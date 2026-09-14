@@ -2757,9 +2757,27 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
-const inferenceParamMutationVersions = Object.fromEntries(
-  PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
-) as Record<PersistedInferenceParamKey, number>;
+/** Per-key mutation counters, built on first use rather than at module scope.
+ *
+ * A function, not a module-scope read: per-model-params is inside the @/features/chat
+ * import cycle, so it can still be initializing when this module's body runs, and naming
+ * PERSISTED_INFERENCE_PARAM_KEYS here would read a const in its temporal dead zone and
+ * throw at import time. Same deferral as watchedStorageKeys() in hooks/use-model-memory.ts.
+ * Memoized: the record keeps one identity, so the `+= 1` bumps below still accumulate. */
+let inferenceParamMutationVersionsCache: Record<
+  PersistedInferenceParamKey,
+  number
+> | null = null;
+
+function inferenceParamMutationVersions(): Record<
+  PersistedInferenceParamKey,
+  number
+> {
+  inferenceParamMutationVersionsCache ??= Object.fromEntries(
+    PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
+  ) as Record<PersistedInferenceParamKey, number>;
+  return inferenceParamMutationVersionsCache;
+}
 const scalarSettingMutationVersions = Object.fromEntries(
   SCALAR_SETTING_KEYS.map((key) => [key, 0]),
 ) as Record<ScalarSettingKey, number>;
@@ -2816,7 +2834,7 @@ function hasKeys(value: object): boolean {
 
 function getSettingsHydrationVersions(): SettingsHydrationVersions {
   return {
-    inferenceParams: { ...inferenceParamMutationVersions },
+    inferenceParams: { ...inferenceParamMutationVersions() },
     scalarSettings: { ...scalarSettingMutationVersions },
     presets: {
       customPresets: customPresetsMutationVersion,
@@ -2892,7 +2910,7 @@ function getChangedInferenceParams(
       continue;
     }
     if (bumpVersions) {
-      inferenceParamMutationVersions[key] += 1;
+      inferenceParamMutationVersions()[key] += 1;
     }
     if (nextValue !== undefined) {
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
@@ -3091,7 +3109,7 @@ function pickLocallyEditedParams(
 ): PersistedInferenceParams {
   const edited: PersistedInferenceParams = {};
   for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
-    if (inferenceParamMutationVersions[key] !== versions.inferenceParams[key]) {
+    if (inferenceParamMutationVersions()[key] !== versions.inferenceParams[key]) {
       setInferenceParam(edited as InferenceParams, key, params[key]);
     }
   }
@@ -3226,7 +3244,7 @@ function getHydratedSettingsState(
       // The context belongs to the load, not the previous model's global set, and no entry carries
       // one for the replay below.
       !(loadedBeforeHydration && key === "maxSeqLength") &&
-      inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+      inferenceParamMutationVersions()[key] === versions.inferenceParams[key]
     ) {
       setInferenceParam(params, key, value);
     }
@@ -3377,7 +3395,7 @@ function getHydratedSettingsState(
       const value = remembered[key];
       if (
         value !== undefined &&
-        inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+        inferenceParamMutationVersions()[key] === versions.inferenceParams[key]
       ) {
         setInferenceParam(replayed, key, value);
       }
@@ -3666,7 +3684,7 @@ function adoptMigratedFieldsAfterLocalEdit(
       const field = key as PersistedInferenceParamKey;
       if (
         versionsBefore[field] === undefined ||
-        inferenceParamMutationVersions[field] !== versionsBefore[field] ||
+        inferenceParamMutationVersions()[field] !== versionsBefore[field] ||
         nextParams[field] === value
       ) {
         continue;
@@ -3761,7 +3779,7 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     // Captured before the write: an edit landing mid-flight is the one case
     // where the server takes the migration and local refuses it.
     const presetSourceBeforeWrite = activePresetSourceMutationVersion;
-    const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions };
+    const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions() };
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
       confirmed,
       migration.patch,
