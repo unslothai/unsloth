@@ -82,7 +82,7 @@ ROWS = MIN_ROWS_FOR_ONLINE + 5
 
 
 def _single_process_launch(monkeypatch):
-    """Clear every launcher variable, so a run reads as Studio's own launch.
+    """Clear every launcher variable, so a run reads as Unsloth's own launch.
 
     Same helper and same constant tuples as ``test_training_preflight.py``: the
     two must not disagree about what counts as a launcher, or one file starts
@@ -417,7 +417,7 @@ def test_a_failure_while_attaching_rolls_the_dataset_back(monkeypatch):
 
 
 def test_a_step_cap_is_resolved_into_passes_rather_than_guessed(monkeypatch):
-    """`max_steps` alone reads as "unknown length" in the gate; Studio knows the
+    """`max_steps` alone reads as "unknown length" in the gate; Unsloth knows the
     row count and the microbatch size, so it answers the question here."""
     decision, _, _, _ = _run(monkeypatch, config_overrides = {"max_steps": 30, "num_train_epochs": 1})
     assert decision.enabled, decision.reason

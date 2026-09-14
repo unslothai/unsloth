@@ -1,13 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A dangling ``refs/<branch>`` must not hide an intact repo from the scan.
+"""A bad cache entry must not hide an otherwise usable repo.
 
-``scan_cache_dir`` raises CorruptedCacheException for a repo whose ref names a commit with no
-``snapshots/<commit>/`` directory and omits it from ``.repos``, so the model stays visible in the
-picker (a plain directory walk) but vanishes from every Hub inventory endpoint chat auto-load reads.
-The repair is read-only: refs are written with an unlocked in-place ``write_text``, so no external
-process can delete one race-free.
+Recovery handles dangling refs, broken snapshot links, and stray snapshot files without mutating
+the cache. Ref deletion cannot be race-free because Hub writes refs in place.
 """
 
 from __future__ import annotations
@@ -178,14 +175,44 @@ def test_a_download_that_has_only_written_its_ref_is_not_invented(tmp_path, monk
     assert _ref_names(repo_dir) == ["main"]
 
 
-def test_a_repo_corrupted_beyond_a_dangling_ref_stays_omitted(tmp_path, monkeypatch):
-    """A broken snapshot symlink is corruption hub rejects for its own reasons."""
-    repo_dir = _build_repo(tmp_path)
+def test_a_broken_symlink_costs_its_file_and_not_the_repo(tmp_path, monkeypatch):
+    """A broken link must not hide readable files beside it."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
     broken = repo_dir / "snapshots" / SNAPSHOT / "weights.bin"
     try:
         os.symlink(repo_dir / "blobs" / "missing", broken)
     except (NotImplementedError, OSError):
         pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    names = {file.file_name for revision in repo.revisions for file in revision.files}
+    assert names == {"model.safetensors"}, "the readable payload must survive"
+    assert _ref_names(repo_dir) == ["main"], "the repair stays read-only"
+
+
+def test_a_stray_file_under_snapshots_costs_itself_and_not_the_repo(tmp_path, monkeypatch):
+    """A stray snapshot file is not a revision."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+    (repo_dir / "snapshots" / "notes.txt").write_text("stray", encoding = "utf-8")
+
+    repo = _only_repo(tmp_path, monkeypatch)
+
+    assert {revision.commit_hash for revision in repo.revisions} == {SNAPSHOT}
+
+
+def test_a_repo_dropped_for_a_reason_this_cannot_see_is_not_invented(tmp_path):
+    """Do not invent a row when the on-disk state does not explain the omission."""
+    repo_dir = _build_repo(tmp_path, ref = SNAPSHOT)
+
+    assert inventory_scan._recover_repo_dropped_by_scan(repo_dir) is None
+
+
+def test_a_refs_file_where_the_refs_directory_belongs_stays_omitted(tmp_path, monkeypatch):
+    """Unreadable refs provide too little information to recover the repo."""
+    repo_dir = _build_repo(tmp_path, ref = None)
+    shutil.rmtree(repo_dir / "refs")
+    (repo_dir / "refs").write_text(SNAPSHOT, encoding = "utf-8")
 
     assert _scanned_repo_ids(tmp_path, monkeypatch) == []
 
@@ -211,7 +238,7 @@ def test_an_unreadable_repo_does_not_abort_the_recovery(tmp_path):
         pytest.skip("filesystem does not enforce directory permissions")
     try:
         scan = _empty_cache_info(HFCacheInfo)
-        merged = inventory_scan._with_repos_hidden_by_dangling_refs(scan, tmp_path)
+        merged = inventory_scan._with_repos_dropped_by_scan(scan, tmp_path)
         assert sorted(repo.repo_id for repo in merged.repos) == ["Org/Model"]
         assert _ref_names(hidden) == ["main"]
     finally:
@@ -605,6 +632,32 @@ def test_gguf_variants_still_list_when_no_snapshot_is_complete(
     assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == offered
 
 
+def test_a_broken_symlink_costs_its_quant_and_leaves_the_clean_one_loadable(tmp_path, monkeypatch):
+    """Recovery keeps a clean quant loadable without offering the broken one."""
+    repo_dir = tmp_path / "models--Org--Model"
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    snapshot.mkdir(parents = True)
+    (repo_dir / "blobs").mkdir()
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text(SNAPSHOT, encoding = "utf-8")
+    good = repo_dir / "blobs" / ("1" * 64)
+    good.write_bytes(b"\0" * 2048)
+    try:
+        os.symlink(good, snapshot / "Model-Q4_K_M.gguf")
+        os.symlink(repo_dir / "blobs" / ("2" * 64), snapshot / "Model-Q8_0.gguf")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    rows = _autoload_gguf_rows(tmp_path, monkeypatch)
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["partial"] is False, "one dead quant must not cost the clean one can_chat"
+    assert rows[0]["capabilities"]["can_chat"] is True
+    # Keep both visible, but offer only the readable quant for loading.
+    assert _listed_gguf_variants(rows[0], tmp_path) == ["Q4_K_M", "Q8_0"]
+    assert _local_gguf_variants_for_autoload(rows[0], tmp_path) == ["Q4_K_M"]
+
+
 def test_a_whole_quant_in_a_mixed_newest_snapshot_beats_an_older_larger_one(tmp_path, monkeypatch):
     """A whole small quant can sit in the newest snapshot beside an interrupted split one while an
     older snapshot holds only a whole larger quant. Auto-load takes the smallest offered, so skipping
@@ -835,12 +888,8 @@ def test_an_empty_projector_is_not_vision_support(tmp_path, monkeypatch, project
     projector llama.cpp cannot open while the row's own quant stayed whole."""
     from hub.utils.gguf import list_local_gguf_variants
 
-    _repo_with(
-        tmp_path,
-        snapshots = {
-            SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 256, "mmproj-F16.gguf": projector},
-        },
-        refs = {"main": UPSTREAM_HEAD},
+    _snapshot_repo(
+        tmp_path, SNAPSHOT, {"Model-Q4_K_M.gguf": b"\0" * 256, "mmproj-F16.gguf": projector}
     )
     rows = _autoload_gguf_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is False
@@ -1495,24 +1544,18 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
 # --- the chokepoints, so a new signal cannot pick its own snapshot ------------
 
 _BACKEND = Path(__file__).resolve().parents[1]
-# Every helper the per-repo scan may hand the whole repo to. Each aggregates across revisions on
-# purpose, so a new name here is a new repo-wide signal on a one-directory row.
-_REPO_WIDE_HELPERS = frozenset(
+# helpers passed repo_info; snapshot signals also receive selected.
+_REPO_INFO_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
-        # The row's pipeline task. Repo-wide on purpose and NOT a snapshot signal: it answers "which
-        # model is this", which every revision of a repo agrees on. The non-GGUF classifier returns
-        # non-None only when detect_family(repo_id) does, and _repo_is_diffusers is True whenever
-        # that holds, so its newest-revision _repo_has_pipeline_index branch cannot change the
-        # answer; the GGUF one reads general.architecture, identical in every cached quant. Scoping
-        # it would only lose rows -- an unreadable header in the one pinned snapshot would drop the
-        # repo from the Images/Video pickers entirely.
+        "_cached_row_is_diffusers",
         "_cached_row_task",
         "_repo_gguf_last_modified",
         "_repo_gguf_payload_snapshots",
         "_repo_gguf_size_bytes",
         "_repo_has_gguf_files",
         "_repo_non_gguf_model_payload",
+        "catalog_classification._repo_gguf_audio_type",
         "getattr",
     }
 )
@@ -1522,7 +1565,7 @@ _MTIME_READERS = {
     "hub/utils/gguf.py": frozenset(),
     "hub/services/models/cache_inventory.py": frozenset({"_blob_mtime"}),
     # Mirrors what huggingface_hub records per revision; it selects nothing.
-    "hub/utils/inventory_scan.py": frozenset({"_recover_repo_hidden_by_dangling_refs"}),
+    "hub/utils/inventory_scan.py": frozenset({"_recover_repo_dropped_by_scan"}),
     # The compatibility routes, listed so the two snapshot selectors cannot reintroduce their own
     # mtime reads. The names left rank directories or repo/blob mtimes, never snapshots.
     "routes/models.py": frozenset(
@@ -1587,8 +1630,8 @@ def test_the_scan_loop_cannot_advertise_a_signal_it_did_not_scope(scan):
         }
     )
     assert (
-        set(handed_off) <= _REPO_WIDE_HELPERS
-    ), f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
+        set(handed_off) <= _REPO_INFO_HELPERS
+    ), f"{scan} hands repo_info to {sorted(set(handed_off) - _REPO_INFO_HELPERS)}"
 
 
 @pytest.mark.parametrize("module, allowed", sorted(_MTIME_READERS.items()))
@@ -1630,20 +1673,31 @@ def _repo_with(
     return repo_dir
 
 
+def _snapshot_repo(
+    cache_root,
+    commit,
+    files,
+    *,
+    ref = UPSTREAM_HEAD,
+    name = "models--Org--Model",
+):
+    """A cache repo whose one snapshot ``commit`` holds ``files``, with refs/main at ``ref``."""
+    return _repo_with(cache_root, {commit: files}, {"main": ref}, name)
+
+
 def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory
 
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {
-                "config.json": b'{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}',
-                "model.safetensors": b"\0" * 256,
-            }
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}',
+            "model.safetensors": b"\0" * 256,
         },
-        refs = {"main": SNAPSHOT},
+        ref = SNAPSHOT,
         name = "models--user--speech-finetune",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
@@ -1664,22 +1718,55 @@ def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, 
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
-def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkeypatch):
+def test_task_inventory_preserves_cached_community_tts_codec(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory
 
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "README.md": b"---\npipeline_tag: text-to-speech\nlibrary_name: transformers\n---\n",
-            }
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "README.md": b"---\npipeline_tag: text-to-speech\nlibrary_name: transformers\n---\n",
         },
-        refs = {"main": SNAPSHOT},
-        name = "models--community--orpheus-tts",
+        ref = SNAPSHOT,
+        name = "models--community--renamed-checkpoint",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    monkeypatch.setattr(cache_inventory, "detect_local_tts_audio_type", lambda _path: "snac")
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert len(rows) == 1
+    assert rows[0]["task"] == "text-to-speech"
+    assert rows[0]["pipeline_tag"] == "text-to-speech"
+    assert rows[0]["audio_type"] == "snac"
+
+
+def test_active_cache_native_fork_loads_by_detected_snapshot(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference.native_audio import is_native_audio_model
+    from hub.services.models import cache_inventory
+
+    repo_dir = _snapshot_repo(
+        tmp_path,
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"moss_tts_local"}',
+            "model.safetensors": b"\0" * 256,
+        },
+        ref = SNAPSHOT,
+        name = "models--acme--native-audio-fork",
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
     monkeypatch.setattr(
@@ -1692,9 +1779,12 @@ def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkey
     finally:
         inventory_scan.invalidate_hf_cache_scans()
 
-    assert len(rows) == 1
-    assert rows[0]["task"] == "text-to-speech"
-    assert rows[0]["pipeline_tag"] == "text-to-speech"
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    assert rows[0]["repo_id"] == "acme/native-audio-fork"
+    assert rows[0]["audio_type"] == "moss_tts_local"
+    assert rows[0]["load_id"] == str(snapshot)
+    assert rows[0]["capabilities"]["can_chat"] is False
+    assert is_native_audio_model(rows[0]["load_id"])
 
 
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):
@@ -1803,17 +1893,15 @@ def test_a_required_config_has_to_parse_before_it_proves_a_payload(
 ):
     """from_pretrained parses config.json before it looks at a single weight, so one that does not
     parse fails the load as surely as a zero-byte one and cannot mark the snapshot ready."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": config_body,
-                "model-00001-of-00002.safetensors": b"\0" * 256,
-                "model-00002-of-00002.safetensors": b"\0" * 256,
-                "model.safetensors.index.json": _SHARD_INDEX,
-            }
+        OLDER,
+        {
+            "config.json": config_body,
+            "model-00001-of-00002.safetensors": b"\0" * 256,
+            "model-00002-of-00002.safetensors": b"\0" * 256,
+            "model.safetensors.index.json": _SHARD_INDEX,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -1829,10 +1917,8 @@ def test_a_required_config_has_to_parse_before_it_proves_a_payload(
 def test_trainer_state_is_not_the_model_it_was_saved_beside(tmp_path, monkeypatch, artefact):
     """A trainer writes these next to the weights. They end in .safetensors and from_pretrained
     will not load one, so a snapshot holding nothing else has no payload to offer."""
-    _repo_with(
-        tmp_path,
-        snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', artefact: b"\0" * 256}},
-        refs = {"main": UPSTREAM_HEAD},
+    _snapshot_repo(
+        tmp_path, OLDER, {"config.json": b'{"model_type":"llama"}', artefact: b"\0" * 256}
     )
 
     assert _autoload_rows(tmp_path, monkeypatch) == []
@@ -1840,16 +1926,14 @@ def test_trainer_state_is_not_the_model_it_was_saved_beside(tmp_path, monkeypatc
 
 def test_trainer_state_beside_real_weights_changes_nothing(tmp_path, monkeypatch):
     """Negative control for the test above: the artefact is ignored, not held against the row."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "optimizer.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "optimizer.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -1861,16 +1945,14 @@ def test_trainer_state_beside_real_weights_changes_nothing(tmp_path, monkeypatch
 def test_an_empty_stray_adapter_does_not_veto_a_checkpoint(tmp_path, monkeypatch):
     """A zero-byte file from the other family is not what this row loads. The non-empty case is
     already exempted when the row's own payload names no family, and this is the same shape."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.ckpt": b"\0" * 256,
-                "adapter_model.safetensors": b"",
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.ckpt": b"\0" * 256,
+            "adapter_model.safetensors": b"",
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -1881,16 +1963,14 @@ def test_an_empty_stray_adapter_does_not_veto_a_checkpoint(tmp_path, monkeypatch
 
 def test_an_empty_weight_of_the_rows_own_kind_still_vetoes(tmp_path, monkeypatch):
     """Negative control for the test above: the loader stops on a name of the kind it wants."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "adapter_config.json": b'{"peft_type":"LORA"}',
-                "adapter_model.safetensors": b"",
-                "adapter_model.bin": b"",
-            }
+        OLDER,
+        {
+            "adapter_config.json": b'{"peft_type":"LORA"}',
+            "adapter_model.safetensors": b"",
+            "adapter_model.bin": b"",
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     assert _autoload_rows(tmp_path, monkeypatch) == []
@@ -1908,11 +1988,7 @@ def test_an_empty_weight_of_the_rows_own_kind_still_vetoes(tmp_path, monkeypatch
 def test_numbering_no_set_of_shards_can_satisfy_is_a_family_short(tmp_path, monkeypatch, weight):
     """The name still classifies the snapshot, so dropping the family left nothing to be short of
     and it read as complete. Neither transformers nor peft can assemble one of these."""
-    _repo_with(
-        tmp_path,
-        snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', weight: b"\0" * 256}},
-        refs = {"main": UPSTREAM_HEAD},
-    )
+    _snapshot_repo(tmp_path, OLDER, {"config.json": b'{"model_type":"llama"}', weight: b"\0" * 256})
 
     rows = _autoload_rows(tmp_path, monkeypatch)
 
@@ -1926,10 +2002,8 @@ def test_trainer_state_in_checkpoint_format_is_not_a_payload_either(
 ):
     """The checkpoint extensions are a suffix test, so trainer state saved as .pt read as weights
     the same way optimizer.safetensors did before it was excluded."""
-    _repo_with(
-        tmp_path,
-        snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', artefact: b"\0" * 256}},
-        refs = {"main": UPSTREAM_HEAD},
+    _snapshot_repo(
+        tmp_path, OLDER, {"config.json": b'{"model_type":"llama"}', artefact: b"\0" * 256}
     )
 
     assert _autoload_rows(tmp_path, monkeypatch) == []
@@ -1983,19 +2057,17 @@ def test_an_empty_diffusion_weight_is_judged_like_an_empty_checkpoint(tmp_path, 
 def test_a_family_in_a_subdirectory_does_not_stand_in_for_the_root_one(tmp_path, monkeypatch):
     """from_pretrained reads the snapshot root and fails on the index it finds there. It does not
     go looking for an unrelated set under backup/, so that set cannot vouch for the row."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model-00001-of-00002.safetensors": b"\0" * 64,
-                "model.safetensors.index.json": _SHARD_INDEX,
-                "backup/model-00001-of-00002.safetensors": b"\0" * 64,
-                "backup/model-00002-of-00002.safetensors": b"\0" * 64,
-                "backup/model.safetensors.index.json": _SHARD_INDEX,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model-00001-of-00002.safetensors": b"\0" * 64,
+            "model.safetensors.index.json": _SHARD_INDEX,
+            "backup/model-00001-of-00002.safetensors": b"\0" * 64,
+            "backup/model-00002-of-00002.safetensors": b"\0" * 64,
+            "backup/model.safetensors.index.json": _SHARD_INDEX,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2011,17 +2083,15 @@ def test_a_layout_that_keeps_every_weight_in_a_subdirectory_cannot_serve_the_roo
     so a set that lives only under backup/ is not one the pinned load can reach either. A layout
     that genuinely keeps its weights in subdirectories names no family this walk groups, so it is
     carried by the ungrouped payload rather than by this one."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "backup/model-00001-of-00002.safetensors": b"\0" * 64,
-                "backup/model-00002-of-00002.safetensors": b"\0" * 64,
-                "backup/model.safetensors.index.json": _SHARD_INDEX,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "backup/model-00001-of-00002.safetensors": b"\0" * 64,
+            "backup/model-00002-of-00002.safetensors": b"\0" * 64,
+            "backup/model.safetensors.index.json": _SHARD_INDEX,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2033,15 +2103,13 @@ def test_a_layout_that_keeps_every_weight_in_a_subdirectory_cannot_serve_the_roo
 def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_path, monkeypatch):
     """The unsharded twin of the test above. A lone backup/adapter_model.safetensors is not the
     name peft opens at the snapshot root, so it cannot make the pinned snapshot loadable."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "adapter_config.json": b'{"peft_type":"LORA"}',
-                "backup/adapter_model.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "adapter_config.json": b'{"peft_type":"LORA"}',
+            "backup/adapter_model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2053,12 +2121,13 @@ def test_an_unsharded_weight_under_a_subdirectory_does_not_serve_the_root(tmp_pa
 def test_a_config_the_loader_cannot_open_by_name_does_not_classify(tmp_path, monkeypatch):
     """The loaders open config.json by its exact path, so on a case-sensitive volume a Config.json
     is not the file they find. The filesystem answers that, not a lowercased basename."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {"Config.json": b'{"model_type":"llama"}', "model.safetensors": b"\0" * 256}
+        OLDER,
+        {
+            "Config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     probe = tmp_path / "case-probe"
@@ -2090,11 +2159,7 @@ def test_a_weight_the_loader_cannot_open_by_name_does_not_serve(tmp_path, monkey
     ):
         root = tmp_path / weight.replace(".", "_")
         config_name = "adapter_config.json" if "peft_type" in config else "config.json"
-        _repo_with(
-            root,
-            snapshots = {OLDER: {config_name: config.encode(), weight: b"\0" * 256}},
-            refs = {"main": UPSTREAM_HEAD},
-        )
+        _snapshot_repo(root, OLDER, {config_name: config.encode(), weight: b"\0" * 256})
 
         rows = _autoload_rows(root, monkeypatch)
 
@@ -2153,16 +2218,14 @@ def test_a_canonical_index_with_no_shards_is_not_skipped_for_the_bin(tmp_path, m
     """_get_resolved_checkpoint_files tries model.safetensors.index.json before pytorch_model.bin,
     and the branches are exclusive, so a whole .bin beside an index whose shards were never
     recovered is not the file the loader reaches."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "pytorch_model.bin": b"\0" * 256,
-                "model.safetensors.index.json": _SHARD_INDEX,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "pytorch_model.bin": b"\0" * 256,
+            "model.safetensors.index.json": _SHARD_INDEX,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2174,15 +2237,13 @@ def test_a_canonical_index_with_no_shards_is_not_skipped_for_the_bin(tmp_path, m
 def test_a_bin_with_no_safetensors_index_beside_it_still_serves(tmp_path, monkeypatch):
     """Control for the test above: with no safetensors name of any kind, pytorch_model.bin is the
     file the loader reaches."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "pytorch_model.bin": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "pytorch_model.bin": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2248,16 +2309,14 @@ def test_an_empty_canonical_weight_is_not_excused_by_another_root_file(tmp_path,
         ("pytorch_model.bin", "consolidated.bin"),
     ):
         root = tmp_path / empty.replace(".", "_")
-        _repo_with(
+        _snapshot_repo(
             root,
-            snapshots = {
-                OLDER: {
-                    "config.json": b'{"model_type":"llama"}',
-                    empty: b"",
-                    whole: b"\0" * 256,
-                }
+            OLDER,
+            {
+                "config.json": b'{"model_type":"llama"}',
+                empty: b"",
+                whole: b"\0" * 256,
             },
-            refs = {"main": UPSTREAM_HEAD},
         )
 
         rows = _autoload_rows(root, monkeypatch)
@@ -2269,16 +2328,14 @@ def test_an_empty_canonical_weight_is_not_excused_by_another_root_file(tmp_path,
 def test_a_whole_canonical_weight_beside_another_root_file_still_serves(tmp_path, monkeypatch):
     """Control for the test above: with the name the loader picks whole, the second root file is
     beside the point."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "consolidated.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "consolidated.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2290,16 +2347,14 @@ def test_a_whole_canonical_weight_beside_another_root_file_still_serves(tmp_path
 def test_a_torn_quant_does_not_veto_the_weights_row_beside_it(tmp_path, monkeypatch):
     """The weights row loads model.safetensors and never opens a .gguf, so an interrupted quant
     download beside it says nothing about the row."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "Model-Q4_K_M-00001-of-00002.gguf": b"GGUF" + b"\0" * 252,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "Model-Q4_K_M-00001-of-00002.gguf": b"GGUF" + b"\0" * 252,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2342,11 +2397,7 @@ def test_a_root_weight_under_a_name_the_loader_never_opens_does_not_serve(tmp_pa
     ):
         root = tmp_path / weight.replace(".", "_")
         config_name = "adapter_config.json" if "peft_type" in config else "config.json"
-        _repo_with(
-            root,
-            snapshots = {OLDER: {config_name: config.encode(), weight: b"\0" * 256}},
-            refs = {"main": UPSTREAM_HEAD},
-        )
+        _snapshot_repo(root, OLDER, {config_name: config.encode(), weight: b"\0" * 256})
 
         rows = _autoload_rows(root, monkeypatch)
 
@@ -2382,10 +2433,8 @@ def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(tmp
     under backup/ any more than it can a nested shard set."""
     for weights in ("backup/model.ckpt", "backup/diffusion_pytorch_model.safetensors"):
         root = tmp_path / weights.replace("/", "_")
-        _repo_with(
-            root,
-            snapshots = {OLDER: {"config.json": b'{"model_type":"llama"}', weights: b"\0" * 256}},
-            refs = {"main": UPSTREAM_HEAD},
+        _snapshot_repo(
+            root, OLDER, {"config.json": b'{"model_type":"llama"}', weights: b"\0" * 256}
         )
 
         rows = _autoload_rows(root, monkeypatch)
@@ -2397,16 +2446,14 @@ def test_an_ungroupable_payload_under_a_subdirectory_does_not_serve_the_root(tmp
 def test_a_root_ungroupable_payload_is_not_vetoed_by_a_nested_copy(tmp_path, monkeypatch):
     """Control for the test above: the root holds one the loader opens, so a second copy
     underneath it is beside the point."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.ckpt": b"\0" * 256,
-                "backup/model.ckpt": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.ckpt": b"\0" * 256,
+            "backup/model.ckpt": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2418,16 +2465,14 @@ def test_a_root_ungroupable_payload_is_not_vetoed_by_a_nested_copy(tmp_path, mon
 def test_an_unsharded_weight_at_the_root_beside_a_nested_copy_still_serves(tmp_path, monkeypatch):
     """Control for the test above: the root holds the name the loader opens, so a second copy
     underneath it changes nothing."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "backup/model.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "backup/model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2439,15 +2484,13 @@ def test_an_unsharded_weight_at_the_root_beside_a_nested_copy_still_serves(tmp_p
 def test_a_config_in_a_subdirectory_does_not_serve_the_snapshot_root(tmp_path, monkeypatch):
     """The pin names the snapshot root, and from_pretrained opens the config there. A copy under
     backup/ is not the one that load finds, so it cannot classify the snapshot as loadable."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "backup/config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "backup/config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2459,16 +2502,14 @@ def test_a_config_in_a_subdirectory_does_not_serve_the_snapshot_root(tmp_path, m
 def test_a_nested_config_beside_the_root_one_leaves_the_row_alone(tmp_path, monkeypatch):
     """Negative control: the root config is what the loader opens, so a second copy underneath it
     changes nothing."""
-    repo_dir = _repo_with(
+    repo_dir = _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "backup/config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "backup/config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2481,15 +2522,13 @@ def test_a_nested_config_beside_the_root_one_leaves_the_row_alone(tmp_path, monk
 def test_a_nested_adapter_config_does_not_serve_the_snapshot_root(tmp_path, monkeypatch):
     """peft resolves adapter_config.json at the directory it is handed, the same as the base
     loader, so a nested copy cannot classify the snapshot as an adapter either."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "backup/adapter_config.json": b'{"peft_type":"LORA"}',
-                "adapter_model.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "backup/adapter_config.json": b'{"peft_type":"LORA"}',
+            "adapter_model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -2497,10 +2536,8 @@ def test_a_nested_adapter_config_does_not_serve_the_snapshot_root(tmp_path, monk
     assert rows == [] or rows[0]["partial"] is True
 
 
-def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypatch):
-    """The compatibility model list carries no path, so a client loads by id out of the active
-    cache. With a broken copy there, publishing another cache's copy under the same id offers a
-    load that follows the broken one. The Hub inventory still lists it, with a path."""
+def test_a_broken_active_copy_does_not_hide_a_complete_legacy_copy(tmp_path, monkeypatch):
+    """A broken active copy must not hide a complete copy the row can pin by path."""
     import asyncio
 
     import routes.models as models_route
@@ -2516,13 +2553,9 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
     del torn["model-00002-of-00002.safetensors"]
     # Active: half a set behind a dangling ref. Legacy: the same repo, whole.
     _repo_with(active, snapshots = {OLDER: torn}, refs = {"main": UPSTREAM_HEAD})
-    _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
+    legacy_repo = _repo_with(legacy, snapshots = {NEWER: whole}, refs = {"main": NEWER})
 
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [active, legacy])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = active),
-    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     inventory_scan.invalidate_hf_cache_scans()
 
@@ -2530,14 +2563,11 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
         models_route.list_cached_models(current_subject = "test-user", hf_token = None)
     )
     cached = response["cached"] if isinstance(response, dict) else response.cached
-    assert cached == []
+    assert len(cached) == 1
+    assert cached[0]["load_id"] == str(legacy_repo / "snapshots" / NEWER)
 
     # Control: the broken copy in the other cache leaves the active one publishable.
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [legacy, active])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: SimpleNamespace(hub_cache = legacy),
-    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: legacy)
     inventory_scan.invalidate_hf_cache_scans()
 
@@ -2550,17 +2580,15 @@ def test_a_broken_active_copy_withholds_the_compatibility_row(tmp_path, monkeypa
 
 def test_a_config_that_parses_still_proves_a_payload(tmp_path, monkeypatch):
     """Negative control for the test above: the same shape with a readable config."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model-00001-of-00002.safetensors": b"\0" * 256,
-                "model-00002-of-00002.safetensors": b"\0" * 256,
-                "model.safetensors.index.json": _SHARD_INDEX,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model-00001-of-00002.safetensors": b"\0" * 256,
+            "model-00002-of-00002.safetensors": b"\0" * 256,
+            "model.safetensors.index.json": _SHARD_INDEX,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -3006,11 +3034,7 @@ def test_an_mtp_only_recovered_repo_does_not_become_a_chattable_gguf_row(tmp_pat
     """End to end for the recovery path. Un-hiding a repo behind a dangling ref must not classify it
     more loosely than a healthy one: with only a drafter in the snapshot there is nothing to
     load."""
-    _repo_with(
-        tmp_path,
-        snapshots = {SNAPSHOT: {"MTP/drafter-Q4_K_M.gguf": b"\0" * 64}},
-        refs = {"main": UPSTREAM_HEAD},
-    )
+    _snapshot_repo(tmp_path, SNAPSHOT, {"MTP/drafter-Q4_K_M.gguf": b"\0" * 64})
     assert _autoload_rows(tmp_path, monkeypatch, gguf = True) == []
 
 
@@ -3023,10 +3047,8 @@ def test_an_all_incomplete_repo_is_offered_by_repo_id_as_partial(tmp_path, monke
 
     from hub.services.models import gguf_variants
 
-    _repo_with(
-        tmp_path,
-        snapshots = {SNAPSHOT: {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16}},
-        refs = {"main": SNAPSHOT},
+    _snapshot_repo(
+        tmp_path, SNAPSHOT, {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 16}, ref = SNAPSHOT
     )
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
@@ -3053,11 +3075,7 @@ def test_a_whole_repo_is_still_offered_by_repo_id_as_downloaded(tmp_path, monkey
 
     from hub.services.models import gguf_variants
 
-    _repo_with(
-        tmp_path,
-        snapshots = {SNAPSHOT: {"Model-Q4_K_M.gguf": b"\0" * 64}},
-        refs = {"main": SNAPSHOT},
-    )
+    _snapshot_repo(tmp_path, SNAPSHOT, {"Model-Q4_K_M.gguf": b"\0" * 64}, ref = SNAPSHOT)
     monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
@@ -3268,6 +3286,17 @@ _CASCADE_INDEX = {
     "text_encoder": ["transformers", "CLIPTextModelWithProjection"],
     "vqgan": ["wuerstchen", "PaellaVQModel"],
 }
+
+
+def test_modular_manifest_is_parsed_before_fixed_denoiser_fallback(tmp_path):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text(json.dumps(_CASCADE_INDEX))
+    decoder = snapshot / "decoder"
+    decoder.mkdir()
+    (decoder / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
 def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
@@ -3928,6 +3957,57 @@ def test_a_stray_base_shard_does_not_veto_a_complete_adapter(
 
 
 @pytest.mark.parametrize(
+    ("base_config", "expected"),
+    [
+        ({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}, True),
+        (
+            {
+                "model_type": "whisper",
+                "architectures": ["WhisperForConditionalGeneration"],
+            },
+            False,
+        ),
+    ],
+    ids = ["chat-base", "non-chat-base"],
+)
+def test_cached_adapter_chat_capability_uses_its_exact_cached_base(
+    base_config, expected, tmp_path, monkeypatch
+):
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "adapter_config.json": json.dumps(
+                    {
+                        "base_model_name_or_path": "Org/Base",
+                        "revision": SNAPSHOT,
+                        "peft_type": "LORA",
+                    }
+                ).encode(),
+                "adapter_model.safetensors": b"\0" * 128,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--Org--Adapter",
+    )
+    _snapshot_repo(
+        tmp_path,
+        SNAPSHOT,
+        {
+            "config.json": json.dumps(base_config).encode(),
+            "model.safetensors": b"\0" * 256,
+        },
+        ref = SNAPSHOT,
+        name = "models--Org--Base",
+    )
+
+    rows = {row["repo_id"]: row for row in _autoload_rows(tmp_path, monkeypatch)}
+
+    assert rows["Org/Adapter"]["model_format"] == "adapter"
+    assert rows["Org/Adapter"]["capabilities"]["can_chat"] is expected
+
+
+@pytest.mark.parametrize(
     "files, cannot_serve",
     [
         # A real transformers file beside a config.json outranks the adapter, so the torn base
@@ -3984,8 +4064,13 @@ def test_the_judged_weight_family_follows_the_row_format(files, cannot_serve, tm
 
 
 def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
-    """GET /api/models/cached-models. Its schema has no partial and no load_id, so it can only
-    describe a repo that loads by id."""
+    """Repo ids from GET /api/models/cached-models."""
+    return [row["repo_id"] for row in _compat_cached_rows(cache_root, monkeypatch)]
+
+
+def _compat_cached_rows(cache_root: Path, monkeypatch) -> list[dict]:
+    """GET /api/models/cached-models. Its schema carries partial and load_id, so it can describe
+    a repo pinned to a snapshot as well as one that loads by id."""
     import asyncio
     from types import SimpleNamespace
 
@@ -4003,25 +4088,33 @@ def _compat_cached_models(cache_root: Path, monkeypatch) -> list[str]:
         )
     finally:
         inventory_scan.invalidate_hf_cache_scans()
-    return [row["repo_id"] for row in response["cached"]]
+    return list(response["cached"])
 
 
 @pytest.mark.parametrize(
-    "snapshot_files",
+    "snapshot_files, listed",
     [
-        {"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256},
-        {"config.json": b"{}", "model.safetensors": b"\0" * 256},
+        ({"config.json": b"{}", "model-00001-of-00002.safetensors": b"\0" * 256}, False),
+        ({"config.json": b"{}", "model.safetensors": b"\0" * 256}, True),
     ],
     ids = ["short-a-shard", "whole-but-only-loadable-by-path"],
 )
 def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
-    snapshot_files, tmp_path, monkeypatch
+    snapshot_files, listed, tmp_path, monkeypatch
 ):
-    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it:
-    with neither partial nor a load id, a torn recovery reads as a plain cached model and a whole
-    one is offered under a repo id that does not resolve."""
+    """Un-hiding a repo must not smuggle it into a response that cannot say what is wrong with it.
+
+    A torn recovery stays withheld: nothing in the schema says "short a shard", so it would read
+    as a plain cached model. The whole one is no longer withheld, because the premise changed --
+    this schema now carries ``load_id``, so the row can name the snapshot to load instead of an
+    id that does not resolve. Withholding it hid a model whose weights are on disk and loadable.
+    """
     _repo_with(tmp_path, snapshots = {SNAPSHOT: snapshot_files}, refs = {"main": UPSTREAM_HEAD})
-    assert _compat_cached_models(tmp_path, monkeypatch) == []
+    rows = _compat_cached_rows(tmp_path, monkeypatch)
+    assert [row["repo_id"] for row in rows] == (["Org/Model"] if listed else [])
+    if listed:
+        # Pinned, since the dangling ref is exactly what the bare id cannot follow.
+        assert rows[0]["load_id"].endswith(SNAPSHOT)
     # The Hub inventory still lists it, with the fields to describe it.
     assert [row["repo_id"] for row in _autoload_rows(tmp_path, monkeypatch)] == ["Org/Model"]
 
@@ -4029,10 +4122,14 @@ def test_the_compatibility_route_withholds_a_recovery_it_cannot_describe(
 def test_the_compatibility_route_still_lists_what_upstream_returns(tmp_path, monkeypatch):
     """The control that bounds the gate: a repo whose refs/main resolves is one upstream already
     returned, so it is unaffected."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {SNAPSHOT: {"config.json": b"{}", "model.safetensors": b"\0" * 256}},
-        refs = {"main": SNAPSHOT},
+        SNAPSHOT,
+        {
+            "config.json": b"{}",
+            "model.safetensors": b"\0" * 256,
+        },
+        ref = SNAPSHOT,
     )
     assert _compat_cached_models(tmp_path, monkeypatch) == ["Org/Model"]
 
@@ -4121,17 +4218,15 @@ def test_an_adapter_beside_a_config_json_is_still_an_adapter(tmp_path, monkeypat
     """A LoRA snapshot legitimately ships the base model's config.json next to
     adapter_config.json. Reading the config alone as "this is a base row" made a whole adapter
     unusable whenever an unrelated torn base shard sat beside it."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {
-                "config.json": b'{"model_type":"llama"}',
-                "adapter_config.json": b'{"peft_type":"LORA"}',
-                "adapter_model.safetensors": b"\0" * 128,
-                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
-            }
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "adapter_config.json": b'{"peft_type":"LORA"}',
+            "adapter_model.safetensors": b"\0" * 128,
+            "pytorch_model-00001-of-00002.bin": b"\0" * 64,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["model_format"] == "adapter"
@@ -4227,12 +4322,13 @@ def test_the_newest_snapshot_still_wins_when_both_are_complete(tmp_path, monkeyp
 def test_an_empty_adapter_config_is_not_loadable(tmp_path, monkeypatch):
     """The adapter's required config gets the same treatment as config.json: recognised by name so
     the snapshot classifies, but peft cannot parse an empty one, so whole weights are not enough."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {"adapter_config.json": b"", "adapter_model.safetensors": b"\0" * 128}
+        SNAPSHOT,
+        {
+            "adapter_config.json": b"",
+            "adapter_model.safetensors": b"\0" * 128,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["model_format"] == "adapter"
@@ -4243,16 +4339,14 @@ def test_an_empty_adapter_config_is_not_loadable(tmp_path, monkeypatch):
 def test_an_empty_base_config_does_not_block_an_adapter_row(tmp_path, monkeypatch):
     """The veto is scoped to the format that has to parse the file. An adapter loads through
     adapter_config.json, so a stray empty config.json beside it is not its problem."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {
-                "config.json": b"",
-                "adapter_config.json": b'{"peft_type":"LORA"}',
-                "adapter_model.safetensors": b"\0" * 128,
-            }
+        SNAPSHOT,
+        {
+            "config.json": b"",
+            "adapter_config.json": b'{"peft_type":"LORA"}',
+            "adapter_model.safetensors": b"\0" * 128,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["model_format"] == "adapter"
@@ -4287,12 +4381,13 @@ def test_an_adapter_file_does_not_stand_in_for_a_checkpoint_row(tmp_path, monkey
     """adapter_model.bin reads as checkpoint-like, so a snapshot holding it beside a config.json
     and no adapter_config.json classifies checkpoint. The completeness walk then accepted the
     adapter file as that row's payload, though a checkpoint load finds no base weights."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {"config.json": b'{"model_type":"llama"}', "adapter_model.bin": b"\0" * 256}
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "adapter_model.bin": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["model_format"] == "checkpoint"
@@ -4390,17 +4485,15 @@ def test_a_sharded_base_family_needs_its_index(files, partial, tmp_path, monkeyp
 def test_an_index_less_shard_set_does_not_veto_a_whole_family(tmp_path, monkeypatch):
     """The index makes a family uncountable, not the snapshot unusable. A whole model.safetensors
     beside an index-less .bin set still serves the row, the same as beside a torn one."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "pytorch_model-00001-of-00002.bin": b"\0" * 64,
-                "pytorch_model-00002-of-00002.bin": b"\0" * 64,
-            }
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "pytorch_model-00001-of-00002.bin": b"\0" * 64,
+            "pytorch_model-00002-of-00002.bin": b"\0" * 64,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
     rows = _autoload_rows(tmp_path, monkeypatch)
     assert rows[0]["partial"] is False
@@ -4431,16 +4524,14 @@ def test_a_root_weight_no_runtime_discovers_by_name_does_not_serve(tmp_path, mon
 
 def test_a_root_weight_no_runtime_discovers_does_not_veto_one_it_does(tmp_path, monkeypatch):
     """Control for the test above: an unopened name is no evidence; a canonical weight decides."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "foo.safetensors": b"\0" * 256,
-                "model.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "foo.safetensors": b"\0" * 256,
+            "model.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -4454,16 +4545,14 @@ def test_a_torn_quant_does_not_charge_a_stale_incomplete_blob_to_the_weights_row
 ):
     """The legacy .incomplete walk attributes a repo-wide signal, and that question is per row: a
     weights row never opens a .gguf, so a torn quant must not charge it the leftover blob."""
-    repo_dir = _repo_with(
+    repo_dir = _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors": b"\0" * 256,
-                "Model-Q4_K_M-00001-of-00002.gguf": b"GGUF" + b"\0" * 252,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors": b"\0" * 256,
+            "Model-Q4_K_M-00001-of-00002.gguf": b"GGUF" + b"\0" * 252,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
     (repo_dir / "blobs" / "abc123.incomplete").write_bytes(b"\0" * 8)
 
@@ -4550,16 +4639,14 @@ def test_an_index_naming_half_of_the_family_it_describes_still_reads_as_torn(tmp
     """Control for the test above. A shard names its own total, so an index listing one of a set
     has to list the whole set: the loader opens exactly what is mapped and silently drops the
     rest, which is an interrupted download rather than stale content beside a whole one."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            SNAPSHOT: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors.index.json": _shard_index("model-00001-of-00002.safetensors"),
-                "model-00001-of-00002.safetensors": b"\0" * 256,
-            }
+        SNAPSHOT,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors.index.json": _shard_index("model-00001-of-00002.safetensors"),
+            "model-00001-of-00002.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)
@@ -4600,16 +4687,14 @@ def test_a_torn_revision_does_not_choose_the_format_over_a_whole_one(tmp_path, m
 def test_a_repo_whose_only_format_is_torn_still_reads_as_torn(tmp_path, monkeypatch):
     """Control for the test above: with no whole revision in any other format there is nothing to
     fall back to, so the torn safetensors revision stays the answer."""
-    _repo_with(
+    _snapshot_repo(
         tmp_path,
-        snapshots = {
-            OLDER: {
-                "config.json": b'{"model_type":"llama"}',
-                "model.safetensors.index.json": _SHARD_INDEX,
-                "model-00001-of-00002.safetensors": b"\0" * 256,
-            }
+        OLDER,
+        {
+            "config.json": b'{"model_type":"llama"}',
+            "model.safetensors.index.json": _SHARD_INDEX,
+            "model-00001-of-00002.safetensors": b"\0" * 256,
         },
-        refs = {"main": UPSTREAM_HEAD},
     )
 
     rows = _autoload_rows(tmp_path, monkeypatch)

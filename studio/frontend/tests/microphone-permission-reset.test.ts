@@ -13,6 +13,8 @@ import { register } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { readSrc, readText } from "./helpers/kit.ts";
+
 register("./helpers/tauri-core-resolver.mjs", import.meta.url);
 
 // A file:// URL, not a native path. `import()` takes a URL or a relative specifier, and
@@ -24,25 +26,11 @@ const MODULE = new URL(
   import.meta.url,
 ).href;
 
-const VOICE_TAB = readFileSync(
-  fileURLToPath(new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url)),
-  "utf8",
-);
+const VOICE_TAB = readSrc("features/settings/tabs/voice-tab.tsx");
 
-const ADAPTER = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/chat/adapters/studio-web-speech-dictation-adapter.ts",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+const ADAPTER = readSrc("features/chat/adapters/studio-web-speech-dictation-adapter.ts");
 
-const MAIN_RS = readFileSync(
-  fileURLToPath(new URL("../../src-tauri/src/main.rs", import.meta.url)),
-  "utf8",
-);
+const MAIN_RS = readText("../../src-tauri/src/main.rs");
 
 type StubControl = { calls: { command: string }[]; mode: "ok" | "rejects" };
 
@@ -134,10 +122,7 @@ test("the blocked toast only promises another prompt on the desktop", () => {
 });
 
 test("the browser message still points at the page permission", () => {
-  const en = readFileSync(
-    fileURLToPath(new URL("../src/i18n/locales/en.ts", import.meta.url)),
-    "utf8",
-  );
+  const en = readSrc("i18n/locales/en.ts");
   const blocked = en.match(/micAccessBlocked:\s*\n?\s*"([^"]+)"/);
   assert.ok(blocked, "micAccessBlocked is missing");
   assert.match(blocked[1], /for this Unsloth page/);

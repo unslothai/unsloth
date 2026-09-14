@@ -8,13 +8,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, unstructured_seed_cache_root
 
 DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
-_CACHE_DIR = unstructured_seed_cache_root()
+_CACHE_DIR = LazyPath(unstructured_seed_cache_root)
 
 _PANDAS = None
 
@@ -146,10 +147,7 @@ def materialize_unstructured_seed_dataset(
 
 
 def materialize_multi_file_unstructured_seed(
-    *,
-    file_entries: list[tuple[Path, str]],  # (extracted_txt_path, original_filename)
-    chunk_size: int,
-    chunk_overlap: int,
+    *, file_entries: list[tuple[Path, str]], chunk_size: int, chunk_overlap: int
 ) -> tuple[Path, list[dict[str, str]]]:
     """Chunk multiple files into one parquet dataset with a source_file column."""
     chunk_size, chunk_overlap = resolve_chunking(chunk_size, chunk_overlap)

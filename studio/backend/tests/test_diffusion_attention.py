@@ -704,7 +704,7 @@ def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
 
 def test_transient_resolution_failure_is_not_memoised(monkeypatch):
     """A probe that times out on a loaded box is transient. Caching it would turn one
-    hiccup into "no xFormers for the rest of this Studio session", so only DETERMINISTIC
+    hiccup into "no xFormers for the rest of this Unsloth session", so only DETERMINISTIC
     answers (a URL, or a refusal that depends purely on the resident torch) are cached."""
     import utils.wheel_utils as wu
 

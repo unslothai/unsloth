@@ -6,43 +6,62 @@ import {
 } from "./attachment-queue";
 import type { NativeIntent } from "./types";
 
+function moveQueuedAttachments(
+  queues: PendingNativeAttachments,
+  staleKeys: string[],
+  targetKey: string,
+): PendingNativeAttachments {
+  let pending = queues;
+  for (const key of staleKeys) {
+    const queued = queues[key] ?? [];
+    if (queued.length > 0) {
+      pending = enqueueNativeAttachments(pending, targetKey, queued);
+    }
+    if (key in pending) {
+      pending = { ...pending };
+      delete pending[key];
+    }
+  }
+  return pending;
+}
+
 interface NativeIntentState {
   pendingModelIntent: NativeIntent | null;
   // Key each batch to the chat that received the OS drop. Registration crosses an
   // async Rust boundary, so the active chat may change before these arrive.
   pendingAttachments: PendingNativeAttachments;
   pendingImageAttachments: PendingNativeAttachments;
+  pendingOpenDocumentAttachments: PendingNativeAttachments;
   pendingAudioAttachments: PendingNativeAttachments;
   pendingVideoAttachments: PendingNativeAttachments;
   // Image drops registering with Rust, before they have a queue to sit in. Not
   // keyed: until the intents land there is no settled target, and the OS drop
   // went to the window, which has one composer to send from.
   registeringImageDrops: number;
-  // Same for audio: cover the register-and-read window or a fast submit
-  // goes out without the clip.
+  // Same for audio: cover the register-and-read window or a fast submit goes out without the clip.
   registeringAudioDrops: number;
-  // Same for video: one clip is a long read, and a submit in that window would
-  // go out without it.
+  // Same for video: one clip is a long read, and a submit in that window would go out without it.
   registeringVideoDrops: number;
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
   imageDropFailures: Record<string, number>;
   audioDropFailures: Record<string, number>;
   videoDropFailures: Record<string, number>;
-  // Owner of a queued image batch, by composer identity. A remount means the
-  // outgoing instance cannot hand the batch over itself, so it leaves a note.
+  // Owner of queued composer-file batches, by composer identity. A remount means
+  // the outgoing instance cannot hand the batches over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
-  // Same for audio: a new chat re-keys mid-read, so the clip needs a note
-  // to follow the composer.
+  // Same for audio: a new chat re-keys mid-read, so the clip needs a note to follow the composer.
   audioDropOwners: Record<string, string>;
   videoDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
+  addOpenDocumentAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addAudioAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addVideoAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   takeAttachments: (targetKey: string) => NativeIntent[];
   takeImageAttachments: (targetKey: string) => NativeIntent[];
+  takeOpenDocumentAttachments: (targetKey: string) => NativeIntent[];
   takeAudioAttachments: (targetKey: string) => NativeIntent[];
   takeVideoAttachments: (targetKey: string) => NativeIntent[];
   beginImageDropRegistration: () => void;
@@ -67,6 +86,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingModelIntent: null,
   pendingAttachments: {},
   pendingImageAttachments: {},
+  pendingOpenDocumentAttachments: {},
   pendingAudioAttachments: {},
   pendingVideoAttachments: {},
   registeringImageDrops: 0,
@@ -98,6 +118,17 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     );
     if (pendingImageAttachments !== current) {
       set({ pendingImageAttachments });
+    }
+  },
+  addOpenDocumentAttachments: (targetKey, intents) => {
+    const current = get().pendingOpenDocumentAttachments;
+    const pendingOpenDocumentAttachments = enqueueNativeAttachments(
+      current,
+      targetKey,
+      intents,
+    );
+    if (pendingOpenDocumentAttachments !== current) {
+      set({ pendingOpenDocumentAttachments });
     }
   },
   addAudioAttachments: (targetKey, intents) => {
@@ -144,6 +175,17 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     }
     return queued;
   },
+  takeOpenDocumentAttachments: (targetKey) => {
+    const current = get().pendingOpenDocumentAttachments;
+    const [queued, pendingOpenDocumentAttachments] = dequeueNativeAttachments(
+      current,
+      targetKey,
+    );
+    if (pendingOpenDocumentAttachments !== current) {
+      set({ pendingOpenDocumentAttachments });
+    }
+    return queued;
+  },
   beginImageDropRegistration: () => {
     set({ registeringImageDrops: get().registeringImageDrops + 1 });
   },
@@ -185,25 +227,23 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
       (key) => owners[key] === identity && key !== targetKey,
     );
     if (stale.length === 0) return;
-    const queues = get().pendingImageAttachments;
-    let pendingImageAttachments = queues;
-    for (const key of stale) {
-      const queued = queues[key] ?? [];
-      if (queued.length > 0) {
-        pendingImageAttachments = enqueueNativeAttachments(
-          pendingImageAttachments,
-          targetKey,
-          queued,
-        );
-      }
-      if (key in pendingImageAttachments) {
-        pendingImageAttachments = { ...pendingImageAttachments };
-        delete pendingImageAttachments[key];
-      }
-    }
+    const pendingImageAttachments = moveQueuedAttachments(
+      get().pendingImageAttachments,
+      stale,
+      targetKey,
+    );
+    const pendingOpenDocumentAttachments = moveQueuedAttachments(
+      get().pendingOpenDocumentAttachments,
+      stale,
+      targetKey,
+    );
     const nextOwners = { ...owners };
     for (const key of stale) delete nextOwners[key];
-    set({ pendingImageAttachments, imageDropOwners: nextOwners });
+    set({
+      pendingImageAttachments,
+      pendingOpenDocumentAttachments,
+      imageDropOwners: nextOwners,
+    });
   },
   noteAudioDropOwner: (targetKey, identity) => {
     if (!identity) return;

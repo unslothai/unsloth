@@ -3,31 +3,51 @@
 
 """Auto-shutdown for an exposed first-run Unsloth whose admin password is unchanged.
 
-On a fresh install the seeded bootstrap admin password stays a valid login
-credential until first login changes it. When the web UI is put on the network
-(``--secure`` / ``0.0.0.0``) and nobody completes that first-login change within
-a deadline, tear Unsloth down so a fresh, unconfigured instance does not stay
-publicly reachable indefinitely. If the password was changed, Unsloth keeps
-running.
+On a fresh install the seeded bootstrap admin password stays a valid login credential until first login changes
+it. When the web UI is put on the network (``--secure`` / ``0.0.0.0``) and nobody completes that first-login
+change within a deadline, tear Unsloth down so a fresh, unconfigured instance does not stay publicly reachable
+indefinitely. If the password was changed, Unsloth keeps running.
 
-Scope: web UI launches only (never ``--api-only``, which authenticates by API
-key rather than the admin password, and never Colab). Configurable via
-``UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT`` (seconds; default 3600; ``0`` disables).
+Scope: web UI launches only (never ``--api-only``, which authenticates by API key rather than the admin
+password, and never Colab). Configurable via ``UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT`` (seconds; default 3600; ``0``
+disables).
 """
 
 import os
 import sys
 import threading
+import time
+from typing import Optional
 
 BOOTSTRAP_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
 
+# Monotonic expiry, or None when nothing is armed. Read back over HTTP because the
+# stderr warning is lost on the launches that arm it (--secure, external bind).
+_deadline_at: Optional[float] = None
+
+
+def record_bootstrap_deadline(timeout_seconds: int) -> None:
+    global _deadline_at
+    _deadline_at = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
+
+
+def clear_bootstrap_deadline() -> None:
+    global _deadline_at
+    _deadline_at = None
+
+
+def bootstrap_deadline_remaining_seconds() -> Optional[int]:
+    """Seconds until shutdown, or None when this launch is not time-boxed.
+    Floors at 0: a caller can land between expiry and the shutdown completing."""
+    if _deadline_at is None:
+        return None
+    return max(0, int(round(_deadline_at - time.monotonic())))
+
 
 def bootstrap_timeout_seconds(env = None) -> int:
-    """Resolve the deadline in seconds. ``0`` (or invalid/negative) disables it.
-
-    A malformed value falls back to the default rather than disabling, so a typo
-    cannot silently remove the protection.
+    """Resolve the deadline in seconds. ``0`` (or invalid/negative) disables it. A malformed value falls back to
+    the default rather than disabling, so a typo cannot silently remove the protection.
     """
     env = os.environ if env is None else env
     raw = env.get(BOOTSTRAP_TIMEOUT_ENV_VAR)
@@ -96,17 +116,14 @@ def enforce_bootstrap_password_deadline(
     timeout_seconds: int,
     logger = None,
 ) -> bool:
-    """Deadline handler: shut down iff the seeded admin password is still unchanged.
-
-    Returns True if it shut Unsloth down, False if it left it running (the
-    password was changed in time).
-    """
+    """Deadline handler: shut down iff the seeded admin password is still unchanged. Returns True if it
+    shut Unsloth down, False if it left it running (the password was changed in time)."""
     try:
         still_default = storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME)
     except Exception:
         return False
     if not still_default:
-        return False  # password changed in time -> leave Unsloth running
+        return False
 
     message = (
         "\nUnsloth Studio was exposed on the network but its default admin "
@@ -134,6 +151,7 @@ def arm_bootstrap_timeout(
     logger = None,
 ) -> "threading.Timer":
     """Start a daemon timer that enforces the deadline. Returns the Timer."""
+    record_bootstrap_deadline(timeout_seconds)
     timer = threading.Timer(
         timeout_seconds,
         enforce_bootstrap_password_deadline,

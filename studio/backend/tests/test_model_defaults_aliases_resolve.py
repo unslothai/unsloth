@@ -92,3 +92,15 @@ def test_claimed_alias_loads_its_own_defaults(config_name, alias):
     own = _load_tuned(_primary_name(config_name), config_name)
     assert _load_tuned(alias, config_name) == own
     assert _load_tuned(_on_disk(alias), config_name) == own
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "LiquidAI/LFM2-1.2B",
+        "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
+    ],
+)
+def test_lfm2_supported_ids_use_all_linear_defaults(model_id):
+    config = _load_tuned(model_id, "unsloth_LFM2-1.2B.yaml")
+    assert config["lora"]["target_modules"] == ["all-linear"]

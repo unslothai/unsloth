@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import {
   formatFastApiDetail,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -327,6 +329,37 @@ export async function getRecipeJobDataset(
   );
 }
 
+export type RecipeJobDownloadFormat = "jsonl" | "parquet";
+
+export async function downloadRecipeJobDataset(
+  jobId: string,
+  options?: {
+    format?: RecipeJobDownloadFormat;
+    artifactPath?: string | null;
+    filename?: string | null;
+  },
+): Promise<{ url: string; filename: string }> {
+  const params = new URLSearchParams();
+  params.set("format", options?.format ?? "jsonl");
+  if (options?.artifactPath) {
+    params.set("artifact_path", options.artifactPath);
+  }
+  if (options?.filename) {
+    params.set("filename", options.filename);
+  }
+  // Minted over authFetch: it refreshes an expired session and surfaces an unexportable run
+  // before the save dialog opens. The server names the file, since a JSONL is zipped only when
+  // the artifact has images.
+  const { path, filename } = await getJson<{ path: string; filename: string }>(
+    `/jobs/${jobId}/download-url?${params.toString()}`,
+  );
+  // The same base every other call here uses, so a repointed VITE_DATA_DESIGNER_API is honoured.
+  // Its trailing slash is dropped: authFetch survives the // via FastAPI's redirect, but the
+  // native downloader refuses every 3xx, and only after the save location has been chosen.
+  const base = DATA_DESIGNER_API_BASE.replace(/\/+$/, "");
+  return { url: apiUrl(`${base}${path}`), filename };
+}
+
 export async function cancelRecipeJob(
   jobId: string,
 ): Promise<JobStatusResponse> {
@@ -379,13 +412,10 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
+    { headers, signal: options.signal },
   );
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
