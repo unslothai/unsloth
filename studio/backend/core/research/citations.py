@@ -107,7 +107,7 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
     # that way. Doing it before anything is masked also means a report cannot spell a
     # placeholder token itself and have restoration hand it another region's text. Both
     # characters are one code point, so the line offsets below are unaffected.
-    text = text.replace("\x00", "�")
+    text = text.replace("\x00", "\ufffd")
     offsets = [0, *(match.end() for match in re.finditer(r"\r\n?|\n", text))]
     if offsets[-1] != len(text):
         offsets.append(len(text))

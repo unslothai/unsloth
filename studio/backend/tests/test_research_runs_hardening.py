@@ -3412,21 +3412,21 @@ def test_removed_url_line_does_not_turn_a_document_citation_into_code(report, ex
         # A report spelling a masking token must not be handed the code that token stands for.
         (
             "prose \x00research-code-0\x00 then `real code` [1].",
-            "prose �research-code-0� then `real code` [A](https://a.com).",
+            "prose \ufffdresearch-code-0\ufffd then `real code` [A](https://a.com).",
         ),
         # Nor may one masked span be rewritten with a later span's text.
         (
             "`x = \x00research-code-1\x00` and `second` [1].",
-            "`x = �research-code-1�` and `second` [A](https://a.com).",
+            "`x = \ufffdresearch-code-1\ufffd` and `second` [A](https://a.com).",
         ),
         # The same forgery through the citation and document token names, which predate masking.
         (
             "prose \x00research-citation-1\x00 and [1].",
-            "prose �research-citation-1� and [A](https://a.com).",
+            "prose \ufffdresearch-citation-1\ufffd and [A](https://a.com).",
         ),
         (
             "prose \x00document-citation-0\x00 and [Document: real.pdf].",
-            "prose �document-citation-0� and [Document: real.pdf].",
+            "prose \ufffddocument-citation-0\ufffd and [Document: real.pdf].",
         ),
     ],
 )
@@ -3446,7 +3446,9 @@ def test_restoring_code_does_not_rescan_it_for_later_tokens():
     placeholders: dict[str, str] = {}
     masked = _mask_code("`a \x00research-code-1\x00 b` and `c`", placeholders)
     assert len(placeholders) == 2
-    assert _restore_placeholders(masked, placeholders) == "`a �research-code-1� b` and `c`"
+    assert (
+        _restore_placeholders(masked, placeholders) == "`a \ufffdresearch-code-1\ufffd b` and `c`"
+    )
 
 
 def test_every_allocated_token_is_one_restoration_recognises():
