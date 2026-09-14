@@ -6558,6 +6558,13 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
+        # Same ratio, but for auto tensor-parallel mode. The planner may emit a
+        # weighted split or fall back to a user-supplied ratio; recording it lets
+        # _runtime_matches_intent detect a changed ratio and reload.
+        self._auto_tensor_split: Optional[tuple[float, ...]] = None
+        # The actual split that was emitted to llama-server in auto mode, used for
+        # /status reporting. Manual mode stores this in _tensor_split.
+        self._auto_tensor_split_emitted: Optional[tuple[float, ...]] = None
         # Tokens the tensor-spill plan added to this argv, so a retry that re-places
         # the model can strip them with _without_subsequence. Empty when it abstained.
         self._spill_plan_flags: List[str] = []
@@ -7363,9 +7370,16 @@ class LlamaCppBackend:
 
     @property
     def tensor_split(self) -> Optional[List[float]]:
-        """Manual-mode relative model share per GPU (--tensor-split); None =
-        default (split by free VRAM)."""
-        return self._tensor_split
+        """Relative model share per GPU (--tensor-split) for the active load.
+
+        Manual mode returns the requested ratio; auto tensor-parallel mode
+        returns the normalized ratio that was actually emitted, or None when
+        the planner left the split to llama.cpp's default."""
+        if self._tensor_split is not None:
+            return self._tensor_split
+        if self._auto_tensor_split_emitted is not None:
+            return list(self._auto_tensor_split_emitted)
+        return None
 
     @property
     def gpu_ids(self) -> Optional[List[int]]:
@@ -7536,6 +7550,16 @@ class LlamaCppBackend:
                         )
                     )
                 )
+            ):
+                return False
+            # Auto tensor-parallel mode can still carry a user ratio, which the
+            # planner's own split does not describe. Two otherwise identical auto
+            # requests with different ratios must not reuse the same server --
+            # and two with the SAME ratio, or with none at all, must.
+            if (
+                intent.gpu_memory_mode != "manual"
+                and self._tensor_parallel
+                and self._auto_tensor_split != self._auto_split_fingerprint(intent.tensor_split)
             ):
                 return False
 
@@ -7743,6 +7767,56 @@ class LlamaCppBackend:
             ]
         except (TypeError, ValueError, OverflowError):
             return []
+
+    @staticmethod
+    def _format_tensor_split(values: List[float]) -> str:
+        """``--tensor-split`` text for a sanitized ratio, in plain decimal.
+
+        Fixed point rather than ``%g``, which renders a perfectly legal
+        ``1000000,1`` as ``1e+06,1``. ``std::stof`` reads that, but the argv a
+        user is asked to paste into a bug report should say what they asked
+        for, and a whole-number ratio should come back out as the ``3,1`` they
+        typed.
+
+        A ratio of very small numbers would round to ``0,0``, which llama.cpp
+        normalizes by dividing by a zero total. Only that case is rescaled, by
+        the largest weight -- free, because llama.cpp normalizes the list
+        anyway, so ``3,1`` and ``75,25`` are already the same instruction.
+        """
+
+        def _render(items):
+            return [f"{x:.6f}".rstrip("0").rstrip(".") or "0" for x in items]
+
+        rendered = _render(values)
+        if values and all(part == "0" for part in rendered):
+            peak = max(values)
+            if peak > 0:
+                rendered = _render(v / peak for v in values)
+        return ",".join(rendered)
+
+    @staticmethod
+    def _auto_split_fingerprint(tensor_split: Optional[List[float]]) -> Optional[tuple[float, ...]]:
+        """What an auto-mode load ASKED for, as a comparable ratio.
+
+        Requested against requested, the same rule the tuning group in
+        ``_runtime_matches_intent`` uses, and it has to be: what auto mode
+        EMITS is not in the caller's units. The planner's own split is a list
+        of per-device MiB budgets, and a user ratio the budget check declined
+        is emitted as nothing at all -- so comparing either against the
+        caller's ``tensor_split`` mismatches on every repeat of a request that
+        has not changed, and reloads a multi-gigabyte model forever.
+
+        Normalized because llama.cpp normalizes: ``-ts 3,1`` and ``-ts 75,25``
+        are the same instruction, so they are the same intent here. A ratio
+        that sanitizes to nothing is None, which is what an absent ratio is.
+        """
+        if not tensor_split:
+            return None
+        values = LlamaCppBackend._sanitize_tensor_split(tensor_split)
+        total = sum(values)
+        if not values or total <= 0:
+            return None
+        return tuple(round(v / total, 6) for v in values)
 
     @property
     def layer_preserves_tensor_intent(self) -> bool:
@@ -16134,6 +16208,8 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
+        self._auto_tensor_split = None
+        self._auto_tensor_split_emitted = None
         self._spill_plan_flags = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
@@ -18928,6 +19004,115 @@ class LlamaCppBackend:
                 tensor_split = adj
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
 
+    def _tensor_split_fits_budget(
+        self,
+        split: list[float],
+        gpus: list[tuple[int, int]],
+        gpu_indices: list[int],
+        model_size: int,
+        effective_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        n_parallel: int = 1,
+        n_ubatch: Optional[int] = None,
+        kv_unified: bool = True,
+        flash_attn: bool = True,
+        swa_full: bool = False,
+        mtp_engaged: bool = False,
+        mtp_overhead_fn: Optional[Callable[[int], int]] = None,
+        mtp_flat_reserve_bytes: int = 0,
+        total_by_idx: Optional[dict[int, int]] = None,
+        vram_fraction: Optional[float] = None,
+        soft_overhead_bytes: int = 0,
+        scratch_cache_type_kv: Optional[str] = None,
+    ) -> bool:
+        """Check that a caller-supplied tensor split fits each selected GPU.
+
+        The auto planner returns ``None`` when an even share fits, but a user
+        ratio may still overshoot one card. Validate the ratio against the same
+        per-device budget the planner uses (usable VRAM minus the replicated
+        compute-graph reserve and context-linear buffer).
+
+        "The same budget" is the whole claim, so the operands are the planner's,
+        including the two that are easy to leave out. ``soft_overhead_bytes`` is
+        the CUDA context plus the vision and MTP reserves the planner subtracts
+        from its own KV budget; omitting it makes this check OPTIMISTIC, and a
+        tensor load has no ``--fit`` valve to spill into when the card it
+        over-filled runs out. ``scratch_cache_type_kv`` is the lighter of an
+        asymmetric K/V pair, which is what the context-linear dequant scratch is
+        actually sized from; pricing it from the heavier axis misreads a
+        ``-ctk q4_0 -ctv f16`` load by several gigabytes per device.
+        """
+        if not split or sum(split) <= 0 or len(split) != len(gpu_indices):
+            return False
+
+        _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
+
+        def _usable(idx: int, free_mib: int) -> float:
+            t = total_by_idx.get(idx, 0) if total_by_idx else 0
+            return max(0.0, _vram_usable_mib(free_mib, t, _tp_frac))
+
+        free_by_idx = {idx: free for idx, free in gpus}
+        # Fail closed on a device the survey does not cover. ``gpus`` is the set
+        # the tensor-parallel reserve filter admitted and ``gpu_indices`` is what
+        # the load ended up pinned to; they can disagree, and indexing straight
+        # into the first with the second raised KeyError out of load_model. A
+        # budget that cannot be priced is not a budget that passed.
+        if any(idx not in free_by_idx for idx in gpu_indices):
+            return False
+        usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
+
+        _reserve_bytes = self._estimate_compute_buffer_bytes(
+            n_ubatch = n_ubatch, n_parallel = n_parallel, per_device_tensor = True
+        )
+        reserve_mib = (
+            _reserve_bytes // (1024 * 1024)
+            if _reserve_bytes > 0
+            else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+        )
+
+        flat_mtp = max(0, mtp_flat_reserve_bytes)
+        if mtp_engaged and mtp_overhead_fn is None:
+            flat_mtp = max(flat_mtp, 2 * 1024**3)
+
+        kv_bytes = (
+            self._estimate_kv_cache_bytes(
+                effective_ctx,
+                cache_type_kv,
+                n_parallel = n_parallel,
+                swa_full = swa_full,
+                kv_unified = kv_unified,
+                n_ubatch = n_ubatch,
+                flash_attn = flash_attn,
+            )
+            if self._can_estimate_kv() and effective_ctx > 0
+            else 0
+        )
+        mtp_bytes = (
+            mtp_overhead_fn(effective_ctx) if mtp_overhead_fn is not None else 0
+        ) + flat_mtp
+        # REPLICATED, not split: every device allocates the whole
+        # context-linear buffer whatever its weight, which is why the planner
+        # subtracts one per-device slice from each card BEFORE weighting rather
+        # than distributing the aggregate. Weighting the aggregate is the same
+        # arithmetic only for an even ratio; away from even it charges a
+        # low-weight card less than the buffer it must allocate and a high-weight
+        # card more, so it both under-refuses and over-refuses. Mirror the
+        # planner: flat per device, alongside the compute-graph reserve.
+        cc_per_device_bytes = self._compute_buffer_ctx_bytes(
+            effective_ctx, n_ubatch, scratch_cache_type_kv or cache_type_kv
+        )
+        total_bytes = model_size + kv_bytes + mtp_bytes + max(0, soft_overhead_bytes)
+
+        total_weight = sum(split)
+        for i, idx in enumerate(gpu_indices):
+            alloc_bytes = total_bytes * split[i] / total_weight
+            capacity_bytes = (
+                (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
+            )
+            if alloc_bytes > capacity_bytes:
+                return False
+        return True
+
     @staticmethod
     def _with_mmproj_offload_disabled(
         cmd: Sequence[str], env: Optional[Mapping[str, str]] = None
@@ -21216,6 +21401,11 @@ class LlamaCppBackend:
                 # branch so an earlier launch's recorded drop cannot excuse this one.
                 self._arch_gate_dropped_tensor_split = None
                 self._arch_gate_dropped_tensor_parallel = False
+                # Same reason, same place: the auto ratio is recorded only on the
+                # auto tensor branch, so without this a manual load would carry a
+                # previous auto load's ratio forward into the next comparison.
+                self._auto_tensor_split = None
+                self._auto_tensor_split_emitted = None
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     self._gpu_layers = gpu_layers
                     self._n_cpu_moe = n_cpu_moe
@@ -21224,6 +21414,8 @@ class LlamaCppBackend:
                     self._gpu_layers = -1
                     self._n_cpu_moe = 0
                     self._tensor_split = None
+                    self._auto_tensor_split = None
+                    self._auto_tensor_split_emitted = None
                 self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -21384,6 +21576,16 @@ class LlamaCppBackend:
                 # kv_cache_bytes, so reading it from the spill arm would be an
                 # UnboundLocalError on the path that reaches it most often.
                 _spill_inputs: Optional[dict] = None
+                # Whether the tensor-parallel planner ran to completion. Bound before
+                # the try for the same reason as the two above, and read AFTER it: the
+                # auto ``--tensor-split`` fallback needs the planner's own working set
+                # (``tp_gpus``, ``gpu_indices``, the MTP terms), and every one of those
+                # is bound inside the try. The except arm restores ``tp_tensor_split =
+                # None``, which is precisely the state the fallback fires on, so
+                # without this it would read locals a throw left unbound -- or, worse,
+                # a ``gpu_indices`` the arm rebuilt from a WIDER device set than the
+                # planner's reserve filter admitted, and index a card that is not in it.
+                _tp_planned = False
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -22022,7 +22224,8 @@ class LlamaCppBackend:
                     tp_tensor_split: Optional[list[int]] = None
                     # Whether the tensor-parallel branch below really planned this load.
                     # Not readable from tp_tensor_split, which stays None on a tensor
-                    # split llama.cpp is left to size itself.
+                    # split llama.cpp is left to size itself. Re-set here, not only
+                    # above the try, so a retry through this scope starts clean.
                     _tp_planned = False
                     explicit_ctx = requested_ctx > 0
                     # Nothing speculative on the GPU: the drafter that launches is the
@@ -24276,18 +24479,75 @@ class LlamaCppBackend:
                 # See llama.cpp --split-mode.
                 if tensor_parallel:
                     cmd.extend(["--split-mode", "tensor"])
+                    _emitted_tensor_split: Optional[str] = None
                     if tp_tensor_split and len(tp_tensor_split) > 1:
-                        cmd.extend(
-                            [
-                                "--tensor-split",
-                                ",".join(str(int(x)) for x in tp_tensor_split),
-                            ]
-                        )
+                        _emitted_tensor_split = ",".join(str(int(x)) for x in tp_tensor_split)
+                    elif (
+                        gpu_memory_mode != "manual" and tensor_split and _tp_planned and gpu_indices
+                    ):
+                        # Auto tensor planning may decide an even split is safe and
+                        # return None, but a user who set a per-GPU ratio still expects
+                        # it to reach llama-server. Fall back to the ratio only when
+                        # the planner emitted nothing and the ratio actually fits the
+                        # per-GPU budget the planner used.
+                        #
+                        # Gated on _tp_planned, not on tp_tensor_split alone: the fit
+                        # block's except arm ALSO leaves tp_tensor_split None, with
+                        # gpu_indices either None or rebuilt from every device rather
+                        # than the ones the reserve filter admitted. That arm is a
+                        # designed degradation -- it launches under `--fit on` -- and it
+                        # must not be turned into a KeyError by pricing a ratio against
+                        # a survey that was never taken.
+                        _split_gpus = self._effective_gpu_count(gpu_indices)
+                        _sanitized_split = self._sanitize_tensor_split(tensor_split)
+                        if (
+                            len(_sanitized_split) == _split_gpus
+                            and sum(_sanitized_split) > 0
+                            and self._tensor_split_fits_budget(
+                                _sanitized_split,
+                                tp_gpus,
+                                gpu_indices,
+                                model_size,
+                                effective_ctx,
+                                cache_type_kv = cache_type_kv,
+                                n_parallel = n_parallel,
+                                n_ubatch = _effective_ubatch,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                swa_full = swa_full,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                mtp_flat_reserve_bytes = (
+                                    2 * 1024**3 if (_mtp_reserves_gpu and _mtp_kv_unsized) else 0
+                                ),
+                                total_by_idx = total_by_idx,
+                                vram_fraction = _vram_frac,
+                                # The planner's own operands, so "the same budget"
+                                # in the docstring is true. Both are bound by the
+                                # time _tp_planned is set.
+                                soft_overhead_bytes = _soft_overhead,
+                                scratch_cache_type_kv = _scratch_cache_type_kv,
+                            )
+                        ):
+                            _emitted_tensor_split = self._format_tensor_split(_sanitized_split)
+                    _emitted_values: Optional[list[float]] = None
+                    if _emitted_tensor_split is not None:
+                        cmd.extend(["--tensor-split", _emitted_tensor_split])
+                        _emitted_values = [float(x) for x in _emitted_tensor_split.split(",")]
                     self._tensor_parallel = True
                     self._layer_preserves_tensor_intent = False
+                    # Record the ratio this auto load was ASKED for, so a later
+                    # request with a different ratio is not incorrectly reused.
+                    # Not the emitted list: see _auto_split_fingerprint for why
+                    # recording that instead reloads on every identical repeat.
+                    if gpu_memory_mode != "manual":
+                        self._auto_tensor_split = self._auto_split_fingerprint(tensor_split)
+                        self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                            _emitted_values
+                        )
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
-                        tp_tensor_split,
+                        _emitted_tensor_split,
                     )
                 else:
                     self._tensor_parallel = False
@@ -26896,6 +27156,12 @@ class LlamaCppBackend:
                             # is non-None only in manual mode, which leaves gpu_indices
                             # None, and this arm needs it truthy.
                             self._tensor_split = None
+                            # The auto twin, which this arm CAN reach: an auto
+                            # tensor-parallel fallback emits its ratio with
+                            # gpu_indices pinned. Left set it feeds the
+                            # `tensor_split` property a ratio the respawned child
+                            # does not have.
+                            self._auto_tensor_split_emitted = None
                         # A tensor split needs two devices, so narrowing to one makes
                         # --split-mode tensor a no-op still REPORTED as active
                         # (tensor_parallel drives the UI and the MTP watchdog). Strip it.
@@ -28712,6 +28978,8 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
+            self._auto_tensor_split = None
+            self._auto_tensor_split_emitted = None
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
