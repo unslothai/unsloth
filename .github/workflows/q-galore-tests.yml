@@ -28,10 +28,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Optimizer2State's constructor signature is not stable across the range
-        # pyproject allows, which is how a call that misbinds its arguments on 0.50.x
-        # reached main. 0.45.5 is the floor, 0.49.2 the last with percentile_clipping /
-        # block_wise, 0.50.2 the first without them and with CPU optimizer kernels.
+        # bitsandbytes is not API-stable across the range pyproject allows, so pinning one
+        # version tests one point of it. 0.45.5 is the floor, 0.49.2 the last with
+        # percentile_clipping / block_wise, 0.50.2 the first without them and with CPU
+        # optimizer kernels. This PR's tests are quantizer-only and touch no bitsandbytes
+        # entry point; the constructor coverage that uses these pins arrives with #10874.
         bitsandbytes: ["0.45.5", "0.49.2", "0.50.2"]
     name: q-galore (bitsandbytes ${{ matrix.bitsandbytes }})
     steps:
