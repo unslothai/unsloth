@@ -439,6 +439,21 @@ def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
     assert _settle(_settle_backend(monkeypatch), base = "Tongyi-MAI/Z-Image") is None
 
 
+def test_a_forced_fp8_accumulate_the_artifact_cannot_bake_keeps_the_released_weights(monkeypatch):
+    """The hosted fp8 checkpoints bake fast accumulate, and ``_validate_checkpoint`` refuses a baked value that
+    differs from a FORCED one. Seeding anyway drops the released shards for a checkpoint the load must reject."""
+    backend = _settle_backend(monkeypatch)
+    assert _settle(backend, transformer_quant = "fp8", fast_accum = False) is None
+    assert _settle(backend, transformer_quant = "fp8", fast_accum = True) == "fp8"
+    assert _settle(backend, transformer_quant = "fp8") == "fp8"
+
+
+def test_a_forced_accumulate_never_blocks_a_scheme_that_bakes_none(monkeypatch):
+    """Only fp8 records ``fast_accum``, so the int8 artifact is seeded whatever the caller forces."""
+    backend = _settle_backend(monkeypatch, scheme = "int8")
+    assert _settle(backend, transformer_quant = "int8", fast_accum = False) == "int8"
+
+
 def test_a_gguf_pick_is_never_settled_here(monkeypatch):
     assert _settle(_settle_backend(monkeypatch), kind = "gguf") is None
 

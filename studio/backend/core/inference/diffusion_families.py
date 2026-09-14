@@ -310,6 +310,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Qwen-Image-FP8"),
             ("fp8", "unsloth/Qwen-Image-FP8"),
         ),
+        # 2512 is a different checkpoint with its own baked artifacts; without these rows an official 2512 pick plans
+        # the Qwen-Image artifact, and the load's base_model_id check refuses it once the shards are already dropped.
+        prequant_variant_repos = (
+            ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
+            ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
+        ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
@@ -439,6 +445,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "unsloth/HiDream-I1-Full-FP8"),
         ),
+        # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other weights and no
+        # artifact is published for either. Excluded rather than inherited: the load's base_model_id check refuses
+        # the Full artifact only after the plan has dropped their released shards.
+        prequant_excluded_bases = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
         # Pre-cast Llama-3.1-8B TE4 (16.1 -> 8.1 GB). The generic TE pass only covers text_encoder.._3, so TE4 engages
         # via hidream_te4_kwargs.
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),

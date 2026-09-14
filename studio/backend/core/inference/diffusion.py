@@ -167,6 +167,7 @@ from .diffusion_denoiser_prequant import (
     prequant_artifact_label,
 )
 from .diffusion_prequant import (
+    hosted_fast_accum_conflict,
     load_prequantized_transformer,
     prequant_checkpoint_cached,
     resolve_prequant_source,
@@ -2224,6 +2225,7 @@ class DiffusionBackend:
                 transformer_prequant_path = kwargs.get("transformer_prequant_path"),
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 repo_id = kwargs["repo_id"],
+                fast_accum = kwargs.get("transformer_quant_fast_accum"),
             )
             if local_files_only and pipeline_planned not in (None, PIPELINE_SEED_DECLINED):
                 # The offline twin of the Hub probe below, the same swap the video loader makes in
@@ -2557,6 +2559,7 @@ class DiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         repo_id: Optional[str] = None,
         fetch_base: Optional[str] = None,
+        fast_accum: Optional[bool] = None,
     ) -> Optional[str]:
         """The scheme an official ``kind == "pipeline"`` pick seeds its denoiser from, settled BEFORE
         anything is downloaded; None keeps the released bf16 weights and ``PIPELINE_SEED_DECLINED``
@@ -2612,14 +2615,19 @@ class DiffusionBackend:
                 declined = False
                 memory = snapshot_device_memory(target)
                 for rung in rungs:
-                    if (
-                        denoiser_prequant_source(
-                            fam,
-                            rung,
-                            base_repo = base,
-                            path_override = transformer_prequant_path,
-                        )
-                        is None
+                    source = denoiser_prequant_source(
+                        fam,
+                        rung,
+                        base_repo = base,
+                        path_override = transformer_prequant_path,
+                    )
+                    if source is None:
+                        continue
+                    # A FORCED fp8 accumulate the hosted artifact does not bake is refused by the loader's
+                    # checkpoint validation, and by then the plan has already dropped the released shards. An
+                    # operator's own checkpoint is not a repo source and is left to that validation.
+                    if getattr(source, "kind", None) == "repo" and hosted_fast_accum_conflict(
+                        rung, fast_accum
                     ):
                         continue
                     candidate = resolve_dense_quant_candidate(
@@ -3069,6 +3077,7 @@ class DiffusionBackend:
                 transformer_prequant_path = load_kwargs.get("transformer_prequant_path"),
                 gpu_ordinal = load_kwargs.get("gpu_ordinal"),
                 repo_id = repo_id,
+                fast_accum = load_kwargs.get("transformer_quant_fast_accum"),
             )
             if allow_device_probe
             else None
