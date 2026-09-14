@@ -20,7 +20,13 @@ from fastapi import HTTPException
 
 from core import research_runs
 from core.research.citations import (
+    _PLACEHOLDER,
+    _PLACEHOLDER_KINDS,
     _citation_title,
+    _mask_code,
+    _restore_placeholders,
+    _validate_masked_document_sources,
+    _validate_masked_sources,
     _validate_report,
     _validate_report_document_sources,
     _validate_report_sources,
@@ -3398,3 +3404,79 @@ def test_delivered_report_keeps_document_literals_in_code(code):
 )
 def test_removed_url_line_does_not_turn_a_document_citation_into_code(report, expected):
     assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # A report spelling a masking token must not be handed the code that token stands for.
+        (
+            "prose \x00research-code-0\x00 then `real code` [1].",
+            "prose �research-code-0� then `real code` [A](https://a.com).",
+        ),
+        # Nor may one masked span be rewritten with a later span's text.
+        (
+            "`x = \x00research-code-1\x00` and `second` [1].",
+            "`x = �research-code-1�` and `second` [A](https://a.com).",
+        ),
+        # The same forgery through the citation and document token names, which predate masking.
+        (
+            "prose \x00research-citation-1\x00 and [1].",
+            "prose �research-citation-1� and [A](https://a.com).",
+        ),
+        (
+            "prose \x00document-citation-0\x00 and [Document: real.pdf].",
+            "prose �document-citation-0� and [Document: real.pdf].",
+        ),
+    ],
+)
+def test_report_cannot_forge_a_masking_placeholder(report, expected):
+    """CommonMark renders a literal NUL as U+FFFD, so the report is normalized the same way
+    before anything is masked. Without it a report that spells a token gets another region's
+    text substituted into it."""
+    out = _validate_report(
+        report, [{"url": "https://a.com", "title": "A"}], [{"filename": "real.pdf"}]
+    )
+    assert out == expected
+    assert "\x00" not in out
+
+
+def test_restoring_code_does_not_rescan_it_for_later_tokens():
+    """One pass, so a masked span is never searched again once restored."""
+    placeholders: dict[str, str] = {}
+    masked = _mask_code("`a \x00research-code-1\x00 b` and `c`", placeholders)
+    assert len(placeholders) == 2
+    assert _restore_placeholders(masked, placeholders) == "`a �research-code-1� b` and `c`"
+
+
+def test_every_allocated_token_is_one_restoration_recognises():
+    """A kind missing from _PLACEHOLDER_KINDS would leave its raw sentinel in the report, so
+    exercise all three producers and check the pattern matches everything they allocate."""
+    placeholders: dict[str, str] = {}
+    report = "Run `curl https://a.com` per [1] and [Document: real.pdf]."
+    masked = _validate_masked_sources(
+        _mask_code(report, placeholders), [{"url": "https://a.com", "title": "A"}], placeholders
+    )
+    masked = _validate_masked_document_sources(masked, [{"filename": "real.pdf"}], placeholders)
+    kinds = {key.strip("\x00").rsplit("-", 1)[0] for key in placeholders}
+    assert kinds == set(_PLACEHOLDER_KINDS)
+    assert all(_PLACEHOLDER.fullmatch(key) for key in placeholders)
+    assert "\x00" not in _restore_placeholders(masked, placeholders)
+
+
+def test_unknown_placeholder_shaped_text_survives_restoration():
+    assert _restore_placeholders(
+        "x \x00research-code-9\x00 y", {"\x00research-code-0\x00": "z"}
+    ) == ("x \x00research-code-9\x00 y")
+
+
+def test_restoring_many_code_spans_stays_linear():
+    """A replace() per token rescans the whole report once per span. Guard the single pass so a
+    code-heavy report cannot go quadratic on the event loop."""
+    placeholders = {f"\x00research-code-{i}\x00": f"`c{i}`" for i in range(2000)}
+    text = "x" * 200_000 + "".join(placeholders)
+    start = time.perf_counter()
+    restored = _restore_placeholders(text, placeholders)
+    elapsed = time.perf_counter() - start
+    assert restored == "x" * 200_000 + "".join(placeholders.values())
+    assert elapsed < 2.0, f"restoration took {elapsed:.1f}s for 2000 spans in a 200KB report"

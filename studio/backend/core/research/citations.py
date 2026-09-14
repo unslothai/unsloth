@@ -32,6 +32,10 @@ _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 # \x00 stops a URL glued to masked code from swallowing its placeholder.
 _RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
+_PLACEHOLDER_KINDS = ("research-code", "research-citation", "document-citation")
+# Kept beside the kinds so a new one cannot be restored by a pass that does not know it, which
+# would leave the raw sentinel in the delivered report.
+_PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-\d+\x00")
 
 
 def _citation_title(source: dict, fallback: str) -> str:
@@ -68,6 +72,15 @@ def _trim_url_tail(raw: str) -> str:
     return raw[:end]
 
 
+def _placeholder(kind: str, index: int) -> str:
+    """Sentinel standing in for text a validator must move but not rewrite.
+
+    NUL delimited because the validators are regex passes over prose and a NUL cannot survive
+    into a report: ``_mask_code`` normalizes any the model wrote away first.
+    """
+    return f"\x00{kind}-{index}\x00"
+
+
 def _record_code_span(state, silent: bool) -> bool:
     start = state.pos
     count = len(state.tokens)
@@ -90,6 +103,11 @@ _CODE_MARKDOWN.inline.ruler.at("backticks", _record_code_span)
 
 
 def _mask_code(text: str, placeholders: dict[str, str]) -> str:
+    # CommonMark replaces a literal NUL with U+FFFD, so the renderer already shows the report
+    # that way. Doing it before anything is masked also means a report cannot spell a
+    # placeholder token itself and have restoration hand it another region's text. Both
+    # characters are one code point, so the line offsets below are unaffected.
+    text = text.replace("\x00", "�")
     offsets = [0, *(match.end() for match in re.finditer(r"\r\n?|\n", text))]
     if offsets[-1] != len(text):
         offsets.append(len(text))
@@ -111,7 +129,7 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
     cursor = 0
     for start, end in sorted(spans):
         pieces.append(text[cursor:start])
-        token = f"\x00research-code-{len(placeholders)}\x00"
+        token = _placeholder("research-code", len(placeholders))
         placeholders[token] = text[start:end]
         pieces.append(token)
         cursor = end
@@ -120,9 +138,16 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
 
 
 def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
-    for token, value in placeholders.items():
-        text = text.replace(token, value)
-    return text
+    """Substitute every token in one pass.
+
+    A replace() per token rescans the whole report once per masked region, so a code-heavy
+    report costs O(len(report) x spans); one sub() is linear. The single pass also means a
+    restored code span is never itself searched for a later token, so code that happens to
+    contain a token's text survives verbatim.
+    """
+    if not placeholders:
+        return text
+    return _PLACEHOLDER.sub(lambda match: placeholders.get(match.group(0), match.group(0)), text)
 
 
 def _validate_masked_sources(report: str, sources: list[dict], placeholders: dict[str, str]) -> str:
@@ -140,7 +165,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         if source is None:
             return None
         title = _citation_title(source, url)
-        token = f"\x00research-citation-{len(placeholders)}\x00"
+        token = _placeholder("research-citation", len(placeholders))
         placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
         return token
 
@@ -264,7 +289,7 @@ def _validate_masked_document_sources(
     # truncate them, then strip the invalid ones and restore the valid.
     for index, citation in enumerate(sorted(allowed, key = len, reverse = True)):
         if citation in report:
-            token = f"\x00document-citation-{index}\x00"
+            token = _placeholder("document-citation", index)
             placeholders[token] = citation
             report = report.replace(citation, token)
     return _DOCUMENT_CITATION.sub("", report)
