@@ -12,6 +12,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 # --local: install from the local repo checkout (overlays unsloth as editable
 # and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
 # path that runs setup.sh directly without going through install.sh.
+# ── Parse flags ──
 if [ "$#" -gt 0 ]; then
     for _arg in "$@"; do
         case "$_arg" in
@@ -26,7 +27,6 @@ fi
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
-#
 #   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
 #   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
@@ -36,7 +36,6 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
-#
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 #                           "hip", or "rocm". Concrete values select and persist a
 #                           backend across updates; "auto" restores detection.
@@ -775,6 +774,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -792,6 +792,10 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+_backend_raw = payload.get("backend")
+# Absent before #8520, and null when backend_for_install_kind() had no answer. str() on a
+# non-string would diverge from the setup.ps1 twin (Python "[1, 2]" vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -804,6 +808,10 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend: a Vulkan and a ROCm bundle print an identical line without it. The
+# shape check keeps the line single-line and matches the setup.ps1 twin byte for byte.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
@@ -941,6 +949,37 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+
+# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
+# block there, including the write probe and the unwind on failure.
+#
+# This script is also the standalone entry point: `unsloth studio update` runs it
+# directly, without install.sh, so an export made only there covers the first install and
+# nothing after it. A redirected STUDIO_HOME would then download a SECOND cache to
+# $HOME/.cache/uv on the very first update and copy every wheel across the filesystem
+# boundary, which is exactly the disk cost the co-location exists to avoid -- deferred by
+# one run rather than fixed. Pointing at the same path also means the update reuses the
+# cache the install filled instead of refetching it.
+#
+# STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
+# two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    # mktemp, not a $$-derived name: this branch exists for a cache directory another
+    # account can write, and there a predictable path can be pre-created as a symlink,
+    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
+    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
+    # to create IS the writability answer this probe wanted.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        unset UV_CACHE_DIR
+    fi
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
@@ -1903,17 +1942,49 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # Same shape, same reason: a venv installed before the tokenizers pin can
+        # hold a tokenizers the installed transformers rejects at import, which
+        # takes down every `import transformers` and so the whole MLX stack, while
+        # $_PKG_NAME itself is current. Without this the fast path reports "up to
+        # date" and repairs nothing. Ask the metadata, not an import: the import is
+        # what is broken. Any unreadable half exits 1 and changes nothing.
+        if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
         # An interrupted install leaves $_PKG_NAME current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
         if ! "$VENV_DIR/bin/python" -c "
-import sys
+import os, sys
 sys.path.insert(0, sys.argv[1])
 try:
     import install_manifest
 except Exception:
-    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
-sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
+    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
+try:
+    ok = install_manifest.verify_install(deep = True)['ok']
+except TypeError:
+    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
+sys.exit(0 if ok else 1)
 " "$SCRIPT_DIR" 2>/dev/null; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
@@ -2024,6 +2095,30 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # As setup.ps1's "Torch-index pin changed" branch: an explicit cu*/rocm*/cpu pin over
+        # ANOTHER family's torch is a request only the dependency pass acts on, and the version
+        # compare calls it up to date. Labelled wheels only; custom leaves left alone.
+        _setup_pin_have_family=""
+        case "${_setup_pin_ver:-}" in
+            *+cu[0-9]*) _setup_pin_have_family=cu ;;
+            *+rocm*) _setup_pin_have_family=rocm ;;
+            *+cpu) _setup_pin_have_family=cpu ;;
+            *+xpu) _setup_pin_have_family=xpu ;;
+        esac
+        _setup_pin_want_family=""
+        if [ "$_setup_pin_known_nonxpu" = true ]; then
+            case "$_setup_pin_leaf" in
+                cu[0-9]*) _setup_pin_want_family=cu ;;
+                rocm[0-9]* | gfx[0-9]*) _setup_pin_want_family=rocm ;;
+                cpu) _setup_pin_want_family=cpu ;;
+            esac
+        fi
+        if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "$_setup_pin_want_family" ] \
+            && [ -n "$_setup_pin_have_family" ] && [ "$_setup_pin_have_family" != xpu ] \
+            && [ "$_setup_pin_have_family" != "$_setup_pin_want_family" ]; then
+            substep "$_setup_pin_leaf pinned over a +$_setup_pin_have_family torch wheel -- forcing dependency pass to reinstall torch from the pin..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -2077,56 +2172,184 @@ _target_has_pkg_version() {
     done
     return 1
 }
-_NEED_T5_INSTALL=false
+# Audited AND installed from here: a name the audit cannot reach on disk reads stale forever.
+_SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
+
+# Remnants of a failed tiktoken install shadow the ambient copy and nothing else clears them.
+_sidecar_drop_tiktoken() {
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && rm -rf "$_sdt_entry" 2>/dev/null
+    done
+    _sdt_left=0
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && _sdt_left=1
+    done
+    unset _sdt_entry
+    if [ "$_sdt_left" = 1 ]; then
+        unset _sdt_left
+        return 1
+    fi
+    unset _sdt_left
+    return 0
+}
+
+_sidecar_retire_after_failed_tiktoken() {
+    # `|| true`: best effort under `set -e`, or an undeletable file fails an otherwise fine update.
+    rm -rf "$1" 2>/dev/null || true
+    substep "the $2 sidecar kept part of a failed tiktoken install; retired, rebuilt on the next update"
+}
+
+_sidecar_top_up_tiktoken() {
+    _stt_dir="$1"
+    _stt_label="$2"
+    # Payload AND dist-info (RECORD is written last): an interrupted install leaves one without the
+    # other. A recordless dist-info goes first; uv cannot uninstall it, metadata still reads it.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
+            rm -rf "$_stt_info" || true   # `|| true`: set -e; the reinstall below handles a leftover
+        fi
+    done
+    unset _stt_info
+    for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
+        if [ -f "$_stt_meta" ] && [ -f "${_stt_meta%METADATA}RECORD" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
+            unset _stt_meta
+            return 0
+        fi
+    done
+    unset _stt_meta
+    # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        [ -d "$_stt_info" ] && { rm -rf "$_stt_info" || true; }
+    done
+    unset _stt_info
+    if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
+        if _sidecar_drop_tiktoken "$_stt_dir"; then
+            substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
+        else
+            _sidecar_retire_after_failed_tiktoken "$_stt_dir" "$_stt_label"
+        fi
+    fi
+    return 0
+}
+
+_sidecar_current() {
+    # One predicate for both shells: the version grep called a half-written sidecar current.
+    _sc_dir="$1"
+    _sc_ver="$2"
+    [ -d "$_sc_dir" ] || return 1
+    # No shim: answer from the grep, as setup.ps1 does, or every tier reads stale.
+    if [ ! -f "$SCRIPT_DIR/install_manifest.py" ]; then
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
+    # Colab has no venv interpreter but the stdlib-only shim runs under its own python.
+    _sc_python="$VENV_DIR/bin/python"
+    if [ ! -x "$_sc_python" ]; then
+        _sc_python=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
+    fi
+    if [ -z "$_sc_python" ]; then
+        unset _sc_python
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
+    # Bounded where timeout exists: the shim cannot interrupt a stalled read. A timeout is stale.
+    # shellcheck disable=SC2086  # the pins are a deliberate word-split list
+    if command -v timeout >/dev/null 2>&1; then
+        _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    else
+        _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    fi
+    # 124 is timeout's TERM, 137 its KILL.
+    if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
+        _sc_out="sidecar: audit did not answer within 60 seconds"
+    fi
+    unset _sc_python
+    case "$_sc_out" in
+        "sidecar: current")
+            unset _sc_out _sc_rc
+            return 0
+            ;;
+        sidecar:*)
+            verbose_substep "sidecar $_sc_dir: ${_sc_out#sidecar: }"
+            unset _sc_out _sc_rc
+            return 1
+            ;;
+    esac
+    unset _sc_out
+    # A failure with no marker is a dead audit, not the legacy silent exit 0.
+    if [ "$_sc_rc" -ne 0 ]; then
+        verbose_substep "sidecar $_sc_dir: audit failed (exit $_sc_rc)"
+        unset _sc_rc
+        return 1
+    fi
+    unset _sc_rc
+    # An old shim exits 0 silently: fall back to the grep this replaced.
+    _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+}
+
+_install_sidecar() {
+    _is_dir="$1"
+    _is_ver="$2"
+    _is_label="$3"
+    _assert_studio_owned_or_absent "$_is_dir" "transformers $_is_label sidecar venv"
+    [ -d "$_is_dir" ] && rm -rf "$_is_dir"
+    mkdir -p "$_is_dir"
+    : > "$_is_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
+    # From $_SIDECAR_COMMON_PINS, not a copy: a pin demanded but never installed reads stale forever.
+    for _is_pin in $_SIDECAR_COMMON_PINS; do
+        run_quiet "install ${_is_pin%%==*} for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "$_is_pin"
+    done
+    unset _is_pin
+    # Optional, as in setup.ps1; _sidecar_top_up_tiktoken retries it later.
+    if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
+        if _sidecar_drop_tiktoken "$_is_dir"; then
+            substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
+        else
+            _sidecar_retire_after_failed_tiktoken "$_is_dir" "$_is_label"
+        fi
+    fi
+    step "transformers" "$_is_ver pre-installed"
+}
+
+_NEED_T5_530=false
+_NEED_T5_550=false
+_NEED_T5_510=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
-    # Legacy layout — migrate. The tiered venvs a staged run builds land under the
-    # stage root and may never be activated, so removing the live legacy one here
-    # would strip the running install of its only sidecar. The live update does it.
+    # Legacy layout. A staged run's venvs may never be activated, so only the live update migrates.
     if [ -z "$STAGE_ROOT" ]; then
         _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
         rm -rf "$STUDIO_HOME/.venv_t5"
     fi
-    _NEED_T5_INSTALL=true
+    _NEED_T5_530=true
+    _NEED_T5_550=true
+    _NEED_T5_510=true
 fi
-[ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
-# Also reinstall when python deps were updated (packages may need rebuild)
-[ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
+_sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
+_sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
+_sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
 
-if [ "$_NEED_T5_INSTALL" = true ]; then
-    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
-    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
-    mkdir -p "$VENV_T5_530_DIR"
-    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.3.0" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "tiktoken"
-    step "transformers" "5.3.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
-    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
-    mkdir -p "$VENV_T5_550_DIR"
-    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.5.0" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
-    run_quiet "install huggingface_hub for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "tiktoken"
-    step "transformers" "5.5.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
-    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
-    mkdir -p "$VENV_T5_510_DIR"
-    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.10.2" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
-    run_quiet "install huggingface_hub for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "tiktoken"
-    step "transformers" "5.10.2 pre-installed"
+if [ "$_NEED_T5_530" = true ]; then
+    _install_sidecar "$VENV_T5_530_DIR" "5.3.0" "5.3"
+else
+    step "transformers" "5.3.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
+fi
+if [ "$_NEED_T5_550" = true ]; then
+    _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+else
+    step "transformers" "5.5.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
+fi
+if [ "$_NEED_T5_510" = true ]; then
+    _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+else
+    step "transformers" "5.10.2 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
 fi
 fi
 
@@ -2504,8 +2727,17 @@ EOF
     else
         step "gpu" "AMD ROCm"
     fi
+    # Only claim a path that is really there, matching install.sh. /opt/rocm is a
+    # FALLBACK, not a detection, so a runtime-only ROCm host reaches here with nothing at
+    # it -- and this script runs after install.sh on every install and alone on every
+    # `unsloth studio update`, so leaving it unconditional here meant the run still ended
+    # by advertising the directory install.sh had just stopped claiming.
     _setup_rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_setup_rocm_root"
+    if [ -d "$_setup_rocm_root" ]; then
+        substep "ROCm: $_setup_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_setup_rocm_root)"
+    fi
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
 elif [ "$_setup_xpu_ready" = true ]; then
@@ -2544,6 +2776,7 @@ LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
+_LLAMA_KEEP_PREBUILT_ACTIVE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -2632,6 +2865,71 @@ _link_local_llama_quantize_shim() {
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+# UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
+# The Docker Studio build sets it -- no GPU is visible there, so detection installs a CPU bundle over the baked CUDA one.
+_keep_installed_gpu_prebuilt() {
+    local install_dir=$1 requested_tag=$2 repo=$3 release_pin=${4:-}
+    case "$(printf '%s' "${UNSLOTH_LLAMA_KEEP_PREBUILT:-}" | awk '{$1=$1; print tolower($0)}')" in
+        1|true|yes|on) ;;
+        *) return 1 ;;
+    esac
+    # An explicitly requested backend must still be installed, or fail loudly, never kept over.
+    [ -z "${_explicit_llama_source_backend:-}" ] || return 1
+    _has_local_llama_server "$install_dir" || return 1
+    [ -f "$install_dir/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$install_dir/UNSLOTH_PREBUILT_INFO.json" "$requested_tag" "$repo" "$release_pin" <<'PY' 2>/dev/null
+import json
+import re
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+
+requested = sys.argv[2].strip()
+repo = sys.argv[3].strip()
+release_pin = sys.argv[4].strip() if len(sys.argv) > 4 else ""
+GPU_TOKENS = ("cuda", "rocm", "hip", "vulkan", "metal")
+# Fork bundles record only "platform"; install_llama_prebuilt.py also records "backend". Accept either.
+backend = str(payload.get("backend") or "").strip().lower()
+platform_kind = str(payload.get("platform") or payload.get("install_kind") or "").strip().lower()
+if payload.get("force_cpu") is True:
+    raise SystemExit(1)
+if backend not in GPU_TOKENS and not any(token in platform_kind for token in GPU_TOKENS):
+    raise SystemExit(1)
+if repo and str(payload.get("published_repo") or "").strip() != repo:
+    raise SystemExit(1)
+
+
+def base_build(tag: str) -> str:
+    """b10840 out of b10840-mix-d5c17a0, so the marker's normalized "tag" still matches."""
+    match = re.match(r"b(\d+)", tag.strip())
+    return f"b{match.group(1)}" if match else tag.strip()
+
+
+recorded = {str(payload.get(key) or "").strip() for key in ("release_tag", "tag", "upstream_tag")}
+recorded.discard("")
+if not recorded:
+    raise SystemExit(1)
+# UNSLOTH_LLAMA_RELEASE_TAG names one published release, so only that exact release_tag can be kept.
+if release_pin and str(payload.get("release_tag") or "").strip() != release_pin:
+    raise SystemExit(1)
+if requested and requested.lower() != "latest":
+    if re.fullmatch(r"b\d+", requested):
+        # A bare base build pin is satisfied by any mix release cut from that build.
+        if requested not in {base_build(t) for t in recorded}:
+            raise SystemExit(1)
+    elif requested not in recorded:
+        # b10840-mix-new and b10840-mix-old share a base build but are different bundles.
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
 }
 
 _LOCAL_LLAMA_CPP_LINKED=false
@@ -2741,6 +3039,10 @@ elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then
     substep "prebuilt install skipped -- falling back to source build"
+elif _keep_installed_gpu_prebuilt "$LLAMA_CPP_DIR" "$_REQUESTED_LLAMA_TAG" "$_HELPER_RELEASE_REPO" "${UNSLOTH_LLAMA_RELEASE_TAG:-}"; then
+    step "llama.cpp" "keeping the installed GPU prebuilt (UNSLOTH_LLAMA_KEEP_PREBUILT=1)"
+    print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    _LLAMA_KEEP_PREBUILT_ACTIVE=true
 else
     substep "installing prebuilt llama.cpp..."
     if [ -d "$LLAMA_CPP_DIR" ]; then
@@ -2815,6 +3117,11 @@ else
     if [ "$_PREBUILT_STATUS" -eq 0 ]; then
         if grep -Fq "already matches" "$_PREBUILT_LOG"; then
             step "llama.cpp" "prebuilt up to date and validated"
+        elif grep -Fq "keeping the existing complete install" "$_PREBUILT_LOG"; then
+            # Exit 0 can also mean the installer kept the tree already on disk after a
+            # transient failure. "installed and validated" would name a release nothing
+            # fetched.
+            step "llama.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
@@ -3468,6 +3775,7 @@ fi  # end _SKIP_GGUF_BUILD check
 # on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
+        && [ "$_LLAMA_KEEP_PREBUILT_ACTIVE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
@@ -3646,13 +3954,27 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
     # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
     # InstallingContent renders verbatim, so the user actually reads the limitation.
+    #
+    # DIAG as well: progress detail is cleared by the next install-step and is gone
+    # once the install screen closes, so it cannot answer "why is GGUF missing"
+    # afterwards. record_diag_marker keeps this in the support report.
     case "${UNSLOTH_TAURI_MODE:-0}" in
         1|true)
             printf '[TAURI:PROGRESS] %s\n' \
                 "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable"
             ;;
         *)
             setup_fail 1 "llama.cpp setup did not produce a usable server"
             ;;
+    esac
+fi
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ]; then
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in
+        1|true) printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable" ;;
     esac
 fi
