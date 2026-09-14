@@ -1856,8 +1856,9 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
-      "read_skill",
-      "create_skill",
+      // Same gate as the completion: with no enabled skill the request carries neither tool,
+      // so counting them here would price schemas and a catalog nudge the prompt never gets.
+      ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its

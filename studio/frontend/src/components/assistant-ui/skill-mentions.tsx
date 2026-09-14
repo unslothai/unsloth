@@ -2,10 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  SKILL_MENTION_PATTERN,
   type SkillRecord,
   refreshSkillsCatalog,
   useSkillsCatalog,
 } from "@/features/chat";
+import { useT } from "@/i18n";
 import type {
   Unstable_DirectiveFormatter,
   Unstable_DirectiveSegment,
@@ -35,7 +37,8 @@ function enabled(records: readonly SkillRecord[]): readonly SkillRecord[] {
   );
 }
 
-const MENTION_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]{0,63})/gim;
+// The catalog allows 1,000 skills per root; a keystroke must not render them all.
+const MAX_MENTION_RESULTS = 50;
 
 const skillMentionFormatter: Unstable_DirectiveFormatter = {
   serialize: (item) => `@${item.label}`,
@@ -43,7 +46,9 @@ const skillMentionFormatter: Unstable_DirectiveFormatter = {
     const segments: Unstable_DirectiveSegment[] = [];
     let lastIndex = 0;
 
-    for (const match of text.matchAll(MENTION_PATTERN)) {
+    // The same pattern the send path uses to decide a re-read, so a chip and a catalog
+    // lookup never disagree about what counts as a mention.
+    for (const match of text.matchAll(SKILL_MENTION_PATTERN)) {
       const whitespace = match[1] ?? "";
       const mentionStart = match.index + whitespace.length;
       if (mentionStart > lastIndex) {
@@ -112,6 +117,7 @@ export function SkillMentionPopover({
   enabled: boolean;
   onConsumesEnterChange?: (consumesEnter: boolean) => void;
 }): ReactElement | null {
+  const t = useT();
   const { skills } = useSkillsCatalog();
   const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
   const available = mentionsEnabled ? enabled(skills) : [];
@@ -137,7 +143,7 @@ export function SkillMentionPopover({
     <ComposerPrimitive.Unstable_TriggerPopover
       char="@"
       adapter={mention.adapter}
-      aria-label="Agent Skills"
+      aria-label={t("skills.mentions")}
       className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100"
     >
       <ComposerPrimitive.Unstable_TriggerPopover.Directive
@@ -151,10 +157,10 @@ export function SkillMentionPopover({
               active={results.length > 0}
             />
             <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-              Agent Skills
+              {t("skills.mentions")}
             </div>
             <div ref={setListElement} className="max-h-64 overflow-y-auto">
-              {results.map((item, index) => (
+              {results.slice(0, MAX_MENTION_RESULTS).map((item, index) => (
                 <ComposerPrimitive.Unstable_TriggerPopoverItem
                   key={item.id}
                   item={item}
@@ -209,6 +215,7 @@ export function useTextareaSkillMentions({
   composingRef: MutableRefObject<boolean>;
   enabled: boolean;
 }) {
+  const t = useT();
   const { skills } = useSkillsCatalog();
   const [range, setRange] = useState<MentionRange>(null);
   const listboxId = useId();
@@ -217,11 +224,17 @@ export function useTextareaSkillMentions({
     if (!range) return [];
     const query = range.query.toLowerCase();
     if (!mentionsEnabled) return [];
-    return enabled(skills).filter(
-      (skill) =>
+    const matches: SkillRecord[] = [];
+    for (const skill of enabled(skills)) {
+      if (
         skill.name.toLowerCase().includes(query) ||
-        skill.description.toLowerCase().includes(query),
-    );
+        skill.description.toLowerCase().includes(query)
+      ) {
+        matches.push(skill);
+        if (matches.length === MAX_MENTION_RESULTS) break;
+      }
+    }
+    return matches;
   }, [mentionsEnabled, range, skills]);
 
   const open = range !== null && results.length > 0;
@@ -312,13 +325,13 @@ export function useTextareaSkillMentions({
   const popover = open ? (
     <div className="animate-in fade-in-0 zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100">
       <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-        Agent Skills
+        {t("skills.mentions")}
       </div>
       <div
         ref={resultsRef}
         id={listboxId}
         role="listbox"
-        aria-label="Agent Skills"
+        aria-label={t("skills.mentions")}
         className="max-h-64 overflow-y-auto"
       >
         {results.map((skill, index) => (

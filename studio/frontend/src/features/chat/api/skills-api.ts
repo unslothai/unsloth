@@ -140,13 +140,25 @@ export async function setSkillEnabled(
   return updated;
 }
 
-const SKILL_MENTION_PATTERN = /(^|\s)@([a-z0-9][a-z0-9-]{0,63})/gi;
+// A skill name per the Agent Skills spec (lowercase, digits, single hyphens, 1-64 chars), and
+// only when the name ends where a word would: trailing punctuation is fine (`@probe-alpha.`),
+// but `@example.com`, `@3pm`, `@probe_alpha` and `@Probe` are not mentions, so they never
+// trigger a catalog re-read on send.
+export const SKILL_MENTION_PATTERN =
+  /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)\]'"]+(?:$|\s))/g;
+
+// How long a pre-send catalog re-read may hold the request. authFetch has no deadline of its
+// own, so without this a hung /api/skills would stall every send that names an unknown skill.
+const SETTLE_TIMEOUT_MS = 3000;
 
 // Settle the catalog before a request decides tool enablement from it: finish any fetch
 // already in flight, and re-read the folders when the text names a skill the snapshot has
 // never seen (a pasted @mention gets no bare-@ keystroke to refresh on).
 export async function settleSkillsForText(text: string): Promise<void> {
-  if (pending) await pending.catch(() => undefined);
+  const deadline = new Promise<void>((resolve) =>
+    setTimeout(resolve, SETTLE_TIMEOUT_MS),
+  );
+  if (pending) await Promise.race([pending.catch(() => undefined), deadline]);
   // Usable entries only: a mention of a skill the snapshot holds as invalid, shadowed or
   // disabled re-reads too, since the file may have been repaired or re-enabled since.
   const known = new Set(
@@ -157,12 +169,14 @@ export async function settleSkillsForText(text: string): Promise<void> {
   let stale = !snapshot.initialized;
   for (const match of text.matchAll(SKILL_MENTION_PATTERN)) {
     const name = match[2] ?? "";
-    if (!known.has(name.toLowerCase())) {
+    if (!known.has(name)) {
       stale = true;
       break;
     }
   }
-  if (stale) await listSkills(true).catch(() => undefined);
+  if (stale) {
+    await Promise.race([listSkills(true).catch(() => undefined), deadline]);
+  }
 }
 
 // Skills are files the user edits while Studio is open, so the places that surface the

@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { BookOpen01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -30,8 +31,15 @@ export function ChatSkillsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }): ReactElement {
+  const t = useT();
   const { skills, loading, error } = useSkillsCatalog();
   const [changing, setChanging] = useState<string | null>(null);
+  const sourceLabel = (source: "agents" | "claude" | "bundled") =>
+    source === "agents"
+      ? t("skills.sourceAgents")
+      : source === "claude"
+        ? t("skills.sourceClaude")
+        : t("skills.sourceBundled");
   // Skills are added by writing files, so each open re-reads the folders.
   useEffect(() => {
     if (open) void listSkills(true).catch(() => undefined);
@@ -42,7 +50,7 @@ export function ChatSkillsDialog({
     try {
       await setSkillEnabled(name, enabled);
     } catch (cause) {
-      toast.error("Could not update Agent Skill", {
+      toast.error(t("skills.updateError"), {
         description: cause instanceof Error ? cause.message : undefined,
       });
     } finally {
@@ -60,17 +68,14 @@ export function ChatSkillsDialog({
               strokeWidth={1.75}
               className="size-5 text-primary"
             />
-            <DialogTitle>Agent Skills</DialogTitle>
+            <DialogTitle>{t("skills.title")}</DialogTitle>
           </div>
-          <DialogDescription>
-            Skills are discovered from your standard agent folders. Enable them
-            here, then type @ in chat to mention one.
-          </DialogDescription>
+          <DialogDescription>{t("skills.description")}</DialogDescription>
         </DialogHeader>
 
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-muted-foreground">
-            ~/.agents/skills takes precedence over ~/.claude/skills.
+            {t("skills.precedence")}
           </p>
           <Button
             type="button"
@@ -80,7 +85,7 @@ export function ChatSkillsDialog({
             onClick={() => void listSkills(true).catch(() => undefined)}
           >
             {loading ? <Spinner /> : <RefreshCwIcon />}
-            Refresh
+            {t("skills.refresh")}
           </Button>
         </div>
 
@@ -92,8 +97,7 @@ export function ChatSkillsDialog({
           ) : null}
           {!loading && !error && skills.length === 0 ? (
             <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-              No Agent Skills found. Add a SKILL.md folder under
-              ~/.agents/skills or ~/.claude/skills, then refresh.
+              {t("skills.empty")}
             </div>
           ) : null}
           {skills.map((skill) => {
@@ -107,18 +111,12 @@ export function ChatSkillsDialog({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="truncate font-medium">{skill.name}</span>
-                      <Badge variant="outline">
-                        {skill.source === "agents"
-                          ? "Agents"
-                          : skill.source === "claude"
-                            ? "Claude"
-                            : "Bundled"}
-                      </Badge>
+                      <Badge variant="outline">{sourceLabel(skill.source)}</Badge>
                       {skill.shadowed ? (
-                        <Badge variant="secondary">Shadowed</Badge>
+                        <Badge variant="secondary">{t("skills.shadowed")}</Badge>
                       ) : null}
                       {skill.valid ? null : (
-                        <Badge variant="destructive">Invalid</Badge>
+                        <Badge variant="destructive">{t("skills.invalid")}</Badge>
                       )}
                     </div>
                     {skill.description ? (
@@ -128,18 +126,14 @@ export function ChatSkillsDialog({
                     ) : null}
                     {skill.compatibility ? (
                       <p className="mt-2 text-xs text-muted-foreground">
-                        Compatibility: {skill.compatibility}
+                        {t("skills.compatibility", { value: skill.compatibility })}
                       </p>
                     ) : null}
                     {skill.shadowed_by ? (
                       <p className="mt-2 text-xs text-muted-foreground">
-                        Another{" "}
-                        {skill.shadowed_by === "agents"
-                          ? "Agents"
-                          : skill.shadowed_by === "claude"
-                            ? "Claude"
-                            : "bundled"}{" "}
-                        skill with this name takes precedence.
+                        {t("skills.shadowedBy", {
+                          source: sourceLabel(skill.shadowed_by),
+                        })}
                       </p>
                     ) : null}
                     {skill.error ? (
@@ -149,7 +143,9 @@ export function ChatSkillsDialog({
                     ) : null}
                   </div>
                   <Switch
-                    aria-label={`${skill.enabled ? "Disable" : "Enable"} ${skill.name}`}
+                    aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", {
+                      name: skill.name,
+                    })}
                     checked={selectable && skill.enabled}
                     disabled={!selectable || changing === skill.name}
                     onCheckedChange={(checked) =>
