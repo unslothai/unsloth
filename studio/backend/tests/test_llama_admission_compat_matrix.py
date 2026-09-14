@@ -184,6 +184,11 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
         assert queue._reparking == 0
 
 
+# Appended in the order they were added, so an older caller's positional arguments
+# keep their meaning.
+_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot")
+
+
 class TestOldCallers:
     """Everything added is keyword-with-default, so code written before this still runs."""
 
@@ -220,8 +225,10 @@ class TestOldCallers:
         from core.inference.llama_cpp import LlamaCppBackend
 
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
-        parameter = signature.parameters["on_conversation_grew"]
-        assert parameter.default is None, "the hook must be optional for existing callers"
+        for name in _TOOL_LOOP_HOOKS:
+            assert (
+                signature.parameters[name].default is None
+            ), f"{name} must be optional for existing callers"
 
     def test_the_hook_was_appended_rather_than_inserted(self):
         """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
@@ -234,9 +241,9 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert (
-            names[-1] == "on_conversation_grew"
-        ), f"the hook must be last; signature ends {names[-3:]}"
+        assert names[-len(_TOOL_LOOP_HOOKS) :] == list(
+            _TOOL_LOOP_HOOKS
+        ), f"the hooks must stay at the tail, in order; signature ends {names[-3:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect
@@ -245,8 +252,9 @@ class TestOldCallers:
 
         from core.inference.llama_admission import LlamaAdmissionLease
 
-        signature = inspect.signature(LlamaAdmissionLease.recost_waiting)
-        assert signature.parameters["timeout_s"].default == DEFAULT_RECOST_WAIT_TIMEOUT_S
+        for method in (LlamaAdmissionLease.recost_waiting, LlamaAdmissionLease.unpark_async):
+            signature = inspect.signature(method)
+            assert signature.parameters["timeout_s"].default == DEFAULT_RECOST_WAIT_TIMEOUT_S
 
 
 class TestNoPersistentStateChanged:

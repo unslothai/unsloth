@@ -6167,3 +6167,51 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+def _verbose_slot_stream(slot: int):
+    """A plain answer whose final result names the llama-server slot it decoded on.
+
+    Only the final chat-stream result carries ``__verbose``, and ``response_fields``
+    narrows it to ``id_slot`` alone; the partial deltas above it never carry either.
+    """
+    return [
+        _sse({"role": "assistant", "content": None}),
+        _sse({"content": "done"}),
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "__verbose": {"id_slot": slot},
+            }
+        )
+        + "\n",
+        _done(),
+    ]
+
+
+def test_the_decode_slot_callback_is_fed_from_the_stream(monkeypatch):
+    """The approval park needs the slot this round decoded on; nothing else supplies it."""
+    backend, payloads = _backend_and_payloads(monkeypatch, [_verbose_slot_stream(3)])
+    seen = []
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hi"}],
+        _render_html_tools(),
+        on_decode_slot = lambda base_url, slot: seen.append((base_url, slot)),
+    )
+
+    assert seen == [(backend.base_url, 3)]
+    assert payloads[0]["verbose"] is True
+    assert payloads[0]["response_fields"] == ["id_slot"]
+
+
+def test_the_verbose_slot_request_is_not_made_without_a_callback(monkeypatch):
+    """llama-server would otherwise attach the whole prompt to every round's last chunk."""
+    backend, payloads = _backend_and_payloads(monkeypatch, [_verbose_slot_stream(3)])
+
+    _run_tool_loop(backend, [{"role": "user", "content": "hi"}], _render_html_tools())
+
+    assert "verbose" not in payloads[0]
+    assert "response_fields" not in payloads[0]

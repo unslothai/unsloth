@@ -29282,13 +29282,40 @@ class LlamaCppBackend:
                     continue
                 raise
 
-    def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
-        """Return cache capacity only after the engine acknowledges erasing the slot.
+    @staticmethod
+    def decode_slot_from_chunk(chunk) -> Optional[int]:
+        """The llama-server slot a stream chunk was decoded on, None if it does not say.
 
-        Use the response's server identity, not the current load's slot with the same
-        number. Older engines or failed erasures keep the existing reservation.
+        Only the final chat-stream result carries ``__verbose``, and only when the request
+        asked for it; ``response_fields`` narrows it to ``id_slot`` alone.
         """
-        if base_url != self.base_url or type(slot) is not int or slot < 0:
+        if not isinstance(chunk, dict):
+            return None
+        verbose = chunk.get("__verbose")
+        if not isinstance(verbose, dict):
+            return None
+        slot = verbose.get("id_slot")
+        if type(slot) is not int or slot < 0:
+            return None
+        return slot
+
+    def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
+        """Erase one completed round's cached context, True once the engine says so.
+
+        Declines unless ``base_url`` is still the server that decoded the round, since a
+        reload renumbers the slots, and unless --slot-save-path is in play, which the
+        endpoint requires. Anything unacknowledged keeps the reservation.
+
+        The engine defers rather than drops an erase aimed at a slot already handed to
+        another request, and keeps that task when this call times out, so a timeout can
+        still cost the new chat its prefix.
+        """
+        if (
+            not self._slot_save_dir
+            or base_url != self.base_url
+            or type(slot) is not int
+            or slot < 0
+        ):
             return False
         try:
             response = httpx.post(
@@ -30740,12 +30767,9 @@ class LlamaCppBackend:
                             try:
                                 chunk_data = json.loads(line[6:])
                                 if on_decode_slot is not None:
-                                    slot = (chunk_data.get("__verbose") or {}).get("id_slot")
-                                    if type(slot) is int and slot >= 0:
-                                        on_decode_slot(
-                                            str(response.url).split("/v1/chat/completions", 1)[0],
-                                            slot,
-                                        )
+                                    slot = self.decode_slot_from_chunk(chunk_data)
+                                    if slot is not None:
+                                        on_decode_slot(self.base_url, slot)
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")

@@ -1737,6 +1737,8 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
+# How often a parked chat re-asks whether anyone is waiting on the cache it still holds.
+_APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -22597,18 +22599,20 @@ async def produce_openai_chat_completions(
             # reservation exists but not ITERATED until after, so the callback always sees
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
-            _gguf_decode_slot = None
-            _gguf_cache_reclaimed = False
+            # Written from the generator thread, read by the approval watcher on the loop.
+            _gguf_decode_lock = threading.Lock()
+            _gguf_decode: dict = {"slot": None, "erased": False}
 
             def _gguf_record_decode_slot(base_url: str, slot: int) -> None:
-                nonlocal _gguf_decode_slot, _gguf_cache_reclaimed
-                _gguf_decode_slot = (base_url, slot)
-                _gguf_cache_reclaimed = False
+                with _gguf_decode_lock:
+                    _gguf_decode["slot"] = (base_url, slot)
+                    _gguf_decode["erased"] = False
 
             def _gguf_recost(conversation) -> None:
-                nonlocal _gguf_decode_slot, _gguf_cache_reclaimed
-                _gguf_decode_slot = None
-                _gguf_cache_reclaimed = False
+                with _gguf_decode_lock:
+                    # A new round re-fills the cache; the last erasure says nothing now.
+                    _gguf_decode["slot"] = None
+                    _gguf_decode["erased"] = False
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -22745,8 +22749,51 @@ async def produce_openai_chat_completions(
                 # otherwise unanswered prompts hold every slot.
                 _parked = False
 
+                _reclaim_task = None
+
+                async def _reclaim_approval_cache(lease):
+                    """Erase this round's cached context once a queued chat needs its room.
+
+                    On demand only: the engine drops the cells rather than spilling them to
+                    its prompt cache, so this costs the approved chat a full reprocess.
+                    """
+                    try:
+                        while not lease.reclaim_would_admit():
+                            await asyncio.sleep(_APPROVAL_CACHE_RECLAIM_POLL_S)
+                        with _gguf_decode_lock:
+                            target = _gguf_decode["slot"]
+                            erased = _gguf_decode["erased"]
+                        if target is None:
+                            return
+                        if not erased:
+                            if not await asyncio.to_thread(
+                                llama_backend.release_idle_chat_slot, *target
+                            ):
+                                return
+                            with _gguf_decode_lock:
+                                _gguf_decode["erased"] = True
+                        lease.release_parked_cache()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
+
+                def _watch_for_reclaim(lease) -> None:
+                    nonlocal _reclaim_task
+                    with _gguf_decode_lock:
+                        known = _gguf_decode["slot"] is not None
+                    if not known or _reclaim_task is not None:
+                        return
+                    _reclaim_task = asyncio.create_task(_reclaim_approval_cache(lease))
+
+                def _stop_reclaim_watch() -> None:
+                    nonlocal _reclaim_task
+                    if _reclaim_task is not None:
+                        _reclaim_task.cancel()
+                        _reclaim_task = None
+
                 async def _park_admission(on: bool, *, wait: bool = True):
-                    nonlocal _parked, _gguf_cache_reclaimed
+                    nonlocal _parked
                     if on == _parked:
                         return
                     # This run's own lease, not a fresh lookup: queues are keyed by base_url and a
@@ -22755,22 +22802,18 @@ async def produce_openai_chat_completions(
                     if lease is None:
                         return
                     if on:
-                        # Refused when the budget is spent: the slot stays here,
-                        # so there is nothing to take back afterwards.
-                        reclaimed = _gguf_cache_reclaimed
-                        if not reclaimed and _gguf_decode_slot is not None:
-                            reclaimed = await asyncio.to_thread(
-                                llama_backend.release_idle_chat_slot, *_gguf_decode_slot
-                            )
-                        _gguf_cache_reclaimed = reclaimed
-                        if not lease.park(cache_reclaimed = reclaimed):
+                        # A refused park keeps the slot, so there is nothing to offer yet.
+                        if not lease.park():
                             return
+                        _watch_for_reclaim(lease)
                     elif wait:
-                        # Resuming: park() may have handed our slot to a waiter, so wait for room instead
-                        # of putting two holders on one slot.
+                        # Parking gave the slot away and reclamation may have given the
+                        # room away, so win both back rather than decode without them.
+                        _stop_reclaim_watch()
                         await lease.unpark_async(cancel_event = cancel_event)
                     else:
                         # Tearing down; the lease is released separately.
+                        _stop_reclaim_watch()
                         lease.unpark()
                     _parked = on
 
