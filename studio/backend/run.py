@@ -2356,6 +2356,7 @@ def _terminal_password_gate(
         # secret, revoke refresh tokens in the SAME transaction.
         _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens = True)
 
+    _prompt_began = time.monotonic()
     changed = prompt_for_password_change(
         min_length = _auth_storage.MIN_PASSWORD_LENGTH,
         is_current_password = _is_current_password,
@@ -2370,13 +2371,22 @@ def _terminal_password_gate(
         # always fails closed. The tunnel waits forever instead.
         first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
+    if (
+        changed is False
+        and not tunnel_will_start
+        and not getattr(_terminal_prompt, "UNATTENDED_RETURNS_NONE", False)
+    ):
+        # An older terminal_prompt.py, which a torn `studio update` can leave next
+        # to this file, returns False for the unattended deadline as well as for a
+        # refusal. Reading both as refusal stops `docker run -dt`; reading both as
+        # unattended binds the socket after the operator asked to abort. The clock
+        # separates them, because only the deadline waits the whole timeout out.
+        elapsed = time.monotonic() - _prompt_began
+        changed = None if elapsed >= _UNATTENDED_PROMPT_SECONDS else False
     if changed is True:
         return True, True
-    if tunnel_will_start:
-        return False, False
-    # Only a module reporting the deadline as None can tell a refusal from it;
-    # an older one folds both into False, stopping `docker run -dt`.
-    if changed is False and getattr(_terminal_prompt, "UNATTENDED_RETURNS_NONE", False):
+    if changed is False or tunnel_will_start:
+        # Ctrl+C / EOF is an explicit refusal for any reachable UI launch.
         return False, False
     # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
     # arms the deadline, so say what will actually happen rather than promise a

@@ -495,8 +495,33 @@ def test_an_older_prompt_modules_ambiguous_false_still_starts_a_raw_bind(monkeyp
 
     monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
     monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+    # The legacy module only returns False here after waiting the deadline out;
+    # a fake clock says so without spending the real 30s.
+    ticks = iter([0.0, float(run._UNATTENDED_PROMPT_SECONDS)])
+    monkeypatch.setattr(run.time, "monotonic", lambda: next(ticks))
 
     assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+
+
+def test_an_older_prompt_modules_fast_false_is_a_refusal(monkeypatch):
+    """The other half: a legacy False that came back instantly is Ctrl+C.
+
+    Reading every legacy False as unattended would bind the socket after the
+    operator asked to abort, so the clock decides: only the deadline waits out
+    the whole timeout.
+    """
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (
+        False,
+        False,
+    )
 
 
 def test_an_older_prompt_modules_false_still_aborts_a_tunnel(monkeypatch):
