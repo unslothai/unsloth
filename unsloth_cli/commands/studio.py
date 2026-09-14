@@ -1800,6 +1800,16 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        if api_max_concurrency is not None:
+            typer.echo(
+                f"Error: --api-max-concurrency on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put the flag after the "
+                f"subcommand: `unsloth studio {ctx.invoked_subcommand} "
+                f"--api-max-concurrency {api_max_concurrency} ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         if cloudflare is not None:
             _cf_flag = "--cloudflare" if cloudflare else "--no-cloudflare"
             typer.echo(
@@ -1951,6 +1961,12 @@ def studio_default(
         ),
     )
 
+    # Before the re-exec branches, not beside run_server: the child is launched with an
+    # explicit argv that does not carry this flag, so setting it later would drop the cap on
+    # every out-of-venv launch. The environment is inherited by both execvp and Popen.
+    if api_max_concurrency is not None:
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
+
     if not in_studio_venv:
         if studio_python and run_py:
             if not silent:
@@ -2025,9 +2041,6 @@ def studio_default(
         if not silent:
             launch_host = _openable_host_for_bind(run_mod, host)
             typer.echo(f"Starting Unsloth Studio on http://{_url_host(launch_host)}:{port}")
-
-        if api_max_concurrency is not None:
-            os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 
         run_kwargs = dict(
             host = host,
@@ -2589,6 +2602,12 @@ def run(
         ),
     )
 
+    # Before the re-exec branch, not beside run_server: the child argv below does not carry
+    # this flag, so setting it later would drop the cap on every out-of-venv launch. The
+    # environment is inherited by both execvp and Popen.
+    if api_max_concurrency is not None:
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
+
     if not in_studio_venv:
         # Application Control blocks the generated unsloth.exe on some machines but not the signed python.exe beside it.
         launch_head = (
@@ -2674,9 +2693,6 @@ def run(
 
     set_tool_policy_default(True)
     set_tool_policy(enable_tools)
-
-    if api_max_concurrency is not None:
-        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 
     run_kwargs = dict(
         host = host,

@@ -6896,8 +6896,9 @@ def _close_load_event(
     api_monitor.finish(entry_id)
 
 
-# Direct calls skip admission but still occupy a slot: /completions, /embeddings,
-# GGUF TTS and RAG vision (captioning/OCR) all reach llama-server without a lease.
+# Direct calls skip admission but still occupy a slot: /embeddings, GGUF TTS and RAG
+# vision (captioning/OCR) all reach llama-server without a lease. /completions leases
+# like the chat routes, and counts here only when admission control is switched off.
 _direct_llama_inflight = 0
 _direct_llama_inflight_lock = threading.Lock()
 
@@ -29520,6 +29521,35 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         subject = current_subject,
     )
 
+    # Legacy /v1/completions decodes on the same llama-server slots as /v1/chat/completions, so
+    # it takes the same lease: without one the advertised cap (--parallel, and the
+    # UNSLOTH_API_MAX_CONCURRENCY override on top of it) was bypassable by calling the non-chat
+    # endpoint, which admitted as many concurrent generations as clients cared to open.
+    # `body` carries a prompt rather than messages, which the estimator prices as an equal
+    # share of the cache (see _openai_llama_admission_tokens).
+    try:
+        reservation, admission_config = _openai_llama_admission_reserve(
+            request = request,
+            llama_backend = llama_backend,
+            payload = body,
+        )
+    except LlamaAdmissionQueueFull as exc:
+        _llama_admission_log(
+            "queue-full",
+            snapshot = exc.snapshot,
+            request = request,
+            mode = "completions_stream" if is_stream else "completions",
+            level = "warning",
+        )
+        api_monitor.fail(monitor_id, str(exc))
+        raise _openai_admission_http_exception(exc, status_code = 429)
+
+    # The direct counter is for calls that reach llama-server with no lease; now that this one
+    # leases, counting it as well would show a single request as two in the slot readout. With
+    # admission control off the reservation is a no-op, so the counter is still the only thing
+    # that can show this call.
+    _direct_counted = not admission_config.enabled
+
     if is_stream:
 
         async def _stream():
@@ -29543,25 +29573,74 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             upstream_body["stream_options"] = upstream_stream_options
             from core.inference.llama_keepwarm import mark_response_failed
 
-            client = httpx.AsyncClient(
-                timeout = _llama_streaming_generation_timeout(),
-                trust_env = False,
-            )
-            resp = None
-            bytes_iter = None
-            items_iter = None
+            # Created before the admission wait so a client that disconnects while queued ends
+            # the wait; the cancel tracker below arms the same event for the relay.
             disconnect_event = threading.Event()
-            disconnect_watcher = None
-            # This proxy relays straight from llama-server, so the swap gate has to see it: without an
-            # entry a non-forced /unload counts zero generations and tears the server down mid-response.
-            # Sharing disconnect_event lets a forced swap stop the relay through the check it already
-            # polls. Entered inside the body generator, so a response whose body never starts leaves
-            # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
-            _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
-            _tracker.__enter__()
-            # Must stay the last statement before the try that decrements it: a raise in
-            # between leaks a permanent +1, and there is no reset hook.
-            _direct_llama_request_started()
+            admission_lease = None
+            try:
+                async for _admission_item in _openai_admission_wait_stream_chunks(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = disconnect_event,
+                ):
+                    if isinstance(_admission_item, str):
+                        # SSE comments that keep a queued client's connection warm.
+                        yield _admission_item.encode("utf-8")
+                    else:
+                        admission_lease = _admission_item
+            except LlamaAdmissionTimeout as exc:
+                _llama_admission_log(
+                    "timeout",
+                    reservation,
+                    request = request,
+                    mode = "completions_stream",
+                    level = "warning",
+                )
+                api_monitor.fail(monitor_id, str(exc))
+                yield _openai_stream_error_sse_bytes(
+                    _openai_admission_error_body(exc, status_code = 503)
+                )
+                return
+            except LlamaAdmissionCancelled:
+                _llama_admission_log(
+                    "cancelled-before-upstream",
+                    reservation,
+                    request = request,
+                    mode = "completions_stream",
+                    level = "debug",
+                )
+                api_monitor.finish(monitor_id, "cancelled")
+                return
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+
+            # Guarded: the lease is held from here, and the try that releases it starts below.
+            # A raise in between would drop a slot the pool never gets back.
+            try:
+                client = httpx.AsyncClient(
+                    timeout = _llama_streaming_generation_timeout(),
+                    trust_env = False,
+                )
+                resp = None
+                bytes_iter = None
+                disconnect_watcher = None
+                # This proxy relays straight from llama-server, so the swap gate has to see it: without an
+                # entry a non-forced /unload counts zero generations and tears the server down mid-response.
+                # Sharing disconnect_event lets a forced swap stop the relay through the check it already
+                # polls. Entered inside the body generator, so a response whose body never starts leaves
+                # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
+                _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
+                _tracker.__enter__()
+                # Must stay the last statement before the try that exits it: a raise in between
+                # leaks a permanent +1, and there is no reset hook.
+                _direct = _direct_llama_request(_direct_counted)
+                _direct.__enter__()
+            except BaseException:
+                if admission_lease is not None:
+                    admission_lease.release()
+                raise
             try:
                 req = client.build_request(
                     "POST", target_url, json = upstream_body, headers = {"Connection": "close"}
@@ -29673,27 +29752,82 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         client = client,
                     )
                 finally:
-                    _direct_llama_request_finished()
+                    _direct.__exit__(None, None, None)
                     _tracker.__exit__(None, None, None)
+                    if admission_lease is not None:
+                        admission_lease.release()
 
-        return _sse_streaming_response(_stream())
+        async def _unstarted_admission_cleanup() -> None:
+            # The reservation is taken in the route, so a response whose body never starts
+            # would leave a waiter queued against the pool forever.
+            api_monitor.finish(monitor_id, "cancelled")
+            reservation.cancel()
+
+        return _sse_streaming_response(
+            _stream(), unstarted_cleanup = _unstarted_admission_cleanup
+        )
     else:
         # ``stream`` defaults to false, so this common shape registers with the swap gate like the
         # streaming branch: unregistered, a non-forced /unload counts zero generations and kills
         # llama-server mid-request, and force_cancel_active has no event. Unpooled client so a
         # cancel-close hits this call only.
         _cancel_event = threading.Event()
-        _client = _cancelable_nonstreaming_client()
-        _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
-        _tracker.__enter__()
-        _cancel_watcher = asyncio.create_task(
-            _await_cancel_or_disconnect_then_close_client(
-                cancel_event = _cancel_event,
+        # Wait for a slot before opening the upstream request, exactly as the chat
+        # pass-through does: 503 on a queue timeout, 499 when the client goes away first.
+        try:
+            _admission_lease = await _wait_for_openai_admission_non_streaming(
+                reservation,
+                admission_config,
                 request = request,
-                client = _client,
+                cancel_event = _cancel_event,
             )
-        )
-        _direct_llama_request_started()
+        except LlamaAdmissionTimeout as exc:
+            _llama_admission_log(
+                "timeout",
+                reservation,
+                request = request,
+                mode = "completions",
+                level = "warning",
+            )
+            api_monitor.fail(monitor_id, str(exc))
+            raise _openai_admission_http_exception(exc, status_code = 503)
+        except LlamaAdmissionCancelled as exc:
+            _llama_admission_log(
+                "cancelled-before-upstream",
+                reservation,
+                request = request,
+                mode = "completions",
+                level = "debug",
+            )
+            api_monitor.finish(monitor_id, "cancelled")
+            raise HTTPException(
+                status_code = 499,
+                detail = _openai_admission_error_body(exc, status_code = 499),
+            )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            reservation.cancel()
+            raise
+        # Guarded: the lease is held from here, and the try that releases it starts below.
+        # A raise in between would drop a slot the pool never gets back.
+        try:
+            _client = _cancelable_nonstreaming_client()
+            _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
+            _tracker.__enter__()
+            _cancel_watcher = asyncio.create_task(
+                _await_cancel_or_disconnect_then_close_client(
+                    cancel_event = _cancel_event,
+                    request = request,
+                    client = _client,
+                )
+            )
+            # Must stay the last statement before the try that exits it: a raise in between
+            # leaks a permanent +1, and there is no reset hook.
+            _direct = _direct_llama_request(_direct_counted)
+            _direct.__enter__()
+        except BaseException:
+            _admission_lease.release()
+            raise
         try:
             try:
                 resp = await _client.post(
@@ -29723,8 +29857,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 except Exception:
                     pass
             finally:
-                _direct_llama_request_finished()
+                _direct.__exit__(None, None, None)
                 _tracker.__exit__(None, None, None)
+                _admission_lease.release()
 
         if resp.status_code != 200:
             api_monitor.fail(monitor_id, resp.text[:500])
