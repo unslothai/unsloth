@@ -570,7 +570,12 @@ def test_torch_is_rocm_build_reads_the_wheel_version(monkeypatch):
     assert _msvc_env._torch_is_rocm_build() is False
 
 
-def _record_torch_triton_imports(monkeypatch, imported, *, torch_raises = False):
+def _record_torch_triton_imports(
+    monkeypatch,
+    imported,
+    *,
+    torch_raises = False,
+):
     """`import torch` on an already-imported module is silent, so the import itself is what
     must be observed; __import__ sees the name before any binding happens."""
     import builtins
@@ -588,7 +593,12 @@ def _record_torch_triton_imports(monkeypatch, imported, *, torch_raises = False)
     monkeypatch.setattr(builtins, "__import__", recording)
 
 
-def _gate_imports(monkeypatch, *, rocm, torch_raises = False):
+def _gate_imports(
+    monkeypatch,
+    *,
+    rocm,
+    torch_raises = False,
+):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")

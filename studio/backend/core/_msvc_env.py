@@ -202,7 +202,6 @@ def _torch_is_rocm_build() -> bool:
     # Wheel metadata only, no torch import on CUDA/CPU builds.
     try:
         from importlib.metadata import version  # noqa: PLC0415
-
         return "+rocm" in version("torch")
     except Exception:  # noqa: BLE001
         logger.debug("Could not read the installed torch's version", exc_info = True)
