@@ -5446,7 +5446,6 @@ def _push_merged_to_hub_revision(save_kwargs):
                     username = username,
                     base_model = base_model,
                     model_type = model.config.model_type,
-                    # Only reached when the repo has no card yet.
                     method = "finetuned",
                     extra = "unsloth",
                 )
