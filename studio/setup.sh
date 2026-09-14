@@ -3221,7 +3221,15 @@ else
             # is still a card, and _setup_nvidia_usable is false for it. Gating on that
             # compiled a CPU-only binary and installed it over the tree for good, which is
             # the same permanent downgrade the prebuilt selector avoids for masked hosts.
-            if [ "$_setup_nvidia_physical" = true ]; then
+            #
+            # A MASKED card only claims the build when there is no AMD GPU to serve. The AMD
+            # probes run whenever NVIDIA is not usable, so a mixed host reaches here with
+            # _setup_amd_detected set, and the ROCm branch below only fires while GPU_BACKEND
+            # is empty: without this, hiding the NVIDIA card would build CUDA for the card
+            # the user hid instead of HIP for the one they left visible. A USABLE card still
+            # wins outright, which is the existing NVIDIA-priority rule.
+            if [ "$_setup_nvidia_usable" = true ] || \
+               { [ "$_setup_nvidia_physical" = true ] && [ "$_setup_amd_detected" != true ]; }; then
                 if command -v nvcc &>/dev/null; then
                     NVCC_PATH="$(command -v nvcc)"
                     GPU_BACKEND="cuda"

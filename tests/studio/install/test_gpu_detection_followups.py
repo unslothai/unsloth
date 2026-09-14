@@ -238,11 +238,15 @@ class TestSetupShHardening:
         """
         anchor = setup_src.find('NVCC_PATH=""\n')
         assert anchor >= 0
-        window = setup_src[anchor : anchor + 900]
+        window = setup_src[anchor : anchor + 1400]
         assert (
-            'if [ "$_setup_nvidia_physical" = true ]' in window
+            '"$_setup_nvidia_physical" = true' in window
         ), "CUDA toolkit search must require a physically present NVIDIA GPU, not just nvcc"
-        assert "$_setup_nvidia_usable" not in window
+        # The masked arm is the one that must yield to AMD; the usable arm never does.
+        # TestSetupShSourceBuildBackendChoice runs the whole expression as a truth table.
+        assert (
+            '"$_setup_amd_detected" != true' in window
+        ), "a masked NVIDIA card must not take the build away from a usable AMD card"
 
     def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
         """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so CVD ""/-1 suppresses NVIDIA before AMD gating."""
@@ -496,6 +500,55 @@ class TestSetupShPhysicalNvidiaSurvivesTheMask:
             cvd,
         )
         assert out == "usable"
+
+
+class TestSetupShSourceBuildBackendChoice:
+    """The three-flag gate in front of the nvcc search, exercised as a truth table.
+
+    Masked NVIDIA has to beat CPU without beating a usable AMD card: the AMD probes run
+    whenever NVIDIA is not usable, so a mixed host arrives here with _setup_amd_detected
+    set, and the ROCm branch only fires while GPU_BACKEND is still empty.
+    """
+
+    @staticmethod
+    def _decide(tmp_path, usable, physical, amd):
+        import subprocess as sp
+
+        src = SETUP_SH.read_text(encoding = "utf-8")
+        start = src.find('NVCC_PATH=""\n')
+        assert start >= 0
+        gate = src[src.find("if [", start) : src.find("; then", start) + len("; then")]
+        script = tmp_path / "gate.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            f"_setup_nvidia_usable={usable}\n"
+            f"_setup_nvidia_physical={physical}\n"
+            f"_setup_amd_detected={amd}\n"
+            f"{gate}\n"
+            "  echo cuda\n"
+            'elif [ "$_setup_nvidia_usable" != true ] && [ "$_setup_amd_detected" = true ]; then\n'
+            "  echo rocm\n"
+            "else\n"
+            "  echo cpu\n"
+            "fi\n"
+        )
+        return sp.run(
+            ["sh", str(script)], capture_output = True, text = True, timeout = 30
+        ).stdout.strip()
+
+    @pytest.mark.parametrize(
+        "usable, physical, amd, expected",
+        [
+            ("true", "true", "false", "cuda"),  # visible NVIDIA, no AMD
+            ("true", "true", "true", "cuda"),  # visible NVIDIA wins over AMD, as before
+            ("false", "true", "false", "cuda"),  # masked NVIDIA beats a CPU-only build
+            ("false", "true", "true", "rocm"),  # masked NVIDIA must NOT take the AMD card's build
+            ("false", "false", "true", "rocm"),  # AMD only
+            ("false", "false", "false", "cpu"),  # a toolkit with no GPU is still refused
+        ],
+    )
+    def test_the_source_build_backend(self, tmp_path, usable, physical, amd, expected):
+        assert self._decide(tmp_path, usable, physical, amd) == expected
 
 
 class TestRedactInstallOutput:
