@@ -75,8 +75,7 @@ function ViewRepositoryButton({
 }) {
   const online = useOnlineStatus();
   // From the store, not getHfEndpoint(): this component is memoized, so a module
-  // read would keep the link on whatever host was configured when it last
-  // rendered, and an endpoint arriving later would never reach it.
+  // read would keep the link on the host configured when it last rendered.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =

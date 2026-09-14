@@ -47,9 +47,8 @@ test("a mirror reported by the backend is applied to both getters", () => {
 });
 
 test("a reported endpoint is stored as sent, minus trailing slashes", () => {
-  // The backend has already sanitised, folded and canonicalised this value. The
-  // only thing done to it here is the trailing slash, since every consumer builds
-  // `${getHfEndpoint()}/path`.
+  // Already sanitised and canonicalised by the backend; only the trailing slash
+  // is dropped, since every consumer builds `${getHfEndpoint()}/path`.
   for (const [raw, expected] of [
     ["https://hf-mirror.com", "https://hf-mirror.com"],
     ["https://hf-mirror.com/", "https://hf-mirror.com"],
@@ -82,8 +81,8 @@ test("an older backend that reports neither field keeps the configured mirror", 
 });
 
 test("a value that does not parse as an http(s) URL is ignored", () => {
-  // Not a second copy of the backend's policy: this only keeps a value that would
-  // throw inside `new URL(getHfEndpoint())` from reaching a caller.
+  // Not a second copy of the policy: only a value that would throw inside
+  // `new URL(getHfEndpoint())` is kept out.
   for (const junk of [
     "javascript:alert(1)",
     "file:///etc/passwd",

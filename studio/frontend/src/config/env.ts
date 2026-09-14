@@ -226,9 +226,8 @@ export async function fetchDeviceType(options?: {
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
         // Older backends carry neither field: keep what the store holds.
-        // The store mirrors what setHfEndpoints accepted, never the raw reply, so
-        // a component reading the store and one calling getHfEndpoint() can never
-        // build URLs against different hosts.
+        // What setHfEndpoints accepted, never the raw reply: the store and the
+        // module getter must not name different hosts.
         hfEndpoint: getHfEndpoint(),
         hfDatasetsServer: getHfDatasetsServerBase(),
         fetched: data.device_type !== undefined || keepPlatform,

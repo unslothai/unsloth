@@ -18,12 +18,10 @@ let _datasetsServer = DEFAULT_DATASETS_SERVER;
 /**
  * Accept a value from `/api/health` only if it parses as an http(s) URL.
  *
- * Deliberately NOT a second copy of the backend's policy. `utils/hf_endpoint.py`
- * already sanitises, folds and canonicalises this value, and it is the only
- * producer; re-deciding the rules here in another language is what made the two
- * disagree about a path ending in a colon, an IDN host and an uncompressed IPv6
- * literal. This is a parse check, so a junk value cannot crash a caller building
- * `new URL(getHfEndpoint())`.
+ * Deliberately NOT a second copy of the backend's policy: `utils/hf_endpoint.py`
+ * is the only producer and has already sanitised, folded and canonicalised it.
+ * Deciding the rules twice is what made the two disagree about a path ending in
+ * a colon, an IDN host and an uncompressed IPv6 literal.
  */
 function usableEndpoint(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
