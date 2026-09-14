@@ -529,6 +529,19 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
         return _remove_manifest_locked(root, path, parked)
 
 
+def manifest_is_present(path: Path) -> bool:
+    """Whether *path* is there, answering True when the filesystem refuses to say.
+
+    Path.exists() raises EACCES when the directory holding it is unsearchable, and every
+    caller here is deciding whether a marker still blocks the pass. Unknown has to read as
+    blocked, and it must not raise: remove_manifest reported a refusal before this existed.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
 def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> bool:
     try:
         os.replace(path, parked)
@@ -538,14 +551,14 @@ def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> b
         # reads it as evidence and refuses behind one it cannot clear -- on Windows after
         # setup.ps1's mutations. Losing a dead run's evidence only costs a full pass.
         consume_previous_manifest(root)
-        return not parked.exists()
+        return not manifest_is_present(parked)
     except OSError:
         # The rename was refused. Clear the reserved name and retry before falling back to
         # the unlink: setup.ps1 reads True as permission to replace pip, torch and triton, and
         # the pass refuses behind a parked copy it cannot clear. Dropping the live manifest
         # first would put that refusal after the mutations, on a venv that cannot verify.
         consume_previous_manifest(root)
-        if parked.exists():
+        if manifest_is_present(parked):
             return False
         try:
             os.replace(path, parked)
