@@ -8,7 +8,6 @@ import shutil
 import sys
 import threading
 import time
-import uuid
 import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
@@ -743,12 +742,21 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
-def _scan_ollama_dir(ollama_dir: Path, *, limit: Optional[int] = None) -> List[LocalModelInfo]:
+def _scan_ollama_dir(
+    ollama_dir: Path,
+    *,
+    limit: Optional[int] = None,
+    materialize_links: bool = True,
+) -> List[LocalModelInfo]:
+    """Ollama rows for the compat inventory, from the one scanner the Hub inventory also uses.
+
+    This inventory's readers treat a row's id and path as filenames, so ``materialize_links``
+    defaults to the ``.gguf`` link; a caller that resolves the model itself passes False.
+    """
     from hub.services.models.ollama import scan_ollama_dir
-    fields = LocalModelInfo.model_fields
     return [
-        LocalModelInfo.model_validate({k: v for k, v in row.model_dump().items() if k in fields})
-        for row in scan_ollama_dir(ollama_dir, limit = limit)
+        LocalModelInfo.model_validate(row.model_dump())
+        for row in scan_ollama_dir(ollama_dir, limit = limit, materialize_links = materialize_links)
     ]
 
 
@@ -798,13 +806,15 @@ def collect_local_models(
     *,
     custom_folders: Optional[list[dict]] = None,
     sources: Optional[_CompatLocalInventorySources] = None,
+    materialize_ollama_links: bool = True,
 ) -> List[LocalModelInfo]:
-    """Scan ``models_root``, the HF caches, LM Studio and Hermes dirs, and user scan
+    """Scan ``models_root``, the HF caches, LM Studio, Hermes and Ollama dirs, and user scan
     folders, returning a deduplicated, hidden-filtered list of discovered local models.
 
     Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
     catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
-    must already be validated/trusted by the caller.
+    must already be validated/trusted by the caller, and ``materialize_ollama_links`` is the one
+    thing the two do not share; see :func:`_scan_ollama_dir`.
     """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
@@ -881,7 +891,7 @@ def collect_local_models(
 
     for ollama_dir in sources.ollama_dirs:
         try:
-            local_models += _scan_ollama_dir(ollama_dir)
+            local_models += _scan_ollama_dir(ollama_dir, materialize_links = materialize_ollama_links)
         except Exception as e:
             logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
 
@@ -946,6 +956,7 @@ def collect_local_models(
                 custom_models += _scan_ollama_dir(
                     folder_path,
                     limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                    materialize_links = materialize_ollama_links,
                 )
         except OSError as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
@@ -966,11 +977,7 @@ def collect_local_models(
     # "Custom Folders" UI section even when the model is also in the HF cache.
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
-        semantic_id = (
-            model.model_id
-            if model.source in ("hf_cache", "ollama") and model.model_id
-            else model.id
-        )
+        semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
         if model.source == "custom":
             physical_identity = gguf_utils.local_path_physical_identity(model.path)
             if (
@@ -1133,7 +1140,7 @@ async def list_local_models(
     ),
     current_subject: str = Depends(get_current_subject),
 ):
-    """List local model candidates from the models dir, HF caches, LM Studio and Hermes dirs."""
+    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama."""
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir

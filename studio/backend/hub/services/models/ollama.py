@@ -83,7 +83,7 @@ _OLLAMA_ADMITTED_LAYER_MEDIA_TYPES = (
     | _OLLAMA_IGNORABLE_LAYER_MEDIA_TYPES
 )
 
-_OLLAMA_MATERIALIZE_LOCKS: dict[str, threading.Lock] = {}
+_OLLAMA_MATERIALIZE_LOCKS: dict[tuple, threading.Lock] = {}
 _OLLAMA_MATERIALIZE_LOCKS_GUARD = threading.Lock()
 
 
@@ -264,6 +264,7 @@ def _ollama_model_info_from_manifest(
     materialize_links: bool = False,
     links_root: Optional[Path] = None,
     reject_unsupported_layers: bool = False,
+    manifest: Optional[dict] = None,
 ) -> Optional[LocalModelInfo]:
     manifests_root = ollama_dir / "manifests"
     blobs_dir = ollama_dir / "blobs"
@@ -297,10 +298,11 @@ def _ollama_model_info_from_manifest(
         logger.debug("Skipping %s (%s)", tag_file, message)
         return None
 
-    try:
-        manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
-        return invalid_manifest(str(e))
+    if manifest is None:
+        try:
+            manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            return invalid_manifest(str(e))
     if not isinstance(manifest, dict):
         return invalid_manifest("top level must be a JSON object")
 
@@ -508,12 +510,20 @@ def scan_ollama_dir(
             if not _safe_is_file(tag_file):
                 continue
 
-            info = _ollama_model_info_from_manifest(
-                ollama_dir,
-                tag_file,
-                materialize_links = materialize_links,
-                links_root = links_root,
-            )
+            lock = _materialization_lock(tag_file, ollama_dir) if materialize_links else None
+            if lock is not None and not lock.acquire(blocking = False):
+                # A load holds this tag and its lease promises the link stays put; skip, do not block.
+                continue
+            try:
+                info = _ollama_model_info_from_manifest(
+                    ollama_dir,
+                    tag_file,
+                    materialize_links = materialize_links,
+                    links_root = links_root,
+                )
+            finally:
+                if lock is not None:
+                    lock.release()
             if info is None:
                 continue
             found.append(info)
@@ -559,24 +569,38 @@ def _validated_ollama_manifest_location(ref: str) -> tuple[Path, Path]:
     return tag_file, canonical_ollama_dir
 
 
-def _ollama_model_ref_info(ref: str) -> tuple[Path, Path, LocalModelInfo]:
+def _ollama_model_ref_info(ref: str) -> tuple[Path, dict, LocalModelInfo]:
+    """Ollama root, parsed manifest and model row for *ref*, from a single read: a pull between two
+    reads would pair one version's weights with another's projector. Raises on nothing loadable."""
     tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
+    try:
+        manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"Could not read Ollama manifest: {e}") from e
+    # A manifest of JSON ``null`` is indistinguishable from passing none below, which re-reads.
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid Ollama manifest: top level must be a JSON object")
     info = _ollama_model_info_from_manifest(
-        ollama_dir, tag_file, materialize_links = False, reject_unsupported_layers = True
+        ollama_dir,
+        tag_file,
+        materialize_links = False,
+        reject_unsupported_layers = True,
+        manifest = manifest,
     )
     if info is None:
         raise ValueError("Could not resolve Ollama model from manifest")
-    return tag_file, ollama_dir, info
+    return ollama_dir, manifest, info
 
 
 def ollama_model_ref_public_id(ref: str) -> str:
+    """The ``ollama/<repo>:<tag>`` id clients see for *ref*, whose own form is internal."""
     _, _, info = _ollama_model_ref_info(ref)
     return info.model_id
 
 
 def ollama_model_ref_files(ref: str) -> tuple[str, Optional[str]]:
-    tag_file, ollama_dir, info = _ollama_model_ref_info(ref)
-    manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+    """``(weights blob, projector blob or None)`` for *ref*: the blobs, not the links a load makes."""
+    ollama_dir, manifest, info = _ollama_model_ref_info(ref)
     projector = None
     for layer in manifest.get("layers") or []:
         if layer.get("mediaType") == "application/vnd.ollama.image.projector":
@@ -584,8 +608,16 @@ def ollama_model_ref_files(ref: str) -> tuple[str, Optional[str]]:
     return info.path, str(projector) if projector is not None else None
 
 
-def _materialization_lock(tag_file: Path) -> threading.Lock:
-    key = os.path.normcase(str(tag_file))
+def _materialization_lock(tag_file: Path, ollama_dir: Path) -> threading.Lock:
+    """Per-tag lock, keyed by the store's inode and the manifest's path inside it. Not by pathname:
+    one store reached through a symlink or spelled in another case would hand out two locks."""
+    try:
+        stat = os.stat(ollama_dir)
+        root: object = (stat.st_dev, stat.st_ino)
+        rel = os.path.relpath(os.path.realpath(str(tag_file)), os.path.realpath(str(ollama_dir)))
+    except (OSError, ValueError):
+        root, rel = None, os.path.realpath(str(tag_file))
+    key = (root, os.path.normcase(rel))
     with _OLLAMA_MATERIALIZE_LOCKS_GUARD:
         return _OLLAMA_MATERIALIZE_LOCKS.setdefault(key, threading.Lock())
 
@@ -610,14 +642,14 @@ def _materialize_ollama_model_ref_unlocked(tag_file: Path, ollama_dir: Path) -> 
 def materialize_ollama_model_ref(ref: str) -> str:
     """Resolve an Ollama ref while serializing updates to its model/projector pair."""
     tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
-    with _materialization_lock(tag_file):
+    with _materialization_lock(tag_file, ollama_dir):
         return _materialize_ollama_model_ref_unlocked(tag_file, ollama_dir)
 
 
 def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
     """Materialize and keep the pair stable until the caller releases the lease."""
     tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
-    lock = _materialization_lock(tag_file)
+    lock = _materialization_lock(tag_file, ollama_dir)
     lock.acquire()
     try:
         return OllamaModelLease(_materialize_ollama_model_ref_unlocked(tag_file, ollama_dir), lock)

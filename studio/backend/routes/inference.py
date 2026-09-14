@@ -7326,9 +7326,7 @@ async def _wait_for_model_switch_idle(
 
 
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
-    """The id to report for the loaded GGUF in API responses: the advertised repo
-    id from an auto-switch load, else the cleaned public id, never the on-disk
-    .gguf path (see core.inference.model_ids.public_model_id)."""
+    """API-facing id for the loaded GGUF: a recorded advertised id, else the public id, never a path."""
     return (
         getattr(llama_backend, "_openai_advertised_id", None)
         or public_model_id(getattr(llama_backend, "model_identifier", None))
@@ -8221,17 +8219,21 @@ def _loaded_satisfies(requested: str) -> bool:
             )
             if candidate
         ]
-        if not _matches_any(base, candidates):
+        # The whole id too: an Ollama tag (":latest") is part of the name, not a quant suffix.
+        whole_id_matched = _matches_any(requested, candidates)
+        if not whole_id_matched and not _matches_any(base, candidates):
             return False
         identifier = getattr(llama_backend, "model_identifier", None)
         if (
             identifier
             and is_ollama_manifest_ref(identifier)
-            and not _resolves_to_resident(identifier, llama_only = True)
+            and not _resident_is_still_tagged(identifier, llama_backend)
         ):
             return False
-        if not looks_like_quant(variant):
-            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
+        # A quant-shaped tag matched whole names one file, so a manifest resident has none to check.
+        if (whole_id_matched and is_ollama_manifest_ref(identifier or "")) or not looks_like_quant(
+            variant
+        ):
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
     backend = get_inference_backend()
@@ -8356,16 +8358,29 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
     return bool(variant) and resident.lower() == variant.strip().lower()
 
 
+def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:
+    """A load identity reduced to (device, inode, size, mtime): link, hardlink and blob then match."""
+    return tuple(part[-4:] for part in identity) if identity else None
+
+
 def _ollama_source_identity(ref: str) -> Optional[tuple]:
+    """Blob identity of every file *ref*'s manifest names now, projector included, or None."""
     from core.inference.llama_cpp import LlamaCppBackend
     from hub.services.models.ollama import ollama_model_ref_files
+
     try:
         model_path, projector_path = ollama_model_ref_files(ref)
-        identity = LlamaCppBackend._gguf_load_source_identity(model_path, projector_path)
-        # Materialized hardlinks have different paths but share the blob's inode.
-        return tuple(part[-4:] for part in identity) if identity else None
+        return _blob_identity(
+            LlamaCppBackend._gguf_load_source_identity(model_path, projector_path)
+        )
     except (OSError, ValueError):
         return None
+
+
+def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
+    source = _ollama_source_identity(ref)
+    loaded = _blob_identity(getattr(llama_backend, "_gguf_load_identity", None))
+    return bool(source and source == loaded)
 
 
 def _resolves_to_resident(
@@ -8374,7 +8389,7 @@ def _resolves_to_resident(
     llama_only: bool = False,
     exact_only: bool = False,
 ) -> bool:
-    """Whether a resolved on-disk path is what is already loaded.
+    """Whether a resolver result -- a path, or an Ollama manifest reference -- is already loaded.
 
     ``llama_only`` drops the Transformers backend: only llama.cpp carries a quant
     identity, so a Transformers model active from a directory that also holds GGUF
@@ -8386,6 +8401,9 @@ def _resolves_to_resident(
         return False
     target = _norm_path(load_path)
     llama_backend = get_llama_cpp_backend()
+    # A reference and the .gguf link the picker loaded share no spelling, so only the blobs decide.
+    if is_ollama_manifest_ref(load_path):
+        return _resident_is_still_tagged(load_path, llama_backend)
     orchestrator_model = (
         None if llama_only else getattr(get_inference_backend(), "active_model_name", None)
     )
@@ -8402,10 +8420,6 @@ def _resolves_to_resident(
             continue
         current = _norm_path(candidate)
         if current == target:
-            if is_ollama_manifest_ref(load_path):
-                source = _ollama_source_identity(load_path)
-                loaded = getattr(llama_backend, "_gguf_load_identity", None)
-                return bool(source and loaded and source == tuple(part[-4:] for part in loaded))
             return True
         # A non-GGUF checkpoint loads from its own directory, so a row nested under the
         # loaded one is different weights however that model was loaded.
@@ -8537,12 +8551,18 @@ async def _reject_unservable_model(
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
-        advertised = _advertised_local_path(base)
+        advertised_alias = requested_model
+        advertised = _advertised_local_path(requested_model)
+        if advertised is None:
+            advertised_alias = base
+            advertised = _advertised_local_path(base)
         # classified from the advertised path itself, since a resolver miss left the pair above safe.
         advertised_is_resident = (
             advertised is not None
             and (
-                await asyncio.to_thread(_classify_and_probe_residency, advertised, base, quantified)
+                await asyncio.to_thread(
+                    _classify_and_probe_residency, advertised, advertised_alias, quantified
+                )
             )[1]
         )
         if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
@@ -8936,13 +8956,10 @@ async def _maybe_auto_switch_model(
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
+            # An Ollama tag is mutable: after a re-pull the id still matches, the weights do not.
             if ollama_target:
-                loaded_source = getattr(backend, "_gguf_load_identity", None)
-                if (
-                    not ollama_source_identity
-                    or not loaded_source
-                    or tuple(part[-4:] for part in loaded_source) != ollama_source_identity
-                ):
+                loaded_source = _blob_identity(getattr(backend, "_gguf_load_identity", None))
+                if not ollama_source_identity or loaded_source != ollama_source_identity:
                     return False
             loaded_companion_roots = tuple(
                 getattr(backend, "_openai_gguf_companion_roots", ()) or ()
@@ -9126,6 +9143,11 @@ async def _maybe_auto_switch_model(
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
+                        # Re-read under the gate: the snapshot above predates the wait.
+                        if ollama_target:
+                            ollama_source_identity = await asyncio.to_thread(
+                                _ollama_source_identity, target_id
+                            )
                         if _already_serving():
                             if claim_resident:
                                 _set_preview_resident(None)
@@ -14438,8 +14460,8 @@ async def _load_model_impl(
                 # Case-sensitive filesystems keep two checkpoint paths that differ only by
                 # case distinct, so they must not dedup onto the already-loaded fast path
                 # (the intent match lowercases the identifier). Checked before the adopt so
-                # a mismatch never adopts the caller's placement.
-                _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
+                # a mismatch never adopts the caller's placement. An Ollama load records the ref.
+                _same_loaded_identifier(llama_backend.model_identifier, public_model_identifier)
                 and tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
                 == tuple(request._gguf_companion_roots)
                 and getattr(llama_backend, "_openai_gguf_companion_state", ())
@@ -15072,7 +15094,7 @@ async def _load_model_impl(
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
             llama_backend._openai_gguf_companion_state = gguf_companion_state
             await asyncio.to_thread(note_model_loaded, llama_backend)
-            # Keep the manifest ref internal; API clients use the catalog alias.
+            # None elsewhere: only an Ollama load has an identifier no client should be handed.
             llama_backend._openai_advertised_id = ollama_advertised_id
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
@@ -26062,7 +26084,8 @@ _OWNED_BY = "unsloth-studio"
 
 
 def _openai_model_objects() -> list[dict]:
-    """The model objects GET /v1/models exposes (one per loaded local backend).
+    """The model objects GET /v1/models exposes, one per loaded local backend still answering to
+    the id it is advertised under.
 
     Shared by the LIST and RETRIEVE handlers so both report the same ids and
     field shape.
@@ -26072,12 +26095,19 @@ def _openai_model_objects() -> list[dict]:
 
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded:
+    # Claiming a re-pulled tag would displace the scanned row holding its current weights.
+    _resident_identifier = getattr(llama_backend, "model_identifier", None) or ""
+    _stale_ollama_resident = (
+        llama_backend.is_loaded
+        and is_ollama_manifest_ref(_resident_identifier)
+        and not _resident_is_still_tagged(_resident_identifier, llama_backend)
+    )
+    if llama_backend.is_loaded and not _stale_ollama_resident:
         # Advertise the repo id an auto-switch load recorded, not the concrete
         # on-disk load path, so /v1/models never leaks a host path or lists a
         # model twice (path plus repo id).
         entry = {
-            # Advertised repo id after an auto-switch load, else a clean public id,
+            # Advertised id recorded by an auto-switch or Ollama load, else a clean public id,
             # never the absolute .gguf path (which leaks the host filesystem layout).
             "id": _llama_public_model_id(llama_backend),
             "object": "model",
@@ -26468,7 +26498,7 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
 
 
 async def _cached_local_catalog() -> list:
-    """Locally available models (models dir + HF caches + LM Studio + scan
+    """Locally available models (models dir + HF caches + LM Studio + Ollama + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
 
     The scan walks several directories and stats many files, so it runs in a
@@ -26487,8 +26517,12 @@ async def _cached_local_catalog() -> list:
             return _CATALOG_CACHE["models"]
         try:
             from routes.models import collect_local_models
+
+            # By manifest reference: this catalog resolves rows rather than opening their ids.
             _CATALOG_CACHE["models"] = await asyncio.to_thread(
-                lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
+                lambda: _classified_catalog(
+                    collect_local_models(Path("./models").resolve(), materialize_ollama_links = False)
+                )
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -27287,18 +27321,24 @@ def _resident_absent(llama_backend) -> bool:
 def _stashed_gguf_embeds() -> bool:
     from core.inference.llama_keepwarm import get_last_unloaded_model
     from core.inference.local_model_resolver import resolve_local_gguf
+    from hub.services.models.ollama import ollama_model_ref_files
 
     last = get_last_unloaded_model()
     if not last:
         return False
     target_id, variant = last[0], last[1]
     try:
+        # The variant beside a manifest reference is its tag, so pinning it asks for no quant.
+        pin_variant = variant and not is_ollama_manifest_ref(target_id)
         resolved = resolve_local_gguf(
-            f"{target_id}:{variant}" if variant else target_id, allow_scan = False
+            f"{target_id}:{variant}" if pin_variant else target_id, allow_scan = False
         )
         path = resolved[0] if resolved else None
         if not path:
             return False
+        # Read the blob out rather than materializing a link: this only asks what was stashed.
+        if is_ollama_manifest_ref(path):
+            path = ollama_model_ref_files(path)[0]
         probe = _probe_backend()
         probe._read_gguf_metadata(path)
         return bool(probe.is_embedding_gguf)

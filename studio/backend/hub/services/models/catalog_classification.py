@@ -40,6 +40,7 @@ _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
+# ":" separates an Ollama size tag ("qwen3-asr:0.6b"), where a filename would use "-".
 _QWEN3_ASR_HINT = re.compile(
     r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. :]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
@@ -342,6 +343,7 @@ def _gguf_path_audio_type(
 ) -> Optional[str]:
     model_path = Path(path)
     try:
+        # No extension check: an Ollama model is a blob named by its digest.
         paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
             audio_type = _arch_to_audio_type(
