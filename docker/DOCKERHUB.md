@@ -104,7 +104,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
-| `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: no `/workspace/unsloth-notebooks` and no `/workspace/Unsloth Notebooks`. |
+| `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks` (copies left there by an earlier start on a mounted `/workspace` stay as they are). |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
 
 On a host with no GPU, Studio, JupyterLab and its kernels, and login shells all run in
