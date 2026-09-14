@@ -10575,6 +10575,10 @@ class LlamaCppBackend:
             integrated_ids = LlamaCppBackend._integrated_cuda_gpu_ids()
             # Same #7624 arch gate the amd-smi branch applies, from the one helper.
             arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
+            # How many devices the shared pool is about to be divided between. Read
+            # once, from the same set the loop tests, so the count and the per-device
+            # decision cannot disagree and produce a division by zero.
+            shared_cuda_count = sum(1 for _i in integrated_ids if arch_keeps(_i))
             gpus = []
             # Windows ROCm's free reading is an over-report on discrete cards too,
             # not only on the shared pool handled below (#8403). It is capped
@@ -10633,6 +10637,14 @@ class LlamaCppBackend:
                         # answer the ROCm shared pool gives, and prices the fit off the
                         # free reading, which IS the container's ceiling.
                         cgroup_bound = True
+                    # One pool, however many integrated devices draw on it. Every
+                    # figure above is a whole-pool figure, so handing it to each
+                    # device in turn lets a caller that sums across cards commit the
+                    # same bytes twice. Share it instead. Division by 1 on every
+                    # shipping part, since no product pairs two integrated SoCs.
+                    if shared_cuda_count > 1:
+                        raw_mib //= shared_cuda_count
+                        total_mib //= shared_cuda_count
                 free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared or integrated)
                 if free_mib < raw_mib:
                     logger.info(

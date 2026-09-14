@@ -476,3 +476,57 @@ def test_an_equal_cgroup_remainder_is_still_the_ceiling(monkeypatch):
     assert gpus[0][1] == 16384 - 1024
     # The host-wide total here would reserve several GiB the container cannot reach.
     assert gpus[0][2] == 0
+
+
+# ── one pool, more than one device drawing on it ──
+
+
+def _two_integrated_torch(free_mib: int, total_mib: int) -> types.ModuleType:
+    """Two devices that both report integrated, sharing ONE host pool."""
+    module = types.ModuleType("torch")
+    module.version = types.SimpleNamespace(hip = None)
+    module.cuda = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: 2,
+        mem_get_info = lambda ordinal: (free_mib * MIB, total_mib * MIB),
+        get_device_properties = lambda ordinal: _SparkProps(),
+    )
+    return module
+
+
+def test_two_integrated_devices_do_not_each_claim_the_whole_pool(monkeypatch):
+    # Every figure the integrated arm computes -- MemAvailable, the cgroup
+    # remainder, the pool total -- describes the WHOLE host. Handing it to each
+    # device in turn lets a caller that sums across cards commit the same bytes
+    # twice, and the fit then sizes a load against memory that does not exist.
+    # No shipping product pairs two integrated SoCs, so this is a guard rather
+    # than a reproduction, and it costs a division by 1 everywhere else.
+    for mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(mask, raising = False)
+    monkeypatch.setitem(sys.modules, "torch", _two_integrated_torch(1590, 124609))
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 61850)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
+    )
+    gpus = LlamaCppBackend._get_gpu_memory()
+
+    assert len(gpus) == 2
+    # The pool is offered once, not once per device.
+    assert sum(free for _idx, free, _total in gpus) <= 61850
+    assert sum(total for _idx, _free, total in gpus) <= 124609
+
+
+def test_a_single_integrated_device_is_not_divided(monkeypatch):
+    # The guard above must be invisible on every machine that actually exists.
+    gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 1590, available_mib = 61850)
+    assert gpus == [(0, 61850 - 1024, 124609)]
