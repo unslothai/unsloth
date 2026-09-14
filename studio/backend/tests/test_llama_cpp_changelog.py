@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -383,21 +385,32 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
 
 
-def test_a_403_records_the_shared_lockout(monkeypatch):
+@pytest.mark.parametrize(
+    ("retry_after", "body", "low", "high"),
+    [
+        ({"Retry-After": "90"}, b"", 85, 90),
+        # Only the body names a secondary limit, so the call site has to forward it.
+        ({}, b'{"message": "secondary rate limit"}', 60, None),
+    ],
+)
+def test_a_403_records_the_shared_lockout(monkeypatch, retry_after, body, low, high):
     import email.message
+    import io
     import urllib.error
 
     from utils.prebuilt import freshness_flow
 
     headers = email.message.Message()
-    headers["Retry-After"] = "90"
+    for key, value in retry_after.items():
+        headers[key] = value
 
     def refused(*_args, **_kwargs):
-        raise urllib.error.HTTPError("url", 403, "rate limited", headers, None)
+        raise urllib.error.HTTPError("url", 403, "rate limited", headers, io.BytesIO(body))
 
     monkeypatch.setattr(changes.urllib.request, "urlopen", refused)
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
-    assert 85 < freshness_flow.github_rate_limit_remaining() <= 90
+    ceiling = high if high is not None else freshness_flow.GITHUB_RATE_LIMITED_DEFAULT_SECONDS
+    assert low < freshness_flow.github_rate_limit_remaining() <= ceiling
 
 
 def test_the_lockout_holds_even_for_a_forced_refresh(monkeypatch):
@@ -411,9 +424,8 @@ def test_the_lockout_holds_even_for_a_forced_refresh(monkeypatch):
         "_fetch_release",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fetched into a rate limit")),
     )
-    freshness_flow.note_github_rate_limited(_force_wait = 600)
+    freshness_flow.note_github_rate_limited({"Retry-After": "600"}, status = 429)
     assert changes._release_for_tag("unslothai/llama.cpp", "b1", force_refresh = True) is None
-    # A body still inside its TTL keeps answering; only the fetch is withheld.
     key = ("unslothai/llama.cpp", "b2")
     monkeypatch.setattr(changes, "_release_memo", {key: (time.monotonic(), {"body": "- x"})})
     assert changes._release_for_tag(*key, force_refresh = True) == {"body": "- x"}

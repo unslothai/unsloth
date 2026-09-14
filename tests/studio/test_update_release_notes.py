@@ -483,6 +483,19 @@ def notes_module():
     release_notes.reset_release_notes_cache()
 
 
+@pytest.fixture(autouse = True)
+def _clear_github_rate_limit_lockout(notes_module):
+    # The lockout is process-wide: a 403 answered here would silence later fetches.
+    sys.path.insert(0, str(BACKEND))
+    try:
+        from utils.prebuilt import freshness_flow
+    finally:
+        sys.path.pop(0)
+    freshness_flow._api_rate_limited_until = 0.0
+    yield
+    freshness_flow._api_rate_limited_until = 0.0
+
+
 @pytest.fixture
 def serve_releases(notes_module, monkeypatch):
     """Serve a releases payload locally, and point the module at it."""
@@ -838,7 +851,7 @@ def test_notes_honor_shared_github_backoff_and_resume_after_reset(
     monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
     now = time.monotonic()
     monkeypatch.setattr(time, "monotonic", lambda: now)
-    freshness_flow.note_github_rate_limited(_force_wait = 60)
+    freshness_flow.note_github_rate_limited({"Retry-After": "60"}, status = 429)
     calls = []
 
     def capture(request, **kwargs):
@@ -863,7 +876,7 @@ def test_shared_github_backoff_does_not_block_a_release_notes_mirror(notes_modul
     notes_module.reset_release_notes_cache()
     url = "https://mirror.example/releases"
     monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url)
-    freshness_flow.note_github_rate_limited(_force_wait = 60)
+    freshness_flow.note_github_rate_limited({"Retry-After": "60"}, status = 429)
     calls = []
 
     def capture(request, **kwargs):
@@ -878,9 +891,19 @@ def test_shared_github_backoff_does_not_block_a_release_notes_mirror(notes_modul
         notes_module.reset_release_notes_cache()
 
 
-def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
-    """GH_TOKEN lifts the 60/hour per-IP limit, and must never travel to an
-    UNSLOTH_RELEASES_URL override."""
+@pytest.mark.parametrize(
+    ("url_override", "env", "expected"),
+    [
+        # Same precedence as the other fetches sharing this lockout.
+        (None, {"GH_TOKEN": "ghp_gh", "GITHUB_TOKEN": "ghp_github"}, "Bearer ghp_github"),
+        (None, {"GH_TOKEN": "ghp_gh"}, "Bearer ghp_gh"),
+        ("https://mirror.example/releases", {"GH_TOKEN": "ghp_gh"}, None),
+        ("http://api.github.com/repos/x/releases", {"GITHUB_TOKEN": "ghp_secret"}, None),
+    ],
+)
+def test_where_the_release_notes_token_may_travel(
+    notes_module, monkeypatch, url_override, env, expected
+):
     import urllib.error
 
     seen = []
@@ -890,162 +913,21 @@ def test_a_token_is_sent_only_to_the_github_api_host(notes_module, monkeypatch):
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
-    # The code reads GITHUB_TOKEN first; a developer with one exported would otherwise
-    # see their own token here and the assertion below would fail on their machine.
-    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
-    monkeypatch.setenv("GH_TOKEN", "ghp_test_token")
-    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
-    notes_module._fetch_latest_release()
-    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "https://mirror.example/releases")
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
     notes_module.reset_release_notes_cache()
     notes_module._fetch_latest_release()
-    assert seen == ["Bearer ghp_test_token", None]
-
-
-def test_a_mirror_rate_limit_does_not_lock_out_the_github_api(notes_module, monkeypatch):
-    """UNSLOTH_RELEASES_URL can point anywhere. A 429 from a mirror says nothing
-    about api.github.com's quota, and recording one would send the llama.cpp and
-    whisper.cpp freshness checks to the lagging redirect for up to an hour."""
-    import email.message
-    import urllib.error
-
-    from utils.prebuilt import freshness_flow
-
-    notes_module.reset_release_notes_cache()
-    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "https://mirror.example/releases")
-    headers = email.message.Message()
-    headers["X-RateLimit-Remaining"] = "0"
-    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
-
-    def refuse(request, timeout = None):
-        raise urllib.error.HTTPError(request.full_url, 429, "slow down", headers, None)
-
-    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
-    try:
-        result = notes_module.get_latest_release()
-        assert "rate limit" in (result.error or "").lower()
-        assert freshness_flow.github_rate_limit_remaining() == 0
-    finally:
-        notes_module.reset_release_notes_cache()
-
-
-def test_a_github_api_rate_limit_is_shared_with_the_freshness_checks(notes_module, monkeypatch):
-    """The same 60/hour per-IP quota, so the notes fetch that spent it tells the
-    freshness checks rather than letting each one rediscover the lockout."""
-    import email.message
-    import urllib.error
-
-    from utils.prebuilt import freshness_flow
-
-    notes_module.reset_release_notes_cache()
-    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
-    headers = email.message.Message()
-    headers["X-RateLimit-Remaining"] = "0"
-    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
-
-    def refuse(request, timeout = None):
-        raise urllib.error.HTTPError(request.full_url, 403, "rate limited", headers, None)
-
-    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
-    try:
-        notes_module.get_latest_release()
-        assert freshness_flow.github_rate_limit_remaining() > 0
-    finally:
-        notes_module.reset_release_notes_cache()
-
-
-def test_a_permission_403_is_not_shared_as_a_rate_limit(notes_module, monkeypatch):
-    """A fine-grained token without access to the repo is refused with quota to spare.
-    Sharing that as a lockout would suppress every llama.cpp and whisper.cpp API check
-    in the process over a permission error."""
-    import email.message
-    import urllib.error
-
-    from utils.prebuilt import freshness_flow
-
-    notes_module.reset_release_notes_cache()
-    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
-    headers = email.message.Message()
-    headers["X-RateLimit-Remaining"] = "4998"
-    headers["X-RateLimit-Limit"] = "5000"
-
-    def refuse(request, timeout = None):
-        raise urllib.error.HTTPError(request.full_url, 403, "forbidden", headers, None)
-
-    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
-    try:
-        notes_module.get_latest_release()
-        assert freshness_flow.github_rate_limit_remaining() == 0
-    finally:
-        notes_module.reset_release_notes_cache()
-
-
-def test_the_notes_fetch_picks_the_same_token_as_the_freshness_checks(notes_module, monkeypatch):
-    """They share one process-wide lockout, so authenticating as a different identity
-    would let one token's exhaustion silence requests the other could still make."""
-    import urllib.error
-
-    seen = []
-
-    def capture(request, timeout = None):
-        seen.append(request.get_header("Authorization"))
-        raise urllib.error.URLError("offline")
-
-    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
-    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
-    monkeypatch.setenv("GH_TOKEN", "ghp_gh")
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
-    notes_module.reset_release_notes_cache()
-    notes_module._fetch_latest_release()
-    # freshness_flow and llama_cpp_changelog both read GITHUB_TOKEN first.
-    assert seen == ["Bearer ghp_github"]
-
-
-def test_a_429_is_shared_as_a_rate_limit_despite_the_quota_header(notes_module, monkeypatch):
-    """A secondary limit answers 429 without touching X-RateLimit-Remaining."""
-    import email.message
-    import urllib.error
-
-    from utils.prebuilt import freshness_flow
-
-    notes_module.reset_release_notes_cache()
-    monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
-    headers = email.message.Message()
-    headers["X-RateLimit-Remaining"] = "4998"
-
-    def refuse(request, timeout = None):
-        raise urllib.error.HTTPError(request.full_url, 429, "too many", headers, None)
-
-    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
-    try:
-        notes_module.get_latest_release()
-        assert freshness_flow.github_rate_limit_remaining() > 0
-    finally:
-        notes_module.reset_release_notes_cache()
-
-
-def test_a_token_never_travels_over_plaintext_http(notes_module, monkeypatch):
-    """UNSLOTH_RELEASES_URL accepts http://, so a hostname-only check would put the
-    token on the wire in clear for http://api.github.com."""
-    import urllib.error
-
-    seen = []
-
-    def capture(request, timeout = None):
-        seen.append(request.get_header("Authorization"))
-        raise urllib.error.URLError("offline")
-
-    monkeypatch.setattr(notes_module.urllib.request, "urlopen", capture)
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret")
-    monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "http://api.github.com/repos/x/releases")
-    notes_module.reset_release_notes_cache()
-    notes_module._fetch_latest_release()
-    assert seen == [None]
+    assert seen == [expected]
 
 
 def test_a_redirect_cannot_carry_the_token_off_the_api_host(notes_module, monkeypatch):
-    """urllib replays a request's headers on a redirect, but not its unredirected ones.
-    The token must be in the second set, or a 302 would hand it to the new host."""
+    """urllib replays a request's headers on a redirect, but not its unredirected ones."""
     import urllib.error
 
     captured = []
@@ -1060,12 +942,49 @@ def test_a_redirect_cannot_carry_the_token_off_the_api_host(notes_module, monkey
     notes_module.reset_release_notes_cache()
     notes_module._fetch_latest_release()
 
-    request = captured[0]
-    assert request.get_header("Authorization") == "Bearer ghp_secret"
-    # What urllib.request.HTTPRedirectHandler.redirect_request copies onto the new
-    # request is req.headers; unredirected_hdrs is exactly what it leaves behind.
-    assert "Authorization" not in request.headers
-    assert request.unredirected_hdrs.get("Authorization") == "Bearer ghp_secret"
+    # redirect_request copies req.headers; unredirected_hdrs is what it leaves behind.
+    assert captured[0].get_header("Authorization") == "Bearer ghp_secret"
+    assert "Authorization" not in captured[0].headers
+
+
+@pytest.mark.parametrize(
+    ("url_override", "status", "remaining", "body", "shared", "reported"),
+    [
+        (None, 403, "0", b"", True, True),
+        (None, 429, "4998", b"", True, True),
+        (None, 403, "4998", b'{"message": "secondary rate limit"}', True, True),
+        (None, 403, "4998", b"", False, False),
+        ("https://mirror.example/releases", 429, "0", b"", False, True),
+    ],
+)
+def test_which_release_note_refusals_reach_the_shared_lockout(
+    notes_module, monkeypatch, url_override, status, remaining, body, shared, reported
+):
+    import email.message
+    import io
+    import urllib.error
+
+    from utils.prebuilt import freshness_flow
+
+    notes_module.reset_release_notes_cache()
+    if url_override is None:
+        monkeypatch.delenv(notes_module.RELEASES_URL_ENV_VAR, raising = False)
+    else:
+        monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, url_override)
+    headers = email.message.Message()
+    headers["X-RateLimit-Remaining"] = remaining
+    headers["X-RateLimit-Reset"] = str(int(time.time() + 1800))
+
+    def refuse(request, timeout = None):
+        raise urllib.error.HTTPError(request.full_url, status, "refused", headers, io.BytesIO(body))
+
+    monkeypatch.setattr(notes_module.urllib.request, "urlopen", refuse)
+    try:
+        result = notes_module.get_latest_release()
+        assert (freshness_flow.github_rate_limit_remaining() > 0) is shared
+        assert ("rate limit" in (result.error or "").lower()) is reported
+    finally:
+        notes_module.reset_release_notes_cache()
 
 
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):

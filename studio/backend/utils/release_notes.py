@@ -17,7 +17,6 @@ import urllib.request
 from utils.prebuilt.freshness_flow import (
     GITHUB_RATE_LIMIT_MAX_SECONDS,
     GITHUB_RATE_LIMITED_DEFAULT_SECONDS,
-    clear_github_rate_limit,
     error_body,
     github_rate_limit_remaining,
     note_github_rate_limited,
@@ -39,7 +38,6 @@ _RELEASES_CHUNK_BYTES = 64 * 1024
 _RELEASES_MIN_READ_SECONDS = 0.05
 RELEASES_SUCCESS_TTL_SECONDS = 30 * 60
 RELEASES_FAILURE_TTL_SECONDS = 5 * 60
-# Unauthenticated callers get 60 requests an hour per IP, so a spent address backs off instead of retrying every 5 minutes. Used when the response carries no reset to wait for. The same window the freshness and changelog fetches use: one quota, one policy.
 RELEASES_RATE_LIMITED_TTL_SECONDS = GITHUB_RATE_LIMITED_DEFAULT_SECONDS
 # GitHub's X-RateLimit-Reset wins over the back-off above, but the window is an hour, so a skewed or proxied header is held to that ceiling rather than trusted outright.
 RELEASES_RATE_LIMIT_MAX_SECONDS = GITHUB_RATE_LIMIT_MAX_SECONDS
@@ -189,7 +187,6 @@ def reset_release_notes_cache() -> None:
         _remote_last_good = None
         _rate_limited_until = 0.0
         _cache_condition.notify_all()
-    clear_github_rate_limit()
 
 
 def is_supported_version_query(version: str) -> bool:
@@ -618,25 +615,16 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
         # Or a compressing proxy hands back bytes we would decode as notes.
         "Accept-Encoding": "identity",
     }
-    # A token lifts the 60/hour per-IP limit. Only for GitHub's own API host, never for an
-    # UNSLOTH_RELEASES_URL override.
-    # Same precedence as the freshness and changelog fetches: they share one process-wide
-    # lockout, so picking a different credential here would let one token's exhaustion
-    # silence requests the other could still make.
+    # Same precedence as the fetches sharing this lockout: a second credential would let one token's exhaustion silence the other's requests. https only, since the override accepts http://.
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     parsed = urllib.parse.urlparse(url)
-    # https only, not merely the right hostname: the override above accepts http://, and
-    # http://api.github.com would put the token on the wire in plaintext for an on-path
-    # attacker before GitHub could redirect it.
     send_token = bool(token) and parsed.scheme == "https" and parsed.hostname == "api.github.com"
     if _remote_etag:
         headers["If-None-Match"] = _remote_etag
 
     request = urllib.request.Request(url, headers = headers)
     if send_token:
-        # Unredirected: urllib replays request headers on a redirect, and headers added
-        # this way are the ones it does NOT carry over, so a redirect off the API host
-        # cannot take the token with it.
+        # urllib does not replay unredirected headers, so a redirect off the API host cannot carry the token.
         request.add_unredirected_header("Authorization", f"Bearer {token}")
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS
     try:
@@ -714,7 +702,6 @@ def _fetch_latest_release() -> tuple[ReleaseSource, float]:
 def _http_error_source(
     error: urllib.error.HTTPError, *, url: str = RELEASES_API_URL
 ) -> tuple[ReleaseSource, float]:
-    """The answer and TTL for an HTTP status the release host refused the request with."""
     global _rate_limited_until
 
     if error.code == 304 and _remote_last_good is not None:
@@ -722,12 +709,6 @@ def _http_error_source(
         return _remote_last_good, RELEASES_SUCCESS_TTL_SECONDS
 
     if error.code in (403, 429):
-        # One verdict for the local popup lockout and the shared one, from the same
-        # helper the freshness and changelog fetches use: Retry-After, then a spent
-        # primary quota, then GitHub's throttling text, else the plain back-off; and
-        # None for a 403 that was a permission refusal, which is no lockout at all.
-        # The helper already bounds the wait to one window, so a skewed header cannot
-        # park the popup for as long as it liked.
         body = error_body(error)
         wait = rate_limit_verdict(error.headers, status = error.code, body = body)
         if wait is None:
@@ -738,10 +719,6 @@ def _http_error_source(
         now = time.time()
         _rate_limited_until = now + wait
         ttl = wait
-        # The quota is shared with the freshness and changelog fetches; tell them too.
-        # Only for GitHub's own API host: an UNSLOTH_RELEASES_URL mirror refusing us
-        # says nothing about api.github.com, and a lockout recorded from one would send
-        # those checks to the lagging redirect for up to an hour.
         if urllib.parse.urlparse(url).hostname == "api.github.com":
             note_github_rate_limited(error.headers, status = error.code, body = body)
         return (
