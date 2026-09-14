@@ -6970,11 +6970,10 @@ def _uv_only_binary_args(cmd: "list[str]") -> "list[str]":
     """The operator's only-binary, as uv flags, for a pinned command.
 
     uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
-    UV_NO_CONFIG=1 because a discovered uv.toml outranks the CLI pin (#6898), so restoring
-    the policy in the environment alone leaves it unenforced on the leg that actually runs.
-    Measured against uv 0.10.7: with PIP_ONLY_BINARY=:all: set, a pinned `uv pip install`
-    builds the sdist anyway, and `--only-binary` refuses it. Only pinned commands: a
-    non-pinned one keeps its config file, so uv applies the policy itself.
+    UV_NO_CONFIG=1 since a discovered uv.toml outranks the CLI pin (#6898), so the
+    environment alone leaves the policy unenforced on the leg that runs. Measured on uv
+    0.10.7: a pinned install builds the sdist with PIP_ONLY_BINARY=:all: set and refuses it
+    given --only-binary. Pinned only: others keep their config file and uv applies it.
     """
     if not _is_pinned_index_cmd(cmd):
         return []
@@ -7021,7 +7020,7 @@ _PM_HASH_ENV_VARS = (
 
 # no-binary would FORCE a source build of a pinned wheel: clearing it is less build-time
 # execution, not more. UV_EXCLUDE_NEWER because only uv reads it, so honouring it on the uv
-# leg alone lets the pip fallback install past the cutoff.
+# leg alone would let the pip fallback install past the cutoff.
 _PM_FORCE_SOURCE_ENV_VARS = (
     "UV_NO_BINARY",
     "UV_NO_BINARY_PACKAGE",
@@ -7456,10 +7455,9 @@ _PINNED_PIP_CONFIG_DEFAULT_SECTION = "install"
 _PINNED_PIP_CONFIG_SEPARATORS = {"trusted-host": " ", "only-binary": ","}
 
 # ...and of those, the one pip ACCUMULATES across sections instead of overriding. Asked of
-# pip 26.2's own parser with [global] and [install] both set: `trusted_hosts` comes back as
-# the install value alone (an append option, assigned per section) while `format_control`
-# holds both (a callback that mutates in place). Treating trusted-host as accumulating
-# would re-trust a host the install section had dropped, which is a TLS decision.
+# pip 26.2's parser with both sections set, `trusted_hosts` holds the install value alone
+# (assigned per section) while `format_control` holds both (a callback that mutates in
+# place). Accumulating trusted-host would re-trust a host install dropped, a TLS decision.
 _PINNED_PIP_CONFIG_ACCUMULATING = frozenset({"only-binary"})
 
 _PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
@@ -7490,11 +7488,8 @@ def _pinned_pip_config_overrides(
             [sys.executable, "-m", "pip", "config", "list"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
-            # Tell the child what to write rather than guessing what it wrote: a piped
-            # child otherwise encodes with ITS locale, the ANSI code page on Windows, and
-            # no decoder can reliably detect that after the fact (cp1252 "A3" bytes form
-            # valid UTF-8). Without this, a non-ASCII cert path decodes to one that exists
-            # nowhere, and pip fails the pinned install rather than losing the setting.
+            # Dictate the child's encoding; see _decode_pip_output. Guessing loses a
+            # non-ASCII cert path, and pip then fails rather than dropping the setting.
             env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
             # On the path to every pinned install: a wedged pip costs a minute, not more.
             timeout = 60,
@@ -7511,11 +7506,10 @@ def _pinned_pip_config_overrides(
 def _decode_pip_output(raw: bytes) -> str:
     r"""`pip config list` bytes as text.
 
-    The child is told to write UTF-8 (see PYTHONIOENCODING above), so this decodes UTF-8.
-    The fallback is for a listing produced some other way, a pip old enough to ignore the
-    variable among them: the locale codec is then the child's encoding, since parent and
-    child share a locale. Sniffing cannot replace either, because cp1252 bytes can form
-    valid UTF-8, so an undictated encoding is simply not recoverable afterwards.
+    The child is told to write UTF-8 (see PYTHONIOENCODING above). The fallback covers a
+    listing produced some other way, a pip old enough to ignore that variable among them,
+    where the locale codec is the child's encoding since both share a locale. Sniffing
+    replaces neither: cp1252 bytes can form valid UTF-8, so it is not recoverable after.
     """
     try:
         return raw.decode("utf-8")
@@ -7561,12 +7555,10 @@ def _parse_pinned_pip_config(
         if option not in _PINNED_PIP_CONFIG_ACCUMULATING:
             value = present[-1]  # the command's section overrides global
         else:
-            # A repeatable option ACCUMULATES across sections rather than overriding, and
-            # pip applies the entries IN ORDER: `:none:` empties the set, so a later
-            # re-add outranks it. Measured on pip 26.2 with [global] a,b and
-            # [install] :none:,a -- pip keeps a, and so does this concatenation, while
-            # deduplicating dropped the re-add and left `:none:` last, which empties the
-            # set and lets a pinned install build the sdist the operator forbade.
+            # Accumulates across sections, and pip applies the entries IN ORDER, so a
+            # re-add outranks the `:none:` that empties the set. Measured on pip 26.2:
+            # [global] a,b plus [install] :none:,a keeps a. Deduplicating left `:none:`
+            # last instead, letting a pinned install build the forbidden sdist.
             parts = [part for chunk in present for part in chunk.split(separator_for_key) if part]
             value = separator_for_key.join(parts)
         overrides[f"PIP_{option.upper().replace('-', '_')}"] = value

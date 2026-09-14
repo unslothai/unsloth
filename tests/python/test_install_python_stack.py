@@ -919,8 +919,7 @@ class TestHardenedPipConfigRelaxation:
     @pytest.mark.parametrize(
         "cmd, relaxed",
         [
-            # os.path.basename does not split a backslash off-Windows, so these are the
-            # shapes a naive stem test gets wrong.
+            # os.path.basename keeps a backslash off-Windows: the naive-stem traps.
             ([r"C:\Python313\python.exe", "-m", "pip", "install", "x"], True),
             ([r"C:\venv\Scripts\pip.exe", "install", "x"], True),
             ([r"C:\venv\Scripts\pip3.13.exe", "download", "x"], True),

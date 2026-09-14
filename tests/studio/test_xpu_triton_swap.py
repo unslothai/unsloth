@@ -79,8 +79,8 @@ def _load_real_index_env_scrub():
         ("def _pip_subcommand_of(", "\n\ndef ", 0),
         ("def _decode_pip_output(", "\n\ndef ", 0),
         ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),
-        # Omitting it left the exec'd copy raising NameError into a broad except, so the
-        # scrub this file executes returned {} and agreed with anything.
+        # Omitting it made the exec'd scrub raise into a broad except and agree with
+        # anything.
         ("def _parse_pinned_pip_config(", "\n\ndef ", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pip_subcommand(", "\n\ndef ", 0),
@@ -439,8 +439,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert env["UV_NO_CONFIG"] == "1"
 
     def test_the_fetch_keeps_the_operators_build_policy(self, monkeypatch, tmp_path):
-        # The pin is a wheel, so only-binary costs it nothing. This fetch is `pip
-        # download`, so PIP_ONLY_BINARY is the one that decides.
+        # The pin is a wheel, so only-binary costs it nothing; this is `pip download`.
         monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
         monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
         monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
