@@ -318,7 +318,7 @@ def _budget(**kwargs):
 
 
 def test_the_host_headroom_is_anchored_to_what_is_already_resident():
-    """8 GiB resident, 10 GiB of host RAM spare, 0.9 of it spendable.
+    """8 GiB resident and 9 GiB of spendable host headroom.
 
     The caller tests ``memory_allocated + W.nbytes < budget``, so the budget must
     leave room for 9 GiB MORE, i.e. land at 8 + 9 = 17 GiB. Returning the bare
@@ -327,22 +327,20 @@ def test_the_host_headroom_is_anchored_to_what_is_already_resident():
     got = _budget(
         vram_budget_bytes = 40 * GIB,
         allocated_bytes = 8 * GIB,
-        available_host_bytes = 10 * GIB,
-        fraction = 0.9,
+        host_headroom_bytes = 9 * GIB,
     )
-    assert got == 8 * GIB + int(10 * GIB * 0.9)
+    assert got == 17 * GIB
     assert got > 8 * GIB, "the ceiling must not sit below what is already resident"
 
 
 def test_a_tight_host_still_binds_the_budget_down():
-    """Capping is the whole point: a 45 GiB pool with 2 GiB of RAM spare."""
+    """Capping is the whole point: a 45 GiB pool with under 2 GiB spendable."""
     got = _budget(
         vram_budget_bytes = 45 * GIB,
         allocated_bytes = 0,
-        available_host_bytes = 2 * GIB,
-        fraction = 0.9,
+        host_headroom_bytes = 2 * GIB,
     )
-    assert got == int(2 * GIB * 0.9)
+    assert got == 2 * GIB
 
 
 def test_it_never_raises_the_discrete_budget():
@@ -350,8 +348,7 @@ def test_it_never_raises_the_discrete_budget():
     got = _budget(
         vram_budget_bytes = 20 * GIB,
         allocated_bytes = 0,
-        available_host_bytes = 500 * GIB,
-        fraction = 0.9,
+        host_headroom_bytes = 500 * GIB,
     )
     assert got == 20 * GIB
 
@@ -360,7 +357,50 @@ def test_a_negative_host_reading_is_not_spendable():
     got = _budget(
         vram_budget_bytes = 20 * GIB,
         allocated_bytes = 4 * GIB,
-        available_host_bytes = -1,
-        fraction = 0.9,
+        host_headroom_bytes = -1,
     )
     assert got == 4 * GIB
+
+
+def test_the_shard_workspace_is_not_spent_twice_on_one_pool():
+    """`max_ram` has already had the serialization workspace taken out and the
+    fraction applied. On unified memory the retained tensors and that workspace
+    are the same bytes, so the GPU ceiling has to be the SAME budget, not a fresh
+    `available * fraction` that silently re-credits the shard reserve.
+
+    39 GiB available, 5 GiB shard workspace, 0.9 usable: max_ram is 30.6 GiB, so
+    that is the whole headroom. Deriving from raw availability would offer
+    35.1 GiB and leave under a shard's room for the final save_pretrained.
+    """
+    available = 39 * GIB
+    shard = 5 * GIB
+    max_ram = int(max(0, available - shard) * 0.9)
+    got = _budget(
+        vram_budget_bytes = 46 * GIB, allocated_bytes = 0, host_headroom_bytes = max_ram,
+    )
+    assert got == max_ram
+    assert got < int(available * 0.9), "the shard workspace must not be re-credited"
+
+
+def test_the_cgroup_reader_the_save_path_imports_still_exists():
+    """The save path reaches `_cgroup_free_bytes` through a lazy import wrapped in
+    `except Exception`, which is right at runtime (it must not break a merge on a
+    host without cgroups) and dangerous at review time: a rename would be swallowed
+    and the container cap would silently stop being applied. Pin the name.
+    """
+    from unsloth.dataset_num_proc import _cgroup_free_bytes
+
+    answer = _cgroup_free_bytes()
+    assert answer is None or (isinstance(answer, int) and answer >= 0)
+
+
+def test_the_save_path_bounds_max_ram_by_the_cgroup():
+    """psutil reports the HOST inside a container, so the merge budget has to be
+    the tighter of the two readings."""
+    import inspect
+
+    from unsloth import save as save_mod
+
+    source = inspect.getsource(save_mod.unsloth_save_model)
+    assert "_cgroup_free_bytes" in source
+    assert "max_ram = min(max_ram, _cgroup_ram)" in source
