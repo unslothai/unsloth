@@ -5491,15 +5491,9 @@ def _extra_args_draft_offloaded_to_cpu(
     device flag has no env). An embedded MTP head follows the main -ngl, so these
     draft-only flags don't move it. Last-wins, so only each flag's final value counts.
 
-    A main ``--device`` is deliberately NOT read here. llama.cpp replaces the main
-    device list with the draft one for any separate drafter (``result.devices =
-    params_spec.devices``, common_base_params_to_speculative), unset meaning every
-    device, so the main pin reaches the drafter only where Studio copies it -- which
-    _emit_dspark never does, and _emit_dflash and _emit_mtp do only when they emit a
-    sidecar of their own. Inheriting it unconditionally made every consumer here
-    under-count a drafter that was really on a GPU, so the drafter is charged unless
-    a draft-only flag says otherwise. The cost is an over-charge where the pin is
-    real, which loses context rather than failing a launch.
+    A main ``--device`` is NOT read: llama.cpp gives a separate drafter the draft
+    device list (common_base_params_to_speculative), unset meaning every device, so
+    inheriting the main pin under-counted a drafter really on a GPU.
 
     A count BETWEEN 0 and the drafter's block count is a split, not an offload; see
     ``_draft_is_split_across_host``."""
@@ -8843,8 +8837,7 @@ class LlamaCppBackend:
         and the file size alone under-counts. 0 rather than raising for anything
         unreadable, so a surprising GGUF costs the old budget, not a failed launch.
         """
-        # Keyed on device and inode: a model rebuilt in place under its old name and
-        # size must not serve its predecessor's answer.
+        # Keyed on device and inode: a file rebuilt in place keeps its name and size.
         identity = LlamaCppBackend._gguf_load_source_identity(model_path)
         if identity is None:
             return 0
@@ -8871,11 +8864,7 @@ class LlamaCppBackend:
             # Encoder-only: no vocabulary head, so the missing output.weight is not tying.
             if is_no_vocab_output_gguf_architecture(architecture):
                 return 0
-            # A dflash/eagle3 sidecar INHERITS the target's output projection when it ships
-            # none of its own, so nothing is duplicated and the draft's token_embd stays the
-            # single host-pinned copy. Charging it here cancelled that host-pinned discount
-            # and left the drafter over-reserved by a whole vocabulary matrix, which costs
-            # context and can talk Auto out of speculative decoding.
+            # A dflash/eagle3 sidecar inherits the target's output projection: nothing is duplicated.
             if is_target_output_inheriting_gguf_architecture(architecture):
                 return 0
             return embd
@@ -8910,8 +8899,7 @@ class LlamaCppBackend:
         architecture: Optional[str] = None
         token_embd_bytes = 0
         alignment = 32  # GGUF's default when general.alignment is absent
-        # Set when token_embd uses a quant type the pinned gguf package predates: size
-        # then comes from the data layout, since aborting restores the under-count.
+        # A quant type the pinned gguf package predates: sized from the data layout instead.
         unsized_at: Optional[int] = None
         with open(path, "rb") as f:
             if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
@@ -10214,21 +10202,9 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    # Neighbours are deliberately absent: gfx1103 is Phoenix integrated graphics and
-    # gfx1150-1152 are unified-memory APUs. An unknown arch stays conservative.
-    #
-    # gfx942 is absent for a stronger reason: the arch itself is ambiguous. The discrete
-    # MI300X/MI325X and the unified-memory MI300A APU all report gcnArchName "gfx942"
-    # (ROCm/ROCm#4825), so the string is no evidence of a private VRAM pool. The driver
-    # flag does answer -- rocminfo shows the MI300A GPU agent with "Memory Properties:
-    # APU" -- but only through clr's HSA_AMD_MEMORY_PROPERTY_AGENT_IS_APU read in
-    # rocclr/device/rocm/rocdevice.cpp, which first appears in the rocm-6.1.2 tag and is
-    # absent from rocm-6.0.x/6.1.0/6.1.1. Before that the only source of
-    # hostUnifiedMemory_ is HSA_PROFILE_FULL, and the MI300A GPU agent is BASE_PROFILE,
-    # so props.is_integrated reads 0 and _rocm_classify_unified_memory says "discrete".
-    # Trusting the arch there would subtract host-pinned embeddings from a pool the CPU
-    # shares, which is the under-count that fails a launch. An MI300X pays an over-count
-    # instead, which only costs context.
+    # Deliberately absent: gfx1103 (Phoenix iGPU), gfx1150-1152 (unified-memory APUs), and
+    # gfx942, shared by the discrete MI300X/MI325X and the MI300A APU (ROCm/ROCm#4825),
+    # whose is_integrated reads 0 before rocm-6.1.2.
     _ROCM_PROVED_DISCRETE_ARCHS = frozenset(
         {
             "gfx803",
@@ -22173,8 +22149,7 @@ class LlamaCppBackend:
                 # Bound before the fit try: a probe failure falls through to preflight.
                 _host_pinned = 0
                 _draft_host_pinned = 0
-                # Physical residency, not the discount above: a placement can earn no
-                # discount while its embeddings still cannot leave RAM.
+                # Physical residency: a placement can earn no discount while its embeddings stay in RAM.
                 _host_pinned_floor = 0
                 _draft_host_pinned_floor = 0
                 _tied_output_charge = 0
@@ -22243,9 +22218,8 @@ class LlamaCppBackend:
                     if _user_mmproj_offload is False and launch_mmproj_path:
                         # Still in system RAM, which the APU shortfall guard prices.
                         _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
-                    # Charge the tied duplicate, then discount the host-pinned
-                    # embeddings. Under-counting is the dangerous direction: the search
-                    # promises VRAM the load takes. Shared memory gets no discount.
+                    # Charge the tied duplicate, then discount host-pinned embeddings on
+                    # discrete devices only.
                     _tied_output_charge = self._tied_output_bytes(model_path)
                     weights_size = gguf_size + _tied_output_charge
                     from utils.hardware import is_apple_silicon
@@ -22410,21 +22384,14 @@ class LlamaCppBackend:
                         _shared_gpu_ids = {
                             idx for idx, _free, total in _visible_gpu_mem if total <= 0
                         }
-                        # An unreadable type reports a heap like a dGPU, so total > 0
-                        # leaves it out of the set above and the per-candidate search
-                        # would hand back the discount the global term just refused.
+                        # An unreadable type reports a heap like a dGPU, so total > 0 misses it.
                         _unclassified_gpu_ids = {
                             int(row["index"])
                             for row in (_vulkan_probe_rows or ())
                             if not row.get("type_known", True)
                         }
-                        # And they join the shared set, which is the separate question
-                        # of whether this pool may be credited on TOP of host RAM. If
-                        # the device is integrated its heap IS that RAM, and counting
-                        # it twice hides the shortfall the pageable override exists to
-                        # catch. Only a Vulkan row is folded in: elsewhere
-                        # "unclassified" can mean torch is simply absent, which says
-                        # nothing about any device's memory topology.
+                        # Never credited on top of host RAM either. Vulkan only: elsewhere
+                        # "unclassified" can just mean torch is absent.
                         _shared_gpu_ids |= _unclassified_gpu_ids
                     else:
                         _unclassified_gpu_ids = {
@@ -24050,9 +24017,8 @@ class LlamaCppBackend:
                             _auto_best = None
                             for subset in _auto_subsets:
                                 n_gpus = len(subset)
-                                # Grouped by cardinality: compare a fitting size's peers
-                                # before widening, since a shared singleton may hold less
-                                # than a discounted sibling.
+                                # Compare same-size peers before widening: a shared singleton
+                                # may hold less than a discounted sibling.
                                 if _auto_best is not None and n_gpus > _auto_best[2]:
                                     break
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
@@ -24881,10 +24847,7 @@ class LlamaCppBackend:
                     _fit_env_mmproj_on_host = (
                         _resolved_mmproj_offload(_fit_extras, _fit_env) is False
                     )
-                    # `_host_pinned` is the discount and is zero on a shared or
-                    # unclassified device, while the CPU pin on the input layer is not,
-                    # so it alone would answer `none` for a load whose embeddings RAM
-                    # then holds anonymously. MOVED below, not added: same total.
+                    # The floor, not the discount, is what RAM holds; moved to host_only_bytes below.
                     _fit_extra_host_pinned = max(0, _host_pinned_floor - _host_pinned)
                     _fit_extra_draft_pinned = max(0, _draft_host_pinned_floor - _draft_host_pinned)
                     _fit_model_size = model_size
@@ -25019,10 +24982,8 @@ class LlamaCppBackend:
                 ):
                     gpu_indices = sorted(idx for idx, _free in _detected_gpus)
 
-                    # Auto Vulkan can leave --fit on over a mixed pool and narrow the
-                    # child to the dGPU set only here, after the spill snapshot, so
-                    # re-point it at the argv that launches. Backends with no final pin
-                    # keep their shared-memory abstention.
+                    # Auto Vulkan narrows the child to the dGPU set only here, after the
+                    # spill snapshot, so re-point it at the argv that launches.
                     if _spill_inputs is not None:
                         _apply_candidate_discounts(gpu_indices)
                         _mtp_reserve_bytes = (
@@ -28195,14 +28156,8 @@ class LlamaCppBackend:
                                 self._record_load_warning(_retry_apu_msg)
                         # host guard credited the whole pool; the respawn reaches only _remaining
                         _retry_rows = [row for row in _detected_gpus if row[0] in set(_remaining)]
-                        # The crashed placement may have spent discounts on a larger
-                        # Auto context; _apply_candidate_discounts restored each exactly
-                        # once, so re-fit on that raw footprint. Original Auto policy:
-                        # a fully-offloaded fitted context when one exists, else the
-                        # useful offload context. A hand-set context is never reduced.
-                        # The restored bytes alone, not a KNOWN APU: an unclassified
-                        # device restores the same discount, and skipping the re-fit
-                        # launches the crashed context against the larger footprint.
+                        # The crashed placement's discounts bought a larger Auto context, so
+                        # re-fit on the restored footprint. A hand-set context is never reduced.
                         if (
                             not explicit_ctx
                             and _retry_restored_discount > 0
