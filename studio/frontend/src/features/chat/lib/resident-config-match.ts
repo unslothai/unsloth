@@ -132,9 +132,17 @@ type SettingCheck = {
 /** Fallback reasons the backend retries on an IDENTICAL next load, from the arms of
  *  `LlamaCppBackend._runtime_matches_intent` that return False to force a repair. The rest are
  *  excluded on purpose: "drafter_no_vram" and "mla_mtp_disabled" are Auto-mode policy, and
- *  "runtime_error" only reopens when the draft count changes, which the comparison sees. */
+ *  "runtime_error" only reopens when the draft count changes, which the comparison sees.
+ *
+ *  "drafter_unloadable" is here because the sheet's remedy is to replace the sidecar in place,
+ *  and `adoptable` in use-chat-model-runtime would otherwise skip `/load`, so the backend's
+ *  content re-check never runs. An unchanged file still dedupes through already_loaded. It
+ *  needs no `sendsGgufPath` exclusion, unlike "drafter_not_found", because the re-check lives
+ *  in `_runtime_matches_intent`'s drafter comparison rather than the refetch arm that requires
+ *  `intent.gguf_path is None`. */
 const RETRYABLE_SPEC_FALLBACKS = new Set([
   "drafter_not_found",
+  "drafter_unloadable",
   "binary_no_mtp",
   "binary_outdated",
 ]);

@@ -1487,6 +1487,42 @@ test("a retryable drafter failure declines the shortcut", () => {
   }
 });
 
+test("a repaired drafter has to reach the backend to be re-checked", () => {
+  // The sheet's remedy is to replace the sidecar in place, and `adoptable` skips /load
+  // when this returns false, so the re-check would never run. An unchanged file still
+  // dedupes server-side, so declining the shortcut is cheap rather than a teardown.
+  for (const mode of ["auto", "mtp", "mtp+ngram"]) {
+    assert.equal(
+      residentSpeculativeNeedsRepair(
+        { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+        mode,
+      ),
+      true,
+      `drafter_unloadable under ${mode} must reload`,
+    );
+  }
+  // No sendsGgufPath exclusion, unlike drafter_not_found: the re-check sits in the drafter
+  // comparison, which a standalone .gguf load reaches, not in the gguf_path-gated refetch.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+      "auto",
+      true,
+    ),
+    true,
+    "a standalone .gguf load must still reload for a repaired drafter",
+  );
+  // And the mode still has to be one that asked for a drafter at all.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+      "off",
+    ),
+    false,
+    "spec off asked for no drafter, so there is nothing to repair",
+  );
+});
+
 test("an Auto-mode policy downgrade is not a repair the load can make", () => {
   for (const reason of [
     "drafter_no_vram",
