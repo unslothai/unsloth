@@ -23,11 +23,7 @@ from unsloth_cli import _studio_prefetch  # noqa: E402
 
 STUDIO_COMMAND = _REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 INSTALL_PYTHON_STACK = _REPO_ROOT / "studio" / "install_python_stack.py"
-# The source form of the no-torch core step's label, as ast.unparse renders it.
 NO_TORCH_CORE_LABEL = "f'Updating {package_name} + unsloth-zoo (no-torch mode)'"
-
-
-# Dry-run plan parsing.
 
 
 def test_plan_lines_are_read_from_either_stream_and_either_line_ending():
@@ -51,7 +47,6 @@ def test_removals_and_local_tag_pins_are_left_out_of_the_plan():
         [
             " - numpy==2.1.0",
             " + numpy==2.2.0",
-            # From a pinned index or --torch-backend: not askable as a bare name==version.
             " + torch==2.9.0+cu128",
             " + nvidia-cublas-cu12==12.8.4.1",
         ]
@@ -74,18 +69,8 @@ def test_plan_names_are_normalised_so_the_pin_matches_the_index():
     assert _studio_prefetch.pins_from_plan({"unsloth-zoo": "1.0"}) == ["unsloth-zoo==1.0"]
 
 
-# The core command must not drift from the installer's.
-
-
 def _installer_core_step_arguments(label: str) -> list[str]:
-    """The positional arguments of one core `pip_install` call in the installer.
-
-    `label` is the SOURCE form of the call's first argument, because one of the two
-    branches names itself with an f-string.
-
-    Read out of the installer rather than copied, so a change to that call site
-    fails this test instead of silently making the prefetch warm the wrong wheels.
-    """
+    """Positional arguments of one core `pip_install` call, read from the installer source."""
     tree = ast.parse(INSTALL_PYTHON_STACK.read_text(encoding = "utf-8"))
     calls = [
         node
@@ -94,10 +79,7 @@ def _installer_core_step_arguments(label: str) -> list[str]:
         and isinstance(node.func, ast.Name)
         and node.func.id == "pip_install"
         and node.args
-        # The no-torch label is an f-string, so compare the unparsed source form.
         and ast.unparse(node.args[0]) == label
-        # The --local branch passes the literal "unsloth"; the desktop's branches the floor-aware
-        # spec.
         and any(isinstance(arg, ast.Name) and arg.id == "unsloth_spec" for arg in node.args)
     ]
     assert len(calls) == 1, f"the installer's {label!r} core step moved or was duplicated"
@@ -114,7 +96,6 @@ def _installer_core_step_arguments(label: str) -> list[str]:
 
 def _expected_tail(label: str, floor: str) -> list[str]:
     installer = _installer_core_step_arguments(label)
-    # _translate_pip_args_for_uv drops this on the uv path, so the prefetch does too.
     assert "--no-cache-dir" in installer
     return [
         f"unsloth>={floor}" if argument == "<spec>" else argument
@@ -140,13 +121,7 @@ def test_the_core_dry_run_is_the_installers_core_step_plus_dry_run(tmp_path):
 
 
 def test_a_no_torch_install_resolves_the_core_step_with_no_deps(tmp_path):
-    """Without it the resolver plans torch and every nvidia wheel behind it.
-
-    unsloth's PyPI metadata makes torch a hard dependency, and a GGUF-only venv has
-    none of it installed to satisfy that, so the plain resolve returns the whole
-    CUDA stack. Measured before this branch pinned it: 24 packages, 2.7 GB
-    downloaded, for an update that installs two wheels.
-    """
+    """Without it the resolver plans torch and every nvidia wheel behind it."""
     python = tmp_path / "unsloth_studio" / "bin" / "python"
 
     command = _studio_prefetch.core_dry_run_command(
@@ -178,7 +153,6 @@ def test_a_requirement_file_is_filtered_the_way_the_installer_filters_it(tmp_pat
     )
 
     assert filtered != requirement
-    # Beside the source, as _filter_requirements does, so `-r base.txt` still resolves.
     assert filtered.parent == requirement.parent
     assert not work.exists()
     assert filtered.read_text(encoding = "utf-8") == "# audio\n-r base.txt\nsoundfile\n"
@@ -216,7 +190,6 @@ def test_the_torch_backend_follows_the_installers_rule(monkeypatch, tmp_path):
     )
     assert "--torch-backend=auto" in command
 
-    # _build_uv_cmd never adds it on a pinned index; neither does this.
     assert "--torch-backend=auto" not in _studio_prefetch._torch_backend_argument(
         ["uv", "pip", "install", "--index-url", "https://example.invalid/simple"]
     )
@@ -233,17 +206,11 @@ def test_the_fetch_keeps_every_byte_out_of_the_venv(tmp_path):
     assert "--no-deps" in command
     assert command[command.index("--only-binary") + 1] == ":all:"
     assert "unsloth==1.0" in command
-    # No --system, no --break-system-packages, nothing that could write to a venv.
     assert "--system" not in command
 
 
 def test_a_wheel_less_requirement_is_left_to_swap_time_rather_than_losing_the_file():
-    """uv refuses the whole `--only-binary :all:` command over one such pin.
-
-    openai-whisper and friends have no wheel at any version, so leaving them in the
-    pin list loses every other package in the file, which is what the first end-to-end
-    run showed: `extras.txt` skipped with "no usable wheel" and nothing warmed.
-    """
+    """uv refuses the whole `--only-binary :all:` command over one such pin."""
     planned = {"openai-whisper": "20250625", "soundfile": "0.13.1", "argbind": "0.3.9"}
 
     assert _studio_prefetch.pins_from_plan(planned, only_binary = True) == ["soundfile==0.13.1"]
@@ -252,7 +219,6 @@ def test_a_wheel_less_requirement_is_left_to_swap_time_rather_than_losing_the_fi
 
 
 def test_a_plan_uv_announced_but_this_parser_could_not_read_is_not_an_empty_plan():
-    # The shape uv prints today.
     assert _studio_prefetch.plan_is_readable(
         "Would install 2 packages\n + a==1\n + b==2\n", {"a": "1", "b": "2"}
     )
@@ -269,24 +235,18 @@ def test_a_plan_uv_announced_but_this_parser_could_not_read_is_not_an_empty_plan
     assert _studio_prefetch.planned_install_count("nothing to say") is None
 
 
-# Floors.
-
-
 def test_a_post_release_of_the_floor_still_meets_it():
     assert _studio_prefetch.version_meets_floor("2026.9.2", "2026.9.2")
     assert _studio_prefetch.version_meets_floor("2026.9.2.post1", "2026.9.2")
     assert _studio_prefetch.version_meets_floor("2026.9.3", "2026.9.2")
     assert not _studio_prefetch.version_meets_floor("2026.9.1", "2026.9.2")
-    # Full ordering when both parse: an earlier post-release does not meet a post-release floor.
     assert not _studio_prefetch.version_meets_floor("2026.9.5.post1", "2026.9.5.post2")
     assert _studio_prefetch.version_meets_floor("2026.9.5.post2", "2026.9.5.post1")
     assert _studio_prefetch.version_meets_floor("2026.9.5.post2", "2026.9.5.post2")
 
 
 def test_the_prefetch_decides_no_torch_mode_the_way_the_installer_does(managed, monkeypatch):
-    """install_python_stack._infer_no_torch: the environment when set, then the manifest,
-    then the marker. Reading the marker alone had a no-torch manifest without its marker
-    resolving with dependencies and handing the update a plan with torch in it."""
+    """install_python_stack._infer_no_torch: the environment, then the manifest, then the marker."""
     venv = managed / _studio_prefetch.VENV_NAME
     manifest = venv / _studio_prefetch.MANIFEST_NAME
     marker = venv / _studio_prefetch.NO_TORCH_MARKER
@@ -305,12 +265,8 @@ def test_the_prefetch_decides_no_torch_mode_the_way_the_installer_does(managed, 
     monkeypatch.setenv("UNSLOTH_NO_TORCH", "1")
     marker.unlink()
     assert _studio_prefetch.no_torch_mode(venv) is True
-    # Empty counts as unset, as for the installer (PowerShell cannot keep a set-but-empty variable).
     monkeypatch.setenv("UNSLOTH_NO_TORCH", "  ")
     assert _studio_prefetch.no_torch_mode(venv) is False
-
-
-# run().
 
 
 class _Recorder:
@@ -421,12 +377,6 @@ def test_a_successful_prefetch_writes_a_ready_marker_and_never_touches_the_venv(
 
 
 def test_a_gguf_only_install_prepares_two_wheels_and_not_the_cuda_stack(managed, monkeypatch):
-    """The regression this branch was measured into: 24 packages and 2.7 GB.
-
-    A no-torch venv satisfies none of unsloth's torch dependency, so a plain
-    resolve plans torch and every nvidia wheel behind it, and the requirement
-    files the installer filters plan the rest.
-    """
     (managed / _studio_prefetch.VENV_NAME / _studio_prefetch.NO_TORCH_MARKER).write_text(
         "", encoding = "utf-8"
     )
@@ -475,11 +425,7 @@ def test_a_plan_without_unsloth_records_noop_and_downloads_nothing(managed, monk
 
 
 def test_a_zoo_only_bump_is_prepared_rather_than_recorded_as_nothing_to_do(managed, monkeypatch):
-    """unsloth and unsloth-zoo release independently.
-
-    Keying "nothing to prepare" off unsloth alone made a zoo-only update report a
-    warm cache and then download unsloth-zoo at restart.
-    """
+    """unsloth and unsloth-zoo release independently: a zoo-only plan is not a noop."""
     target = _studio_prefetch.site_dir(managed)
 
     def respond(cmd, env):
@@ -583,13 +529,8 @@ def test_a_failing_requirement_file_degrades_to_partial_rather_than_failing(mana
     assert "resolve failed" in payload["requirements"]["studio.txt"]["skipped_reason"]
 
 
-# Finding uv.
-
-
 UV_NAME = "uv.exe" if platform.system() == "Windows" else "uv"
 
-# Every variable the installers read for uv's location, so "PATH has no uv" is not answered by
-# ~/.local/bin.
 _UV_LOCATION_VARS = (
     "UV_INSTALL_DIR",
     "UV_UNMANAGED_INSTALL",
@@ -631,20 +572,13 @@ def test_uv_on_path_is_the_one_the_core_step_would_run(monkeypatch):
     monkeypatch.setattr(_studio_prefetch.shutil, "which", lambda name: "/usr/bin/uv")
     found, searched = _studio_prefetch.locate_uv({})
     assert found == "/usr/bin/uv"
-    # Searched is what the message would name; PATH won before any of it was read.
     assert searched
 
 
 def test_a_path_without_uv_still_finds_the_one_the_installer_put_in_local_bin(
     monkeypatch, tmp_path
 ):
-    """setup.ps1 puts uv in %USERPROFILE%\\.local\\bin and prepends it to PATH.
-
-    A desktop shell started before that registry write has a PATH without it, and
-    the prefetch used to give up there while the update, which reinstalls uv,
-    carried on. Both have to end up on the same binary or the cache is warmed for
-    a resolver the swap will not use.
-    """
+    """A desktop shell started before setup.ps1 put uv on PATH still finds ~/.local/bin/uv."""
     home = tmp_path / "home"
     _without_uv_on_path(monkeypatch, home)
     uv = _install_uv_at(home / ".local" / "bin")
@@ -694,7 +628,6 @@ def test_the_skip_names_the_places_it_looked(managed, monkeypatch, tmp_path):
             echo = lambda line: None,
         )
 
-    # "uv is not available" alone leaves the reader guessing.
     reason = str(skipped.value)
     assert "looked on PATH and in" in reason
     assert str(home / ".local" / "bin") in reason
@@ -875,9 +808,6 @@ def test_discard_removes_only_an_owned_directory(tmp_path):
     assert _studio_prefetch.discard_after_update(home) is False
 
 
-# Locking.
-
-
 @pytest.mark.skipif(os.name == "nt", reason = "the POSIX flock branch is under test")
 def test_a_second_prefetch_is_refused_rather_than_queued(tmp_path):
     home = tmp_path / "studio"
@@ -918,12 +848,8 @@ def test_a_second_prefetch_is_refused_rather_than_queued(tmp_path):
         worker.join(10)
 
     assert busy == [True]
-    # Released: the next prefetch has to be able to take it.
     with _studio_prefetch.prefetch_lock(home):
         pass
-
-
-# Markers.
 
 
 def test_a_marker_is_only_current_for_the_python_cache_and_floor_it_recorded():
@@ -980,9 +906,6 @@ def test_the_marker_is_replaced_atomically(tmp_path, monkeypatch):
     assert replaced[0][1] == str(_studio_prefetch.marker_path(home))
     assert _studio_prefetch.read_marker(home)["state"] == "noop"
     assert not list(_studio_prefetch.prefetch_root(home).glob("*.tmp"))
-
-
-# The CLI wiring.
 
 
 def _command_body(source: str, name: str) -> str:
@@ -1045,14 +968,8 @@ def test_the_prefetch_module_stays_importable_under_isolated_python():
     assert result.stdout.strip() == "3"
 
 
-# The installer's override, the budget inside each call, and redaction.
-
-
 def test_requirement_passes_resolve_under_the_fetched_wheels_override(managed, monkeypatch):
-    """The update's later passes run after the core step has installed the new wheel,
-    at the same path the live override held: the prefetch keeps the live file for the
-    core plan and the fetched wheel's for the requirement files, or a changed override
-    resolves different pins than the update will and leaves them uncached."""
+    """The live override for the core plan, the fetched wheel's for the requirement files."""
     site = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
     live = (
         site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
@@ -1095,9 +1012,7 @@ def test_requirement_passes_resolve_under_the_fetched_wheels_override(managed, m
 
 
 def test_the_dry_run_carries_the_installer_override_on_apple_silicon(managed, monkeypatch):
-    """Without the override uv answers for a different resolver than the core step's:
-    on the staging matrix it planned mlx-vlm and mlx-audio downgrades the update never
-    makes, and the offline swap installed them."""
+    """Without the override the plan downgrades mlx-vlm and mlx-audio."""
     site = managed / _studio_prefetch.VENV_NAME / "lib" / "python3.12" / "site-packages"
     overrides = (
         site / "studio" / "backend" / "requirements" / "single-env" / "overrides-darwin-arm64.txt"
@@ -1150,7 +1065,6 @@ def test_every_uv_call_is_bounded_by_what_is_left_of_the_budget(monkeypatch):
         with pytest.raises(subprocess.TimeoutExpired):
             with _studio_prefetch._within_budget(time.monotonic() - 1):
                 _studio_prefetch._run(["uv", "--version"], None)
-    # Restored: the next call outside the budget is unbounded again.
     _studio_prefetch._run(["uv", "--version"], None)
     assert timeouts[-1] == _studio_prefetch.SUBPROCESS_TIMEOUT_SECONDS
 
@@ -1235,9 +1149,7 @@ def test_the_uv_search_runs_inside_the_budget(managed, monkeypatch):
 
 
 def test_a_source_only_pin_is_named_but_not_recorded_as_fetched(tmp_path, monkeypatch):
-    """The desktop reads a recorded pin missing from the cache as a stale marker. A
-    source-only package is never in the cache, so recording it beside the fetched pins
-    made every marker with one stale on arrival and the preparation repeat forever."""
+    """A source-only package is never cached, so recording it would make the marker stale."""
     requirement = tmp_path / "extras.txt"
     requirement.write_text("soundfile\nopenai-whisper\n", encoding = "utf-8")
     commands = []
@@ -1268,9 +1180,7 @@ def test_a_source_only_pin_is_named_but_not_recorded_as_fetched(tmp_path, monkey
 
 
 def test_every_uv_call_runs_from_the_directory_the_update_runs_from(tmp_path, monkeypatch):
-    """uv discovers uv.toml / pyproject.toml from its working directory and setup.sh
-    runs from the script directory; a prefetch resolving from the caller's directory
-    could plan under a configuration the update never sees."""
+    """uv discovers uv.toml from its working directory, so run from where the update runs."""
     seen = []
 
     def fake_run(cmd, **kwargs):
@@ -1285,9 +1195,7 @@ def test_every_uv_call_runs_from_the_directory_the_update_runs_from(tmp_path, mo
 
 
 def test_a_zoo_only_marker_meets_the_floor_through_the_installed_unsloth():
-    """A zoo-only bump records no backend_version; the unsloth that stays installed is
-    what the floor has to be met by, as for a noop, or the cached zoo pin is withheld and
-    an offline restart fails with the wheel in the cache."""
+    """A zoo-only bump records no backend_version; the installed unsloth meets the floor."""
     marker = {
         "schema": _studio_prefetch.MARKER_SCHEMA,
         "state": "ready",
@@ -1329,10 +1237,7 @@ def test_a_successful_update_leaves_a_running_prefetchs_directory_alone(managed)
 
 
 def test_a_plan_at_the_same_release_orders_by_its_pre_post_and_dev_parts():
-    """2026.9.5rc1 against 2026.9.5 is behind and 2026.9.5 against 2026.9.5.post1 is behind,
-    but 2026.9.5.post2 against 2026.9.5.post1 is ahead: a post release of the installed
-    version is exactly the update a prefetch was made for, and refusing it as "another
-    spelling" left the swap asking the index it could not reach."""
+    """PEP 440 order: rc and plain releases are behind a post release, a later post is ahead."""
     assert not _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.5rc1"}}, {"unsloth": "2026.9.5"}
     )
@@ -1437,9 +1342,7 @@ def test_a_relative_cache_is_anchored_where_uv_runs(monkeypatch):
 
 
 def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path, monkeypatch):
-    """uv anchors a relative UV_CACHE_DIR at ITS working directory (the setup script's),
-    not the desktop shell's: recorded as spelled, the shell checked a directory under
-    its own cwd, found it cold and reported the prefetch stale on every launch."""
+    """A relative UV_CACHE_DIR is recorded resolved against uv's working directory."""
     assert _studio_prefetch.resolved_cache_dir(None) is None
     assert _studio_prefetch.resolved_cache_dir("  ") is None
     absolute = tmp_path / "cache"
@@ -1458,7 +1361,6 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path, monkeyp
         tmp_path / "abs" / "uv-cache"
     )
     monkeypatch.delenv("UV_WORKING_DIR", raising = False)
-    # Without an explicit anchor, the working directory the prefetch's uv calls run from.
     with _studio_prefetch._working_directory(tmp_path / "script"):
         assert _studio_prefetch.resolved_cache_dir("uv-cache") == str(
             tmp_path / "script" / "uv-cache"
@@ -1466,9 +1368,7 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path, monkeyp
 
 
 def test_a_marker_older_than_the_shell_accepts_is_not_current():
-    """The shell's status reads a marker past seven days as stale; the CLI's offline
-    retry must not take pins from one, whether Studio stayed open past the week or the
-    update runs from a terminal."""
+    """A marker past the shell's seven-day limit hands no pins to the offline retry."""
     import time as _time
 
     marker = {
@@ -1479,16 +1379,13 @@ def test_a_marker_older_than_the_shell_accepts_is_not_current():
     }
     assert not _studio_prefetch.marker_is_current(marker)
     assert _studio_prefetch.marker_is_current({**marker, "created_at": int(_time.time() * 1000)})
-    # A clock that went backwards reads as a negative age, which is not old.
     assert _studio_prefetch.marker_is_current(
         {**marker, "created_at": int(_time.time() * 1000) + 10_000}
     )
 
 
 def test_a_preflight_skip_still_retires_another_offers_marker(managed, monkeypatch):
-    """The install turned editable (or set UV_NO_CACHE) after an earlier offer was
-    prepared: the skip exits before uv is looked for, and used to leave the old offer's
-    marker where the update's offline retry would take its pins for the new shell."""
+    """A skip still removes an earlier offer's marker, so its pins never reach the new shell."""
     root = _studio_prefetch.prefetch_root(managed)
     for skip in ("editable", "no-cache"):
         root.mkdir(parents = True, exist_ok = True)
@@ -1520,9 +1417,7 @@ def test_a_preflight_skip_still_retires_another_offers_marker(managed, monkeypat
 
 
 def test_a_prefetch_that_prepares_nothing_still_retires_another_offers_marker(managed, monkeypatch):
-    """uv missing on the second offer's prefetch: without this the first offer's marker
-    stayed on disk, the shell read the skipped command as settled, and the offline retry
-    could have taken the old offer's exact pins for the new shell."""
+    """uv missing on a later offer's prefetch still removes the earlier offer's marker."""
     root = _studio_prefetch.prefetch_root(managed)
     root.mkdir(parents = True, exist_ok = True)
     (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")

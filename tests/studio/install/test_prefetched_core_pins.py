@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""The swap after a background prefetch, with the index unreachable.
-
-The core step asks the index which unsloth and unsloth-zoo are newest before it can
-notice the wheels are already cached, so with PyPI denied it failed under uv and fell
-through to pip. On a venv carrying a constraint conflict pip then started a resolution
-the index it had not got could not finish (macOS, mlx-vlm against the transformers pin:
-two minutes of 403 retries and exit 1). Given the pins the prefetch cached, the step is
-retried from the cache with --offline before pip is tried at all.
-"""
+"""The swap after a background prefetch with the index unreachable: the core step retries
+the prefetched pins from the cache with --offline before falling back to pip."""
 
 from __future__ import annotations
 
@@ -113,10 +106,7 @@ def test_only_well_formed_pins_are_read_from_the_environment(monkeypatch, value,
 
 
 def test_the_core_steps_are_the_ones_that_get_the_pins():
-    """A source guard: the default (PyPI) core step and the no-torch core step pass the
-    pins, and only they do. A --local update overlays a checkout, which no prefetch
-    prepared; a no-torch prefetch fetches the core packages with --no-deps, which is
-    exactly what that step installs."""
+    """Only the default and no-torch core steps pass the pins; --local was never prefetched."""
     import inspect
 
     source = inspect.getsource(stack.install_python_stack)

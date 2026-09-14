@@ -987,14 +987,6 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
     assert studio._uv_cache_has_packages(cache) is False
 
 
-# ── the prefetched core pins ──
-#
-# The swap after a background prefetch is this same update. Its core step asks the index
-# which unsloth and unsloth-zoo are newest before it can notice the wheels are cached, so
-# with the index unreachable it needs to be told what the prefetch already fetched, and
-# only for a marker written for this venv and the cache this run is about to read.
-
-
 def _prefetch_marker(studio, home: Path, cache: Path, venv_python: Path, **extra) -> None:
     from unsloth_cli import _studio_prefetch
 
@@ -1005,8 +997,6 @@ def _prefetch_marker(studio, home: Path, cache: Path, venv_python: Path, **extra
         "cache_dir": str(cache),
         "python": str(venv_python),
         "core_plan": {"unsloth": "2026.9.5", "unsloth-zoo": "2026.9.4"},
-        # Fresh: a marker past the shell's seven-day limit names nothing (see
-        # marker_is_current), which the age case in test_studio_prefetch_update covers.
         "created_at": int(time.time() * 1000),
     }
     payload.update(extra)
@@ -1050,10 +1040,7 @@ def test_a_prefetch_that_does_not_describe_this_update_names_nothing(
 def test_a_prefetch_planned_for_the_other_torch_mode_names_nothing(
     monkeypatch, tmp_path, caches, planned_no_torch, named
 ):
-    """The plan was resolved for one mode. Given to an update running in the other, the
-    offline retry would install torch from it with --no-deps (or be short of what the core
-    step needs). The mode is decided the way the installer decides it: environment, then
-    the manifest, then the marker; here neither is set, so the venv is a with-torch one."""
+    """A plan resolved for one no-torch mode is not handed to an update in the other."""
     from unsloth_cli import _studio_prefetch
 
     studio = _studio()
@@ -1083,8 +1070,7 @@ def test_no_prefetch_at_all_names_nothing(monkeypatch, tmp_path, caches):
 
 
 def test_a_prefetch_below_the_shells_floor_names_nothing(monkeypatch, tmp_path, caches):
-    """A marker an older shell left behind names pins below what this shell requires;
-    the offline retry would install them in place of unsloth>=floor."""
+    """An older shell's marker below this shell's backend floor names no pins."""
     studio = _studio()
     studio_cache, _default = caches
     _fill(studio_cache)

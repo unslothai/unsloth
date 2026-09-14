@@ -1,20 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Warm the uv cache for the next update, without touching the managed venv.
+"""Warm the uv cache for the next update without touching the managed venv.
 
-The desktop runs `unsloth studio prefetch-update` in the background while the user
-keeps working. It resolves what the next update would install, downloads those
-wheels into a throwaway `--target` directory, and leaves them in the shared uv
-cache. The swap is the ordinary `studio update` at restart: it finds every wheel
-already cached and does no network work of its own.
-
-Nothing here mutates the live environment, so this module never takes the runtime
-gate, never runs the idle scan, and is never wrapped in the Windows launcher
-transaction. Killing it at any point leaves cache entries and an owned directory
-without a marker, which the next prefetch wipes.
-
-stdlib only, so it stays importable from a CLI started with `python -I`.
+Resolves what the next update would install and downloads it into a throwaway `--target`,
+leaving the wheels in the shared uv cache for the ordinary `studio update` at restart.
+Nothing here mutates the live environment, so no runtime gate, idle scan or launcher
+transaction. stdlib only: importable from a CLI started with `python -I`.
 """
 
 from __future__ import annotations
@@ -34,24 +26,19 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 
 PREFETCH_DIR_NAME = ".update-prefetch"
 MARKER_NAME = "PREFETCHED.json"
-# The installer's sentinel over any tree it may delete: a foreign directory here is refused.
 OWNED_MARKER = ".unsloth-studio-owned"
 LOCK_NAME = ".prefetch.lock"
 SITE_DIR_NAME = "site"
 MARKER_SCHEMA = 1
-# The wheels are ~52 MB; the floor covers the unpack, the cache copy and the requirement files.
 MIN_FREE_BYTES = 1024 * 1024 * 1024
 # Distinct from 1 so the desktop can tell "already running" from a failure.
 EXIT_BUSY = 3
 
 SUBPROCESS_TIMEOUT_SECONDS = 1800
-# Wall clock for the whole run, under update.rs's two-hour cap: eighteen uv calls at the per-call
-# timeout would hold "Preparing update" for nine hours. Reaching it is not a failure; the core
-# packages are cached by then and the update downloads the rest.
+# Whole-run wall clock: per-call timeouts alone could hold "Preparing update" for hours.
 BUDGET_SECONDS = 20 * 60
 
-# Mirror of studio/install_manifest.py:TRACKED_REQUIREMENT_FILES, not imported: the installed
-# install_manifest is the OLD tree's, and this record is the NEW wheel's.
+# install_manifest.TRACKED_REQUIREMENT_FILES, not imported: the installed one is the OLD tree's.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "studio.txt",
     "base.txt",
@@ -62,8 +49,7 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "single-env/data-designer.txt",
 )
 
-# studio/install_python_stack.py's dependency pass, in its order and with its `--no-deps`. No
-# triton-kernels.txt: it names a git revision, so a dry-run of it is a clone.
+# install_python_stack.py's dependency pass and its --no-deps; no triton-kernels.txt (a git clone).
 REQUIREMENT_PASS: Tuple[Tuple[str, bool], ...] = (
     ("base.txt", False),
     ("no-torch-runtime.txt", True),
@@ -78,9 +64,7 @@ REQUIREMENT_PASS: Tuple[Tuple[str, bool], ...] = (
 # install_manifest.NO_TORCH_MARKER, for the same reason as the tuple above.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
-# Mirrors of install_python_stack.py's NO_TORCH_SKIP_PACKAGES and WINDOWS_SKIP_PACKAGES: the
-# installer drops these lines (`_filter_requirements`), and resolving the unfiltered file on a
-# GGUF-only machine drags the whole CUDA stack into the plan.
+# install_python_stack.py's skip lists: unfiltered, a GGUF-only plan pulls in the CUDA stack.
 NO_TORCH_SKIP_PACKAGES = frozenset(
     {
         "torch-stoi",
@@ -93,16 +77,13 @@ NO_TORCH_SKIP_PACKAGES = frozenset(
 )
 WINDOWS_SKIP_PACKAGES = frozenset({"triton_kernels"})
 
-# Mirror of install_python_stack.py:SDIST_ONLY_PACKAGES. The prefetch uses `--only-binary :all:` and
-# uv refuses the WHOLE command when one pin has no wheel, so these are dropped and left to swap time
-# rather than losing the entire file.
+# install_python_stack.py:SDIST_ONLY_PACKAGES: one wheel-less pin fails an --only-binary fetch.
 SDIST_ONLY_PACKAGES = frozenset(
     {
         "openai-whisper",
         "argbind",
         "randomname",
         "antlr4-python3-runtime",
-        # _extras_sdist_only_packages adds this on macOS cp314+; the update builds it either way.
         "mecab",
     }
 )
@@ -125,9 +106,6 @@ class PrefetchSkipped(RuntimeError):
     """Nothing to prepare on this install. Exit 0 and write no marker."""
 
 
-# Layout.
-
-
 def prefetch_root(studio_home: Path) -> Path:
     return studio_home / PREFETCH_DIR_NAME
 
@@ -144,16 +122,9 @@ def managed_venv(studio_home: Path) -> Path:
     return studio_home / VENV_NAME
 
 
-# Lock.
-
-
 @contextlib.contextmanager
 def prefetch_lock(studio_home: Path) -> Iterator[None]:
-    """Refuse a second prefetch rather than queue it.
-
-    Non-blocking on purpose: the caller is a background task with nothing to
-    wait for, and a queued second run would only redo the first one's work.
-    """
+    """Refuse a second prefetch rather than queue it: a queued run would only redo the first."""
     studio_home.mkdir(parents = True, exist_ok = True)
     handle = (studio_home / LOCK_NAME).open("a+b")
     try:
@@ -173,7 +144,6 @@ def prefetch_lock(studio_home: Path) -> Iterator[None]:
 
         import msvcrt
 
-        # Byte 0: msvcrt has no whole-file lock, and one byte is enough for mutual exclusion.
         handle.seek(0)
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
@@ -189,15 +159,8 @@ def prefetch_lock(studio_home: Path) -> Iterator[None]:
         handle.close()
 
 
-# uv commands.
-
-
 def _uv_safe_path(path: Path) -> str:
-    """install_python_stack.py:_uv_safe_path's rule, for the same reason.
-
-    uv truncates a path at the first space in some positions (astral-sh/uv#6503),
-    so a Studio root under `C:\\Program Files` needs the short form there.
-    """
+    """install_python_stack.py:_uv_safe_path: uv truncates at a space (astral-sh/uv#6503)."""
     text = str(path)
     if " " not in text or platform.system() != "Windows":
         return text
@@ -232,18 +195,10 @@ def core_dry_run_command(
     use_system: bool = False,
     uv: str = "uv",
 ) -> List[str]:
-    """The core step's argv from install_python_stack.py, plus `--dry-run`.
+    """The installer's core step argv plus `--dry-run`; any drift warms the wrong wheels.
 
-    Same shape, same order, same flags: the plan this returns has to be the plan
-    the update will act on, and any drift between the two makes the prefetch warm
-    the wrong wheels. `--no-cache-dir` is absent because
-    `_translate_pip_args_for_uv` drops it on the uv path.
-
-    `no_torch` is the installer's own branch, and it is load bearing rather than
-    cosmetic: PyPI metadata makes torch a hard dependency of unsloth, so without
-    `--no-deps` the resolver plans torch and every nvidia wheel behind it against
-    a venv that deliberately has none of them. Measured: a 24-package plan and
-    2.7 GB downloaded on a GGUF-only install whose update installs two wheels.
+    `no_torch` adds --no-deps as the installer does: PyPI metadata makes torch a hard
+    dependency of unsloth, so without it a GGUF-only install plans the whole CUDA stack.
     """
     cmd = [uv, "pip", "install"]
     if use_system:
@@ -269,17 +224,11 @@ def core_dry_run_command(
     return cmd
 
 
-# A requirement line's distribution name: everything before the first marker, extra, comparison or
-# comment.
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9._-]+)")
 
 
 def effective_requirements(requirement: Path, skip: Iterable[str], work_dir: Path) -> Path:
-    """`_filter_requirements`'s output, or the file itself when nothing is skipped.
-
-    Mirrors install_python_stack.py:_filter_requirements, including the rule that a
-    `-r`/`-c` include or an option line is copied through untouched.
-    """
+    """Mirror of install_python_stack.py:_filter_requirements; option lines pass through."""
     skipped = {canonical_name(name) for name in skip}
     if not skipped:
         return requirement
@@ -299,8 +248,7 @@ def effective_requirements(requirement: Path, skip: Iterable[str], work_dir: Pat
         kept.append(line)
     if not dropped:
         return requirement
-    # Beside the source, as _filter_requirements does: a relative `-r`/`-c` include resolves against
-    # the file's directory. `work_dir` is the fallback for an unwritable tree.
+    # Beside the source, so relative -r/-c includes still resolve; work_dir for an unwritable tree.
     filtered = requirement.with_name(f".{requirement.stem}-filtered.txt")
     try:
         filtered.write_text("".join(kept), encoding = "utf-8")
@@ -349,11 +297,7 @@ def fetch_command(
     use_system: bool = False,
     uv: str = "uv",
 ) -> List[str]:
-    """Download `pins` into `target`, warming the shared cache on the way.
-
-    `--python` so uv picks the same wheel tags the update will, `--target` so not
-    one byte reaches the venv, `--no-deps` because the plan is already complete.
-    """
+    """Download `pins` into `target`, warming the cache; --python picks the update's wheel tags."""
     cmd = [uv, "pip", "install"]
     if use_system:
         cmd.append("--system")
@@ -367,26 +311,21 @@ def fetch_command(
     return cmd
 
 
-# Plan parsing. uv writes its plan on stderr as ` + name==version` per install (` - ` for a
-# removal); a direct URL adds ` (from ...)`, so only the first token is the pin.
+# uv's plan: ` + name==version` per install (` - ` removal), a direct URL adds ` (from ...)`.
 _PLAN_LINE = re.compile(r"^\s*\+\s+(?P<pin>\S+)\s*(?:\(.*\))?\s*$")
-# Printed above the plan: the only way to tell "nothing to do" from a plan shape this parser does
-# not know, which would report a warm cache that warmed nothing.
+# Tells "nothing to do" apart from a plan shape this parser does not know.
 _PLAN_COUNT = re.compile(r"^\s*Would install (?P<count>\d+) packages?\s*$", re.M)
 
 
 def planned_install_count(output: str) -> Optional[int]:
-    """How many installs uv said it would do, or None when it did not say."""
     match = _PLAN_COUNT.search(output.replace("\r\n", "\n").replace("\r", "\n"))
     return int(match.group("count")) if match else None
 
 
 def plan_is_readable(output: str, planned: Dict[str, str]) -> bool:
-    """False when uv announced installs and not one line parsed as a pin at all.
+    """False when uv announced installs and no line parsed as a pin.
 
-    Deliberately measured against the lines, not against `planned`: dropping every
-    local-tag pin can legitimately empty the dict for a plan that was read perfectly
-    (a torch-only plan is one line, and it carries `+cu128`).
+    Measured on the lines, not `planned`: dropping local-tag pins can empty a well-read plan.
     """
     if not planned_install_count(output):
         return True
@@ -399,12 +338,9 @@ def plan_is_readable(output: str, planned: Dict[str, str]) -> bool:
 
 
 def parse_dry_run_plan(output: str) -> Dict[str, str]:
-    """Planned installs as {name: version}, in the order uv reported them.
+    """Planned installs as {name: version} in uv's order.
 
-    `-` lines are removals, not installs. A version carrying a local tag
-    (`2.9.0+cu128`) is dropped: it comes from a pinned index or a torch backend
-    that this command cannot reproduce as a bare `name==version`, and asking for
-    one anyway resolves to a different wheel or to nothing.
+    Local-tag versions (`+cu128`) are dropped: a bare `name==version` cannot reproduce them.
     """
     planned: Dict[str, str] = {}
     for raw in output.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
@@ -424,20 +360,15 @@ def parse_dry_run_plan(output: str) -> Dict[str, str]:
 
 
 def canonical_name(name: str) -> str:
-    """PEP 503 normalisation, so unsloth_zoo and unsloth-zoo compare equal."""
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def pins_from_plan(planned: Dict[str, str], *, only_binary: bool = False) -> List[str]:
-    """The plan as `name==version` pins, minus what cannot be fetched as a wheel."""
     return [
         f"{name}=={version}"
         for name, version in planned.items()
         if not (only_binary and name in SDIST_ONLY_PACKAGES)
     ]
-
-
-# Version comparison (PEP 440 release segment only).
 
 
 def _release_tuple(version: str) -> Tuple[int, ...]:
@@ -467,13 +398,7 @@ _PRE_RANK = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2, "
 
 
 def _version_key(version: str) -> Optional[tuple]:
-    """A PEP 440 ordering key for one version, or None when it does not parse.
-
-    Stdlib only (this module cannot import packaging): epoch, release, then the pre,
-    post and dev parts ordered as PEP 440 orders them, so that 2026.9.5.post2 sorts
-    after 2026.9.5.post1, 2026.9.5 after 2026.9.5rc1, and 2026.9.5.dev1 before both.
-    Trailing zeros of the release segment are dropped, as PEP 440 equality drops them.
-    """
+    """A PEP 440 ordering key, or None when unparseable (stdlib only, no packaging)."""
     match = _VERSION_RE.match(version.strip())
     if match is None:
         return None
@@ -489,8 +414,7 @@ def _version_key(version: str) -> Optional[tuple]:
     else:
         post = None
     dev = int(match.group("dev_n") or 0) if match.group("dev_n") is not None else None
-    # packaging's sentinels: a bare dev release sorts before any pre-release, a final after every
-    # one.
+    # packaging's sentinels: a bare dev release sorts before any pre-release, a final after all.
     if pre is None and post is None and dev is not None:
         pre_key: tuple = (-1,)
     elif pre is None:
@@ -503,16 +427,9 @@ def _version_key(version: str) -> Optional[tuple]:
 
 
 def version_meets_floor(version: str, floor: str) -> bool:
-    """True when `version` is at least `floor` on the release segment.
-
-    Deliberately coarse: the floor the desktop passes is a release version, and a
-    full PEP 440 comparison here would need packaging, which this module cannot
-    import. A `.postN` of the floor compares equal and passes, which is right.
-    """
+    """True when `version` is at least `floor`; release tuples when either does not parse."""
     if not floor:
         return True
-    # Full ordering when both parse (.post1 does not meet a .post2 floor); the release tuple
-    # otherwise.
     left_key, right_key = _version_key(version), _version_key(floor)
     if left_key is not None and right_key is not None:
         return left_key >= right_key
@@ -521,9 +438,6 @@ def version_meets_floor(version: str, floor: str) -> bool:
     if not left or not right:
         return True
     return left >= right
-
-
-# Marker.
 
 
 def _digest_bytes(data: bytes) -> str:
@@ -547,11 +461,7 @@ def requirement_digests(req_root: Path) -> Dict[str, str]:
 
 
 def core_record_digests(target: Path, names: Iterable[str]) -> Dict[str, str]:
-    """sha256 of each fetched distribution's RECORD.
-
-    The swap does not read these; they are what lets a later reader say whether
-    the directory it found is the one this marker describes, without unpacking it.
-    """
+    """sha256 of each fetched distribution's RECORD, identifying the tree without unpacking it."""
     wanted = {canonical_name(name) for name in names}
     digests: Dict[str, str] = {}
     try:
@@ -571,11 +481,7 @@ def core_record_digests(target: Path, names: Iterable[str]) -> Dict[str, str]:
 
 
 def write_marker(studio_home: Path, payload: dict) -> None:
-    """Atomic: a reader never sees a half-written plan.
-
-    Written last, after every wheel is in the cache, so the marker's presence is
-    the statement that the cache is warm.
-    """
+    """Atomic, and written last: its presence states the cache is warm."""
     marker = marker_path(studio_home)
     marker.parent.mkdir(parents = True, exist_ok = True)
     temporary = marker.with_name(marker.name + f".{os.getpid()}.tmp")
@@ -591,19 +497,12 @@ def read_marker(studio_home: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-# How `unsloth studio update` names the core pins a current prefetch cached: when the index is
-# unreachable, install_python_stack.py installs them from the uv cache with --offline.
+# Pins a current prefetch cached; the installer installs them --offline when the index fails.
 CORE_PINS_ENV = "UNSLOTH_PREFETCHED_CORE_PINS"
 
 
 def _core_pin_source(marker: Optional[dict]) -> dict:
-    """The pins a marker stands for: its plan, or for a `noop` the versions that were
-    installed when it found nothing to fetch.
-
-    A noop still leaves the swap's core step asking the index which versions are
-    newest; with the index gone the installer's offline retry needs exact pins to
-    audit against what is installed, and the installed versions are those pins.
-    """
+    """The pins a marker stands for: its plan, or for a `noop` the versions then installed."""
     if not isinstance(marker, dict):
         return {}
     plan = marker.get("core_plan")
@@ -617,13 +516,7 @@ def _core_pin_source(marker: Optional[dict]) -> dict:
 
 
 def prefetched_core_pins(marker: Optional[dict]) -> list:
-    """`name==version` for every core package a marker stands for, in plan order.
-
-    Empty for a marker that is not a marker at all, or a noop written before the
-    installed versions were recorded. Callers pair this with marker_is_current: a plan
-    is only worth naming when the cache it was fetched into is the cache the update is
-    about to read.
-    """
+    """`name==version` for every core package a marker stands for; pair with marker_is_current."""
     plan = _core_pin_source(marker)
     pins = []
     for name, version in plan.items():
@@ -637,12 +530,7 @@ def prefetched_core_pins(marker: Optional[dict]) -> list:
 
 
 def planned_core_names(marker: Optional[dict]) -> list:
-    """The canonical names of every package a marker's plan pins, in plan order.
-
-    The offline retry installs each of them with --no-deps, so a caller deciding whether
-    the plan is still safe to hand over has to look at every one of them, not only at
-    the two the plan was made for.
-    """
+    """Every name the plan pins: the offline retry installs each one, not just the core two."""
     plan = _core_pin_source(marker)
     names = []
     for name in plan:
@@ -653,7 +541,7 @@ def planned_core_names(marker: Optional[dict]) -> list:
     return names
 
 
-# How long a prefetch stays usable, as studio/src-tauri/src/prefetch.rs (MAX_AGE_MS) has it.
+# prefetch.rs MAX_AGE_MS.
 MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 
@@ -664,7 +552,6 @@ def marker_is_current(
     python: Optional[str] = None,
     cache_dir: Optional[str] = None,
 ) -> bool:
-    """Whether a prefetch on disk still describes the update about to run."""
     if not isinstance(marker, dict):
         return False
     if marker.get("schema") != MARKER_SCHEMA:
@@ -675,7 +562,6 @@ def marker_is_current(
         return False
     if cache_dir is not None and marker.get("cache_dir") != cache_dir:
         return False
-    # The shell's own age limit: pins it no longer offers must not reach the offline retry.
     created = marker.get("created_at")
     if isinstance(created, (int, float)) and (time.time() * 1000 - created) > MARKER_MAX_AGE_MS:
         return False
@@ -690,12 +576,9 @@ def marker_is_current(
 
 
 def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str]]) -> bool:
-    """Whether every core pin a marker planned is at least what is installed now.
+    """Whether every planned pin is at least what is installed: old pins offline would downgrade.
 
-    A marker outlives the install it was made for: `unsloth studio setup` or a manual
-    upgrade can move the core packages past the plan, and an offline retry given the
-    old exact pins would downgrade them and call the update done. Unknown installed
-    versions do not count against the plan.
+    Unknown installed versions do not count against the plan.
     """
     plan = _core_pin_source(marker)
     for name, version in plan.items():
@@ -707,15 +590,12 @@ def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str
         planned, present = version.strip(), current.strip()
         planned_key, present_key = _version_key(planned), _version_key(present)
         if planned_key is not None and present_key is not None:
-            # Full PEP 440 order: a .post2 over an installed .post1 is ahead (the update a prefetch
-            # is made for, once refused as "another spelling"), a plain over .post1 behind.
             if planned_key < present_key:
                 return False
             continue
         if _release_tuple(planned) < _release_tuple(present):
             return False
-        # Unparseable at the same release segment reads as behind: a wrong yes is a downgrade
-        # reported as success.
+        # Unparseable at the same release reads as behind: a wrong yes is a silent downgrade.
         if (
             _release_tuple(planned) == _release_tuple(present)
             and planned.lower() != present.lower()
@@ -728,19 +608,12 @@ def _canonical_name(name: str) -> str:
     return name.strip().lower().replace("_", "-")
 
 
-# Discard.
-
-
 def _is_owned(root: Path) -> bool:
     return (root / OWNED_MARKER).is_file()
 
 
 def discard(studio_home: Path) -> bool:
-    """Remove the prefetch directory, but only one this code wrote.
-
-    A directory without the owned marker is somebody else's; refusing it is the
-    same rule `_assert_studio_owned_or_absent` applies in the installer.
-    """
+    """Remove the prefetch directory, only when it carries the owned marker."""
     root = prefetch_root(studio_home)
     if not root.exists():
         return False
@@ -751,14 +624,10 @@ def discard(studio_home: Path) -> bool:
 
 
 def discard_after_update(studio_home: Path) -> bool:
-    """Called once an update has succeeded: the cache is warm, the copy is spent.
+    """Discard after a successful update. Never raises.
 
-    Never raises. A prefetch left behind costs disk, not correctness, and the
-    next prefetch wipes it anyway. Taken under the prefetch lock, non-blocking: a
-    prefetch that is running right now (it does not hold the runtime gate the update
-    holds) would otherwise have its owned root removed under it and recreate the
-    directory without the owned marker, after which every later prefetch and discard
-    refuses it. A running prefetch keeps its directory; it is spent all the same.
+    Under the prefetch lock: removing a running prefetch's root makes it recreate the
+    directory without the owned marker, which every later prefetch then refuses.
     """
     try:
         with prefetch_lock(studio_home):
@@ -767,9 +636,6 @@ def discard_after_update(studio_home: Path) -> bool:
         return False
     except Exception:
         return False
-
-
-# Preflight.
 
 
 def _installed_version(name: str) -> Optional[str]:
@@ -784,7 +650,6 @@ def _installed_version(name: str) -> Optional[str]:
 
 
 def _is_editable_install(name: str = "unsloth") -> bool:
-    """An editable or local checkout has nothing to prefetch from an index."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     try:
@@ -832,7 +697,6 @@ def _free_bytes(path: Path) -> Optional[int]:
 
 
 def _filesystem_id(path: Path) -> Optional[object]:
-    """Something equal for two paths on the same filesystem, or None when unknown."""
     try:
         return os.stat(_nearest_existing(path)).st_dev
     except OSError:
@@ -840,14 +704,9 @@ def _filesystem_id(path: Path) -> Optional[object]:
 
 
 def resolved_cache_dir(cache_dir: Optional[str], cwd: Optional[Path] = None) -> Optional[str]:
-    """The uv cache as an absolute path, or None when no UV_CACHE_DIR is set.
+    """UV_CACHE_DIR made absolute as uv resolves it (against uv's working directory), or None.
 
-    uv resolves a relative UV_CACHE_DIR against ITS working directory, which is the
-    setup script's, not the desktop shell's: a marker that recorded the relative
-    spelling was checked by the shell against a directory under its own cwd, found
-    cold, and reported stale on every launch, so the prefetch ran again each time.
-    The marker records the path resolved the way uv resolves it, and every reader
-    that compares a live setting against it resolves the setting the same way.
+    Every reader comparing a live setting to the marker must resolve it this same way.
     """
     value = (cache_dir or "").strip()
     if not value:
@@ -859,9 +718,7 @@ def resolved_cache_dir(cache_dir: Optional[str], cwd: Optional[Path] = None) -> 
 
 
 def _uv_working_directory(cwd: Optional[Path] = None) -> Path:
-    """Where uv anchors a relative path: its working directory, moved by UV_WORKING_DIR
-    (itself relative to the process cwd when relative), as the installers and the uv
-    cache selector already read it."""
+    """Where uv anchors a relative path: its working directory, moved by UV_WORKING_DIR."""
     base = Path(cwd if cwd is not None else (_RUN_CWD or os.getcwd()))
     working = (os.environ.get("UV_WORKING_DIR") or "").strip()
     if working:
@@ -870,18 +727,11 @@ def _uv_working_directory(cwd: Optional[Path] = None) -> Path:
 
 
 def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
-    """The prefetch root, plus the uv cache when it lives on another filesystem.
-
-    uv writes every wheel it fetches into the cache as well as into the throwaway
-    target, so a cache on a nearly full second volume has to meet the floor too. The
-    same volume is checked once.
-    """
+    """The prefetch root, plus the uv cache when on another filesystem: uv writes both."""
     volumes = [root]
     if cache_dir:
         cache = Path(cache_dir)
         if not cache.is_absolute():
-            # uv resolves a relative UV_CACHE_DIR against ITS working directory (_working_directory,
-            # moved by UV_WORKING_DIR), not this process's.
             cache = _uv_working_directory() / cache
         root_id, cache_id = _filesystem_id(root), _filesystem_id(cache)
         if root_id is None or cache_id is None or root_id != cache_id:
@@ -889,11 +739,7 @@ def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
     return volumes
 
 
-# Runner.
-
-
-# The wall-clock deadline of the prefetch in progress: every uv call is bounded by what is LEFT of
-# the budget, not its own 30 minutes, which once held "Preparing" for an hour.
+# Every uv call is bounded by what is LEFT of the run's budget, not its own timeout.
 _RUN_DEADLINE: Optional[float] = None
 
 
@@ -917,8 +763,7 @@ def _run_timeout(cmd: Sequence[str]) -> float:
     return min(float(SUBPROCESS_TIMEOUT_SECONDS), remaining)
 
 
-# Where every uv call runs from, set by `run`: uv discovers uv.toml / pyproject.toml from its
-# working directory, and a prefetch resolving from the caller's could plan against another index.
+# uv's cwd for every call, set by `run`: uv discovers uv.toml from it, as the update's uv does.
 _RUN_CWD: Optional[str] = None
 
 
@@ -946,8 +791,7 @@ def _run(cmd: Sequence[str], env: Optional[dict]) -> subprocess.CompletedProcess
     )
 
 
-# The installer's _redact_install_output: uv and pip failure text embeds the index URL, which can
-# carry user:token@, ?token= or #token= secrets, and what is raised here reaches the log.
+# The installer's _redact_install_output: failure text can embed index credentials.
 _URL_USERINFO_RE = re.compile(r"(https?://)[^/@\s`]+@")
 _URL_QUERY_VALUE_RE = re.compile(r"([?&][^=\s&`]+)=[^&#\s`]+")
 _URL_FRAGMENT_RE = re.compile(r"(https?://[^\s`#]+)#[^\s`]+")
@@ -960,8 +804,7 @@ def _redact(text: str) -> str:
 
 
 def _failure_text(result: subprocess.CompletedProcess, limit: int) -> str:
-    # Redacted first: a tail cut through a userinfo token would lose the scheme the pattern anchors
-    # on.
+    # Redacted before truncating: a cut through userinfo would lose the scheme the pattern needs.
     return _redact(_combined(result)).strip()[-limit:] or f"uv exited {result.returncode}"
 
 
@@ -970,18 +813,10 @@ def _timed_out(exc: BaseException) -> bool:
 
 
 def _combined(result: subprocess.CompletedProcess) -> str:
-    """uv reports the plan on stderr; read both so a future uv cannot move it."""
     return f"{result.stdout or ''}\n{result.stderr or ''}"
 
 
-# Finding uv.
-
-
-# The installers prepend uv's directory to PATH before starting python; the prefetch is spawned from
-# the desktop shell, whose Windows PATH can predate the install, so a bare `uv` resolved to nothing
-# on a machine that has it. Look where the installer put it: astral's destination priority, as
-# install.ps1 and install.sh compute it. Nothing installs uv into the Studio root or the venv, so
-# these directories are the whole search.
+# The desktop shell's PATH can predate the install: also look where the installers put uv.
 def _uv_search_dirs(env: dict) -> List[Path]:
     dirs: List[Path] = []
 
@@ -996,24 +831,18 @@ def _uv_search_dirs(env: dict) -> List[Path]:
         add(env.get(name))
     data_home = env.get("XDG_DATA_HOME")
     if data_home:
-        # `$XDG_DATA_HOME/../bin`, as both installers spell it.
         add(str(Path(data_home).parent / "bin"))
     home = env.get("USERPROFILE") if platform.system() == "Windows" else None
     home = home or env.get("HOME") or os.path.expanduser("~")
     add(str(Path(home) / ".local" / "bin"))
     local_app_data = env.get("LOCALAPPDATA")
     if platform.system() == "Windows" and local_app_data:
-        # The winget shim, which install.ps1 names in the same scan.
         add(str(Path(local_app_data) / "Microsoft" / "WinGet" / "Links"))
     return dirs
 
 
 def _uv_runs(candidate: Path, env: Optional[dict]) -> bool:
-    """install.ps1's Test-UvCandidateVersion, minus the floor.
-
-    A file at the right path that cannot answer `--version` is not a uv the
-    update will use either, and running it is the only way to know.
-    """
+    """install.ps1's Test-UvCandidateVersion, minus the floor."""
     try:
         return _run([str(candidate), "--version"], env).returncode == 0
     except Exception:
@@ -1021,15 +850,9 @@ def _uv_runs(candidate: Path, env: Optional[dict]) -> bool:
 
 
 def locate_uv(env: Optional[dict] = None) -> Tuple[Optional[str], List[Path]]:
-    """The uv the update's core step will run, and every place this looked.
-
-    PATH first, because a uv on PATH is exactly the one `install_python_stack.py`
-    resolves; the directories are the fallback for a shell that never saw the
-    installer's PATH.
-    """
+    """The uv the update's core step will run (PATH first), and every place searched."""
     environment = dict(env) if env is not None else dict(os.environ)
     searched = _uv_search_dirs(environment)
-    # Bare, as install_python_stack.py:_bootstrap_uv calls it.
     found = shutil.which("uv")
     if found:
         return found, searched
@@ -1056,15 +879,7 @@ NO_TORCH_TRUTHY = ("1", "true", "yes", "on")
 
 
 def no_torch_mode(venv: Path) -> bool:
-    """The mode the installer will run the update in, decided the way it decides it.
-
-    install_python_stack._infer_no_torch: UNSLOTH_NO_TORCH when set and non-empty (an
-    explicit "false" included), else the mode the install manifest recorded, else the
-    marker, else Intel Mac detection. The marker alone was read here before, and a
-    no-torch manifest without its companion marker had the prefetch resolving with
-    dependencies and handing the update a plan with torch in it, which the no-torch
-    core step's offline retry then installed with --no-deps.
-    """
+    """install_python_stack._infer_no_torch: UNSLOTH_NO_TORCH, manifest, marker, then Intel Mac."""
     env = os.environ.get("UNSLOTH_NO_TORCH")
     if env is not None and env.strip():
         return env.strip().lower() in NO_TORCH_TRUTHY
@@ -1088,7 +903,6 @@ def _no_torch(venv: Path) -> bool:
 
 
 def _installed_studio_root(venv: Path) -> Optional[Path]:
-    """`studio/` inside the LIVE venv, which holds the constraints the plan uses."""
     for pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for site in sorted(venv.glob(pattern)):
             candidate = site / "studio"
@@ -1112,12 +926,7 @@ def run(
     python: Optional[Path] = None,
     cwd: Optional[Path] = None,
 ) -> dict:
-    """Prepare the next update in the background. Returns the marker payload.
-
-    `cwd` is the directory the update's own uv calls run from (setup.sh changes into
-    the script directory); every uv call here runs from the same place, so both read
-    the same uv configuration, if any.
-    """
+    """Prepare the next update; returns the marker payload. `cwd` is where the update's uv runs."""
     with _working_directory(cwd):
         return _run_unguarded(
             studio_home = studio_home,
@@ -1138,26 +947,18 @@ def _run_unguarded(
     echo: Callable[[str], None] = print,
     python: Optional[Path] = None,
 ) -> dict:
-    """Prepare the next update in the background. Returns the marker payload.
-
-    Raises `PrefetchSkipped` for an install that has nothing to prepare (exit 0,
-    no marker), `PrefetchBusy` when another prefetch holds the lock, and
-    `PrefetchError` for a real failure.
-    """
+    """Raises PrefetchSkipped (exit 0, no marker) or PrefetchError."""
     interpreter = Path(python) if python is not None else Path(sys.executable)
     venv = Path(sys.prefix)
 
     def step(text: str) -> None:
         echo(f"[TAURI:STEP] {text}")
 
-    # A marker another offer left: any exit short of a new marker (a preflight skip, uv missing, a
-    # full volume) would leave the old offer's pins for the offline retry, which does not compare
-    # the shell version. Before the skips too, which the desktop settles as done.
+    # Before the skips: another offer's marker would hand its pins to the offline retry.
     existing = read_marker(studio_home)
     if isinstance(existing, dict) and existing.get("shell_version") != shell_version:
         discard(studio_home)
 
-    # 1. Preflight. Every branch is "this install prepares nothing", not a failure.
     if not (venv / "pyvenv.cfg").is_file():
         raise PrefetchSkipped("not running from a managed environment")
     expected = managed_venv(studio_home)
@@ -1173,15 +974,12 @@ def _run_unguarded(
         raise PrefetchSkipped("a local install has no index to prepare from")
     if uv_no_cache_requested():
         raise PrefetchSkipped("UV_NO_CACHE leaves nothing behind to prepare")
-    # Before the disk check: the uv search reads the environment the child runs under.
     child_env = dict(env) if env is not None else dict(os.environ)
-    # The budget starts before uv is looked for: a candidate that hangs on --version is a uv call
-    # like any other.
+    # Before the uv search: a candidate hanging on --version spends the budget too.
     deadline = time.monotonic() + BUDGET_SECONDS
     with _within_budget(deadline):
         uv, searched_for_uv = locate_uv(child_env)
     if uv is None:
-        # Name the places searched, so "not available" is not a guess.
         where = ", ".join(str(directory) for directory in searched_for_uv)
         raise PrefetchSkipped(f"uv is not available (looked on PATH and in {where})")
 
@@ -1199,7 +997,7 @@ def _run_unguarded(
         raise PrefetchError(f"{root} exists and was not created by Unsloth")
     shutil.rmtree(root, ignore_errors = True)
     root.mkdir(parents = True, exist_ok = True)
-    # Written first, so an interrupted run leaves a directory the next prefetch may remove.
+    # First, so an interrupted run leaves a directory the next prefetch may remove.
     (root / OWNED_MARKER).write_text("", encoding = "utf-8")
     target = site_dir(studio_home)
     target.mkdir(parents = True, exist_ok = True)
@@ -1212,10 +1010,7 @@ def _run_unguarded(
     )
     if live_constraints is not None and not live_constraints.is_file():
         live_constraints = None
-    # The installer sets UV_OVERRIDE to the bundled macOS arm64 overrides (kept when a caller set
-    # one). Without it the core dry run planned mlx-vlm and mlx-audio DOWNGRADES the update never
-    # makes, and the offline swap installed them. The live tree's file: the live installer runs the
-    # core step.
+    # The installer's macOS arm64 UV_OVERRIDE, from the live tree: without it MLX plans a downgrade.
     _applied_live_override = False
     if (
         platform.system() == "Darwin"
@@ -1230,8 +1025,6 @@ def _run_unguarded(
             child_env["UV_OVERRIDE"] = str(overrides)
             _applied_live_override = True
 
-    # 2. Resolve: what the update's core step would do, asked of the live venv so anything already
-    # satisfied is absent. The installer's own branch.
     no_torch = _no_torch(venv)
     live_override = child_env.get("UV_OVERRIDE") if _applied_live_override else None
     step("prefetch resolving core packages")
@@ -1320,13 +1113,11 @@ def _run_prefetch(
     }
 
     if not planned:
-        # Nothing to fetch: the desktop still shows "ready". Keyed off the whole plan, not unsloth
-        # alone: a zoo-only bump is a real download a "noop" marker would hide.
+        # Keyed off the whole plan: a zoo-only bump is a real download.
         if floor and installed_backend and not version_meets_floor(installed_backend, floor):
             raise PrefetchError(
                 f"the index offers no unsloth>={floor}; installed is {installed_backend}"
             )
-        # The installed versions, so the offline retry has exact pins to audit (_core_pin_source).
         payload["installed_core"] = {
             name: version
             for name, version in (
@@ -1342,8 +1133,6 @@ def _run_prefetch(
     if floor and backend_version is not None and not version_meets_floor(backend_version, floor):
         raise PrefetchError(f"the resolved unsloth {backend_version} is below the required {floor}")
 
-    # 3. Fetch the core plan. --target keeps every byte out of the venv; the download warms the
-    # cache.
     pins = pins_from_plan(planned)
     step(f"prefetch downloading {len(pins)} core package(s)")
     fetch_cmd = fetch_command(interpreter, target, pins, uv = uv)
@@ -1357,8 +1146,7 @@ def _run_prefetch(
         raise PrefetchError("could not download the core packages: " + _failure_text(fetched, 800))
     payload["core_records"] = core_record_digests(target, planned)
 
-    # 4. Requirement files, best effort: the NEW wheel's, resolved against the live venv. One that
-    # will not resolve is recorded and left to swap time, never a failure.
+    # Requirement files, best effort: the NEW wheel's, resolved against the live venv.
     new_studio = _fetched_studio_root(target)
     state = "ready"
     if new_studio is None:
@@ -1367,8 +1155,7 @@ def _run_prefetch(
     else:
         req_root = new_studio / "backend" / "requirements"
         payload["requirement_digests"] = requirement_digests(req_root)
-        # The later passes run under the NEW wheel's override (installed by the core step at the
-        # same path); the core plan above used the live one.
+        # The dependency passes run under the NEW wheel's override; the core plan used the live one.
         requirement_env = child_env
         if live_override is not None:
             new_overrides = req_root / "single-env" / "overrides-darwin-arm64.txt"
@@ -1383,7 +1170,6 @@ def _run_prefetch(
         work_dir = prefetch_root(studio_home) / "req"
         for name, no_deps in REQUIREMENT_PASS:
             if time.monotonic() >= deadline:
-                # Recorded, not raised: the update downloads what is left anyway.
                 payload["requirements"][name] = {"skipped_reason": "out of time"}
                 state = "partial"
                 continue
@@ -1410,7 +1196,6 @@ def _run_prefetch(
                 state = "partial"
 
     payload["state"] = state
-    # 5. Last, so its presence means every wheel above is in the cache.
     write_marker(studio_home, payload)
     step(f"prefetch {state}")
     return payload
@@ -1452,20 +1237,17 @@ def _prefetch_requirement_file(
     if not planned:
         return {"pins": {}}
     pins = pins_from_plan(planned, only_binary = True)
-    # Only fetched pins are recorded: the desktop reads a recorded pin missing from the cache as
-    # stale, and a source-only package never is in it.
+    # Only fetched pins: the desktop reads a recorded pin missing from the cache as stale.
     wanted = set(pins)
     fetched_plan = {
         name: version for name, version in planned.items() if f"{name}=={version}" in wanted
     }
     source_only = sorted(name for name in planned if name not in fetched_plan)
     if not pins:
-        # Everything this file plans is built from source; there is no wheel to warm.
         return {"pins": {}, "source_only": source_only}
     step(f"prefetch downloading {len(pins)} package(s) for {label}")
     try:
-        # --only-binary: a source distribution would be BUILT here, for a wheel the update builds
-        # anyway.
+        # --only-binary: never build an sdist here that the update builds anyway.
         fetched = _run(
             fetch_command(interpreter, target, pins, only_binary = True, uv = uv),
             env,
