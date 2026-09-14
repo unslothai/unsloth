@@ -88,8 +88,6 @@ export async function installDesktopUpdate(): Promise<void> {
   await invoke("install_desktop_update");
 }
 
-// Background preparation.
-
 /** `prefetch.rs::PrefetchStatus`. */
 export interface PrefetchStatus {
   state: "none" | "ready" | "noop" | "partial" | "stale";
@@ -101,12 +99,10 @@ export interface PrefetchStatus {
   runningShellVersion: string | null;
 }
 
-/** The installed backend has no `prefetch-update` command. Nothing to report. */
+/** The installed backend has no `prefetch-update` command. */
 export const PREFETCH_UNSUPPORTED = "prefetch-unsupported";
-/** Another prefetch owns the work; whatever it produces is what gets adopted. */
 export const PREFETCH_BUSY = "prefetch-busy";
 
-/** Why a prefetch stopped. Only `failed` is worth a word, and the restart downloads regardless. */
 export type PrefetchOutcome = "ready" | "unsupported" | "busy" | "failed";
 
 const PREFETCH_POLL_MS = 1000;
@@ -129,7 +125,7 @@ export async function startPrefetch(
     onLog(event.payload);
   });
   try {
-    // The offered backend release: the child resolves against the floor the new shell enforces.
+    // The child resolves against the floor the offered shell enforces.
     await invoke("start_prefetch_update", {
       shellVersion,
       backendFloor: backendFloor ?? null,
@@ -137,8 +133,6 @@ export async function startPrefetch(
     return "ready";
   } catch (e) {
     const reason = String(e);
-    // A backend predating this feature exits with click's usage error, mapped to this token:
-    // expected on the release that introduces the prefetch, not a fault.
     if (reason.includes(PREFETCH_UNSUPPORTED)) return "unsupported";
     if (reason.includes(PREFETCH_BUSY)) return "busy";
     console.warn("Background update preparation failed:", e);

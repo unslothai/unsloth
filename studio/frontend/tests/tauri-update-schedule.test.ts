@@ -539,8 +539,7 @@ test("a bundle download the update did not start reports its progress", async (t
     bundleStates: [
       // The first press only prepares, and finds the bundle already retained.
       { version: "2.0.0", downloaded: true, downloading: false },
-      // By Restart the bundle is gone and a foreign native download is in flight; the update
-      // watches it rather than start a second.
+      // By Restart a foreign native download is in flight; the update watches it.
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: true, downloading: false },

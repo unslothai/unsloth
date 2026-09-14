@@ -195,8 +195,7 @@ function harness(
           }
           if (command === "desktop_update_cleanup_armed") return true;
           if (command === "start_backend_update") {
-            // Listener registrations are promises in the same executor; a synchronous answer
-            // would emit into nothing.
+            // Answered async: listener registrations are still pending in this executor.
             await settleUntil(() => listeners.has("update-complete"));
             if (holdUpdate) await holdUpdate();
             if (failUpdateOnce && !failedOnce) {
@@ -370,7 +369,6 @@ test("an offer whose bundle is already on disk prepares without downloading", as
 });
 
 test("a check already in flight cannot reopen the offer mid-install", async (t) => {
-  // Assigned inside the synchronous executor; the type stops TypeScript narrowing to `never`.
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -388,7 +386,7 @@ test("a check already in flight cannot reopen the offer mid-install", async (t) 
   await settleUntil(() => hook.calls.includes("start_backend_update"));
   assert.equal(hook.statusUpdates.at(-1), "updating-backend");
 
-  // The hourly check mid-update used to put the status back to "ready" and start a second download.
+  // An hourly check mid-update must not put the status back to "ready".
   const downloads = hook.calls.filter((c) => c === "download_desktop_update").length;
   await hook.controller.checkForUpdate();
   await settle();
@@ -403,8 +401,7 @@ test("a check already in flight cannot reopen the offer mid-install", async (t) 
 });
 
 test("a retained failure's retry installs instead of preparing again", async (t) => {
-  // After a failed install "Retry update" is a retry, not a first press: preparing on it
-  // would do nothing visible and demand a second click.
+  // After a failed install "Retry update" is a retry, not a first press.
   const hook = harness(t, { failUpdateOnce: true });
   await hook.controller.checkForUpdate();
   await settle();

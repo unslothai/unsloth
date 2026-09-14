@@ -31,12 +31,10 @@ export function DesktopUpdateControl(): ReactElement | null {
   const checking = update.status === "checking";
   const preparing = update.status === "preparing";
   const ready = update.status === "ready";
-  // A running install owns the update screen; no second "Update now".
   const inFlight =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
     update.status === "installing";
-  // Preparing counts: the offer is accepted and only Restart is left to press.
   const busy = checking || inFlight || preparing;
   const available = update.info !== null && !checking;
   const checkFailed = update.checkError !== null && !available;

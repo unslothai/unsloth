@@ -27,10 +27,7 @@ export const INITIAL_PREPARATION: UpdatePreparation = {
   shellProgress: 0,
 };
 
-/**
- * What the offer looks like right now. A failed bundle download puts it back to plain
- * "available"; the backend half never blocks the restart.
- */
+/** A failed bundle download puts the offer back to "available"; the backend half never blocks. */
 export function preparationStatus(
   preparation: UpdatePreparation,
 ): PreparationStatus {
@@ -75,7 +72,6 @@ export function prefetchDecision(args: {
   offeredVersion: string;
   prefetch: PrefetchStatus;
 }): PrefetchDecision {
-  // An external server is someone else's environment; the manual Linux path has no in-app update.
   if (!args.inApp || args.isExternalServer) return "skip";
   const prefetch = args.prefetch;
   if (prefetch.running) {
@@ -83,7 +79,6 @@ export function prefetchDecision(args: {
       ? "adopt"
       : "restart";
   }
-  // Not `stale`: a marker this build will not act on says nothing about the cache.
   const usable =
     prefetch.state === "ready" ||
     prefetch.state === "noop" ||
@@ -93,7 +88,6 @@ export function prefetchDecision(args: {
   return "prefetch";
 }
 
-/** The one line the pill has room for while an update is being prepared. */
 export function preparationShortLabel(preparation: UpdatePreparation): string {
   if (preparation.shell === "downloading")
     return `downloading ${preparation.shellProgress}%`;
