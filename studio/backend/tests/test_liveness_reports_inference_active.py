@@ -27,6 +27,7 @@ CPU-only, no network, no GPU, no weights.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -168,6 +169,23 @@ def test_the_marker_disappears_once_nothing_is_generating():
     )
 
 
+def _watchdog_probe_budget_s() -> float:
+    """The launcher's per-probe HTTP budget, read out of the Rust that owns it.
+
+    A ceiling on this route has to sit under the number the watchdog actually allows, or a
+    regression that makes /api/liveness block for most of a probe passes here while every
+    real probe times out. Derived rather than written down so the two cannot drift apart,
+    the way test_health_answers_within_probe_budget.py derives its own budget.
+    """
+    assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
+    match = re.search(
+        r"const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
+        _COMMANDS_RS.read_text(encoding = "utf-8"),
+    )
+    assert match, "commands.rs no longer sets a whole-seconds probe timeout"
+    return float(match.group(1))
+
+
 def test_the_marker_costs_nothing_to_read():
     """A probe every 15s cannot pay for anything that waits, which is why the route reads
     a registry len() rather than asking the backend what it is doing."""
@@ -175,12 +193,16 @@ def test_the_marker_costs_nothing_to_read():
 
     # `has_busy_key` above is what pins the behaviour; the marker is a registry len() and
     # the busy states here are stubbed, so no bound this test can set separates "read the
-    # registry" from "waited on it". What is left for the clock is the case where the
-    # route grows a real wait, and that wants a ceiling a contended runner cannot trip
-    # rather than the 0.5s one, which is 4 subprocess probes on a shared 2-vCPU box.
+    # registry" from "waited on it". What is left for the clock is the case where the route
+    # grows a real wait, and the bound for that is not a guess: anything at or over the
+    # watchdog's own per-probe budget times out every probe, so half of it is both well
+    # clear of a contended runner and provably inside what the launcher allows. The 0.5s it
+    # replaces was four subprocess probes on a shared 2-vCPU box.
+    ceiling = _watchdog_probe_budget_s() / 2
     for state, sample in result.items():
-        assert sample["elapsed"] < 30.0, (
-            f"/api/liveness took {sample['elapsed']:.2f}s while {state}; it must read the "
+        assert sample["elapsed"] < ceiling, (
+            f"/api/liveness took {sample['elapsed']:.2f}s while {state}, against a "
+            f"{_watchdog_probe_budget_s():.0f}s watchdog probe budget; it must read the "
             f"registry rather than wait on the generations in it"
         )
 

@@ -1556,7 +1556,10 @@ def test_a_long_backtick_run_does_not_stall_the_parser(notes_module):
         lambda text: parse_sections(notes_module, text),
         lambda n: "## 1.0\n\n- " + "`" * n + " <!--\n",
         "backtick run",
-        20_000,
+        # 5_000, so the big leg is the 20k this was previously measured at. The broken
+        # parser took over a minute there; at 80k it would take about sixteen, and the
+        # job would be killed instead of reporting the ratio.
+        5_000,
     )
 
 

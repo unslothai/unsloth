@@ -468,7 +468,8 @@ def test_no_catastrophic_backtracking_on_orphan_opening_spam():
         lambda text: _TOOL_XML_RE.sub("", text),
         lambda n: "<tool_call>X" * n,
         "orphan opens",
-        1000,
+        # 250, so the big leg is the 1000 openings this was previously measured at.
+        250,
     )
     assert "<tool_call>" not in cleaned
 

@@ -219,19 +219,40 @@ def test_a_warm_retired_mid_stage_is_not_reported_as_warming_forever():
     )
 
 
+def _watchdog_probe_budget_s() -> float:
+    """The launcher's per-probe HTTP budget, read out of the Rust that owns it.
+
+    A ceiling on this route has to sit under the number the watchdog actually allows, or a
+    regression that makes /api/liveness block for most of a probe passes here while every
+    real probe times out. Derived rather than written down so the two cannot drift apart,
+    the way test_health_answers_within_probe_budget.py derives its own budget.
+    """
+    assert _COMMANDS_RS.is_file(), f"{_COMMANDS_RS} moved; update this guard"
+    match = re.search(
+        r"const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs\((\d+)\)",
+        _COMMANDS_RS.read_text(encoding = "utf-8"),
+    )
+    assert match, "commands.rs no longer sets a whole-seconds probe timeout"
+    return float(match.group(1))
+
+
 def test_liveness_answers_immediately_and_never_starts_detection():
     """The route exists because health's detection wait is too expensive to probe every
     15s. The stub raises if detection is started, so returning at all proves it was not."""
     result = _probe(settled = False)
 
-    # Returning at all is the assertion, and the snippet is built so that it is: the stub
-    # at `must_not_run` raises if the route starts detection, and DETECTION_COMPLETE is
-    # cleared, so a route that waits for a settled snapshot blocks until the subprocess
-    # is killed. `elapsed < 0.5` could not distinguish either of those from a busy
-    # runner -- it only ever failed for the third reason.
-    assert result["elapsed"] < 30.0, (
-        f"/api/liveness took {result['elapsed']:.2f}s, which is long enough that it was "
-        "waiting on something rather than reading the snapshot"
+    # Returning at all is most of the assertion, and the snippet is built so that it is: the
+    # stub at `must_not_run` raises if the route starts detection, and DETECTION_COMPLETE is
+    # cleared, so a route that waits for a settled snapshot blocks until the subprocess is
+    # killed. What the clock still has to catch is a route that merely got slow, and the
+    # bound for that comes from the watchdog's own per-probe budget rather than from a guess:
+    # at or over it, every real probe times out. `elapsed < 0.5` could not tell any of this
+    # apart from a busy runner -- it only ever failed for that last reason.
+    ceiling = _watchdog_probe_budget_s() / 2
+    assert result["elapsed"] < ceiling, (
+        f"/api/liveness took {result['elapsed']:.2f}s against a "
+        f"{_watchdog_probe_budget_s():.0f}s watchdog probe budget, so it was waiting on "
+        "something rather than reading the snapshot"
     )
     # Still the full port-validation payload the launcher matches on. The key must be
     # present because the launcher reads it; its value is environment-derived and is

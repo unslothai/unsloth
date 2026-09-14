@@ -96,7 +96,16 @@ def assert_linear(
     factor: int = 4,
     tolerance: float = 6.0,
 ):
-    """`run(build(n))` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input."""
+    """`run(build(n))` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input.
+
+    `units` is the SMALL size. The largest input actually run is `units * factor`, so when
+    this replaces an absolute budget, pass the old size DIVIDED by `factor` -- otherwise the
+    big leg is `factor`x bigger than anything that was ever measured, and on the regression
+    being guarded against that leg is `factor ** 2`x slower again. A guard whose broken case
+    takes a minute at the old size would then take a quarter of an hour, and the job's own
+    timeout kills it before the ratio below can say why. The `big < 60.0` backstop cannot
+    save that: it is checked after the measurement, not during it.
+    """
     ratio, big, result = growth(run, build, units, factor)
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
