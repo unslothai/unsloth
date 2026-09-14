@@ -197,6 +197,12 @@ def _load(
         # pip check only runs when something said it changed the environment.
         "_count_install_action": lambda: counted.append(1),
         "_red": lambda s: s,
+        # _ensure_xpu_triton reads the setup-script handover through this helper rather
+        # than inline, so the slice needs it by name or the guard tests NameError at call
+        # time. Same semantics as the real one: the env var, lowercased.
+        "_handover_torch_flavor_tag": (
+            lambda: os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+        ),
         # _safe_print, not print: the slice calls it by name, so stubbing "print" would leave _safe_print undefined at
         # exec time.
         "_safe_print": (
