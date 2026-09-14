@@ -58,6 +58,7 @@ import { InlineModel } from "./inline/inline-model";
 import { isInlineConfig } from "./inline/inline-policy";
 import { InlineSampler } from "./inline/inline-sampler";
 import { InlineSeed } from "./inline/inline-seed";
+import { RecipeTrainNode } from "./recipe-train-node";
 import {
   BaseNode,
   BaseNodeContent,
@@ -107,6 +108,9 @@ const NODE_META = {
   },
   seed: {
     tone: RECIPE_STUDIO_NODE_TONES.seed,
+  },
+  train: {
+    tone: RECIPE_STUDIO_NODE_TONES.train,
   },
   model_provider: {
     tone: RECIPE_STUDIO_NODE_TONES.model_provider,
@@ -420,6 +424,10 @@ function RecipeGraphNodeBase({
         </BaseNodeContent>
       </BaseNode>
     );
+  }
+
+  if (config?.kind === "train") {
+    return <RecipeTrainNode id={id} data={data} selected={selected} />;
   }
 
   const showDataHandles =
