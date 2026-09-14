@@ -2275,6 +2275,68 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
     assert backend.load_progress()["phase"] == "finalizing"  # 1000/1000
 
 
+def test_load_progress_counts_only_the_selected_prequant_file_in_its_artifact_repo(monkeypatch):
+    # unsloth/Qwen-Image-FP8 hosts one checkpoint per scheme, so a card that already ran the fp8
+    # artifact and now loads the int8 one has 19 GB of a sibling file sitting in that repo, while
+    # expected_bytes counts only the int8 file. Counting the whole repo reported finalizing with
+    # most of the selected checkpoint still to come.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "Qwen/Qwen-Image",
+        base_repo = "Qwen/Qwen-Image",
+        expected_bytes = 1000,
+    )
+    backend._loading.asset_repos = ("unsloth/Qwen-Image-FP8",)
+    # 600 bytes of the fp8 sibling were already there when the load claimed the repo.
+    backend._loading.asset_files = (("unsloth/Qwen-Image-FP8", "Qwen-Image-INT8.pt", 400, 600),)
+    monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 0))
+    monkeypatch.setattr(DiffusionBackend, "_cache_file_bytes", staticmethod(lambda repo, f: 0))
+
+    # 100 of the selected file's 400 bytes have landed as an .incomplete blob.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 700 if repo == "unsloth/Qwen-Image-FP8" else 500),
+    )
+    p = backend.load_progress()
+    assert p["phase"] == "downloading"
+    assert p["bytes_downloaded"] == 600  # 500 base + 100 of the selected file, not 500 + 700
+
+    # Finished: the file is in the snapshot, so it counts in full and exactly once.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_file_bytes",
+        staticmethod(lambda repo, f: 400 if f == "Qwen-Image-INT8.pt" else 0),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 1000 if repo == "unsloth/Qwen-Image-FP8" else 600),
+    )
+    assert backend.load_progress()["phase"] == "finalizing"  # 600 + 400
+    assert backend.load_progress()["bytes_downloaded"] == 1000
+
+
+def test_load_progress_reports_a_prequant_file_that_was_already_cached(monkeypatch):
+    # Nothing to download from the artifact repo: the selected file must still count, or the bar
+    # stalls short of 100% for the rest of the load.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "Qwen/Qwen-Image",
+        base_repo = "Qwen/Qwen-Image",
+        expected_bytes = 1000,
+    )
+    backend._loading.asset_repos = ("unsloth/Qwen-Image-FP8",)
+    backend._loading.asset_files = (("unsloth/Qwen-Image-FP8", "Qwen-Image-INT8.pt", 400, 1000),)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 1000 if repo == "unsloth/Qwen-Image-FP8" else 600),
+    )
+    monkeypatch.setattr(DiffusionBackend, "_cache_file_bytes", staticmethod(lambda repo, f: 400))
+    assert backend.load_progress()["phase"] == "finalizing"
+
+
 def test_load_progress_counts_a_mirrored_pipeline_repo_once(monkeypatch):
     # base_repo == repo_id, so count once. Summing adds the upstream's stale partial blobs -- the
     # very thing that selects the mirror -- to the mirror's live bytes, pegging the bar at 100%.

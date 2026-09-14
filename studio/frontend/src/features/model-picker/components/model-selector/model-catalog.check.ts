@@ -1210,6 +1210,38 @@ assert.equal(
   }),
   false,
 );
+// The reported schemes are a LADDER. `_pipeline_planned_denoiser_scheme` walks past an int8 rung
+// whose artifact-sized plan still offloads and seeds the fp8 rung instead, so sizing the row by
+// schemes[0] alone refuses a card the official pipeline really runs on (Qwen-Image hosts int8 at
+// 25.4 GB against fp8's 19.06) and sends the click to the bnb row.
+const qwenImageGroup = groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG);
+assert.ok(qwenImageGroup);
+assert.equal(
+  curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
+    gpuGb: 64,
+    systemRamGb: 128,
+    denseQuantSchemes: ["int8", "fp8"],
+  }),
+  true,
+);
+assert.equal(
+  pickDefaultArtifact(qwenImageGroup, {
+    gpuGb: 64,
+    systemRamGb: 128,
+    denseQuantSchemes: ["int8", "fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  "Qwen/Qwen-Image",
+);
+// A ladder no rung of which fits is still refused, and still routes to the bnb row.
+assert.equal(
+  curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
+    gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["int8", "fp8"],
+  }),
+  false,
+);
 for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
   assert.equal(
     curatedArtifactFitsDevice(id, IMAGE_CATALOG, {

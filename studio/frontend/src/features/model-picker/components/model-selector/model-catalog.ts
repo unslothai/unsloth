@@ -1167,23 +1167,36 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
 const BF16_BYTES_PER_PARAM = 2;
 
 /** What a row is sized by here: the pre-quantised transformer plus the companions, which are
- *  `approxSizeGb` minus the bf16 transformer. Clamped to the dense figure. */
+ *  `approxSizeGb` minus the bf16 transformer. Clamped to the dense figure.
+ *
+ *  The reported schemes are a LADDER, not one scheme: `_pipeline_planned_denoiser_scheme` walks
+ *  every rung below its winner and seeds the first one whose hosted artifact stays resident. So
+ *  the first rung that fits `allowanceGb` is the one the load really uses, and sizing the row by
+ *  `schemes[0]` alone refuses rows the backend would have run (Qwen-Image hosts int8 at 25.4 GB
+ *  against fp8's 19.06). Without an allowance, or when no rung fits, the first hosted rung. */
 function residentSizeGb(
   group: CatalogGroup,
   artifact: ModelArtifact,
   budget: DeviceBudget,
+  allowanceGb?: number,
 ): number | undefined {
   const dense = artifact.approxSizeGb;
-  const scheme = normalizeDenseQuantSchemes(budget.denseQuantSchemes)[0];
-  if (!scheme || dense === undefined) return dense;
+  const schemes = normalizeDenseQuantSchemes(budget.denseQuantSchemes);
+  if (schemes.length === 0 || dense === undefined) return dense;
   if (!artifactTakesDenseQuant(group, artifact)) return dense;
-  const quantised = artifact.prequantSizeGb?.[scheme as DenseQuantScheme];
-  if (quantised === undefined) return dense;
   const denseTransformerGb = artifact.totalParams
     ? (artifact.totalParams * BF16_BYTES_PER_PARAM) / BYTES_PER_GB
     : 0;
   const companionsGb = Math.max(0, dense - denseTransformerGb);
-  return Math.min(dense, quantised + companionsGb);
+  let firstHosted: number | undefined;
+  for (const scheme of schemes) {
+    const quantised = artifact.prequantSizeGb?.[scheme as DenseQuantScheme];
+    if (quantised === undefined) continue;
+    const sizeGb = Math.min(dense, quantised + companionsGb);
+    if (firstHosted === undefined) firstHosted = sizeGb;
+    if (allowanceGb === undefined || sizeGb <= allowanceGb) return sizeGb;
+  }
+  return firstHosted ?? dense;
 }
 
 function fitsArtifactBudget(
@@ -1196,9 +1209,10 @@ function fitsArtifactBudget(
       (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
     );
   }
-  const sizeGb = residentSizeGb(group, artifact, budget);
+  const allowanceGb = budget.gpuGb * 0.7;
+  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
   if (sizeGb === undefined) return false;
-  return sizeGb <= budget.gpuGb * 0.7;
+  return sizeGb <= allowanceGb;
 }
 
 /** The artifact a bare group click loads. Sized artifacts normally use the 0.7 * GPU budget;
@@ -1259,8 +1273,6 @@ export function curatedArtifactFitsDevice(
   const { group, artifact } = hit;
   if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
   if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(group, artifact, budget);
-  const sizeGb = residentSizeGb(group, artifact, budget);
-  if (sizeGb === undefined) return undefined;
   // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
   // there, but the WHOLE model goes to whichever device it lands on, so it is the larger of
   // the two and not their sum. An image, video or TTS load rejects CPU offload.
@@ -1270,7 +1282,10 @@ export function curatedArtifactFitsDevice(
       : budget.gpuGb > 0
         ? budget.gpuGb
         : budget.systemRamGb;
-  return sizeGb <= deviceGb * 0.7;
+  const allowanceGb = deviceGb * 0.7;
+  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
+  if (sizeGb === undefined) return undefined;
+  return sizeGb <= allowanceGb;
 }
 
 /** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an

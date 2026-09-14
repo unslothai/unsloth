@@ -910,6 +910,11 @@ class _LoadingState:
     fetch_repo: Optional[str] = None
     # Third repos this load downloads from; the cache scan and the delete guard both need them.
     asset_repos: tuple[str, ...] = ()
+    # ``(repo, filename, declared size, that repo's bytes on disk when this load claimed it)`` for an
+    # asset repo we fetch ONE named file from. The scan counts what this load adds to such a repo
+    # instead of every byte in it: the artifact repo hosts one checkpoint per scheme, and
+    # ``expected_bytes`` counts only the file this load fetches.
+    asset_files: tuple[tuple[str, str, int, int], ...] = ()
 
 
 @dataclass
@@ -2365,6 +2370,9 @@ class DiffusionBackend:
                     shortfall,
                 )
                 raise RuntimeError(shortfall)
+            # Read outside the lock: this is a disk scan, and nothing of ours has written to the
+            # artifact repo yet.
+            asset_baseline = self._cache_bytes(dit_prequant[0]) if skip_transformer_weights else 0
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
@@ -2374,6 +2382,14 @@ class DiffusionBackend:
                         # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing.
                         self._loading.asset_repos = tuple(
                             dict.fromkeys(self._loading.asset_repos + (dit_prequant[0],))
+                        )
+                        self._loading.asset_files += (
+                            (
+                                dit_prequant[0],
+                                dit_prequant[1],
+                                int(dit_prequant[2]),
+                                asset_baseline,
+                            ),
                         )
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
@@ -2453,9 +2469,20 @@ class DiffusionBackend:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
                 downloaded += self._cache_bytes(companion)
+        scoped = {entry[0] for entry in loading.asset_files}
         for asset in loading.asset_repos:
-            if asset and asset not in (loading.repo_id, companion):
+            if asset and asset not in (loading.repo_id, companion) and asset not in scoped:
                 downloaded += self._cache_bytes(asset)
+        for repo, filename, size, baseline in loading.asset_files:
+            if not repo or repo in (loading.repo_id, companion):
+                continue
+            # The finished file plus whatever this load has added to the repo since it claimed it
+            # (the in-flight ``blobs/*.incomplete``), capped at the one file ``expected_bytes``
+            # counts. A sibling scheme's cached checkpoint sits in the baseline and never counts.
+            downloaded += min(
+                size,
+                self._cache_file_bytes(repo, filename) + max(0, self._cache_bytes(repo) - baseline),
+            )
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
@@ -3529,6 +3556,23 @@ class DiffusionBackend:
             return None
         snapshot = repo_dir / "snapshots" / rev
         return snapshot if snapshot.is_dir() else None
+
+    @staticmethod
+    def _cache_file_bytes(repo_id: str, filename: str) -> int:
+        """On-disk bytes of ONE file of ``repo_id``, across cache roots, 0 when it is not there.
+
+        The largest copy, not the sum: the same file present in two roots is one logical file, the
+        rule ``_cache_bytes`` dedupes by snapshot-relative path for."""
+        best = 0
+        for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo_id):
+            snapshot = DiffusionBackend._live_snapshot_dir(repo_dir)
+            if snapshot is None:
+                continue
+            try:
+                best = max(best, (snapshot / filename).stat().st_size)
+            except OSError:
+                continue  # not in this root / broken symlink / unreadable
+        return best
 
     @staticmethod
     def _cache_bytes(repo_id: str) -> int:
