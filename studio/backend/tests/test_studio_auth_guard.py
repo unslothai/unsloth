@@ -552,3 +552,63 @@ def test_a_cd_earlier_in_the_command_moves_what_a_relative_path_means(monkeypatc
             assert not tools._references_studio_credential_here(command, str(sandbox)), command
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_chain_of_cds_that_ends_inside_the_auth_dir(monkeypatch, tmp_path):
+    # `cd ../..; cd auth; sqlite3 auth.db` never writes a path with a separator in it, so every
+    # token in it reads as an ordinary filename and only the walked directory itself gives it away.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'cd ../..; cd auth; sqlite3 auth.db "select jwt_secret from auth_user"',
+            "cd ../.. && cd auth && cat .cli_api_key_cli_1",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in ("cd ../..; cd models; ls", "cd .. && cd data && cat x.csv"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_traversal_through_the_proc_cwd_symlink(monkeypatch, tmp_path):
+    # The kernel resolves /proc/self/cwd to the session sandbox BEFORE applying the `..` that
+    # follows, so a lexical normpath reads this as /proc/self/auth/auth.db and misses the file the
+    # call actually opens.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            "print(open('/proc/self/cwd/../../auth/auth.db').read())",
+            "import sqlite3\nprint(sqlite3.connect('/proc/self/cwd/../../auth/auth.db'))",
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        assert (
+            tools._bash_exec(
+                "cat /proc/self/cwd/../../auth/.desktop_secret",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        # Reading procfs itself is ordinary work.
+        for ordinary in ("cat /proc/self/status", "ls /proc/self/cwd"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

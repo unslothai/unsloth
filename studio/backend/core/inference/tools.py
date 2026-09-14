@@ -2785,6 +2785,11 @@ _CD_TARGET_RE = re.compile(r"(?:^|[;&|(]\s*|\s)cd\s+(?:/d\s+)?([^\s;&|)]+)")
 _MAX_TRACKED_CWDS = 8
 
 
+# /proc/<pid>/cwd (and the self / thread-self aliases) is a symlink to the process's working
+# directory, which the kernel resolves before any `..` that follows it.
+_PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+)/cwd")
+
+
 def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
     """Every working directory *text* walks into via `cd`, in order.
 
@@ -2813,6 +2818,13 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     leave the sandbox at all."""
     if _references_studio_credential(text):
         return True
+    # `/proc/self/cwd/../../auth/auth.db`: the kernel resolves the symlink to the session sandbox
+    # FIRST and applies `..` to that, so a lexical normpath reads it as `/proc/self/auth/auth.db`
+    # and misses. Substituting the cwd back is what the kernel is going to do anyway.
+    if workdir and "/proc/" in text:
+        substituted = _PROC_CWD_RE.sub(lambda _m: workdir.rstrip("/"), text)
+        if substituted != text and _references_studio_credential(substituted):
+            return True
     # `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"` names the database through one level of shell
     # indirection. Bypass Permissions keeps STUDIO_HOME in the child env, so the shell resolves it
     # and the literal scan above sees nothing. `_expand_shell_assignments` is the same best-effort
@@ -2825,6 +2837,11 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     # from, so those paths have to be re-resolved against where the command actually ended up.
     if workdir and "cd" in text:
         for cwd in _cwds_after_cd(workdir, text):
+            # The walked directory itself, not only what is opened from it: `cd ../..; cd auth;
+            # sqlite3 auth.db` never writes a path with a separator in it, so every token below
+            # looks like an ordinary filename.
+            if _references_studio_credential(cwd):
+                return True
             for token in _RELATIVE_PATH_TOKEN_RE.findall(text):
                 if os.path.isabs(token) or token.startswith("~"):
                     continue
