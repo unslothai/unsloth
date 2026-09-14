@@ -92,25 +92,25 @@ def _allow(monkeypatch, allowed):
     monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device, **kw: scheme in allowed)
 
 
-def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
+def test_auto_blackwell_prefers_int8_then_walks_the_ladder(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
-    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200 it is faster AND more accurate than nvfp4 at DiT shapes.
+    # Every scheme available: auto picks int8 on a data-center Blackwell part too. It is the rung every hosted
+    # checkpoint repo ships and within 3 percent of fp8 at 1024px on B200; nvfp4 stays an explicit opt-in.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
-    # fp8 unavailable: auto skips nvfp4 even though the hardware runs it, because nvfp4 is an
-    # explicit opt-in only (slower AND less accurate at DiT shapes), and lands on mxfp8.
-    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
-    # Only mxfp8 + int8 left -> mxfp8 (still above int8).
-    _allow(monkeypatch, {TQ_MXFP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
-    # Only int8 usable -> int8.
-    _allow(monkeypatch, {TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+    # int8 unavailable: fp8 is next.
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
+    # fp8 gone too: auto skips nvfp4 even though the hardware runs it and lands on mxfp8.
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8})
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
+    # Nothing in the ladder usable -> None, never nvfp4.
+    _allow(monkeypatch, {TQ_NVFP4})
+    assert select_transformer_quant_scheme(_target(), "auto") is None
 
 
 def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
-    # Consumer Blackwell (RTX 50xx): fp8 FP32-accumulate is throughput-halved while int8 is full-rate, so auto prefers int8.
+    # Consumer Blackwell (RTX 50xx): int8 is full-rate where fp8 FP32 accumulate is halved, and it is the ladder head.
     _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
@@ -127,29 +127,30 @@ def test_auto_consumer_ada_prefers_int8(monkeypatch):
 
 
 def test_auto_workstation_unknown_prefers_int8(monkeypatch):
-    # An unknown / workstation name is treated as consumer (the safe default), so int8 first.
     _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA RTX A5000")
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
-def test_auto_professional_rtx_prefers_fp8(monkeypatch):
-    # Professional parts (RTX PRO 6000 Blackwell, RTX 6000 Ada) count as datacenter elsewhere in the backend, so auto keeps fp8 first, matching llama_cpp.
+def test_auto_professional_rtx_prefers_int8(monkeypatch):
+    # Professional parts count as data-center for the accumulate gate; the ladder order no longer depends on that.
     for device_name, cc in (
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
         ("NVIDIA RTX 6000 Ada Generation", (8, 9)),
     ):
         _stub_torch(monkeypatch, cc = cc, device_name = device_name)
         _allow(monkeypatch, {TQ_FP8, TQ_INT8})
-        assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
+        assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
-def test_auto_ada_hopper_prefers_fp8(monkeypatch):
-    # Data-center Ada (L40S) / Hopper (H100) are not nerfed, so fp8 comes first.
+def test_auto_ada_hopper_prefers_int8_then_fp8(monkeypatch):
+    # Data-center Ada (L40S) / Hopper (H100): int8 first, fp8 when int8 is not usable.
     _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
     _stub_torch(monkeypatch, cc = (9, 0), device_name = "NVIDIA H100 80GB HBM3")  # Hopper
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+    _allow(monkeypatch, {TQ_FP8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
 
 
@@ -1130,16 +1131,18 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
 
 
 def test_family_deny_auto_skips_mx_and_nvfp4_for_qwen(monkeypatch):
-    # B200 with every scheme available: mxfp8 and nvfp4 still damage the Qwen DiT, so auto skips
-    # them. fp8 is no longer denied (activation_value_lb fixed the black frames), so auto now
-    # takes fp8 first on a data-center part rather than falling all the way to int8.
+    # B200 with every scheme available: int8 leads the ladder, and it is also the best measured rung on Qwen
+    # (gate LPIPS 0.057 int8 against 0.154 fp8).
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit") == TQ_FP8
-    # With fp8 unavailable the deny still bites: mxfp8 / nvfp4 are skipped and int8 is the pick.
-    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit") == TQ_INT8
+    # With int8 unavailable, fp8 is next (no longer denied since activation_value_lb fixed the black frames).
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
+    # With both gone the deny still bites: mxfp8 / nvfp4 are skipped and nothing automatic is left.
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") is None
 
 
 def test_family_deny_refuses_explicit_mxfp8_and_nvfp4_for_qwen(monkeypatch):
@@ -1155,11 +1158,11 @@ def test_family_deny_refuses_explicit_mxfp8_and_nvfp4_for_qwen(monkeypatch):
 
 
 def test_family_deny_no_family_keeps_ladder(monkeypatch):
-    # Without a family (or an unknown one) the ladder is unchanged: fp8 first on B200.
+    # Without a family (or an unknown one) the ladder is unchanged: int8 first on B200.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "sdxl") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "sdxl") == TQ_INT8
 
 
 def test_quantize_transformer_threads_family(monkeypatch):
@@ -1416,9 +1419,9 @@ def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monke
 
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
-    assert auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
-    # The deny list still applies: qwen-image keeps mxfp8 out, so fp8 then int8.
-    assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_FP8, TQ_INT8)
+    assert auto_scheme_candidates(_target()) == (TQ_INT8, TQ_FP8, TQ_MXFP8)
+    # The deny list still applies: qwen-image keeps mxfp8 out, so int8 then fp8.
+    assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8, TQ_FP8)
     # Whatever the probe refuses is absent, so the list can never offer an unusable scheme.
     _allow(monkeypatch, {TQ_INT8})
     assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8,)
