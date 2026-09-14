@@ -1280,6 +1280,16 @@ class TestInstallUvCacheRootParity:
         )
         assert "Get-Content -LiteralPath $markerFile" not in ps1_marker
 
+        # Both launch repoints probe the Studio cache first. Shared mode reaches them having
+        # probed only the shared cache, so an unwritable Studio cache would abort uv on one OS
+        # and not the other.
+        _sh_launch = sh[sh.index("_prepare_studio_uv_cache_for_launch() {") :]
+        _sh_launch = _sh_launch[: _sh_launch.index("\n}\n")]
+        assert '_probe_uv_cache_writable "$STUDIO_HOME/cache/uv" || return 0' in _sh_launch
+        _ps1_launch = ps1[ps1.index("function Set-StudioUvCacheForLaunch") :]
+        _ps1_launch = _ps1_launch[: _ps1_launch.index("\n    }\n")]
+        assert "Test-StudioDirectoryUsable" in _ps1_launch, _ps1_launch
+
         # The ENCODING of the write, which nothing asserted: the whole cross-installer contract
         # is that one marker is plain UTF-8 with one LF, because install.sh writes
         # `printf '%s\n'` and the CLI writes os.fsencode(f"{chosen}\n"). `Set-Content -Encoding

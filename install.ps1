@@ -1836,7 +1836,13 @@ exit 1
     function Set-StudioUvCacheForLaunch {
         param([Parameter(Mandatory = $true)][string]$StudioRoot)
         if ($script:StudioUvCacheMode -eq "shared") {
-            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value (Join-Path (Join-Path $StudioRoot "cache") "uv")
+            # Probe first, as install.sh's _prepare_studio_uv_cache_for_launch does. Shared mode
+            # never probed the Studio cache, since the warm shared one won earlier, and uv aborts
+            # on a cache it cannot create. Keep the shared cache then: this install just filled it.
+            $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
+            if (Test-StudioDirectoryUsable -Path $studioCache -CreateIfMissing) {
+                Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $studioCache
+            }
         }
     }
 
