@@ -992,6 +992,43 @@ def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tm
     assert probed == ["http://127.0.0.1:8888/api/health"]
 
 
+def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monkeypatch, tmp_path):
+    import importlib
+    import sys
+    import types
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    process = types.SimpleNamespace(create_time = lambda: 1000.0)
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process = lambda pid: process))
+    # A crashed Studio's record whose PID now belongs to another process, next to a live one.
+    (tmp_path / "studio-8887-4242.pid").write_text("4242\n500.0", encoding = "utf-8")
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n1000.0", encoding = "utf-8")
+    probed = []
+
+    class _OK:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def urlopen(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("connection refused")
+        return _OK()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
     # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1: discovery tries each
     # loopback address and returns the one that answers.

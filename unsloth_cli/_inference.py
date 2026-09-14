@@ -645,7 +645,13 @@ def _loopback_candidate_bases(base: str) -> list:
 
 
 def _recorded_studio_bases(tried: list):
-    from unsloth_cli.commands.studio import PID_FILE_GLOB, STUDIO_HOME, _pid_alive, _read_pid_record
+    from unsloth_cli.commands.studio import (
+        PID_FILE_GLOB,
+        STUDIO_HOME,
+        _pid_alive,
+        _pid_is_studio_server,
+        _read_pid_record,
+    )
 
     seen = set(tried)
     try:
@@ -658,7 +664,11 @@ def _recorded_studio_bases(tried: list):
         if record is None:
             continue
         candidate = f"http://127.0.0.1:{match.group(1)}"
-        if candidate not in seen and _pid_alive(record[0]):
+        if (
+            candidate not in seen
+            and _pid_alive(record[0])
+            and _pid_is_studio_server(record[0], [record[1]])
+        ):
             seen.add(candidate)
             yield candidate
 
