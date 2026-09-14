@@ -72,7 +72,13 @@ def _load_real_index_env_scrub():
         # One line, so it ends at the first newline; "\n)\n" would swallow the file.
         ("_PINNED_PIP_CONFIG_KEEP_KEYS = (", "\n)\n", 2),
         ("_PINNED_PIP_CONFIG_SECTIONS = (", "\n", 1),
-        ("@functools.lru_cache(maxsize = 1)\ndef _pinned_pip_config_overrides(", "\n\ndef ", 0),
+        ("_PINNED_PIP_CONFIG_LIST_KEYS = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_CACHE: ", "\n", 1),
+        ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),
+        # Called BY _pinned_pip_config_overrides. Omitting it used to leave the exec'd
+        # copy raising NameError into a broad except, so the "real scrub" this file
+        # deliberately executes silently returned {} and agreed with anything.
+        ("def _parse_pinned_pip_config(", "\n\ndef ", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pip_subcommand(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
@@ -82,6 +88,10 @@ def _load_real_index_env_scrub():
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
     assert "PIP_REQUIRE_HASHES" in ns["_PM_HASH_ENV_VARS"], "extraction lost the hash vars"
+    # Execute the extracted parser once: a missing dependency in this namespace would
+    # otherwise only show up as an empty scrub that quietly agrees with every assertion.
+    parsed = ns["_parse_pinned_pip_config"](b"global.cert='/etc/corp/ca.pem'\n")
+    assert parsed == {"PIP_CERT": "/etc/corp/ca.pem"}, f"extraction is inert: {parsed}"
     return ns["_install_env_for_cmd"]
 
 
@@ -431,14 +441,15 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         # only hash enforcement, which no requirement we ship can satisfy, is cleared. The
         # fetch is `pip download`, so PIP_ONLY_BINARY is the one that decides here.
         monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
-        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
         monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
         assert env["PIP_ONLY_BINARY"] == ":all:"
-        assert env["UV_EXCLUDE_NEWER"] == "2024-01-01T00:00:00Z"
         assert "PIP_REQUIRE_HASHES" not in env
+        # This fetch IS the pip leg, and pip cannot express an upload cutoff here.
+        assert "UV_EXCLUDE_NEWER" not in env
 
     def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
         # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate host reaches the index

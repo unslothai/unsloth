@@ -73,18 +73,15 @@ STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "ut
 # The pinned scrub reads `pip config list` once per process and memoises it. A CI image
 # carrying its own /etc/pip.conf would otherwise leak into these assertions, and a test
 # that mocks subprocess could poison the cache for whatever runs next under -p randomly.
-REAL_PINNED_PIP_CONFIG_OVERRIDES = ips._pinned_pip_config_overrides
-
-
 @pytest.fixture(autouse = True)
 def _hermetic_pinned_pip_config(request):
-    ips._pinned_pip_config_overrides.cache_clear()
+    ips._PINNED_PIP_CONFIG_CACHE = None
     if "reads_real_pip_config" in request.keywords:
         yield
     else:
         with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda: {}):
             yield
-    ips._pinned_pip_config_overrides.cache_clear()
+    ips._PINNED_PIP_CONFIG_CACHE = None
 
 
 class TestBuildUvCmdTorchBackend:
@@ -542,9 +539,20 @@ class TestHardenedPipConfigRelaxation:
         for name in ("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"):
             assert name not in env, f"{name} cannot be satisfied by an unhashed pin"
         assert env["PIP_ONLY_BINARY"] == ":all:"
-        assert env["UV_NO_BUILD"] == "1"
-        assert env["UV_EXCLUDE_NEWER"] == "2024-01-01T00:00:00Z"
+        assert env["UV_NO_BUILD"] == "1"  # inert for uv, but not ours to drop either
         assert env["UV_NO_CONFIG"] == "1"
+
+    def test_pinned_cmd_clears_an_upload_cutoff_uv_alone_would_honour(self):
+        """UV_EXCLUDE_NEWER is the one policy only ONE of the two tools reads. uv honours
+        it; _build_pip_cmd never adds pip's --uploaded-prior-to, and pip_install falls
+        back to pip whenever uv fails. Honouring it on the uv leg alone would mean a
+        pinned install that fell back quietly installed an artifact the cutoff forbids,
+        so it stays cleared for pinned commands as it was before this change."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert "UV_EXCLUDE_NEWER" not in env
 
     def test_pinned_cmd_clears_forced_source_builds(self):
         """`no-binary` is the one policy a pinned install must drop, and dropping it is
@@ -619,19 +627,32 @@ class TestHardenedPipConfigRelaxation:
             mock.Mock(returncode = 0, stdout = None),                # nothing captured
             OSError("no pip"),
             subprocess.TimeoutExpired("pip", 60),                    # a wedged pip
-            mock.Mock(returncode = 0, stdout = mock.Mock()),         # not even bytes
         ],
     )
     def test_a_pip_that_cannot_answer_changes_nothing(self, outcome):
         """This sits on the path to every pinned install, including the final torch
         repair, so anything other than a clean listing has to degrade to no overrides."""
-        ips._pinned_pip_config_overrides.cache_clear()
         kwargs = (
             {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
         )
         with mock.patch.object(ips.subprocess, "run", **kwargs):
             assert ips._pinned_pip_config_overrides() == {}
-        ips._pinned_pip_config_overrides.cache_clear()
+
+    @pytest.mark.reads_real_pip_config
+    def test_only_a_successful_read_is_cached(self):
+        """A transient miss must not cost the operator their cert and proxy for the rest
+        of the run, which is every later pinned install including the final repair."""
+        listing = b"global.cert='/etc/ssl/corp.pem'\n"
+        with mock.patch.object(ips.subprocess, "run", side_effect = OSError("wedged")):
+            assert ips._pinned_pip_config_overrides() == {}
+        with mock.patch.object(ips.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode = 0, stdout = listing)
+            assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/ssl/corp.pem"}
+            assert run.call_count == 1
+        # ...and the success IS cached, so N pinned commands cost one subprocess.
+        with mock.patch.object(ips.subprocess, "run") as run:
+            assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/ssl/corp.pem"}
+            assert run.call_count == 0
 
     def test_garbage_in_the_listing_is_ignored_not_fatal(self):
         for listing in (b"", b"not a config listing\n", b"global.cert\n", b"=\n",
@@ -646,6 +667,35 @@ class TestHardenedPipConfigRelaxation:
             b"install.only-binary='numpy'\nglobal.only-binary=':all:'\n",
         ):
             assert ips._parse_pinned_pip_config(listing)["PIP_ONLY_BINARY"] == "numpy"
+
+    def test_a_different_subcommands_section_never_redefines_the_policy(self):
+        """A PIP_ variable applies to whatever command runs, so `[wheel] only-binary` is
+        not a more specific `[install] only-binary`, it is a setting for a different
+        command. Letting it through would silently downgrade an install-wide binary-only
+        policy to one package on every pinned install."""
+        listing = b"install.only-binary=':all:'\nwheel.only-binary='numpy'\ndownload.timeout='5'\n"
+        parsed = ips._parse_pinned_pip_config(listing)
+        assert parsed["PIP_ONLY_BINARY"] == ":all:"
+        assert "PIP_TIMEOUT" not in parsed
+
+    @pytest.mark.parametrize(
+        "listing, expected",
+        [
+            # One value, passed through: collapsing whitespace would break a real path.
+            (b"global.cert='C:\\Program  Files\\ca.pem'", {"PIP_CERT": "C:\\Program  Files\\ca.pem"}),
+            (b"global.proxy='http://user:pw@proxy.corp:3128'",
+             {"PIP_PROXY": "http://user:pw@proxy.corp:3128"}),
+            # A list pip accumulates. Measured: `pip config list` renders it on ONE line
+            # with an escaped \n inside the quotes, which is what ast.literal_eval undoes.
+            (rb"global.trusted-host='a.corp\nb.corp'", {"PIP_TRUSTED_HOST": "a.corp b.corp"}),
+            # only-binary is a COMMA separated format control, not a whitespace list.
+            # Verified against pip 26.2: PIP_ONLY_BINARY="a,b" refuses both as sdists.
+            (rb"global.only-binary='numpy\nscipy'", {"PIP_ONLY_BINARY": "numpy,scipy"}),
+            (b"global.only-binary=':all:'", {"PIP_ONLY_BINARY": ":all:"}),
+        ],
+    )
+    def test_each_key_is_joined_the_way_pip_reads_it(self, listing, expected):
+        assert ips._parse_pinned_pip_config(listing) == expected
 
     def test_the_callers_own_environment_wins(self):
         """The re-assertion fills gaps; it never overwrites a variable the caller set."""
@@ -670,12 +720,10 @@ class TestHardenedPipConfigRelaxation:
         assert "_uv_config_build_policy" not in src, (
             "re-asserting UV_NO_BUILD would promise a guarantee uv does not honour"
         )
-        # What uv DOES read from the environment is kept.
+        # A NON-pinned uv command still inherits everything, so a uv.toml no-build and a
+        # UV_EXCLUDE_NEWER both apply where the source builds actually happen.
         with mock.patch.dict(os.environ, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"}):
-            env = ips._install_env_for_cmd(
-                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-            )
-        assert env["UV_EXCLUDE_NEWER"] == "2024-01-01T00:00:00Z"
+            assert ips._install_env_for_cmd(["uv", "pip", "install", "-r", "extras.txt"]) is None
 
     @pytest.mark.parametrize(
         "cmd",

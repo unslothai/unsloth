@@ -7000,21 +7000,29 @@ _PM_HASH_ENV_VARS = (
 # the hardening the other vars express: it makes pip/uv build torch from an sdist, which
 # is both more build-time code execution and a resolution the pinned index cannot serve.
 # Cleared for pinned commands for that reason, not to relax anything.
+#
+# UV_EXCLUDE_NEWER is here for a different reason, and it is the pre-existing behaviour:
+# only uv reads it, `_build_pip_cmd` never adds the `--uploaded-prior-to` that would be
+# pip's equivalent, and pip_install falls back to pip whenever uv fails. Honouring it on
+# the uv leg alone would mean a pinned install that fell back quietly installed an
+# artifact the cutoff forbids, which is the outcome _uv_upload_cutoff_args exists to
+# prevent. Consistently off is the honest answer until the fallback can carry it.
 _PM_FORCE_SOURCE_ENV_VARS = (
     "UV_NO_BINARY",
     "UV_NO_BINARY_PACKAGE",
     "PIP_NO_BINARY",
+    "UV_EXCLUDE_NEWER",
 )
 
-# Deliberately NOT cleared for pinned installs: PIP_ONLY_BINARY and UV_EXCLUDE_NEWER are
-# the operator's build-time code execution and upload-cutoff controls, and every pinned
-# index we install from serves wheels, so honouring them costs nothing and dropping them
-# would hand a compromised mirror a source build the operator had forbidden. Both are read
-# by the tool that owns them: measured against pip 26.2 and uv 0.10.7, PIP_ONLY_BINARY and
-# UV_EXCLUDE_NEWER take effect, while UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not
-# uv environment variables at all (uv reads no-build from its config file only, and the
-# pin cannot leave that file enabled), so nothing here can carry a uv.toml no-build onto a
-# pinned command. Nothing is lost by that: pinned commands install wheels.
+# Deliberately NOT cleared for pinned installs: PIP_ONLY_BINARY, the operator's build-time
+# code execution control. Every pinned index we install from serves wheels, so honouring it
+# costs the pin nothing, while dropping it would hand a compromised mirror a source build
+# the operator had forbidden. It is also the one that is actually read: measured against
+# pip 26.2 and uv 0.10.7, PIP_ONLY_BINARY takes effect, while UV_NO_BUILD / UV_NO_BINARY /
+# UV_ONLY_BINARY are not uv environment variables at all (uv reads no-build from its config
+# file only, and the pin cannot leave that file enabled), so nothing here can carry a
+# uv.toml no-build onto a pinned command. Nothing is lost by that: pinned commands install
+# wheels.
 
 
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
@@ -7069,11 +7077,26 @@ def _is_pip_subcommand(cmd: "list[str]", subcommands: "tuple[str, ...]") -> bool
         args = args[1:]
     else:
         return False
+    # The first token that NAMES a subcommand, rather than the first token without a
+    # leading dash: `pip --cache-dir /tmp/c install x` puts a bare path before the
+    # subcommand, and reading that as "not an install" would silently drop the hash
+    # relaxation and re-break #8530 the first time a call site is written that way.
     for arg in args:
-        if arg.startswith("-"):
-            continue
-        return arg in subcommands
+        if arg in _PIP_SUBCOMMANDS:
+            return arg in subcommands
     return False
+
+
+# pip 26.2 `pip --help`. Only used to find where the options stop and the subcommand
+# starts, so an unknown future subcommand costs nothing: it is not in `subcommands`
+# either, and the scan simply runs off the end.
+_PIP_SUBCOMMANDS = frozenset(
+    (
+        "install", "download", "uninstall", "freeze", "inspect", "list", "show", "check",
+        "config", "search", "cache", "index", "wheel", "hash", "completion", "debug", "help",
+        "lock",
+    )
+)
 
 
 def _uv_is_offline() -> bool:
@@ -7434,28 +7457,39 @@ _PINNED_PIP_CONFIG_KEEP_KEYS = (
     "only-binary",
 )
 
-# Sections whose options apply to the commands this module runs. A `list.format` or
-# `freeze.all` is not an install setting and must not become a global PIP_ variable.
-_PINNED_PIP_CONFIG_SECTIONS = ("global", "install", "download", "wheel")
+# A PIP_ variable applies to whatever pip command runs, so a per-subcommand section
+# cannot be translated faithfully: `[wheel] only-binary` is not a weaker `[install]
+# only-binary`, it is a setting for a different command. Only these two are read, with
+# `install` winning, and `[download]` / `[wheel]` deliberately ignored rather than
+# allowed to redefine an install-wide policy.
+_PINNED_PIP_CONFIG_SECTIONS = ("global", "install")
+
+# Keys pip accumulates as a LIST, which is the only case where the newline `pip config
+# list` renders becomes a separator in the environment spelling. Everything else is one
+# value, where collapsing whitespace would corrupt a path like `C:\Program  Files\ca.pem`.
+_PINNED_PIP_CONFIG_LIST_KEYS = {"trusted-host": " ", "only-binary": ","}
+
+_PINNED_PIP_CONFIG_CACHE: "dict[str, str] | None" = None
 
 
-@functools.lru_cache(maxsize = 1)
 def _pinned_pip_config_overrides() -> "dict[str, str]":
     """pip's configured transport and binary policy, as PIP_ environment variables.
 
-    Read once per run (idempotent: the same mapping comes back every call) because it
-    costs a `pip config list` subprocess, and empty whenever pip cannot answer -- a venv
-    with no pip yet is the normal case early in a fresh install, and the caller then
-    behaves exactly as it did before this existed.
+    Read once per run and memoised, because it costs a `pip config list` subprocess.
+    ONLY a successful read is cached: a transient miss (a wedged pip hitting the timeout,
+    or a read racing the pip bootstrap) must not silently cost the operator their cert and
+    proxy for every later pinned install, including the torch repair that runs last.
+
+    Empty when pip cannot answer, which is the normal case in a venv that has no pip yet;
+    the caller then behaves exactly as it did before this existed.
 
     `:env:` entries are skipped: those come from the environment, which the child already
     inherits, and re-asserting them would undo the variables the pinned branch just
     cleared on purpose.
-
-    Nothing in here may raise. It sits on the path to every pinned install, including the
-    torch repair that runs last, so an unreadable or unexpected listing has to degrade to
-    "no overrides" the way a missing pip already does, not take the install down.
     """
+    global _PINNED_PIP_CONFIG_CACHE
+    if _PINNED_PIP_CONFIG_CACHE is not None:
+        return _PINNED_PIP_CONFIG_CACHE
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -7466,18 +7500,20 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
             timeout = 60,
             **_windows_hidden_subprocess_kwargs(),
         )
-        if result.returncode != 0:
-            return {}
-        return _parse_pinned_pip_config(result.stdout or b"")
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return {}
+    if result.returncode != 0:
+        return {}
+    _PINNED_PIP_CONFIG_CACHE = _parse_pinned_pip_config(result.stdout or b"")
+    return _PINNED_PIP_CONFIG_CACHE
 
 
 def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
     """`pip config list` output, filtered to the allowlist, as PIP_ variables.
 
-    A command section beats `global` for the same option, which is pip's own precedence,
-    and is resolved by position rather than by the order the listing happens to print in.
+    `[install]` beats `[global]` for the same option, which is pip's own precedence, and
+    is resolved by position rather than by the order the listing happens to print in.
+    A line that does not parse is skipped; the whole listing is never fatal.
     """
     found: dict[str, dict[str, str]] = {}
     for line in stdout.decode("utf-8", "replace").splitlines():
@@ -7493,15 +7529,16 @@ def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
             value = ast.literal_eval(raw.strip())
         except (ValueError, SyntaxError):
             continue
-        # pip renders a repeatable setting as one newline separated string; the
-        # environment spelling of the same list is whitespace separated.
-        text = " ".join(str(value).split())
+        separator_for_key = _PINNED_PIP_CONFIG_LIST_KEYS.get(option)
+        if separator_for_key is None:
+            text = str(value).strip()  # one value: pass it through as written
+        else:
+            text = separator_for_key.join(str(value).split())
         if text:
             found.setdefault(option, {})[section] = text
     overrides: dict[str, str] = {}
     for option, by_section in found.items():
-        # _PINNED_PIP_CONFIG_SECTIONS is ordered global first, so each command section
-        # present overwrites it and the most specific one set wins.
+        # Ordered global first, so an [install] entry overwrites it.
         for section in _PINNED_PIP_CONFIG_SECTIONS:
             if section in by_section:
                 overrides[f"PIP_{option.upper().replace('-', '_')}"] = by_section[section]
