@@ -4076,7 +4076,7 @@ def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(tmp
     }
     cached = [{"name": "lookup", "description": "d", "inputSchema": schema}]
     mapping = {"tool": "lookup", "field": "image_payload", "encoding": "base64"}
-    _, digest = validate_image_input_mappings([mapping], cached)
+    _, digest = validate_image_input_mappings([mapping], cached, server_key = "mlx-image")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)

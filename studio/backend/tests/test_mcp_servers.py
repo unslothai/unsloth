@@ -129,6 +129,7 @@ def test_image_mapping_rejects_unsupported_private_transport(url, use_oauth, det
                 url = url,
                 headers = None,
                 use_oauth = use_oauth,
+                model_server_key = "server",
             )
         )
 

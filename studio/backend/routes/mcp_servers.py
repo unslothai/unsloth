@@ -205,6 +205,7 @@ async def _validated_image_mappings(
     url: str,
     headers: dict[str, str] | None,
     use_oauth: bool,
+    model_server_key: str,
     server_id: str | None = None,
 ) -> tuple[list[dict[str, str]], str | None]:
     if not mappings:
@@ -234,7 +235,7 @@ async def _validated_image_mappings(
                 detail = "Could not validate image mappings against this server's tools.",
             ) from exc
     try:
-        validated = validate_image_input_mappings(mappings, tools)
+        validated = validate_image_input_mappings(mappings, tools, server_key = model_server_key)
     except McpImageDisclosureError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     await _validate_private_image_endpoint(url, headers)
@@ -448,14 +449,15 @@ async def create_mcp_server(
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
+    server_id = uuid.uuid4().hex[:16]
     mappings, schema_digest = await _validated_image_mappings(
         payload.image_input_mappings,
         url = url,
         headers = headers,
         use_oauth = use_oauth,
+        model_server_key = server_id,
     )
 
-    server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
         id = server_id,
         display_name = display_name,
@@ -568,6 +570,7 @@ async def update_mcp_server(
                 if not any(key in changes for key in TOOL_CACHE_INVALIDATING_FIELDS)
                 else None
             ),
+            model_server_key = "blender" if old.get("builtin_id") == "blender" else server_id,
         )
         changes["image_input_mappings_json"] = json.dumps(mappings, sort_keys = True)
         changes["image_input_schema_digest"] = schema_digest
@@ -676,7 +679,10 @@ async def refresh_mcp_server_tools(
         if not isinstance(mappings, list):
             mappings = []
         if mappings:
-            normalized, schema_digest = validate_image_input_mappings(mappings, tools)
+            server_key = "blender" if server.get("builtin_id") == "blender" else server_id
+            normalized, schema_digest = validate_image_input_mappings(
+                mappings, tools, server_key = server_key
+            )
             current = mcp_servers_db.get_server(server_id)
             if current == server and schema_digest != current.get("image_input_schema_digest"):
                 from state.tool_approvals import revoke_mcp_image_disclosures

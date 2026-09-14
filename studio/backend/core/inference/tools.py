@@ -59,6 +59,7 @@ import urllib.parse
 import urllib.request
 
 from core.inference.mcp_client import (
+    MCP_MODEL_TOOL_NAME_RE,
     MCP_TOOL_PREFIX,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
@@ -67,6 +68,8 @@ from core.inference.mcp_client import (
     in_failure_cooloff,
     is_stdio,
     list_tools_async,
+    mcp_model_tool_name,
+    mcp_tool_model_visible,
     parse_server_headers,
     probe_timeout,
     record_probe_failure,
@@ -9631,29 +9634,6 @@ DEEP_RESEARCH_TOOL = {
 }
 
 
-# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so validate up front and skip
-# with a warning.
-_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-
-def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for MCP Apps tools marked app-only (_meta.ui.visibility without "model"): those exist
-    for a server-rendered widget to call, not the LLM."""
-    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
-    for key in ("meta", "_meta"):
-        meta = tool.get(key)
-        if not isinstance(meta, dict):
-            continue
-        ui = meta.get("ui")
-        visibility = ui.get("visibility") if isinstance(ui, dict) else None
-        if visibility is None:
-            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
-            visibility = meta.get("ui/visibility")
-        if isinstance(visibility, (list, tuple)):
-            return "model" in visibility
-    return True
-
-
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
@@ -9664,14 +9644,14 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not _mcp_tool_model_visible(tool):
+        if not mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
+        name = mcp_model_tool_name(server_key, raw_name)
         # Bad chars or oversized names would 400 the whole request; skip + warn
         # so the rest of the tools still ship.
-        if not _OPENAI_FN_NAME_RE.fullmatch(name):
+        if not MCP_MODEL_TOOL_NAME_RE.fullmatch(name):
             logger.warning(
                 "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
                 "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",

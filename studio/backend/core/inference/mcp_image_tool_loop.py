@@ -229,7 +229,7 @@ def _mapping_for_name(name):
     tools = get_cached_tools(server["id"])
     if not tools:
         raise McpImageDisclosureError("Refresh the MCP tools before sharing an image")
-    _, digest = validate_image_input_mappings(mappings, tools)
+    _, digest = validate_image_input_mappings(mappings, tools, server_key = parts[1])
     if digest != server.get("image_input_schema_digest"):
         raise McpImageDisclosureError("The MCP image input schema changed; configure it again")
     tool = next(t for t in tools if t.get("name") == parts[2])

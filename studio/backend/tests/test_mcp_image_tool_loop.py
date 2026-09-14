@@ -63,7 +63,9 @@ def image_request(tmp_path, monkeypatch):
             "required": [field],
         }
         mapping = {"tool": raw, "field": field, "encoding": encoding}
-        _, digest = validate_image_input_mappings([mapping], [{"name": raw, "inputSchema": schema}])
+        _, digest = validate_image_input_mappings(
+            [mapping], [{"name": raw, "inputSchema": schema}], server_key = raw
+        )
         name = f"mcp__{raw}__{raw}"
         rows[name] = (
             {

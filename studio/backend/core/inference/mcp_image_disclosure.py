@@ -20,6 +20,12 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Iterable
 
+from core.inference.mcp_client import (
+    MCP_MODEL_TOOL_NAME_RE,
+    mcp_model_tool_name,
+    mcp_tool_model_visible,
+)
+
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
@@ -141,7 +147,7 @@ def _reject_regex_schema(schema: dict[str, Any]) -> None:
 
 
 def validate_image_input_mappings(
-    mappings: Iterable[Any], tools: Iterable[dict[str, Any]]
+    mappings: Iterable[Any], tools: Iterable[dict[str, Any]], *, server_key: str
 ) -> tuple[list[dict[str, str]], str | None]:
     normalized = [_mapping_dict(mapping) for mapping in mappings]
     if not normalized:
@@ -165,6 +171,10 @@ def validate_image_input_mappings(
         tool = by_name.get(tool_name)
         if tool is None:
             raise McpImageDisclosureError(f"MCP tool '{tool_name}' was not discovered")
+        if not mcp_tool_model_visible(tool) or not MCP_MODEL_TOOL_NAME_RE.fullmatch(
+            mcp_model_tool_name(server_key, tool_name)
+        ):
+            raise McpImageDisclosureError(f"MCP tool '{tool_name}' is not available to the model")
         schema = _tool_schema(tool)
         _eligible_field(schema, field)
         _reject_regex_schema(schema)

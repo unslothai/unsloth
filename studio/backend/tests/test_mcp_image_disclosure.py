@@ -44,9 +44,24 @@ def test_two_unrelated_mapping_names_and_schema_aliases_are_validated():
             _tool("inspect_picture", "picture_blob"),
             _tool("classify_frame", "frame_data", required = False, alias = True),
         ],
+        server_key = "server",
     )
     assert [mapping["field"] for mapping in mappings] == ["picture_blob", "frame_data"]
     assert len(digest) == 64
+
+
+@pytest.mark.parametrize("hidden", ["app_only", "invalid_name"])
+def test_mapping_rejects_tools_hidden_from_the_model_catalog(hidden):
+    name = "inspect_picture" if hidden == "app_only" else "x" * 60
+    tool = _tool(name, "image")
+    if hidden == "app_only":
+        tool["_meta"] = {"ui": {"visibility": ["app"]}}
+    with pytest.raises(McpImageDisclosureError, match = "not available to the model"):
+        validate_image_input_mappings(
+            [{"tool": name, "field": "image", "encoding": "base64"}],
+            [tool],
+            server_key = "server",
+        )
 
 
 def test_model_schema_replaces_only_the_payload_field_and_removes_hints():
@@ -112,6 +127,7 @@ def test_unsupported_mapping_schemas_fail_closed(schema, message):
         validate_image_input_mappings(
             [{"tool": "inspect", "field": "image", "encoding": "base64"}],
             [{"name": "inspect", "inputSchema": schema}],
+            server_key = "server",
         )
 
 

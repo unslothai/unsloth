@@ -668,8 +668,28 @@ def _call_private_tool(url, headers, name, args, context, config_check, cancel_e
 
 
 MCP_TOOL_PREFIX = "mcp__"
+MCP_MODEL_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
 _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
+
+def mcp_tool_model_visible(tool: dict) -> bool:
+    """Whether an MCP tool is available to the model rather than only to an MCP App."""
+    for key in ("meta", "_meta"):
+        meta = tool.get(key)
+        if not isinstance(meta, dict):
+            continue
+        ui = meta.get("ui")
+        visibility = ui.get("visibility") if isinstance(ui, dict) else None
+        if visibility is None:
+            visibility = meta.get("ui/visibility")
+        if isinstance(visibility, (list, tuple)):
+            return "model" in visibility
+    return True
+
+
+def mcp_model_tool_name(server_key: str, raw_name: str) -> str:
+    return f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
+
 
 # A failed probe isn't cached (a recovered server must come back), but it's recorded so a down server isn't re-probed
 # -- and the chat send re-hung for the full timeout -- on every message. Cool off for this long after a failure; much
