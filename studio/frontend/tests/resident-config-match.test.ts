@@ -1487,21 +1487,41 @@ test("a retryable drafter failure declines the shortcut", () => {
   }
 });
 
-test("a drafter that cannot be opened is not a repair the load can make", () => {
-  // The sidecar is present and structurally unusable, so the next identical load reaches
-  // the same verdict and the backend dedupes it. Treating it as retryable is what made
-  // Apply keep sending a reload the backend refused, leaving the panel offering a remedy
-  // that changes nothing.
+test("a repaired drafter has to reach the backend to be re-checked", () => {
+  // The settings sheet tells the user to replace the sidecar in place. `adoptable` skips
+  // /load when this returns false, so the backend's content re-check would never run and
+  // the repair would do nothing. An unchanged file still dedupes server-side, which is
+  // what makes declining the shortcut cheap rather than a teardown.
   for (const mode of ["auto", "mtp", "mtp+ngram"]) {
     assert.equal(
       residentSpeculativeNeedsRepair(
         { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
         mode,
       ),
-      false,
-      `drafter_unloadable under ${mode} must not reload`,
+      true,
+      `drafter_unloadable under ${mode} must reload`,
     );
   }
+  // No sendsGgufPath exclusion, unlike drafter_not_found: the re-check sits in the drafter
+  // comparison, which a standalone .gguf load reaches, not in the gguf_path-gated refetch.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+      "auto",
+      true,
+    ),
+    true,
+    "a standalone .gguf load must still reload for a repaired drafter",
+  );
+  // And the mode still has to be one that asked for a drafter at all.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+      "off",
+    ),
+    false,
+    "spec off asked for no drafter, so there is nothing to repair",
+  );
 });
 
 test("an Auto-mode policy downgrade is not a repair the load can make", () => {
