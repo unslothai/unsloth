@@ -6,6 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import { useEffect, useState } from "react";
 import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
@@ -73,7 +74,10 @@ export function SafetensorsDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
-  const sizeKey = `${repoId}::${fingerprintToken(hfToken)}`;
+  // In the identity so a mirror arriving after this effect ran refetches, rather
+  // than keeping the expected download size the official host reported.
+  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
   const [modelSize, setModelSize] = useState<{
     key: string;
     bytes: number | null;

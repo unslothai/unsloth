@@ -53,7 +53,11 @@ async function fetchReadmeOnce(
   let transient = false;
   for (const branch of ["main", "master"] as const) {
     try {
-      const url = `${getHfEndpoint()}/${prefix}${repoId}/raw/${branch}/README.md`;
+      // /resolve, not /raw: /raw is a huggingface.co web route a mirror need
+      // not serve, while /resolve is what hf_hub_url builds (and what
+      // transformers_version.py::_hf_raw_url already uses). Same bytes on
+      // huggingface.co, and README.md is never LFS.
+      const url = `${getHfEndpoint()}/${prefix}${repoId}/resolve/${branch}/README.md`;
       const res = await fetchWithTimeout(
         url,
         {
