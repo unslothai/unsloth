@@ -324,7 +324,18 @@ export async function syncExternalProvidersFromBackend(
 }
 
 const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
-const MODEL_CATALOG_PROVIDER_TYPES = new Set(["openrouter"]);
+// The live catalog is stored per provider type, so only the provider's own endpoint may write it; a connection
+// pointed at a compatible gateway keeps the bundled snapshot instead of overwriting OpenRouter's entries.
+const MODEL_CATALOG_PROVIDER_BASE_URLS: Record<string, string> = {
+  openrouter: "https://openrouter.ai/api/v1",
+};
+
+function usesProviderCatalogEndpoint(provider: ExternalProviderConfig): boolean {
+  const expected = MODEL_CATALOG_PROVIDER_BASE_URLS[provider.providerType];
+  if (!expected) return false;
+  const baseUrl = (provider.baseUrl ?? "").trim().replace(/\/+$/, "").toLowerCase();
+  return baseUrl === "" || baseUrl === expected;
+}
 
 export async function refreshProviderModelCatalogs(
   providers: readonly ExternalProviderConfig[],
@@ -345,7 +356,7 @@ export async function refreshProviderModelCatalogs(
   }
   for (const provider of providers) {
     const providerType = provider.providerType;
-    if (!MODEL_CATALOG_PROVIDER_TYPES.has(providerType)) continue;
+    if (!usesProviderCatalogEndpoint(provider)) continue;
     // A successful fetch makes the catalog fresh, so later connections of the same type skip;
     // a failed one leaves it stale and the next connection gets a turn.
     const fetchedAt = providerModelCatalogFetchedAt(providerType);

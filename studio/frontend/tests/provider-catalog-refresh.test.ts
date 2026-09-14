@@ -41,4 +41,36 @@ test("a failing OpenRouter connection leaves the catalog for the next connection
   }
   assert.deepEqual(asked, ["expired-key", "working-key"]);
   assert.deepEqual(catalog.resolveModelCatalogEntry("openrouter", "acme/fresh")?.efforts, ["low", "high"]);
+  catalog.clearProviderModelCatalog("openrouter");
+});
+
+test("an OpenRouter connection on a gateway base URL never writes the shared catalog", async () => {
+  const { refreshProviderModelCatalogs } = await vite.ssrLoadModule(
+    "/src/features/chat/sync-external-providers.ts",
+  );
+  const catalog = await vite.ssrLoadModule("/src/features/chat/model-catalog.ts");
+  catalog.setModelsDevCatalog({ fetched_at: Date.now() / 1000, providers: {} });
+  const asked: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const { provider_id: providerId } = JSON.parse(String(init?.body));
+    asked.push(providerId);
+    return providerId === "gateway"
+      ? Response.json([{ id: "acme/fresh", reasoning: { supported_efforts: ["max"] } }])
+      : Response.json([{ id: "acme/fresh", reasoning: { supported_efforts: ["low", "high"] } }]);
+  }) as typeof fetch;
+  try {
+    await refreshProviderModelCatalogs([
+      { id: "gateway", providerType: "openrouter", baseUrl: "https://gateway.example/api/v1" },
+      { id: "openrouter", providerType: "openrouter", baseUrl: "https://openrouter.ai/api/v1/" },
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  try {
+    assert.deepEqual(asked, ["openrouter"]);
+    assert.deepEqual(catalog.resolveModelCatalogEntry("openrouter", "acme/fresh")?.efforts, ["low", "high"]);
+  } finally {
+    catalog.clearProviderModelCatalog("openrouter");
+  }
 });
