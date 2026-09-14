@@ -2993,6 +2993,13 @@ _PATH_READ_COMMANDS = frozenset(
         "type",
         "get-content",
         "gc",
+        "tar",
+        "7z",
+        "unrar",
+        # Changing directory to an absolute path re-points every RELATIVE operand that follows it, which is how the
+        # rest of this scan decides a command stays in the sandbox. `cd /usr/lib && ls` still stays silent.
+        "cd",
+        "pushd",
     }
 )
 # Commands whose file operands are CREATED or OVERWRITTEN.
@@ -3020,6 +3027,9 @@ _PATH_ARG_SKIP = {
     "openssl": 1,
     "xargs": 1,
 }
+# Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
+# from an operand position.
+_PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
 # `sed -i` rewrites its operands in place, unlike a plain sed.
 _SED_INPLACE_FLAGS = ("-i", "--in-place")
 _REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
@@ -3065,6 +3075,13 @@ def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
             continue
         segment.append(token)
     flush()
+    # A forwarding command builds ANOTHER command's argument list out of the pipeline's text, so the path never
+    # reaches the operand position this scan reads (`echo /media/x | xargs cat`). Every absolute token in the line is
+    # a candidate operand once one is present.
+    if any(
+        os.path.basename(t.strip(";&|()`{}")).lower() in _PATH_FORWARDING_COMMANDS for t in tokens
+    ):
+        operands.extend((t, False) for t in tokens if _looks_absolute(t))
     return operands
 
 
@@ -3183,6 +3200,9 @@ _PY_PATH_READ_CALLS = frozenset(
         "imageio",
         "parse",
         "iterparse",
+        "input",
+        # os.chdir re-points every relative path that follows, the same way `cd` does in the shell.
+        "chdir",
         "open_memmap",
         "memmap",
         "get_data",
@@ -3218,6 +3238,12 @@ _PY_PATH_WRITE_CALLS = frozenset(
         "utime",
     }
     | _AUTO_UNSAFE_PY_WRITE_METHODS
+)
+# Archive constructors: the mode sits in the second argument, exactly like open().
+_PY_PATH_ARCHIVE_CTORS = frozenset(_ARCHIVE_CTOR_NAMES) | {"TarFile", "tarfile"}
+# Spawning a child hands the path to a process this scan does not see, so its argv is screened wholesale.
+_PY_PATH_SUBPROCESS_CALLS = frozenset(
+    {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput", "system"}
 )
 # Callables whose SECOND argument is the destination (shutil.copy(src, dst), os.rename(a, b)).
 _PY_PATH_DEST_SECOND_CALLS = frozenset(
@@ -3320,6 +3346,23 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 isinstance(func, ast.Attribute) and getattr(func.value, "id", "") in ("os", "posix")
             )
             add(first, writing)
+            # Path('/media/x').open(): the path is the RECEIVER, not an argument.
+            if isinstance(func, ast.Attribute):
+                add(func.value, writing)
+        elif name in _PY_PATH_ARCHIVE_CTORS:
+            # ZipFile(name) reads, ZipFile(name, "w") writes -- the same second-argument mode as open().
+            add(first, _builtin_open_writes(node))
+        elif name in _PY_PATH_SUBPROCESS_CALLS:
+            # A child process is not bound by this scan at all, so every absolute path in its argv counts. The
+            # command itself is screened separately by the terminal blocklist.
+            for argument in (*node.args, *(k.value for k in node.keywords)):
+                for piece in ast.walk(argument):
+                    if not isinstance(piece, ast.Constant) or not isinstance(piece.value, str):
+                        continue
+                    # shell = True passes one whole command line, so the path sits inside the string.
+                    for word in piece.value.split() or (piece.value,):
+                        if _looks_absolute(word):
+                            operands.append((word, False))
         elif name in _PY_PATH_DEST_SECOND_CALLS:
             add(first, False)
             add(second, True)

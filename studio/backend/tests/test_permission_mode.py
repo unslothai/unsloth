@@ -3331,6 +3331,63 @@ _ALLOWLISTED_PYTHON = (
 )
 
 
+# Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
+# before the operand scan learned about them.
+_OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    f"cd {_OUTSIDE_DIR} && cat memory.md",  # chdir re-points every relative path that follows
+    f"cd {_OUTSIDE_DIR}; cat memory.md",
+    f"(cd {_OUTSIDE_DIR} && cat memory.md)",
+    f"pushd {_OUTSIDE_DIR}",
+    f"echo {_OUTSIDE_FILE} | xargs cat",  # the path arrives through the pipeline, not an operand
+    f"tar cf - {_OUTSIDE_DIR}",
+    f"D={_OUTSIDE_DIR}; cat $D/memory.md",  # assembled from an assignment
+)
+
+_OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    f"import os\nos.chdir({_OUTSIDE_DIR!r})\nprint(open('memory.md').read())",
+    f"import subprocess\nsubprocess.run(['cat', {_OUTSIDE_FILE!r}])",  # a child process this scan cannot follow
+    f"import subprocess\nsubprocess.check_output('cat {_OUTSIDE_FILE}', shell = True)",
+    f"import fileinput\nfor line in fileinput.input({_OUTSIDE_FILE!r}):\n    print(line)",
+    f"import zipfile\nzipfile.ZipFile({_OUTSIDE_DIR!r} + '/a.zip', 'w')",
+    f"import pathlib\npathlib.Path({_OUTSIDE_FILE!r}).open().read()",  # the path is the receiver
+)
+
+# The same indirections pointed somewhere ordinary: these must stay silent.
+_INDIRECT_BENIGN_TERMINAL = (
+    "cd build && make",
+    "cd /usr/lib && ls",
+    "echo notes.txt | xargs cat",
+    "tar czf out.tgz .",
+)
+
+_INDIRECT_BENIGN_PYTHON = (
+    "import os\nos.chdir('subdir')",
+    "import subprocess\nsubprocess.run(['ls', '-la'])",
+    "import subprocess\nsubprocess.run(['python', 'train.py'])",
+    "import zipfile\nzipfile.ZipFile('out.zip', 'w')",
+)
+
+
+@pytest.mark.parametrize("command", _OUTSIDE_SANDBOX_INDIRECT_TERMINAL)
+def test_auto_mode_prompts_on_indirect_out_of_sandbox_terminal(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+
+
+@pytest.mark.parametrize("code", _OUTSIDE_SANDBOX_INDIRECT_PYTHON)
+def test_auto_mode_prompts_on_indirect_out_of_sandbox_python(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize("command", _INDIRECT_BENIGN_TERMINAL)
+def test_indirect_forms_stay_silent_inside_the_sandbox_terminal(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is False
+
+
+@pytest.mark.parametrize("code", _INDIRECT_BENIGN_PYTHON)
+def test_indirect_forms_stay_silent_inside_the_sandbox_python(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
 @pytest.mark.parametrize("command", _OUTSIDE_SANDBOX_TERMINAL)
 def test_auto_mode_prompts_on_out_of_sandbox_terminal_paths(command):
     assert is_high_risk_tool_call("terminal", {"command": command}) is True
