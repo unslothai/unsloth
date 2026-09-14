@@ -87,8 +87,7 @@ def _stub_torch(monkeypatch):
     )
     # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
-    # The VAE-decode compile wraps a bound method; identity wrap is enough for tests. The kwargs are recorded so a
-    # test can assert the tier's compile recipe.
+    # Kwargs are recorded so a test can assert the tier's compile recipe.
     torch.compile_calls = []
 
     def _compile(fn, **kwargs):
@@ -203,11 +202,11 @@ def test_restore_is_independent_per_flag(monkeypatch):
 
 
 class AutoencoderKL(types.SimpleNamespace):
-    """The class NAME is load bearing: ``auto`` compiles the decode only for the VAE classes it was measured on."""
+    """The class NAME is load bearing: ``auto`` keys the allow list off it."""
 
 
 class AutoencoderKLWan(types.SimpleNamespace):
-    """A video VAE, reached through the same helper by video.py's per-view apply_speed_optims calls."""
+    """A video VAE, reached through the same helper by the video backend's per-view calls."""
 
 
 class _Pipe:
@@ -433,8 +432,6 @@ def test_unet_whole_compile_default_tier(monkeypatch):
 
 
 def test_dit_default_tier_keeps_fuse_off_and_compiles_the_vae_decode(monkeypatch):
-    # Fused QKV measured exactly neutral on a DiT, so it stays max-only. The VAE decode does compile under `auto`:
-    # it is the largest non-GEMM bucket of a DiT render (flux.1 1024: 117 of 353 ms of GPU busy).
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
@@ -444,12 +441,10 @@ def test_dit_default_tier_keeps_fuse_off_and_compiles_the_vae_decode(monkeypatch
     assert applied["compiled"] is True
     assert applied["fused_qkv"] is False and pipe.fused is False
     assert applied["compiled_vae_decode"] is True
-    # Resolution-robust: one artifact across the shapes a session renders, no `mode`.
     assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
 
 
 def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
-    # `0` restores the earlier U-Net-only behaviour, which is the rollback if a family regresses in the field.
     torch = _stub_torch(monkeypatch)
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
     pipe = _Pipe(with_compile = True)
@@ -461,8 +456,6 @@ def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
 
 
 def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
-    # A denied VAE class is skipped under `auto` and compiled anyway under `1`. Qwen-Image's VAE is denied on
-    # measurement: its decode runs 46.5 -> 89.2 ms compiled, so the render pays 1.090 -> 1.141 s.
     assert "AutoencoderKLQwenImage" in ds_mod._VAE_COMPILE_DENY
     _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
@@ -488,9 +481,8 @@ def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
 
 
 def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
-    # video.py calls apply_speed_optims for every compile-eligible video DiT (video.py:4513), and once per proxy view
-    # on a dual-DiT family, so `auto` must not reach a 5-D tiled video decode nobody measured, and one shared VAE must
-    # not be compiled twice.
+    # The video backend runs apply_speed_optims for every video DiT view, so `auto` must not reach an unmeasured
+    # video decode and one shared VAE must not be compiled twice.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
@@ -499,7 +491,6 @@ def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch
     )
     assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
     assert torch.compile_calls == []
-    # The same pipe passed twice (the real second call arrives as a proxy view onto it) compiles the decode once.
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
     for _ in range(2):
         applied = apply_speed_optims(
@@ -510,8 +501,6 @@ def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch
 
 
 def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
-    # `max` already pays a large compile tax on the block, so the decode's convs are autotuned too. No cudagraphs: the
-    # decode runs once per image and a capture would pin its activations for the session.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
@@ -525,7 +514,6 @@ def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
 
 
 def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
-    # U-Net behaviour is unchanged by the switch: the whole-module U-Net recipe was measured WITH the compiled decode.
     _stub_torch(monkeypatch)
     monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
     pipe = _UNetPipe()
