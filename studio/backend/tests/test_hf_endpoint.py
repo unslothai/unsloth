@@ -187,3 +187,60 @@ class TestRejectsUnusableEndpoints:
         """Ports, http for a LAN mirror, and a path prefix are all valid mirrors."""
         monkeypatch.setenv("HF_ENDPOINT", raw)
         assert get_hf_endpoint() == expected
+
+
+class TestMalformedUrlDoesNotCrash:
+    """`_build_csp` runs on every response, so a raise here is a 500 for every request."""
+
+    @pytest.mark.parametrize(
+        "raw", ["https://[", "https://[::1", "https://[bad]", "http://[", "https://a[b"]
+    )
+    def test_bracketed_host_falls_back_instead_of_raising(self, monkeypatch, raw):
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == OFFICIAL_HF
+        monkeypatch.delenv("HF_ENDPOINT")
+        monkeypatch.setenv("HF_DATASETS_SERVER", raw)
+        assert get_hf_datasets_server() == OFFICIAL_DS
+
+
+class TestPlainHttpIsLoopbackOnly:
+    """The frontend attaches the Hub token to these requests, so off-box HTTP
+    would put a bearer token on the wire in cleartext."""
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["http://127.0.0.1:9700", "http://localhost:8080", "http://127.1.2.3", "http://[::1]:9000"],
+    )
+    def test_loopback_http_is_kept(self, monkeypatch, raw):
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == raw
+
+    @pytest.mark.parametrize(
+        "raw", ["http://192.168.1.10:8080", "http://hf-mirror.com", "http://10.0.0.5:8080"]
+    )
+    def test_off_box_http_is_refused(self, monkeypatch, raw):
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == OFFICIAL_HF
+
+    @pytest.mark.parametrize("raw", ["https://192.168.1.10:8080", "https://hf-mirror.com"])
+    def test_https_to_the_same_hosts_is_fine(self, monkeypatch, raw):
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == raw
+
+
+class TestAssetSources:
+    def test_no_asset_sources_without_a_mirror(self):
+        from utils.hf_endpoint import csp_asset_sources
+        assert csp_asset_sources() == ()
+
+    def test_an_https_mirror_needs_none(self, monkeypatch):
+        """img-src/media-src already carry a bare https:."""
+        from utils.hf_endpoint import csp_asset_sources
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        assert csp_asset_sources() == ()
+
+    def test_a_loopback_http_mirror_needs_one(self, monkeypatch):
+        from utils.hf_endpoint import csp_asset_sources
+        monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+        assert csp_asset_sources() == ("http://127.0.0.1:9700",)

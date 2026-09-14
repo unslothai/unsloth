@@ -34,6 +34,13 @@ let _datasetsServer = DEFAULT_DATASETS_SERVER;
  * value is pasted into URLs and compared against `new URL(...).origin`, and a
  * junk value there fails far away from its cause.
  */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "::1") return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
 function normalizeEndpoint(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -52,6 +59,10 @@ function normalizeEndpoint(raw: string | null | undefined): string | null {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
   if (!parsed.hostname) return null;
+  // Hub calls carry the user's token (`credentials: { accessToken }`), so a
+  // plain-HTTP mirror off-box would put a bearer token on the wire in cleartext.
+  // Loopback is the local-proxy case and never leaves the machine.
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) return null;
   // "*" would reach the backend's CSP connect-src as "https://*", a source that
   // allows every https origin, and is never a host to send a request to.
   if (parsed.hostname.includes("*")) return null;

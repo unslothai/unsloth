@@ -1838,6 +1838,24 @@ fn configured_hf_endpoints() -> Vec<String> {
         .collect()
 }
 
+/// Is this authority (host, optionally with :port) a loopback address?
+///
+/// Mirrors `utils/hf_endpoint.py::_is_loopback`.
+fn is_loopback_host(authority: &str) -> bool {
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !authority.ends_with(']') && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host == "::1" {
+        return true;
+    }
+    let mut octets = host.split('.');
+    matches!(octets.next(), Some("127"))
+        && host.split('.').count() == 4
+        && host.split('.').all(|o| !o.is_empty() && o.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Reduce an endpoint to scheme://host[:port] for use as a CSP source.
 ///
 /// A host-source carrying a path is matched *exactly* unless the path ends in a
@@ -1885,6 +1903,11 @@ fn is_usable_csp_source(endpoint: &str) -> bool {
     if host.contains('*') {
         return false;
     }
+    // Hub calls carry the user's token, so a plain-HTTP mirror off-box would put a
+    // bearer token on the wire in cleartext. Loopback never leaves the machine.
+    if endpoint.starts_with("http://") && !is_loopback_host(host) {
+        return false;
+    }
     // A scheme-less value keeps everything before the first ':' as the host, so
     // "javascript:alert(1)" arrives here as "https://javascript:alert(1)" -- shaped
     // like a URL, with nonsense for a port.
@@ -1902,17 +1925,25 @@ fn is_usable_csp_source(endpoint: &str) -> bool {
 /// a hostname containing "connect-src" can never match. Leaves the policy
 /// untouched (and returns false) when there is no `connect-src` directive.
 fn append_connect_sources(policy: &mut String, sources: &[String]) -> bool {
+    append_sources_to(policy, "connect-src", sources)
+}
+
+/// The same append, for any directive. img-src and media-src need it when the
+/// configured mirror is plain-HTTP loopback: those directives carry a bare
+/// `https:`, which covers an https mirror but not that one, so its avatars and
+/// README images would be blocked while the API calls beside them succeed.
+fn append_sources_to(policy: &mut String, directive_name: &str, sources: &[String]) -> bool {
     let mut appended = false;
     let rebuilt: Vec<String> = policy
         .split(';')
         .map(|directive| directive.trim())
         .filter(|directive| !directive.is_empty())
         .map(|directive| {
-            let is_connect_src = directive
+            let is_target = directive
                 .split_whitespace()
                 .next()
-                .is_some_and(|name| name.eq_ignore_ascii_case("connect-src"));
-            if !is_connect_src || appended {
+                .is_some_and(|name| name.eq_ignore_ascii_case(directive_name));
+            if !is_target || appended {
                 return directive.to_string();
             }
             let existing: Vec<&str> = directive.split_whitespace().collect();
@@ -1948,6 +1979,16 @@ fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<
         context.config_mut().app.security.csp.as_mut()
     {
         append_connect_sources(policy, &endpoints);
+        // Only the http ones: img-src/media-src already carry a bare https:.
+        let assets: Vec<String> = endpoints
+            .iter()
+            .filter(|e| e.starts_with("http://"))
+            .cloned()
+            .collect();
+        if !assets.is_empty() {
+            append_sources_to(policy, "img-src", &assets);
+            append_sources_to(policy, "media-src", &assets);
+        }
     }
 }
 
@@ -2291,6 +2332,36 @@ mod tests {
         ] {
             assert!(!is_usable_csp_source(bad), "should reject {bad:?}");
         }
+    }
+
+    #[test]
+    fn plain_http_is_loopback_only() {
+        // Hub calls carry the user's token, so an off-box http mirror would put a
+        // bearer token on the wire in cleartext.
+        assert!(is_usable_csp_source("http://127.0.0.1:9700"));
+        assert!(is_usable_csp_source("http://localhost:8080"));
+        assert!(is_usable_csp_source("http://127.1.2.3"));
+        assert!(!is_usable_csp_source("http://192.168.1.10:8080"));
+        assert!(!is_usable_csp_source("http://hf-mirror.com"));
+        assert!(!is_usable_csp_source("http://10.0.0.5:8080"));
+        // https to the same hosts stays fine.
+        assert!(is_usable_csp_source("https://192.168.1.10:8080"));
+        assert!(is_usable_csp_source("https://hf-mirror.com"));
+    }
+
+    #[test]
+    fn a_loopback_http_mirror_reaches_the_asset_directives_too() {
+        // img-src/media-src carry a bare https:, which does not cover http.
+        let mut policy = "connect-src 'self'; img-src 'self' data: https:; \
+media-src 'self' https:"
+            .to_string();
+        let assets = ["http://127.0.0.1:9700".to_string()];
+        assert!(append_sources_to(&mut policy, "img-src", &assets));
+        assert!(append_sources_to(&mut policy, "media-src", &assets));
+        assert!(policy.contains("img-src 'self' data: https: http://127.0.0.1:9700"));
+        assert!(policy.contains("media-src 'self' https: http://127.0.0.1:9700"));
+        // connect-src untouched by those two calls.
+        assert!(policy.contains("connect-src 'self';"));
     }
 
     #[test]

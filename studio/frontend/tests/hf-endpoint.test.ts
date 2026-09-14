@@ -58,6 +58,7 @@ test("endpoints are normalised the way the backend normalises them", () => {
     ["hf-mirror.com/", "https://hf-mirror.com"],
     ["  https://hf-mirror.com  ", "https://hf-mirror.com"],
     ["http://localhost:8080", "http://localhost:8080"],
+    ["http://127.0.0.1:9700", "http://127.0.0.1:9700"],
     ["https://hub.internal:8443/hf/", "https://hub.internal:8443/hf"],
   ] as const) {
     resetHfEndpoints();
@@ -104,6 +105,11 @@ test("a value that could widen the CSP is refused, not propagated", () => {
     "*",
     "https://*",
     "https://*.evil.com",
+    // Plain HTTP off-box: Hub calls carry the user's token, so this would put a
+    // bearer token on the wire in cleartext. The backend refuses it too.
+    "http://192.168.1.10:8080",
+    "http://hf-mirror.com",
+    "http://10.0.0.5:8080",
   ]) {
     resetHfEndpoints();
     setHfEndpoints(hostile, hostile);

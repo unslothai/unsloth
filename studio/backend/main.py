@@ -350,6 +350,7 @@ from utils.cache_cleanup import (
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.hf_endpoint import (
+    csp_asset_sources,
     csp_connect_sources,
     get_hf_endpoint,
     get_hf_datasets_server,
@@ -944,9 +945,11 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
     # A mirrored HF_ENDPOINT / HF_DATASETS_SERVER has to appear in connect-src too,
-    # or the browser blocks every Hub call the frontend routes there; img/media are
-    # already covered by the https: wildcard above. dict.fromkeys keeps the default
-    # order and de-duplicates, so with no mirror configured the output is unchanged.
+    # or the browser blocks every Hub call the frontend routes there. img/media carry
+    # a bare https:, so an https mirror needs nothing there; a loopback HTTP one does,
+    # or its avatars and README images are blocked while the API calls beside them
+    # succeed. dict.fromkeys keeps the default order and de-duplicates, so with no
+    # mirror configured the output is unchanged.
     # csp_connect_sources() reduces each endpoint to its origin: a host-source
     # carrying a path is matched exactly unless the path ends in "/", so a
     # path-prefixed mirror listed verbatim would block every request under it.
@@ -959,6 +962,8 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
             )
         )
     )
+    asset_sources = csp_asset_sources()
+    hf_asset_src = (" " + " ".join(asset_sources)) if asset_sources else ""
 
     # In Colab the kernel scaffolding injects scripts and fetch/WS from *.prod.colab.dev and
     # *.googleusercontent.com, so widen script-src/connect-src. Scripts still use a nonce.
@@ -974,8 +979,8 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
 
     return (
         "default-src 'self'; "
-        "img-src 'self' data: blob: https:; "
-        "media-src 'self' data: blob: https:; "
+        f"img-src 'self' data: blob: https:{hf_asset_src}; "
+        f"media-src 'self' data: blob: https:{hf_asset_src}; "
         f"connect-src {connect_src}; "
         f"{style_src}; "
         f"{script_src}; "

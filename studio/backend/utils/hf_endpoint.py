@@ -17,6 +17,7 @@ mirrored datasets-server must set ``HF_DATASETS_SERVER`` explicitly.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from urllib.parse import urlsplit
@@ -36,6 +37,26 @@ _rejected_warned: set[str] = set()
 # A CSP source list is whitespace-separated and semicolon-delimited, so any of these
 # inside an endpoint would add sources or whole directives rather than one origin.
 _FORBIDDEN_CHARS = frozenset(" \t\r\n\f\v;,'\"\\")
+
+
+def _split(candidate: str):
+    """``urlsplit`` that answers None instead of raising on a malformed host."""
+    try:
+        return urlsplit(candidate)
+    except ValueError:
+        return None
+
+
+def _is_loopback(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.strip("[]").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _port_is_valid(parts) -> bool:
@@ -63,8 +84,12 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
         ord(ch) < 0x20 or ord(ch) == 0x7F for ch in candidate
     ):
         reason = "contains whitespace, a separator or a control character"
+    elif (parts := _split(candidate)) is None:
+        # urlsplit RAISES on malformed bracketed-host syntax ("https://["), and
+        # _build_csp runs on every response, so letting that escape turns one
+        # mistyped env var into a 500 for every request the server handles.
+        reason = "is not a parseable URL"
     else:
-        parts = urlsplit(candidate)
         if parts.scheme not in ("http", "https"):
             reason = "is not an http(s) URL"
         elif not parts.hostname:
@@ -86,6 +111,15 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             # EVERY https origin -- the opposite of what the policy is for. A
             # wildcard is never a usable endpoint to send requests to either.
             reason = "contains a wildcard host"
+        elif parts.scheme == "http" and not _is_loopback(parts.hostname):
+            # The frontend attaches the user's Hub token to these requests
+            # (listModels is called with `credentials: { accessToken }`), so a
+            # plain-HTTP mirror on the LAN puts a bearer token on the wire in
+            # cleartext for anyone on the path. Loopback stays allowed: it is
+            # the local-proxy case and never leaves the machine.
+            reason = (
+                "is plain HTTP to a non-loopback host, which would put the Hub token on the wire"
+            )
         else:
             return candidate
     if candidate not in _rejected_warned:
@@ -111,6 +145,22 @@ def csp_connect_sources() -> tuple[str, str]:
     is reduced to scheme://host[:port].
     """
     return (_origin_of(get_hf_endpoint()), _origin_of(get_hf_datasets_server()))
+
+
+def csp_asset_sources() -> tuple[str, ...]:
+    """Configured origins that ``img-src``/``media-src`` do not already cover.
+
+    Those directives carry a bare ``https:``, so an https mirror needs nothing
+    added. A loopback HTTP mirror does: its avatars (hf-owner-avatar.ts) and
+    README images (hf-readme.ts) are same-origin-relative to the endpoint, and
+    without this they are blocked while the API calls beside them succeed.
+
+    Returning only the http origins is what keeps an unconfigured deployment's
+    policy byte-identical to the pre-PR one.
+    """
+    return tuple(
+        dict.fromkeys(source for source in csp_connect_sources() if source.startswith("http://"))
+    )
 
 
 def _origin_of(endpoint: str) -> str:
