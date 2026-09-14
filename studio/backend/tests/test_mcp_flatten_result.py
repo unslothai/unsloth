@@ -262,6 +262,10 @@ def test_partially_mirrored_structured_content_keeps_its_own_fields():
     assert _flatten_result(_result(_audio(), structured = wrapped)) == (
         "{'type': 'success'}\n[audio attachment (audio/wav) not shown to the model]"
     )
+    nested = {"type": "success", "attachment": {"type": "audio", "data": WAV_B64}}
+    assert _flatten_result(_result(_audio(), structured = nested)) == (
+        "{'type': 'success'}\n[audio attachment (audio/wav) not shown to the model]"
+    )
 
 
 def test_audio_only_error_keeps_error_prefix():

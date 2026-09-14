@@ -1640,36 +1640,40 @@ def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
     return f"{label} not shown to the model", str(data)
 
 
-_BLOCK_KEYS = frozenset({"type", "mimeType", "mime_type", "uri"})
-# _MIRRORED: a payload or the block that carried it; _EMPTIED: a container left with nothing
 _MIRRORED = object()
-_EMPTIED = object()
+
+
+def _mirrored_block(value: dict, payloads: set[str]) -> bool:
+    # an MCP content block copied from result.content: image/audio data or an embedded resource blob
+    kind = value.get("type")
+    if kind in ("image", "audio"):
+        payload = value.get("data")
+    elif kind == "resource" and isinstance(value.get("resource"), dict):
+        payload = value["resource"].get("blob")
+    else:
+        return False
+    return isinstance(payload, str) and payload in payloads
 
 
 def _strip_payloads(value: Any, payloads: set[str]) -> Any:
+    # drop mirrored blocks and bare payloads, then any container they leave empty
     if isinstance(value, str):
         return _MIRRORED if value in payloads else value
     if isinstance(value, dict):
+        if _mirrored_block(value, payloads):
+            return _MIRRORED
         kept = {}
-        carried = False
         for key, item in value.items():
             item = _strip_payloads(item, payloads)
-            if item is _MIRRORED:
-                carried = True
-            elif item is not _EMPTIED:
+            if item is not _MIRRORED:
                 kept[key] = item
-        # only the carrying block loses its descriptors; a wrapper keeps its own fields
-        if carried and kept.keys() <= _BLOCK_KEYS:
-            return _MIRRORED
-        return _EMPTIED if value and not kept else kept
-    if isinstance(value, (list, tuple)):
-        kept = []
-        for item in value:
-            item = _strip_payloads(item, payloads)
-            if item is not _MIRRORED and item is not _EMPTIED:
-                kept.append(item)
-        return _EMPTIED if value and not kept else kept
-    return value
+    elif isinstance(value, (list, tuple)):
+        kept = [
+            s for s in (_strip_payloads(item, payloads) for item in value) if s is not _MIRRORED
+        ]
+    else:
+        return value
+    return _MIRRORED if value and not kept else kept
 
 
 def _flatten_result(result: Any) -> str:
@@ -1711,7 +1715,7 @@ def _flatten_result(result: Any) -> str:
     structured = None if has_text else getattr(result, "structured_content", None)
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
-    if structured is not None and structured is not _MIRRORED and structured is not _EMPTIED:
+    if structured is not None and structured is not _MIRRORED:
         body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted or unshown:
         notes = []
