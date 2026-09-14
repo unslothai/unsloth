@@ -503,7 +503,9 @@ def test_a_killed_updates_record_is_recovered_before_studio_starts(tmp_path):
     home = tmp_path / "home"
     stub = tmp_path / "stub" / "unsloth-studio-update"
     stub.parent.mkdir()
-    stub.write_text('#!/usr/bin/env bash\necho "UPDATER $* home=$UNSLOTH_STUDIO_HOME" >> "$STUB_LOG"\nexit "${STUB_RC:-0}"\n')
+    stub.write_text(
+        '#!/usr/bin/env bash\necho "UPDATER $* home=$UNSLOTH_STUDIO_HOME" >> "$STUB_LOG"\nexit "${STUB_RC:-0}"\n'
+    )
     stub.chmod(0o755)
     log = tmp_path / "calls.log"
     env = {"UNSLOTH_STUDIO_UPDATER": str(stub), "STUB_LOG": str(log)}
