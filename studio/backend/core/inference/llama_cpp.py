@@ -23193,13 +23193,8 @@ class LlamaCppBackend:
                         # when the planner emitted nothing.
                         _split_gpus = self._effective_gpu_count(gpu_indices)
                         _sanitized_split = self._sanitize_tensor_split(tensor_split)
-                        if (
-                            len(_sanitized_split) == _split_gpus
-                            and sum(_sanitized_split) > 0
-                        ):
-                            _emitted_tensor_split = ",".join(
-                                f"{x:g}" for x in _sanitized_split
-                            )
+                        if len(_sanitized_split) == _split_gpus and sum(_sanitized_split) > 0:
+                            _emitted_tensor_split = ",".join(f"{x:g}" for x in _sanitized_split)
                     if _emitted_tensor_split is not None:
                         cmd.extend(["--tensor-split", _emitted_tensor_split])
                     self._tensor_parallel = True
