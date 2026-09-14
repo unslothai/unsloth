@@ -751,6 +751,48 @@ def _normalize_tied_weights_keys_for_save(save_fn):
     return wrapper
 
 
+def _unified_memory_vram_budget(
+    vram_budget_bytes,
+    *,
+    allocated_bytes,
+    host_headroom_bytes,
+):
+    """The merge ceiling for ONE device whose VRAM and system RAM are the same bytes.
+
+    On a unified-memory part (GB10 / N1X, an AMD APU) the card's "VRAM" IS system
+    RAM, and the save path already holds a `max_ram` budget over those very same
+    bytes. Two budgets drawn on one pool is how a merge the arithmetic says fits
+    sends the host to swap: an N1X laptop offers a 45 GiB pool while the OS has
+    5 GiB spare. So the host figure has to bind as well.
+
+    ``host_headroom_bytes`` is the caller's ``max_ram``, NOT raw availability.
+    That figure has already had the serialization workspace taken out of it
+    (``sharded_ram_usage``, 5 GiB by default) and the usage fraction applied, and
+    on a unified-memory part the retained tensors and that workspace are the same
+    pool. Re-deriving from ``virtual_memory().available`` here would hand the GPU
+    side the full fraction while the host side still believed it had a shard's
+    workspace in reserve, so a 46 GiB machine with 39 GiB spare could retain
+    ~35 GiB and leave less than one shard's room for the final
+    ``save_pretrained``. One budget, spent once.
+
+    The units are the other trap. The returned ceiling is ABSOLUTE: the caller
+    compares it against ``memory_allocated(device) + W.nbytes``, a running total.
+    But the host headroom is INCREMENTAL -- what is left, which already excludes
+    every byte currently resident. Handing it back raw as the ceiling charges the
+    resident bytes twice, and with 8 GiB already on the device and 10 GiB spare it
+    lands at ~9 GiB, allowing only ~1 GiB more before the whole merge falls to the
+    slow disk path on a machine with room for it. Anchoring to what is already
+    allocated keeps both sides of the comparison in the same unit.
+
+    Only ever lowers the discrete budget it is given, and never below what is
+    already resident.
+    """
+    return min(
+        int(vram_budget_bytes),
+        int(allocated_bytes) + int(max(0, host_headroom_bytes)),
+    )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_save_model(
@@ -1040,6 +1082,20 @@ def unsloth_save_model(
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
 
     max_ram = psutil.virtual_memory().available
+    # psutil reports the HOST inside a container, so a merge in a 4 GB pod on a
+    # 512 GB box sizes itself to the box and is OOM-killed. Bound by what this
+    # process may actually charge. The reader is the one `dataset_num_proc`
+    # already uses rather than another walk of /sys/fs/cgroup: it handles v1
+    # against v2, the innermost-first path walk, the "unlimited" sentinels, and
+    # the ancestor pairing that stops a leaf's usage being matched to a slice's
+    # limit. Outside a cgroup it answers None and this is the figure it was.
+    try:
+        from unsloth.dataset_num_proc import _cgroup_free_bytes
+        _cgroup_ram = _cgroup_free_bytes()
+    except Exception:
+        _cgroup_ram = None
+    if _cgroup_ram is not None:
+        max_ram = min(max_ram, _cgroup_ram)
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
         gb_found = re.match(r"([0-9]{1,})[\s]{0,}GB", max_shard_size, flags = re.IGNORECASE)
@@ -1116,14 +1172,47 @@ def unsloth_save_model(
     # A merged tensor lives on the GPU of its source layer, so budget against W's own device: a GPU0-only check OOMs GPU1+ on a sharded model.
     _max_vram_by_device = {}
 
+    def _merging_on_unified_memory(idx):
+        """Whether THIS device's memory and the host's system RAM are the same bytes.
+
+        One definition for the whole package: the safetensors loader classifies the
+        same parts, by the driver's own integrated flag. Asked per device, because
+        the budget is per device -- the process-wide "every device is integrated"
+        question answers False on a mixed box and would skip the cap on exactly the
+        device that needs it. False on anything it cannot read, so a machine this
+        cannot classify budgets exactly as before.
+        """
+        try:
+            from unsloth.models._uma_safetensors import device_is_integrated_unified_memory
+            return device_is_integrated_unified_memory(idx)
+        except Exception:
+            return False
+
     def _device_vram_budget(dev):
         if dev.type != "cuda":
             return None
         idx = dev.index if dev.index is not None else torch.cuda.current_device()
         if idx not in _max_vram_by_device:
-            _max_vram_by_device[idx] = int(
-                torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage
-            )
+            budget = int(torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage)
+            # On a unified-memory part (GB10 / N1X, an AMD APU) that "VRAM" IS system
+            # RAM, and `max_ram` above is a budget over the very same bytes. Two budgets
+            # drawn on one pool is how a merge the arithmetic says fits sends the host to
+            # swap: an N1X laptop offers a 45 GiB pool while the OS has 5 GiB spare.
+            # Cap against what can actually be spared; discrete cards are untouched.
+            if _merging_on_unified_memory(idx):
+                try:
+                    budget = _unified_memory_vram_budget(
+                        budget,
+                        allocated_bytes = int(torch.cuda.memory_allocated(idx)),
+                        # `max_ram`, not a fresh reading: it is already bounded by
+                        # the cgroup, already has the shard workspace reserved and
+                        # already has the fraction applied, and on one pool those
+                        # reservations have to bind the GPU side too.
+                        host_headroom_bytes = max_ram,
+                    )
+                except Exception:
+                    pass
+            _max_vram_by_device[idx] = budget
         return _max_vram_by_device[idx]
 
     print("Unsloth: Saving model... This might take 5 minutes ...")

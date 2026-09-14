@@ -221,3 +221,186 @@ def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_
     for key, expected in tensors.items():
         with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
             assert torch.equal(f.get_tensor(key).cpu(), expected)
+
+
+# ── the budget question is per device, because the budget is per device ──────
+def _fake_torch_cuda(uma, monkeypatch, flags, *, attr = "is_integrated"):
+    """A torch whose device ``i`` reports ``flags[i]`` for the integrated flag."""
+
+    def _props(index):
+        props = types.SimpleNamespace()
+        setattr(props, attr, flags[index])
+        return props
+
+    monkeypatch.setattr(
+        uma,
+        "torch",
+        types.SimpleNamespace(
+            cuda = types.SimpleNamespace(
+                is_available = lambda: True,
+                device_count = lambda: len(flags),
+                get_device_properties = _props,
+            )
+        ),
+    )
+    monkeypatch.delenv("UNSLOTH_FORCE_UMA", raising = False)
+    uma.device_is_integrated_unified_memory.cache_clear()
+    uma.is_integrated_unified_memory_gpu.cache_clear()
+
+
+def test_a_mixed_host_still_classifies_the_integrated_device(uma, monkeypatch):
+    """A GB10 beside a discrete card. The process-wide gate answers False, which
+    is right for the loader patch and wrong for a per-device memory budget: it
+    would skip the cap on exactly the device whose pool is the host's RAM."""
+    _fake_torch_cuda(uma, monkeypatch, {0: 0, 1: 1})
+    assert uma.is_integrated_unified_memory_gpu() is False
+    assert uma.device_is_integrated_unified_memory(0) is False
+    assert uma.device_is_integrated_unified_memory(1) is True
+
+
+def test_every_device_discrete_answers_false_throughout(uma, monkeypatch):
+    _fake_torch_cuda(uma, monkeypatch, {0: 0, 1: 0})
+    assert uma.device_is_integrated_unified_memory(0) is False
+    assert uma.device_is_integrated_unified_memory(1) is False
+
+
+def test_the_older_attribute_spelling_is_read_too(uma, monkeypatch):
+    """torch renamed the flag; a wheel exposing neither reads discrete."""
+    _fake_torch_cuda(uma, monkeypatch, {0: 1}, attr = "integrated")
+    assert uma.device_is_integrated_unified_memory(0) is True
+    _fake_torch_cuda(uma, monkeypatch, {0: 1}, attr = "neither_spelling")
+    assert uma.device_is_integrated_unified_memory(0) is False
+
+
+def test_an_out_of_range_device_is_not_classified(uma, monkeypatch):
+    _fake_torch_cuda(uma, monkeypatch, {0: 1})
+    assert uma.device_is_integrated_unified_memory(5) is False
+    assert uma.device_is_integrated_unified_memory(-1) is False
+
+
+def test_a_device_that_cannot_be_read_budgets_as_before(uma, monkeypatch):
+    def _raise(index):
+        raise RuntimeError("no driver")
+
+    monkeypatch.setattr(
+        uma,
+        "torch",
+        types.SimpleNamespace(
+            cuda = types.SimpleNamespace(
+                is_available = lambda: True,
+                device_count = lambda: 1,
+                get_device_properties = _raise,
+            )
+        ),
+    )
+    monkeypatch.delenv("UNSLOTH_FORCE_UMA", raising = False)
+    uma.device_is_integrated_unified_memory.cache_clear()
+    assert uma.device_is_integrated_unified_memory(0) is False
+
+
+def test_the_force_override_still_applies_per_device(uma, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
+    uma.device_is_integrated_unified_memory.cache_clear()
+    assert uma.device_is_integrated_unified_memory(0) is True
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "0")
+    uma.device_is_integrated_unified_memory.cache_clear()
+    assert uma.device_is_integrated_unified_memory(0) is False
+
+
+# ── an absolute ceiling and an incremental headroom are not the same number ──
+GIB = 1024**3
+
+
+def _budget(**kwargs):
+    from unsloth.save import _unified_memory_vram_budget
+
+    return _unified_memory_vram_budget(**kwargs)
+
+
+def test_the_host_headroom_is_anchored_to_what_is_already_resident():
+    """8 GiB resident and 9 GiB of spendable host headroom.
+
+    The caller tests ``memory_allocated + W.nbytes < budget``, so the budget must
+    leave room for 9 GiB MORE, i.e. land at 8 + 9 = 17 GiB. Returning the bare
+    9 GiB charges the resident bytes a second time and allows ~1 GiB more.
+    """
+    got = _budget(
+        vram_budget_bytes = 40 * GIB,
+        allocated_bytes = 8 * GIB,
+        host_headroom_bytes = 9 * GIB,
+    )
+    assert got == 17 * GIB
+    assert got > 8 * GIB, "the ceiling must not sit below what is already resident"
+
+
+def test_a_tight_host_still_binds_the_budget_down():
+    """Capping is the whole point: a 45 GiB pool with under 2 GiB spendable."""
+    got = _budget(
+        vram_budget_bytes = 45 * GIB,
+        allocated_bytes = 0,
+        host_headroom_bytes = 2 * GIB,
+    )
+    assert got == 2 * GIB
+
+
+def test_it_never_raises_the_discrete_budget():
+    """Plenty of host RAM does not license spending more than the pool allows."""
+    got = _budget(
+        vram_budget_bytes = 20 * GIB,
+        allocated_bytes = 0,
+        host_headroom_bytes = 500 * GIB,
+    )
+    assert got == 20 * GIB
+
+
+def test_a_negative_host_reading_is_not_spendable():
+    got = _budget(
+        vram_budget_bytes = 20 * GIB,
+        allocated_bytes = 4 * GIB,
+        host_headroom_bytes = -1,
+    )
+    assert got == 4 * GIB
+
+
+def test_the_shard_workspace_is_not_spent_twice_on_one_pool():
+    """`max_ram` has already had the serialization workspace taken out and the
+    fraction applied. On unified memory the retained tensors and that workspace
+    are the same bytes, so the GPU ceiling has to be the SAME budget, not a fresh
+    `available * fraction` that silently re-credits the shard reserve.
+
+    39 GiB available, 5 GiB shard workspace, 0.9 usable: max_ram is 30.6 GiB, so
+    that is the whole headroom. Deriving from raw availability would offer
+    35.1 GiB and leave under a shard's room for the final save_pretrained.
+    """
+    available = 39 * GIB
+    shard = 5 * GIB
+    max_ram = int(max(0, available - shard) * 0.9)
+    got = _budget(
+        vram_budget_bytes = 46 * GIB, allocated_bytes = 0, host_headroom_bytes = max_ram,
+    )
+    assert got == max_ram
+    assert got < int(available * 0.9), "the shard workspace must not be re-credited"
+
+
+def test_the_cgroup_reader_the_save_path_imports_still_exists():
+    """The save path reaches `_cgroup_free_bytes` through a lazy import wrapped in
+    `except Exception`, which is right at runtime (it must not break a merge on a
+    host without cgroups) and dangerous at review time: a rename would be swallowed
+    and the container cap would silently stop being applied. Pin the name.
+    """
+    from unsloth.dataset_num_proc import _cgroup_free_bytes
+
+    answer = _cgroup_free_bytes()
+    assert answer is None or (isinstance(answer, int) and answer >= 0)
+
+
+def test_the_save_path_bounds_max_ram_by_the_cgroup():
+    """psutil reports the HOST inside a container, so the merge budget has to be
+    the tighter of the two readings."""
+    import inspect
+
+    from unsloth import save as save_mod
+
+    source = inspect.getsource(save_mod.unsloth_save_model)
+    assert "_cgroup_free_bytes" in source
+    assert "max_ram = min(max_ram, _cgroup_ram)" in source

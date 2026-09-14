@@ -21,9 +21,41 @@ import functools
 import torch
 
 __all__ = [
+    "device_is_integrated_unified_memory",
     "is_integrated_unified_memory_gpu",
     "patch_unified_memory_safetensors_load",
 ]
+
+
+@functools.lru_cache(maxsize = None)
+def device_is_integrated_unified_memory(index):
+    """True when THIS ONE CUDA/HIP device's memory is the host's.
+
+    The all-devices question below is the right gate for the loader patch, which
+    is process-wide, but the wrong one for a per-device memory budget: on a mixed
+    box (a GB10 beside a discrete card, or an APU beside a dGPU) it answers False
+    and the integrated device is then budgeted as though its pool were its own.
+    Same driver flag, asked one device at a time. False on anything unreadable,
+    so a machine this cannot classify budgets exactly as before.
+    """
+    _force = os.environ.get("UNSLOTH_FORCE_UMA")
+    if _force == "1":
+        return True
+    if _force == "0":
+        return False
+    try:
+        if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+            return False
+        if not (0 <= int(index) < torch.cuda.device_count()):
+            return False
+        props = torch.cuda.get_device_properties(int(index))
+        # Both spellings: torch renamed the attribute, and a wheel exposing
+        # neither reads discrete.
+        return bool(
+            getattr(props, "is_integrated", 0) or getattr(props, "integrated", 0)
+        )
+    except Exception:
+        return False
 
 
 @functools.lru_cache(maxsize = None)

@@ -1,0 +1,871 @@
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Memory budgets on NVIDIA unified-memory parts (GB10 / N1X, "DGX Spark").
+
+Two readings of the same machine are wrong in opposite directions, and both decide
+whether a model loads and how much context it gets:
+
+* ``nvidia-smi`` reports a small carve-out (8128 MiB on the laptop this was measured
+  on) while CUDA addresses the whole 46477 MiB pool. Believing it under-provisions by
+  5.7x and refuses loads the machine runs comfortably.
+* the CUDA driver reports that whole pool as FREE, which is more than the host can
+  actually spare (46297 MiB free against 39 GiB available). Believing that
+  over-commits and pushes the host into swap.
+
+Both are corrected only for devices the driver positively classifies as integrated, so
+every discrete card keeps the reading it has always had -- which is what most of these
+tests check.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+
+def _find_repo_root() -> Path | None:
+    env = os.environ.get("UNSLOTH_REPO_ROOT")
+    if env:
+        p = Path(env).resolve()
+        if (p / "studio" / "backend").is_dir():
+            return p
+    here = Path(__file__).resolve()
+    for parent in (here, *here.parents):
+        if (parent / "studio" / "backend").is_dir():
+            return parent
+        if (parent / "unsloth" / "studio" / "backend").is_dir():
+            return parent / "unsloth"
+    return None
+
+
+_REPO_ROOT = _find_repo_root()
+if _REPO_ROOT is None:
+    pytest.skip(
+        "Could not locate studio/backend. Set UNSLOTH_REPO_ROOT or clone "
+        "unslothai/unsloth into a parent directory.",
+        allow_module_level = True,
+    )
+
+sys.path.insert(0, str(_REPO_ROOT / "studio" / "backend"))
+
+import logging as _logging  # noqa: E402
+
+_loggers_stub = types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: _logging.getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+_structlog = sys.modules.get("structlog")
+if _structlog is None and importlib.util.find_spec("structlog") is None:
+    _structlog = sys.modules.setdefault("structlog", types.ModuleType("structlog"))
+if _structlog is not None and not hasattr(_structlog, "get_logger"):
+    _structlog.get_logger = lambda *args, **kwargs: _logging.getLogger(
+        args[0] if args else "structlog"
+    )
+
+from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+
+import torch as _REAL_TORCH  # noqa: E402
+
+
+@pytest.fixture
+def HW():
+    """The hardware module the code under test will actually import.
+
+    Sibling suites drop ``utils.hardware.hardware`` from ``sys.modules`` so it
+    re-imports under a spoofed platform, which leaves a module-level binding here
+    pointing at an object nothing else uses -- patches land on it and the code goes
+    on calling the real probe. Resolving it per test, and putting it back in
+    ``sys.modules``, patches whatever the lazy import inside the backend will find.
+    """
+    import importlib
+
+    module = importlib.import_module("utils.hardware.hardware")
+    sys.modules["utils.hardware.hardware"] = module
+    return module
+
+
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+# The measured N1X laptop, so the numbers below are a real machine and not a fable.
+_SMI_CARVE_OUT = (0, 7929, 8128)
+_REAL_POOL_BYTES = 48735117312  # 46477 MiB
+
+_NL = chr(10)
+# One line per device: "<ordinal> <integrated> <total_bytes>".
+_ONE_INTEGRATED = "0 1 48735117312" + _NL
+_ONE_DISCRETE_ONE_INTEGRATED = "0 0 25757220864" + _NL + "1 1 48735117312" + _NL
+
+
+@pytest.fixture(autouse = True)
+def _no_inherited_visibility_mask(monkeypatch):
+    """Run with no GPU visibility mask set.
+
+    Sibling suites leave ``CUDA_VISIBLE_DEVICES=""`` behind, and an empty mask means
+    "no GPUs visible" -- the correction then rightly declines to touch a device the
+    caller has hidden, and every assertion here about rewritten numbers fails for a
+    reason that has nothing to do with what it is testing. The mask belongs to the
+    test that is about the mask.
+    """
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+
+
+@pytest.fixture
+def integrated(HW, monkeypatch):
+    """Classify device 0 as integrated with the measured pool size."""
+    monkeypatch.setattr(
+        HW,
+        "_cuda_device_integrated_and_total",
+        lambda index: (True, _REAL_POOL_BYTES) if index == 0 else None,
+    )
+    return _REAL_POOL_BYTES
+
+
+@pytest.fixture
+def discrete(HW, monkeypatch):
+    """Classify every device as a normal card."""
+    monkeypatch.setattr(
+        HW,
+        "_cuda_device_integrated_and_total",
+        lambda index: (False, 24 * GIB),
+    )
+
+
+@pytest.fixture
+def unclassifiable(HW, monkeypatch):
+    """No driver, an error, or ROCm: the probe declines to answer."""
+    monkeypatch.setattr(HW, "_cuda_device_integrated_and_total", lambda index: None)
+
+
+# ── the llama.cpp probe: nvidia-smi's carve-out ──────────────────────────────
+def test_smi_carve_out_is_replaced_by_the_real_pool(HW, integrated, monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
+    )
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [_SMI_CARVE_OUT]
+    )
+    assert idx == 0
+    # The pool, less the 1 GiB host reserve -- not nvidia-smi's 7929 MiB.
+    assert free_mib == 46477 - 1024
+    # Reported as a shared pool so the fit uses free*frac, not a card's capacity.
+    assert total_mib == 0
+
+
+def test_the_pool_is_capped_by_what_the_host_can_spare(HW, integrated, monkeypatch):
+    """The pool is system RAM, so free RAM is the ceiling -- not the pool size."""
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 20000),
+    )
+    ((_idx, free_mib, _total),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [_SMI_CARVE_OUT]
+    )
+    assert free_mib == 20000 - 1024
+
+
+def test_unreadable_system_memory_still_beats_the_carve_out(HW, integrated, monkeypatch):
+    """No RAM reading is not a reason to fall back to a figure known to be wrong."""
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: None),
+    )
+    ((_idx, free_mib, _total),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [_SMI_CARVE_OUT]
+    )
+    assert free_mib == 46477 - 1024
+
+
+def test_a_discrete_card_is_untouched(HW, discrete):
+    rows = [(0, 20000, 24564)]
+    assert LlamaCppBackend._apply_cuda_unified_memory_correction(rows) == rows
+
+
+def test_an_unclassifiable_device_is_untouched(HW, unclassifiable):
+    rows = [(0, 20000, 24564)]
+    assert LlamaCppBackend._apply_cuda_unified_memory_correction(rows) == rows
+
+
+def test_only_the_integrated_device_in_a_mixed_host_is_rewritten(HW, monkeypatch):
+    monkeypatch.setattr(
+        HW,
+        "_cuda_device_integrated_and_total",
+        lambda index: (True, _REAL_POOL_BYTES) if index == 1 else (False, 24 * GIB),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
+    )
+    rows = [(0, 20000, 24564), (1, 7929, 8128)]
+    corrected = LlamaCppBackend._apply_cuda_unified_memory_correction(rows)
+    assert corrected[0] == (0, 20000, 24564)
+    assert corrected[1] == (1, 46477 - 1024, 0)
+
+
+def test_a_visibility_mask_maps_physical_ids_to_driver_ordinals(HW, monkeypatch):
+    """nvidia-smi reports physical ids; the driver's ordinals are what CVD filters.
+
+    With ``CUDA_VISIBLE_DEVICES=3``, physical GPU 3 is driver ordinal 0, and asking
+    the driver about ordinal 3 would classify the wrong device -- or none at all.
+    """
+    asked: list[int] = []
+
+    def _probe(index):
+        asked.append(index)
+        return (True, _REAL_POOL_BYTES) if index == 0 else (False, 24 * GIB)
+
+    monkeypatch.setattr(HW, "_cuda_device_integrated_and_total", _probe)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_resolve_visible_physical_ids",
+        staticmethod(lambda: [3]),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
+    )
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [(3, 7929, 8128)]
+    )
+    assert asked == [0]
+    assert (idx, free_mib, total_mib) == (3, 46477 - 1024, 0)
+
+
+# ── the torch reading: the driver's optimistic free ──────────────────────────
+class _FakeCudaModule:
+    def __init__(self, free_bytes, total_bytes):
+        self._info = (free_bytes, total_bytes)
+
+    def mem_get_info(self, device = None):
+        return self._info
+
+    def current_device(self):
+        return 0
+
+
+def _trusted(HW, monkeypatch, module, *, available_bytes):
+    """Run trusted_mem_get_info against a fake cuda module."""
+    torch_stub = types.SimpleNamespace(cuda = module)
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(HW, "available_system_memory_bytes", lambda: available_bytes)
+    return HW.trusted_mem_get_info(0, module = module)
+
+
+def test_free_is_capped_against_available_ram_on_a_unified_part(HW, integrated, monkeypatch):
+    module = _FakeCudaModule(46297 * MIB, 46477 * MIB)
+    free, total = _trusted(HW, monkeypatch, module, available_bytes = 39 * GIB)
+    assert free == (39 - 1) * GIB  # host reserve held back
+    assert total == 46477 * MIB  # capacity is real and left alone
+
+
+def test_a_free_reading_below_available_ram_is_kept(HW, integrated, monkeypatch):
+    """Only ever reduces: a load already resident makes free the smaller number."""
+    module = _FakeCudaModule(4 * GIB, 46477 * MIB)
+    free, _total = _trusted(HW, monkeypatch, module, available_bytes = 39 * GIB)
+    assert free == 4 * GIB
+
+
+def test_a_discrete_card_free_reading_is_untouched(HW, discrete, monkeypatch):
+    module = _FakeCudaModule(20 * GIB, 24 * GIB)
+    free, total = _trusted(HW, monkeypatch, module, available_bytes = 2 * GIB)
+    assert (free, total) == (20 * GIB, 24 * GIB)
+
+
+def test_an_unclassifiable_device_free_reading_is_untouched(HW, unclassifiable, monkeypatch):
+    module = _FakeCudaModule(20 * GIB, 24 * GIB)
+    free, total = _trusted(HW, monkeypatch, module, available_bytes = 2 * GIB)
+    assert (free, total) == (20 * GIB, 24 * GIB)
+
+
+def test_unreadable_system_memory_leaves_the_driver_figure_alone(HW, integrated, monkeypatch):
+    """Nothing to cap against is not a licence to invent a smaller number."""
+    module = _FakeCudaModule(46297 * MIB, 46477 * MIB)
+    free, _total = _trusted(HW, monkeypatch, module, available_bytes = None)
+    assert free == 46297 * MIB
+
+
+# ── matching a device to the driver's view of it ─────────────────────────────
+def test_the_two_sources_spell_a_bus_id_differently(HW):
+    """For one device: nvidia-smi says 0000000F:01:00.0, CUDA says 000f:01:00.0.
+
+    Measured on the GB10 laptop. Compared as text they never match, so the
+    correction would silently stop firing on the very hardware it is for.
+    """
+    smi, driver = "0000000F:01:00.0", "000f:01:00.0"
+    assert HW.canonical_pci_bus_id(smi) == HW.canonical_pci_bus_id(driver)
+    assert HW.canonical_pci_bus_id("01:00.0") == HW.canonical_pci_bus_id("0000:01:00.0")
+    for junk in ("[N/A]", "", None, "nonsense", "1:2"):
+        assert HW.canonical_pci_bus_id(junk) == "", junk
+
+
+def test_a_bus_id_beats_ordinal_guessing(HW, monkeypatch):
+    """nvidia-smi indexes by bus id; CUDA's default order is FASTEST_FIRST.
+
+    Here nvidia-smi index 0 is the driver's ordinal 1. Matching on the bus id gets
+    it right; translating index to ordinal would classify the other card.
+    """
+    monkeypatch.setattr(
+        HW,
+        "cuda_integrated_by_pci_bus_id",
+        lambda: {"0:01:00.0": (True, _REAL_POOL_BYTES)},
+    )
+    monkeypatch.setattr(
+        HW,
+        "_cuda_device_integrated_and_total",
+        lambda index: (False, 24 * GIB),  # what guessing by ordinal would answer
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_available_system_memory_mib",
+        staticmethod(lambda: 60000),
+    )
+    ((idx, free_mib, total_mib),) = LlamaCppBackend._apply_cuda_unified_memory_correction(
+        [_SMI_CARVE_OUT],
+        bus_ids = {0: "00000000:01:00.0"},
+    )
+    assert (idx, free_mib, total_mib) == (0, 46477 - 1024, 0)
+
+
+def test_a_device_the_driver_did_not_report_is_left_alone(HW, monkeypatch):
+    """Never fall back to ordinal guessing for a bus id the driver did not list."""
+    monkeypatch.setattr(
+        HW,
+        "cuda_integrated_by_pci_bus_id",
+        lambda: {"0:02:00.0": (True, _REAL_POOL_BYTES)},
+    )
+    monkeypatch.setattr(
+        HW,
+        "_cuda_device_integrated_and_total",
+        lambda index: (True, _REAL_POOL_BYTES),
+    )
+    rows = [(0, 7929, 8128)]
+    assert (
+        LlamaCppBackend._apply_cuda_unified_memory_correction(
+            rows,
+            bus_ids = {0: "00000000:01:00.0"},
+        )
+        == rows
+    )
+
+
+# ── the classifier itself ────────────────────────────────────────────────────
+class _FakeCompleted:
+    def __init__(
+        self,
+        stdout = "",
+        returncode = 0,
+    ):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = returncode
+
+
+@pytest.fixture
+def spawned(HW, monkeypatch):
+    """Record what the probe spawns, and answer it with canned stdout."""
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _FakeCompleted(_fake_run.stdout, _fake_run.returncode)
+
+    _fake_run.stdout = _ONE_INTEGRATED
+    _fake_run.returncode = 0
+    HW._cuda_integrated_map_cached.cache_clear()
+    monkeypatch.setattr(HW.subprocess, "run", _fake_run)
+    monkeypatch.setattr(HW, "IS_ROCM", False)
+    yield calls, _fake_run
+    HW._cuda_integrated_map_cached.cache_clear()
+
+
+def test_the_probe_runs_out_of_process(HW, spawned):
+    """The whole point of the design: this process must not initialise CUDA.
+
+    cuInit in a long lived process makes every later fork useless for CUDA: the
+    child's own cuInit returns CUDA_ERROR_NOT_INITIALIZED, which torch surfaces as
+    cuda.is_available() == False. Measured on a GB10 laptop before this moved out
+    of process, a forked child that computed on the GPU stopped seeing it at all.
+    """
+    calls, _ = spawned
+    assert HW._cuda_device_integrated_and_total(0) == (True, _REAL_POOL_BYTES)
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[0] == sys.executable, "must re-run this interpreter, not a guess at one"
+    assert "-I" in cmd, "isolated: no site customisation, no user site-packages"
+    assert kwargs.get("timeout"), "an unresponsive driver must not hang the caller"
+
+
+def test_the_module_never_calls_cuinit_in_process(HW):
+    """Regression guard for the fork hazard, checked on the AST rather than text.
+
+    The child probe is a string constant, so it is data to the parser. Anything
+    the parser sees as an attribute access or a name is code this process would
+    run, and a driver call there re-introduces the fork hazard. Asserted this way
+    rather than by counting words so that editing the comments cannot break it.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(HW))
+    called_in_process = sorted(
+        {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr in {"cuInit", "cuDeviceGet", "cuDeviceGetAttribute"}
+        }
+        | {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and node.id.startswith("cuInit")
+        }
+    )
+    assert called_in_process == [], (
+        "these CUDA driver entry points are reachable as code in the hosting "
+        f"process: {called_in_process}. They belong in the spawned probe only."
+    )
+    assert "cuInit" in HW._CUDA_UMA_PROBE_SOURCE, "the child probe still needs it"
+
+
+def test_one_spawn_answers_for_every_device(HW, spawned):
+    """A single child enumerates every device, so N devices cost one process."""
+    calls, fake = spawned
+    fake.stdout = _ONE_DISCRETE_ONE_INTEGRATED
+    assert HW._cuda_device_integrated_and_total(0) == (False, 25757220864)
+    assert HW._cuda_device_integrated_and_total(1) == (True, _REAL_POOL_BYTES)
+    assert HW._cuda_device_integrated_and_total(2) is None
+    assert len(calls) == 1
+
+
+def test_rocm_is_never_classified_by_the_cuda_driver(HW, spawned, monkeypatch):
+    """ROCm reuses the torch.cuda namespace but has its own APU classifier."""
+    calls, _ = spawned
+    monkeypatch.setattr(HW, "IS_ROCM", True)
+    HW._cuda_integrated_map_cached.cache_clear()
+    assert HW._cuda_device_integrated_and_total(0) is None
+    assert calls == [], "ROCm must not even spawn the probe"
+
+
+def test_a_failing_or_silent_probe_declines(HW, spawned):
+    """No driver, a crash, or unparseable output: decline, never guess."""
+    _calls, fake = spawned
+    for stdout, code in (
+        ("", 0),
+        ("garbage" + _NL, 0),
+        (_ONE_INTEGRATED, 1),
+        ("0 1" + _NL, 0),
+    ):
+        HW._cuda_integrated_map_cached.cache_clear()
+        fake.stdout, fake.returncode = stdout, code
+        assert HW._cuda_device_integrated_and_total(0) is None, (stdout, code)
+        assert HW.cuda_device_is_unified_memory(0) is False
+
+
+def test_a_probe_that_raises_declines(HW, monkeypatch):
+    """A timeout or a refused spawn must not surface in a caller's load."""
+    HW._cuda_integrated_map_cached.cache_clear()
+    monkeypatch.setattr(HW, "IS_ROCM", False)
+
+    def _boom(cmd, **kwargs):
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(HW.subprocess, "run", _boom)
+    try:
+        assert HW._cuda_device_integrated_and_total(0) is None
+    finally:
+        HW._cuda_integrated_map_cached.cache_clear()
+
+
+def test_a_changed_visibility_mask_is_not_answered_from_cache(HW, spawned, monkeypatch):
+    """Driver ordinals are assigned under CUDA_VISIBLE_DEVICES.
+
+    A process that changes the mask must not be handed a classification made
+    under the old one, so the mask is part of the cache key.
+    """
+    calls, fake = spawned
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert HW._cuda_device_integrated_and_total(0) == (True, _REAL_POOL_BYTES)
+    fake.stdout = "0 0 25757220864" + _NL
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert HW._cuda_device_integrated_and_total(0) == (False, 25757220864)
+    assert len(calls) == 2, "the mask change must force a fresh probe"
+
+
+# ── the correction has to be REACHED, not merely present ─────────────────────
+
+
+def test_the_probe_actually_calls_the_correction(HW, integrated, monkeypatch):
+    """`_get_gpu_memory`'s nvidia-smi arm must route through the correction.
+
+    This exists because of how the conflict between this branch and `main` reads
+    when it is resolved by keeping both sides:
+
+        LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+        return gpus                                        # main's
+        return LlamaCppBackend._apply_cuda_unified_memory_correction(...)
+
+    That parses, imports, and passes every test that does not load a Spark, while
+    this entire branch does nothing. Observed once, on a trial merge. Asserting on
+    the returned numbers rather than on the source keeps it honest.
+    """
+    calls = []
+    real = LlamaCppBackend._apply_cuda_unified_memory_correction
+
+    def recording(gpus, bus_ids = None):
+        calls.append((list(gpus), dict(bus_ids or {})))
+        return real(gpus, bus_ids = bus_ids)
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apply_cuda_unified_memory_correction", staticmethod(recording)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0, stdout = "0, 7929, 8128, 00000000:01:00.0\n", stderr = ""
+        ),
+    )
+    gpus = LlamaCppBackend._get_gpu_memory()
+
+    assert calls, "the nvidia-smi arm returned without applying the correction"
+    # And the caller got the corrected numbers, not nvidia-smi's carve-out.
+    assert gpus == [(0, 46477 - 1024, 0)]
+
+
+def test_the_probe_still_reports_pci_index_ids(HW, integrated, monkeypatch):
+    """The other half of that conflict: `main` sets `_GPU_IDS_ARE_PCI_INDICES` on
+    this arm, and callers feed these ids back as CUDA_VISIBLE_DEVICES. Resolving
+    the conflict in this branch's favour alone drops the flag, and the ids are
+    then read as torch ordinals."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0, stdout = "0, 7929, 8128, 00000000:01:00.0\n", stderr = ""
+        ),
+    )
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    LlamaCppBackend._get_gpu_memory()
+    assert LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
+
+
+# ── an unindexed device means the CURRENT device, not device 0 ───────────────
+class _CurrentDeviceCuda(_FakeCudaModule):
+    """A host whose current device is not 0, which is the whole point here."""
+
+    def __init__(self, free_bytes, total_bytes, current = 1):
+        super().__init__(free_bytes, total_bytes)
+        self._current = current
+
+    def current_device(self):
+        return self._current
+
+
+def _device_like(type_name, index):
+    """A REAL ``torch.device``, built before torch is stubbed out.
+
+    Its ``index`` is None and its ``str()`` is the bare type name for an unindexed
+    device, and getting either of those subtly wrong in a stub is how this bug
+    passed review in the first place.
+    """
+    # Resolved once at import, so a test that has stubbed sys.modules["torch"]
+    # still builds a genuine device object.
+    return _REAL_TORCH.device(type_name if index is None else f"{type_name}:{index}")
+
+
+def test_an_indexless_device_resolves_to_the_current_device(HW, monkeypatch):
+    """``torch.device("cuda")`` carries no index, and ``mem_get_info`` resolves
+    that to the current device. Reading it as 0 asks about a different card."""
+    monkeypatch.setitem(
+        sys.modules, "torch",
+        types.SimpleNamespace(cuda = _CurrentDeviceCuda(0, 0, current = 1)),
+    )
+    assert HW._cuda_ordinal_for(_device_like("cuda", None)) == 1
+    assert HW._cuda_ordinal_for("cuda") == 1
+    assert HW._cuda_ordinal_for(None) == 1
+
+
+def test_an_explicit_index_still_wins_over_the_current_device(HW, monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "torch",
+        types.SimpleNamespace(cuda = _CurrentDeviceCuda(0, 0, current = 1)),
+    )
+    assert HW._cuda_ordinal_for(_device_like("cuda", 0)) == 0
+    assert HW._cuda_ordinal_for("cuda:0") == 0
+    assert HW._cuda_ordinal_for(3) == 3
+
+
+def test_the_clamp_follows_the_current_device_on_a_mixed_host(HW, monkeypatch):
+    """Discrete card at ordinal 0, integrated part at ordinal 1, current = 1.
+
+    ``mem_get_info(torch.device("cuda"))`` measures the integrated part, so the
+    unified-memory clamp has to be decided from the integrated part too. Deciding
+    it from device 0 hands back the driver's whole-pool figure.
+    """
+    monkeypatch.setattr(
+        HW, "_cuda_device_integrated_and_total",
+        lambda index: (index == 1, _REAL_POOL_BYTES if index == 1 else 24 * GIB),
+    )
+    module = _CurrentDeviceCuda(46297 * MIB, 46477 * MIB, current = 1)
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda = module))
+    monkeypatch.setattr(HW, "available_system_memory_bytes", lambda: 39 * GIB)
+    free, _total = HW.trusted_mem_get_info(_device_like("cuda", None), module = module)
+    assert free == (39 - 1) * GIB
+
+
+# ── the host RAM figure is bounded by the container, not the host ────────────
+def test_available_system_memory_is_capped_by_the_cgroup(HW, monkeypatch):
+    """psutil and /proc/meminfo both report the HOST. In a 4 GiB container on a
+    64 GiB box they hand back RAM this process may not charge, and a unified-memory
+    fit sized to it is the shape that gets OOM-killed rather than refused."""
+    monkeypatch.setattr(
+        HW, "psutil", None, raising = False
+    )
+    monkeypatch.setitem(
+        sys.modules, "psutil",
+        types.SimpleNamespace(
+            virtual_memory = lambda: types.SimpleNamespace(available = 60 * GIB)
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 4 * 1024)
+    )
+    assert HW.available_system_memory_bytes() == 4 * GIB
+
+
+def test_an_unreadable_cgroup_leaves_the_host_figure_alone(HW, monkeypatch):
+    """No cap read is not a licence to invent a smaller number: this is exactly
+    what the function returned before the cap existed."""
+    monkeypatch.setitem(
+        sys.modules, "psutil",
+        types.SimpleNamespace(
+            virtual_memory = lambda: types.SimpleNamespace(available = 60 * GIB)
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
+    assert HW.available_system_memory_bytes() == 60 * GIB
+
+
+def test_a_cgroup_looser_than_the_host_does_not_raise_the_answer(HW, monkeypatch):
+    monkeypatch.setitem(
+        sys.modules, "psutil",
+        types.SimpleNamespace(
+            virtual_memory = lambda: types.SimpleNamespace(available = 8 * GIB)
+        ),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 64 * 1024)
+    )
+    assert HW.available_system_memory_bytes() == 8 * GIB
+
+
+# ── classifying integrated CUDA costs no CUDA context ────────────────────────
+def test_integrated_ids_come_from_the_out_of_process_probe(HW, monkeypatch):
+    """``get_device_properties`` creates a ~700 MiB primary context on every device
+    it touches. The driver probe already ran out of process, so asking it again in
+    here would be that cost for an answer we have."""
+    touched = []
+
+    def _explode(ordinal):
+        touched.append(ordinal)
+        raise AssertionError("get_device_properties must not be called here")
+
+    monkeypatch.setitem(
+        sys.modules, "torch",
+        types.SimpleNamespace(
+            version = types.SimpleNamespace(hip = None, cuda = "12.8"),
+            cuda = types.SimpleNamespace(
+                is_available = lambda: True,
+                device_count = lambda: 2,
+                get_device_properties = _explode,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        HW, "_cuda_integrated_map",
+        lambda: {0: (False, 24 * GIB, "0000:01:00.0"), 1: (True, _REAL_POOL_BYTES, "0000:02:00.0")},
+    )
+    assert LlamaCppBackend._integrated_cuda_gpu_ids() == {1}
+    assert touched == []
+
+
+# ── one pool is credited once ────────────────────────────────────────────────
+def _integrated_fit(monkeypatch, *, integrated, free_mib, avail_mib, model_bytes):
+    """The planner's verdict for a 1-GPU host, integrated or not."""
+    import utils.hardware as _hardware
+
+    monkeypatch.setattr(_hardware, "is_apple_silicon", lambda: False)
+
+    class _Stub:
+        _fits_without_paging = LlamaCppBackend._fits_without_paging
+        _FIT_LOAD_MODE = LlamaCppBackend._FIT_LOAD_MODE
+
+        def _available_system_memory_mib(self):
+            return avail_mib
+
+        def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+            return False
+
+        def _unified_memory_gpu_ids(self):
+            return {0} if integrated else set()
+
+    return LlamaCppBackend._fit_derived_load_mode(
+        _Stub(),
+        model_size = model_bytes,
+        gpus = [(0, free_mib)],
+        avail_mib = avail_mib,
+    )
+
+
+def test_an_integrated_cuda_pool_is_not_credited_twice(monkeypatch):
+    """A GB10's 20 GiB of "free VRAM" IS the host's 20 GiB of free RAM. Counting
+    both fits a 30 GiB model into memory that holds 20 GiB of it."""
+    got = _integrated_fit(
+        monkeypatch, integrated = True,
+        free_mib = 20 * 1024, avail_mib = 20 * 1024, model_bytes = 30 * GIB,
+    )
+    assert got is None, "a 30 GiB model must not read as a fit on a 20 GiB machine"
+
+
+def test_a_discrete_card_still_gets_its_own_pool(monkeypatch):
+    """The same numbers on a discrete card really are two pools, and the fit that
+    is genuinely there must not be forfeited."""
+    got = _integrated_fit(
+        monkeypatch, integrated = False,
+        free_mib = 20 * 1024, avail_mib = 20 * 1024, model_bytes = 30 * GIB,
+    )
+    assert got == LlamaCppBackend._FIT_LOAD_MODE
+
+
+def test_an_integrated_pool_that_really_does_hold_the_model_still_fits(monkeypatch):
+    """Pricing it once is not pricing it at zero."""
+    got = _integrated_fit(
+        monkeypatch, integrated = True,
+        free_mib = 40 * 1024, avail_mib = 40 * 1024, model_bytes = 8 * GIB,
+    )
+    assert got == LlamaCppBackend._FIT_LOAD_MODE
+
+
+# ── the probe's record, and every consumer reading the same ids ──────────────
+def test_the_correction_records_the_rows_it_rewrote(HW, monkeypatch):
+    """Downstream guards need to know WHICH rows describe host RAM, and they can
+    only match the ids the probe actually returned."""
+    monkeypatch.setattr(
+        HW, "_cuda_device_integrated_and_total",
+        lambda index: (True, _REAL_POOL_BYTES) if index == 1 else (False, 24 * GIB),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    LlamaCppBackend._apply_cuda_unified_memory_correction([(0, 20000, 24564), (1, 7929, 8128)])
+    assert LlamaCppBackend._unified_memory_gpu_ids() == {1}
+
+
+def test_a_discrete_host_records_nothing(HW, discrete, monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    LlamaCppBackend._apply_cuda_unified_memory_correction([(0, 20000, 24564)])
+    assert LlamaCppBackend._unified_memory_gpu_ids() == set()
+
+
+def test_the_smi_record_is_not_answered_from_physical_ids(HW, monkeypatch):
+    """nvidia-smi enumerates by bus id while CUDA defaults to FASTEST_FIRST, so the
+    two orders disagree. The accessor must hand back the ids the ROWS carry, not a
+    fresh driver classification in the other space."""
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(LlamaCppBackend, "_UNIFIED_MEMORY_SMI_IDS", {1})
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
+    )
+    assert LlamaCppBackend._unified_memory_gpu_ids() == {1}
+
+
+def test_the_torch_leg_answers_in_its_own_id_space(HW, monkeypatch):
+    """No nvidia-smi: the rows carry physical ids, where the driver classification
+    IS the right answer."""
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+    monkeypatch.setattr(LlamaCppBackend, "_UNIFIED_MEMORY_SMI_IDS", {1})
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
+    )
+    assert LlamaCppBackend._unified_memory_gpu_ids() == {0}
+
+
+def test_nothing_is_shared_before_a_probe_has_run(HW, monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", None)
+    assert LlamaCppBackend._unified_memory_gpu_ids() == set()
+
+
+def test_the_launch_guard_prices_one_pool_once(monkeypatch):
+    """The item this closes: `_launch_host_shortfall_message` subtracts free VRAM
+    and then charges the rest to available RAM, so an unmarked GB10 was credited
+    19 GiB of VRAM PLUS 20 GiB of RAM for one 20 GiB pool and the pageable-load
+    guard never fired on a 30 GiB model.
+
+    Driven through a REAL backend with only the four readings stubbed, rather than
+    a hand-built stub: the guard reaches a dozen helpers, and a stub deep enough to
+    satisfy them is a second implementation that can agree with itself while
+    disagreeing with the code that ships.
+    """
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gguf_size_bytes", lambda self, _p: 30 * GIB, raising = False
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 20 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_amd_apu_wants_unified_memory", staticmethod(lambda _i = None: False)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_offload_warning_opted_out", staticmethod(lambda: False)
+    )
+    rows = [(0, 20 * 1024)]
+
+    def _message(shared):
+        return backend._launch_host_shortfall_message(
+            ["llama-server", "-m", "m.gguf"], rows, {}, shared_gpu_ids = shared,
+        )
+
+    # Unmarked: the 20 GiB pool is credited as VRAM and then again as RAM, the
+    # 30 GiB model looks like it fits, and nothing is reported.
+    assert _message(set()) is None
+    # Marked: the whole 30 GiB has to come out of 20 GiB of host RAM, and the
+    # shortfall is reported.
+    assert _message({0}) is not None
