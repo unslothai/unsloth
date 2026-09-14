@@ -174,6 +174,39 @@ mkdir -p "$_alien/archive-v0/torch" "$_alien/lost+found"
 : > "$_alien/archive-v0/torch/libtorch.so"
 : > "$_alien/CACHEDIR.TAG"
 chmod 000 "$_alien/lost+found"
+# Bucket-SHAPED but not a kind uv creates, so uv never opens it.
+_alien_bucket="$_TMP/uvalienbucket"
+mkdir -p "$_alien_bucket/archive-v0/torch" "$_alien_bucket/unused-v999"
+: > "$_alien_bucket/archive-v0/torch/libtorch.so"
+: > "$_alien_bucket/CACHEDIR.TAG"
+chmod 000 "$_alien_bucket/unused-v999"
+# python-v0 IS uv's, since 0.8.16, and the installer installs a managed CPython.
+_managed_python="$_TMP/uvpython"
+mkdir -p "$_managed_python/archive-v0/torch" "$_managed_python/python-v0"
+: > "$_managed_python/archive-v0/torch/libtorch.so"
+: > "$_managed_python/CACHEDIR.TAG"
+chmod a-w "$_managed_python/python-v0"
+# Case-SENSITIVE: two directories, only the lowercase one uv's. Inferring the fold from the
+# pair existing would condemn the cache, which is why the probe makes its own directory.
+_cased_bucket="$_TMP/uvcased"
+mkdir -p "$_cased_bucket/archive-v0/torch" "$_cased_bucket/Python-V0" "$_cased_bucket/python-v0"
+: > "$_cased_bucket/archive-v0/torch/libtorch.so"
+: > "$_cased_bucket/CACHEDIR.TAG"
+chmod a-w "$_cased_bucket/Python-V0"
+_cased_only="$_TMP/uvcasedonly"
+mkdir -p "$_cased_only/archive-v0/torch" "$_cased_only/Python-V0"
+: > "$_cased_only/archive-v0/torch/libtorch.so"
+: > "$_cased_only/CACHEDIR.TAG"
+chmod a-w "$_cased_only/Python-V0"
+# Asked the same way install.sh asks, so the fold cases below run for real on an APFS runner
+# rather than being simulated into always-true on ext4.
+_cased_file="$_TMP/uvcasedfile"
+mkdir -p "$_cased_file/archive-v0/torch"
+: > "$_cased_file/archive-v0/torch/libtorch.so"
+: > "$_cased_file/CACHEDIR.TAG"
+: > "$_cased_file/Python-V0"
+_FOLDS=false
+mkdir -p "$_TMP/.foldcheck-A" && [ -d "$_TMP/.foldcheck-a" ] && _FOLDS=true
 # A bucket NAME needs the whole suffix to be the version: a backup copy or a tarball beside
 # the real bucket is not uv's to write, and must not condemn the cache.
 _lookalike="$_TMP/uvlookalike"
@@ -260,6 +293,26 @@ else
     assert_eq "a denied metadata bucket too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/q" '' "$_alien")
     assert_eq "lost+found does not condemn it" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q2" '' "$_alien_bucket")
+    assert_eq "an unknown KIND does not either" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q3" '' "$_managed_python")
+    assert_eq "a read-only python-v0 still does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    if [ "$_FOLDS" = true ]; then
+        _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
+        assert_eq "a cased bucket condemns when folded" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+        _out=$(_run "$_TMP/q5" '' "$_cased_only")
+        assert_eq "so does a lone cased bucket"         "studio" "$(echo "$_out" | cut -d' ' -f1)"
+        # A FILE collides with uv's mkdir, and only the rejection branch catches it.
+        _out=$(_run "$_TMP/q6" '' "$_cased_file")
+        assert_eq "and a cased FILE does too"           "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    else
+        _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
+        assert_eq "a cased sibling does not condemn" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+        _out=$(_run "$_TMP/q5" '' "$_cased_only")
+        assert_eq "nor a lone cased directory"       "shared" "$(echo "$_out" | cut -d' ' -f1)"
+        _out=$(_run "$_TMP/q6" '' "$_cased_file")
+        assert_eq "nor a cased file"                 "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    fi
     _out=$(_run "$_TMP/v1" '' "$_empty_version")
     assert_eq "an empty -v suffix is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
@@ -287,12 +340,15 @@ for _nc in 0 false; do
     unset UV_NO_CACHE
 done
 chmod 700 "$_alien/lost+found"
+chmod 700 "$_alien_bucket/unused-v999"
+chmod u+w "$_managed_python/python-v0" "$_cased_bucket/Python-V0" "$_cased_only/Python-V0"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
     "$_denied_meta/interpreter-v4" "$_empty_version/archive-v1-v"
 # The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
 _run "$_TMP/g" '' "$_populated" >/dev/null
 assert_eq "write probe cleaned up" "" "$(ls -A "$_populated" | grep 'unsloth-write-probe' || true)"
+assert_eq "case probe cleaned up"  "" "$(ls -A "$_populated" | grep 'unsloth-case-probe' || true)"
 
 echo "=== a relative cache-dir resolves against UV_WORKING_DIR, not the installer's cwd ==="
 _out=$(_run "$_TMP/h" '' "relcache" false "$_TMP/work")
@@ -361,6 +417,15 @@ printf '\357\273\277%s\r\n' "$_TMP/crlf/cache/uv" > "$_TMP/crlf/cache/uv-cache-d
 _out=$(_run "$_TMP/crlf" '' "$_populated")
 assert_eq "a BOM+CRLF marker is honoured"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "and names the right directory"  "$_TMP/crlf/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+
+# Stripping every CR made a cache whose name holds one read as a path that does not exist.
+_cr=$(printf '\r')
+mkdir -p "$_TMP/embedcr/cache" "$_TMP/sha${_cr}red/archive-v0/torch"
+: > "$_TMP/sha${_cr}red/archive-v0/torch/libtorch.so"
+printf '%s\r\n' "$_TMP/sha${_cr}red" > "$_TMP/embedcr/cache/uv-cache-dir"
+_out=$(_run "$_TMP/embedcr" '' "$_empty")
+assert_eq "a CR inside the path survives" "$_TMP/sha${_cr}red" "$(echo "$_out" | cut -d' ' -f2)"
+unset _cr
 
 echo "=== a trailing slash in the marker is the same directory ==="
 mkdir -p "$_TMP/slash/cache/uv/archive-v0/torch"

@@ -1235,8 +1235,43 @@ class TestInstallUvCacheRootParity:
         # rejected it from the start, so this was a real split.
         bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
-        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split("\n}", 1)[0]
+        # To the NEXT function: the body is indented, so splitting on "\n}" ran two
+        # functions on and every assertion below it read the wrong code.
+        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
+            "function Test-StudioUvCacheWritable", 1
+        )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
+        # Both sides MEASURE whether to fold: default APFS folds and ext4 does not, NTFS
+        # folds unless fsutil setCaseSensitiveInfo says otherwise. Blind folding condemns.
+        assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
+        assert "-cin" not in bucket_ps1, bucket_ps1
+        assert "[switch]$Fold" in bucket_ps1, bucket_ps1
+        writable_ps1 = ps1.split("function Test-StudioUvCacheWritable", 1)[1].split(
+            "function Test-StudioUvCachePopulated", 1
+        )[0]
+        assert ".unsloth-case-probe." in writable_ps1, writable_ps1
+        assert "-Fold:$fold" in writable_ps1, writable_ps1
+        writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
+        assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
+        # By a directory the probe MAKES: an existing pair cannot say whether it is one.
+        assert ".unsloth-case-probe." in writable_sh, writable_sh
+        assert "_uv_w_fold=1" in writable_sh, writable_sh
+        # and it decides only the NAME: a colliding file must reach the rejection below.
+        assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
+        probe_kinds = {
+            "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
+            "git", "interpreter", "osv", "python", "sdists", "simple", "wheels",
+        }
+        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        case_body = re.search(
+            r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
+        ).group(1)
+        kinds_sh = set(re.findall(r"[a-z\-]+", case_body))
+        assert kinds_sh == probe_kinds, sorted(kinds_sh ^ probe_kinds)
+        kinds_ps1 = set(
+            re.findall(r'"([a-z\-]+)"', bucket_ps1.split("-in @(", 1)[1].split("))", 1)[0])
+        )
+        assert kinds_ps1 == probe_kinds, sorted(kinds_ps1 ^ probe_kinds)
         # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
         # cache the installers just rejected. Its docstring claimed the same rule long before
         # it had it.
