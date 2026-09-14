@@ -28,8 +28,34 @@ die() { log "ERROR: $*"; exit 1; }
 # image that ships Studio inside the home (before the code/data split) to roll back.
 if [ "${1:-}" = "--restore" ]; then
     legacy="$HOME_DIR/$LEGACY_NAME"
-    [ -d "$legacy" ] || { log "nothing to restore: no $legacy"; exit 0; }
     shopt -s dotglob nullglob
+    if [ ! -d "$legacy" ]; then
+        # A volume first used after the split, or one whose legacy copy was deleted, holds
+        # data plus links into the app dir and no old code at all. An image from before the
+        # split cannot run it as is (its own Studio tree is hidden under the mount and the
+        # links point at nothing there), so give it real copies of this image's code.
+        [ -d "$APP" ] || die "no $legacy to restore and no $APP on this image: run --restore under an image that has the Studio code in $APP (the one that last ran this volume), it copies that code into the home for an older image"
+        copied=()
+        for target in "$HOME_DIR"/*; do
+            [ -L "$target" ] || continue
+            link="$(readlink "$target")"
+            case "$link" in "$APP"/*) ;; *) continue;; esac
+            name="${target##*/}"
+            if [ -e "$link" ]; then
+                rm -f -- "$target"
+                cp -a -- "$link" "$target" || die "cannot copy $link to $target; the home now lacks $name, rerun --restore"
+                copied+=("$name")
+            else
+                rm -f -- "$target"
+            fi
+        done
+        if [ "${#copied[@]}" -gt 0 ]; then
+            log "no kept-aside copy on this volume; copied this image's code into the home instead (${copied[*]}), so an image from before the split can run it. The next start of a split image links its own code back in."
+        else
+            log "nothing to restore: no links into $APP and no $legacy"
+        fi
+        exit 0
+    fi
     # every link of ours goes, kept copy or not: an older image expects real entries
     # and Docker copies nothing into a volume that is not empty
     for target in "$HOME_DIR"/*; do

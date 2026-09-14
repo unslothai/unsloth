@@ -161,12 +161,37 @@ def test_restore_refuses_to_overwrite_a_real_entry(tmp_path):
     assert (home / LEGACY / "src" / "studio" / "uncommitted.py").read_text() == "mine"
 
 
-def test_restore_without_a_legacy_dir_is_a_no_op(tmp_path):
+def test_restore_without_a_legacy_dir_copies_this_images_code_in(tmp_path):
+    """A volume first used after the split has no old code to put back. An older image
+    cannot run links into an app dir it does not have, so --restore materialises copies."""
     app = _app(tmp_path)
     home = tmp_path / "home"
+    (home / "outputs").mkdir(parents = True)
+    (home / "outputs" / "model.bin").write_text("weights")
     assert _link(app, home).returncode == 0
     res = _link(app, home, "--restore")
     assert res.returncode == 0, res.stderr
+    assert not (home / "src").is_symlink() and (home / "src").is_dir()
+    assert (home / "unsloth_studio" / "VERSION").read_text() == "new\n"
+    assert not (home / "llama.cpp").exists() or (home / "llama.cpp").is_symlink()
+    assert (home / "outputs" / "model.bin").read_text() == "weights"
+    assert "copied this image's code" in res.stderr
+    # and a split image links its own code back in on the next start, keeping the copies aside
+    assert _link(app, home).returncode == 0
+    assert (home / "src").is_symlink()
+    assert (home / LEGACY / "src").is_dir()
+
+
+def test_restore_without_a_legacy_dir_or_an_app_dir_says_which_image_to_use(tmp_path):
+    app = _app(tmp_path)
+    home = tmp_path / "home"
+    assert _link(app, home).returncode == 0
+    import shutil
+
+    shutil.rmtree(app)
+    res = _link(app, home, "--restore")
+    assert res.returncode == 1
+    assert "run --restore under an image that has the Studio code" in res.stderr
     assert (home / "src").is_symlink()
 
 
