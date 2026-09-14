@@ -205,6 +205,10 @@ export function createRecoveryReplay(
   const slots = parts as unknown as StreamedToolCallPart[];
 
   const liveOutput = new Map<string, string>();
+  // A provider turn ended (at least one tool completed); the next delta round restarts index at 0.
+  // Mirrors the live adapter's endProviderTurn() which deletes _delta_index from all cards so the
+  // new round's index-0 fragment doesn't match the prior round's index-0 card.
+  let sawToolEnd = false;
   // What `document_citations` frames collected. Web sources are NOT stored here: like live they are
   // DERIVED from the web_search/web_fetch parts at assembly time, so both readers derive them alike.
   const citationParts: ContentPart[] = [];
@@ -380,6 +384,9 @@ export function createRecoveryReplay(
     // Resolved through the map, so a frame naming `call_0` finds the card the id-less fragments drew
     // under `tool_call_0` instead of opening a second one.
     const existingIndex = cardNamed(backendId);
+    if (type === "tool_end") {
+      sawToolEnd = true;
+    }
     if (type === "tool_output") {
       // Incremental stdout for a call that is still running. With no card there is nothing to
       // append to, which is also what the live path does.
@@ -482,6 +489,19 @@ export function createRecoveryReplay(
 
   const applyToolCallDeltas = (calls: unknown): boolean => {
     if (!Array.isArray(calls) || calls.length === 0) return false;
+    // Turn boundary: the prior round's cards are done, and this round's index restarts at 0.
+    // Without this reset, findStreamedToolCallPartIndex matches the new index-0 delta to the
+    // prior completed card (same _delta_index), renaming and overwriting it instead of creating
+    // a new one. Exactly what the live adapter's endProviderTurn() prevents.
+    if (sawToolEnd) {
+      sawToolEnd = false;
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i]._delta_index === undefined) continue;
+        const closed = { ...parts[i] };
+        delete closed._delta_index;
+        parts[i] = closed;
+      }
+    }
     let changed = false;
     for (const entry of calls) {
       if (!entry || typeof entry !== "object") continue;
