@@ -4977,7 +4977,7 @@ export function createOpenAIStreamAdapter(
       if (submittedImages.length) {
         try {
           mcpImagePolicy = mcpImagePolicySnapshot(
-            mcpEnabledForChat ? await listMcpServers() : [],
+            mcpEnabledForChat && supportsTools ? await listMcpServers() : [],
           );
         } catch {
           throw new Error(

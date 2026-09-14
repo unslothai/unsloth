@@ -281,7 +281,9 @@ class VisionImageAdapter implements AttachmentAdapter {
   private readonly pendingToolOnly = new Set<string>();
 
   private async mcpToolOnlyEnabled(): Promise<boolean> {
-    if (!useChatRuntimeStore.getState().mcpEnabledForChat) return false;
+    const state = useChatRuntimeStore.getState();
+    const modelLoaded = !!state.params.checkpoint && !state.modelLoading;
+    if (!state.mcpEnabledForChat || (modelLoaded && !state.supportsTools)) return false;
     try {
       return mcpImagePolicySnapshot(await listMcpServers()).tool_only;
     } catch {

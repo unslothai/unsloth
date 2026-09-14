@@ -84,6 +84,11 @@ function sourceBetween(path: string, start: string, end: string): string {
 }
 
 test("attachment and send gates forward projector fallback state", () => {
+  const provider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(provider, /modelLoaded && !state\.supportsTools/);
   const attachmentGate = sourceBetween(
     "../src/features/chat/runtime-provider.tsx",
     "const unavailableReason = getImageInputUnavailableReason({",

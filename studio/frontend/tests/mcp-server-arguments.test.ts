@@ -743,6 +743,7 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     .sort();
 
   assert.deepEqual(listOccurrences, [
+    "api/chat-adapter.ts",
     "api/mcp-servers-api.ts",
     "chat-mcp-servers-dialog.tsx",
     "mcp-composer-button.tsx",

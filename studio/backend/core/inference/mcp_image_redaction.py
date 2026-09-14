@@ -389,17 +389,6 @@ class _ImageEchoSanitizer:
         slots = []
         integer_slots = []
         rekeys = []
-        metadata_keys = {
-            "type",
-            "mimeType",
-            "mime_type",
-            "name",
-            "id",
-            "role",
-            "kind",
-            "separator",
-            "delimiter",
-        }
 
         def collect(
             node,
@@ -407,8 +396,7 @@ class _ImageEchoSanitizer:
             key = None,
         ):
             if type(node) is str:
-                compact = self._normalized_text(node)
-                if owner is not None and (key not in metadata_keys or compact in self.fingerprint):
+                if owner is not None:
                     slots.append((owner, key, node))
                 return
             if isinstance(node, dict):
