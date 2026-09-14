@@ -5528,7 +5528,13 @@ def _sampling_release(monkeypatch, **utils_fields):
     monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(**utils_fields))
 
 
-def _legacy_load_video(video_path, fps = 2.0, nframes = None, min_frames = 4, max_frames = 768):
+def _legacy_load_video(
+    video_path,
+    fps = 2.0,
+    nframes = None,
+    min_frames = 4,
+    max_frames = 768,
+):
     raise AssertionError("never decoded here")
 
 
@@ -5599,7 +5605,11 @@ def test_mlx_vlm_a_release_naming_no_fps_knob_still_bounds_a_clip(monkeypatch):
     """Forward compatibility: an unknown load_video signature must not make a clip a KeyError."""
     from core.inference import mlx_inference
 
-    def load_video(video_path, sampling = None, **sampling_kwargs):
+    def load_video(
+        video_path,
+        sampling = None,
+        **sampling_kwargs,
+    ):
         raise AssertionError("never decoded here")
 
     _sampling_release(monkeypatch, load_video = load_video)
@@ -5630,11 +5640,8 @@ def test_mlx_vlm_without_opencv_refuses_a_clip_by_name(monkeypatch):
 
 def _mlx_reads_video_probe(monkeypatch):
     from core.inference.mlx_inference import _mlx_reads_video
-
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         lambda _t, _m, **_k: "<video> marked",
     )
-    return _mlx_reads_video(
-        SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
-    )
+    return _mlx_reads_video(SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace()))
