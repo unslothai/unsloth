@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import pwsh_env
+
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -330,10 +332,18 @@ def _run_pwsh(script: Path, *, timeout: int):
     Only an abnormal termination is forgiven, and only with a fault banner on stderr to back
     it up: a clean non-zero exit, or the wrong answer on stdout, is the script under test
     being wrong and still fails. Retried once first, because the fault has never repeated.
+
+    pwsh_env, not run_pwsh: this function's whole job is to look at a crashed
+    CompletedProcess and decide, and run_pwsh raises PwshInterpreterCrash instead of
+    returning one, so it cannot be the caller here. What it can still take is the private
+    startup cache -- and the FileLoadException named in _PWSH_HOST_FAULT above is exactly
+    the torn-cache shape that cache directory removes, so this is the call site that most
+    needed it. See tests/_shared/unsloth_pwsh_runner.py.
     """
     command = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)]
+    env = pwsh_env()
     for attempt in range(2):
-        result = subprocess.run(command, capture_output = True, text = True, timeout = timeout)
+        result = subprocess.run(command, capture_output = True, text = True, timeout = timeout, env = env)
         crashed = result.returncode < 0 and any(
             marker in result.stderr for marker in _PWSH_HOST_FAULT
         )

@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from unsloth_pwsh_runner import run_pwsh
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
@@ -238,7 +240,13 @@ def _run_ps1_printer(install_dir, strict_mode):
     # to sit in the CALLER's scope.
     script_path = Path(install_dir).parent / f"drive_{strict_mode.replace('.', '_')}.ps1"
     script_path.write_text(script, encoding = "utf-8")
-    proc = subprocess.run(
+    # run_pwsh, not subprocess.run: this helper is the single entry point for all 498
+    # parametrised ps1 cases in this file, so every one of them was starting pwsh with the
+    # shared $XDG_CACHE_HOME/powershell startup cache. At -n 16 roughly nine of them died at
+    # startup per run with `System.IO.FileLoadException: The given assembly name was
+    # invalid`, which the assertions below then reported as the printer emitting the wrong
+    # line. See tests/_shared/unsloth_pwsh_runner.py.
+    proc = run_pwsh(
         [
             "pwsh",
             "-NoLogo",
