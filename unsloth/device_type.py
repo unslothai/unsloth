@@ -64,18 +64,13 @@ def is_hip():
 def npu_is_available():
     """True only when torch.npu is present AND usable.
 
-    torch_npu >= 2.5.1 registers the torch.npu namespace during `import torch` through
-    its torch.backends entry point, but older releases and
-    TORCH_DEVICE_BACKEND_AUTOLOAD=0 do not, so fall back to importing it here.
-    Every probe stays guarded: torch_npu without CANN or a driver raises on import
-    (missing libascend_hal.so), and that must not take `import unsloth` down on the
-    CUDA, ROCm and XPU hosts that never had an NPU in the first place.
+    Only torch_npu >= 2.5.1 autoloads the namespace, and importing it without a driver
+    raises, so an unguarded probe would break `import unsloth` on CUDA, ROCm and XPU too.
     """
     if _IS_MLX:
         return False
     npu = getattr(torch, "npu", None)
     if npu is None:
-        # find_spec first: on a host without torch_npu this answers None and costs nothing.
         if importlib.util.find_spec("torch_npu") is None:
             return False
         try:
@@ -107,8 +102,7 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    # After xpu, not before it: a host exposing both must keep selecting xpu, as it did
-    # before Ascend was known about.
+    # After xpu: a host exposing both keeps selecting xpu, as it did before Ascend.
     elif npu_is_available():
         return "npu"
     accelerator = None
@@ -116,17 +110,15 @@ def get_device_type():
         if not torch.accelerator.is_available():
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
-        # "npu" joins this list rather than returning it: reaching here means torch.npu is
-        # missing or unusable, so returning "npu" would only defer the failure to
-        # torch.npu.device_count() as an unhelpful AttributeError.
+        # "npu" is listed, not returned: torch.npu is unusable here, so returning it
+        # would only defer the failure to device_count() as an AttributeError.
         if accelerator in ("cuda", "xpu", "hip", "npu"):
             raise RuntimeError(
                 f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()`, `torch.npu.is_available()` and `is_hip` all failed.\n"
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    # Name the device that was actually found. torch.accelerator only exists from torch
-    # 2.6, so below that there is no name to report.
+    # torch.accelerator only exists from torch 2.6, so below that there is no name.
     raise NotImplementedError(
         f"Unsloth does not currently work on {accelerator}."
         if accelerator
@@ -299,8 +291,7 @@ def get_device_stats() -> tuple[str, str, float]:
         snippet = f"Intel Toolkit: {torch.version.xpu}."
     elif DEVICE_TYPE == "npu":
         name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
-        # Mirrors the cuda/xpu arms by reporting the toolkit version rather than
-        # repeating the device name, which "Ascend NPU: " + name already put in `name`.
+        # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
         try:
             import torch_npu
             snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."

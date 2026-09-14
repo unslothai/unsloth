@@ -207,8 +207,7 @@ def test_model_call_sites_use_shared_cache_dispatch():
 NPU_PROPERTIES = types.SimpleNamespace(
     name = "Ascend910B2",
     total_memory = 60 * 1024**3,
-    # torch_npu exposes major/minor as std::optional<int>, so they arrive as None on
-    # real hardware. The npu arm must never read them.
+    # major/minor are std::optional on real hardware, so None. The npu arm must not read them.
     major = None,
     minor = None,
 )
@@ -269,7 +268,6 @@ def test_npu_blank_name_falls_back(monkeypatch):
 
 
 def test_cuda_wins_over_npu(monkeypatch):
-    # A future torch shipping torch.npu, or a mixed host, must not flip CUDA to npu.
     torch = _fake_torch(properties = CUDA_PROPERTIES)
     torch.npu = _npu_backend()
 
@@ -279,7 +277,6 @@ def test_cuda_wins_over_npu(monkeypatch):
 
 
 def test_xpu_wins_over_npu(monkeypatch):
-    # npu is probed after xpu so a host exposing both keeps its pre-Ascend answer.
     xpu_backend = types.SimpleNamespace(
         is_available = lambda: True,
         device_count = lambda: 2,
@@ -304,8 +301,7 @@ def test_xpu_wins_over_npu(monkeypatch):
 
 
 def test_npu_probe_survives_raising_is_available(monkeypatch):
-    # torch_npu installed without a driver raises here. That must stay a clean
-    # NotImplementedError, not a RuntimeError escaping `import unsloth`.
+    # Must stay a clean NotImplementedError, not a RuntimeError escaping `import unsloth`.
     torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
     torch.npu = _npu_backend(available = "raise")
 
@@ -322,7 +318,6 @@ def test_npu_unavailable_is_not_selected(monkeypatch):
 
 
 def test_unsupported_accelerator_is_named_in_the_error(monkeypatch):
-    # An unknown accelerator should say what was found, not just list what is supported.
     torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
     torch.accelerator = types.SimpleNamespace(
         is_available = lambda: True,
@@ -334,7 +329,7 @@ def test_unsupported_accelerator_is_named_in_the_error(monkeypatch):
 
 
 def test_error_without_torch_accelerator_has_no_device_name(monkeypatch):
-    # torch < 2.6 has no torch.accelerator, so there is no device name to report.
+    # torch < 2.6 has no torch.accelerator, so there is no name to report.
     torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
 
     with pytest.raises(NotImplementedError, match = "does not currently work on this device"):
