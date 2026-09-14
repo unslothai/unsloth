@@ -5,7 +5,8 @@
 #   --ipc=host           ample /dev/shm; the default 64MB crashes DataLoader workers
 #   --ulimit memlock=-1  unlimited pinned memory (else multi-GPU training stalls)
 #   --ulimit stack=64MB  larger libtorch thread stack (some kernels OOM the 8MB default)
-# Plus mounts the host HF + Triton caches so downloads and kernels persist.
+# Plus mounts the host HF + Triton caches so downloads and kernels persist, and the
+# LM Studio, Ollama and Hermes model folders it finds, read-only, so Studio lists them.
 #
 # With no command the image's own CMD runs, which on unsloth/unsloth:latest is the
 # Studio (8000) + JupyterLab (8888) launcher, not a REPL. $PWD is at /workspace/host.
@@ -30,6 +31,10 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_LMSTUDIO_DIR=<detected>         host LM Studio models dir, "none" to skip
+#   UNSLOTH_OLLAMA_DIR=<detected>           host Ollama models dir, "none" to skip
+#   UNSLOTH_HERMES_DIR=<detected>           host Hermes models dir, "none" to skip
+#   UNSLOTH_MODELS_DIR=                     host dir of GGUFs/model folders for Studio
 set -euo pipefail
 
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
@@ -51,6 +56,48 @@ TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
+
+first_dir() {
+    local dir
+    for dir in "$@"; do
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            printf '%s' "$dir"
+            return 0
+        fi
+    done
+}
+
+lmstudio_dir() {
+    local settings="$HOME/.lmstudio/settings.json" custom=""
+    local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
+        custom="${BASH_REMATCH[1]}"
+    fi
+    first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
+}
+
+ollama_dir() {
+    first_dir "${OLLAMA_MODELS:-}" "$HOME/.ollama/models" \
+        /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
+}
+
+declare -a MODEL_MOUNTS=()
+mount_models() {
+    local name="$1" dir="$2" target="$3"
+    [[ -z "$dir" || "$dir" == none ]] && return 0
+    if [[ ! -d "$dir" ]]; then
+        printf "\033[1;33mWARN:\033[0m %s models folder %s does not exist; not mounting it.\n" "$name" "$dir" >&2
+        return 0
+    fi
+    [[ "$dir" == /* ]] || dir="$PWD/$dir"
+    MODEL_MOUNTS+=(-v "$dir:$target:ro")
+    printf "Mounting %s models from %s (read-only)\n" "$name" "$dir" >&2
+}
+
+mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
+mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
+mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(first_dir "$HOME/.hermes/models")}" /root/.hermes/models
+mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 
 # Docker resolves --gpus in the DAEMON, before the container exists: on a host with
 # no NVIDIA GPU it dies with "failed to discover GPU vendor from CDI: no known GPU
@@ -166,6 +213,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"
