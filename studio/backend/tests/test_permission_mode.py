@@ -354,6 +354,13 @@ def test_terminal_classifier(command, unsafe):
         ("cat ~/.ssh/id_rsa", True),
         ("cat ~/.aws/credentials", True),
         ("cat /proc/1/environ", True),
+        # Studio's own auth dir: the cached CLI bearer, the bootstrap password and auth.db live there.
+        ("cat ~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742", True),
+        ("ls -a ~/.unsloth/studio/auth", True),
+        ("cat /custom/home/auth/.bootstrap_password", True),
+        # ...while an application's own auth code is ordinary work.
+        ("grep -rn auth src/", False),
+        ("cat src/auth.py", False),
         # --- prompt: sandbox-escape via env that hijacks loading/lookup ---
         ("LD_PRELOAD=/tmp/x.so ls", True),
         # --- prompt: a verb hidden behind an assignment / default param ---
@@ -1398,6 +1405,10 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # --- prompt: credential-path read/write ---
         ("open('/etc/shadow').read()", True),
         ("open('/root/.ssh/id_rsa').read()", True),
+        ("Path('/custom/home/auth/.cli_api_key_cli_99bb88401742').read_text()", True),
+        ("open('/home/u/.unsloth/studio/auth/auth.db', 'rb').read()", True),
+        # an application's own auth module stays ordinary
+        ("import auth\nprint(auth.__file__)", False),
         # --- prompt: destructive filesystem deletion (parity with terminal rm) ---
         ("import os; os.remove('important.py')", True),
         ("import os; os.unlink('x')", True),
@@ -2479,6 +2490,7 @@ def test_blender_cli_summaries_require_approval(tool, approval):
         ({"path": "/etc/passwd"}, True),  # read-named tool at a credential path
         ({"path": "../../.ssh/id_rsa"}, True),
         ({"nested": {"file": "~/.aws/credentials"}}, True),
+        ({"path": "~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742"}, True),
         ({"name": "OPENAI_API_KEY"}, True),  # explicit credential env-var read
         ({"name": "AWS_SECRET_ACCESS_KEY"}, True),
         ({"key": "DATABASE_PASSWORD"}, True),

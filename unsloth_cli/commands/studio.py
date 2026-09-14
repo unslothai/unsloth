@@ -771,6 +771,12 @@ def _load_backend_auth_storage():
 
 def _write_auth_secret(path: Path, secret: str) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
+    # mkdir under a 022 umask leaves auth/ world-readable when this runs before the DB connection does it; the files
+    # below are 0600 either way, but the directory listing names them. Best-effort, like the chmods below.
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, tmp_name = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
     tmp_path = Path(tmp_name)
     try:

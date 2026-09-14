@@ -2530,6 +2530,75 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
     re.IGNORECASE,
 )
+# Studio's own auth directory ($STUDIO_HOME/auth) holds this install's credentials in the clear: the reusable CLI
+# bearer (.cli_api_key_<stem>_<digest>), the bootstrap password, the desktop secret, the llama.cpp stream key, and
+# auth.db with the JWT secret. Tool subprocesses run as the backend's OS user, so the 0600 modes those files carry are
+# no boundary against them, and a provider that talks the model into `cat`ing one gets a live key replayed back to it.
+# Deliberately narrow: only these basenames and the auth directory itself, so an application's own auth/ package,
+# auth.py or `grep -r auth src/` stays ordinary work.
+_STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
+    # Dotted names nothing else spells, so they match bare too.
+    r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\"]*|\.bootstrap_password|\.desktop_secret)"
+    r"(?:$|[\s'\"])"
+    # `llama_api_key` also reads as an ordinary identifier, so only its path form counts. auth.db is
+    # deliberately absent: a project's own auth/auth.db is spelled the same way, and Studio's copy is
+    # already covered by the auth-directory patterns below.
+    r"|[/\\]llama_api_key(?:$|[\s'\"])",
+    re.IGNORECASE,
+)
+# The default install layout, for the common case where the path is spelled out rather than resolved.
+_STUDIO_AUTH_DIR_RE = re.compile(
+    r"(?:^|[/\\\s'\"=])\.unsloth[/\\]studio[/\\]auth(?:[/\\]|$|[\s'\"])",
+    re.IGNORECASE,
+)
+
+_studio_auth_markers_cache: "tuple | None" = None
+
+
+def _studio_auth_dir_markers() -> tuple:
+    """Spellings of this install's auth directory. Resolved once per process: STUDIO_HOME is fixed
+    at startup, and a custom UNSLOTH_STUDIO_HOME is only covered by asking for the real root rather
+    than assuming the default layout. A failure is not cached, so a root that could not be resolved
+    during startup import ordering does not leave the guard half-blind for the process lifetime."""
+    global _studio_auth_markers_cache
+    if _studio_auth_markers_cache is not None:
+        return _studio_auth_markers_cache
+    try:
+        from utils.paths.storage_roots import auth_root
+        resolved = str(auth_root())
+    except Exception:  # noqa: BLE001 - an unresolvable root leaves the literal patterns above
+        return ()
+    if not resolved:
+        return ()
+    markers = [resolved]
+    home = os.path.expanduser("~")
+    # Boundary-aware: a plain startswith makes /home/u2/... look like it is under /home/u and mints
+    # markers ("~2/...") that would refuse unrelated commands.
+    if home and (resolved == home or resolved.startswith(home.rstrip(os.sep) + os.sep)):
+        tail = resolved[len(home.rstrip(os.sep)):]
+        markers.extend(("~" + tail, "$HOME" + tail))
+    _studio_auth_markers_cache = tuple(m.lower() for m in markers if m)
+    return _studio_auth_markers_cache
+
+
+# Names neither the path nor the value it would have returned: the refusal itself goes back to the model.
+_STUDIO_CREDENTIAL_BLOCKED = (
+    "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
+    "credentials and is not readable by tools."
+)
+
+
+def _references_studio_credential(text: str) -> bool:
+    """True if *text* names Studio's auth directory or one of the credential files in it."""
+    if not text:
+        return False
+    return bool(
+        _STUDIO_CREDENTIAL_BASENAME_RE.search(text)
+        or _STUDIO_AUTH_DIR_RE.search(text)
+        or any(marker in text.lower() for marker in _studio_auth_dir_markers())
+    )
+
+
 # A shell redirection with no following space (cat <../../notes) keeps `..` adjacent to `<`/`>`, so those count as
 # leading delimiters here too.
 _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:<>])\.\.(?:[/\\]|$|[\s'\"])")
@@ -2653,6 +2722,7 @@ def _references_sensitive_path(text: str) -> bool:
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
     return bool(
         _PARENT_TRAVERSAL_RE.search(text)
+        or _references_studio_credential(text)
         or _SENSITIVE_PATH_RE.search(text)
         or _SENSITIVE_PATH_RE.search(norm)
         or _SENSITIVE_PATH_RE.search(debracket)
@@ -3953,6 +4023,27 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
     r"client[-_]?secret|password|passwd|session[-_]?token)$",
     re.IGNORECASE,
 )
+
+
+def _mcp_arguments_reference_studio_credential(arguments) -> bool:
+    """True if an MCP call's arguments point at Studio's auth directory. An MCP server runs outside
+    the terminal sandbox, so a filesystem server would read the credential the local tools refuse.
+    Prose fields are skipped for the same reason they are below: an issue body that mentions the
+    filename is text to store, not a file to open."""
+
+    def walk(value, is_prose: bool = False) -> bool:
+        if isinstance(value, str):
+            return False if is_prose else _references_studio_credential(value)
+        if isinstance(value, dict):
+            return any(
+                walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
+                for k, v in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(walk(v, is_prose) for v in value)
+        return False
+
+    return walk(arguments)
 
 
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
@@ -8971,6 +9062,10 @@ def _edit_file(
     disable_sandbox: bool = False,
 ) -> str:
     """Replace exact strings in a file. See the notes above."""
+    # The receipt echoes a window of the file back, so an edit is also a read. Workdir containment already keeps this
+    # away from the auth directory, but it is lifted under Bypass Permissions, and the refusal holds in every mode.
+    if _references_studio_credential(str(arguments.get("path") or "")):
+        return _STUDIO_CREDENTIAL_BLOCKED
     edits, error = _edit_file_parse_edits(arguments.get("edits"))
     if error:
         return error
@@ -9837,6 +9932,9 @@ def execute_tool(
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
+        # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
+        if _mcp_arguments_reference_studio_credential(arguments):
+            return _STUDIO_CREDENTIAL_BLOCKED
         try:
             _, server_id, tool_name = name.split("__", 2)
         except ValueError:
@@ -14041,7 +14139,9 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     from .tool_loop_controller import strip_result_for_model
 
     try:
-        body = strip_result_for_model(text, name)
+        # Unredacted: this split subtracts the body from the text to recover the envelope, so it needs the strip to
+        # remove a suffix and nothing else. The model-bound copy is masked in `model_message`.
+        body = strip_result_for_model(text, name, redact = False)
     except Exception:
         logger.debug("frontend suffix split failed", exc_info = True)
         return text, ""
@@ -15244,6 +15344,10 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
+    # Refused in every mode, for the same reason _bash_exec refuses it: this install's credentials are not tool input.
+    if _references_studio_credential(code):
+        return _STUDIO_CREDENTIAL_BLOCKED
+
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
         error = _check_code_safety(code)
@@ -15412,6 +15516,12 @@ def _bash_exec(
     returned result is unchanged."""
     if not command or not command.strip():
         return "No command provided."
+
+    # Studio's own credentials, refused in every mode. Unlike the blocklist below this is not a sandbox rule that
+    # Bypass Permissions opts out of: handing the model this install's live bearer token exfiltrates it to whatever
+    # provider is serving the turn, and no user flow asks a tool to read Studio's auth directory.
+    if _references_studio_credential(command):
+        return _STUDIO_CREDENTIAL_BLOCKED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:

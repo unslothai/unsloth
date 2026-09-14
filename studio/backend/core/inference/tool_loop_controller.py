@@ -938,9 +938,38 @@ _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 _WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
-def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+# This install's API keys are `sk-unsloth-` + 32 hex (auth/storage.py), and one of them is cached in the clear so the
+# CLI can reuse it across launches. Whatever route put it in a tool result, the model turn is where it would leave the
+# machine, so it is masked on the way out. Only the model-bound copy: the tool card the user is looking at is their own
+# output and stays as it was. The mask carries neither prefix, so re-running this is a no-op.
+_STUDIO_API_KEY_RE = re.compile(
+    r"sk-unsloth-[A-Za-z0-9]{16,}"
+    # The desktop credential is `desktop-` + token_urlsafe(48); the length floor keeps an ordinary
+    # hyphenated word ("desktop-app") out of it.
+    r"|desktop-[A-Za-z0-9_-]{40,}"
+)
+_STUDIO_SECRET_MASK = "[redacted]"
+
+
+def redact_studio_credentials(text: str) -> str:
+    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    # Two substring scans before the alternation: a result carrying neither prefix is every ordinary result, and the
+    # regex costs ~20x a `in` test per megabyte because an alternation has no single literal to anchor on.
+    if "sk-unsloth-" not in text and "desktop-" not in text:
+        return text
+    return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
+
+
+def strip_result_for_model(
+    result: str, tool_name: "str | None" = None, *, redact: bool = True
+) -> str:
+    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
+    before feeding the result back to the model.
+
+    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
+    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
+    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
+    through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
@@ -951,7 +980,7 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
         result = _strip_images_sentinel(result)
     if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
         result = _strip_rag_sources_sentinel(result)
-    return result
+    return redact_studio_credentials(result) if redact else result
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
