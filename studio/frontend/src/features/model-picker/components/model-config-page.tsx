@@ -103,7 +103,10 @@ import {
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
+  clearModelConfigDraftEdited,
   isExtraArgsHydratedForDraft,
+  isModelConfigDraftEdited,
+  markModelConfigDraftEdited,
   markExtraArgsHydratedForDraft,
   modelConfigDraftKey,
   patchModelConfigDraft,
@@ -2160,6 +2163,8 @@ export function ModelConfigPage({
     // The draft alone, never a string built from `keys`: the two hosts derive different
     // candidate lists for one model, so any identity drawn from them let the second editor miss
     // the mark, re-read the row and write it back over an edit the first had already made.
+    // Retaining the draft clears this again when nothing has been edited, so a fresh editor
+    // still picks up a row another origin saved.
     if (isExtraArgsHydratedForDraft(draftKey)) {
       setExtraArgsHydrating(false);
       return;
@@ -2278,9 +2283,13 @@ export function ModelConfigPage({
         // show different remembered values; fromApiOverride keeps the rest of this browser's config,
         // since an absent field is as much a gap in the mirror as a chosen default. Never over an
         // edit made while the request was in flight.
+        // The edited check is the load-bearing one: an edit the OTHER editor made before this
+        // read started is already in configAtStart, so the before/after comparison reads as
+        // untouched and the stored row would go straight over it.
         if (
           resolvedRow &&
           serverConfig &&
+          !isModelConfigDraftEdited(draftKey) &&
           configRef.current === configAtStart &&
           rememberRef.current === rememberAtStart
         ) {
@@ -2414,11 +2423,16 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
-  const update = (patch: Partial<PerModelConfig>) =>
+  const update = (patch: Partial<PerModelConfig>) => {
+    // Every control on the page lands here and nothing else does: the sanitising writes inside
+    // the hydration effect go through setConfig directly, and marking those would have the read
+    // refuse its own result.
+    markModelConfigDraftEdited(draftKey);
     setConfig((current) => ({
       ...reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
       ...patch,
     }));
+  };
 
   // True for every mode that takes a draft depth, DSpark included, so this gates the Draft
   // Tokens row rather than naming a drafter.
@@ -2886,6 +2900,8 @@ export function ModelConfigPage({
         remember ? normalizedRuntimeConfig : null,
       );
     }
+    // What the draft holds is now what is stored, so the next editor may read a newer row again.
+    clearModelConfigDraftEdited(draftKey);
     // Saving can push the local map over budget and drop other models, whose server entries would
     // keep applying with nothing able to forget them. Not a Forget: only mirrored fields go.
     for (const dropped of evicted) {
@@ -3178,14 +3194,16 @@ export function ModelConfigPage({
             size="sm"
             className="h-8"
             disabled={atDefault}
-            onClick={() =>
+            onClick={() => {
+              // Reset writes through setConfig rather than update, so it marks the draft itself.
+              markModelConfigDraftEdited(draftKey);
               setConfig({
                 // null, not the default's absent: absent omits the field, and the load then INHERITS the
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
-              })
-            }
+              });
+            }}
           >
             Reset
           </Button>

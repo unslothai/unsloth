@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clearModelConfigDraftEdited,
   isExtraArgsHydratedForDraft,
+  isModelConfigDraftEdited,
+  markModelConfigDraftEdited,
   markExtraArgsHydratedForDraft,
   readExtraArgsEditForDraft,
   setExtraArgsEditForDraft,
@@ -14,6 +17,7 @@ import {
   patchModelConfigDraft,
   primeModelConfigDraft,
   readModelConfigDraft,
+  replaceModelConfigDraft,
   retainModelConfigDraft,
   setModelConfigDraftRemember,
 } from "../src/features/model-picker/model-config/model-config-draft.ts";
@@ -193,5 +197,49 @@ test("a verdict without an edit is dropped rather than inventing one", () => {
   const release = retainModelConfigDraft(key);
   setExtraArgsEditLoadableForDraft(key, false);
   assert.equal(readExtraArgsEditForDraft(key), undefined);
+  release();
+});
+
+test("a fresh editor re-reads the stored row, but not over an unsaved edit", () => {
+  const key = modelConfigDraftKey("unsloth/Refresh-GGUF", VARIANT);
+  const sidebar = retainModelConfigDraft(key);
+  primeModelConfigDraft(key, { config: SEED, remembered: false }, "none");
+  markExtraArgsHydratedForDraft(key);
+
+  // Nothing edited: opening the picker retires the mark, so the read runs again and settings
+  // another origin saved are picked up. The sidebar host never unmounts while a model is
+  // resident, so without this the tab could never notice them.
+  const picker = retainModelConfigDraft(key);
+  assert.equal(isExtraArgsHydratedForDraft(key), false);
+  markExtraArgsHydratedForDraft(key);
+  picker();
+
+  // With an unsaved edit the mark stands: by the time a second read returned, that edit would
+  // already be in the config it compared itself against, so it would go straight over it.
+  markModelConfigDraftEdited(key);
+  const pickerAgain = retainModelConfigDraft(key);
+  assert.equal(isExtraArgsHydratedForDraft(key), true);
+  pickerAgain();
+
+  // A save makes the draft and the stored row the same thing again.
+  clearModelConfigDraftEdited(key);
+  const pickerOnceMore = retainModelConfigDraft(key);
+  assert.equal(isExtraArgsHydratedForDraft(key), false);
+  pickerOnceMore();
+  sidebar();
+  assert.equal(isModelConfigDraftEdited(key), false);
+});
+
+test("re-seeding or replacing a draft retires the edited mark", () => {
+  const key = modelConfigDraftKey("unsloth/Edited-GGUF", VARIANT);
+  const release = retainModelConfigDraft(key);
+  primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-a");
+  markModelConfigDraftEdited(key);
+  // The resident process reloaded: the draft is re-seeded wholesale, so the edit is gone with it.
+  primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-b");
+  assert.equal(isModelConfigDraftEdited(key), false);
+  markModelConfigDraftEdited(key);
+  replaceModelConfigDraft(key, SEED, { remember: true, savedRemember: true });
+  assert.equal(isModelConfigDraftEdited(key), false);
   release();
 });

@@ -56,6 +56,11 @@ const hostCounts = new Map<string, number>();
 // their spellings still leaves the lists unequal. Nothing reachable within one draft key changes
 // what the read returns, and the mark dies with the draft.
 const extraArgsHydratedDrafts = new Set<string>();
+// Drafts the USER has changed, as opposed to ones only seeded or hydrated. Two things turn on
+// it, and neither can be told from the config alone: a stored-row read may not replace an edited
+// draft, because the peer's unsaved edit is already in the config the request compared itself
+// against; and a fresh editor may only re-read an UNedited one.
+const editedDrafts = new Set<string>();
 // What is TYPED into the Extra Arguments box, which is not what is stored: the config holds
 // argv tokens. Shared for the same reason the config is: the box publishes tokens on every
 // keystroke, valid or not, so a second editor re-quoted a half-typed line into balanced text,
@@ -100,6 +105,13 @@ export function readModelConfigDraft(
 
 /** Registers one editor and returns its release; the draft and its mark live while any holds. */
 export function retainModelConfigDraft(key: string): () => void {
+  if (!editedDrafts.has(key)) {
+    // A fresh editor re-reads the stored row, or a tab whose sidebar never unmounts while a
+    // model is resident could not notice settings another origin saved, and would mirror its
+    // stale copy back over them on the next Run. Never over an edit: that is the one case where
+    // what is on screen is worth more than what is stored.
+    extraArgsHydratedDrafts.delete(key);
+  }
   hostCounts.set(key, (hostCounts.get(key) ?? 0) + 1);
   let released = false;
   return () => {
@@ -114,6 +126,7 @@ export function retainModelConfigDraft(key: string): () => void {
     }
     hostCounts.delete(key);
     extraArgsHydratedDrafts.delete(key);
+    editedDrafts.delete(key);
     extraArgsEditByDraftKey.delete(key);
     if (drafts.delete(key)) {
       notify();
@@ -135,6 +148,7 @@ export function primeModelConfigDraft(
       appliedLiveSignature: liveSignature,
     };
     drafts.set(key, created);
+    editedDrafts.delete(key);
     notify();
     return created;
   }
@@ -149,6 +163,7 @@ export function primeModelConfigDraft(
       appliedLiveSignature: liveSignature,
     };
     drafts.set(key, next);
+    editedDrafts.delete(key);
     notify();
     return next;
   }
@@ -175,6 +190,7 @@ export function replaceModelConfigDraft(
       "none",
   };
   drafts.set(key, next);
+  editedDrafts.delete(key);
   notify();
 }
 
@@ -231,6 +247,18 @@ export function isExtraArgsHydratedForDraft(key: string): boolean {
 
 export function markExtraArgsHydratedForDraft(key: string): void {
   extraArgsHydratedDrafts.add(key);
+}
+
+export function markModelConfigDraftEdited(key: string): void {
+  editedDrafts.add(key);
+}
+
+export function clearModelConfigDraftEdited(key: string): void {
+  editedDrafts.delete(key);
+}
+
+export function isModelConfigDraftEdited(key: string): boolean {
+  return editedDrafts.has(key);
 }
 
 export function readExtraArgsEditForDraft(

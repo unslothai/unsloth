@@ -2991,6 +2991,13 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     # any such identity let the second editor miss the mark, re-read the stored row and write it
     # back over the first's edit.
     assert "isExtraArgsHydratedForDraft(draftKey)" in page
+    # Retaining an UNedited draft retires that mark, so a fresh editor re-reads the stored row:
+    # the sidebar host stays mounted for the whole of a model's residency, so a mark kept for the
+    # life of the draft left the tab unable to notice settings another origin saved, and Run with
+    # Remember on mirrored the stale copy back over them.
+    assert "!isModelConfigDraftEdited(draftKey) &&" in page
+    assert "markModelConfigDraftEdited(draftKey)" in page
+    assert "clearModelConfigDraftEdited(draftKey)" in page
     assert "markExtraArgsHydratedForDraft(draftKey)" in page
     # Reset passes a plain object, and DEFAULT_PER_MODEL_CONFIG names no GPU field, so a
     # setConfig that merged could not clear a manual placement: the rows kept the pick and
