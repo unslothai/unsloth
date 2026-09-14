@@ -23614,7 +23614,7 @@ async def produce_openai_chat_completions(
                 _parked = False
 
                 _reclaim_task = None
-                _reclaim_stop = threading.Event()
+                _reclaim_stop = asyncio.Event()
 
                 def _erase_and_record(target) -> bool:
                     if not llama_backend.release_idle_chat_slot(*target):
@@ -23631,13 +23631,19 @@ async def produce_openai_chat_completions(
 
                     Stops on request only before the erase is sent. Past that the request is
                     already with llama-server, so the cells are going whatever this chat does
-                    now, and the resume has to be told rather than spared.
+                    now, and the resume has to be told rather than spared. The poll waits on
+                    that request rather than sleeping through it, so the usual resume -- the
+                    one where nothing was ever erased -- is not held up by a poll interval.
                     """
                     try:
                         while not lease.reclaim_would_admit():
-                            if _reclaim_stop.is_set():
-                                return
-                            await asyncio.sleep(_APPROVAL_CACHE_RECLAIM_POLL_S)
+                            try:
+                                await asyncio.wait_for(
+                                    _reclaim_stop.wait(), _APPROVAL_CACHE_RECLAIM_POLL_S
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            return
                         with _gguf_decode_lock:
                             target = _gguf_decode["slot"]
                             erased = _gguf_decode["erased"]
@@ -23666,7 +23672,8 @@ async def produce_openai_chat_completions(
                     Cancelling would not stop it -- the worker thread runs on, and the erase
                     lands whether or not anyone is still listening. The resumed round would
                     then price itself against cells llama-server was in the middle of
-                    dropping. Bounded by the erase request's own timeout.
+                    dropping. A watcher still polling gives up at once; one that is sending
+                    is waited out, bounded by the erase request's own timeout.
                     """
                     nonlocal _reclaim_task
                     task, _reclaim_task = _reclaim_task, None

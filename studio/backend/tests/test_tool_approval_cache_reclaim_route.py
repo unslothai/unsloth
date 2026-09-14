@@ -487,3 +487,60 @@ def test_an_erase_that_outlives_its_watcher_is_still_recorded(monkeypatch):
     asyncio.run(_drive())
 
     assert recosts == [True], f"the round after the cancelled watch was told {recosts}"
+
+
+def test_an_approval_with_nobody_waiting_resumes_without_a_poll_interval(monkeypatch):
+    """The common resume erased nothing, so it has no reclamation to wait out.
+
+    The watcher spends that whole approval idle between polls, and sleeping through one
+    would charge every approval in a tool loop for a wait that answers nothing.
+    """
+    backend = _GrowsAfterApprovalBackend()
+    app = _install(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "_APPROVAL_CACHE_RECLAIM_POLL_S", 30.0)
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_llama_admission_recost",
+        lambda *a, **kw: None,
+    )
+
+    async def _drive():
+        body = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "compute 17 * 23 " + "x " * 4000}],
+                "stream": True,
+                "confirm_tool_calls": True,
+            }
+        ).encode()
+        done = asyncio.Event()
+
+        async def receive():
+            if not done.is_set():
+                return {"type": "http.request", "body": body, "more_body": False}
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message.get("type") == "http.response.body":
+                if message.get("body", b"").decode() == inference_route._SSE_DONE_CHUNK:
+                    done.set()
+
+        task = asyncio.create_task(app(_request_scope(app, body), receive, send))
+        try:
+            await _until(
+                lambda: _queue().snapshot().active == 0 and _queue().snapshot().committed > 0,
+                "the approval to park",
+            )
+            assert not backend.erased, "nothing is waiting, so nothing should be erased"
+
+            started = asyncio.get_running_loop().time()
+            backend.answered.set()
+            await wait_for_frame(done, task, what = "the [DONE] frame")
+            waited = asyncio.get_running_loop().time() - started
+        finally:
+            backend.answered.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions = True)
+
+        assert waited < 5.0, f"the resume waited {waited:.1f}s on a watcher with nothing to do"
+
+    asyncio.run(_drive())
