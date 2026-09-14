@@ -2558,13 +2558,38 @@ _uv_sha256() {
     fi
 }
 
-# Can a freshly downloaded binary run at all? Both ways it could hang are closed off: no stdin, so a build that prompts reads EOF, and a ceiling where `timeout` exists (stock macOS has none). A healthy uv answers in milliseconds, so only a binary we would refuse reaches the ceiling.
+# Liveness probe for a fresh binary, hang-proof: no stdin (a prompting build reads EOF) and a
+# ceiling, held by `timeout -k` where it exists and by a watchdog on stock macOS, which has none.
 _uv_probe_exec() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$1" --version >/dev/null 2>&1 </dev/null
-    else
-        "$1" --version >/dev/null 2>&1 </dev/null
+    _upe_secs="${_UV_PROBE_SECONDS:-20}"
+    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
+    if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
+        timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
+        return $?
     fi
+    "$1" --version >/dev/null 2>&1 </dev/null &
+    _upe_pid=$!
+    _upe_waited=0
+    while kill -0 "$_upe_pid" 2>/dev/null; do
+        if [ "$_upe_waited" -ge "$_upe_secs" ]; then
+            kill "$_upe_pid" 2>/dev/null
+            _upe_grace=0
+            while [ "$_upe_grace" -lt 5 ] && kill -0 "$_upe_pid" 2>/dev/null; do
+                sleep 1
+                _upe_grace=$((_upe_grace + 1))
+            done
+            kill -9 "$_upe_pid" 2>/dev/null
+            wait "$_upe_pid" 2>/dev/null
+            unset _upe_pid _upe_waited _upe_grace
+            return 124
+        fi
+        sleep 1
+        _upe_waited=$((_upe_waited + 1))
+    done
+    wait "$_upe_pid"
+    _upe_rc=$?
+    unset _upe_pid _upe_waited
+    return $_upe_rc
 }
 
 _uv_install_pinned() {
