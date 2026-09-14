@@ -18,6 +18,32 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def _shared_setup_1(__file__):
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    return _pytest
+
+
+def _shared_setup_2(_pytest, backend, passthrough, payload):
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+
+
+def _shared_setup_3():
+    import test_sf_client_tools_passthrough as passthrough
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    return backend, passthrough
+
+
 _STUBBED: list[str] = []
 
 
@@ -573,6 +599,36 @@ def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     )
 
 
+def test_a_video_is_attached_the_way_an_image_is():
+    """Every attached medium lands on the newest user turn, media before text, never doubled."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    alone = messages_with_attached_image(
+        [{"role": "user", "content": "what moves"}], image = False, video = True
+    )
+    assert alone[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+
+    both = messages_with_attached_image(
+        [{"role": "user", "content": [{"type": "text", "text": "compare"}]}], video = True
+    )
+    assert both[-1]["content"] == [
+        {"type": "image"},
+        {"type": "video"},
+        {"type": "text", "text": "compare"},
+    ]
+
+    placed = messages_with_attached_image(
+        [
+            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": "x"}}]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "and now?"},
+        ],
+        video = True,
+    )
+    assert [p["type"] for p in placed[-1]["content"]] == ["image", "text"]
+    assert [p["type"] for p in placed[0]["content"]] == ["video_url"]
+
+
 def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
     """A processor template alone does not mean the render selects it; mirroring it anyway
     profiles an unused body with processor semantics (#10092)."""
@@ -628,17 +684,10 @@ def test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog():
 
     # conftest puts the backend root on sys.path, not the tests directory.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import test_sf_client_tools_passthrough as passthrough
-
-    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
-    backend.models["sf-model"]["is_vision"] = True
+    backend, passthrough = _shared_setup_3()
     payload = _image_request(tools = [passthrough.LOOKUP_TOOL], enable_tools = True, stream = False)
 
-    monkeypatch = _pytest.MonkeyPatch()
-    try:
-        passthrough._call(payload, monkeypatch, backend)
-    finally:
-        monkeypatch.undo()
+    _shared_setup_2(_pytest, backend, passthrough, payload)
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
@@ -648,17 +697,11 @@ def test_image_tool_support_is_classified_from_the_processor_template():
     """A VLM whose processor template advertises tools its nested tokenizer never does had
     the catalog disabled and reached generation with no schemas (#10092)."""
     import asyncio
-    import os
-    import sys
 
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
-    import test_sf_client_tools_passthrough as passthrough
 
-    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
-    backend.models["sf-model"]["is_vision"] = True
+    backend, passthrough = _shared_setup_3()
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
         "processor_template": _CHATML_WITH_TOOLS,
@@ -685,6 +728,58 @@ def test_image_tool_support_is_classified_from_the_processor_template():
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+
+
+def test_video_tool_support_is_classified_from_the_processor_template():
+    """A clip renders through the processor, so tool support is read off the processor template."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["has_video_input"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
+    clip = "AAAAGGZ0eXBtcDQy"
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "what moves")],
+        video_base64 = clip,
+        tools = [passthrough.LOOKUP_TOOL],
+        stream = False,
+    )
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        monkeypatch.setattr(
+            inf,
+            "_detect_safetensors_features",
+            lambda _backend, template, **k: {"supports_tools": template == _CHATML_WITH_TOOLS},
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+    assert backend.calls[0]["video"] == clip
 
 
 def test_mlx_selects_structured_content_for_a_processor_render():
@@ -731,17 +826,11 @@ def test_a_named_processor_template_is_classified_without_tool_use():
     """A ProcessorMixin render never implicitly selects the "tool_use" branch, so gating on
     it advertised a catalog the prompt never shows (#10092)."""
     import asyncio
-    import os
-    import sys
 
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
-    import test_sf_client_tools_passthrough as passthrough
 
-    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
-    backend.models["sf-model"]["is_vision"] = True
+    backend, passthrough = _shared_setup_3()
     backend.models["sf-model"]["chat_template_info"] = {
         "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
         "processor_template": {
@@ -791,12 +880,8 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
     """_extract_content_parts takes the newest image from anywhere in the thread while the
     renderers attach it to the newest user turn, moving it onto a later question (#10092)."""
     import asyncio
-    import os
-    import sys
 
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
     import test_sf_client_tools_passthrough as passthrough
     from models.inference import ChatCompletionRequest, ChatMessage
@@ -825,11 +910,7 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
         ],
     )
 
-    monkeypatch = _pytest.MonkeyPatch()
-    try:
-        passthrough._call(payload, monkeypatch, backend)
-    finally:
-        monkeypatch.undo()
+    _shared_setup_2(_pytest, backend, passthrough, payload)
 
     assert backend.calls, "generation never ran"
     sent = backend.calls[0]["messages"]
@@ -840,6 +921,88 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
     assert not isinstance(later["content"], list) or not any(
         p.get("type") == "image" for p in later["content"]
     )
+
+
+def _historical_image_thread():
+    from models.inference import ChatMessage
+    return [
+        ChatMessage(role = "user", content = "EARLIER_QUESTION with no picture"),
+        ChatMessage(role = "assistant", content = "hello"),
+        ChatMessage(
+            role = "user",
+            content = [
+                {"type": "text", "text": "IMAGE_QUESTION about the picture"},
+                {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+            ],
+        ),
+        ChatMessage(role = "assistant", content = "it is a dot"),
+        ChatMessage(role = "user", content = "LATER_QUESTION unrelated to it"),
+    ]
+
+
+def _plain_route_messages(chat_template_info):
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = chat_template_info
+    payload = ChatCompletionRequest(
+        model = "default", stream = False, messages = _historical_image_thread()
+    )
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+    assert backend.calls, "generation never ran"
+    return backend.calls[0]["messages"]
+
+
+def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
+    """The plain route attached the thread's latest picture to the newest question on
+    every request, so the prompt prefix holding it was never shared between turns."""
+    # A template-less processor still places the image: the gate is renders_image.
+    sent = _plain_route_messages({"template": _CHATML_WITH_TOOLS, "renders_image": True})
+    earlier, owning, later = [m for m in sent if m.get("role") == "user"]
+    assert [p.get("type") for p in owning["content"]] == ["image", "text"]
+    assert owning["content"][1]["text"] == "IMAGE_QUESTION about the picture"
+    assert earlier["content"] == "EARLIER_QUESTION with no picture"
+    assert later["content"] == "LATER_QUESTION unrelated to it"
+
+
+def test_no_image_marker_on_the_plain_route_when_renders_image_is_false():
+    """``renders_image`` is the whole gate, and it is read with ``.get``, so a model whose
+    capability probe never reported one leaves the thread as strings.
+
+    Named for the key it actually varies. As "..._when_the_render_is_text_only", carrying a
+    ``processor_template``, it read as a claim about the render target and asserted nothing
+    about it: the same dict without ``renders_image`` passes identically on the commit
+    before this one, so it could not have caught the marker firing on a text render.
+    """
+    sent = _plain_route_messages(
+        {"template": _CHATML_WITH_TOOLS, "processor_template": _CHATML_WITH_TOOLS}
+    )
+    assert all(isinstance(m.get("content"), str) for m in sent if m.get("role") == "user")
+
+    # And with the gate open, the same thread is marked: the assertion above is about
+    # renders_image, not about the processor_template sitting next to it.
+    marked = _plain_route_messages(
+        {
+            "template": _CHATML_WITH_TOOLS,
+            "processor_template": _CHATML_WITH_TOOLS,
+            "renders_image": True,
+        }
+    )
+    owning = [m for m in marked if m.get("role") == "user"][1]
+    assert [p.get("type") for p in owning["content"]] == ["image", "text"]
 
 
 def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
@@ -887,12 +1050,8 @@ def test_image_reasoning_is_classified_from_the_processor_template():
     """A processor template can carry a reasoning channel the tokenizer never declares, so
     classifying only supports_tools from it leaked <think> markup into the answer (#10092)."""
     import asyncio
-    import os
-    import sys
 
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
     import test_sf_client_tools_passthrough as passthrough
 
@@ -936,12 +1095,8 @@ def test_the_prefill_probe_gets_the_selected_processor_body():
     """Handed the whole named collection, the prefill probe's <think> guard tests the
     dict's keys and misses a selected branch that prefills an open block (#10092)."""
     import asyncio
-    import os
-    import sys
 
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import routes.inference as inf
     import test_sf_client_tools_passthrough as passthrough
 
@@ -986,24 +1141,13 @@ def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
     """A vision-marked model whose processor cannot handle images renders the tokenizer
     text path, so marking the owning turn handed a string-only template part lists (#10092)."""
     import asyncio
-    import os
-    import sys
 
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import test_sf_client_tools_passthrough as passthrough
-
-    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
-    backend.models["sf-model"]["is_vision"] = True
+    _pytest = _shared_setup_1(__file__)
+    backend, passthrough = _shared_setup_3()
     backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}
     payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False)
 
-    monkeypatch = _pytest.MonkeyPatch()
-    try:
-        passthrough._call(payload, monkeypatch, backend)
-    finally:
-        monkeypatch.undo()
+    _shared_setup_2(_pytest, backend, passthrough, payload)
 
     assert backend.calls, "generation never ran"
     for message in backend.calls[0]["messages"]:
@@ -1015,12 +1159,7 @@ def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
 def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
     """A processor with no template of its own still places the image, so keying the marker
     on the template left a historical image on the newest, unrelated question (#10092)."""
-    import os
-    import sys
-
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import test_sf_client_tools_passthrough as passthrough
     from models.inference import ChatCompletionRequest, ChatMessage
 
@@ -1046,11 +1185,7 @@ def test_an_image_capable_processor_without_a_template_still_marks_its_turn():
             ChatMessage(role = "user", content = "LATER_QUESTION"),
         ],
     )
-    monkeypatch = _pytest.MonkeyPatch()
-    try:
-        passthrough._call(payload, monkeypatch, backend)
-    finally:
-        monkeypatch.undo()
+    _shared_setup_2(_pytest, backend, passthrough, payload)
 
     sent = [m for m in backend.calls[0]["messages"] if m.get("role") == "user"]
     assert isinstance(sent[0]["content"], list), sent[0]
@@ -1128,12 +1263,7 @@ def test_reasoning_is_not_rescued_from_the_tokenizer_body_on_an_image_turn():
 def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
     """The nudge retry's image marker must be keyed on renders_image, not on the image
     alone, or a text-path fallback is handed part lists (#10092)."""
-    import os
-    import sys
-
-    import pytest as _pytest
-
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _pytest = _shared_setup_1(__file__)
     import test_sf_client_tools_passthrough as passthrough
 
     truncated = '<tool_call>{"name": "lookup"'
@@ -1155,11 +1285,7 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
     backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}
     payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
 
-    monkeypatch = _pytest.MonkeyPatch()
-    try:
-        passthrough._call(payload, monkeypatch, backend)
-    finally:
-        monkeypatch.undo()
+    _shared_setup_2(_pytest, backend, passthrough, payload)
 
     assert len(backend.calls) == 2, "the nudge retry did not run"
     for call in backend.calls:

@@ -38,22 +38,34 @@ FLOOR_CHECK = REPO / "tests" / "test_python39_compatibility.py"
 BACKEND = REPO / "studio" / "backend"
 
 
-# The interpreter the full suite runs on. Written down rather than derived, so moving to
-# 3.14 is a decision somebody makes and defends here, not something that follows silently
-# from an edit elsewhere. Asserting only "newer than the floor" was not enough: 3.11 and
-# 3.12 satisfy that too, and either would quietly give up the removals-and-deprecations
-# coverage that is the whole reason the single leg is the newest one.
+# The interpreter the full suite runs on.
+# Written down rather than derived, so moving to 3.14 is a decision somebody makes and defends here, not something that
+# follows silently from an edit elsewhere.
+# Asserting only "newer than the floor" was not enough: 3.11 and 3.12 satisfy that too, and either would quietly give up
+# the removals-and-deprecations coverage that is the whole reason the single leg is the newest one.
 CEILING = "3.13"
 
 
 def _legs() -> dict[str, str]:
-    """Each leg the matrix runs, as scope -> interpreter."""
+    """Each scope the matrix runs, as scope -> interpreter.
+
+    A scope maps to one interpreter but no longer to one entry: `full` is three shards of
+    the same suite on the same 3.13, split because the leg had become the longest thing a
+    pull request waits for. What this has to keep unambiguous is the SCOPE-to-interpreter
+    mapping the tests below ask about, so that is what is asserted -- counting entries
+    would now be counting shards, which is a different question and not this file's.
+    """
     document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     matrix = document["jobs"]["pytest"]["strategy"]["matrix"]
     entries = matrix.get("include")
     assert entries, f"the matrix no longer lists its legs by scope: {matrix!r}"
-    legs = {str(entry["scope"]): str(entry["python"]) for entry in entries}
-    assert len(legs) == len(entries), f"two legs share a scope: {entries!r}"
+    legs = {}
+    for entry in entries:
+        scope, python = str(entry["scope"]), str(entry["python"])
+        assert legs.setdefault(scope, python) == python, (
+            f"scope {scope!r} runs on more than one interpreter, so scope no longer says "
+            f"which one a leg is: {entries!r}"
+        )
     return legs
 
 

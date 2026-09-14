@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -44,10 +43,9 @@ print(f"{'='*80}")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/orpheus-3b-0.1-ft",
-    max_seq_length = 2048,  # Choose any for long context!
-    dtype = None,  # Select None for auto detection
-    load_in_4bit = False,  # Select True for 4bit which reduces memory usage
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+    max_seq_length = 2048,
+    dtype = None,
+    load_in_4bit = False,
 )
 
 base_model_class = model.__class__.__name__
@@ -68,7 +66,6 @@ model = FastLanguageModel.get_peft_model(
     lora_alpha = 64,
     lora_dropout = 0,  # Supports any, but = 0 is optimized
     bias = "none",  # Supports any, but = "none" is optimized
-    # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
     use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
     random_state = 3407,
     use_rslora = False,  # We support rank stabilized LoRA
@@ -126,14 +123,11 @@ print(f"{'='*80}")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = "unsloth/orpheus-3b-0.1-ft",
-    max_seq_length = 2048,  # Choose any for long context!
-    dtype = None,  # Select None for auto detection
-    load_in_4bit = False,  # Select True for 4bit which reduces memory usage
-    # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+    max_seq_length = 2048,
+    dtype = None,
+    load_in_4bit = False,
 )
 
-# from transformers import AutoProcessor
-# processor = AutoProcessor.from_pretrained("unsloth/csm-1b")
 
 print("✅ Model loaded for inference successfully!")
 
@@ -141,9 +135,6 @@ print("✅ Model loaded for inference successfully!")
 print(f"\n{'='*80}")
 print("🔍 SECTION 6: Running Inference")
 print(f"{'='*80}")
-
-
-# @title Run Inference
 
 
 FastLanguageModel.for_inference(model)  # Enable native 2x faster inference
@@ -168,9 +159,7 @@ end_tokens = torch.tensor([[128009, 128260]], dtype = torch.int64)  # End of tex
 
 all_modified_input_ids = []
 for input_ids in all_input_ids:
-    modified_input_ids = torch.cat(
-        [start_token, input_ids, end_tokens], dim = 1
-    )  # SOH SOT Text EOT EOH
+    modified_input_ids = torch.cat([start_token, input_ids, end_tokens], dim = 1)
     all_modified_input_ids.append(modified_input_ids)
 
 all_padded_tensors = []
@@ -255,7 +244,6 @@ def redistribute_codes(code_list):
         torch.tensor(layer_3).unsqueeze(0),
     ]
 
-    # codes = [c.to("cuda") for c in codes]
     audio_hat = snac_model.decode(codes)
     return audio_hat
 
@@ -280,7 +268,6 @@ import os
 assert os.path.exists(output_path), f"Audio file not found at {output_path}"
 print("✅ Audio file exists on disk!")
 del my_samples, samples
-## assert that transcribed_text contains The birch canoe slid on the smooth planks. Glued the sheet to the dark blue background. It's easy to tell the depth of a well. Four hours of steady work faced us.
 
 print("✅ All sections passed successfully!")
 

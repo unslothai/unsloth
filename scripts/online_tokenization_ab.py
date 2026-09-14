@@ -107,8 +107,8 @@ def main() -> int:
         return 1
     mark("model_ready")
 
-    # `local_datasets` resolves its entries to files and rejects anything without a
-    # supported extension, so a Hub id has to go through `dataset_source` instead.
+    # `local_datasets` resolves its entries to files and rejects anything without a supported extension, so a Hub id has
+    # to go through `dataset_source` instead.
     local_split = os.path.exists(args.dataset) or Path(args.dataset).suffix.lower() in (
         ".json",
         ".jsonl",

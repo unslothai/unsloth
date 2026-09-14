@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import {
   type MemoryEstimate,
   type MemoryEstimateRequest,
@@ -12,21 +13,20 @@ import {
   resolveTokenIdentity as tokenIdentity,
 } from "../model-config/estimate-context";
 
-/** Long enough that a slider drag lands one request, not sixty; short enough that
- *  letting go feels immediate. The fetch itself is a header walk, tens of ms. */
+/** Long enough that a slider drag lands one request, not sixty; short enough that letting go
+ *  feels immediate. The fetch itself is a header walk, tens of ms. */
 const ESTIMATE_DEBOUNCE_MS = 250;
 
 export interface MemoryEstimateState {
   estimate: MemoryEstimate | null;
-  /** First fetch for this model, nothing to show yet. A re-price keeps the old
-   *  numbers up and sets `stale` instead, so the row never blinks on a slider step. */
+  /** First fetch for this model, nothing to show yet. A re-price keeps the old numbers up and sets
+   *  `stale` instead, so the row never blinks on a slider step. */
   loading: boolean;
   /** The numbers shown are for older settings; a fresh answer is on its way. */
   stale: boolean;
 }
 
-/** Everything that changes the answer. Settings the backend ignores stay out, or
- *  the row re-fetches for nothing. */
+/** Everything that changes the answer. Settings the backend ignores stay out, or the row re-fetches for nothing. */
 function estimateKey(request: MemoryEstimateRequest | null): string | null {
   if (!request) return null;
   return JSON.stringify([
@@ -53,20 +53,17 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
   ]);
 }
 
-/**
- * Debounced memory estimate for a prospective load. Pass null to stand down.
- *
- * In-flight requests abort when the settings move again, so a slow answer for a
- * context already dragged past cannot overwrite a newer one.
- */
+/** Debounced memory estimate for a prospective load. Pass null to stand down. In-flight requests
+ *  abort when the settings move again, so a slow answer for a context already dragged past
+ *  cannot overwrite a newer one. */
 export function useMemoryEstimate(
   request: MemoryEstimateRequest | null,
+  { refreshMemory = false }: { refreshMemory?: boolean } = {},
 ): MemoryEstimateState {
   const key = estimateKey(request);
-  // Computed during render, not read from a ref the effect updates after paint: the
-  // effect below still clears on a switch, but it runs after React has painted, so a
-  // direct switch between two GGUFs showed the previous model's footprint and fit
-  // colour under the new name for a frame. Both helpers are pure, so this is safe.
+  // Computed during render, not read from a ref the effect updates after paint: the effect below
+  // still clears on a switch, but it runs after React has painted, so a direct switch between
+  // two GGUFs showed the previous model's footprint under the new name for a frame.
   const currentIdentity =
     request == null
       ? null
@@ -76,27 +73,30 @@ export function useMemoryEstimate(
           tokenIdentity(request.hfToken),
           request.nativePathToken,
         );
-  const [state, setState] = useState<MemoryEstimateState & { identity: string | null }>({
+  const [state, setState] = useState<MemoryEstimateState & {
+    identity: string | null;
+    probeKey: string | null;
+  }>({
     estimate: null,
     loading: false,
     stale: false,
     identity: null,
+    probeKey: null,
   });
-  // Read inside the effect so it depends on the key alone: `request` is a fresh
-  // object every render and would restart the debounce on any keystroke.
+  // Read inside the effect so it depends on the key alone: `request` is a fresh object every
+  // render and would restart the debounce on any keystroke.
   const latestRequest = useRef(request);
   latestRequest.current = request;
-  // Which model the numbers belong to. A switch must clear them: one model's
-  // footprint under another's name is worse than none. The quantization counts as a
-  // switch -- Q4_K_M to F16 on one repository leaves modelPath alone while the
-  // weights quadruple -- so this is the source identity, not the path.
+  // Which model the numbers belong to. A switch must clear them: one model's footprint under
+  // another's name is worse than none. The quantization counts as a switch -- Q4_K_M to F16 on
+  // one repository leaves modelPath alone while the weights quadruple.
   const shownModel = useRef<string | null>(null);
 
   useEffect(() => {
     const pending = latestRequest.current;
     if (key == null || pending == null) {
       shownModel.current = null;
-      setState({ estimate: null, loading: false, stale: false, identity: null });
+      setState({ estimate: null, loading: false, stale: false, identity: null, probeKey: null });
       return;
     }
     const identity = resolveEstimateSourceIdentity(
@@ -108,34 +108,42 @@ export function useMemoryEstimate(
     const modelChanged = shownModel.current !== identity;
     setState((current) =>
       modelChanged
-        ? { estimate: null, loading: true, stale: false, identity }
+        ? { estimate: null, loading: true, stale: false, identity, probeKey: null }
         : { ...current, loading: current.estimate == null, stale: true, identity },
     );
     const controller = new AbortController();
     const timer = setTimeout(() => {
       fetchMemoryEstimate(pending, controller.signal)
-        .then((estimate) => {
+        .then(async (estimate) => {
+          if (controller.signal.aborted) return;
+          if (refreshMemory && estimate.available) {
+            const probe = await fetchSystemInfo({ refreshMemory: true });
+            if (!probe?.memory_refreshed) throw new Error("Memory probe unavailable");
+          }
           if (controller.signal.aborted) return;
           shownModel.current = identity;
-          setState({ estimate, loading: false, stale: false, identity });
+          setState({ estimate, loading: false, stale: false, identity, probeKey: refreshMemory ? key : null });
         })
         .catch(() => {
           if (controller.signal.aborted) return;
           // A failed estimate is not a failed panel; drop the row.
           shownModel.current = identity;
-          setState({ estimate: null, loading: false, stale: false, identity });
+          setState({ estimate: null, loading: false, stale: false, identity, probeKey: null });
         });
     }, ESTIMATE_DEBOUNCE_MS);
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [key]);
+  }, [key, refreshMemory]);
 
-  // State that belongs to a different source is not shown at all, not even for the
-  // frame before the effect clears it.
+  // State that belongs to a different source is not shown at all, not even for the frame before the effect clears it.
   if (state.identity !== currentIdentity) {
     return { estimate: null, loading: currentIdentity != null, stale: false };
   }
-  return { estimate: state.estimate, loading: state.loading, stale: state.stale };
+  return {
+    estimate: state.estimate,
+    loading: state.loading,
+    stale: state.stale || (refreshMemory && state.probeKey !== key),
+  };
 }

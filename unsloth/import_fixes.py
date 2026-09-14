@@ -2444,20 +2444,70 @@ def patch_torchcodec_audio_decoder():
 
 
 # torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
+# torchcodec ships no `Requires-Dist: torch`, so pip cannot catch a mismatch and this table
+# is the only check. Lockstep releases only; 0.12+ is the ABI-stable rule below.
 _TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
+    "2.11": {"0.11"},
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
     "2.8": {"0.6", "0.7"},
     "2.7": {"0.3", "0.4", "0.5"},
-    "2.6": {"0.2", "0.3"},
-    "2.5": {"0.1", "0.2"},
+    "2.6": {"0.2"},
+    "2.5": {"0.1"},
 }
+
+
+# torch.minor -> the pyproject extra that pins the matching torchcodec line.
+_TORCH_TORCHCODEC_EXTRAS: dict[str, str] = {
+    "2.11": "audio-torch211",
+    "2.10": "audio-torch210",
+}
+
+# torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
+# to 2.11), so that half of the matrix is open-ended rather than a finite set of minors.
+# Mirrors notebook_validator.TORCHCODEC_ABI_STABLE_{TORCH,CODEC}.
+_TORCHCODEC_ABI_STABLE_TORCH = (2, 11)
+_TORCHCODEC_ABI_STABLE_CODEC = (0, 12)
 
 
 def _torchcodec_exclusive_upper(pin: str) -> str:
     """Next torchcodec minor as an exclusive pip upper bound (0.10 -> <0.11.0)."""
     major, minor = pin.split(".", 1)
     return f"<{major}.{int(minor) + 1}.0"
+
+
+def _shell_env_ref(name: str) -> str:
+    """How to reference an environment variable in the shell this host pastes into.
+
+    PowerShell is Studio's supported Windows shell and does not expand `$NAME`; it needs
+    `$env:NAME`, so the POSIX spelling silently produced an empty `--index-url`.
+    """
+    if sys.platform.startswith("win"):
+        return f"$env:{name}"
+    return f'"${name}"'
+
+
+def _torch_index_url_for_remedy(local_tag: str) -> str:
+    """The index a torchcodec remedy should name for a `+local_tag` torch.
+
+    An explicitly configured index wins, exactly as it does in
+    install_python_stack._torchcodec_index_url: on an authenticated, corporate or
+    air-gapped host, telling the user to install from download.pytorch.org either fails
+    outright or bypasses the artifact source the install was configured with, and the
+    mirror is where the matching build actually is.
+    """
+    if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
+        # The variable, not its value: an authenticated mirror carries credentials in its
+        # userinfo or query token, and this warning lands in terminals and CI logs. The
+        # shell expands it, so the command still works and nothing is written down.
+        return _shell_env_ref("UNSLOTH_TORCH_INDEX_URL")
+    leaf = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/") or local_tag
+    if os.environ.get("UNSLOTH_PYTORCH_MIRROR", "").strip():
+        # UNSLOTH_PYTORCH_MIRROR replaces the base every install_python_stack index is built
+        # from, so naming the public site fails on an air-gapped host. Expanded, not disclosed,
+        # as above.
+        return f"{_shell_env_ref('UNSLOTH_PYTORCH_MIRROR')}/{leaf}"
+    return f"https://download.pytorch.org/whl/{leaf}"
 
 
 def _torchcodec_version_mismatch_hint() -> str | None:
@@ -2471,28 +2521,147 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     except Exception:
         return None
 
-    def _minor(version: str) -> str:
+    def _release(version: str) -> tuple:
         parts = Version(version.split("+", 1)[0]).release
-        return ".".join(str(p) for p in parts[:2])
+        return tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
+
+    def _at_least(version: str, floor: tuple) -> bool:
+        # The FULL Version, not its release tuple: PEP 440 sorts `2.11.0rc1` below `2.11`,
+        # while `.release` drops the rc and read it as being at the ABI floor. That approved a
+        # pairing outside the ABI-stable contract and silenced this hint on it.
+        return Version(version.split("+", 1)[0]) >= Version(".".join(str(p) for p in floor))
 
     try:
-        torch_minor = _minor(torch.__version__)
-        codec_minor = _minor(torchcodec_version)
+        torch_release = _release(torch.__version__)
+        codec_release = _release(torchcodec_version)
+        torch_at_abi = _at_least(torch.__version__, _TORCHCODEC_ABI_STABLE_TORCH)
+        codec_at_abi = _at_least(torchcodec_version, _TORCHCODEC_ABI_STABLE_CODEC)
     except Exception:
         # Non-PEP440 version strings must never break `import unsloth`.
         return None
-    allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
-    if allowed is None or codec_minor in allowed:
-        return None
+    if torch_at_abi and codec_at_abi:
+        return None  # ABI-stable pairing, not locked to one torch minor
+    torch_minor = ".".join(str(p) for p in torch_release)
+    codec_minor = ".".join(str(p) for p in codec_release)
 
-    pin = sorted(allowed)[-1]
-    upper = _torchcodec_exclusive_upper(pin)
-    install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
-    if torch_minor == "2.10":
-        install_hint += " or `pip install 'unsloth[audio-torch210]'`"
+    def _index_flag(recommended: "tuple[int, ...]") -> str:
+        """`--index-url ...` when torch carries an accelerator tag, else "".
+
+        torchcodec ships one wheel per accelerator, so a remedy that installs the right
+        version from the default index still lands a codec that cannot dlopen on a cu126 or
+        cu128 venv. Mirrors install_python_stack._torchcodec_index_url, including the lines
+        it will not pin: torchcodec 0.1 and 0.2 exist on PyPI only.
+        """
+        if recommended < (0, 3):
+            return ""
+        local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
+        if local == "cpu" or re.fullmatch(r"cu\d+", local or ""):
+            return f"--index-url {_torch_index_url_for_remedy(local)} "
+        return ""
+
+    allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
+    if allowed is None:
+        # No lockstep row: below the table stays silent; at or past the ABI floor this is a
+        # pre-0.12 codec, since 0.12+ already returned above.
+        if not torch_at_abi:
+            return None
+        abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        install_hint = (
+            f"`pip install {_index_flag(_TORCHCODEC_ABI_STABLE_CODEC)}'torchcodec>={abi_pin}.0'`"
+        )
+    elif codec_minor in allowed:
+        return None
+    else:
+        pin = sorted(allowed)[-1]
+        upper = _torchcodec_exclusive_upper(pin)
+        install_hint = f"`pip install {_index_flag(tuple(int(x) for x in pin.split('.')))}'torchcodec>={pin},{upper}'`"
+        extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
+        # Only when no index pin is needed. An extra cannot carry one -- the marker picks the
+        # version, not the index -- and --index-url on the whole command would resolve unsloth
+        # from the torch index too, handing back the same unloadable wheel.
+        if extra is not None and not _index_flag(tuple(int(x) for x in pin.split("."))):
+            install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
         f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
         f"install a matching build with {install_hint}."
+    )
+
+
+def _installed_torchcodec_version() -> "str | None":
+    """The installed codec's version WITHOUT importing it, or None when nothing is installed.
+
+    This is only ever asked once the codec has FAILED to load, and an unloadable wheel usually
+    raises while `torchcodec/__init__` imports its decoders. Python drops a module whose
+    initialisation raised, so importing it again just repeats the exception and the accelerator
+    mismatch went undiagnosed in exactly the case this exists to name. The metadata is written
+    by the installer and needs no native library.
+    """
+    try:
+        from importlib.metadata import version
+        return str(version("torchcodec"))
+    except Exception:
+        pass
+    try:
+        import torchcodec  # a layout the metadata cannot describe, e.g. a source checkout
+        return str(getattr(torchcodec, "__version__", "") or "")
+    except Exception:
+        return None
+
+
+def _torchcodec_provenance_hint() -> "str | None":
+    """A remedy for a codec whose ACCELERATOR build does not match torch's, or None.
+
+    torchcodec ships one wheel per accelerator, so a cu128 venv holding PyPI's default 0.11
+    has the right VERSION and still cannot dlopen -- docker/Dockerfile pins cu128 by hand
+    for exactly this. The version hint above returns None there, since the minors agree, so
+    without this the codec is disabled with nothing said about how to repair it.
+
+    Only called once the codec has actually failed to load, so a working pairing this cannot
+    explain never produces a warning.
+    """
+    try:
+        import torch
+    except Exception:
+        return None
+    codec_version = _installed_torchcodec_version()
+    if codec_version is None:
+        return None
+    torch_local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
+    codec_local = codec_version.partition("+")[2].strip().lower()
+    if torch_local == codec_local:
+        return None  # same provenance, so the failure is something this cannot name
+    if not (torch_local == "cpu" or re.fullmatch(r"cu\d+", torch_local or "")):
+        return None  # rocm and xpu publish no torchcodec under this name
+    index = _torch_index_url_for_remedy(torch_local)
+    codec_from = codec_local or "the default index"
+    # The window the table allows, not a bare name: the accelerator indexes carry the whole
+    # codec line, so `pip install torchcodec` on torch 2.9 trades a wrong-accelerator build
+    # for a wrong-VERSION one and audio stays disabled. Past the table, the ABI floor pins.
+    try:
+        from packaging.version import Version
+        parts = Version(str(torch.__version__).split("+", 1)[0]).release
+        torch_release = tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
+    except Exception:
+        torch_release = ()
+    allowed = _TORCH_TORCHCODEC_MINORS.get(".".join(str(p) for p in torch_release))
+    if allowed:
+        pin = sorted(allowed)[-1]
+        want = f"'torchcodec>={pin},{_torchcodec_exclusive_upper(pin)}'"
+    elif torch_release and torch_release >= _TORCHCODEC_ABI_STABLE_TORCH:
+        abi = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        want = f"'torchcodec>={abi}.0'"
+    else:
+        want = "torchcodec"
+    # "may be", not "is": this only establishes different indexes. torchcodec is published
+    # per accelerator on every line, 0.12+ included, so a mismatch stays possible -- but the
+    # load can equally have failed on a missing libavutil, which no reinstall fixes. Name both.
+    return (
+        f"torchcodec {codec_version or '?'} came from {codec_from} while "
+        f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
+        f"may be built for a different accelerator; audio is disabled. Try "
+        f"`pip install --force-reinstall --no-deps --index-url {index} {want}`. "
+        f"If that does not help, the failure is likely FFmpeg rather than the wheel: "
+        f"torchcodec needs libavutil / libavcodec from FFmpeg 4 through 8."
     )
 
 
@@ -2521,6 +2690,16 @@ def disable_torchcodec_if_broken():
         # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
         from torchcodec.decoders import AudioDecoder
     except (ImportError, RuntimeError, OSError):
+        if mismatch_hint is None:
+            # Versions agree, so the load failed for another reason. A mismatched accelerator
+            # build is the one this can still name, and the one pinning the index repairs.
+            try:
+                provenance_hint = _torchcodec_provenance_hint()
+                if provenance_hint is not None:
+                    import warnings
+                    warnings.warn(provenance_hint, stacklevel = 2)
+            except Exception:
+                pass  # a diagnostic must never abort the disable fallback below
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
         try:
             import transformers.utils.import_utils as tf_import_utils
@@ -3199,8 +3378,10 @@ _PEFT_CONVERSION_SYMBOLS = {
     ),
 }
 
-# Of those, the ones peft calls rather than merely imports. An inert body on a REAL
-# transformers would be called and answer wrongly, so those get a placeholder that says so.
+# Of those, the ones peft calls rather than merely imports. The stubs are deliberately inert: on
+# transformers <5 the whole module is ours and peft's converter never runs. An inert body on a REAL
+# transformers is a different matter, since peft would call it and get a wrong answer, so those get a
+# placeholder that says what is wrong instead.
 _PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
     (
         "transformers.core_model_loading.dot_natural_key",
@@ -5574,6 +5755,221 @@ def fix_torchao_nf4tensor_move():
     sys.meta_path.append(_TorchaoNF4AliasFinder())
 
 
+_TORCHAO_INTMM_MODULES = (
+    "torchao.kernel.intmm",  # every release up to and including 0.18.0
+    "torchao.quantization.quantize_.workflows.int8.kernels",  # main after pytorch/ao#4718
+)
+_TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
+_TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
+_TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+
+# The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
+_TORCHAO_SAFE_INT_MM_MARKERS = (
+    "input.__repr__()",
+    "dynamo_is_compiling()",
+    "out_dtype(torch.ops.aten.mm.default",
+    "j_is_nonzero_multiple_of_8",
+    "k_is_nonzero_multiple_of_8",
+    "mat2.is_contiguous()",
+)
+
+
+def _is_fake_tensor(x):
+    """Covers exactly the set the substring repr probe did: ``is_fake`` unwraps FunctionalTensor too."""
+    try:
+        from torch._subclasses.fake_tensor import is_fake
+        return bool(is_fake(x))
+    except Exception:
+        pass
+    try:
+        from torch._subclasses.fake_tensor import FakeTensor
+        return isinstance(x, FakeTensor)
+    except Exception:
+        return False
+
+
+def _make_safe_int_mm(mod, original):
+    """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
+    import torch
+
+    out_dtype = mod.out_dtype
+    dynamo_is_compiling = mod.dynamo_is_compiling
+
+    @functools.wraps(original)
+    def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
+        if dynamo_is_compiling() or _is_fake_tensor(input):
+            if input.device.type == "cpu":
+                # Matmul in int32 is slow on CPU and not supported well by Inductor cpp backend
+                return out_dtype(
+                    torch.ops.aten.mm.default, torch.int32, input.float(), mat2.float()
+                )
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
+
+        assert (
+            mat2.device == input.device
+        ), f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
+        device_cpu = "cpu" in [mat2.device.type, input.device.type]
+        j_is_nonzero_multiple_of_8 = (input.shape[1] % 8 == 0) and (input.shape[1] > 0)
+        k_is_nonzero_multiple_of_8 = (mat2.shape[1] % 8 == 0) and (mat2.shape[1] > 0)
+        bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
+
+        if device_cpu or bad_dimensions_for_cublas:
+            return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
+                input.device.type
+            )
+
+        if not mat2.is_contiguous():  # silently gives incorrect result without this
+            mat2 = mat2.contiguous()
+        if (not input.is_contiguous()) and (
+            input.shape[0] % 8 != 0
+        ):  # gives cryptic error without this
+            input = input.contiguous()
+        try:
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
+        except Exception:
+            # H100 float8: "addmm_cuda" not implemented for 'Float8_e4m3fn'
+            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(torch.int32)
+
+    safe_int_mm.__unsloth_patched__ = True
+    safe_int_mm.__unsloth_original__ = original
+    return safe_int_mm
+
+
+def _patch_torchao_intmm_module(mod):
+    """Rebind ``safe_int_mm`` on either torchao home; True when this call installed it."""
+    original = getattr(mod, "safe_int_mm", None)
+    if original is None or not callable(original):
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return False
+    # Off the module, never imported here, so this fails closed rather than borrowing our own operators.
+    if not hasattr(mod, "out_dtype") or not hasattr(mod, "dynamo_is_compiling"):
+        return False
+    try:
+        source = inspect.getsource(original)
+    except Exception:
+        return False
+    missing = [marker for marker in _TORCHAO_SAFE_INT_MM_MARKERS if marker not in source]
+    if missing:
+        if "input.__repr__()" not in missing:
+            logger.warning(
+                "Unsloth: torchao's safe_int_mm still probes input.__repr__() but its body "
+                "changed (%s missing), so the capture-safe replacement was not installed. "
+                "Eager int8 keeps syncing the device on every linear.",
+                ", ".join(missing),
+            )
+        return False
+    patched = _make_safe_int_mm(mod, original)
+    try:
+        mod.safe_int_mm = patched
+    except Exception:
+        return False
+    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT, so they need a sweep.
+    for name, other in tuple(sys.modules.items()):
+        if other is None or not (name == "torchao" or name.startswith("torchao.")):
+            continue
+        if getattr(other, "safe_int_mm", None) is original:
+            try:
+                setattr(other, "safe_int_mm", patched)
+            except Exception:
+                pass
+    return True
+
+
+class _TorchaoIntmmLoader(importlib.abc.Loader):
+    """The real loader, plus the patch once the module body finishes. Failures here leave torchao unpatched."""
+
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create = getattr(self._loader, "create_module", None)
+        if create is None:
+            return None
+        return create(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_torchao_intmm_module(module)
+        except Exception:
+            pass
+
+    def __getattr__(self, attribute):
+        return getattr(self._loader, attribute)
+
+
+class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
+    """Inserted at the FRONT of sys.meta_path: the module really exists, so PathFinder would answer first."""
+
+    __slots__ = (_TORCHAO_INTMM_SENTINEL, "_finding")
+
+    def __init__(self):
+        setattr(self, _TORCHAO_INTMM_SENTINEL, True)
+        self._finding = False  # find_spec below walks sys.meta_path again
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _TORCHAO_INTMM_MODULES or self._finding:
+            return None
+        self._finding = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            return None
+        finally:
+            self._finding = False
+        if spec is None or spec.loader is None:
+            return None
+        if not hasattr(spec.loader, "exec_module"):
+            return None  # a loader from before PEP 451; leave the import entirely alone
+        try:
+            spec.loader = _TorchaoIntmmLoader(spec.loader)
+        except Exception:
+            return None
+        return spec
+
+
+def fix_torchao_safe_int_mm_repr_probe():
+    """Stop torchao's int8 GEMM from syncing the device to ask whether it is being traced.
+
+    ``safe_int_mm`` branches on ``"FakeTensor" in input.__repr__()``; a real CUDA tensor's repr calls
+    ``.item()``, so eager int8 syncs per linear and ``torch.cuda.graph`` capture fails outright. The
+    gate is structural, not version-based, and the meta path finder covers a torchao imported after
+    this call, which the int8 prequant path needs since it never calls ``quantize_``.
+    ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
+    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
+    if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":
+        return None
+    try:
+        if importlib.util.find_spec("torchao") is None:
+            return None
+    except Exception:
+        return None
+    patched_now = False
+    for name in _TORCHAO_INTMM_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        try:
+            patched_now = _patch_torchao_intmm_module(module) or patched_now
+        except Exception:
+            pass
+    if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
+        return patched_now  # nothing left for a finder to catch
+    for finder in sys.meta_path:
+        if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
+            return patched_now
+    sys.meta_path.insert(0, _TorchaoIntmmPatchFinder())
+    return True
+
+
 # `datasets` fingerprints through dill, and dill._dill._is_builtin_module pickles a module by
 # reference only if its __file__ starts with a sys prefix, ends with an extension suffix, or
 # contains the literal `site-packages`. An install matching none (pip install --target, a
@@ -5871,5 +6267,81 @@ def fix_dill_module_by_value_pickling():
             "Unsloth: patched dill to pickle importable modules by reference; "
             f"{getattr(probe, '__name__', '?')} is installed outside a "
             "site-packages tree."
+        )
+    return True
+
+
+# Windows refuses sentencepiece's compiled extension on some machines. Smart App Control and
+# App Control for Business judge by reputation, one file at a time, so a freshly published
+# unsigned .pyd can be refused on a machine where everything else loads. The user sees a Bad
+# Image dialog naming the file, and transformers keeps saying the package is available,
+# because it decides that from find_spec and installed metadata and loads nothing.
+#
+# There is no way to ask whether this machine will refuse the file that does not involve
+# handing the file to the loader, which is the thing being avoided: a probe IS the dialog. So
+# on Windows the extension is simply never imported.
+DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
+_SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def sentencepiece_should_be_disabled():
+    """Whether to make sentencepiece absent in this process.
+
+    Windows by default; every other platform only when asked. WSL reports ``linux`` and is
+    treated as the Linux box it is, since App Control does not enforce over ELF binaries in
+    the guest.
+
+    An unrecognised value falls back to the platform default rather than raising. This runs at
+    the very top of the process, where a typo in an environment variable must not be fatal.
+    """
+    value = (os.environ.get(DISABLE_SENTENCEPIECE_VARIABLE) or "").strip().lower()
+    if value in _SENTENCEPIECE_TRUTHY:
+        return True
+    if value in _SENTENCEPIECE_FALSY:
+        return False
+    return sys.platform == "win32"
+
+
+def disable_sentencepiece_on_windows():
+    """Make ``import sentencepiece`` fail the way an uninstalled package does.
+
+    A ``None`` entry in ``sys.modules`` is CPython's documented sentinel for this: the import
+    raises ``ModuleNotFoundError`` (an ``ImportError``, so every ``try/except ImportError`` in
+    transformers already handles it) and nothing on disk is opened, so the compiled extension
+    is never handed to the Windows loader and there is no dialog to see.
+
+    Deliberately NOT a monkey patch of ``is_sentencepiece_available``. transformers derives
+    that from ``find_spec``, which now finds the sentinel and answers False on its own, so the
+    process is in the ordinary "sentencepiece was never installed" configuration rather than a
+    state where the flag and the package disagree. That distinction is load bearing: on
+    transformers 4.52 through 4.57 a flag that lies sends ``tokenizer_class_from_name`` into a
+    fallback that imports the slow tokenizer module and reaches its unguarded
+    ``import sentencepiece as spm``, which is the loader error this is meant to prevent.
+
+    Must run before transformers is imported, since transformers reads availability during
+    its own import. Once transformers is in sys.modules this declines rather than installing a
+    sentinel it has already contradicted. Returns True only when this call is what made it
+    absent.
+    """
+    if not sentencepiece_should_be_disabled():
+        return False
+    if "sentencepiece" in sys.modules:
+        # Already imported by something earlier, or already disabled by an earlier call.
+        # Replacing a live module here would break whoever is holding it.
+        return sys.modules["sentencepiece"] is None
+    if "transformers" in sys.modules:
+        # Too late, and installing it anyway would be worse than doing nothing. transformers
+        # has already read availability from find_spec and cached "installed", so the sentinel
+        # would only produce the disagreement described above, and a tokenizer that loads
+        # today would start raising ModuleNotFoundError. Whoever imported transformers first
+        # keeps the ordinary behaviour.
+        return False
+    sys.modules["sentencepiece"] = None
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: sentencepiece is not imported on Windows, so a code integrity policy "
+            "cannot refuse its extension. Models needing it will say so. Set "
+            f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
         )
     return True

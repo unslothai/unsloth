@@ -143,6 +143,7 @@ export interface LocalModelListResponse {
   hf_cache_dir?: string | null;
   lmstudio_dirs: string[];
   ollama_dirs?: string[];
+  hermes_dirs?: string[];
   models: LocalModelInfo[];
 }
 

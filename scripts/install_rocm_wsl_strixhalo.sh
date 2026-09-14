@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # ──────────────────────────────────────────────────────────────────────────────
 # Enable ROCm-on-WSL for AMD GPUs (Strix Halo/Point APUs AND discrete Radeon RX
 # 7000/9000). Verified on gfx1151 (Radeon 8060S) and gfx1200 (Radeon RX 9060 XT).
@@ -11,23 +10,19 @@
 # This helper does that Linux-side prerequisite on Ubuntu 24.04 WSL2, invoked by
 # install.sh when it sees an AMD GPU via /dev/dxg but no ROCm yet. Arch-agnostic: the
 # arch is auto-detected from rocminfo (override UNSLOTH_WSL_GFX=gfx1200). Idempotent.
-#
 # Manual, admin-gated Windows prerequisite: an AMD Adrenalin driver with
 # production ROCDXG/WSL support (26.2.2+). install.ps1 offers to update it. Once
 # installed + rebooted, /dev/dxg is exposed to WSL and this script builds the rest.
-#
 # HOW ROCDXG WORKS (and why older /usr/lib/wsl/lib notes are wrong): librocdxg.so
 # is AMD's user-mode bridge between the Linux HSA runtime and the Windows driver
 # over /dev/dxg. The STANDARD hsa-rocr runtime (NOT the gone "roc4wsl" package)
 # loads it when HSA_ENABLE_DXG_DETECTION=1. No hsa/rocm libs need injecting into
 # /usr/lib/wsl/lib (it holds only d3d12/dxcore), yet rocminfo enumerates gfx1151
 # fine -- so we gate on /dev/dxg, not on WSL lib injection.
-#
 # KNOWN CAVEAT (ROCm/ROCm#6022): librocdxg can cap usable ROCm VRAM at the WSL
 # VM's RAM (.wslconfig [wsl2] memory=) on some BIOS UMA layouts, and amd-smi
 # doesn't work in WSL. On OOM below capacity, raise memory= (then wsl --shutdown)
 # and watch GPU use from Windows. Large-UMA BIOS exposes the full pool regardless.
-#
 # Verified on Ryzen AI Max+ PRO 395 / Radeon 8060S (gfx1151) with ROCm 7.2.1 +
 # Ubuntu 24.04 + WSL2 + Adrenalin. These pins MOVE; bump + re-verify on newer ROCm.
 # ──────────────────────────────────────────────────────────────────────────────

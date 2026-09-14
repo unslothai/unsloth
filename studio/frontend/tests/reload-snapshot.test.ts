@@ -2,133 +2,55 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const script = readFileSync(
-  new URL("../public/reload-snapshot.js", import.meta.url),
-  "utf8",
-);
-const indexHtml = readFileSync(
-  new URL("../index.html", import.meta.url),
-  "utf8",
-);
-const indexCss = readFileSync(
-  new URL("../src/index.css", import.meta.url),
-  "utf8",
-);
-const rootRouteSource = readFileSync(
-  new URL("../src/app/routes/__root.tsx", import.meta.url),
-  "utf8",
-);
-const runtimeProviderSource = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
-const chatPageSource = readFileSync(
-  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-  "utf8",
-);
-const sharedComposerSource = readFileSync(
-  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-  "utf8",
-);
-const imageDropzoneSource = readFileSync(
-  new URL("../src/components/image-dropzone.tsx", import.meta.url),
-  "utf8",
-);
-const attachmentPreviewSource = readFileSync(
-  new URL(
-    "../src/components/assistant-ui/attachment-preview.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc, readText } from "./helpers/kit.ts";
 
-const attachmentSource = readFileSync(
-  new URL("../src/components/assistant-ui/attachment.tsx", import.meta.url),
-  "utf8",
-);
-const imagesPageSource = readFileSync(
-  new URL("../src/features/images/images-page.tsx", import.meta.url),
-  "utf8",
-);
-const videoPageSource = readFileSync(
-  new URL("../src/features/video/video-page.tsx", import.meta.url),
-  "utf8",
-);
-const audioPageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const hubPageSource = readFileSync(
-  new URL("../src/features/hub/hub-page.tsx", import.meta.url),
-  "utf8",
-);
-const referencePickerSource = readFileSync(
-  new URL("../src/features/video/reference-picker.tsx", import.meta.url),
-  "utf8",
-);
+const script = readText("../public/reload-snapshot.js");
+const indexHtml = readText("../index.html");
+const indexCss = readSrc("index.css");
+const rootRouteSource = readSrc("app/routes/__root.tsx");
+const runtimeProviderSource = readSrc("features/chat/runtime-provider.tsx");
+const chatPageSource = readSrc("features/chat/chat-page.tsx");
+const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
+const imageDropzoneSource = readSrc("components/image-dropzone.tsx");
+const attachmentPreviewSource = readSrc("components/assistant-ui/attachment-preview.tsx");
 
-const unstructuredDropZoneSource = readFileSync(
-  new URL(
-    "../src/features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const attachmentSource = readSrc("components/assistant-ui/attachment.tsx");
+const imagesPageSource = readSrc("features/images/images-page.tsx");
+const videoPageSource = readSrc("features/video/video-page.tsx");
+const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const hubPageSource = readSrc("features/hub/hub-page.tsx");
+const referencePickerSource = readSrc("features/video/reference-picker.tsx");
 
-const projectsPageSource = readFileSync(
-  new URL("../src/features/chat/projects-page.tsx", import.meta.url),
-  "utf8",
-);
+const unstructuredDropZoneSource = readSrc("features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx");
 
-const seedDialogSource = readFileSync(
-  new URL(
-    "../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const projectsPageSource = readSrc("features/chat/projects-page.tsx");
 
-const projectSourceDropzoneSource = readFileSync(
-  new URL(
-    "../src/features/rag/components/project-source-dropzone.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const dataRecipesPageSource = readFileSync(
-  new URL(
-    "../src/features/data-recipes/pages/data-recipes-page.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const editRecipePageSource = readFileSync(
-  new URL(
-    "../src/features/data-recipes/pages/edit-recipe-page.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const exportPageSource = readFileSync(
-  new URL("../src/features/export/export-page.tsx", import.meta.url),
-  "utf8",
-);
-const studioPageSource = readFileSync(
-  new URL("../src/features/studio/studio-page.tsx", import.meta.url),
-  "utf8",
-);
-const apiMonitorPageSource = readFileSync(
-  new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url),
-  "utf8",
-);
-const authFormSource = readFileSync(
-  new URL("../src/features/auth/components/auth-form.tsx", import.meta.url),
-  "utf8",
-);
+const seedDialogSource = readSrc("features/recipe-studio/dialogs/seed/seed-dialog.tsx");
+
+const projectSourceDropzoneSource = readSrc("features/rag/components/project-source-dropzone.tsx");
+const dataRecipesPageSource = readSrc("features/data-recipes/pages/data-recipes-page.tsx");
+const editRecipePageSource = readSrc("features/data-recipes/pages/edit-recipe-page.tsx");
+const exportPageSource = readSrc("features/export/export-page.tsx");
+const studioPageSource = readSrc("features/studio/studio-page.tsx");
+const apiMonitorPageSource = readSrc("features/api-monitor/api-monitor-page.tsx");
+const authFormSource = readSrc("features/auth/components/auth-form.tsx");
+
+test("scoped readiness still emits the reload snapshot event", () => {
+  const readinessSource = readSrc("components/app-readiness.ts");
+  assert.match(readinessSource, /function signalReloadSnapshotReady\(\): void \{\s*window\.dispatchEvent\(new Event\("unsloth:app-shell-ready"\)\)/);
+  assert.match(readinessSource, /signalReady: \(\) => \{\s*if \(!active\) return;\s*onReady\(\);\s*signalReloadSnapshotReady\(\)/);
+  assert.match(readinessSource, /value: scope\.signalReady/);
+  assert.match(readinessSource, /return useContext\(AppShellReadyContext\)/);
+  for (const source of [rootRouteSource, runtimeProviderSource, chatPageSource,
+    hubPageSource, projectsPageSource, dataRecipesPageSource, editRecipePageSource,
+    exportPageSource, studioPageSource, apiMonitorPageSource, authFormSource]) {
+    assert.match(source, /useAppShellReadySignal/);
+  }
+});
+
 
 type Listener = (event: Record<string, unknown>) => void;
 
@@ -820,7 +742,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
+    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?signalReady\(\)[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
   );
   assert.match(
     runtimeProviderSource,
@@ -845,7 +767,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?unsloth:app-shell-ready[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
+    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?signalReady\(\)[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
   );
   assert.match(
     runtimeProviderSource,
@@ -864,7 +786,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?unsloth:app-shell-ready/,
+    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -880,7 +802,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -935,11 +857,11 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     hubPageSource,
-    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
+    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     projectsPageSource,
-    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     rootRouteSource,
@@ -947,32 +869,32 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     dataRecipesPageSource,
-    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     editRecipePageSource,
-    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/export"/);
   assert.match(
     exportPageSource,
-    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/studio"/);
   assert.match(
     studioPageSource,
-    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/api-monitor"/);
   assert.match(
     apiMonitorPageSource,
-    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/login"/);
   assert.match(rootRouteSource, /pathname === "\/change-password"/);
   assert.match(
     authFormSource,
-    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?unsloth:app-shell-ready/,
+    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?signalReady\(\)/,
   );
 });
 

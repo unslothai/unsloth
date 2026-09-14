@@ -185,6 +185,34 @@ export const hi = {
     },
   },
   settings: {
+    accounts: {
+      title: "खाते",
+      description: "निजी Studio खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
+      username: "उपयोगकर्ता नाम",
+      create: "खाता बनाएँ",
+      setupCode: "सेटअप कोड",
+      setupFor: "{username} के लिए सेटअप कोड",
+      shownOnce: "यह कोड अभी कॉपी करें और खाता धारक को दें। यह केवल यहीं दिखता है और 60 मिनट के भीतर एक बार इस्तेमाल किया जा सकता है।",
+      expires: "समाप्ति: {expiry}",
+      copy: "सेटअप कोड कॉपी करें",
+      copied: "कॉपी हो गया",
+      copyFailed: "कॉपी नहीं हो सका। ऊपर दिए सेटअप कोड को चुनकर कॉपी करें।",
+      dismiss: "हो गया",
+      owner: "इंस्टॉलेशन स्वामी",
+      active: "सक्रिय",
+      inactive: "निष्क्रिय",
+      regenerate: "सेटअप कोड फिर से बनाएँ",
+      resetTitle: "{username} का पासवर्ड रीसेट करें?",
+      resetDescription: "सेटअप कोड फिर से बनाने पर {username} का पासवर्ड बदल जाता है, उनके सत्र समाप्त हो जाते हैं और उनकी API कुंजियाँ रद्द हो जाती हैं। उन्हें नया कोड दें ताकि वे फिर से पासवर्ड चुन सकें।",
+      deactivate: "निष्क्रिय करें",
+      reactivate: "फिर से सक्रिय करें",
+      delete: "खाता हटाएँ",
+      deleteTitle: "{username} को हटाएँ?",
+      deleteDescription: "इससे {username} के सत्र रद्द हो जाएँगे और उनका चल रहा काम बंद हो जाएगा। उनकी चैट, सेटिंग्स, क्रेडेंशियल, अपलोड, डेटासेट, ट्रेनिंग रन, आउटपुट, एक्सपोर्ट, गैलरी, सैंडबॉक्स, प्रोजेक्ट और अस्थायी फ़ाइलें अलग रख दी जाती हैं। डायरेक्टरी का नाम बदलकर उन्हें किनारे कर दिया जाता है, हटाया कभी नहीं जाता। यही उपयोगकर्ता नाम फिर से बनाने पर इस डेटा के बिना एक नया खाता शुरू होता है।",
+      cancel: "रद्द करें",
+      retry: "खाते ताज़ा करें",
+      failed: "खाता अनुरोध विफल रहा।",
+    },
     title: "सेटिंग्स",
     dialog: {
       title: "सेटिंग्स",
@@ -196,6 +224,7 @@ export const hi = {
       panelReload: "फिर से लोड करें",
     },
     tabs: {
+      accounts: "खाते",
       general: "सामान्य",
       profile: "प्रोफ़ाइल",
       appearance: "रूप-रंग",
@@ -468,6 +497,17 @@ export const hi = {
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
       morePending: "और पंक्तियां अभी पढ़ी जा रही हैं; वे अगले रिफ्रेश पर आएंगी।",
       staleSession: "फ़ाइल लॉगिंग बंद है, इसलिए यह पुराना सत्र है और अपडेट नहीं होगा।",
+      downloadAllLogs: "सभी लॉग डाउनलोड करें (.zip)",
+      downloadingAllLogs: "लॉग पैक किए जा रहे हैं...",
+      exportMaskedNote: "निर्यात की गई फ़ाइलों में क्रेडेंशियल छिपा दिए जाते हैं। बहुत बड़े लॉग केवल अपनी सबसे हाल की पंक्तियाँ रखते हैं, और कुछ लॉग पूरी तरह छूट सकते हैं; संग्रह में EXPORT_WARNINGS.txt देखें।",
+      downloadedTo: "{path} में सहेजा गया",
+      downloadedToBrowser: "डाउनलोड शुरू हो गया।",
+      showInFolder: "फ़ोल्डर में दिखाएँ",
+      openLogsFolder: "लॉग फ़ोल्डर खोलें",
+      openLogsFolderFailed: "लॉग फ़ोल्डर नहीं खोला जा सका।",
+      exportFailed: "लॉग डाउनलोड नहीं किए जा सके।",
+      exportTooOld: "चल रहा Unsloth बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
+      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Studio सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
@@ -495,6 +535,13 @@ export const hi = {
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttDeviceLabel: "इसमें लोड करें",
+        sttDeviceAuto: "उपलब्ध होने पर GPU",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU उपलब्ध हो तो उसका उपयोग करें, अन्यथा CPU का।",
+        sttDeviceCpuDescription:
+          "मॉडल को सिस्टम RAM में रखें। ट्रांसक्रिप्शन धीमा होगा, पर GPU मेमोरी नहीं लगेगी।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
         sttModelSearching: "Hugging Face पर खोजा जा रहा है…",
         sttModelValidating: "Whisper संगतता जाँची जा रही है…",
@@ -917,7 +964,11 @@ export const hi = {
         currentStreak: "मौजूदा स्ट्रीक",
         longestStreak: "सबसे लंबी स्ट्रीक",
         activityTitle: "टोकन गतिविधि",
-        activityDescription: "अवधि: {weeks} · {total}",
+        activityDescription: {
+          daily: "अवधि: {weeks} · {total}",
+          weekly: "सबसे व्यस्त सप्ताह {total} · पिछले {weeks}",
+          cumulative: "पिछले {weeks} में कुल {total}",
+        },
         mode: {
           daily: "दैनिक",
           weekly: "साप्ताहिक",
@@ -1191,8 +1242,8 @@ export const hi = {
         keepResidentDescription: "प्रॉम्प्ट के बीच VRAM में बना रहता है।",
         keepResidentHint: "जब तक मॉडल लोड रहता है, वेट्स सिस्टम RAM को वापस नहीं दिए जाते। निष्क्रिय होने पर स्वतः अनलोड बंद कर देता है, और जब वेट्स वास्तव में होस्ट RAM में रहते हैं (यूनिफाइड मेमोरी, या आंशिक GPU ऑफ़लोड) तब --mlock भी भेजता है, ताकि OS उन्हें पेज आउट करके आपके अगले प्रॉम्प्ट पर दोबारा अपलोड न करे।",
         noRamReserve: "मॉडल के लिए सिस्टम RAM आरक्षित न करें",
-        noRamReserveDescription: "RAM में पूरी प्रति नहीं रखता।",
-        noRamReserveHint: "RAM में पूरी प्रति रखने के बजाय वेट्स को VRAM में भेजता है। llama.cpp की मेमोरी-मैप्ड लोडिंग बनाए रखता है और --no-mmap तथा --mlock हटा देता है।",
+        noRamReserveDescription: "मॉडल वेट्स के लिए रखी गई RAM घटाता है।",
+        noRamReserveHint: "जब मॉडल पूरी तरह GPU पर ऑफ़लोड हो, तो समर्थित Windows बिल्ड पर मेमोरी-मैप्ड लोडिंग छोड़ देता है, ताकि उसके पेज रेज़िडेंट न रहें। अन्यथा मेमोरी-मैप्ड लोडिंग बनाए रखता है। आवश्यक CPU बफ़र अब भी RAM ले सकते हैं। --no-mmap तथा --mlock हटा देता है।",
         mlockVetoed: "--mlock बंद ही रहता है: मॉडल को पिन करने से उसकी पूरी मात्रा के लिए RAM आरक्षित हो जाएगी। निष्क्रिय होने पर स्वतः अनलोड अब भी अक्षम है।",
         memlockCapped: "यह सिस्टम लॉक की गई मेमोरी को {limit} तक सीमित करता है। इससे बड़ा मॉडल पूरी तरह पिन नहीं होगा; ulimit -l से सीमा बढ़ाएँ।",
         reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
@@ -1246,11 +1297,12 @@ export const hi = {
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
       intro:
-        "Claude Code, Codex, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",
       commandBuilder: "कमांड बिल्डर",
+      commandShell: "सभी कमांड के लिए शेल",
       agent: "कोडिंग एजेंट",
       model: "मॉडल",
       searchModels: "GGUF मॉडल खोजें...",
@@ -1268,9 +1320,8 @@ export const hi = {
       docs: "दस्तावेज़",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1376,6 +1427,7 @@ export const hi = {
           "आइटम को चैट के + साइड मेन्यू में पिन करें। बाकी आइटम “More” में चले जाएँगे।",
         chatWithFiles: "फ़ाइलों के साथ चैट (RAG)",
         mcp: "MCP",
+        skills: "एजेंट कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
@@ -1706,7 +1758,7 @@ export const hi = {
           "इसमें आम तौर पर कुछ सेकंड लगते हैं।",
         desktopAvailable: "डेस्कटॉप ऐप {version} उपलब्ध है",
         desktopAvailableDescription:
-          "अभी अपडेट करें, यह पृष्ठभूमि में तैयार होगा। आप काम करते रह सकते हैं और तैयार होने पर फिर से शुरू करें।",
+          "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
         desktopExternalServer:
           "जिस टर्मिनल से सर्वर शुरू किया गया था, उसमें `unsloth studio update` चलाएँ।",
         desktopManualInstall:
@@ -1716,20 +1768,11 @@ export const hi = {
           "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
         desktopCurrent: "डेस्कटॉप ऐप नवीनतम संस्करण पर है",
         desktopCurrentDescription: "Unsloth अपने-आप जाँच करता रहेगा।",
-        desktopPreparingDescription:
-          "अपडेट पृष्ठभूमि में तैयार हो रहा है। आप काम करते रह सकते हैं।",
-        desktopReadyToRestartDescription:
-          "सब तैयार है। इंस्टॉल पूरा करने के लिए फिर से शुरू करें।",
-        desktopReadyToInstallDescription:
-          "ऐप अपडेट डाउनलोड हो गया है। इसे इंस्टॉल करने के लिए बैकएंड अपडेट पूरा करें।",
         checkForUpdates: "अपडेट की जाँच करें",
         checkAgain: "फिर से जाँचें",
         retryCheck: "फिर से कोशिश करें",
         checking: "जाँच हो रही है...",
-        preparing: "तैयार हो रहा है...",
         updateNow: "अभी अपडेट करें",
-        restartToUpdate: "अपडेट के लिए फिर से शुरू करें",
-        finishUpdate: "अपडेट पूरा करें",
         openReleasePage: "रिलीज़ पेज खोलें",
         unknownInstall:
           "यह पता नहीं लगाया जा सका कि Unsloth कैसे इंस्टॉल किया गया था। इंस्टॉलर या PyPI इंस्टॉल के लिए, ऊपर दिए गए कमांड का उपयोग करें।",
@@ -1895,6 +1938,7 @@ export const hi = {
       sourceHfCache: "HF कैश",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "कस्टम फ़ोल्डर",
       sourceLocalModel: "स्थानीय मॉडल",
       vramOomBadge: "OOM",
@@ -2142,6 +2186,7 @@ export const hi = {
       memoryEfficient: "मेमोरी कुशल",
       weightDecomposed: "भार-विघटित",
       notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
+      doraNeedsVisionLayersOff: "DoRA उपयोग करने के लिए विज़न लेयर्स ट्रेनिंग बंद करें",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",
@@ -2442,5 +2487,23 @@ export const hi = {
     kvRate: "KV आरक्षित, ~{rate}/टोकन",
     oomLikely: "मौजूदा सेटिंग्स के साथ मेमोरी कम पड़ सकती है",
     tooLarge: "VRAM से बड़ा है, CPU पर ऑफ़लोड होगा। छोटा क्वांटाइज़ेशन तेज़ चलता है",
+  },
+  skills: {
+    title: "एजेंट कौशल",
+    description: "कौशल आपके मानक एजेंट फ़ोल्डरों से खोजे जाते हैं। उन्हें यहाँ सक्षम करें, फिर चैट में @ टाइप करके किसी का उल्लेख करें।",
+    precedence: "~/.agents/skills को ~/.claude/skills पर प्राथमिकता मिलती है।",
+    refresh: "रीफ़्रेश",
+    empty: "कोई एजेंट कौशल नहीं मिला। ~/.agents/skills या ~/.claude/skills में SKILL.md फ़ोल्डर जोड़ें, फिर रीफ़्रेश करें।",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "बंडल्ड",
+    shadowed: "छिपा हुआ",
+    invalid: "अमान्य",
+    compatibility: "संगतता: {value}",
+    shadowedBy: "इसी नाम का एक और कौशल ({source}) प्राथमिकता लेता है।",
+    enable: "{name} सक्षम करें",
+    disable: "{name} अक्षम करें",
+    updateError: "एजेंट कौशल अपडेट नहीं हो सका",
+    mentions: "एजेंट कौशल",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -1,31 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
-import {
-  Alert02Icon,
-  PlayIcon,
-  RemoveCircleIcon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { TrainIcon } from "../components/train-icon";
 import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { deleteCachedModel } from "../inventory";
 import type { ModelInventoryFormat } from "../inventory";
 import { fetchModelSize } from "../lib/dataset-size";
 import { formatBytes } from "../lib/format";
-import {
-  HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
-  HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
-} from "../lib/hub-feature-flags";
 import { fingerprintToken } from "../lib/token-fingerprint";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
@@ -34,6 +21,7 @@ import {
   DeleteConfirmDialog,
   DownloadActionButton,
   DownloadCard,
+  ModelRunActionButton,
 } from "./download-card";
 import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
@@ -60,14 +48,12 @@ export function SafetensorsDownloadCard({
   partialTransport = null,
   partialResumable = false,
   modelFormat,
-  canRun = true,
   isActive,
   isLoadingThisModel,
   cachePath,
   knownBytes,
-  onLoad,
-  onEject,
-  onTrain,
+  onRun,
+  runPending = false,
   onChange,
 }: {
   repoId: string;
@@ -76,17 +62,13 @@ export function SafetensorsDownloadCard({
   partialTransport?: string | null;
   partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
-  canRun?: boolean;
   isActive: boolean;
   isLoadingThisModel: boolean;
   /** Owning cache dir, threaded into delete so it targets this copy. */
   cachePath?: string | null;
   knownBytes?: number | null;
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  /** Accepted for API parity; the run bar ejects instead of opening chat. */
-  onUseInChat?: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
+  onRun?: () => void;
+  runPending?: boolean;
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
@@ -167,16 +149,23 @@ export function SafetensorsDownloadCard({
     partialResumable,
     partialsResumable,
   });
-  const showActionPair = isDownloaded && !downloading && (canRun || !!onTrain);
-  const showUnavailableAction =
-    isDownloaded && !downloading && !canRun && !onTrain;
-  const trainActionVisible = !!onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE;
+  const showDownloadAction =
+    !isDownloaded || downloading || cancelling || downloadAction.starting;
+  const showRunAction =
+    Boolean(onRun) &&
+    isDownloaded &&
+    !isPartial &&
+    !downloading &&
+    !cancelling &&
+    !downloadAction.starting &&
+    !isLoadingThisModel;
   const canDelete =
     (isDownloaded || isPartial) &&
     !downloading &&
     !repoPeerActive &&
     !isActive &&
-    !isLoadingThisModel;
+    !isLoadingThisModel &&
+    !runPending;
 
   // Same preview the On Device and picker rows run: without it this card kept an enabled Delete
   // for a companion base an installed image GGUF still needs, and the refusal arrived as a 400
@@ -218,13 +207,8 @@ export function SafetensorsDownloadCard({
       >
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
           <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
-            {(isActive || isDownloaded) && (
-              <DotTag
-                tone="success"
-                label={isActive ? "Loaded" : "On device"}
-              />
-            )}
-            {!isDownloaded && !isActive && isPartial && !downloading && (
+            {isDownloaded && <DotTag tone="success" label="On device" />}
+            {!isDownloaded && isPartial && !downloading && (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   <span className="inline-flex">
@@ -248,9 +232,8 @@ export function SafetensorsDownloadCard({
             )}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
-            {/* TODO: inference settings gear hidden for now, work on it in a future PR. */}
             {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
-                omitted in the run bar. Managed HF-cache repos only. */}
+                omitted here. Managed HF-cache repos only. */}
             {(isDownloaded || (isPartial && !downloading)) &&
               !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
               <QuantOptionsMenu
@@ -266,81 +249,12 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {/* Info/actions hairline; dropped for the run action row (no divider before
-            Run, as in the GGUF card's Run CTA), restored when the Train pair ships. */}
-        {(!showActionPair || trainActionVisible) && <CardDivider />}
-        {showActionPair ? (
-          <div
-            className={cn(
-              "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              !HUB_NON_GGUF_RUN_ACTIONS_VISIBLE && "hidden",
-            )}
-          >
-            {trainActionVisible && (
-              <button
-                type="button"
-                onClick={onTrain}
-                className="hub-action-btn w-24"
-              >
-                <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
-                Train
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={isLoadingThisModel || !canRun}
-              onClick={() => {
-                if (!canRun) return;
-                if (isActive) {
-                  onEject?.();
-                  return;
-                }
-                onLoad({});
-              }}
-              className={cn(
-                isLoadingThisModel || isActive || !canRun
-                  ? "hub-action-btn w-24"
-                  : "hub-run-action-btn w-24",
-                (isLoadingThisModel || !canRun) && "opacity-70",
-              )}
-            >
-              {isLoadingThisModel ? (
-                <>
-                  <Spinner />
-                  Loading…
-                </>
-              ) : isActive ? (
-                <>
-                  <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
-                  Eject
-                </>
-              ) : canRun ? (
-                <>
-                  <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
-                  Run
-                </>
-              ) : (
-                <>
-                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
-                  No run
-                </>
-              )}
-            </button>
-          </div>
-        ) : showUnavailableAction ? (
-          <button
-            type="button"
-            disabled={true}
-            className="hub-action-btn w-28 opacity-70"
-          >
-            <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
-            Unavailable
-          </button>
-        ) : (
+        {(showDownloadAction || showRunAction) && <CardDivider />}
+        {showDownloadAction && (
           <DownloadActionButton
             downloading={downloadAction.downloading}
             cancelling={downloadAction.cancelling}
-            loading={isLoadingThisModel || downloadAction.starting}
+            loading={downloadAction.starting}
             isPartial={downloadAction.isPartial}
             partialResumable={downloadAction.partialResumable}
             stopMode={downloadAction.stopMode}
@@ -348,6 +262,13 @@ export function SafetensorsDownloadCard({
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}
             className={repoPeerActive ? "opacity-70" : undefined}
+          />
+        )}
+        {showRunAction && onRun && (
+          <ModelRunActionButton
+            label={`Configure and run ${repoId}`}
+            onClick={onRun}
+            loading={runPending}
           />
         )}
       </DownloadCard>

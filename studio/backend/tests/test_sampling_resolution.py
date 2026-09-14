@@ -7,7 +7,10 @@ Precedence per field: operator UNSLOTH_SAMPLING_* pin -> client explicit value -
 per-model recommendation (load_inference_config) -> static schema default.
 """
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 from utils.inference import inference_config as ic
@@ -108,6 +111,20 @@ def test_recommendation_matches_ui_source(model):
         cleaned = ic._clean_sampling_value(f, ui.get(f))
         if cleaned is not None:
             assert rec.get(f) == cleaned, f"{model}:{f} rec={rec.get(f)} ui={ui.get(f)}"
+
+
+def test_model_recommended_sampling_values_are_in_range():
+    defaults_dir = Path(ic.__file__).resolve().parents[2] / "assets" / "configs" / "model_defaults"
+    invalid = []
+    for path in sorted(defaults_dir.rglob("*.yaml")):
+        inference = (yaml.safe_load(path.read_text(encoding = "utf-8")) or {}).get(
+            "inference", {}
+        ) or {}
+        for field in ic._UI_RECOMMENDED_FIELDS:
+            if field in inference and ic._clean_sampling_value(field, inference[field]) is None:
+                invalid.append(f"{path.relative_to(defaults_dir)}:{field}={inference[field]!r}")
+
+    assert not invalid, "Out-of-range model sampling defaults: " + ", ".join(invalid)
 
 
 def test_qwen38_reuses_qwen36_sampling_defaults():
