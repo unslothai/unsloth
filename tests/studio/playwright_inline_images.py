@@ -69,8 +69,9 @@ def main() -> None:
     if not output.is_relative_to(REPO):
         parser.error("Output must stay inside the repository")
     output.mkdir(parents = True, exist_ok = True)
-    runtime = output / "runtime"
-    runtime.mkdir(exist_ok = True)
+    # Keep Chromium's Unix socket path below the platform limit.
+    runtime = REPO / "temp" / "p"
+    runtime.mkdir(parents = True, exist_ok = True)
     os.environ.update({key: str(runtime) for key in ("TMPDIR", "TMP", "TEMP")})
     if args.probe:
         from playwright.sync_api import sync_playwright
@@ -104,7 +105,7 @@ def main() -> None:
             if args.manual:
                 server.wait()
                 return
-            from playwright.sync_api import sync_playwright
+            from playwright.sync_api import expect, sync_playwright
 
             reports = []
             with sync_playwright() as playwright:
@@ -140,9 +141,7 @@ def main() -> None:
                                     page.get_by_role("button", name = button).click()
                                 ready_image = page.locator('#subject img[data-streamdown="image"]')
                                 ready_image.wait_for(state = "visible")
-                                page.wait_for_function(
-                                    "document.querySelector('#subject img')?.naturalWidth === 32"
-                                )
+                                expect(ready_image).to_have_js_property("naturalWidth", 32)
                                 previous = page.request.get(
                                     url.replace("/inline-images", "/inline-fixture/requests")
                                 ).json()
