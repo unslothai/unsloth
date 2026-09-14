@@ -27,6 +27,7 @@ def _isolate_env(monkeypatch):
     import utils.hf_endpoint as _mod
 
     monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
+    monkeypatch.setattr(_mod, "_rejected_warned", set())
     yield
 
 
@@ -110,3 +111,72 @@ class TestGetHfDatasetsServer:
         with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
             get_hf_datasets_server()
         assert not [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
+
+
+# These values are interpolated into request URLs *and* into the CSP connect-src
+# directive built in main.py. A CSP source list is whitespace-separated and
+# semicolon-delimited, so anything carrying those characters would widen the
+# policy rather than name one origin.
+HOSTILE_ENDPOINTS = [
+    "https://hf-mirror.com; script-src *",
+    "https://hf-mirror.com *",
+    "https://hf-mirror.com\nscript-src *",
+    "https://hf-mirror.com\r\nscript-src *",
+    "https://hf-mirror.com\tfoo",
+    "https://hf-mirror.com,https://evil.com",
+    "https://hf-mirror.com'",
+    'https://hf-mirror.com"',
+    # An embedded NUL is not listed: os.environ rejects it before we ever see it.
+]
+
+MALFORMED_ENDPOINTS = [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,x",
+    "ftp://hf-mirror.com",
+    "https://",
+    "https://user:pass@hf-mirror.com",
+    "https://hf-mirror.com?x=1",
+    "https://hf-mirror.com#frag",
+]
+
+
+class TestRejectsUnusableEndpoints:
+    @pytest.mark.parametrize("raw", HOSTILE_ENDPOINTS + MALFORMED_ENDPOINTS)
+    def test_hub_endpoint_falls_back_to_official(self, monkeypatch, raw):
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == OFFICIAL_HF
+
+    @pytest.mark.parametrize("raw", HOSTILE_ENDPOINTS + MALFORMED_ENDPOINTS)
+    def test_datasets_server_falls_back_to_official(self, monkeypatch, raw):
+        monkeypatch.setenv("HF_DATASETS_SERVER", raw)
+        assert get_hf_datasets_server() == OFFICIAL_DS
+
+    def test_rejection_is_logged(self, monkeypatch, caplog):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com; script-src *")
+        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+            get_hf_endpoint()
+        assert any("HF_ENDPOINT" in r.getMessage() for r in caplog.records)
+
+    def test_rejection_logged_once_not_per_call(self, monkeypatch, caplog):
+        """_build_csp runs per response, so a per-call warning would flood the log."""
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com; script-src *")
+        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+            for _ in range(5):
+                get_hf_endpoint()
+        assert len([r for r in caplog.records if "HF_ENDPOINT" in r.getMessage()]) == 1
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("https://hub.internal:8443", "https://hub.internal:8443"),
+            ("http://localhost:8080", "http://localhost:8080"),
+            ("https://hub.internal/hf", "https://hub.internal/hf"),
+            ("https://hub.internal/hf/", "https://hub.internal/hf"),
+            ("hub.internal:8443", "https://hub.internal:8443"),
+        ],
+    )
+    def test_legitimate_forms_survive(self, monkeypatch, raw, expected):
+        """Ports, http for a LAN mirror, and a path prefix are all valid mirrors."""
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == expected

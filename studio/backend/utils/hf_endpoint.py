@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+from urllib.parse import urlsplit
 
 from utils.utils import hf_endpoint_url
 
@@ -28,6 +29,67 @@ _DEFAULT_HF_ENDPOINT = "https://huggingface.co"
 _DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co"
 
 _ds_mirror_warned = False
+# Values already reported as unusable, so a per-request caller (the CSP builder runs
+# on every response) logs each bad configuration once rather than per request.
+_rejected_warned: set[str] = set()
+
+# A CSP source list is whitespace-separated and semicolon-delimited, so any of these
+# inside an endpoint would add sources or whole directives rather than one origin.
+_FORBIDDEN_CHARS = frozenset(" \t\r\n\f\v;,'\"\\")
+
+
+def _port_is_valid(parts) -> bool:
+    """``SplitResult.port`` raises rather than returning None on a bad port."""
+    try:
+        parts.port
+    except ValueError:
+        return False
+    return True
+
+
+def _sanitize(candidate: str, default: str, var_name: str) -> str:
+    """Return ``candidate`` when it is a plain http(s) origin, else ``default``.
+
+    These values are interpolated into request URLs *and* into the
+    ``connect-src`` directive of the Content-Security-Policy header, so a value
+    carrying whitespace, a semicolon or a control character would inject extra
+    CSP sources or directives. Operators set these env vars themselves, so this
+    is a configuration guard rather than a defence against hostile input, but a
+    silently broken policy is the worst way to find that out.
+    """
+    if not candidate:
+        return default
+    if any(ch in _FORBIDDEN_CHARS for ch in candidate) or any(
+        ord(ch) < 0x20 or ord(ch) == 0x7F for ch in candidate
+    ):
+        reason = "contains whitespace, a separator or a control character"
+    else:
+        parts = urlsplit(candidate)
+        if parts.scheme not in ("http", "https"):
+            reason = "is not an http(s) URL"
+        elif not parts.hostname:
+            reason = "has no host"
+        elif parts.username or parts.password:
+            reason = "carries credentials"
+        elif parts.query or parts.fragment:
+            reason = "carries a query string or fragment"
+        elif not _port_is_valid(parts):
+            # A scheme-less value keeps everything before the first ':' as the host,
+            # so "javascript:alert(1)" becomes "https://javascript:alert(1)" -- a
+            # syntactically fine URL whose port is nonsense.
+            reason = "has an invalid port"
+        else:
+            return candidate
+    if candidate not in _rejected_warned:
+        _rejected_warned.add(candidate)
+        logger.warning(
+            "%s=%r %s; ignoring it and using %s instead.",
+            var_name,
+            candidate,
+            reason,
+            default,
+        )
+    return default
 
 
 def get_hf_endpoint() -> str:
@@ -36,7 +98,9 @@ def get_hf_endpoint() -> str:
     Wraps :func:`utils.utils.hf_endpoint_url` so callers get a value that is
     safe for ``f"{endpoint}/path"`` concatenation.
     """
-    return hf_endpoint_url().rstrip("/")
+    return _sanitize(
+        hf_endpoint_url().rstrip("/"), _DEFAULT_HF_ENDPOINT, "HF_ENDPOINT"
+    )
 
 
 def get_hf_datasets_server() -> str:
@@ -50,7 +114,9 @@ def get_hf_datasets_server() -> str:
     raw = (os.environ.get("HF_DATASETS_SERVER") or "").strip()
     if raw:
         endpoint = raw if "://" in raw else "https://" + raw
-        return endpoint.rstrip("/")
+        return _sanitize(
+            endpoint.rstrip("/"), _DEFAULT_DATASETS_SERVER, "HF_DATASETS_SERVER"
+        )
     global _ds_mirror_warned
     if not _ds_mirror_warned and get_hf_endpoint() != _DEFAULT_HF_ENDPOINT:
         _ds_mirror_warned = True

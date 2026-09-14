@@ -853,11 +853,15 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         _tokenizer_class_cache[cache_key] = result
         return result
     except urllib.error.HTTPError as exc:
-        # 404 is a legitimate miss (fail-open). Anything else means the endpoint
-        # answered but failed — the classic signature of a HF_ENDPOINT mirror that
-        # does not proxy /resolve/ paths, so surface it instead of staying silent.
-        if exc.code == 404:
-            logger.debug("tokenizer_config.json not found for '%s' at %s", model_name, url)
+        # 401/403/404 are legitimate misses (fail-open): a gated or private repo read
+        # without a token is the normal case, not a mirror fault, and warning on it
+        # would fire on every such model. Anything else means the endpoint answered
+        # but failed — the classic signature of a HF_ENDPOINT mirror that does not
+        # proxy /resolve/ paths, so surface it instead of staying silent.
+        if exc.code in (401, 403, 404):
+            logger.debug(
+                "tokenizer_config.json not readable for '%s' at %s: %s", model_name, url, exc
+            )
         else:
             logger.warning(
                 "HTTP %s fetching tokenizer_config.json for '%s' from %s; "

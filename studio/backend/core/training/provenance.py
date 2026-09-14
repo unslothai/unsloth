@@ -416,7 +416,12 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
     try:
         parsed = urlsplit(path_value)
-        endpoint = urlsplit(os.environ.get("HF_ENDPOINT", "https://huggingface.co"))
+        # Via the shared helper, not a third private parse of HF_ENDPOINT: a blank
+        # or scheme-less value used to yield an empty netloc here, which matched no
+        # URL at all and silently dropped provenance for every recorded source.
+        from utils.hf_endpoint import get_hf_endpoint
+
+        endpoint = urlsplit(get_hf_endpoint())
     except ValueError:
         return None
     if (

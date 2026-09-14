@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { cachedModelInfo } from "../lib/hf-cache";
 import { useEffect, useState } from "react";
 import { toHfModelResult } from "../lib/view-models";
@@ -37,6 +38,7 @@ export function useSelectedModelMetadata(
     let cancelled = false;
 
     cachedModelInfo({
+      hubUrl: getHfEndpoint(),
       name: repoId,
       ...(accessToken ? { accessToken } : {}),
     })

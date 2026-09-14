@@ -1833,7 +1833,46 @@ fn configured_hf_endpoints() -> Vec<String> {
             let with_scheme = if raw.contains("://") { raw } else { format!("https://{raw}") };
             with_scheme.trim_end_matches('/').to_string()
         })
+        .filter(|endpoint| is_usable_csp_source(endpoint))
         .collect()
+}
+
+/// A CSP source list is whitespace-separated and semicolon-delimited, so an
+/// endpoint carrying either would add sources or whole directives instead of one
+/// origin. Mirrors the backend's `utils/hf_endpoint.py::_sanitize`, so the webview
+/// policy and `/api/health` never disagree about what counts as configured.
+fn is_usable_csp_source(endpoint: &str) -> bool {
+    if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+        return false;
+    }
+    if endpoint
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, ';' | ',' | '\'' | '"' | '\\'))
+    {
+        return false;
+    }
+    let authority = match endpoint.split_once("://") {
+        Some((_, rest)) => rest,
+        None => return false,
+    };
+    // No credentials, query or fragment, and a non-empty host.
+    let host = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if host.is_empty() || host.contains('@') || authority.contains('?') || authority.contains('#') {
+        return false;
+    }
+    // A scheme-less value keeps everything before the first ':' as the host, so
+    // "javascript:alert(1)" arrives here as "https://javascript:alert(1)" -- shaped
+    // like a URL, with nonsense for a port.
+    match host.rsplit_once(':') {
+        // IPv6 literals end in ']' and carry no port in that position.
+        Some((_, port)) if !host.ends_with(']') => {
+            !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+        }
+        _ => true,
+    }
 }
 
 /// Append `sources` to the policy's `connect-src` directive, skipping sources
@@ -2170,6 +2209,50 @@ mod tests {
         let mut policy = "connect-src 'self'; img-src connect-src.evil.com".to_string();
         assert!(append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
         assert_eq!(policy, "connect-src 'self' https://hf-mirror.com; img-src connect-src.evil.com");
+    }
+
+    #[test]
+    fn a_plain_https_origin_is_a_usable_csp_source() {
+        assert!(is_usable_csp_source("https://hf-mirror.com"));
+        assert!(is_usable_csp_source("http://localhost:8080"));
+        assert!(is_usable_csp_source("https://hub.internal:8443/hf"));
+    }
+
+    #[test]
+    fn an_endpoint_that_could_forge_a_directive_is_rejected() {
+        // Each of these would add a source or a whole directive rather than one
+        // origin, silently widening the policy the webview enforces.
+        for hostile in [
+            "https://hf-mirror.com; script-src *",
+            "https://hf-mirror.com *",
+            "https://hf-mirror.com\nscript-src *",
+            "https://hf-mirror.com\r\nscript-src *",
+            "https://hf-mirror.com\tfoo",
+            "https://hf-mirror.com,https://evil.com",
+            "https://hf-mirror.com'",
+        ] {
+            assert!(!is_usable_csp_source(hostile), "should reject {hostile:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_http_or_hostless_endpoint_is_rejected() {
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,x",
+            "ftp://hf-mirror.com",
+            "https://",
+            "https://user:pass@hf-mirror.com",
+            "https://hf-mirror.com?x=1",
+            "https://hf-mirror.com#f",
+            // Scheme-less input that configured_hf_endpoints prefixes with https://.
+            "https://javascript:alert(1)",
+            "https://hf-mirror.com:",
+            "https://hf-mirror.com:80x",
+        ] {
+            assert!(!is_usable_csp_source(bad), "should reject {bad:?}");
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getHfDatasetsServerBase } from "@/lib/hf-endpoint";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -29,7 +30,7 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   const p = (async () => {
     try {
       const res = await fetch(
-        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(
+        `${getHfDatasetsServerBase()}/first-rows?dataset=${encodeURIComponent(
           repo,
         )}&config=default&split=train`,
       );

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -181,7 +182,16 @@ export async function fetchDeviceType(options?: {
       // request that resolved after a later forced refresh already picked up device_type and the
       // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
       // refreshes are explicit re-reads, so they still write.
+      // Endpoint routing is reported to unauthenticated callers and is idempotent, so it
+      // is applied before the authoritative-platform guard below. A mirror deployment whose
+      // first authoritative reply already landed would otherwise never route its Hub calls.
+      setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
+        usePlatformStore.setState({
+          hfEndpoint: data.hf_endpoint ?? usePlatformStore.getState().hfEndpoint,
+          hfDatasetsServer:
+            data.hf_datasets_server ?? usePlatformStore.getState().hfDatasetsServer,
+        });
         return usePlatformStore.getState().deviceType;
       }
       const previous = usePlatformStore.getState();

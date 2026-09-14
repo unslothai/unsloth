@@ -1140,3 +1140,170 @@ class TestHealthAuthGate:
         assert body["status"] == "healthy"
         for field in self.LAUNCHER_BITS + self.FINGERPRINT_FIELDS:
             assert field in body, f"missing: {field}"
+
+
+# Captured from origin/main (pre-PR) with HF_ENDPOINT and HF_DATASETS_SERVER unset,
+# nonce fixed. The mirror feature must be invisible to every default deployment, and
+# a substring assertion cannot show that -- directive order, spacing and every other
+# source have to survive byte for byte.
+_MAIN_CSP_DEFAULT = (
+    "default-src 'self'; img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+    "style-src 'self' 'unsafe-inline'; script-src 'self' 'nonce-NONCE'; "
+    "worker-src 'self'; font-src 'self' data:; frame-src 'self'; "
+    "frame-ancestors 'none'; form-action 'self'; base-uri 'self'"
+)
+_MAIN_CSP_DOCS = (
+    "default-src 'self'; img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' https://huggingface.co https://datasets-server.huggingface.co; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "script-src 'self' 'nonce-NONCE'; worker-src 'self' blob:; "
+    "font-src 'self' data: https://fonts.gstatic.com; frame-src 'self'; "
+    "frame-ancestors 'none'; form-action 'self'; base-uri 'self'"
+)
+_MAIN_CSP_COLAB = (
+    "default-src 'self'; img-src 'self' data: blob: https:; "
+    "media-src 'self' data: blob: https:; "
+    "connect-src 'self' blob: data: https://huggingface.co "
+    "https://datasets-server.huggingface.co https://*.prod.colab.dev "
+    "wss://*.prod.colab.dev https://*.googleusercontent.com "
+    "wss://*.googleusercontent.com; style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'nonce-NONCE' https://*.prod.colab.dev "
+    "https://*.googleusercontent.com; worker-src 'self'; font-src 'self' data:; "
+    "frame-src 'self'; frame-ancestors *; form-action 'self'; base-uri 'self'"
+)
+
+
+def _connect_src(policy: str) -> list[str]:
+    """Exact source tokens of connect-src. Substring checks pass on a prefix."""
+    for chunk in policy.split(";"):
+        tokens = chunk.strip().split()
+        if tokens and tokens[0] == "connect-src":
+            return tokens[1:]
+    raise AssertionError(f"no connect-src in {policy!r}")
+
+
+class TestCspHfEndpoints:
+    @pytest.fixture(autouse = True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+        import utils.hf_endpoint as _mod
+
+        monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
+        monkeypatch.setattr(_mod, "_rejected_warned", set())
+        yield
+
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            ({}, _MAIN_CSP_DEFAULT),
+            ({"docs": True}, _MAIN_CSP_DOCS),
+        ],
+    )
+    def test_unmirrored_policy_is_byte_identical_to_pre_pr(
+        self, main_module, kwargs, expected
+    ):
+        assert main_module._build_csp("NONCE", **kwargs) == expected
+
+    def test_unmirrored_colab_policy_is_byte_identical_to_pre_pr(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        assert main_module._build_csp("NONCE") == _MAIN_CSP_COLAB
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_blank_env_vars_leave_the_policy_identical(
+        self, main_module, monkeypatch, blank
+    ):
+        monkeypatch.setenv("HF_ENDPOINT", blank)
+        monkeypatch.setenv("HF_DATASETS_SERVER", blank)
+        assert main_module._build_csp("NONCE") == _MAIN_CSP_DEFAULT
+
+    def test_endpoints_set_to_the_official_hosts_do_not_duplicate_sources(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
+        monkeypatch.setenv(
+            "HF_DATASETS_SERVER", "https://datasets-server.huggingface.co"
+        )
+        assert main_module._build_csp("NONCE") == _MAIN_CSP_DEFAULT
+
+    def test_a_mirror_adds_exactly_its_two_origins(self, main_module, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
+        policy = main_module._build_csp("NONCE")
+        assert _connect_src(policy) == [
+            "'self'",
+            "https://huggingface.co",
+            "https://datasets-server.huggingface.co",
+            "https://hf-mirror.com",
+            "https://ds.example.com",
+        ]
+        # Nothing outside connect-src moved.
+        baseline = dict(
+            chunk.strip().split(" ", 1)
+            for chunk in _MAIN_CSP_DEFAULT.split(";")
+            if chunk.strip() and " " in chunk.strip()
+        )
+        actual = dict(
+            chunk.strip().split(" ", 1)
+            for chunk in policy.split(";")
+            if chunk.strip() and " " in chunk.strip()
+        )
+        for directive, value in baseline.items():
+            if directive == "connect-src":
+                continue
+            assert actual[directive] == value, directive
+
+    def test_a_mirrored_colab_policy_keeps_every_colab_source(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        sources = _connect_src(main_module._build_csp("NONCE"))
+        for required in _connect_src(_MAIN_CSP_COLAB):
+            assert required in sources, required
+        assert "https://hf-mirror.com" in sources
+
+    def test_a_mirror_is_listed_once_even_if_both_vars_name_it(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://hf-mirror.com")
+        sources = _connect_src(main_module._build_csp("NONCE"))
+        assert sources.count("https://hf-mirror.com") == 1
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "https://hf-mirror.com; script-src *",
+            "https://hf-mirror.com *",
+            "https://hf-mirror.com\nscript-src *",
+            "https://hf-mirror.com,https://evil.com",
+            "javascript:alert(1)",
+            "https://user:pass@hf-mirror.com",
+        ],
+    )
+    def test_an_endpoint_cannot_forge_a_directive(
+        self, main_module, monkeypatch, hostile
+    ):
+        """A bad env var must not widen the policy -- it falls back to the default."""
+        monkeypatch.setenv("HF_ENDPOINT", hostile)
+        policy = main_module._build_csp("NONCE")
+        assert policy == _MAIN_CSP_DEFAULT
+        # No directive was added and script-src was not touched.
+        assert policy.count(";") == _MAIN_CSP_DEFAULT.count(";")
+
+    def test_the_header_on_a_real_response_carries_the_mirror(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        sources = _connect_src(r.headers["content-security-policy"])
+        assert "https://hf-mirror.com" in sources
+        assert "https://ds.example.com" in sources
