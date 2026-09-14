@@ -920,6 +920,69 @@ def test_a_rolled_back_move_puts_the_migration_back_on_the_table(tmp_path, monke
     assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
 
 
+def test_a_move_that_begins_and_ends_inside_the_pass_still_counts(tmp_path, monkeypatch):
+    """The reversed interleaving: the rollback finishes before the pass looks.
+
+    Asking what is in flight only answers "right now". A move that starts after the pass has
+    listed the legacy root and rolls back before the pass reaches its check leaves nothing in
+    flight to find, yet the listing never saw it and the restored source is sitting at the
+    legacy root unlisted. The pass would call the migration done over it."""
+    import os
+    import shutil
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_inside"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+    root = tools.sandbox_root()
+
+    real_listdir = os.listdir
+    real_rename = os.rename
+    rename_failed = []
+    ran = []
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if str(destination).endswith("__LOCALID_inside") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    def listdir_then_move(path, *args, **kwargs):
+        entries = real_listdir(path, *args, **kwargs)
+        # Once, right after the pass reads the legacy root: a whole move, start to rollback,
+        # inside the pass and invisible to it.
+        if not ran and os.path.realpath(str(path)) == os.path.realpath(str(fake_home / "studio_sandbox")):
+            ran.append(True)
+            monkeypatch.setattr(tools.os, "rename", failing_rename)
+            try:
+                tools._migrate_one_legacy_session(root, "__LOCALID_inside")
+            except OSError:
+                pass
+            monkeypatch.setattr(tools.os, "rename", real_rename)
+            return [e for e in entries if e != "__LOCALID_inside"]
+        return entries
+
+    monkeypatch.setattr(tools.os, "listdir", listdir_then_move)
+    monkeypatch.setattr(tools.shutil, "move", shutil.move)
+
+    tools._migrate_legacy_sandbox(root)
+
+    assert ran, "the nested move never ran"
+    assert rename_failed, "the rename was never made to fail"
+    assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
+    assert not tools._legacy_sandbox_migrated, (
+        "the pass finished over a move it never listed, so the restored copy is stranded"
+    )
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_inside"))
+    assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
+
+
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
     file that always 404s."""

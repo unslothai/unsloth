@@ -8029,8 +8029,10 @@ def _staged_move(source: str, target: str, name: str) -> None:
             raise
         _mark_sandbox(target, name)
     finally:
+        global _legacy_moves_done
         with _legacy_locks_guard:
             _legacy_moves_in_flight.discard(name)
+            _legacy_moves_done += 1
 
 
 # Bookkeeping only, never held across a move: starting the background pass and the sweep. Anything that copies a tree
@@ -8053,6 +8055,11 @@ def _legacy_lock_for(name: str) -> threading.Lock:
 # it. Neither root shows the tree while that runs, so this is the only thing that separates
 # "the legacy copy is gone because it arrived" from "it is gone because it is in staging".
 _legacy_moves_in_flight: "set[str]" = set()
+# Every move that has finished, succeeded or rolled back. The set above only answers "right
+# now", which cannot see a move that both started and ended inside a whole-tree pass: by the
+# end it is empty again although the pass listed the legacy root mid-staging and, if that move
+# rolled back, the source is now sitting there unlisted.
+_legacy_moves_done = 0
 
 
 def _legacy_move_in_flight(name: str) -> bool:
@@ -8158,21 +8165,27 @@ def _migrate_legacy_sandbox(root: str) -> None:
         if _legacy_sandbox_migrated:
             return
         # Only when nothing movable is left: a file locked on Windows is retryable, and one attempt strands it once
-        # the destination exists.
-        if _migrate_legacy_sandbox_locked(root):
-            _legacy_sandbox_migrated = True
+        # the destination exists. The flag is committed inside, in the same guarded moment as the check that earns
+        # it, so a rollback cannot be decided against and then overwritten by a verdict formed before it happened.
+        _migrate_legacy_sandbox_locked(root)
 
 
 def _migrate_legacy_sandbox_locked(root: str) -> bool:
     """True when the legacy root holds nothing that could still be moved. A collision is not a
     failure: the new root already has that session, and the legacy copy is deliberately left for
     the user to find."""
+    global _legacy_sandbox_migrated
     legacy = _legacy_sandbox_root()
     try:
+        # Read before the tree is looked at, so any move that runs from here on is counted.
+        with _legacy_locks_guard:
+            moves_before = _legacy_moves_done
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
+            _legacy_sandbox_migrated = True
             return True
         os.makedirs(root, exist_ok = True)
         moved = 0
+        own_moves = 0
         complete = True
         for name in os.listdir(legacy):
             source = os.path.join(legacy, name)
@@ -8191,6 +8204,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 with _legacy_lock_for(name):
                     if not os.path.isdir(source) or os.path.exists(target):
                         continue  # a request path moved it while we waited
+                    own_moves += 1  # before the call: one that raises still advances the count
                     _staged_move(source, target, name)
                 moved += 1
             except OSError as error:
@@ -8200,12 +8214,16 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 logger.warning("Could not move sandbox %s: %s", name, error)
         if moved:
             logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
-        # Somebody else's move, still in staging: its own are all finished by here. That session was in neither root
-        # for part of this pass, so an empty listing is not evidence about it, and the legacy root has to stay for the
-        # rollback that move may yet need to rename back into. Reporting unfinished is what brings the next pass.
+        # Any move but this pass's own, overlapping any part of it. Such a session was in neither root while the
+        # listing above ran, so that listing is not evidence about it: it may have arrived, or rolled back and be
+        # sitting at the legacy root right now, unlisted. Counting rather than asking what is in flight is the point,
+        # since one that started and ended inside the pass leaves nothing in flight to find. The legacy root has to
+        # stay too, as that is where a rollback renames back into. Reporting unfinished is what brings the next pass.
         with _legacy_locks_guard:
-            undisturbed = not _legacy_moves_in_flight
-        if not undisturbed:
+            overlapped = bool(_legacy_moves_in_flight) or _legacy_moves_done - moves_before != own_moves
+            if not overlapped and complete:
+                _legacy_sandbox_migrated = True
+        if overlapped:
             return False
         # Empty only: a leftover is a collision the user should still find.
         try:
