@@ -34025,6 +34025,8 @@ def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
         if m.get("role") == "user" and out and out[-1].get("role") == "user":
             prev = dict(out[-1])
             prev["content"] = _merge_user_content(prev.get("content"), m.get("content"))
+            if prev.get("name") != m.get("name"):
+                prev.pop("name", None)
             out[-1] = prev
             continue
         out.append(m)

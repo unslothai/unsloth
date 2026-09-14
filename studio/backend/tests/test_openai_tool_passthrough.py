@@ -44,6 +44,7 @@ from core.inference.llama_admission import (
 from routes.inference import (
     _aclose_stream_resources,
     _build_chat_request,
+    _build_external_messages,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
@@ -528,10 +529,10 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
         assert "tool_call_id" in str(exc_info.value)
 
-    def test_name_on_user_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", name = "get_weather")
-        assert "name" in str(exc_info.value)
+    @pytest.mark.parametrize("role", ["user", "assistant", "system", "developer"])
+    def test_participant_name_accepted_on_every_role(self, role):
+        msg = ChatMessage(role = role, content = "Hi", name = "alice")
+        assert msg.name == "alice"
 
 
 # =====================================================================
@@ -10021,6 +10022,28 @@ class TestCoalesceConsecutiveUserTurns:
         _coalesce_consecutive_user_turns(msgs)
         assert msgs[0]["content"] == "hi"
 
+    def test_shared_participant_name_survives_merge(self):
+        msgs = [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "user", "name": "alice", "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "name": "alice", "content": "hi\n\nagain"},
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "alice"}, {"name": "bob"}), ({"name": "alice"}, {}), ({}, {"name": "bob"})],
+    )
+    def test_differing_participant_names_are_dropped_on_merge(self, first, second):
+        msgs = [
+            {"role": "user", **first, "content": "hi"},
+            {"role": "user", **second, "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "hi\n\nagain"},
+        ]
+
 
 class TestGgufChatHistoryAlternation:
     def test_empty_assistant_turn_dropped_then_users_coalesced(self):
@@ -10093,6 +10116,50 @@ class TestGgufChatHistoryAlternation:
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+
+    def test_participant_names_reach_llama_server(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "name": "alice", "content": "again"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m.get("name") for m in out] == ["supervisor", "alice", "researcher", "alice"]
+
+
+class TestExternalProviderParticipantNames:
+    @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini", "mistral"])
+    def test_only_tool_results_keep_their_name(self, provider_type):
+        messages = [
+            ChatMessage(role = "system", name = "supervisor", content = "be brief"),
+            ChatMessage(role = "user", name = "alice", content = "weather?"),
+            ChatMessage(
+                role = "assistant",
+                name = "researcher",
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool", tool_call_id = "call_1", name = "get_weather", content = "sunny"
+            ),
+            ChatMessage(role = "assistant", name = "researcher", content = "It is sunny."),
+        ]
+        out = _build_external_messages(
+            messages, supports_vision = True, provider_type = provider_type
+        )
+        assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "assistant"]
+        assert [m.get("name") for m in out] == [None, None, None, "get_weather", None]
 
 
 # ── Per-choice seeds on the GGUF drain ──────────────────────────────
