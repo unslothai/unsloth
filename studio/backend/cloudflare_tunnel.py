@@ -11,6 +11,7 @@ domain. Best-effort throughout: any failure collapses to "no URL" and Unsloth ke
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -166,12 +167,12 @@ def _download(
 ) -> bool:
     """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool.
 
-    One deadline covers every attempt and the pauses between them, so the retries can
-    never stretch a bad transfer past the single-attempt worst case this launch path had
-    before they existed: a transfer that stalls and then resets gets the time it has
-    left, not a fresh budget. A timeout and a permanent 4xx are terminal, since neither
-    changes on the next attempt.
+    Attempts share one budget instead of each getting `timeout`, so a failing download
+    still costs about what the single attempt before them did. A timeout, a 4xx other than
+    408/429, and a name the resolver answers for are terminal: the next attempt answers the
+    same, and run.py starts the launch tunnel inline, where a pause delays the banner.
     """
+    import socket
     import tempfile
     import urllib.error
     import urllib.request
@@ -204,26 +205,31 @@ def _download(
                     tmp_path.unlink(missing_ok = True)
                 except Exception:
                     pass
-            timed_out = isinstance(exc, TimeoutError) or isinstance(
-                getattr(exc, "reason", None), TimeoutError
+            reason = getattr(exc, "reason", None)
+            resolver = exc if isinstance(exc, socket.gaierror) else reason
+            terminal = (
+                isinstance(exc, TimeoutError)
+                or isinstance(reason, TimeoutError)
+                # EAI_AGAIN is the resolver asking to be tried again; the rest are answers.
+                or (isinstance(resolver, socket.gaierror) and resolver.errno != socket.EAI_AGAIN)
+                # 408 and 429 are the two 4xx a retry can change.
+                or (
+                    isinstance(exc, urllib.error.HTTPError)
+                    and 400 <= exc.code < 500
+                    and exc.code not in (408, 429)
+                )
             )
-            # 408 and 429 are the two 4xx a retry can change; the rest are permanent.
-            permanent = (
-                isinstance(exc, urllib.error.HTTPError)
-                and 400 <= exc.code < 500
-                and exc.code not in (408, 429)
-            )
-            if timed_out or permanent or attempt >= attempts:
+            if terminal or attempt >= attempts:
                 break
             pause = 1.5 * attempt
             if time.monotonic() + pause >= deadline:
                 break
             time.sleep(pause)
-    print(
-        f"[cloudflare] could not download cloudflared from {url} ({last_error}); "
-        "install cloudflared on PATH to use a public tunnel",
-        file = sys.stderr,
-        flush = True,
+    logging.getLogger(__name__).warning(
+        "could not download cloudflared from %s (%s); install cloudflared on PATH "
+        "to use a public tunnel",
+        url,
+        last_error,
     )
     return False
 

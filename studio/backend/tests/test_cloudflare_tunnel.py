@@ -1585,7 +1585,8 @@ def test_download_retries_a_transient_failure(monkeypatch, tmp_path):
     assert dest.read_bytes() == b"payload"
 
 
-def test_download_gives_up_and_says_so(monkeypatch, tmp_path, capsys):
+def test_download_gives_up_and_says_so(monkeypatch, tmp_path, caplog):
+    import logging
     import urllib.error
     import urllib.request
 
@@ -1595,9 +1596,10 @@ def test_download_gives_up_and_says_so(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(urllib.request, "urlopen", refused)
     monkeypatch.setattr(ct.time, "sleep", lambda s: None)
     dest = tmp_path / "cloudflared"
-    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is False
+    with caplog.at_level(logging.WARNING, logger = ct.__name__):
+        assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is False
     assert not dest.exists() and not list(tmp_path.glob("cloudflared.tmp-*"))
-    assert "could not download cloudflared" in capsys.readouterr().err
+    assert "could not download cloudflared" in caplog.text
 
 
 def test_download_does_not_retry_a_timeout(monkeypatch, tmp_path):
@@ -1657,6 +1659,78 @@ def test_download_still_retries_a_5xx(monkeypatch, tmp_path):
     assert len(calls) == 2
 
 
+def test_download_retries_a_429(monkeypatch, tmp_path):
+    """A 429 from GitHub's CDN says to come back, not that the asset is missing, so it is
+    one of the two 4xx the loop is allowed to try again."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def throttled(req, timeout = None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", None, None)
+        return io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", throttled)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
+def test_download_does_not_retry_an_unresolvable_host(monkeypatch, tmp_path):
+    """A resolver that says the name does not exist says it again 1.5s later, and run.py
+    starts the launch tunnel inline, so the pauses would only delay the banner."""
+    import socket
+    import urllib.error
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def offline(req, timeout = None):
+        calls.append(timeout)
+        raise urllib.error.URLError(
+            socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided")
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
+    """EAI_AGAIN is the resolver reporting it could not answer yet, not that the name is
+    wrong: a resolver that comes back between attempts still produces a tunnel."""
+    import io
+    import socket
+    import urllib.error
+    import urllib.request
+
+    calls = []
+
+    def resolving(req, timeout = None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise urllib.error.URLError(
+                socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+            )
+        return io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", resolving)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
 def test_download_retries_share_one_deadline(monkeypatch, tmp_path):
     """A transfer that stalls for most of the budget and then resets gets what is left,
     not a fresh budget. Three fresh budgets would hold the launch banner for minutes."""
@@ -1677,7 +1751,7 @@ def test_download_retries_share_one_deadline(monkeypatch, tmp_path):
         ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf", timeout = 60)
         is False
     )
-    # One attempt: 1s was left, less than the 1.5s pause, so no second try.
+    # 1s left is less than the 1.5s pause, so there is no second attempt.
     assert timeouts == [60.0]
 
 
@@ -1699,5 +1773,4 @@ def test_download_later_attempts_get_only_the_remaining_time(monkeypatch, tmp_pa
         ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf", timeout = 60)
         is False
     )
-    # 60, then 60-10-1.5, then that-10-3.0: each attempt sees strictly less.
     assert timeouts == [60.0, 48.5, 35.5]
