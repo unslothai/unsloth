@@ -5049,7 +5049,10 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
-        $_desktopVerBad = $false
+        # Starts bad and is cleared only on a confirmed exit 0, mirroring setup.sh's `if !`:
+        # an invocation that throws left it false, so an install under the floor kept the
+        # fast path, and $LASTEXITCODE would be a previous command's.
+        $_desktopVerBad = $true
         try {
             & python -c "
 import re, sys
@@ -5062,8 +5065,8 @@ except ImportError:
 installed = parse_v(sys.argv[1])
 required = parse_v(sys.argv[2])
 sys.exit(0 if installed is not None and required is not None and installed >= required else 1)
-" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null
-            if ($LASTEXITCODE -ne 0) { $_desktopVerBad = $true }
+" "$InstalledVer" "$env:UNSLOTH_DESKTOP_BACKEND_VERSION" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $_desktopVerBad = $false }
         } catch {}
         if ($_desktopVerBad) {
             substep "$_PkgName $InstalledVer < $env:UNSLOTH_DESKTOP_BACKEND_VERSION (required by desktop app) -- forcing dependency pass to update..." "Cyan"
