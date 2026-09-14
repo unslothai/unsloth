@@ -157,9 +157,10 @@ docker run -d --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -e UNSLOTH_STUDIO_PASSWORD="mypassword" -e JUPYTER_PASSWORD="mypassword" \
   -v "$PWD":/workspace/host \
+  -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
-Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The `unsloth-studio` volume keeps your accounts, chats and trained models across `docker rm`; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -176,6 +177,8 @@ unsloth studio -H 0.0.0.0 -p 8888
 **LAN Access (home network)**: `Settings > API keys > LAN access`
 
 #### Password management & headless starts
+Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network. On a non-loopback `-H` bind a terminal nobody answers is not a refusal: after ~30s Unsloth starts anyway and shuts down on the bootstrap deadline, so detached launches (`docker run -dt`, `tmux new -d`) are unaffected. Setting `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables that shutdown, so give those launches a password instead. A tunnel gets no such timeout and waits indefinitely rather than publish a public URL unasked, so give a detached `--secure` / `--cloudflare` launch its password non-interactively.
+
 Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var

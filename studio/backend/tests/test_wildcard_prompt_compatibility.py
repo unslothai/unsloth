@@ -143,6 +143,8 @@ def test_the_prompt_signature_stays_keyword_compatible():
 
     params = inspect.signature(terminal_prompt.prompt_for_password_change).parameters
     assert params["exposure"].default == "on the public internet"
+    # An old run.py still passes refusal_aborts, and it still picks the banner.
+    assert "refusal_aborts" in params
     for name, param in params.items():
         assert param.kind is not inspect.Parameter.POSITIONAL_ONLY, name
 

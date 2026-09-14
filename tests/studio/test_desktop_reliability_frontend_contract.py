@@ -5,7 +5,13 @@
 
 import re
 from pathlib import Path
-from tests.studio._js_source import binding_joining, gates_the_markup
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    boolean_table,
+    expand_bindings,
+    gates_the_markup,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -465,7 +471,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -676,9 +682,28 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    # #10706 named the pair: the rail holds out (holdsOut) unless an edge peek holds it open (heldOut).
-    assert "aria-hidden={(holdsOut && !heldOut) || undefined}" in primitive
-    assert "inert={(holdsOut && !heldOut) || undefined}" in primitive
+    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
+    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
+    # named const and giving it a peek exception: a refactor that changed nothing this
+    # contract protects, and it left main and every open PR red for a day. What must hold is
+    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
+    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    # Asking only that the held-out condition still appears would accept dropping the peek
+    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
+    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
+    # the accessibility tree, over every combination of the four inputs, and let any
+    # spelling that admits exactly those states pass.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():

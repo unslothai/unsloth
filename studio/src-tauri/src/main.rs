@@ -1919,6 +1919,7 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
             native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
