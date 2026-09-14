@@ -1237,6 +1237,11 @@ class TestInstallUvCacheRootParity:
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
         bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split("\n}", 1)[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
+        # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
+        # cache the installers just rejected. Its docstring claimed the same rule long before
+        # it had it.
+        assert "def _uv_is_bucket_name(name: str) -> bool:" in cli
+        assert '_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")' in cli
         #   4. readable is not usable: a real create-and-delete, root and every bucket
         assert ".unsloth-write-probe." in sh
         assert ".unsloth-write-probe." in ps1

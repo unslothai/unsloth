@@ -3182,18 +3182,27 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 )
 
 
-_UV_CACHE_BUCKETS = ("archive-", "builds-", "built-wheels-", "wheels-", "sdists-")
+_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
+
+
+def _uv_is_bucket_name(name: str) -> bool:
+    """A name uv itself creates: <kind>-v<N>, whole suffix numeric, kind from the LAST `-v`.
+    Mirrors _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in install.ps1."""
+    kind, marker, version = name.rpartition("-v")
+    return bool(marker) and version.isdigit() and kind in _UV_CACHE_BUCKETS
 
 
 def _uv_cache_has_packages(cache_dir: Path) -> bool:
     """wheels-* is metadata only on uv 0.10, so counting any file reads a merely-resolved cache
-    as warm. Same rule as install.sh:_configure_uv_cache."""
+    as warm. Same rule as install.sh:_configure_uv_cache, the WHOLE `-v` suffix included: a
+    prefix match also takes `archive-v0.backup` and `archive-backup-v0`, whose bytes uv cannot
+    reuse, so an update could prefer a cache that is cold in practice and redownload."""
     try:
         buckets = [
             entry
             for entry in cache_dir.iterdir()
-            if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
+            if _uv_is_bucket_name(entry.name) and entry.is_dir()
         ]
     except (OSError, ValueError):
         return False
@@ -3315,6 +3324,32 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
+def _unmarked_studio_cache_is_ours(recorded: Optional[Path]) -> bool:
+    """Whether a warm $STUDIO_HOME/cache/uv with no live marker is this install's own cache.
+
+    On POSIX it is. Before the marker shipped, install.sh always took its `custom` branch and
+    filled the Studio cache, so shared mode was unreachable there: verified by running the
+    selector from b66d2a4c8~1. Preferring uv's default instead abandons that cache the moment
+    one unrelated wheel makes the default read as warm, which offline fails the update outright.
+
+    On Windows it is not. install.ps1's selection already worked, so a pre-marker install could
+    have chosen the shared cache and then repointed the backend at the Studio one, leaving a few
+    on-demand wheels there while Torch and CUDA live in the shared cache. Preferring the Studio
+    cache there would abandon the real one, so Windows keeps uv's default ahead of it.
+
+    Either way this is only for an absent or dangling marker. A marker naming a cache that still
+    exists is a decision, even when it has gone cold.
+    """
+    if platform.system() == "Windows":
+        return False
+    if recorded is None:
+        return True
+    try:
+        return not recorded.is_dir()
+    except OSError:
+        return True
+
+
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
@@ -3327,7 +3362,9 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if recorded is not None and _uv_cache_has_packages(recorded):
         # Only while it holds something: a marker for an emptied cache loses to a warm one.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    # No marker, and content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode, so use uv's default.
+    if _unmarked_studio_cache_is_ours(recorded) and _uv_cache_has_packages(studio_cache):
+        return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
+    # Content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode, so use uv's default.
     default_cache = _uv_default_cache_dir(cwd)
     if default_cache is not None and _uv_cache_has_packages(default_cache):
         return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
