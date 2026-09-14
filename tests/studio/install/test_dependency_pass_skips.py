@@ -1611,9 +1611,7 @@ def test_a_known_unmet_field_that_is_not_a_mapping_is_ignored(monkeypatch, gated
         assert stack._closure_record() == {}
 
 
-def test_a_requirement_that_is_simply_absent_is_never_a_known_conflict(
-    monkeypatch, gated
-) -> None:
+def test_a_requirement_that_is_simply_absent_is_never_a_known_conflict(monkeypatch, gated) -> None:
     """closure_unmet_requirements names an absent distribution by itself and one outside its
     specifier as "name version". Only the second can be a conflict nothing can resolve: an
     absent one is work this step does, and recording it would excuse the install that repairs
