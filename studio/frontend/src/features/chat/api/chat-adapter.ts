@@ -320,7 +320,7 @@ import {
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
-import { turnRequiresLegacyStream } from "./durable-gate";
+import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -4967,20 +4967,20 @@ export function createOpenAIStreamAdapter(
           findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
           findLatestUserVideoBase64(currentTurnMessages),
       );
-      const generationCandidate = Boolean(
-        !isExternalRequest &&
-          !activeModel?.isAudio &&
-          !runtime.loadedIsDiffusion &&
-          // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
-          !currentTurnCarriesMedia &&
-          // Continue yields the seeded partial before the request starts so the autosave lands before
-          // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
-          !continuation &&
-          resolvedThreadId &&
-          !isThreadIncognito(resolvedThreadId) &&
-          unstable_assistantMessageId &&
-          generationUserMessage,
-      );
+      const generationCandidate = isDurableRunCandidate({
+        externalProvider: isExternalRequest,
+        modelIsAudio: activeModel?.isAudio,
+        loadedIsDiffusion: runtime.loadedIsDiffusion,
+        // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
+        turnCarriesMedia: currentTurnCarriesMedia,
+        // Continue yields the seeded partial before the request starts so the autosave lands before
+        // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
+        continuation,
+        threadId: resolvedThreadId,
+        incognito: resolvedThreadId ? isThreadIncognito(resolvedThreadId) : false,
+        assistantMessageId: unstable_assistantMessageId,
+        hasUserMessage: Boolean(generationUserMessage),
+      });
       let generationDecision: "pending" | "durable" | "legacy" =
         generationCandidate ? "pending" : "legacy";
       let generationRun: ChatGenerationRun | null = null;
