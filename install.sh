@@ -1931,14 +1931,6 @@ LAUNCHER_EOF
     if [ -z "$_css_found_icon" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/frontend/public/rounded-512.png" ]; then
         _css_found_icon="$_css_script_dir/studio/frontend/public/rounded-512.png"
     fi
-    # icon.png always ships in the wheel; no need to reach raw.githubusercontent.com.
-    if [ -z "$_css_found_icon" ]; then
-        for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
-            if [ -f "$_sp/icon.png" ]; then
-                _css_found_icon="$_sp/icon.png"
-            fi
-        done
-    fi
 
     # Copy or download rounded-512.png (used for both Linux icon and macOS icns)
     if [ -n "$_css_found_icon" ]; then
@@ -2177,7 +2169,7 @@ STUB_EOF
         fi
         _css_lnk_name_ps=$(printf '%s' "$_css_lnk_name" | sed "s/'/''/g")
 
-        # The packaged .ico (frontend/dist) is copied first; GitHub is only the fallback.
+        # The generated script prefers this to its download.
         _css_wsl_ico_win=""
         for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
             if [ -f "$_sp/unsloth.ico" ] && command -v wslpath >/dev/null 2>&1; then
