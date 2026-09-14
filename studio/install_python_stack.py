@@ -6987,26 +6987,16 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
-# Hash enforcement a pinned install cannot satisfy: every requirements file we ship is
-# pinned but UNHASHED, so `require-hashes` can only ever abort the install -- it has no
-# artifact to check against. An env var outranks a config file, so the pinned branch has
-# to clear these from the environment as well as neutralise the config (#8530).
+# Unsatisfiable, not relaxed: every requirements file we ship is unhashed, so
+# require-hashes can only abort (#8530). Env beats config, so the variables go too.
 _PM_HASH_ENV_VARS = (
     "UV_REQUIRE_HASHES",
     "PIP_REQUIRE_HASHES",
 )
 
-# Policy that would force a SOURCE build of a pinned wheel. `no-binary` is the inverse of
-# the hardening the other vars express: it makes pip/uv build torch from an sdist, which
-# is both more build-time code execution and a resolution the pinned index cannot serve.
-# Cleared for pinned commands for that reason, not to relax anything.
-#
-# UV_EXCLUDE_NEWER is here for a different reason, and it is the pre-existing behaviour:
-# only uv reads it, `_build_pip_cmd` never adds the `--uploaded-prior-to` that would be
-# pip's equivalent, and pip_install falls back to pip whenever uv fails. Honouring it on
-# the uv leg alone would mean a pinned install that fell back quietly installed an
-# artifact the cutoff forbids, which is the outcome _uv_upload_cutoff_args exists to
-# prevent. Consistently off is the honest answer until the fallback can carry it.
+# no-binary would FORCE a source build of a pinned wheel: clearing it is less build-time
+# execution, not more. UV_EXCLUDE_NEWER because only uv reads it, so honouring it on the uv
+# leg alone lets the pip fallback install past the cutoff.
 _PM_FORCE_SOURCE_ENV_VARS = (
     "UV_NO_BINARY",
     "UV_NO_BINARY_PACKAGE",
@@ -7014,36 +7004,19 @@ _PM_FORCE_SOURCE_ENV_VARS = (
     "UV_EXCLUDE_NEWER",
 )
 
-# Deliberately NOT cleared for pinned installs: PIP_ONLY_BINARY, the operator's build-time
-# code execution control. Every pinned index we install from serves wheels, so honouring it
-# costs the pin nothing, while dropping it would hand a compromised mirror a source build
-# the operator had forbidden. It is also the one that is actually read: measured against
-# pip 26.2 and uv 0.10.7, PIP_ONLY_BINARY takes effect, while UV_NO_BUILD / UV_NO_BINARY /
-# UV_ONLY_BINARY are not uv environment variables at all (uv reads no-build from its config
-# file only, and the pin cannot leave that file enabled), so nothing here can carry a
-# uv.toml no-build onto a pinned command. Nothing is lost by that: pinned commands install
-# wheels.
+# PIP_ONLY_BINARY stays in force: the pinned indexes serve wheels, so it costs the pin
+# nothing. Measured on uv 0.10.7, UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
+# environment variables at all, so no uv.toml no-build can reach a pinned command.
 
 
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
-    """Overrides that stop a hardened user pip config failing the installer's own pip.
+    """Hash mode off for one pip install / download / wheel, and nothing else relaxed.
 
-    Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
-    module drives, every `uv` command included, so the "non-pinned installs inherit the
-    caller env unchanged" contract holds on a machine with no hostile pip config.
-    `wheel` is in that set because the duplicate-metadata repair stages its replacement
-    with `pip wheel`, where require-hashes applies exactly as it does to install: an
-    unpinned name is rejected before anything is built, so the repair would abort on a
-    hardened machine and leave the conflict it exists to remove.
-
-    HASH MODE IS THE ONLY THING RELAXED, and only for the command being run: pip applies
-    env vars AFTER config files, so PIP_REQUIRE_HASHES=0 overrides it while pip.conf's
-    index-url, trusted-host, cert, proxy AND its only-binary / no-build policy all stay in
-    force. `require-hashes = true` makes pip reject any requirement without a --hash,
-    which is every requirements file we ship, so it can only ever abort the install; that
-    is what took the pip FALLBACK down in #8530 once uv had failed. The wheel-less
-    requirements are handled by the package-scoped --no-binary in _sdist_only_build_args()
-    instead, so a binary-only policy keeps applying everywhere it can be honoured.
+    pip applies env vars AFTER config files, so this wins while pip.conf's index-url, cert,
+    proxy and only-binary stay in force; the wheel-less requirements go through the
+    package-scoped --no-binary in _sdist_only_build_args(). `wheel` is in the set because
+    the duplicate-metadata repair stages with it, and require-hashes rejects that too
+    (#8530).
     """
     if not _is_pip_subcommand(cmd, ("install", "download", "wheel")):
         return {}
@@ -7051,11 +7024,10 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 
 
 def _executable_stem(path: str) -> str:
-    """The bare program name from a command's argv[0], on either platform's spelling.
+    """argv[0] as a bare program name, on either platform's spelling.
 
-    Both separators and a lowercased result, because os.path.basename does not split a
-    backslash off-Windows and the same argv can be built on a Windows host, read back in a
-    test, or come through WSL interop: `C:\\venv\\Scripts\\pip3.13.exe` is pip3 anywhere.
+    Both separators, because os.path.basename does not split a backslash off-Windows and
+    the same argv reaches here from a Windows host, a test, or WSL interop.
     """
     leaf = re.split(r"[\\/]", path)[-1]
     return leaf.split(".")[0].lower()
@@ -7064,9 +7036,8 @@ def _executable_stem(path: str) -> str:
 def _is_pip_subcommand(cmd: "list[str]", subcommands: "tuple[str, ...]") -> bool:
     """True when ``cmd`` is a pip invocation whose SUBCOMMAND is one of ``subcommands``.
 
-    Structural rather than "does the word install appear anywhere", so the relaxation
-    cannot ride along on an unrelated command that happens to carry a matching argument
-    (a requirements path, a package literally named ``wheel``, a uv command).
+    Structural, so the relaxation cannot ride along on a requirements path, a package
+    named ``wheel``, or a uv command that merely contains the word.
     """
     args = list(cmd)
     if args[:1] == ["uv"]:
@@ -7077,19 +7048,15 @@ def _is_pip_subcommand(cmd: "list[str]", subcommands: "tuple[str, ...]") -> bool
         args = args[1:]
     else:
         return False
-    # The first token that NAMES a subcommand, rather than the first token without a
-    # leading dash: `pip --cache-dir /tmp/c install x` puts a bare path before the
-    # subcommand, and reading that as "not an install" would silently drop the hash
-    # relaxation and re-break #8530 the first time a call site is written that way.
+    # The first token that NAMES a subcommand, not the first without a dash:
+    # `pip --cache-dir /tmp/c install x` puts a bare path before it.
     for arg in args:
         if arg in _PIP_SUBCOMMANDS:
             return arg in subcommands
     return False
 
 
-# pip 26.2 `pip --help`. Only used to find where the options stop and the subcommand
-# starts, so an unknown future subcommand costs nothing: it is not in `subcommands`
-# either, and the scan simply runs off the end.
+# pip 26.2 `pip --help`; only marks where the options stop, so a missing future one is free.
 _PIP_SUBCOMMANDS = frozenset(
     (
         "install",
@@ -7402,28 +7369,13 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
     None (inherit env) when the command does NOT pin an index, so ordinary installs honour
-    the user's mirror. For pinned commands, the uv index/backend vars are removed and
-    UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin). Mirrors install.sh's
-    gate (#6898).
+    the user's mirror. Pinned ones also get UV_NO_CONFIG=1, since a discovered uv.toml
+    outranks the CLI pin (#6898), and no blanket amnesty from the operator's policy: only
+    the hash and no-binary variables go, for the reasons at their definitions.
 
-    What a pinned command does NOT get is a blanket amnesty from the operator's
-    package-manager policy. Only two classes of variable go:
-
-      * hash enforcement (_PM_HASH_ENV_VARS), which our unhashed requirements can never
-        satisfy, so it can only abort the install; and
-      * `no-binary` (_PM_FORCE_SOURCE_ENV_VARS), which would FORCE a source build of a
-        pinned wheel -- removing it reduces build-time code execution, not the reverse.
-
-    `no-build` / `only-binary` / `exclude-newer` are left in force: the pinned indexes
-    serve wheels, so honouring them costs nothing and dropping them would let a
-    compromised mirror run a source build the operator had forbidden.
-
-    PIP_CONFIG_FILE still points at os.devnull, which is the ONLY way to stop a site or
-    global pip.conf contributing to a pinned install (measured on pip 26.2: pointing the
-    variable at a rewritten file suppresses the per-user file only, so a venv-level
-    `no-index` still killed the pin). What that switches off is put back one key at a
-    time by _pinned_pip_config_overrides(), so the operator keeps their policy and their
-    transport without the pin losing determinism.
+    PIP_CONFIG_FILE stays at os.devnull, the ONLY way to stop a site or global pip.conf
+    contributing (measured on pip 26.2: naming a real file suppresses the per-user file
+    alone). What that removes is put back key by key by _pinned_pip_config_overrides().
     """
     if not _is_pinned_index_cmd(cmd):
         relaxed = _relaxed_pip_policy_env(cmd)
@@ -7437,9 +7389,8 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         env.pop(name, None)
     for name in _PM_HASH_ENV_VARS + _PM_FORCE_SOURCE_ENV_VARS:
         env.pop(name, None)
-    # Both config files have to go for the pin to be deterministic, so anything they
-    # carried that the pin does NOT conflict with is re-asserted as an environment
-    # variable rather than lost.
+    # Both config files go for the pin, so re-assert what they carried that it does not
+    # conflict with.
     for name, value in _pinned_pip_config_overrides().items():
         env.setdefault(name, value)
     env["UV_NO_CONFIG"] = "1"
@@ -7447,20 +7398,9 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     return env
 
 
-# What survives PIP_CONFIG_FILE=devnull for a pinned install, translated from pip's own
-# merged configuration into the environment variable pip reads for the same option.
-#
-# Two kinds of setting, and nothing else -- an allowlist, because a config file can hold
-# options for any subcommand and a blanket translation would apply them all to install:
-#   * transport and auth, which is how a private index is reached at all. Losing these to
-#     devnull is a pre-existing wrong answer: a pinned torch repair on a host that needs a
-#     corporate CA or proxy could not fetch what the pin named.
-#   * only-binary, the operator's build-time code execution control. The pinned indexes
-#     serve wheels, so honouring it costs the pin nothing.
-#
-# Deliberately absent: index-url, extra-index-url, find-links and no-index (the pin
-# replaces those), no-binary (it would FORCE a source build of a pinned wheel), and
-# require-hashes (unsatisfiable against the unhashed requirements we ship).
+# What devnull must not take with it: transport, without which a private index cannot be
+# reached, plus only-binary. An ALLOWLIST: a config file holds options for any subcommand.
+# Absent on purpose: the source keys, no-binary and require-hashes.
 _PINNED_PIP_CONFIG_KEEP_KEYS = (
     "cert",
     "client-cert",
@@ -7472,16 +7412,13 @@ _PINNED_PIP_CONFIG_KEEP_KEYS = (
     "only-binary",
 )
 
-# A PIP_ variable applies to whatever pip command runs, so a per-subcommand section
-# cannot be translated faithfully: `[wheel] only-binary` is not a weaker `[install]
-# only-binary`, it is a setting for a different command. Only these two are read, with
-# `install` winning, and `[download]` / `[wheel]` deliberately ignored rather than
-# allowed to redefine an install-wide policy.
+# A PIP_ variable applies to whatever command runs, so `[wheel] only-binary` is a different
+# command's setting, not a weaker `[install]` one. Install wins; other sections are ignored.
 _PINNED_PIP_CONFIG_SECTIONS = ("global", "install")
 
-# Keys pip accumulates as a LIST, which is the only case where the newline `pip config
-# list` renders becomes a separator in the environment spelling. Everything else is one
-# value, where collapsing whitespace would corrupt a path like `C:\Program  Files\ca.pem`.
+# Keys pip accumulates as a LIST, where the newline `pip config list` renders is a
+# separator. Nowhere else: it would corrupt `C:\Program  Files\ca.pem`. Measured
+# separators: only-binary comma, trusted-host space.
 _PINNED_PIP_CONFIG_LIST_KEYS = {"trusted-host": " ", "only-binary": ","}
 
 _PINNED_PIP_CONFIG_CACHE: "dict[str, str] | None" = None
@@ -7490,17 +7427,9 @@ _PINNED_PIP_CONFIG_CACHE: "dict[str, str] | None" = None
 def _pinned_pip_config_overrides() -> "dict[str, str]":
     """pip's configured transport and binary policy, as PIP_ environment variables.
 
-    Read once per run and memoised, because it costs a `pip config list` subprocess.
-    ONLY a successful read is cached: a transient miss (a wedged pip hitting the timeout,
-    or a read racing the pip bootstrap) must not silently cost the operator their cert and
-    proxy for every later pinned install, including the torch repair that runs last.
-
-    Empty when pip cannot answer, which is the normal case in a venv that has no pip yet;
-    the caller then behaves exactly as it did before this existed.
-
-    `:env:` entries are skipped: those come from the environment, which the child already
-    inherits, and re-asserting them would undo the variables the pinned branch just
-    cleared on purpose.
+    ONLY a successful read is memoised, or a transient miss would cost the operator their
+    cert and proxy for the rest of the run. Empty when pip cannot answer, the normal case
+    in a venv with no pip yet. `:env:` rows are skipped: the child inherits those already.
     """
     global _PINNED_PIP_CONFIG_CACHE
     if _PINNED_PIP_CONFIG_CACHE is not None:
@@ -7510,8 +7439,7 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
             [sys.executable, "-m", "pip", "config", "list"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
-            # Local file reads only, no network, but this now runs on the way to every
-            # pinned install: a wedged pip must cost one minute, not the whole install.
+            # On the path to every pinned install: a wedged pip costs a minute, not more.
             timeout = 60,
             **_windows_hidden_subprocess_kwargs(),
         )
@@ -7526,9 +7454,8 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
 def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
     """`pip config list` output, filtered to the allowlist, as PIP_ variables.
 
-    `[install]` beats `[global]` for the same option, which is pip's own precedence, and
-    is resolved by position rather than by the order the listing happens to print in.
-    A line that does not parse is skipped; the whole listing is never fatal.
+    `[install]` beats `[global]`, pip's own precedence, resolved by position rather than
+    by the order the listing prints in. An unparseable line is skipped, never fatal.
     """
     found: dict[str, dict[str, str]] = {}
     for line in stdout.decode("utf-8", "replace").splitlines():
@@ -7546,15 +7473,14 @@ def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
             continue
         separator_for_key = _PINNED_PIP_CONFIG_LIST_KEYS.get(option)
         if separator_for_key is None:
-            text = str(value).strip()  # one value: pass it through as written
+            text = str(value).strip()
         else:
             text = separator_for_key.join(str(value).split())
         if text:
             found.setdefault(option, {})[section] = text
     overrides: dict[str, str] = {}
     for option, by_section in found.items():
-        # Ordered global first, so an [install] entry overwrites it.
-        for section in _PINNED_PIP_CONFIG_SECTIONS:
+        for section in _PINNED_PIP_CONFIG_SECTIONS:   # global first, so install overwrites
             if section in by_section:
                 overrides[f"PIP_{option.upper().replace('-', '_')}"] = by_section[section]
     return overrides

@@ -59,14 +59,12 @@ def _load_real_index_env_scrub():
         "subprocess": _subprocess,
         "sys": _sys,
         "tempfile": _tempfile,
-        # Windows-only console suppression, irrelevant to the scrub and the one dependency
-        # of _pip_config_without_sources that is not a module.
+        # The one dependency of the extracted code that is not a module.
         "_windows_hidden_subprocess_kwargs": dict,
     }
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
-        # _install_env_for_cmd calls all of these, and they resolve from this namespace at CALL time, so omitting
-        # any only shows up as a NameError once a test actually invokes the scrub.
+        # Resolved from this namespace at CALL time, so an omission is a NameError later.
         ("_PM_HASH_ENV_VARS = (", "\n)\n", 2),
         ("_PM_FORCE_SOURCE_ENV_VARS = (", "\n)\n", 2),
         # One line, so it ends at the first newline; "\n)\n" would swallow the file.
@@ -75,9 +73,8 @@ def _load_real_index_env_scrub():
         ("_PINNED_PIP_CONFIG_LIST_KEYS = ", "\n", 1),
         ("_PINNED_PIP_CONFIG_CACHE: ", "\n", 1),
         ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),
-        # Called BY _pinned_pip_config_overrides. Omitting it used to leave the exec'd
-        # copy raising NameError into a broad except, so the "real scrub" this file
-        # deliberately executes silently returned {} and agreed with anything.
+        # Omitting it left the exec'd copy raising NameError into a broad except, so the
+        # scrub this file executes returned {} and agreed with anything.
         ("def _parse_pinned_pip_config(", "\n\ndef ", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pip_subcommand(", "\n\ndef ", 0),
@@ -88,8 +85,7 @@ def _load_real_index_env_scrub():
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
     assert "PIP_REQUIRE_HASHES" in ns["_PM_HASH_ENV_VARS"], "extraction lost the hash vars"
-    # Execute the extracted parser once: a missing dependency in this namespace would
-    # otherwise only show up as an empty scrub that quietly agrees with every assertion.
+    # Execute it once: a missing dependency here is otherwise an inert scrub that passes.
     parsed = ns["_parse_pinned_pip_config"](b"global.cert='/etc/corp/ca.pem'\n")
     assert parsed == {"PIP_CERT": "/etc/corp/ca.pem"}, f"extraction is inert: {parsed}"
     return ns["_install_env_for_cmd"]
@@ -428,8 +424,8 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert var not in env
 
     def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
-        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does, and
-        # devnull is the only spelling that reaches a SITE or GLOBAL file.
+        # A config no-index outranks the CLI pin, and devnull is the only spelling that
+        # reaches a SITE or GLOBAL file.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
@@ -437,9 +433,8 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert env["UV_NO_CONFIG"] == "1"
 
     def test_the_fetch_keeps_the_operators_build_policy(self, monkeypatch, tmp_path):
-        # The pin is a wheel, so an only-binary / exclude-newer policy costs it nothing;
-        # only hash enforcement, which no requirement we ship can satisfy, is cleared. The
-        # fetch is `pip download`, so PIP_ONLY_BINARY is the one that decides here.
+        # The pin is a wheel, so only-binary costs it nothing. This fetch is `pip
+        # download`, so PIP_ONLY_BINARY is the one that decides.
         monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
         monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
         monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
@@ -448,7 +443,7 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         env = mod.__dict__["_test_download_envs"][0]
         assert env["PIP_ONLY_BINARY"] == ":all:"
         assert "PIP_REQUIRE_HASHES" not in env
-        # This fetch IS the pip leg, and pip cannot express an upload cutoff here.
+        # The pip leg cannot express an upload cutoff.
         assert "UV_EXCLUDE_NEWER" not in env
 
     def test_unrelated_environment_survives(self, monkeypatch, tmp_path):

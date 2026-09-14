@@ -830,9 +830,8 @@ class TestPinnedIndexClearsUvEnvParity:
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
         )
-        # devnull is all or nothing, so what it switches off is put back key by key:
-        # the operator's cert / proxy / trusted-host (how a private index is reached)
-        # and only-binary (their build-time code execution control).
+        # devnull is all or nothing, so the transport and only-binary it removes are put
+        # back key by key.
         assert "_pinned_pip_config_overrides()" in stack, (
             "the pinned scrub must re-assert the operator's transport and binary policy "
             "that PIP_CONFIG_FILE=devnull removes"
