@@ -2826,6 +2826,112 @@ def test_unload_cancels_pipeline_construction(
     backend.unload()
 
 
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "index",
+        "tokenizer",
+        "tokenizer_error",
+        "encoder_config",
+        "text_encoder",
+        "scheduler",
+        "vae",
+        "transformer",
+        "pipeline",
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, phase, cancel):
+    import gc
+    import weakref
+    from core.inference import diffusion as diff_mod, diffusion_krea2 as krea
+
+    backend = DiffusionBackend()
+    calls, ejectors, reclaimed = [], [], []
+    live = weakref.WeakSet()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    def record(name, value):
+        calls.append(name)
+        if name == phase and cancel:
+            ejector = threading.Thread(target = backend.unload, daemon = True)
+            ejectors.append(ejector)
+            ejector.start()
+            assert backend._cancel_event.wait(5), "eject could not signal during assembly"
+        return value
+
+    def component(name):
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        return record(name, value)
+
+    def pretrained(name):
+        return types.SimpleNamespace(from_pretrained = lambda *a, **k: component(name))
+
+    def tokenizer(*args, **kwargs):
+        if phase == "tokenizer_error" and "extra_special_tokens" not in kwargs:
+            record("tokenizer_error", None)
+            raise ValueError("tokenizer config requires the compatibility fallback")
+        return component("tokenizer_retry" if phase == "tokenizer_error" else "tokenizer")
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append(len(live))
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.Krea2Pipeline = lambda **kwargs: component("pipeline")
+    diffusers.Krea2Transformer2DModel = pretrained("transformer")
+    diffusers.FlowMatchEulerDiscreteScheduler = pretrained("scheduler")
+    diffusers.AutoencoderKLQwenImage = pretrained("vae")
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(
+            AutoTokenizer = types.SimpleNamespace(from_pretrained = tokenizer),
+            AutoConfig = types.SimpleNamespace(
+                from_pretrained = lambda *a, **k: record("encoder_config", types.SimpleNamespace())
+            ),
+            Qwen3VLModel = pretrained("text_encoder"),
+        ),
+    )
+    monkeypatch.setattr(krea, "_load_model_index", lambda *a, **k: record("index", {}))
+    monkeypatch.setattr(diff_mod, "clear_gpu_cache", reclaim)
+    expected = [
+        "index",
+        "tokenizer",
+        "encoder_config",
+        "text_encoder",
+        "scheduler",
+        "vae",
+        "transformer",
+        "pipeline",
+    ]
+    if phase == "tokenizer_error":
+        expected[1:2] = ["tokenizer_error", "tokenizer_retry"]
+    try:
+        if cancel:
+            with pytest.raises(RuntimeError, match = "cancelled"):
+                backend.load_pipeline(
+                    str(tmp_path), family_override = "krea-2", local_files_only = True
+                )
+            assert calls == expected[: expected.index(phase) + 1]
+            assert not backend.is_loaded
+            assert reclaimed and not any(reclaimed), reclaimed
+        else:
+            assert backend.load_pipeline(
+                str(tmp_path), family_override = "krea-2", local_files_only = True
+            )["loaded"]
+            assert calls == expected
+            for _ in range(2):
+                assert backend.generate(prompt = "a sloth", steps = 2)["images"]
+    finally:
+        for ejector in ejectors:
+            ejector.join(5)
+            assert not ejector.is_alive()
+        backend.unload()
+
+
 @pytest.mark.parametrize("phase", ["gpu", "validation", "precision"])
 def test_begin_load_remembers_an_eject_during_preflight(fake_runtime, tmp_path, monkeypatch, phase):
     from core.inference import diffusion as diff_mod
@@ -5039,7 +5145,9 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         # production signature, and this branch never sees the guarded pipe_kwargs, so the keyword
         # that keeps the no-download promise has to be one _assemble_pipe really passes.
         local_files_only = False,
+        check_cancelled = None,
     ):
+        assert callable(check_cancelled)
         calls["base"] = base
         calls["transformer"] = transformer
         calls["local_files_only"] = local_files_only

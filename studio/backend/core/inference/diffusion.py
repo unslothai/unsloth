@@ -4143,6 +4143,9 @@ class DiffusionBackend:
                                     fetch_base,
                                     dtype,
                                     hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
                                     # The branch never sees pipe_kwargs, so the one keyword that keeps the no-download
                                     # promise has to be handed over with the rest
                                     local_files_only = local_files_only,
@@ -4247,6 +4250,9 @@ class DiffusionBackend:
                                     fetch_base,
                                     dtype,
                                     hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
                                     transformer = transformer,
                                     # Same reason as the full-pipeline branch: the single file supplies only the denoiser,
                                     # so the encoder, VAE and tokenizer below are still GB this load promised not to
@@ -4917,6 +4923,7 @@ class DiffusionBackend:
                 hf_token = hf_token,
                 transformer = transformer,
                 text_encoder = krea_te,
+                check_cancelled = check_cancelled,
                 # ``base_local_dir`` is None whenever nothing was staged, and then this is a repo id: the same guard
                 # the pipe_kwargs below carry for every other family.
                 local_files_only = local_files_only,
