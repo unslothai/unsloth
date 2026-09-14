@@ -2727,7 +2727,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
 
     def test_a_masked_nvidia_host_takes_cuda_not_the_cpu_bundle(self, monkeypatch):
-        """compute_caps is populated under an emptied mask: nvidia-smi is NVML, not CUDA."""
+        """A masked host selects CUDA off the physical caps, not the emptied visible ones."""
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
@@ -2792,9 +2792,9 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         assert all(a.install_kind not in ("linux-vulkan", "linux-cpu") for a in attempts)
 
     def test_a_masked_host_below_the_bundle_floor_is_not_handed_it(self, monkeypatch):
-        # An emptied mask empties compute_caps, which is the selector's unknown-SM path:
-        # it takes a portable artifact WITHOUT checking min_sm/max_sm. sm_61 against a
-        # floor of sm_70 would install and then offload nothing once the mask came off.
+        # Empty compute_caps is the selector's unknown-SM path: it takes a portable
+        # artifact WITHOUT checking min_sm/max_sm, so sm_61 against a floor of sm_70 would
+        # install and then offload nothing once the mask came off.
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",

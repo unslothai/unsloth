@@ -1514,13 +1514,10 @@ def detect_torch_cuda_runtime_preference(
 ) -> CudaRuntimePreference:
     """The runtime line Torch was built against, so the bundle matches the venv.
 
-    `gpu_hidden_by_mask` is for a caller that has already established a physically
-    present NVIDIA GPU hidden by CUDA_VISIBLE_DEVICES. Both of the usual gates answer
-    "no GPU" under that mask -- has_usable_nvidia is false by definition, and
-    torch.cuda.is_available() sees no devices -- so the preference would be skipped and
-    selection would fall back to newest-first, picking a CUDA 13 bundle for a cu12 venv.
-    torch.version.cuda is a build-time constant that no mask touches, which is exactly
-    the question being asked, so it is read without the availability check.
+    `gpu_hidden_by_mask` is for a caller that already established an NVIDIA GPU hidden by
+    CUDA_VISIBLE_DEVICES. Both usual gates answer "no GPU" under that mask, so selection
+    would fall back to newest-first and hand a cu12 venv a CUDA 13 bundle. No mask touches
+    torch.version.cuda, so it is read without the availability check.
     """
     selection_log: list[str] = []
     if host.is_macos:

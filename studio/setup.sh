@@ -637,8 +637,7 @@ _setup_cvd_hides_nvidia() {
 # via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
 # install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
 # and a mixed host steered to its AMD card keeps the ROCm route.
-# Present, mask or no mask. The two differ by exactly one thing, the CUDA_VISIBLE_DEVICES
-# check, so the usable probe is written in terms of this one rather than beside it.
+# Present, mask or no mask. The usable probe is this plus the CUDA_VISIBLE_DEVICES check.
 _setup_has_physical_nvidia_gpu() {
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
@@ -3452,14 +3451,9 @@ else
 
             GPU_BACKEND=""
             NVCC_PATH=""
-            # Gate the CUDA toolkit search on a PHYSICALLY present NVIDIA GPU. A CUDA
-            # toolkit alone (CPU-only build container, leftover packages) is not proof of a
-            # GPU: building with -DGGML_CUDA=ON there yields a binary that fails at runtime,
-            # so fall through to the CPU build. But a card hidden by CUDA_VISIBLE_DEVICES=""
-            # is still a card, and _setup_nvidia_usable is false for it. Gating on that
-            # compiled a CPU-only binary and installed it over the tree for good, which is
-            # the same permanent downgrade the prebuilt selector avoids for masked hosts.
-            #
+            # A CUDA toolkit alone (CPU-only build container, leftover packages) is not
+            # proof of a GPU: -DGGML_CUDA=ON there yields a binary that fails at runtime.
+            # So both callers gate on a real card first.
             # One search, two callers: the usable-NVIDIA pass below and the masked-NVIDIA
             # retry after ROCm. Sets NVCC_PATH / GPU_BACKEND, or leaves both untouched.
             _select_nvcc() {
@@ -3503,14 +3497,12 @@ else
                 fi
             fi
 
-            # A card hidden by CUDA_VISIBLE_DEVICES is still a card, and a CPU-only binary
-            # built here is activated over the tree for good. So the masked card gets the
-            # build, but only AFTER ROCm has had its turn: on a mixed host the visible AMD
-            # GPU is the one the user asked for. Running the search here rather than gating
-            # the pass above on "no AMD detected" also covers the case where AMD was
-            # detected but no hipcc exists anywhere, which left GPU_BACKEND empty and sent a
-            # GPU host to a CPU source build with nvcc sitting right there.
-            # A CUDA toolkit with no GPU at all is still refused: this needs PHYSICAL NVIDIA.
+            # A card hidden by CUDA_VISIBLE_DEVICES is still a card, and the CPU-only binary
+            # built without this is activated over the tree for good. It runs after ROCm on
+            # purpose: on a mixed host the visible AMD GPU is the one the user asked for.
+            # Retrying here rather than gating the pass above on "no AMD detected" also
+            # covers AMD detected with no hipcc anywhere, which sent a GPU host to a CPU
+            # build with nvcc sitting right there.
             if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_physical" = true ]; then
                 _select_nvcc
             fi
