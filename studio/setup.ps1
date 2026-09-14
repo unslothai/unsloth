@@ -2333,9 +2333,17 @@ function Invoke-NvidiaSmiBounded {
 }
 
 # A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
+# 124 is what Invoke-NvidiaSmiBounded reports when it had to kill the probe. Recorded so
+# the banner below can skip a second query: detection already waited out the full bound on
+# this binary, and asking a hung nvidia-smi again only doubles the stall.
+$script:NvidiaSmiWedged = $false
+
 function Test-NvidiaSmiHasGpu {
     param([Parameter(Mandatory = $true)][string]$Exe)
     $out = Invoke-NvidiaSmiBounded $Exe @('-L')
+    # Assigned, not OR-ed: the fallback loop tries several paths, and what matters is
+    # whether the binary it settled on answered, not whether an earlier one hung.
+    $script:NvidiaSmiWedged = ($LASTEXITCODE -eq 124)
     return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
 }
 
@@ -2373,7 +2381,7 @@ if (-not $HasNvidiaSmi) {
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
-if ($HasNvidiaSmi -and $NvidiaSmiExe) {
+if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged) {
     try {
         # Through the bounded runner, like every other nvidia-smi call here: a wedged
         # driver blocks nvidia-smi indefinitely, and a bare `&` call has nothing to

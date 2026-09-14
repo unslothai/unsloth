@@ -638,6 +638,7 @@ _setup_cvd_hides_nvidia() {
 # install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
 # and a mixed host steered to its AMD card keeps the ROCm route.
 _setup_has_usable_nvidia_gpu() {
+    _setup_nv_smi_wedged=""
     if _setup_cvd_hides_nvidia; then
         return 1
     fi
@@ -648,7 +649,15 @@ _setup_has_usable_nvidia_gpu() {
         _setup_nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_setup_nvsmi" ]; then
-        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+        # Captured rather than piped so `timeout`'s own 124 stays visible. A wedged
+        # driver still detects as a GPU through /proc below, and the banner must not
+        # then pay the 10s bound a second time asking a hung nvidia-smi for a name.
+        _setup_nv_l_rc=0
+        _setup_nv_l_out=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null) || _setup_nv_l_rc=$?
+        if [ "$_setup_nv_l_rc" = "124" ]; then
+            _setup_nv_smi_wedged=1
+        fi
+        if printf '%s\n' "$_setup_nv_l_out" \
            | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
@@ -677,6 +686,9 @@ _setup_nv_banner_fields() {
     _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
     _setup_nv_row=""; _setup_nv_cc=""
     [ -n "${_setup_nvsmi:-}" ] || return 0
+    # Detection already waited out the full bound on this binary. Asking again cannot
+    # succeed and would double the stall, so the banner keeps the vendor-only wording.
+    [ -z "${_setup_nv_smi_wedged:-}" ] || return 0
     # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
     # the mask has to be resolved against them by hand.
     _setup_nv_idx=0

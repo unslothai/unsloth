@@ -2415,6 +2415,7 @@ _cvd_hides_nvidia() {
 # ── NVIDIA usable-GPU helper ──
 # nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback; a hidden GPU is NOT usable.
 _has_usable_nvidia_gpu() {
+    _nv_smi_wedged=""
     if _cvd_hides_nvidia; then
         return 1
     fi
@@ -2425,7 +2426,15 @@ _has_usable_nvidia_gpu() {
         _nvsmi="/usr/bin/nvidia-smi"
     fi
     if [ -n "$_nvsmi" ]; then
-        if _run_bounded "$_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+        # Captured rather than piped so `timeout`'s own 124 stays visible. A wedged
+        # driver still detects as a GPU through /proc below, and the banner must not
+        # then pay the 10s bound a second time asking a hung nvidia-smi for a name.
+        _nv_l_rc=0
+        _nv_l_out=$(_run_bounded "$_nvsmi" -L 2>/dev/null) || _nv_l_rc=$?
+        if [ "$_nv_l_rc" = "124" ]; then
+            _nv_smi_wedged=1
+        fi
+        if printf '%s\n' "$_nv_l_out" | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
             return 0
         fi
     fi
@@ -2456,6 +2465,9 @@ _nv_idx_from_uuid() {
 _nv_banner_fields() {
     _nv_name=""; _nv_sm=""; _nv_driver=""; _nv_row=""; _nv_cc=""
     [ -n "${_nvsmi:-}" ] || return 0
+    # Detection already waited out the full bound on this binary. Asking again cannot
+    # succeed and would double the stall, so the banner keeps the vendor-only wording.
+    [ -z "${_nv_smi_wedged:-}" ] || return 0
     # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
     # the mask has to be resolved against them by hand.
     _nv_idx=0
