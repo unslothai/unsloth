@@ -229,6 +229,7 @@ PREV_SRC=""
 SWAPPED=0
 INSTALLING=0
 DONE=0
+RESTARTED=0
 ROLLBACK=""
 FREEZE=""
 CONSTRAINTS=""
@@ -279,6 +280,16 @@ cleanup() {
     if [ "$DONE" != "1" ] && { [ "$SWAPPED" = "1" ] || [ "$INSTALLING" = "1" ]; }; then
         log "interrupted after the install started; putting the previous install back"
         restore || log "the previous install is not fully back; the next run finishes the restore first"
+        # a service this run already restarted is running the unverified code over
+        # the restored files: put it on the restored install too, as back_out does
+        if [ "$RESTARTED" = "1" ]; then
+            if { "$SUPCTL" restart studio >/dev/null 2>&1 || "$SUPCTL" start studio >/dev/null 2>&1; } \
+                && "$SUPCTL" status studio >/dev/null 2>&1; then
+                log "the previous install is running again"
+            else
+                log "CRITICAL: the previous install is back but supervisorctl could not start it (see docker logs)"
+            fi
+        fi
     fi
     [ -n "$STAGE" ] && rm -rf "$STAGE"
     [ -n "$ROLLBACK" ] && rm -f "$ROLLBACK"
@@ -528,6 +539,9 @@ if [ "$RESTART" = "1" ]; then
         _cmd=restart
         [ "$_st" = "3" ] && _cmd=start
         log "${_cmd}ing the studio service"
+        # from here the service may be on the new code: a signal before commit_update
+        # has to move it back as well as the files (cleanup)
+        RESTARTED=1
         if ! "$SUPCTL" "$_cmd" studio; then
             back_out "supervisorctl $_cmd studio failed"
         fi

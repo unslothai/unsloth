@@ -75,6 +75,12 @@ def _studio_env(
     (site / "studio" / "backend" / "main.py").write_text(
         "" if import_ok else "raise ImportError('No module named structlog')\n"
     )
+    # dist-info for both packages, so importlib.metadata answers from the fake site
+    # and never from whatever the runner's own interpreter has installed
+    for name, ver in (("unsloth", "2026.9.4"), ("unsloth_zoo", "2026.9.3")):
+        info = site / f"{name}-{ver}.dist-info"
+        info.mkdir(parents = True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {ver}\n")
     if dist_ok:
         (site / "studio" / "frontend" / "dist").mkdir(parents = True)
         (site / "studio" / "frontend" / "dist" / "index.html").write_text("<html></html>")
@@ -372,9 +378,7 @@ def test_studio_update_rollback_keeps_the_editable_uri_pip_recorded(tmp_path: Pa
     encoded, and pip rejects that as a bare path but takes it as the URI."""
     env = _studio_env(tmp_path, import_ok = False)
     site = tmp_path / "site"
-    info = site / "unsloth-2026.9.4.dist-info"
-    info.mkdir()
-    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.4\n")
+    info = site / "unsloth-2026.9.4.dist-info"  # seeded by _studio_env
     (info / "direct_url.json").write_text(
         '{"url": "file:///opt/my%20studio/src", "dir_info": {"editable": true}}'
     )
@@ -535,6 +539,27 @@ def test_studio_update_puts_the_install_back_when_pip_itself_fails(tmp_path: Pat
     assert "STUB-SUPERVISORCTL" not in _calls(env)
 
 
+def test_a_signal_during_the_health_wait_puts_the_service_back_too(tmp_path: Path):
+    """Ctrl-C while waiting for /api/health: the service is already running the new
+    code, so restoring the files alone would leave it serving a mix of versions.
+    The cleanup restarts it on the restored install, as back_out does."""
+    env = _studio_env(tmp_path)
+    env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "30"
+    _stub(tmp_path / "bin", "curl", 'echo "STUB-CURL $*" >> "$STUB_LOG"\nkill -TERM "$PPID"\nexit 22\n')
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    calls = _calls(env).splitlines()
+    assert res.returncode == 143, res.stdout + res.stderr
+    assert "interrupted after the install started" in res.stdout, res.stdout
+    assert (home / "src" / "OLD_TREE").exists() and not (home / "src" / "NEW_TREE").exists()
+    reinst = [i for i, l in enumerate(calls) if "install --no-deps --force-reinstall -r" in l]
+    assert reinst, calls
+    after = calls[reinst[-1] + 1 :]
+    assert "STUB-SUPERVISORCTL restart studio" in after, calls
+    assert "the previous install is running again" in res.stdout, res.stdout
+    assert not _scratch(home)
+
+
 def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_path: Path):
     """A backend that imports can still die at startup; the previous tree is kept
     until /api/health answers, and goes back when it does not."""
@@ -647,9 +672,7 @@ def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_pa
     reinstall the wrong thing."""
     env = _studio_env(tmp_path, import_ok = False)
     site = tmp_path / "site"
-    info = site / "unsloth-2026.9.4.dist-info"
-    info.mkdir()
-    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.4\n")
+    info = site / "unsloth-2026.9.4.dist-info"  # seeded by _studio_env
     (info / "direct_url.json").write_text(
         '{"url": "file:///opt/venv-src", "dir_info": {"editable": true}}'
     )
