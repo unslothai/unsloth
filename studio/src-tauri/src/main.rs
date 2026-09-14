@@ -1183,9 +1183,6 @@ fn cleanup_child_processes(app: &tauri::AppHandle) {
             }
             let _ = update::stop_update(&update_state);
         }
-        // No diagnostics record and no dialog for this one: a background download
-        // that is killed on quit has nothing half-written to report, and the next
-        // launch simply prepares again.
         if let Some(prefetch_state) = app.try_state::<update::PrefetchState>() {
             let _ = update::stop_prefetch(&prefetch_state);
         }

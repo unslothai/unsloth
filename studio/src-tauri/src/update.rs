@@ -13,13 +13,10 @@ pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
-    /// Set by `reserve_update_start` while an update is being started but has no
-    /// child yet: stopping the prefetch, stopping the backend, waiting for ports.
-    /// Reported as running so a prefetch cannot start into that window.
+    /// An update is starting but has no child yet; reported as running.
     pub starting: bool,
 }
 
-/// Holds the update's `starting` reservation; dropping it releases the slot.
 pub struct UpdateStartReservation(UpdateState);
 
 impl Drop for UpdateStartReservation {
@@ -30,13 +27,8 @@ impl Drop for UpdateStartReservation {
     }
 }
 
-/// Claim the update slot before any of the work that precedes the spawn.
-///
-/// `start_backend_update` used to check for a child, then stop the prefetch, then stop
-/// the backend, then spawn. A prefetch command arriving during those stops saw no child
-/// and started, and the two then resolved against the live environment and wrote the
-/// same cache side by side. The reservation is taken under the same lock as the child
-/// check, so there is no gap between "no update" and "an update is starting".
+/// Claim the update slot under the same lock as the child check, before the stops that
+/// precede the spawn, so a prefetch cannot start into that window.
 pub fn reserve_update_start(state: &UpdateState) -> Result<UpdateStartReservation, String> {
     let mut update = state
         .lock()
@@ -48,15 +40,11 @@ pub fn reserve_update_start(state: &UpdateState) -> Result<UpdateStartReservatio
     Ok(UpdateStartReservation(state.clone()))
 }
 
-/// One lock for every start: the update's and the prefetch's reservations are taken
-/// under it, so two commands on different Tauri workers cannot each pass the other's
-/// check before either has claimed its slot.
+/// Taken by every update and prefetch start, so neither passes the other's check unclaimed.
 static START_LOCK: Mutex<()> = Mutex::new(());
 
-/// Reserve the update slot and stop a running prefetch, atomically with respect to
-/// `begin_prefetch`: from the moment this returns, `is_update_running` answers yes and no
-/// prefetch is running or can start. Used by the update and the managed repair alike,
-/// both of which rewrite the environment the prefetch resolves against.
+/// Reserve the update slot and stop a running prefetch, atomically with `begin_prefetch`.
+/// Used by the update and the managed repair, which both rewrite the environment.
 pub fn begin_update(
     update_state: &UpdateState,
     prefetch_state: &PrefetchState,
@@ -65,19 +53,12 @@ pub fn begin_update(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let reservation = reserve_update_start(update_state)?;
-    // The real update takes the runtime gate the prefetch deliberately does not, so the
-    // two would not deadlock -- but they would both be resolving against the same index
-    // and writing the same cache, and the update is the one the user is waiting on.
-    // Stop the background work first and let it be redone.
     if is_prefetch_running(prefetch_state) {
         info!("Stopping the background prefetch before the update");
         if let Err(error) = stop_prefetch(prefetch_state) {
             warn!("Could not stop the background prefetch: {error}");
         }
-        // A reservation whose runner has not spawned is cancelled by the flag and
-        // releases itself; a runner still inside its body after the stop (a kill that
-        // failed, a wedged join) is a prefetch that may still be writing the cache the
-        // update is about to read, so the update does not start beside it.
+        // A runner still inside its body after the stop may still be writing the cache.
         if prefetch_runner_active(prefetch_state) {
             return Err(
                 "A background prefetch is still stopping; try the update again in a moment."
@@ -88,9 +69,7 @@ pub fn begin_update(
     Ok(reservation)
 }
 
-/// Stop a running prefetch and remove its directory, atomically with respect to
-/// `begin_prefetch`: a prefetch cannot reserve its slot between the stop and the
-/// deletion, so it cannot be recreating the directory this is removing.
+/// Stop a running prefetch and remove its directory, atomically with `begin_prefetch`.
 pub fn discard_prefetch(
     prefetch_state: &PrefetchState,
     home: &std::path::Path,
@@ -105,9 +84,7 @@ pub fn discard_prefetch(
     Ok(())
 }
 
-/// Drop the prepared update only if no prefetch is running: for a payload the status
-/// would report stale anyway, under the same lock, so a prefetch reserving its slot
-/// meanwhile keeps the directory it is about to write into.
+/// Drop the prepared update only if no prefetch is running, under the start lock.
 pub fn discard_prefetch_if_idle(prefetch_state: &PrefetchState, home: &std::path::Path) -> bool {
     let _starts = START_LOCK
         .lock()
@@ -119,8 +96,7 @@ pub fn discard_prefetch_if_idle(prefetch_state: &PrefetchState, home: &std::path
 }
 
 /// Reserve the prefetch slot unless an update is running or starting, atomically with
-/// respect to `begin_update`. The reservation is held by the runner for the whole
-/// prefetch, so `is_prefetch_running` is true from here until it ends.
+/// `begin_update`. The runner holds the reservation for the whole prefetch.
 pub fn begin_prefetch(
     prefetch_state: &PrefetchState,
     update_state: &UpdateState,
@@ -129,8 +105,6 @@ pub fn begin_prefetch(
     let _starts = START_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // A real update owns the environment and the cache; preparing beside it would
-    // download what it is installing.
     if is_update_running(update_state) {
         return Err("Update is already running.".to_string());
     }
@@ -139,11 +113,8 @@ pub fn begin_prefetch(
     }
     let reservation =
         reserve_update_start(&prefetch_state.process).map_err(|_| PREFETCH_BUSY.to_string())?;
-    // A fresh reservation starts clean; a cancel belongs to the run it interrupted.
     prefetch_state.cancelled.store(false, Ordering::SeqCst);
-    // Published with the reservation and cleared when it is released, so there is no
-    // window where the status says a prefetch is running and cannot say what for. A
-    // reader that saw that window would take the run for an older offer's and cancel it.
+    // Published with the reservation: a running prefetch with no version reads as an older offer's.
     if let Ok(mut running) = prefetch_state.running_version.lock() {
         *running = shell_version;
     }
@@ -153,8 +124,7 @@ pub fn begin_prefetch(
     })
 }
 
-/// The prefetch slot plus the version it is preparing for, held by the runner for the
-/// whole prefetch; dropping it releases the slot and clears the version together.
+/// The prefetch slot plus its version; dropping it releases both together.
 pub struct PrefetchReservation {
     slot: Option<UpdateStartReservation>,
     running_version: Arc<Mutex<Option<String>>>,
@@ -162,8 +132,6 @@ pub struct PrefetchReservation {
 
 impl Drop for PrefetchReservation {
     fn drop(&mut self) {
-        // Under the start lock, so `prefetch_running_snapshot` never sees the version
-        // gone while the slot still reads as running, or the reverse.
         let _starts = START_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -174,9 +142,7 @@ impl Drop for PrefetchReservation {
     }
 }
 
-/// `(running, version)` read under the start lock, as one observation: a prefetch that
-/// completes between two separate reads would report running with no version, which a
-/// reader takes for an older offer's run and restarts.
+/// `(running, version)` as one observation under the start lock.
 pub fn prefetch_running_snapshot(state: &PrefetchState) -> (bool, Option<String>) {
     let _starts = START_LOCK
         .lock()
@@ -195,30 +161,23 @@ const PREFETCH_ARGS: &[&str] = &["studio", "prefetch-update"];
 const SHELL_VERSION_ENV: &str = "UNSLOTH_TAURI_SHELL_VERSION";
 const BACKEND_VERSION_ENV: &str = "UNSLOTH_DESKTOP_BACKEND_VERSION";
 
-/// typer answers an unknown subcommand with click's usage exit, so a backend that
-/// predates PR C fails the prefetch this way and only this way. Paired with the
-/// message below, because 2 on its own is also how a bad option exits.
+/// click's usage exit for an unknown subcommand (a backend without the prefetch), paired
+/// with the message because 2 is also a bad option's exit.
 const PREFETCH_UNSUPPORTED_EXIT: i32 = 2;
 const PREFETCH_UNSUPPORTED_MESSAGE: &str = "No such command";
-/// `_studio_prefetch.EXIT_BUSY`: a prefetch is already running, which is not a
-/// failure to report to anyone.
+/// `_studio_prefetch.EXIT_BUSY`.
 const PREFETCH_BUSY_EXIT: i32 = 3;
 
-/// The offer stands and the swap is the classic update; there is nothing to say.
 pub const PREFETCH_UNSUPPORTED: &str = "prefetch-unsupported";
-/// Another prefetch owns the work. Whatever it produces is what gets adopted.
 pub const PREFETCH_BUSY: &str = "prefetch-busy";
-/// Stopped between its reservation and its spawn; the cache keeps whatever was there.
 pub const PREFETCH_CANCELLED: &str = "prefetch-cancelled";
 
 pub(crate) enum UpdateKind {
     Backend,
     Repair(String),
-    /// Background download into the uv cache. Touches no installed file, so it
-    /// carries none of the protections the two above need.
+    /// Background download into the uv cache; touches no installed file.
     Prefetch {
         shell_version: Option<String>,
-        /// The backend release the offered shell pins, when its manifest names one.
         backend_floor: Option<String>,
     },
 }
@@ -247,9 +206,7 @@ impl UpdateKind {
         }
     }
 
-    /// False for the prefetch, and that is the whole reason it is a separate
-    /// command: no runtime gate, no idle scan, no handoff env, so it can run
-    /// beside a working backend without blocking anything or being blocked.
+    /// False for the prefetch: no runtime gate, idle scan or handoff env.
     fn mutates_live_environment(&self) -> bool {
         !matches!(self, UpdateKind::Prefetch { .. })
     }
@@ -297,8 +254,7 @@ type ChildStreams = (
     Option<std::process::ChildStderr>,
 );
 
-/// Everything an update child and a prefetch child both need. The gate handoff is
-/// deliberately NOT here: it is the one thing the two do not share.
+/// Shared by update and prefetch children; the gate handoff is deliberately not here.
 fn prepare_child_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
     let mut cmd = build_update_command(bin, args)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -330,8 +286,6 @@ fn prepare_child_command(bin: &std::path::Path, args: &[&str]) -> Result<Command
     Ok(cmd)
 }
 
-/// Start the prepared command and hand its pipes back, with the caller's lock on
-/// the slot still held so nothing can take it in between.
 #[cfg_attr(not(windows), allow(unused_mut))]
 fn spawn_prepared(mut cmd: Command, update: &mut UpdateProcess) -> Result<ChildStreams, String> {
     #[cfg(windows)]
@@ -368,7 +322,6 @@ fn spawn_update(bin: &std::path::Path, state: &UpdateState) -> Result<ChildStrea
     )
 }
 
-/// The prefetch child: same isolation and the same managed install, minus the gate.
 fn spawn_prefetch(
     bin: &std::path::Path,
     state: &UpdateState,
@@ -377,7 +330,6 @@ fn spawn_prefetch(
     spawn_child(bin, state, kind, "A prefetch is already running.")
 }
 
-/// The one place a managed CLI child is started for either flow.
 fn spawn_child(
     bin: &std::path::Path,
     state: &UpdateState,
@@ -393,24 +345,15 @@ fn spawn_child(
     spawn_prepared(build_child_command(bin, kind)?, &mut update)
 }
 
-/// The child's whole command, decided by the kind and nothing else.
-///
-/// Split out from the spawn so both shapes can be asserted without starting a
-/// process: whether the gate handoff is set is the difference between an update
-/// and a prefetch, and that is exactly the sort of thing that is only ever wrong
-/// once, in a release.
+/// The child's whole command, split from the spawn so tests can assert it.
 fn build_child_command(bin: &std::path::Path, kind: &UpdateKind) -> Result<Command, String> {
     let mut cmd = prepare_child_command(bin, kind.args())?;
     if kind.mutates_live_environment() {
         configure_runtime_gate_environment(&mut cmd);
     } else {
-        // Removed rather than left alone: this process may itself have been
-        // started with a handoff, and a prefetch that inherited it would tell the
-        // CLI it is holding a gate that nothing is holding for it.
+        // Removed: an inherited handoff would claim a gate nothing holds for the prefetch.
         cmd.env_remove(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV);
     }
-    // The version the prefetch records in its marker, so a later reader can tell
-    // whether the cache was warmed for the offer it is looking at.
     if let UpdateKind::Prefetch {
         shell_version,
         backend_floor,
@@ -419,10 +362,8 @@ fn build_child_command(bin: &std::path::Path, kind: &UpdateKind) -> Result<Comma
         if let Some(version) = shell_version {
             cmd.env(SHELL_VERSION_ENV, version);
         }
-        // The floor the offered shell will hold the backend to, over the one compiled
-        // into this shell: while a mirror lags, a prefetch resolved against the older
-        // floor could settle for the installed backend (a noop marker) and present a
-        // Restart whose new shell then rejects that backend at preflight.
+        // The offered shell's floor, not this shell's: an older floor could settle for a
+        // backend the new shell rejects at preflight.
         if let Some(floor) = backend_floor {
             cmd.env(BACKEND_VERSION_ENV, floor);
         }
@@ -680,38 +621,17 @@ fn run_update(
 
 // ── Prefetch ──
 
-/// The prefetch slot, kept apart from the update slot on purpose.
-///
-/// `is_update_running` and the quit dialog both read `UpdateState`, and a
-/// background download is not a reason to warn anyone about quitting or to refuse
-/// a real update. Sharing one slot would make it both.
+/// Kept apart from `UpdateState`, which the quit dialog and `is_update_running` read.
 #[derive(Clone)]
 pub struct PrefetchState {
     process: UpdateState,
-    /// The offered shell version the RUNNING prefetch was started for.
-    ///
-    /// The marker on disk only names a prefetch that finished, and a webview
-    /// reload loses the renderer's own record, so without this a reloaded window
-    /// cannot tell whether the run in progress is preparing the offer it is
-    /// showing or an older one.
+    /// The offered shell version the running prefetch prepares, for a reloaded webview.
     running_version: Arc<Mutex<Option<String>>>,
-    /// Whether a `run_prefetch_update` task is still inside its body.
-    ///
-    /// Distinct from "the child is alive": `stop_prefetch` takes the child out of
-    /// the slot and kills it, but the task that spawned it is still joining its
-    /// reader threads and will clear `running_version` on its way out. A
-    /// replacement started in that window would have its own version erased by
-    /// the old task, and the old task's wait loop could pick up the new child
-    /// from the shared slot. So a cancel does not return until the runner has
-    /// settled, and nothing starts while it is active.
+    /// Whether a `run_prefetch_update` task is still inside its body, which outlives the
+    /// child; a cancel waits for it so a replacement cannot share the old task's slot.
     runner: Arc<(Mutex<bool>, Condvar)>,
-    /// Set by `stop_prefetch`, cleared by `begin_prefetch`.
-    ///
-    /// Between `begin_prefetch` and the runner's spawn the prefetch exists only as a
-    /// reservation: there is no child to kill and no runner to wait for, so a stop in
-    /// that window would return and the queued runner would then spawn the child
-    /// beside the update that stopped it. The runner checks this flag, under the
-    /// start lock, before it spawns.
+    /// Set by `stop_prefetch`, cleared by `begin_prefetch`; the runner checks it under the
+    /// start lock before spawning, for a stop that arrives before there is a child.
     cancelled: Arc<AtomicBool>,
 }
 
@@ -724,8 +644,7 @@ pub fn new_prefetch_state() -> PrefetchState {
     }
 }
 
-/// Marks the runner active for as long as it lives, and wakes any canceller when
-/// it is dropped, whichever way `run_prefetch_update` returns.
+/// Marks the runner active while alive and wakes any canceller on drop.
 struct PrefetchRunnerGuard(Arc<(Mutex<bool>, Condvar)>);
 
 impl PrefetchRunnerGuard {
@@ -760,7 +679,6 @@ fn prefetch_runner_active(state: &PrefetchState) -> bool {
         .unwrap_or_else(|poisoned| *poisoned.into_inner())
 }
 
-/// How long a cancel waits for a killed runner to finish joining its streams.
 const PREFETCH_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 fn wait_for_prefetch_runner(state: &PrefetchState) {
@@ -796,16 +714,12 @@ pub fn running_prefetch_version(state: &PrefetchState) -> Option<String> {
 }
 
 pub fn stop_prefetch(state: &PrefetchState) -> Result<(), String> {
-    // First, so a runner that has not spawned yet sees it before it does.
     state.cancelled.store(true, Ordering::SeqCst);
     let stopped = stop_update(&state.process);
-    // Whether or not the kill went cleanly, the runner that owns the child is what
-    // a caller about to start a replacement has to wait for.
     wait_for_prefetch_runner(state);
     stopped
 }
 
-/// What the child said about why it stopped, gathered while it was still running.
 #[derive(Default)]
 struct PrefetchOutcome {
     explicit_error: Option<String>,
@@ -820,9 +734,7 @@ fn stream_prefetch_output(
 ) -> Vec<std::thread::JoinHandle<()>> {
     let mut threads = Vec::new();
 
-    // No diagnostics attempt for either stream: this runs on a timer in the
-    // background, and filling the support bundle with hourly downloads would
-    // push out the update the user actually wants read back to them.
+    // No diagnostics attempt: background runs would push real updates out of the bundle.
     if let Some(out) = stdout {
         let app_clone = app.clone();
         let outcome_clone = outcome.clone();
@@ -846,8 +758,6 @@ fn stream_prefetch_output(
         let outcome_clone = outcome.clone();
         threads.push(std::thread::spawn(move || {
             if let Err(e) = read_lossy_lines(err, |text| {
-                // typer prints the usage error here, and only the pair of exit
-                // code and message identifies a backend that has no such command.
                 if text.contains(PREFETCH_UNSUPPORTED_MESSAGE) {
                     if let Ok(mut outcome) = outcome_clone.lock() {
                         outcome.unsupported = true;
@@ -864,7 +774,6 @@ fn stream_prefetch_output(
     threads
 }
 
-/// Map a non-zero prefetch exit onto something the desktop can act on.
 fn prefetch_failure(code: i32, outcome: &PrefetchOutcome) -> String {
     if code == PREFETCH_BUSY_EXIT {
         return PREFETCH_BUSY.to_string();
@@ -878,11 +787,7 @@ fn prefetch_failure(code: i32, outcome: &PrefetchOutcome) -> String {
         .unwrap_or_else(|| format!("Prefetch exited with code {}", code))
 }
 
-/// Warm the uv cache for the next update, in the background.
-///
-/// Deliberately not routed through `run_update`: that function takes the runtime
-/// gate and runs the idle scan around its child, which is exactly what a
-/// background download must not do.
+/// Warm the uv cache for the next update. Not `run_update`, which takes the gate and idle scan.
 pub(crate) fn run_prefetch_update(
     app: AppHandle,
     state: PrefetchState,
@@ -901,10 +806,8 @@ pub(crate) fn run_prefetch_update(
     info!("[prefetch] Preparing the next update via {:?}", bin);
     let outcome = Arc::new(Mutex::new(PrefetchOutcome::default()));
     let (_runner, stdout, stderr) = {
-        // Under the start lock, and the runner guard taken inside it: a `begin_update`
-        // that stops this prefetch either finds the child already in the slot, or has
-        // set the cancel flag checked here before this could spawn. Taking the guard
-        // first would have the stop wait on a runner that is waiting on the lock.
+        // Under the start lock, guard inside it: a stop either finds the child or has set the
+        // flag checked here. Guard first would deadlock a stop waiting on this runner.
         let _starts = START_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -912,20 +815,15 @@ pub(crate) fn run_prefetch_update(
             info!("[prefetch] Stopped before it started");
             return Err(PREFETCH_CANCELLED.to_string());
         }
-        // Held until this function returns, by every path: it is what `stop_prefetch`
-        // waits on, and what keeps a second runner out of the shared slot.
         let Some(runner) = PrefetchRunnerGuard::acquire(&state.runner) else {
             return Err(PREFETCH_BUSY.to_string());
         };
-        // The version this run prepares for is published by the reservation the caller
-        // holds (begin_prefetch), not here, so it is visible for the whole interval.
         match spawn_prefetch(&bin, &state.process, &kind) {
             Ok((stdout, stderr)) => (runner, stdout, stderr),
             Err(msg) => return Err(format!("spawn_prefetch: {msg}")),
         }
     };
-    // A cancel that took the (still empty) child slot before the spawn above found
-    // nothing to kill; it is honoured here, and the wait below sees the child exit.
+    // A cancel that found the slot still empty is honoured here.
     if state.cancelled.load(Ordering::SeqCst) {
         info!("[prefetch] Stopped as it started");
         let _ = stop_update(&state.process);
@@ -936,7 +834,6 @@ pub(crate) fn run_prefetch_update(
     for handle in threads {
         let _ = handle.join();
     }
-    // Read only after both readers are joined, so the last line still counts.
     let outcome = outcome
         .lock()
         .map(|guard| PrefetchOutcome {
@@ -1135,8 +1032,6 @@ mod tests {
 
     #[test]
     fn an_update_arriving_while_a_prefetch_is_only_reserved_cancels_it() {
-        // Between begin_prefetch and the runner's spawn there is no child and no runner:
-        // the stop must still reach the runner, which checks the flag before it spawns.
         let prefetch = new_prefetch_state();
         let update = new_update_state();
         let reservation = begin_prefetch(&prefetch, &update, None).expect("the slot was free");
@@ -1145,14 +1040,11 @@ mod tests {
         assert!(prefetch.cancelled.load(Ordering::SeqCst));
         drop(held);
         drop(reservation);
-        // A fresh reservation starts clean.
         let _again = begin_prefetch(&prefetch, &update, None).expect("free again");
         assert!(!prefetch.cancelled.load(Ordering::SeqCst));
     }
     use std::io::Cursor;
 
-    /// The window between deciding to update and having a child is the one a prefetch
-    /// used to start into; the reservation closes it and releases on drop.
     #[test]
     fn an_update_reservation_counts_as_running_until_it_is_dropped() {
         let state = new_update_state();
@@ -1165,7 +1057,6 @@ mod tests {
         assert!(reserve_update_start(&state).is_ok());
     }
 
-    /// Each start excludes the other from the moment it is claimed, whichever comes first.
     #[test]
     fn an_update_start_and_a_prefetch_start_exclude_each_other() {
         let update = new_update_state();
@@ -1179,7 +1070,6 @@ mod tests {
         let held = begin_prefetch(&prefetch, &update, None).expect("update released");
         assert!(is_prefetch_running(&prefetch));
         assert!(begin_prefetch(&prefetch, &update, None).is_err());
-        // The update wins: it stops the prefetch (nothing to stop here) and reserves.
         let update_held = begin_update(&update, &prefetch).expect("update outranks a prefetch");
         assert!(is_update_running(&update));
         drop(held);
@@ -1188,8 +1078,6 @@ mod tests {
         assert!(!is_prefetch_running(&prefetch));
     }
 
-    /// A directory that looks enough like a managed install for
-    /// `build_update_command` to resolve an interpreter beside the launcher.
     fn managed_binary_for_test(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "unsloth-update-{name}-{}-{}",
@@ -1364,16 +1252,11 @@ mod tests {
             kind.terminal_events(),
             Some(("prefetch-complete", "prefetch-failed"))
         );
-        // The whole point of the separate command: nothing it does needs the gate,
-        // the idle scan, or the launcher transaction on the CLI side.
         assert!(!kind.mutates_live_environment());
         assert!(UpdateKind::Backend.mutates_live_environment());
         assert_eq!(UpdateKind::Backend.args(), &["studio", "update"]);
     }
 
-    /// A prefetch that claimed the parent's gate would tell the CLI it is covered
-    /// by a lock nothing is holding, and a real update starting beside it would
-    /// then find the environment "idle" while a download is writing the cache.
     #[test]
     fn the_prefetch_child_never_inherits_the_runtime_gate() {
         use std::ffi::OsStr;
@@ -1401,16 +1284,12 @@ mod tests {
             key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV)
                 && value == Some(OsStr::new("1"))
         }));
-        // The shell version belongs to the marker a prefetch writes; an update
-        // has nothing to record it in.
         assert!(!update
             .get_envs()
             .any(|(key, _)| key == OsStr::new(SHELL_VERSION_ENV)));
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
     }
 
-    /// The prefetch resolves against the floor of the shell being offered, not the one
-    /// this shell was built with; without an offered floor the compiled one stands.
     #[test]
     fn the_prefetch_child_resolves_against_the_offered_backend_floor() {
         use std::ffi::OsStr;
@@ -1463,8 +1342,6 @@ mod tests {
         std::fs::remove_dir_all(bin.parent().unwrap()).unwrap();
     }
 
-    /// The quit dialog and `is_update_running` both read `UpdateState`, so a
-    /// prefetch in its own slot cannot make either of them fire.
     #[test]
     fn a_running_prefetch_is_invisible_to_the_update_state() {
         let update = new_update_state();
@@ -1489,15 +1366,10 @@ mod tests {
         assert!(!is_prefetch_running(&prefetch));
     }
 
-    /// A cancel used to return as soon as the child was dead, while the task that
-    /// spawned it was still joining its streams and about to clear
-    /// `running_version`. A replacement started in that window lost its own
-    /// version to the old task, and a later status read cancelled it again.
     #[test]
     fn a_cancel_does_not_return_until_the_runner_has_settled() {
         let prefetch = new_prefetch_state();
         let guard = PrefetchRunnerGuard::acquire(&prefetch.runner).unwrap();
-        // No child at all: what is running is the runner's tail, not the process.
         assert!(is_prefetch_running(&prefetch));
         assert!(PrefetchRunnerGuard::acquire(&prefetch.runner).is_none());
 
@@ -1539,7 +1411,6 @@ mod tests {
             prefetch_failure(PREFETCH_UNSUPPORTED_EXIT, &unsupported),
             PREFETCH_UNSUPPORTED
         );
-        // Exit 2 alone is also how a bad option exits, so the message has to be there.
         assert_eq!(
             prefetch_failure(PREFETCH_UNSUPPORTED_EXIT, &PrefetchOutcome::default()),
             "Prefetch exited with code 2"
