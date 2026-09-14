@@ -20,7 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useNativeFileDrop } from "@/features/native-intents";
+import type { NativeIntent } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SearchIcon } from "lucide-react";
@@ -43,7 +46,11 @@ import {
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
-import { useRagDocuments } from "./use-rag-documents";
+import {
+  type RagUploadItem,
+  fileItems,
+  useRagDocuments,
+} from "./use-rag-documents";
 
 const SORT_MODES: SourceSortMode[] = ["uploaded", "name", "size"];
 
@@ -87,19 +94,20 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   // cannot cache "no sources" for the probe's TTL, and announce after it, which
   // is the half other instances and other tabs listen for. Announcing before
   // would refetch and resurrect the row this panel has already dropped.
-  const handleFiles = useCallback(
-    async (files: File[]) => {
-      if (files.length === 0) return;
+  const handleItems = useCallback(
+    async (items: RagUploadItem[]) => {
+      if (items.length === 0) return;
       // Not during a bulk remove: ingestion dedups by content hash, so
       // re-uploading a file that matches a document still queued for deletion
       // resolves to that same id, and the loop then deletes it. The upload
-      // would report success with nothing left behind.
+      // would report success with nothing left behind. Checked here rather than
+      // at the picker so a drop and a native intent are covered too.
       if (removingRef.current) {
         toast.info("Finish removing sources before adding more");
         return;
       }
       invalidateProjectSources(projectId);
-      await upload(files);
+      await upload(items);
       announceProjectSourcesUpdated(projectId);
       // An upload outlives a navigation the same way a bulk remove does, and the
       // announce above already refreshes whoever is showing this project.
@@ -115,6 +123,27 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     [projectId, upload, refresh],
   );
 
+  const handleFiles = useCallback(
+    (files: File[]) => handleItems(fileItems(files)),
+    [handleItems],
+  );
+
+  // Desktop drops arrive as paths; the upload mints a lease per file rather
+  // than reading a document through the webview.
+  const handleNativeIntents = useCallback(
+    (intents: NativeIntent[]) =>
+      handleItems(
+        intents.map((intent) => ({
+          kind: "native" as const,
+          token: intent.path.token,
+          name: intent.path.displayLabel,
+          sizeBytes: intent.path.sizeBytes,
+          modifiedMs: intent.path.modifiedMs,
+        })),
+      ),
+    [handleItems],
+  );
+
   const handleRemove = useCallback(
     async (documentId: string) => {
       invalidateProjectSources(projectId);
@@ -128,10 +157,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
-  // they are done; refresh the mounted list so a source saved from a chat shows
-  // up here without a remount. The list only polls while a row it already knows
-  // is indexing, so nothing else would ever fetch it.
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
+  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
+  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
   useEffect(
     () =>
       subscribeProjectSourcesUpdated(projectId, () => {
@@ -235,15 +263,24 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   const empty = documents.length === 0;
 
+  // Tauri suppresses webview drop events, so the plain `onDrop` this panel
+  // carried never fired on desktop: no border, file ignored (#9036).
+  const {
+    ref: dropRef,
+    dragging,
+    dragHandlers,
+  } = useNativeFileDrop({
+    onFiles: handleFiles,
+    onNativeIntents: handleNativeIntents,
+    accept: RAG_UPLOAD_ACCEPT,
+    disabled: uploading || removing,
+    disabledReason: removing
+      ? "Finish removing sources before adding more."
+      : "Wait for the current upload to finish, then drop again.",
+  });
+
   return (
-    <div
-      className="mt-8"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        void handleFiles(Array.from(e.dataTransfer.files ?? []));
-      }}
-    >
+    <div className="mt-8" ref={dropRef} {...dragHandlers}>
       <input
         ref={fileInputRef}
         type="file"
@@ -253,7 +290,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          void handleFiles(files);
+          void handleItems(fileItems(files));
         }}
       />
       <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
@@ -264,7 +301,12 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         />
       </div>
       {empty ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-[26px] bg-muted/30 px-6 py-16 text-center">
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-3 rounded-[26px] border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
+            dragging && "border-primary/60 bg-primary/5",
+          )}
+        >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
               icon={FolderAddIcon}
@@ -293,7 +335,12 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           <p className="text-ui-11 text-muted-foreground">Or drop files here</p>
         </div>
       ) : (
-        <div className="flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5">
+        <div
+          className={cn(
+            "flex flex-col gap-4 rounded-[26px] border border-transparent bg-muted/30 px-6 py-5 transition-colors",
+            dragging && "border-primary/60 bg-primary/5",
+          )}
+        >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
               {documents.length === 1
@@ -393,6 +440,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                     filename={doc.filename}
                     status={doc.status}
                     progress={doc.progress}
+                    stage={doc.stage}
                     error={doc.error}
                     selected={selectedIds.has(doc.id)}
                     // A concurrent single delete during a batch would race the

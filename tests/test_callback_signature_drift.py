@@ -21,7 +21,6 @@ import sys
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-# Skip noisy paths during file discovery.
 SKIP_PARTS = {
     ".git",
     ".out",
@@ -33,7 +32,6 @@ SKIP_PARTS = {
     "venv",
     ".pytest_cache",
     "__pycache__",
-    # studio frontend is JS/TS plus a few stub .py files; skip.
     "frontend",
 }
 
@@ -52,7 +50,6 @@ def _iter_py(root: pathlib.Path):
         yield p
 
 
-# Parse cache so each file is parsed once across the run.
 _PARSE_CACHE: dict[pathlib.Path, ast.AST | None] = {}
 
 
@@ -61,22 +58,40 @@ def _safe_parse(path: pathlib.Path):
     if key in _PARSE_CACHE:
         return _PARSE_CACHE[key]
     try:
+        text = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        _PARSE_CACHE[key] = None
+        return None
+    # Both halves of the rule need this substring spelled out in the source: a
+    # producer holds `self._<name>_callbacks`, a consumer calls
+    # `add_<name>_callback(...)` or `register_<name>_callback(...)`, and the AST
+    # side matches those attribute names literally. So a file without it cannot
+    # contribute a producer or a registration, and parsing it only to walk it
+    # and find nothing is most of this test's runtime: 3137 files parsed where
+    # 102 can matter.
+    if "_callback" not in text:
+        _PARSE_CACHE[key] = None
+        return None
+    try:
         import warnings as _w
         with _w.catch_warnings():
             # Suppress SyntaxWarning from third-party files with invalid escape sequences.
             _w.simplefilter("ignore", SyntaxWarning)
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(text)
     except (SyntaxError, UnicodeDecodeError):
         tree = None
     _PARSE_CACHE[key] = tree
     return tree
 
 
-def _callback_list_attrs_in_class(cls: ast.ClassDef) -> set[str]:
-    """Find self._<name>_callbacks attributes assigned or appended-to inside cls."""
+def _callback_list_attrs_in_nodes(nodes) -> set[str]:
+    """self._<name>_callbacks attributes assigned or appended-to in a class.
+
+    Takes the already-walked nodes rather than the class, so the caller's walk
+    is shared instead of repeated.
+    """
     found = set()
-    for node in ast.walk(cls):
-        # self._x_callbacks = [...]
+    for node in nodes:
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if (
@@ -87,7 +102,6 @@ def _callback_list_attrs_in_class(cls: ast.ClassDef) -> set[str]:
                     and t.attr.endswith("_callbacks")
                 ):
                     found.add(t.attr)
-        # self._x_callbacks.append(fn)
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -106,19 +120,26 @@ def _producer_arities(tree: ast.AST) -> dict[str, int]:
     """Return {cb_list_attr: max_arity} over all ``for cb in self._x_callbacks: cb(...)`` sites."""
     out: dict[str, int] = {}
     for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-        cb_lists = _callback_list_attrs_in_class(cls)
+        # One walk per class, shared by both questions asked of it. Which
+        # `for cb in self.<x>:` loops a class contains does not depend on the
+        # name being asked about, and re-deriving that per name is what made
+        # this quadratic in classes declaring several lists.
+        nodes = list(ast.walk(cls))
+        cb_lists = _callback_list_attrs_in_nodes(nodes)
+        if not cb_lists:
+            continue
+        dispatch_loops = [
+            node
+            for node in nodes
+            if isinstance(node, ast.For)
+            and isinstance(node.iter, ast.Attribute)
+            and isinstance(node.iter.value, ast.Name)
+            and node.iter.value.id == "self"
+            and isinstance(node.target, ast.Name)
+        ]
         for cb_list in cb_lists:
-            for node in ast.walk(cls):
-                if not isinstance(node, ast.For):
-                    continue
-                if not (
-                    isinstance(node.iter, ast.Attribute)
-                    and isinstance(node.iter.value, ast.Name)
-                    and node.iter.value.id == "self"
-                    and node.iter.attr == cb_list
-                ):
-                    continue
-                if not isinstance(node.target, ast.Name):
+            for node in dispatch_loops:
+                if node.iter.attr != cb_list:
                     continue
                 cb_name = node.target.id
                 for inner in ast.walk(node):
@@ -152,8 +173,8 @@ def _func_arity(node: ast.AST) -> tuple[int, bool] | None:
     args = node.args
     arity = len(args.posonlyargs) + len(args.args)
     accepts_var = args.vararg is not None
-    # Don't subtract self: we can't tell statically if this is a method, and the
-    # consumer check skips `self.fn` registrations anyway.
+    # Don't subtract self: we can't tell statically if this is a method, and the consumer check skips `self.fn`
+    # registrations anyway.
     return arity, accepts_var
 
 
@@ -189,24 +210,24 @@ def check_registrations(
             tree = _safe_parse(src)
             if tree is None:
                 continue
-            # All function/lambda defs in this file, keyed by name.
+            # One walk, collecting both. The definitions still have to be
+            # complete before any call is judged, so the calls are held and
+            # processed after, exactly as the second walk used to do.
             defs_by_name: dict[str, ast.AST] = {}
+            registrations: list[ast.Call] = []
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     defs_by_name[node.name] = node
-                if isinstance(node, ast.Assign):
+                elif isinstance(node, ast.Assign):
                     if (
                         isinstance(node.value, ast.Lambda)
                         and len(node.targets) == 1
                         and isinstance(node.targets[0], ast.Name)
                     ):
                         defs_by_name[node.targets[0].id] = node.value
-            # Find <x>.add_*_callback(fn) sites.
-            for call in ast.walk(tree):
-                if not isinstance(call, ast.Call):
-                    continue
-                if not isinstance(call.func, ast.Attribute):
-                    continue
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    registrations.append(node)
+            for call in registrations:
                 cb_list = _registration_attr_to_list(call.func.attr)
                 if cb_list is None:
                     continue

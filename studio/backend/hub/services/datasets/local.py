@@ -10,7 +10,6 @@ import json
 import uuid
 from contextlib import suppress
 from pathlib import Path
-
 from fastapi import HTTPException, UploadFile
 
 from hub.schemas.datasets import (
@@ -20,17 +19,24 @@ from hub.schemas.datasets import (
 )
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
+from utils.paths.lazy import LazyPath
+from utils.paths.storage_roots import own_entry, within_account
+from utils.paths.path_utils import (
+    any_not_appledouble_metadata,
+    drop_appledouble_metadata,
+    is_appledouble_metadata,
+)
 
-# Tabular formats are preferred over archives for Tier 1 preview: archives (e.g. images.zip)
-# load as ImageFolder with synthetic columns that don't match the real schema.
+# Archives load as ImageFolder with synthetic columns that do not match the real schema, so tabular
+# formats are preferred for Tier 1 preview.
 _TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
 _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
 LOCAL_FILE_EXTS = (".json", ".jsonl", ".csv", ".parquet")
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
 LOCAL_UPLOAD_CHUNK_BYTES = 1024 * 1024
-LOCAL_DATASETS_ROOT = recipe_datasets_root()
-DATASET_UPLOAD_DIR = dataset_uploads_root()
+LOCAL_DATASETS_ROOT = LazyPath(recipe_datasets_root)
+DATASET_UPLOAD_DIR = LazyPath(dataset_uploads_root)
 
 
 def _safe_read_metadata(path: Path) -> dict | None:
@@ -132,14 +138,18 @@ def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
     for entry in LOCAL_DATASETS_ROOT.iterdir():
         if not entry.is_dir() or not entry.name.startswith("recipe_"):
             continue
+        if not within_account(entry):
+            continue
         parquet_dir = entry / "parquet-files"
-        if not parquet_dir.exists() or not any(parquet_dir.glob("*.parquet")):
+        if not parquet_dir.exists() or not any_not_appledouble_metadata(
+            parquet_dir.glob("*.parquet")
+        ):
             continue
 
         rows = None
         metadata_summary = None
         metadata_path = entry / "metadata.json"
-        if metadata_path.exists():
+        if own_entry(metadata_path):
             metadata_payload = _safe_read_metadata(metadata_path)
             rows = _safe_read_rows_from_metadata(metadata_payload)
             metadata_summary = _safe_read_metadata_summary(metadata_payload)
@@ -166,6 +176,8 @@ def _build_uploaded_dataset_items() -> list[LocalDatasetItem]:
     items: list[LocalDatasetItem] = []
     for path in DATASET_UPLOAD_DIR.iterdir():
         if not path.is_file() or path.suffix.lower() not in LOCAL_UPLOAD_EXTS:
+            continue
+        if is_appledouble_metadata(path) or not within_account(path):
             continue
         try:
             if path.stat().st_size == 0:
@@ -233,7 +245,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
             if (dataset_path / "parquet-files").exists()
             else dataset_path
         )
-        parquet_files = sorted(parquet_dir.glob("*.parquet"))
+        parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
         if parquet_files:
             dataset = load_dataset(
                 "parquet",
@@ -246,7 +258,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
 
         candidate_files: list[Path] = []
         for ext in LOCAL_FILE_EXTS:
-            candidate_files.extend(sorted(dataset_path.glob(f"*{ext}")))
+            candidate_files.extend(drop_appledouble_metadata(sorted(dataset_path.glob(f"*{ext}"))))
         if not candidate_files:
             raise HTTPException(
                 status_code = 400,

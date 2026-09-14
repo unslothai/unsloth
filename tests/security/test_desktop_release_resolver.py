@@ -57,9 +57,10 @@ def test_resolver_requires_the_platform_asset_and_fails_when_absent():
 
 def test_clean_machine_workflow_uses_resolver_but_preserves_explicit_tag():
     workflow = WORKFLOW.read_text(encoding = "utf-8")
-    assert workflow.count("python3 .github/scripts/resolve-desktop-release.py") == 3
+    # One lookup per shipped-asset lane: .dmg, .deb, .AppImage, .exe.
+    assert workflow.count("python3 .github/scripts/resolve-desktop-release.py") == 4
     assert "'.github/scripts/resolve-desktop-release.py'" in workflow
-    assert workflow.count('if [ -z "$REL_TAG" ]; then') == 3
+    assert workflow.count('if [ -z "$REL_TAG" ]; then') == 4
     assert 'startswith("desktop-v")' not in workflow
     for suffix in (".dmg", ".deb", ".AppImage", ".exe"):
         assert suffix in workflow

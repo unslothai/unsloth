@@ -210,7 +210,8 @@ class TestTheLaunchPathActuallyCallsIt:
     def test_called_before_every_launch_path(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
         call = source.find("_clear_hsa_override_contradicting_install(")
-        # The definition comes first; find the CALL, which follows it.
+        # The definition comes first;
+        # find the CALL, which follows it.
         call = source.find("_clear_hsa_override_contradicting_install(", call + 1)
         assert call != -1, "the CLI must clear a contradicting override before launching"
         for marker in (

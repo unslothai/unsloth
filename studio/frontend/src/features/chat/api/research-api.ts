@@ -285,12 +285,11 @@ export async function* followResearchRun(
     try {
       for await (const event of streamResearchEvents(id, cursor, signal)) {
         cursor = Math.max(cursor, event.id);
-        // Delta-only events carry no run by design (`_DELTA_ONLY_EVENTS` in
-        // routes/research_runs.py), so reuse the run we hold: report/reasoning deltas arrive
-        // ~12x/s for the whole synthesis, and a fresh object per event re-renders every
-        // subscriber that selects the run. The cursor lives in `session.lastAppliedSeq`, and a
-        // terminal status - all `isSettledResearchRun` reads `lastEventSeq` for - comes with a
-        // snapshot.
+        // Delta-only events carry no run by design (`_DELTA_ONLY_EVENTS` in routes/research_runs.py), so
+        // reuse the run we hold: report and reasoning deltas arrive ~12x/s for the whole synthesis, and
+        // a fresh object per event re-renders every subscriber that selects the run. The cursor lives in
+        // `session.lastAppliedSeq`, and a terminal status comes with a snapshot.
+        // A terminal status, which is all isSettledResearchRun reads lastEventSeq for, comes with a snapshot.
         const eventRun: ResearchRun = event.run ?? currentRun;
         const hydratedEvent: ResearchEvent = {
           ...event,

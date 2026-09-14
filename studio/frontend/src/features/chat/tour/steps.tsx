@@ -75,8 +75,8 @@ export function buildChatTourSteps({
   ];
 
   if (canCompare) {
-    // Compare lives in the + menu (no sidebar button to anchor to); this step
-    // enters compare on its own and explains it.
+    // Compare lives in the + menu, with no sidebar button to anchor to; this step enters compare on
+    // its own and explains it.
     steps.push({
       id: "compare-view",
       target: "chat-compare-view",

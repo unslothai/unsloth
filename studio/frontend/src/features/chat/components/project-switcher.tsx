@@ -22,12 +22,17 @@ export function ProjectSwitcher({
   isLoading,
   onSelectProject,
   onViewAllProjects,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   currentProject: ProjectRecord | null;
   projects: ProjectRecord[];
   isLoading: boolean;
   onSelectProject: (projectId: string) => void;
   onViewAllProjects: () => void;
+  /** Supplied by the page so the "Open project picker" chord can open it. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }): ReactElement {
   const showLoadingRow = isLoading && projects.length === 0;
   const showEmptyRow = !isLoading && projects.length === 0;
@@ -35,7 +40,9 @@ export function ProjectSwitcher({
 
   // Controlled so the body-portaled dropdown can't linger over another tab off-route.
   const active = useChatActive();
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = onOpenChange ?? setUncontrolledOpen;
 
   return (
     <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)}>

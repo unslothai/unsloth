@@ -220,9 +220,9 @@ def _drive_krea(
     with_transformer = True,
 ):
     """Assemble a Krea pipeline against fakes, recording what each component was asked for."""
-    from core.inference.diffusion_krea2 import load_krea2_pipeline
-
     import huggingface_hub
+
+    from core.inference.diffusion_krea2 import load_krea2_pipeline
 
     index = tmp_path / "model_index.json"
     index.write_text(json.dumps({"patch_size": 2}), encoding = "utf-8")
@@ -437,7 +437,7 @@ def test_the_video_assembly_hands_the_flag_to_the_ltx23_assembler():
 
 
 # ── the live cache root ──────────────────────────────────────────────────────────
-# Studio's HF cache folder is a SETTING (PUT /settings/hugging-face-cache), and changing it only
+# Unsloth's HF cache folder is a SETTING (PUT /settings/hugging-face-cache), and changing it only
 # rewrites the DB: os.environ and huggingface_hub's import-time constant keep the startup value.
 # So after a change the live root and the import-time root differ, and an unset cache_dir resolves
 # through the stale one. That mismatch predates this PR and used to be survivable, because a miss
@@ -464,7 +464,7 @@ def test_the_krea_assembler_pins_every_component_to_the_live_cache(
 ):
     seen = _drive_krea(monkeypatch, tmp_path, local_files_only = True)
     # The direct loader calls. "tokenizer" and "text_encoder" are absent by design: those two tags
-    # record the kwargs handed to load_krea2_tokenizer / load_krea2_text_encoder, which are Studio
+    # record the kwargs handed to load_krea2_tokenizer / load_krea2_text_encoder, which are Unsloth
     # helpers rather than hub calls, so they take no cache_dir and pin internally instead. The test
     # below drives them for real.
     for tag in ("scheduler", "vae", "transformer", "model_index"):
