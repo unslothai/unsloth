@@ -6221,7 +6221,7 @@ def _requested_unsloth_zoo_ref() -> str:
     """UNSLOTH_ZOO_REF, or "" when unset or not ref-shaped."""
     ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip()
     if ref and not _is_valid_git_ref(ref):
-        if ref not in _ZOO_REF_WARNED:   # the spec is read more than once
+        if ref not in _ZOO_REF_WARNED:  # the spec is read more than once
             _ZOO_REF_WARNED.add(ref)
             _step(_LABEL, f"ignoring malformed UNSLOTH_ZOO_REF: {ref!r}", _dim)
         return ""
@@ -6257,8 +6257,11 @@ def _pick_zoo_commit(output: str, ref: str) -> str:
         if name and _GIT_COMMIT_RE.match(sha.strip()):
             found.setdefault(name, sha.strip())
     for candidate in (
-        f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}",
-        ref + "^{}", ref,
+        f"refs/heads/{ref}",
+        f"refs/tags/{ref}^{{}}",
+        f"refs/tags/{ref}",
+        ref + "^{}",
+        ref,
     ):
         if candidate in found:
             return found[candidate]
@@ -6291,12 +6294,23 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
             result = subprocess.run(
                 # http.lowSpeed* ends a stalled transfer early, and is the only bound
                 # install.sh has on a host with no `timeout` binary.
-                [git, "-c", "credential.helper=", "-c", "core.askPass=",
-                 "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
-                 "ls-remote", _UNSLOTH_ZOO_GIT_REPO, *_zoo_ls_remote_patterns(ref)],
+                [
+                    git,
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "core.askPass=",
+                    "-c",
+                    "http.lowSpeedLimit=1000",
+                    "-c",
+                    "http.lowSpeedTime=20",
+                    "ls-remote",
+                    _UNSLOTH_ZOO_GIT_REPO,
+                    *_zoo_ls_remote_patterns(ref),
+                ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
-                timeout = 20,   # the same bound install.sh and install.ps1 use
+                timeout = 20,  # the same bound install.sh and install.ps1 use
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),
             )
@@ -6341,7 +6355,7 @@ def _overlay_local_core_package(
     elif canonical == "unsloth-zoo":
         zoo_ref = _unsloth_zoo_ref()
         spec = _unsloth_zoo_git_spec()
-        commit = spec.rpartition("@")[2]   # named in the log, so it is auditable
+        commit = spec.rpartition("@")[2]  # named in the log, so it is auditable
         if _GIT_COMMIT_RE.match(commit) and commit != zoo_ref:
             zoo_ref = f"{zoo_ref} ({commit[:12]})"
         step_label = f"overlaying unsloth-zoo from git {zoo_ref}"

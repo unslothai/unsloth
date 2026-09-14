@@ -115,7 +115,9 @@ class TestUnslothZooGitSpec:
         assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
         assert calls[0][-4:] == [
             ips._UNSLOTH_ZOO_GIT_REPO,
-            "refs/heads/main", "refs/tags/main", "refs/tags/main^{}",
+            "refs/heads/main",
+            "refs/tags/main",
+            "refs/tags/main^{}",
         ]
 
     def test_a_ref_that_merely_ends_in_the_name_is_not_the_ref(self, monkeypatch):
@@ -179,7 +181,7 @@ class TestUnslothZooGitSpec:
         assert kwargs["env"]["GIT_ASKPASS"] == ""
         assert kwargs["env"]["SSH_ASKPASS"] == ""
         assert "core.askPass=" in calls[0]
-        assert kwargs["env"]["SOME_UNRELATED_VAR"] == "kept"   # extended, not replaced
+        assert kwargs["env"]["SOME_UNRELATED_VAR"] == "kept"  # extended, not replaced
         assert kwargs["timeout"] == 20
         assert kwargs["stderr"] is ips.subprocess.DEVNULL
 
