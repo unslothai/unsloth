@@ -2549,7 +2549,7 @@ class DiffusionBackend:
                     )
                     is None
                 ):
-                            return None
+                    return None
                 candidate = resolve_dense_quant_candidate(
                     fam = fam,
                     target = target,
