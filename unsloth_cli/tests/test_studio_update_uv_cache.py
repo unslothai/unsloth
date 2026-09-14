@@ -1133,3 +1133,21 @@ def test_the_fold_probe_leaves_nothing_behind(tmp_path):
     before = sorted(p.name for p in cache.iterdir())
     studio._uv_cache_folds_case(cache)
     assert sorted(p.name for p in cache.iterdir()) == before
+
+
+def test_a_lock_that_is_not_a_regular_file_makes_the_cache_unusable(tmp_path):
+    """uv cannot open it at all. Measured on uv 0.10.7: a `.lock` directory, and a symlink to
+    one, both exit 2 with "Could not acquire lock ... Is a directory". is_file() skipped both."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    lock = cache / ".lock"
+    lock.mkdir()
+    assert studio._uv_cache_is_writable(cache) is False
+    lock.rmdir()
+    assert studio._uv_cache_is_writable(cache) is True
+    (tmp_path / "lock target").mkdir()
+    lock.symlink_to(tmp_path / "lock target")
+    assert studio._uv_cache_is_writable(cache) is False
+    lock.unlink()
+    assert studio._uv_cache_is_writable(cache) is True

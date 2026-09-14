@@ -3404,7 +3404,12 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
             continue
         for name in names:
             control = target / name
-            if control.is_file() and not os.access(control, os.R_OK | os.W_OK):
+            if not control.exists() and not control.is_symlink():
+                continue
+            # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+            # DIRECTORY or a symlink to one exits 2 with "Could not acquire lock ... Is a
+            # directory". is_file() alone skipped it and reported the cache usable.
+            if not control.is_file() or not os.access(control, os.R_OK | os.W_OK):
                 return False
     return True
 

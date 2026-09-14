@@ -1018,29 +1018,49 @@ _uv_cache_probe_writable() {
     return 0
 }
 
+_uv_cache_folds_case() {  # <dir>
+    # Measured on the cache filesystem, not assumed from the platform, as install.sh does it:
+    # default APFS folds and ext4 does not, and a Mac can have either mounted. A cache we
+    # cannot write answers "no", which is the conservative reading.
+    _uvf_probe="$1/.unsloth-case-probe.$$-A"
+    mkdir "$_uvf_probe" 2>/dev/null || { unset _uvf_probe; return 1; }
+    if [ -d "$1/.unsloth-case-probe.$$-a" ]; then
+        rmdir "$_uvf_probe" 2>/dev/null || true
+        unset _uvf_probe
+        return 0
+    fi
+    rmdir "$_uvf_probe" 2>/dev/null || true
+    unset _uvf_probe
+    return 1
+}
+
+_uv_store_key() {  # <entry name> <folds:1|0>  -> the name uv opens it as, or nonzero
+    # Only the NAME folds; what the entry IS is the caller's business. Both scans go through
+    # here so they cannot disagree about which entries are uv's.
+    if _uv_is_bucket_name "$1"; then
+        printf '%s' "$1"
+        return 0
+    fi
+    [ "$2" = 1 ] || return 1
+    case "$1" in *[[:upper:]]*) ;; *) return 1 ;; esac
+    _uvk_lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    if _uv_is_bucket_name "$_uvk_lower"; then
+        printf '%s' "$_uvk_lower"
+        unset _uvk_lower
+        return 0
+    fi
+    unset _uvk_lower
+    return 1
+}
+
 _uv_cache_usable() {
     # The stores uv owns: a 0555 archive-* or interpreter-v4 aborts uv. Not every subdirectory,
     # or an unrelated read-only one disqualifies a usable cache. install.sh's
     # _uv_cache_is_writable is the same check.
     _uv_cache_probe_writable "$1" || return 1
-    # Measured, not assumed, as install.sh does it: default APFS folds case and ext4 does not,
-    # so `Python-V0` is the same path uv opens as `python-v0` on one and not the other. Root
-    # already proven writable above.
-    _uvu_fold=0
-    _uvu_probe="$1/.unsloth-case-probe.$$-A"
-    if mkdir "$_uvu_probe" 2>/dev/null; then
-        [ -d "$1/.unsloth-case-probe.$$-a" ] && _uvu_fold=1
-        rmdir "$_uvu_probe" 2>/dev/null || true
-    fi
-    unset _uvu_probe
+    _uv_cache_folds_case "$1" && _uvu_fold=1 || _uvu_fold=0
     for _uvu_bucket in "$1"/*; do
-        _uvu_name="${_uvu_bucket##*/}"
-        if ! _uv_is_bucket_name "$_uvu_name"; then
-            # Only the NAME folds here; what the entry IS is decided below either way.
-            [ "$_uvu_fold" = 1 ] || continue
-            case "$_uvu_name" in *[[:upper:]]*) ;; *) continue ;; esac
-            _uv_is_bucket_name "$(printf '%s' "$_uvu_name" | tr '[:upper:]' '[:lower:]')" || continue
-        fi
+        _uvu_name=$(_uv_store_key "${_uvu_bucket##*/}" "$_uvu_fold") || continue
         if [ ! -d "$_uvu_bucket" ]; then
             # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
             # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of
@@ -1080,13 +1100,17 @@ _uv_control_files_writable() {  # <dir> <name>...
     _uvc_dir=$1
     shift
     for _uvc_name in "$@"; do
-        [ -f "$_uvc_dir/$_uvc_name" ] || continue
-        if [ ! -r "$_uvc_dir/$_uvc_name" ] || [ ! -w "$_uvc_dir/$_uvc_name" ]; then
-            unset _uvc_dir _uvc_name
+        _uvc_path="$_uvc_dir/$_uvc_name"
+        { [ -e "$_uvc_path" ] || [ -L "$_uvc_path" ]; } || continue
+        # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+        # DIRECTORY (or a symlink to one) exits 2 with "Could not acquire lock ... Is a
+        # directory". `-f` alone skipped it and called the cache usable.
+        if [ ! -f "$_uvc_path" ] || [ ! -r "$_uvc_path" ] || [ ! -w "$_uvc_path" ]; then
+            unset _uvc_dir _uvc_name _uvc_path
             return 1
         fi
     done
-    unset _uvc_dir _uvc_name
+    unset _uvc_dir _uvc_name _uvc_path
     return 0
 }
 
@@ -1094,14 +1118,16 @@ _uv_cache_warm() {
     # Package BYTES, not metadata (wheels-* is .msgpack/.http after a bare resolve). Mirrors
     # install.sh's scan and unsloth_cli's _uv_cache_has_packages.
     [ -n "${1:-}" ] && [ -d "$1" ] && [ -r "$1" ] || return 1
-    for _uvw_bucket in "$1"/archive-* "$1"/builds-* "$1"/built-wheels-* \
-        "$1"/wheels-* "$1"/sdists-*; do
+    # One pass over the entries, not five lowercase globs: on a folding filesystem `Archive-V0`
+    # IS the store uv opens as `archive-v0`, and a glob does not fold, so a cache holding every
+    # wheel read as cold and the offline update failed. _uv_cache_usable normalises the same way.
+    _uv_cache_folds_case "$1" && _uvw_fold=1 || _uvw_fold=0
+    for _uvw_bucket in "$1"/*; do
         [ -d "$_uvw_bucket" ] || continue
         # Stricter than the probe, deliberately, and exactly as install.sh's scan: `archive-*`
         # also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting those reads a
         # cache as warm that then fails an offline update (measured: uv exit 1, not in cache).
-        _uvw_base="${_uvw_bucket##*/}"
-        _uv_is_bucket_name "$_uvw_base" || continue
+        _uvw_base=$(_uv_store_key "${_uvw_bucket##*/}" "$_uvw_fold") || continue
         case "${_uvw_base%-v*}" in
             archive|builds|built-wheels|wheels|sdists) ;;
             *) continue ;;
@@ -1118,11 +1144,11 @@ _uv_cache_warm() {
         # `|| true`: find exits nonzero after an unreadable leaf even once it printed the hit,
         # and the hit is already assigned.
         if [ -n "$_uvw_hit" ]; then
-            unset _uvw_bucket _uvw_hit _uvw_base
+            unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
             return 0
         fi
     done
-    unset _uvw_bucket _uvw_hit _uvw_base
+    unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
     return 1
 }
 
