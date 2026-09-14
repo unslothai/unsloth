@@ -224,10 +224,8 @@ def spawn_worker(
         try:
             hf_token = get_token_to_send(None)
         except Exception as e:  # noqa: BLE001
-            # Best effort, like the env lookup this replaced: hub's OIDC path raises OIDCError, httpx
-            # errors and NotImplementedError past the unreadable-file OSError/UnicodeError, and a public
-            # download must not 500 on those. An escape would also skip bind_worker_budget below,
-            # stranding the reservation apply_xet_env just took.
+            # Best effort, like the env lookup this replaced: do not narrow this catch. An OIDCError
+            # or httpx error from hub's OIDC rung would 500 a public download and strand a reservation.
             detail = download_registry.scrub_secrets(f"{type(e).__name__}: {e}")
             logger.warning(
                 f"Could not resolve a saved Hugging Face login ({detail}); downloading anonymously"
@@ -1211,8 +1209,8 @@ def cancel_worker(
     if proc is None:
         if not registry.mark_pending_cancel(key, generation):
             return registry.get_job(key).state
-        # Registration can race the first lookup while launch runs in a thread.
-        # If it already passed the pending-cancel check, stop that process below.
+        # Registration can race the first lookup now that launch runs in a thread: if it got
+        # past the pending-cancel check, kill that process below.
         proc = registry.get_process(key)
         if proc is None:
             return "cancelling"

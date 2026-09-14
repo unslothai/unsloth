@@ -250,9 +250,8 @@ async def download_dataset_response(
     cache_env = cache_paths.child_env({})
 
     def claim_and_launch():
-        # Keep ownership and launch in one synchronous operation: cancellation while
-        # queued must not leave a claimed job without a worker. Token resolution can
-        # perform network I/O (OAuth refresh or OIDC exchange), so run it off the loop.
+        # Claim and launch as one operation, off the loop: a cancel while queued must not
+        # leave a claimed job with no worker, and token resolution can do network I/O.
         registry = _account_registry()
         claimed, claim_state = _claim_dataset_download(
             registry,

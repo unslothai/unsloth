@@ -274,9 +274,8 @@ async def download_model_response(
             )
 
     def claim_and_launch():
-        # Keep ownership and launch in one synchronous operation: cancellation while
-        # queued must not leave a claimed job without a worker. Token resolution can
-        # perform network I/O (OAuth refresh or OIDC exchange), so run it off the loop.
+        # Claim and launch as one operation, off the loop: a cancel while queued must not
+        # leave a claimed job with no worker, and token resolution can do network I/O.
         claimed, claim_state = _registry.claim(
             key,
             transport,
