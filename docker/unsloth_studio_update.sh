@@ -10,6 +10,8 @@
 #   docker exec <container> unsloth-studio-update --no-restart # update, restart later
 #   --zoo-ref <ref>      unsloth-zoo ref to pair with --ref (default: the same ref, else main)
 #   --packages "<specs>" what a release update installs (default: unsloth unsloth_zoo)
+#   --recover            only finish the restore a killed update left (the container
+#                        start runs this before Studio comes up), then exit
 #   UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=<seconds>  how long to wait for /api/health after the
 #                        restart (default 180). The previous install is kept until Studio
 #                        answers; if it does not, or the restart fails, it goes back and the
@@ -34,6 +36,7 @@ REF=""
 ZOO_REF=""
 NO_DEPS="--no-deps"
 RESTART=1
+RECOVER_ONLY=0
 PACKAGES="unsloth unsloth_zoo"
 
 # the header comment, up to the first line that is not one
@@ -45,6 +48,7 @@ while [ $# -gt 0 ]; do
         --zoo-ref)     ZOO_REF="$2"; shift 2;;
         --with-deps)   NO_DEPS=""; shift;;
         --no-restart)  RESTART=0; shift;;
+        --recover)     RECOVER_ONLY=1; shift;;
         --packages)    PACKAGES="$2"; shift 2;;
         -h|--help)     usage; exit 0;;
         *) echo "unsloth-studio-update: unknown argument: $1" >&2; usage; exit 2;;
@@ -162,12 +166,14 @@ if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
     if [ ! -e "$SRC" ]; then
         log "recovering the source tree an interrupted update left at ${_prev[0]}"
         mv -T "${_prev[0]}" "$SRC"
+        _recovered=1
     elif [ -s "$KEEP_ROLLBACK" ]; then
         log "an interrupted update left its previous tree at ${_prev[0]}; putting it back over the unverified one"
         _drop="$(mktemp -d "$SRC_DIR/.src-update.XXXXXX")" && rmdir "$_drop"
         mv -T "$SRC" "$_drop"
         mv -T "${_prev[0]}" "$SRC"
         rm -rf "$_drop"
+        _recovered=1
     fi
 fi
 if [ -s "$KEEP_ROLLBACK" ]; then
@@ -175,6 +181,7 @@ if [ -s "$KEEP_ROLLBACK" ]; then
     if reinstall_recorded "$KEEP_ROLLBACK" "$KEEP_FREEZE"; then
         rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
         log "the previous packages are back"
+        _recovered=1
         # The service may still be running the unverified code, or be FATAL from the
         # interrupted restart: put it on the restored install before anything else.
         if [ "$RESTART" = "1" ]; then
@@ -204,6 +211,14 @@ if [ -d "$SRC" ]; then
     done
 fi
 shopt -u nullglob
+# --recover: the container start (studio_home.sh) runs the recovery above before
+# supervisord starts Studio, so a kill that no trap could answer never boots the
+# unverified tree; nothing else is done.
+if [ "$RECOVER_ONLY" = "1" ]; then
+    DONE=1
+    if [ "${_recovered:-0}" = "1" ]; then log "recovery done"; else log "nothing to recover"; fi
+    exit 0
+fi
 
 # The tree Studio restarts into must import AND serve its UI: `unsloth studio` exits 1
 # when studio/frontend/dist is missing, and three quick exits leave it FATAL. From / so

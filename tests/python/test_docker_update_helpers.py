@@ -779,6 +779,33 @@ def test_studio_update_with_deps_rollback_fails_when_pip_cannot_list_packages(tm
     assert (home / ".src-update.rollback").is_file(), "the record was dropped after a failed restore"
 
 
+def test_recover_finishes_a_killed_update_and_does_nothing_else(tmp_path: Path):
+    """The container start runs --recover before supervisord starts Studio: a previous
+    tree beside src goes back over the unverified one, the recorded packages are
+    reinstalled, and no update is attempted."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / "src" / "OLD_TREE").unlink()
+    (home / "src" / "NEW_TREE").write_text("unverified\n")
+    (home / ".src-prev.k9x2Qa" / "studio").mkdir(parents = True)
+    (home / ".src-prev.k9x2Qa" / "OLD_TREE").write_text("previous\n")
+    (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
+    res = _run(STUDIO_UPDATE, ["--recover"], env)
+    calls = _calls(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "recovery done" in res.stdout, res.stdout
+    assert (home / "src" / "OLD_TREE").exists() and not (home / "src" / "NEW_TREE").exists()
+    assert not (home / ".src-prev.k9x2Qa").exists()
+    assert not (home / ".src-update.rollback").exists()
+    assert "install --no-deps --force-reinstall -r" in calls, calls
+    assert "install -U" not in calls and "STUB-GIT" not in calls, calls
+    assert not _scratch(home)
+    env = _studio_env(tmp_path / "clean")
+    res = _run(STUDIO_UPDATE, ["--recover"], env)
+    assert res.returncode == 0 and "nothing to recover" in res.stdout, res.stdout
+    assert "STUB-PIP -m pip install" not in _calls(env)
+
+
 def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
     """pip failing during the restore itself must not be reported as the previous
     install being back; the record stays so the next run finishes it."""
