@@ -6310,6 +6310,16 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
             # back to the unresolved URL.
             env = dict(os.environ)
             env["GIT_TERMINAL_PROMPT"] = "0"
+            # An askpass helper is a second door, and GIT_TERMINAL_PROMPT does not
+            # close it: VS Code exports GIT_ASKPASS in its integrated terminal, which
+            # is exactly where a --local install gets run, and a 401 would then raise
+            # its dialog over an unattended probe. Measured against a local endpoint
+            # that answers 401: invoked with only the prompt disabled, not invoked
+            # once these are empty. Empty rather than removed, because git takes the
+            # first of GIT_ASKPASS, core.askPass and SSH_ASKPASS that is SET and
+            # treats an empty one as "no askpass".
+            env["GIT_ASKPASS"] = ""
+            env["SSH_ASKPASS"] = ""
             # ls-remote exits 0 whether or not a ref matched, so an empty stdout is
             # "no such ref" and has to be treated like a failure to resolve.
             result = subprocess.run(
@@ -6317,7 +6327,7 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
                 # timeout below cannot do early and which is the only bound install.sh
                 # has on a host with no `timeout` binary. Measured against a listener
                 # that accepts and then says nothing: indefinite without, 20.1s with.
-                [git, "-c", "credential.helper=",
+                [git, "-c", "credential.helper=", "-c", "core.askPass=",
                  "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
                  "ls-remote", _UNSLOTH_ZOO_GIT_REPO, *_zoo_ls_remote_patterns(ref)],
                 stdout = subprocess.PIPE,

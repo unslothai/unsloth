@@ -2423,7 +2423,10 @@ exit 1
         $zooUrl = 'unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo'
         $script:ZooGitSpec = $zooUrl
         $script:ZooGitLabel = 'main'
-        $prevPrompt = [Environment]::GetEnvironmentVariable('GIT_TERMINAL_PROMPT', 'Process')
+        $probeEnv = @{}
+        foreach ($name in 'GIT_TERMINAL_PROMPT', 'GIT_ASKPASS', 'SSH_ASKPASS') {
+            $probeEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        }
         try {
             $git = Get-Command git -ErrorAction SilentlyContinue
             if (-not $git) { return }
@@ -2432,7 +2435,13 @@ exit 1
             # raise a window if a proxy answers 401, and the installer would sit behind it.
             # No helper, no terminal prompt, and the same bounded-process idiom the smi
             # probes use, so a wedged network cannot hang the install.
+            # An askpass helper is a second door that GIT_TERMINAL_PROMPT does not
+            # close, and Git Credential Manager and VS Code both supply one. Empty
+            # rather than removed: git takes the first of GIT_ASKPASS, core.askPass and
+            # SSH_ASKPASS that is SET and treats an empty one as "no askpass".
             $env:GIT_TERMINAL_PROMPT = '0'
+            $env:GIT_ASKPASS = ''
+            $env:SSH_ASKPASS = ''
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $git.Source
             # The full ref name, never the bare one: an ls-remote pattern matches the
@@ -2440,7 +2449,7 @@ exit 1
             # refs/heads/archive/main, which sorts first and would pin another history.
             # http.lowSpeed*: git abandons a transfer that stalls, so a remote that
             # accepts and then says nothing ends the probe before the 20s wait below.
-            $psi.Arguments = '-c credential.helper= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main'
+            $psi.Arguments = '-c credential.helper= -c core.askPass= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main'
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
@@ -2471,12 +2480,14 @@ exit 1
         } catch {
             # unreachable remote, killed git, anything else: keep the bare URL
         } finally {
-            # The caller's own GIT_TERMINAL_PROMPT goes back exactly as it was, including
-            # having been unset: the rest of the install must not inherit this probe's.
-            if ($null -eq $prevPrompt) {
-                Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue
-            } else {
-                $env:GIT_TERMINAL_PROMPT = $prevPrompt
+            # The caller's own values go back exactly as they were, including having been
+            # unset: the rest of the install must not inherit this probe's.
+            foreach ($name in @($probeEnv.Keys)) {
+                if ($null -eq $probeEnv[$name]) {
+                    Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+                } else {
+                    Set-Item "Env:$name" $probeEnv[$name]
+                }
             }
         }
     }

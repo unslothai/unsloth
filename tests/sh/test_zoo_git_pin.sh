@@ -14,7 +14,6 @@ _FUNC_FILE=$(mktemp)
 sed -n '/^_resolve_zoo_git_spec()/,/^}/p' "$INSTALL_SH" > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
-rm -f "$_FUNC_FILE"
 
 URL="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
 SHA="cb4a3100c1f34766e30f79229168fb2d91ea4123"
@@ -26,7 +25,11 @@ _STUB_DIR=$(mktemp -d)
 cat > "$_STUB_DIR/git" <<'STUB'
 #!/bin/sh
 if [ -n "${STUB_LOG:-}" ]; then
-    { echo "argv: $*"; echo "prompt=${GIT_TERMINAL_PROMPT-unset}"; } >> "$STUB_LOG"
+    {
+        echo "argv: $*"
+        echo "prompt=${GIT_TERMINAL_PROMPT-unset}"
+        echo "askpass=[${GIT_ASKPASS-unset}] ssh_askpass=[${SSH_ASKPASS-unset}]"
+    } >> "$STUB_LOG"
 fi
 printf '%s' "$STUB_OUT"
 exit "${STUB_RC:-0}"
@@ -70,6 +73,11 @@ assert_contains "the probe is bounded"        "$(cat "$STUB_LOG")" "bounded by t
 # git abandons a transfer that stalls. Measured, a silent remote hangs git without it.
 assert_contains "and bounded again by git itself" "$(cat "$STUB_LOG")" \
     "-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20"
+# An askpass helper is the other door, and the terminal prompt setting does not close
+# it: VS Code exports GIT_ASKPASS in its integrated terminal.
+assert_contains "askpass helpers cannot be reached" "$(cat "$STUB_LOG")" \
+    "askpass=[] ssh_askpass=[]"
+assert_contains "including one from a config file" "$(cat "$STUB_LOG")" "-c core.askPass="
 # Compared against what the caller had, not against "unset": a CI runner is allowed
 # to export its own GIT_TERMINAL_PROMPT, and the point is that the probe changed nothing.
 assert_eq "and the variable is left exactly as the caller had it" \
@@ -126,6 +134,12 @@ assert_eq "a qualified ref still pins" "$URL@$SHA" "$_ZOO_GIT_SPEC"
 assert_contains "asked for as written" "$(cat "$STUB_LOG")" \
     "refs/heads/release refs/heads/release^{}"
 
+echo "=== the caller's own positional parameters survive ==="
+# The resolver uses `set --` internally to carry the ref patterns. That is local to a
+# function in POSIX sh, and install.sh is still parsing its own flags from "$@".
+_POSITIONAL_CHECK="$(STUDIO_LOCAL_INSTALL=true sh -c '. "$1"; set -- --no-torch --local; _resolve_zoo_git_spec; echo "$*"' _ "$_FUNC_FILE" 2>/dev/null | tail -n1)"
+assert_eq "the caller still sees its own arguments" "--no-torch --local" "$_POSITIONAL_CHECK"
+
 echo "=== an explicit ref is honored and pinned ==="
 UNSLOTH_ZOO_REF="v2026.5.4"
 export UNSLOTH_ZOO_REF
@@ -175,6 +189,7 @@ done
 unset UNSLOTH_ZOO_REF
 
 rm -rf "$_STUB_DIR"
+rm -f "$_FUNC_FILE"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

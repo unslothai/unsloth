@@ -193,6 +193,12 @@ class TestUnslothZooGitSpec:
         assert "http.lowSpeedTime=20" in calls[0]
         kwargs = self.kwargs[0]
         assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+        # The other door: an askpass helper is invoked regardless of the terminal
+        # prompt setting, and VS Code exports GIT_ASKPASS in its integrated terminal.
+        # Empty, not removed: git uses the first of the three that is SET.
+        assert kwargs["env"]["GIT_ASKPASS"] == ""
+        assert kwargs["env"]["SSH_ASKPASS"] == ""
+        assert "core.askPass=" in calls[0]
         assert kwargs["env"]["SOME_UNRELATED_VAR"] == "kept"   # extended, not replaced
         assert kwargs["timeout"] == 20
         assert kwargs["stderr"] is ips.subprocess.DEVNULL

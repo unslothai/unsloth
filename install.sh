@@ -3060,13 +3060,19 @@ _resolve_zoo_git_spec() {
             refs/*) set -- "$_ZOO_REF" "$_ZOO_REF^{}" ;;
             *)      set -- "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" ;;
         esac
+        # Empty GIT_ASKPASS/SSH_ASKPASS plus -c core.askPass=: an askpass helper is a
+        # second door that GIT_TERMINAL_PROMPT does not close, and VS Code exports
+        # GIT_ASKPASS in its integrated terminal, which is where a --local install gets
+        # run. Empty rather than unset, because git takes the first of the three that is
+        # SET and treats an empty one as "no askpass".
         # http.lowSpeed*: the bound for hosts with no `timeout` binary, which is stock
         # macOS. Measured against a listener that accepts and then says nothing, git
         # waited indefinitely without these and gave up after 20.1s with them.
+        # shellcheck disable=SC1007  # the empty askpass assignments are deliberate
         if command -v timeout >/dev/null 2>&1; then
-            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c credential.helper= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
+            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= timeout 20 git -c credential.helper= -c core.askPass= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
         else
-            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
+            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git -c credential.helper= -c core.askPass= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
         fi
         # Branch first, then the commit an annotated tag points at, then the tag object:
         # the same order `git clone --branch` resolves a name in.
