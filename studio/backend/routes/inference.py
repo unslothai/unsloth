@@ -36767,10 +36767,10 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     mine = account_access.generation_is_mine("diffusion")
     if not mine and account_access.resident_hidden("diffusion"):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -36780,7 +36780,7 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
