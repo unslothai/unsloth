@@ -384,11 +384,20 @@ class _ImageEchoSanitizer:
         for matched in matched_slots:
             self._set_slot(slots[matched], REDACTED_IMAGE)
 
+    def _redact_percent_fragments(self, slots):
+        if len(slots) < 2:
+            return
+        combined = self._normalized_text("".join(text for _, _, text in slots))
+        if self._match_span(combined) is not None:
+            for slot in slots:
+                self._set_slot(slot, REDACTED_IMAGE)
+
     def _redact_structured_fragments(self, value):
         """Check structured result fragments that are rendered through str()."""
         slots = []
         integer_slots = []
         rekeys = []
+        percent_groups = []
 
         def collect(
             node,
@@ -400,11 +409,15 @@ class _ImageEchoSanitizer:
                     slots.append((owner, key, node))
                 return
             if isinstance(node, dict):
+                direct_strings = []
                 for child_key, child in node.items():
                     key_holder = [child_key]
                     slots.append((key_holder, 0, child_key))
                     rekeys.append((node, child_key, key_holder))
+                    if type(child) is str:
+                        direct_strings.append((node, child_key, child))
                     collect(child, node, child_key)
+                percent_groups.append(direct_strings)
                 return
             if isinstance(node, (list, tuple)):
                 if node and all(type(item) is int and 0 <= item <= 255 for item in node):
@@ -420,6 +433,8 @@ class _ImageEchoSanitizer:
 
         collect(value)
         self._redact_slots(slots)
+        for group in percent_groups:
+            self._redact_percent_fragments(group)
         self._redact_integer_fragments(integer_slots)
         for owner, original, holder in rekeys:
             if holder[0] != original and original in owner:

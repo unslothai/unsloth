@@ -16,6 +16,7 @@ from core.inference.mcp_image_redaction import McpImageCallContext, REDACTED_IMA
 
 DATA = b"\x89PNG\r\n\x1a\nunique-private-image-synthetic-\xfb\xff\xef"
 ENCODED = base64.b64encode(DATA).decode()
+PERCENT_ENCODED = quote(ENCODED, safe = "")
 PUBLIC = {"picture": "mcp-image-ref-" + "x" * 40, "options": {"limit": 2}}
 SCHEMA = {
     "type": "object",
@@ -146,6 +147,7 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
                 "noise": "unrelated",
                 "b": ENCODED[17:] + "; done",
             },
+            "percent": {"name": "prefix:" + PERCENT_ENCODED[:54], "payload": PERCENT_ENCODED[54:]},
         },
     }
     clean = make_context().redact_result(result)
@@ -159,6 +161,10 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
         "name": REDACTED_IMAGE,
         "noise": "unrelated",
         "b": REDACTED_IMAGE,
+    }
+    assert clean["structuredContent"]["percent"] == {
+        "name": REDACTED_IMAGE,
+        "payload": REDACTED_IMAGE,
     }
 
 
