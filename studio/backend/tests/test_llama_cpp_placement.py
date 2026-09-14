@@ -1880,6 +1880,8 @@ def test_auto_tensor_parallel_records_split_for_reload_matching(tmp_path):
     )
 
     assert backend._auto_tensor_split == (0.75, 0.25)
+    # /status should also surface the normalized ratio that was emitted.
+    assert backend.tensor_split == [0.75, 0.25]
 
     # The same ratio written differently is the same instruction to llama.cpp,
     # so it reuses; a different one reloads.

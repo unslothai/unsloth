@@ -6414,6 +6414,9 @@ class LlamaCppBackend:
         # weighted split or fall back to a user-supplied ratio; recording it lets
         # _runtime_matches_intent detect a changed ratio and reload.
         self._auto_tensor_split: Optional[tuple[float, ...]] = None
+        # The actual split that was emitted to llama-server in auto mode, used for
+        # /status reporting. Manual mode stores this in _tensor_split.
+        self._auto_tensor_split_emitted: Optional[tuple[float, ...]] = None
         # Tokens the tensor-spill plan added to this argv, so a retry that re-places
         # the model can strip them with _without_subsequence. Empty when it abstained.
         self._spill_plan_flags: List[str] = []
@@ -7211,9 +7214,16 @@ class LlamaCppBackend:
 
     @property
     def tensor_split(self) -> Optional[List[float]]:
-        """Manual-mode relative model share per GPU (--tensor-split); None =
-        default (split by free VRAM)."""
-        return self._tensor_split
+        """Relative model share per GPU (--tensor-split) for the active load.
+
+        Manual mode returns the requested ratio; auto tensor-parallel mode
+        returns the normalized ratio that was actually emitted, or None when
+        the planner left the split to llama.cpp's default."""
+        if self._tensor_split is not None:
+            return self._tensor_split
+        if self._auto_tensor_split_emitted is not None:
+            return list(self._auto_tensor_split_emitted)
+        return None
 
     @property
     def gpu_ids(self) -> Optional[List[int]]:
@@ -15131,6 +15141,7 @@ class LlamaCppBackend:
         self._n_cpu_moe = 0
         self._tensor_split = None
         self._auto_tensor_split = None
+        self._auto_tensor_split_emitted = None
         self._spill_plan_flags = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
@@ -20317,6 +20328,7 @@ class LlamaCppBackend:
                 # auto tensor branch, so without this a manual load would carry a
                 # previous auto load's ratio forward into the next comparison.
                 self._auto_tensor_split = None
+                self._auto_tensor_split_emitted = None
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     self._gpu_layers = gpu_layers
                     self._n_cpu_moe = n_cpu_moe
@@ -20326,6 +20338,7 @@ class LlamaCppBackend:
                     self._n_cpu_moe = 0
                     self._tensor_split = None
                     self._auto_tensor_split = None
+                    self._auto_tensor_split_emitted = None
                 self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -23422,8 +23435,10 @@ class LlamaCppBackend:
                             )
                         ):
                             _emitted_tensor_split = self._format_tensor_split(_sanitized_split)
+                    _emitted_values: Optional[list[float]] = None
                     if _emitted_tensor_split is not None:
                         cmd.extend(["--tensor-split", _emitted_tensor_split])
+                        _emitted_values = [float(x) for x in _emitted_tensor_split.split(",")]
                     self._tensor_parallel = True
                     self._layer_preserves_tensor_intent = False
                     # Record the ratio this auto load was ASKED for, so a later
@@ -23432,6 +23447,9 @@ class LlamaCppBackend:
                     # recording that instead reloads on every identical repeat.
                     if gpu_memory_mode != "manual":
                         self._auto_tensor_split = self._auto_split_fingerprint(tensor_split)
+                        self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                            _emitted_values
+                        )
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
                         _emitted_tensor_split,
@@ -27520,6 +27538,7 @@ class LlamaCppBackend:
             self._n_cpu_moe = 0
             self._tensor_split = None
             self._auto_tensor_split = None
+            self._auto_tensor_split_emitted = None
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
