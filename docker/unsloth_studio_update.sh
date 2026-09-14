@@ -115,12 +115,17 @@ PY
 STAGE=""
 PREV_SRC=""
 SWAPPED=0
+INSTALLING=0
 DONE=0
 ROLLBACK=""
 FREEZE=""
 CONSTRAINTS=""
 restore() {
     log "restoring the previous install"
+    # a restore runs to completion: a signal now would leave a half-restored install,
+    # and the exit trap must not run it a second time
+    trap '' INT TERM
+    INSTALLING=0
     if [ "$SWAPPED" = "1" ] && [ -d "$PREV_SRC" ]; then
         rm -rf "$SRC"
         if mv -T "$PREV_SRC" "$SRC"; then
@@ -141,8 +146,12 @@ restore() {
 # Runs on every exit. An interrupt (Ctrl-C, or a TERM) after the swap started would
 # otherwise leave the half-installed tree in place and the previous one beside it.
 cleanup() {
-    if [ "$DONE" != "1" ] && [ "$SWAPPED" = "1" ]; then
-        log "interrupted after the source tree was swapped; putting the previous one back"
+    # a second signal while the cleanup itself restores must not cut it short
+    trap '' INT TERM
+    # a release-path pip that was interrupted can have replaced the packages half-way:
+    # the recorded previous pins go back the same as after a swap
+    if [ "$DONE" != "1" ] && { [ "$SWAPPED" = "1" ] || [ "$INSTALLING" = "1" ]; }; then
+        log "interrupted after the install started; putting the previous install back"
         restore
     fi
     [ -n "$STAGE" ] && rm -rf "$STAGE"
@@ -292,6 +301,7 @@ if [ -n "$REF" ]; then
     _spec="$SRC_INSTALL"
     # with dependencies: the backend's own requirement set is the `studio` extra
     [ -z "$NO_DEPS" ] && _spec="${SRC_INSTALL}[studio]"
+    INSTALLING=1
     # shellcheck disable=SC2086
     if ! "$PY" -m pip install $NO_DEPS ${DEP_ARGS[@]+"${DEP_ARGS[@]}"} -e "$_spec" \
             "git+https://github.com/unslothai/unsloth-zoo.git@${_zoo_ref}#egg=unsloth_zoo"; then
@@ -306,6 +316,7 @@ else
         _pkgs="$(printf '%s\n' $PACKAGES | sed 's/^unsloth$/unsloth[studio]/' | tr '\n' ' ')"
     fi
     log "installing latest release of: $_pkgs"
+    INSTALLING=1
     # shellcheck disable=SC2086
     if ! "$PY" -m pip install -U $NO_DEPS ${DEP_ARGS[@]+"${DEP_ARGS[@]}"} $_pkgs; then
         restore

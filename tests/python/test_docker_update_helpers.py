@@ -100,6 +100,10 @@ def _studio_env(
         # an interrupted install: the updater is waiting on this child, so the signal
         # lands on it and its trap runs once we exit
         '  case " $* " in *" -e "*) [ -n "${STUB_PIP_INTERRUPT:-}" ] && kill -INT "$PPID" ;; esac\n'
+        # the release path has no swap; an interrupt during its pip must restore too
+        '  case " $* " in *" -U "*) [ -n "${STUB_PIP_INTERRUPT_RELEASE:-}" ] && kill -INT "$PPID" ;; esac\n'
+        # a signal that lands while the restore itself runs must not cut the cleanup short
+        '  case " $* " in *" -r "*) [ -n "${STUB_PIP_INTERRUPT_RESTORE:-}" ] && kill -TERM "$PPID" ;; esac\n'
         # reinstalling the recorded previous install brings the working tree back
         '  case " $* " in *" -r "*)\n'
         f'    : > "{site}/studio/backend/main.py"\n'
@@ -293,6 +297,36 @@ def test_studio_update_ref_restores_the_tree_when_interrupted_after_the_swap(tmp
     assert not list(home.glob(".src-prev.*")), "the previous tree was left beside src"
     assert not list(home.glob(".src-update.*"))
     assert "interrupted" in res.stdout, res.stdout
+
+
+def test_studio_update_release_restores_the_pins_when_interrupted_during_pip(tmp_path: Path):
+    """The release path swaps nothing, but a pip interrupted half-way can have replaced
+    the packages already; the recorded previous install goes back the same way."""
+    env = _studio_env(tmp_path)
+    env["STUB_PIP_INTERRUPT_RELEASE"] = "1"
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env)
+    calls = _calls(env)
+    assert res.returncode == 130, res.stderr + res.stdout
+    assert "install --no-deps -r" in calls, "the previous install was not put back:\n" + calls
+    assert "interrupted" in res.stdout, res.stdout
+
+
+def test_studio_update_restores_once_and_leaves_no_temp_files_when_signalled_mid_restore(
+    tmp_path: Path,
+):
+    """After a failed tree check the script restores explicitly, then exits; the exit
+    trap must not restore a second time, and a signal during the restore must not skip
+    the temp-file cleanup."""
+    env = _studio_env(tmp_path, dist_ok = False)
+    env["STUB_PIP_INTERRUPT_RESTORE"] = "1"
+    tmpd = tmp_path / "tmpd"
+    tmpd.mkdir()
+    env["TMPDIR"] = str(tmpd)
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env)
+    calls = _calls(env)
+    assert res.returncode != 0
+    assert calls.count("install --no-deps -r") == 1, "restore ran more than once:\n" + calls
+    assert not list(tmpd.iterdir()), "temp files left behind: " + str(list(tmpd.iterdir()))
 
 
 def test_studio_update_ref_refuses_a_venv_without_a_source_tree(tmp_path: Path):
