@@ -3614,20 +3614,20 @@ def test_auto_mode_stays_silent_inside_allowlisted_roots_python(code):
 def test_configured_cache_reads_stay_silent():
     """A read under THIS install's own sandbox / model cache is ordinary work, unlike the same path
     shape under someone else's home."""
-    from core.inference import tools
+    from core.inference import tool_path_approval as path_gate
 
-    read_roots, write_roots = tools._silent_roots()
+    read_roots, write_roots = path_gate._silent_roots()
     assert read_roots, "no silent roots resolved; every absolute read would prompt"
     for root in read_roots:
-        assert tools._path_needs_approval(os.path.join(root, "model", "config.json")) is False
+        assert path_gate._path_needs_approval(os.path.join(root, "model", "config.json")) is False
     for root in write_roots:
-        assert tools._path_needs_approval(os.path.join(root, "out.bin"), writing = True) is False
+        assert path_gate._path_needs_approval(os.path.join(root, "out.bin"), writing = True) is False
 
 
 def test_credential_paths_outrank_the_allowlist():
     """The allowlist must never turn a credential read silent: /etc is read-silent, /etc/shadow is
     not."""
-    from core.inference import tools
+    from core.inference import tool_path_approval as path_gate
     for path in (
         "/etc/shadow",
         "/etc/ssh/ssh_host_rsa_key",
@@ -3635,37 +3635,37 @@ def test_credential_paths_outrank_the_allowlist():
         "~/.aws/credentials",
         "/proc/self/environ",
     ):
-        assert tools._path_needs_approval(path) is True, path
+        assert path_gate._path_needs_approval(path) is True, path
 
 
 def test_relative_paths_never_prompt():
     """Relative paths resolve inside the per-session workdir, which is the whole reason ordinary
     in-sandbox work stays silent."""
-    from core.inference import tools
+    from core.inference import tool_path_approval as path_gate
     for path in ("out.txt", "./data/train.csv", "build/artifacts/model.gguf", "-", ""):
-        assert tools._path_needs_approval(path, writing = True) is False, path
+        assert path_gate._path_needs_approval(path, writing = True) is False, path
 
 
 def test_windows_spellings_are_treated_as_absolute():
     """Path syntax is judged on every host, so a Windows-only classifier bug cannot hide behind a
     Linux test run."""
-    from core.inference import tools
+    from core.inference import tool_path_approval as path_gate
     for path in ("C:\\Users\\kuser\\Documents\\taxes.xlsx", "\\\\fileserver\\share\\secret.docx"):
-        assert tools._path_needs_approval(path) is True, path
+        assert path_gate._path_needs_approval(path) is True, path
 
 
 def test_unresolved_dynamic_paths_do_not_prompt():
     """A path the folder could not resolve carries the NUL sentinel; it is not a decidable path, and
     the dynamic-alias checks cover those separately."""
-    from core.inference import tools
-    assert tools._path_needs_approval("/media/\x00/file") is False
+    from core.inference import tool_path_approval as path_gate
+    assert path_gate._path_needs_approval("/media/\x00/file") is False
 
 
 def test_parent_escape_sentinel_asks():
     """\x02 marks a pathlib .parent walking OUT of its root. It is an escape marker, so grouping it
     with the unresolved marker would turn the signal into a pass."""
-    from core.inference import tools
-    assert tools._path_needs_approval("\x02/file") is True
+    from core.inference import tool_path_approval as path_gate
+    assert path_gate._path_needs_approval("\x02/file") is True
 
 
 # Every payload below reached a host path with no approval prompt in the first cut of the
@@ -3805,31 +3805,31 @@ def test_high_risk_implies_potentially_unsafe():
 def test_credentials_inside_a_silent_root_still_ask():
     """A relocated cache is allowlisted wholesale, so the token store inside it needs a name-based
     rule: the path no longer contains the directory name the credential regex looks for."""
-    from core.inference import tools
+    from core.inference import tool_path_approval as path_gate
 
-    read_roots, _ = tools._silent_roots()
+    read_roots, _ = path_gate._silent_roots()
     hf_roots = [root for root in read_roots if "huggingface" in root]
     for root in hf_roots:
-        assert tools._path_needs_approval(os.path.join(root, "token")) is True
-        assert tools._path_needs_approval(os.path.join(root, "stored_tokens")) is True
-        assert tools._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
+        assert path_gate._path_needs_approval(os.path.join(root, "token")) is True
+        assert path_gate._path_needs_approval(os.path.join(root, "stored_tokens")) is True
+        assert path_gate._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
     for path in ("/etc/gshadow", "/etc/krb5.keytab", "/etc/security/opasswd"):
-        assert tools._path_needs_approval(path) is True, path
+        assert path_gate._path_needs_approval(path) is True, path
 
 
 def test_studio_own_state_is_never_silent():
     """The studio home holds studio.db (chat history, provider and MCP configuration) and auth/
     next to the sandbox. Several root producers fall back to that directory when their own
     subdirectory is unset, and one such fallback would grant a tool everything Studio owns."""
-    from core.inference import tools
+    from core.inference import tool_path_approval as path_gate
     from utils.paths.storage_roots import studio_root
 
     home = str(studio_root())
     for path in (os.path.join(home, "studio.db"), os.path.join(home, "auth", "auth.db")):
-        assert tools._path_needs_approval(path) is True, path
-        assert tools._path_needs_approval(path, writing = True) is True, path
+        assert path_gate._path_needs_approval(path) is True, path
+        assert path_gate._path_needs_approval(path, writing = True) is True, path
     assert is_high_risk_tool_call("terminal", {"command": f"cat {home}/studio.db"}) is True
     assert is_high_risk_tool_call("terminal", {"command": f"echo x > {home}/studio.db"}) is True
     # The output subdirectories under it stay silent, or ordinary tool work would prompt.
     for path in (os.path.join(home, "sandbox", "out.txt"), os.path.join(home, "cache", "m.bin")):
-        assert tools._path_needs_approval(path, writing = True) is False, path
+        assert path_gate._path_needs_approval(path, writing = True) is False, path
