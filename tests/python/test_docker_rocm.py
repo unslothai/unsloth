@@ -338,10 +338,12 @@ class TestRocmEntrypoint:
         assert rc == 1 and not ran
         assert "not readable" in err and "--group-add" in err and "NUMERIC" in err, err
 
-    def test_no_gpu_for_rocm_smi_refuses(self, tmp_path):
+    def test_no_gpu_for_rocm_smi_is_a_note_not_a_refusal(self, tmp_path):
+        """Measured on a gfx1151 runner: rocm-smi lists nothing inside the container
+        while HIP torch drives the card. torch is the gate; rocm-smi only advises."""
         rc, ran, err = _entrypoint(tmp_path, smi_sees_gpu = False)
-        assert rc == 1 and not ran
-        assert "No GPU visible to rocm-smi" in err and "/dev/dri" in err, err
+        assert rc == 0 and ran, err
+        assert "rocm-smi lists no GPU" in err and "/dev/dri" in err, err
 
     def test_the_skip_flag_runs_the_command_without_probing(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path, kfd = False, env_extra = {"UNSLOTH_SKIP_GPU_CHECK": "1"})

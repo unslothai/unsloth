@@ -207,7 +207,10 @@ present = sorted(
     if re.match(r"(pytorch-)?triton", d.metadata["Name"] or "")
 )
 assert present == [pin_name], f"FAIL: triton dists {present}, torch pins {pin_name}"
-assert version(pin_name) == triton.__version__, (
+# Base versions: AMD's per-arch triton is 3.6.0+rocm7.13.0 by metadata and reports
+# triton.__version__ 3.6.0 (measured on the gfx1151 build), so the local tag is not
+# part of the comparison. A pypi triton over a ROCm pin still differs in the base.
+assert version(pin_name).split("+")[0] == triton.__version__.split("+")[0], (
     f"FAIL: {pin_name} {version(pin_name)} by metadata but triton.__version__ is {triton.__version__}"
 )
 import triton.backends  # noqa: E402

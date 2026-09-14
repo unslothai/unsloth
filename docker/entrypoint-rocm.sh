@@ -5,8 +5,8 @@
 # the order the failures tend to bite:
 #   1. /dev/kfd missing or unreadable   (no --device flags, no --group-add,
 #                                        Docker Desktop, amdgpu not loaded)
-#   2. rocm-smi sees no GPU             (no --device /dev/dri, driver too old)
-#   3. torch is a HIP build and torch.cuda.is_available() is True
+#   2. what rocm-smi sees, as a note    (it does not list every APU)
+#   3. torch is a HIP build and torch.cuda.is_available() is True: the gate
 #   4. the card's gfx arch against what this image's wheels carry
 #
 # Bypass for offline tooling / CI:
@@ -71,32 +71,19 @@ MSG
     exit 1
 fi
 
-# --- Check 2: rocm-smi present and can see at least one GPU -----------------
+# --- Check 2: what rocm-smi sees (advisory) --------------------------------
+# rocm-smi enumerates through sysfs and does not list every APU (measured on a
+# gfx1151 Strix Halo runner: no GPU[..] line inside the container), so its
+# answer cannot be the gate; check 3 asks torch itself.
 if ! command -v rocm-smi >/dev/null 2>&1; then
-    err "rocm-smi not found inside the container."
-    err "The ROCm runtime in this image is broken. Re-pull the image."
-    exit 1
-fi
-
-if ! rocm-smi --showid 2>/dev/null | grep -q 'GPU\['; then
-    err "No GPU visible to rocm-smi from inside the container."
-    cat >&2 <<'MSG'
-
-Likely causes (in order of frequency):
-
-  1. The container was started without --device /dev/dri (both /dev/kfd and
-     /dev/dri are needed). Re-launch with:
-       bash docker/run.sh --rocm <cmd>
-
-  2. The container user cannot open the render nodes: pass the host's video
-     and render group ids with --group-add <gid> (run.sh --rocm does this).
-
-  3. Host amdgpu driver too old for the ROCm version baked into this image.
-     Check the host: rocm-smi --version  (and  rocminfo  to list the card)
-
-To bypass this check (e.g. offline tooling), set UNSLOTH_SKIP_GPU_CHECK=1.
-MSG
-    exit 1
+    warn "rocm-smi not found inside the container; skipping its listing."
+elif ! rocm-smi --showid 2>/dev/null | grep -q 'GPU\['; then
+    warn "rocm-smi lists no GPU from inside the container. That is normal for some APUs;"
+    warn "if the torch check below fails too, the usual causes are a missing --device /dev/dri,"
+    warn "the host's video/render group ids not passed with --group-add (run.sh --rocm does"
+    warn "both), or a host amdgpu driver older than the ROCm in this image (rocm-smi --version)."
+else
+    rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
 # --- Check 3: a HIP torch that can see the device ---------------------------
@@ -120,8 +107,8 @@ if hip_ver is None:
 if torch.cuda.is_available():
     sys.exit(0)
 image_rocm = os.environ.get("IMAGE_ROCM") or ".".join(hip_ver.split(".")[:2])
-print("ERROR: torch.version.hip is set but torch.cuda.is_available() is False, despite")
-print("rocm-smi seeing the card.")
+print("ERROR: torch is a ROCm build but torch.cuda.is_available() is False: HIP could")
+print("not open the device the container was given.")
 print()
 print(f"This image was built against ROCm {image_rocm} (HIP {hip_ver}). The host's")
 print("amdgpu driver has to be at least as new. Check the host (NOT the container):")
