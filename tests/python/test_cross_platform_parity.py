@@ -1241,11 +1241,17 @@ class TestInstallUvCacheRootParity:
             "function Test-StudioUvCacheWritable", 1
         )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
-        # Case-insensitively on the PowerShell side alone: Windows resolves `Archive-V0` to
-        # uv's `archive-v0`, so it is the same bucket and must be probed. sh keeps `case`,
-        # which is case-sensitive, because on POSIX they are two directories.
+        # Both sides resolve a casing variant to uv's bucket, by different means because the
+        # question is different. Windows is case-insensitive whenever it has not been told
+        # otherwise, so the helper folds unconditionally. A POSIX host can be either (default
+        # APFS is insensitive, ext4 is not), so install.sh asks the filesystem instead: the
+        # lowercase spelling resolving to a directory. Folding it blind would condemn a cache
+        # for a directory uv never opens, which is what the allowlist exists to prevent.
         assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
         assert "-cin" not in bucket_ps1, bucket_ps1
+        writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
+        assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
+        assert '[ -d "$1/$_uv_w_lower" ]' in writable_sh, writable_sh
         # and the KIND has to be one uv creates, on BOTH sides with the same list: a
         # bucket-shaped `unused-v999` is not uv's to write, and condemning a warm cache for it
         # redownloaded what the cache already held. A list that drifts splits the two answers.

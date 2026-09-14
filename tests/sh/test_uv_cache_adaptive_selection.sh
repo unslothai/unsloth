@@ -188,6 +188,22 @@ mkdir -p "$_managed_python/archive-v0/torch" "$_managed_python/python-v0"
 : > "$_managed_python/archive-v0/torch/libtorch.so"
 : > "$_managed_python/CACHEDIR.TAG"
 chmod a-w "$_managed_python/python-v0"
+# Default APFS is case-insensitive, where `Python-V0` IS uv's python-v0. Simulated the way the
+# probe actually detects it, by the lowercase spelling resolving to a directory, so this runs
+# the same on the case-sensitive filesystem CI gives us. The macOS staging legs run the real
+# thing.
+_cased_bucket="$_TMP/uvcased"
+mkdir -p "$_cased_bucket/archive-v0/torch" "$_cased_bucket/Python-V0" "$_cased_bucket/python-v0"
+: > "$_cased_bucket/archive-v0/torch/libtorch.so"
+: > "$_cased_bucket/CACHEDIR.TAG"
+chmod a-w "$_cased_bucket/Python-V0"
+# ...and on a case-SENSITIVE filesystem the same name is a directory uv never opens, so it must
+# NOT condemn the cache. Folding case blind would, which is the bug the allowlist exists to fix.
+_cased_only="$_TMP/uvcasedonly"
+mkdir -p "$_cased_only/archive-v0/torch" "$_cased_only/Python-V0"
+: > "$_cased_only/archive-v0/torch/libtorch.so"
+: > "$_cased_only/CACHEDIR.TAG"
+chmod a-w "$_cased_only/Python-V0"
 # A bucket NAME needs the whole suffix to be the version: a backup copy or a tarball beside
 # the real bucket is not uv's to write, and must not condemn the cache.
 _lookalike="$_TMP/uvlookalike"
@@ -278,6 +294,10 @@ else
     assert_eq "an unknown KIND does not either" "shared" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/q3" '' "$_managed_python")
     assert_eq "a read-only python-v0 still does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
+    assert_eq "a cased bucket the FS resolves does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q5" '' "$_cased_only")
+    assert_eq "one it does not resolve does not"   "shared" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/v1" '' "$_empty_version")
     assert_eq "an empty -v suffix is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
@@ -306,7 +326,7 @@ for _nc in 0 false; do
 done
 chmod 700 "$_alien/lost+found"
 chmod 700 "$_alien_bucket/unused-v999"
-chmod u+w "$_managed_python/python-v0"
+chmod u+w "$_managed_python/python-v0" "$_cased_bucket/Python-V0" "$_cased_only/Python-V0"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
     "$_denied_meta/interpreter-v4" "$_empty_version/archive-v1-v"

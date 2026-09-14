@@ -673,7 +673,18 @@ _uv_cache_is_writable() {
     case $- in *f*) _uv_w_glob=off ;; esac
     set +f
     for _uv_w_dir in "$1"/*; do
-        _uv_is_bucket_name "${_uv_w_dir##*/}" || continue
+        _uv_w_name="${_uv_w_dir##*/}"
+        if ! _uv_is_bucket_name "$_uv_w_name"; then
+            # Default APFS is case-insensitive, so on macOS `Python-v0` IS uv's python-v0 and
+            # uv writes it. Asked of the filesystem rather than of uname, because that is the
+            # actual question and both answers exist on both platforms: the lowercase spelling
+            # resolving to a directory is what case-insensitive MEANS. On ext4 it does not
+            # resolve, and folding there would condemn a cache for a directory uv never opens,
+            # which is the bug this allowlist exists to fix.
+            case "$_uv_w_name" in *[[:upper:]]*) ;; *) continue ;; esac
+            _uv_w_lower=$(printf '%s' "$_uv_w_name" | tr '[:upper:]' '[:lower:]')
+            { _uv_is_bucket_name "$_uv_w_lower" && [ -d "$1/$_uv_w_lower" ]; } || continue
+        fi
         if [ ! -d "$_uv_w_dir" ]; then
             # A file, or a symlink dangling or not, is an existing path to mkdir(2).
             if [ -e "$_uv_w_dir" ] || [ -L "$_uv_w_dir" ]; then
@@ -684,7 +695,7 @@ _uv_cache_is_writable() {
         _uv_cache_root_is_writable "$_uv_w_dir" || _uv_w_bad=1
     done
     if [ "$_uv_w_glob" = off ]; then set -f; fi
-    unset _uv_w_dir _uv_w_glob
+    unset _uv_w_dir _uv_w_glob _uv_w_name _uv_w_lower
     if [ "$_uv_w_bad" -ne 0 ]; then
         unset _uv_w_bad
         return 1
