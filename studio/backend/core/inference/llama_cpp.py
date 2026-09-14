@@ -25769,6 +25769,12 @@ class LlamaCppBackend:
                             # is non-None only in manual mode, which leaves gpu_indices
                             # None, and this arm needs it truthy.
                             self._tensor_split = None
+                            # The auto twin, which this arm CAN reach: an auto
+                            # tensor-parallel fallback emits its ratio with
+                            # gpu_indices pinned. Left set it feeds the
+                            # `tensor_split` property a ratio the respawned child
+                            # does not have.
+                            self._auto_tensor_split_emitted = None
                         # A tensor split needs two devices, so narrowing to one makes
                         # --split-mode tensor a no-op still REPORTED as active
                         # (tensor_parallel drives the UI and the MTP watchdog). Strip it.

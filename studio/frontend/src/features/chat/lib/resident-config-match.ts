@@ -439,11 +439,18 @@ const SETTING_CHECKS: SettingCheck[] = [
     // resident model that is exactly what was asked for. A manual load's custom ratio is still a
     // real disagreement, and a server too old to report its mode is still compared, so nothing
     // that used to reload stops reloading.
+    //
+    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
+    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
+    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
+    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
+    // a placement change the user had made and the server would have applied.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
     agrees: (_c, s, standing) =>
-      s.gpu_memory_mode === "auto" || sameList(standing.splitRatio, s.tensor_split),
+      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
+      sameList(standing.splitRatio, s.tensor_split),
   },
   {
     // A managed override the backend would reject outright. Folding it into "no override" here would

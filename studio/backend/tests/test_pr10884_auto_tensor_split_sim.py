@@ -520,3 +520,59 @@ def test_a_layer_split_load_clears_the_recorded_ratio(tmp_path):
         n_ctx = 4096,
     )
     assert backend._auto_tensor_split is None
+
+
+# --------------------------------------------------------------------------
+# 6. What /status reports after a recovery rewrites the argv.
+# --------------------------------------------------------------------------
+
+
+def _crash_once_with_an_arch_error(backend):
+    """Make the first spawn die the way a binary with no kernels for the pinned
+    card does, so the arch-crash retry runs and the second spawn succeeds."""
+    calls: list[int] = []
+
+    def _health(timeout, **_kw):
+        calls.append(1)
+        return len(calls) > 1
+
+    backend._wait_for_health = _health
+    backend._kernel_image_invalid = lambda _text: True
+    return calls
+
+
+def test_the_arch_crash_retry_stops_reporting_the_ratio_it_dropped(tmp_path):
+    """The emitted ratio is not just a record, it is what `tensor_split` reports.
+
+    The retry re-masks the child onto a narrowed device set, so a split sized for
+    the crashed one weights the wrong cards and `_without_tensor_split` takes it
+    off the argv. Left recorded, /status answers with a ratio the live child does
+    not have, and here the narrowing leaves ONE device, so it would answer with a
+    ratio beside `tensor_parallel: false`. The third card is below the reserve, so
+    the planner pins two of three and the retry has somewhere to go.
+    """
+    backend, gguf = _tp_backend(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],
+    )
+    _crash_once_with_an_arch_error(backend)
+
+    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1])
+
+    assert _flag(cmd, "--tensor-split") is None, "the retry kept a split it re-indexed"
+    assert backend.tensor_parallel is False
+    assert backend.tensor_split is None, (
+        "/status still reports the dropped ratio: " f"{backend.tensor_split}"
+    )
+
+
+def test_a_launch_that_does_not_crash_still_reports_its_ratio(tmp_path):
+    """The control. Clearing on the recovery arm must not clear on the ordinary
+    one, or the PR's own reporting is gone."""
+    backend, gguf = _tp_backend(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],
+    )
+    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1])
+    assert _flag(cmd, "--tensor-split") == "3,1"
+    assert backend.tensor_split == [0.75, 0.25]

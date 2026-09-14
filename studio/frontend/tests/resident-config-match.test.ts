@@ -1811,6 +1811,37 @@ test("an auto tensor-parallel server that reports a split still adopts", () => {
   );
 });
 
+/**
+ * The limit of the rule above. applyInferenceStatusToStore preserves prevState.splitRatio
+ * whenever a gpu-memory edit is pending, so a ratio set under Manual survives the switch
+ * to Auto, and the load path sends store.splitRatio in either mode. Adopting on the
+ * resident's mode alone would drop a placement change the user made and the server would
+ * have applied, since the backend honours a ratio in auto now too.
+ */
+test("a pending ratio the auto resident is not running is still a reload", () => {
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
+      { ...BLANK, tensorParallel: true },
+      { ...STANDING, splitRatio: [0.5, 0.5] },
+    ),
+    false,
+  );
+});
+
+test("a pending ratio the auto resident IS running adopts", () => {
+  // The other half of the guard: it must not turn into a blanket reload for anyone who
+  // ever touched the ratio.
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
+      { ...BLANK, tensorParallel: true },
+      { ...STANDING, splitRatio: [0.75, 0.25] },
+    ),
+    true,
+  );
+});
+
 test("a remembered manual split the resident load does not run is still a reload", () => {
   assert.equal(
     matches(
