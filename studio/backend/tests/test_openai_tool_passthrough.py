@@ -10150,14 +10150,10 @@ class TestExternalProviderParticipantNames:
                     }
                 ],
             ),
-            ChatMessage(
-                role = "tool", tool_call_id = "call_1", name = "get_weather", content = "sunny"
-            ),
+            ChatMessage(role = "tool", tool_call_id = "call_1", name = "get_weather", content = "sunny"),
             ChatMessage(role = "assistant", name = "researcher", content = "It is sunny."),
         ]
-        out = _build_external_messages(
-            messages, supports_vision = True, provider_type = provider_type
-        )
+        out = _build_external_messages(messages, supports_vision = True, provider_type = provider_type)
         assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "assistant"]
         assert [m.get("name") for m in out] == [None, None, None, "get_weather", None]
 
