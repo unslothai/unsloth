@@ -1205,7 +1205,10 @@ else
     else
         UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
         export UV_CACHE_DIR
-        if ! _uv_cache_probe_writable "$UV_CACHE_DIR"; then
+        # The whole cache, not just its root, and the same check the recorded branch gets: a
+        # Studio cache whose archive-v0 went read-only passes a root probe and then aborts uv
+        # (measured: exit 1, "Permission denied"). Leaving it unset lets uv use its own.
+        if ! _uv_cache_usable "$UV_CACHE_DIR"; then
             echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
             unset UV_CACHE_DIR
         fi

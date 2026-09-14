@@ -298,6 +298,21 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: a lookalike is never a store, folding or not" \
         "" "$($shell -c '. "$1"; _uv_store_key "Archive-V0.backup" 1 || true' _ "$PROBE_HELPERS")"
 
+    # The FALLBACK Studio cache gets the same check as a recorded one. A root-only probe passes
+    # on a Studio cache whose archive-v0 went read-only, and uv then aborts (measured: exit 1,
+    # "Permission denied") instead of falling back to uv's own.
+    SICK="$CASE/sick studio/cache/uv"
+    mkdir -p "$SICK/archive-v0/pkg"
+    : > "$SICK/archive-v0/pkg/x.whl"
+    rm -f "$CASE/sick studio/cache/uv-cache-dir"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$SICK/archive-v0" 2>/dev/null; then
+        assert_eq "$shell: an unusable Studio cache is dropped, not exported" \
+            "<unset>" "$(run "$shell" unset "" unset "" "$CASE/sick studio" 2>/dev/null)"
+        chmod 0755 "$SICK/archive-v0" 2>/dev/null || true
+    fi
+    assert_eq "$shell: and is used again once its store is writable" \
+        "$SICK" "$(run "$shell" unset "" unset "" "$CASE/sick studio")"
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one
