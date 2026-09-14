@@ -3182,18 +3182,29 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 )
 
 
-_UV_CACHE_BUCKETS = ("archive-", "builds-", "built-wheels-", "wheels-", "sdists-")
+_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
+
+
+def _uv_is_bucket_name(name: str) -> bool:
+    """A name uv itself creates: <kind>-v<N>, whole suffix numeric, kind from the LAST `-v`.
+    Mirrors _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in install.ps1."""
+    kind, marker, version = name.rpartition("-v")
+    # isascii too: str.isdigit() is true for Arabic-Indic and superscript digits, which the sh
+    # `*[!0-9]*` case and the PowerShell \A[0-9]+\z both reject. uv writes ASCII.
+    return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_BUCKETS
 
 
 def _uv_cache_has_packages(cache_dir: Path) -> bool:
     """wheels-* is metadata only on uv 0.10, so counting any file reads a merely-resolved cache
-    as warm. Same rule as install.sh:_configure_uv_cache."""
+    as warm. Same rule as install.sh:_configure_uv_cache, the WHOLE `-v` suffix included: a
+    prefix match also takes `archive-v0.backup` and `archive-backup-v0`, whose bytes uv cannot
+    reuse, so an update could prefer a cache that is cold in practice and redownload."""
     try:
         buckets = [
             entry
             for entry in cache_dir.iterdir()
-            if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
+            if _uv_is_bucket_name(entry.name) and entry.is_dir()
         ]
     except (OSError, ValueError):
         return False
@@ -3219,14 +3230,19 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-# uv's boolish spelling. Anything outside it is a value uv refuses to run on.
-_UV_TRUE = ("1", "true", "yes", "on")
+# clap's literals, which is what uv binds UV_NO_CACHE to (BoolishValueParser). `y` and `t` are
+# real spellings uv honours, and were missing here, in install.sh and in install.ps1 alike.
+_UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 def _uv_no_cache_requested() -> bool:
     """uv --no-cache caches in a temporary directory and discards it, outranks --cache-dir,
-    and recording it would aim later updates at a cache that never existed."""
-    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+    and recording it would aim later updates at a cache that never existed.
+
+    Not stripped, matching clap and therefore both installers: uv rejects a padded value
+    outright rather than reading it as true, so ` true ` leaves uv's cache ON and this must
+    not stand the selection down for it."""
+    return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
 def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
@@ -3322,7 +3338,9 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if recorded is not None and _uv_cache_has_packages(recorded):
         # Only while it holds something: a marker for an emptied cache loses to a warm one.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    # No marker, and content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode, so use uv's default.
+    # Content cannot settle it: one on-demand wheel warms the Studio cache even in shared mode,
+    # so uv's default goes first and a warm Studio cache is the fallback below. The installers
+    # order the same three the same way.
     default_cache = _uv_default_cache_dir(cwd)
     if default_cache is not None and _uv_cache_has_packages(default_cache):
         return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
