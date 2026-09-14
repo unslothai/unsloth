@@ -660,16 +660,16 @@ test("created files stay outside the collapsible on Python and Terminal cards", 
       0,
       `${file} hid SandboxFiles inside ToolFallbackContent`,
     );
-    const wrap = files[0].parent;
-    assert.ok(
-      wrap && ts.isJsxElement(wrap),
-      `${file} did not wrap SandboxFiles`,
+    // No wrapper element: an empty one would sit in the DOM of every card that created nothing.
+    assert.equal(files[0].parent, root, `${file} wraps SandboxFiles`);
+    const cls = (files[0] as ts.JsxSelfClosingElement).attributes.properties.find(
+      (property): property is ts.JsxAttribute =>
+        ts.isJsxAttribute(property) && property.name.getText() === "className",
     );
-    const cls = jsxAttribute(wrap, "className");
     assert.match(
       cls?.initializer?.getText() ?? "",
-      /pl-5/,
-      `${file} wrapper is missing pl-5, so the file row sits flush with the trigger`,
+      /ml-5/,
+      `${file} is missing ml-5, so the file row sits flush with the trigger`,
     );
   }
 });

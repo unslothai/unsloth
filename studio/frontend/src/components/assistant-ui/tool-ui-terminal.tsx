@@ -123,9 +123,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         </div>
       </ToolFallbackContent>
       {/* Files stay outside even when the card is collapsed (#10425) */}
-      <div className="pl-5">
-        <SandboxFiles sessionId={sessionId} files={files} />
-      </div>
+      <SandboxFiles className="ml-5" sessionId={sessionId} files={files} />
     </ToolFallbackRoot>
   );
 };
