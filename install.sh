@@ -604,13 +604,18 @@ _probe_uv_cache_writable() {
 # Permission denied" during install, and an empty 0555 interpreter-v4 gives "Failed to query
 # Python interpreter ... failed to create directory" before resolution even starts.
 #
-# Every existing immediate subdirectory, therefore, rather than a list that has to track uv's
-# layout (interpreter-v*, simple-v*, archive-v*, wheels-v*, ... change between releases). The
-# WARMTH scan still uses the package-bucket list: interpreter and index metadata are not
+# Matched by uv's own naming convention rather than a fixed list, so a new store in a later uv
+# release is covered without an audit: every directory uv owns here is `<name>-v<n>`
+# (archive-v0, interpreter-v4, simple-v20, wheels-v6, sdists-v9, builds-v0, environments-v2).
+# NOT every subdirectory: an unrelated read-only directory someone left in a shared cache would
+# then disqualify a cache uv can use perfectly, which costs the whole re-download this branch
+# exists to avoid, and fails an offline update outright.
+#
+# The WARMTH scan still uses the package-bucket list: interpreter and index metadata are not
 # packages, and a cache holding only those has fetched nothing.
 _probe_uv_cache_usable() {
     _probe_uv_cache_writable "$1" || return 1
-    for _uv_probe_bucket in "$1"/*/; do
+    for _uv_probe_bucket in "$1"/*-v[0-9]*/; do
         _uv_probe_bucket=${_uv_probe_bucket%/}
         [ -d "$_uv_probe_bucket" ] || continue
         if ! _probe_uv_cache_writable "$_uv_probe_bucket"; then

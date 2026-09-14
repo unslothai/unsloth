@@ -3321,7 +3321,9 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     list that has to track uv's layout. Mirrors install.sh's _probe_uv_cache_usable."""
     probes = [cache_dir]
     try:
-        probes.extend(p for p in cache_dir.iterdir() if p.is_dir())
+        # uv's own `<name>-v<n>` convention, not every subdirectory: an unrelated read-only
+        # directory in a shared cache must not disqualify a cache uv can use.
+        probes.extend(p for p in cache_dir.glob("*-v[0-9]*") if p.is_dir())
     except OSError:
         return False
     for target in probes:

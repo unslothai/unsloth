@@ -583,6 +583,20 @@ ISOLATED
         chmod 0755 "$INTERP_RO/interpreter-v4" 2>/dev/null || true
     fi
 
+    # ...and only the directories uv OWNS. Probing every subdirectory rejected a cache uv uses
+    # perfectly if anything unrelated and read-only sat in it, which throws away the warm cache
+    # this branch exists to find and fails an offline update. uv's stores are all `<name>-v<n>`.
+    STRAY="$CASE/stray dir cache/uv"
+    mkdir -p "$STRAY/archive-v0/pkg" "$STRAY/interpreter-v4" "$STRAY/notes from someone"
+    : > "$STRAY/archive-v0/pkg/payload.whl"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$STRAY/notes from someone" 2>/dev/null; then
+        run_case "$shell" "an unrelated read-only directory does not disqualify a usable cache" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$STRAY" "$STRAY" shared \
+            "reusing existing shared cache ($STRAY) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+        chmod 0755 "$STRAY/notes from someone" 2>/dev/null || true
+    fi
+
     # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.
     mkdir -p "$CASE/work/relcache/archive-v0/pkg"
     : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"
