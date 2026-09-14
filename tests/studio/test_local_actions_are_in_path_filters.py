@@ -106,12 +106,23 @@ def _selects(paths: list, path: str) -> bool:
     return selected
 
 
-def _action_files(action: str) -> list:
-    """The files GitHub would report as changed for an edit to this action."""
-    for name in ("action.yml", "action.yaml"):
-        if (REPO_ROOT / action / name).is_file():
-            return [f"{action}/{name}"]
-    return [f"{action}/action.yml"]
+def _action_files(action: str, root: Path = REPO_ROOT) -> list:
+    """Every file GitHub could report as changed for an edit to this action.
+
+    The whole directory, not just the manifest. A composite action that grows a helper
+    script keeps working with a filter naming only `action.yml`, and a helper-only change
+    would then skip every workflow that uses it, which is the exact failure this guard
+    exists to prevent. Listing the directory means such a change has to be covered too,
+    by a `/**` entry or by naming the file.
+    """
+    directory = root / action
+    if not directory.is_dir():
+        return [f"{action}/action.yml"]
+    return sorted(
+        str(path.relative_to(root)).replace("\\", "/")
+        for path in directory.rglob("*")
+        if path.is_file()
+    )
 
 
 def _workflows() -> list:
@@ -159,6 +170,29 @@ def test_an_ordered_negation_is_not_read_as_a_literal_bang():
         ["studio/backend/**", "!studio/backend/tests/**"], "studio/backend/tests/x.py"
     )
     assert _selects(["studio/backend/**", "!studio/backend/tests/**"], "studio/backend/main.py")
+
+
+def test_a_helper_file_beside_the_manifest_is_checked_too(tmp_path):
+    """Every action here is a lone action.yml today, so this is the case the tree cannot
+    show: an action that grows a helper script.
+
+    A filter naming only `<action>/action.yml` still selects the manifest, so checking the
+    manifest alone would pass while a helper-only change skipped every consuming workflow.
+    """
+    action = ".github/actions/grown"
+    (tmp_path / action).mkdir(parents = True)
+    (tmp_path / action / "action.yml").write_text("name: grown\n")
+    (tmp_path / action / "run.sh").write_text("echo hi\n")
+
+    files = _action_files(action, root = tmp_path)
+    assert files == [f"{action}/action.yml", f"{action}/run.sh"]
+
+    manifest_only = [f"{action}/action.yml"]
+    assert _selects(manifest_only, files[0])
+    assert not all(
+        _selects(manifest_only, f) for f in files
+    ), "naming only the manifest must not satisfy the guard once the action has a helper"
+    assert all(_selects([f"{action}/**"], f) for f in files)
 
 
 def test_the_pre_existing_list_does_not_outlive_the_problem():
