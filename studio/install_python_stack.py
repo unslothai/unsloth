@@ -2515,21 +2515,6 @@ def _has_usable_nvidia_gpu() -> bool:
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
 
-    def _lists_a_gpu(exe: str) -> bool:
-        try:
-            result = subprocess.run(
-                [exe, "-L"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
-            )
-        except Exception:
-            return False
-        return result.returncode == 0 and "GPU " in result.stdout
-
     # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
     # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
     # on the GPU check failing, not on the PATH lookup missing.
@@ -2537,7 +2522,7 @@ def _has_usable_nvidia_gpu() -> bool:
     for _candidate in _nvidia_smi_candidates():
         if _candidate != _path_exe and not os.path.isfile(_candidate):
             continue
-        if _lists_a_gpu(_candidate):
+        if _nvidia_smi_lists_a_gpu(_candidate):
             return True
     # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU whatever nvidia-smi does.
     if sys.platform != "win32":
@@ -3361,6 +3346,28 @@ def _nvidia_smi_candidates() -> "list[str]":
     return candidates
 
 
+def _nvidia_smi_lists_a_gpu(exe: str) -> bool:
+    """Whether this nvidia-smi actually enumerates a GPU.
+
+    The predicate both probes have to agree on. A stale copy can exit 0 and print a
+    perfectly parseable "CUDA Version:" banner while `-L` lists nothing, which is the
+    state setup.ps1's Test-NvidiaSmiHasGpu rejects.
+    """
+    try:
+        result = subprocess.run(
+            [exe, "-L"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "GPU " in result.stdout
+
+
 def _nvidia_smi_usable_candidates() -> "list[str]":
     """Candidates worth actually running: the PATH result plus every file that exists.
 
@@ -3500,6 +3507,12 @@ def _detect_cuda_torch_index_url() -> str:
     # stopped at the stale binary, read no version, and defaulted to cu126. On Blackwell
     # that wheel has no kernels, so a repair would install one the GPU cannot use.
     for exe in _nvidia_smi_usable_candidates():
+        # The same predicate the presence probe uses. A stale copy that exits 0 with a
+        # parseable banner but lists no GPU must not decide the family: _has_usable_nvidia_gpu
+        # walks past it to the working copy, and setup.ps1 keeps the executable that passes
+        # Test-NvidiaSmiHasGpu, so accepting it here picks a family off the wrong driver.
+        if not _nvidia_smi_lists_a_gpu(exe):
+            continue
         try:
             result = subprocess.run(
                 [exe],

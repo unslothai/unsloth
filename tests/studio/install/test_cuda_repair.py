@@ -86,6 +86,14 @@ def _make_run(
         result.returncode = smi_rc
         if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
             out = "".join(f"{cap}\n" for cap in compute_caps)
+        elif len(cmd) > 1 and str(cmd[1]) == "-L":
+            # The GPU-presence predicate both probes now share. A driver that reports a
+            # CUDA version has a GPU to report it for, so this tracks cuda_version.
+            out = (
+                "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-x)\n"
+                if cuda_version
+                else "No devices were found\n"
+            )
         else:
             out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
         result.stdout = out if kwargs.get("text") else out.encode()
@@ -768,6 +776,14 @@ def _run_flavor_invariant(
             result.returncode = 0
             if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
                 out = "8.6\n"
+            elif len(cmd) > 1 and str(cmd[1]) == "-L":
+                # The shared GPU-presence predicate; a driver reporting a CUDA version
+                # has a GPU to report it for.
+                out = (
+                    "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-x)\n"
+                    if cuda_version
+                    else "No devices were found\n"
+                )
             else:
                 out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices\n"
         result.stdout = out if kwargs.get("text") else out.encode()
@@ -2348,12 +2364,65 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         def _run(command, *a, **k):
             if command[0] == "stale-smi":
                 return SimpleNamespace(returncode = 9, stdout = "", stderr = "")
+            if len(command) > 1 and command[1] == "-L":
+                return SimpleNamespace(
+                    returncode = 0, stdout = "GPU 0: NVIDIA RTX (UUID: GPU-x)", stderr = ""
+                )
             return SimpleNamespace(
                 returncode = 0, stdout = "| NVIDIA-SMI 591.86  CUDA Version: 12.8 |", stderr = ""
             )
 
         monkeypatch.setattr(stack_mod.subprocess, "run", _run)
         assert stack_mod._detect_cuda_torch_index_url().endswith("/cu128")
+
+    def test_a_banner_without_a_gpu_does_not_decide_the_family(self, monkeypatch, tmp_path):
+        """Exiting 0 with a parseable banner is not enough; -L has to list a GPU.
+
+        A stale copy can print "CUDA Version: 12.6" and enumerate nothing. The presence
+        probe rejects it and walks on to the working copy, and setup.ps1 keeps whichever
+        executable passes Test-NvidiaSmiHasGpu, so accepting it here reads the family off
+        the wrong driver.
+        """
+        working = tmp_path / "nvidia-smi.exe"
+        working.write_text("")
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda name, *a, **k: "stale-smi")
+        monkeypatch.setattr(
+            stack_mod, "_nvidia_smi_candidates", lambda: ["stale-smi", str(working)]
+        )
+        monkeypatch.setattr(stack_mod, "_cap_cuda_family_for_pre_turing", lambda f, e: f)
+
+        def _run(command, *a, **k):
+            listing = len(command) > 1 and command[1] == "-L"
+            if command[0] == "stale-smi":
+                # Exits 0 either way, but lists nothing.
+                return SimpleNamespace(
+                    returncode = 0,
+                    stdout = "" if listing else "| NVIDIA-SMI 550.1  CUDA Version: 12.6 |",
+                    stderr = "",
+                )
+            return SimpleNamespace(
+                returncode = 0,
+                stdout = (
+                    "GPU 0: NVIDIA RTX (UUID: GPU-x)"
+                    if listing
+                    else "| NVIDIA-SMI 591.86  CUDA Version: 13.1 |"
+                ),
+                stderr = "",
+            )
+
+        monkeypatch.setattr(stack_mod.subprocess, "run", _run)
+        assert stack_mod._detect_cuda_torch_index_url().endswith("/cu130")
+
+    def test_both_probes_share_the_gpu_presence_predicate(self):
+        # Two callers that disagree about what counts as a working nvidia-smi disagree
+        # about the host, which is how the family came off the wrong driver twice.
+        assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(
+            stack_mod._detect_cuda_torch_index_url
+        )
 
     def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
         # The repair helpers install from the pinned URL, so expecting the driver's family
