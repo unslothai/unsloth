@@ -30,7 +30,12 @@ class _FakeUpload:
         return self._content
 
 
-def _load_seed_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def _load_seed_route(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    inline_extraction = True,
+):
     pytest.importorskip("fastapi")
     pytest.importorskip("multipart")
     pytest.importorskip("structlog")
@@ -43,6 +48,12 @@ def _load_seed_route(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     seed_route = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(seed_route)
     seed_route.UNSTRUCTURED_UPLOAD_ROOT = tmp_path / "unstructured-uploads"
+    if inline_extraction:
+        # Unit cases inject extractor failures in this process. Process isolation has separate tests.
+        async def extract(file_path, ext):
+            return seed_route._extract_text_from_file(file_path, ext)
+
+        monkeypatch.setattr(seed_route, "_extract_text_from_file_async", extract)
     return seed_route
 
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -405,6 +406,7 @@ function selectedRepoMatchesRuntime(
 }
 
 export function ModelsPage() {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const gpu = useGpuInfo();
   // The saved VRAM Budget the loader admits against. The "Fits on device" filter scored against
@@ -864,8 +866,9 @@ export function ModelsPage() {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+    signalReady();
   }, [
+    signalReady,
     initialResidentStatusSettled,
     inventorySettled,
     isDiscoverTab,

@@ -50,6 +50,23 @@ from core.inference.openai_responses_shared import normalize_function_schema
 from core.inference.providers import get_provider_info, list_available_providers
 
 
+async def _is_disconnected():
+    return False
+
+
+class AlwaysRejecting:
+    async def get(
+        self,
+        _url,
+        headers = None,
+        params = None,
+    ):
+        return httpx.Response(401, json = {"detail": "expired"})
+
+    async def aclose(self):
+        return None
+
+
 def _jwt(payload: dict) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"header.{encoded}.signature"
@@ -796,7 +813,6 @@ def test_bare_detail_upstream_error_reaches_the_user():
 
 
 def _models_response(payload, status = 200):
-    import httpx
     class FakeClient:
         def __init__(self):
             self.calls = []
@@ -1529,9 +1545,6 @@ def _codex_chat_gate(
 
     monkeypatch.setattr(codex_auth, "resolve_access", resolve or _refuse)
 
-    async def _is_disconnected():
-        return False
-
     request = SimpleNamespace(
         headers = {},
         state = SimpleNamespace(skip_api_monitor = True),
@@ -1598,9 +1611,6 @@ def test_codex_chat_receives_the_current_date(monkeypatch):
         "current_date_prompt_line",
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
-
-    async def _is_disconnected():
-        return False
 
     request = SimpleNamespace(
         headers = {},
@@ -1698,8 +1708,6 @@ def test_chat_refetches_the_plan_catalog_after_a_restart(monkeypatch):
 
 def test_chat_refuses_when_the_catalog_cannot_be_refreshed(monkeypatch):
     """An unreachable catalog refuses the model; it does not declare the connection bad."""
-    import httpx
-
     forget_subscription_models("codex-1")
 
     async def _resolve(_provider_id):
@@ -1766,9 +1774,6 @@ def test_chat_reads_vision_support_from_the_plan_catalog(monkeypatch):
         raise codex_auth.CodexAuthError("stub: past the image gate")
 
     monkeypatch.setattr(codex_auth, "resolve_access", _refuse)
-
-    async def _is_disconnected():
-        return False
 
     def call():
         request = SimpleNamespace(
@@ -1887,9 +1892,6 @@ def test_chat_reports_reconnection_when_an_image_needs_the_catalog(monkeypatch):
         raise codex_auth.CodexAuthError("ChatGPT authorization expired. Reconnect.")
 
     monkeypatch.setattr(codex_auth, "resolve_access", _needs_reauth)
-
-    async def _is_disconnected():
-        return False
 
     payload = ChatCompletionRequest(
         messages = [
@@ -2058,8 +2060,6 @@ def test_a_superseded_catalog_read_does_not_commit(monkeypatch):
     Committing late would also clear the mark that says the saved models are unproven,
     turning a self-correcting state into a sticky one.
     """
-    import httpx
-
     forget_subscription_models("provider-9")
 
     class Rebinding:
@@ -2136,8 +2136,6 @@ def test_a_catalog_401_spends_one_forced_refresh(monkeypatch):
     The responses transport already spends one forced refresh on that, so the editor
     should not be the only path that gives up and demands a reconnect.
     """
-    import httpx
-
     forget_subscription_models("provider-11")
     calls = []
 
@@ -2179,21 +2177,7 @@ def test_a_catalog_401_spends_one_forced_refresh(monkeypatch):
 
 def test_a_second_catalog_401_asks_for_reconnection(monkeypatch):
     """A refresh that does not help is a real reauthorization, not an endless retry."""
-    import httpx
-
     forget_subscription_models("provider-12")
-
-    class AlwaysRejecting:
-        async def get(
-            self,
-            _url,
-            headers = None,
-            params = None,
-        ):
-            return httpx.Response(401, json = {"detail": "expired"})
-
-        async def aclose(self):
-            return None
 
     async def _resolve(
         _provider_id,
@@ -2218,8 +2202,6 @@ def test_a_refresh_that_cannot_be_reached_stays_retryable(monkeypatch):
     rejected, so anything else has to stay transient or the user is sent to reconnect a
     connection whose credentials are fine.
     """
-    import httpx
-
     forget_subscription_models("provider-13")
 
     class Rejecting:
@@ -2253,8 +2235,6 @@ def test_a_refresh_that_cannot_be_reached_stays_retryable(monkeypatch):
 
 def test_a_rejected_refresh_credential_is_a_reauthorization(monkeypatch):
     """The permanent variant still means reconnect."""
-    import httpx
-
     forget_subscription_models("provider-14")
 
     class Rejecting:
@@ -2291,8 +2271,6 @@ def test_a_catalog_is_not_committed_for_an_account_another_worker_replaced(monke
     A read this worker started is not retired by another worker's rebind, so the stored
     bundle is the only thing that can say the answer is for the wrong account.
     """
-    import httpx
-
     forget_subscription_models("provider-15")
 
     class Slow:
@@ -2355,8 +2333,6 @@ def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
     Reporting nothing listed would let a manual reload overlapping a chat refuse a model
     the chat's own lookup had just seen.
     """
-    import httpx
-
     forget_subscription_models("provider-17")
 
     class Overtaken:
@@ -2394,8 +2370,6 @@ def test_an_overtaken_read_still_answers_its_own_caller(monkeypatch):
 
 def test_an_overtaken_read_is_dropped_when_the_account_moved(monkeypatch):
     """If a rebind is what overtook it, its models belong to the previous account."""
-    import httpx
-
     forget_subscription_models("provider-18")
 
     class Overtaken:
@@ -2431,8 +2405,6 @@ def test_a_cold_worker_does_not_trust_a_row_it_cannot_vouch_for(monkeypatch):
     """The stale mark dies with the process; the record next to the credentials does not."""
     saved = "gpt-5.7-nova"
     forget_subscription_models("codex-1")
-
-    import httpx
 
     calls = []
 
@@ -2598,22 +2570,8 @@ def test_recording_the_proof_never_overwrites_newer_credentials(monkeypatch):
 
 def test_a_second_catalog_401_is_recorded_on_the_connection(monkeypatch):
     """Raising alone leaves auth_status saying connected, so nothing offers Reconnect."""
-    import httpx
-
     forget_subscription_models("provider-22")
     marked = []
-
-    class AlwaysRejecting:
-        async def get(
-            self,
-            _url,
-            headers = None,
-            params = None,
-        ):
-            return httpx.Response(401, json = {"detail": "expired"})
-
-        async def aclose(self):
-            return None
 
     async def _resolve(
         _provider_id,
@@ -2697,22 +2655,8 @@ def test_the_reauthorization_marker_is_written_under_the_guard(monkeypatch):
     The streaming error path already takes this guard; the catalog path is the same kind
     of write and needs the same protection.
     """
-    import httpx
-
     forget_subscription_models("provider-24")
     order = []
-
-    class AlwaysRejecting:
-        async def get(
-            self,
-            _url,
-            headers = None,
-            params = None,
-        ):
-            return httpx.Response(401, json = {"detail": "expired"})
-
-        async def aclose(self):
-            return None
 
     async def _resolve(
         _provider_id,
@@ -2829,7 +2773,6 @@ def test_a_boolean_context_window_is_not_reported_as_a_length(monkeypatch):
 
 def _gated_models_client(gate, slug):
     """A models endpoint whose response the test releases, not the network."""
-    import httpx
 
     class Gated:
         async def get(
@@ -2941,8 +2884,6 @@ def test_a_read_started_after_a_release_cannot_be_matched_by_the_older_one(monke
 
 def test_quota_metadata_marks_a_terminal_refusal():
     """A 429 is both "wait a moment" and "your plan is spent"; only the flag tells them apart."""
-    from core.inference import openai_codex_client as codex_client
-
     response = httpx.Response(
         429,
         headers = {"retry-after": "30"},
@@ -2959,8 +2900,6 @@ def test_quota_metadata_marks_a_terminal_refusal():
 def test_quota_metadata_falls_back_to_retry_after_ms():
     """The client's own backoff already reads retry-after-ms; dropping it here left the delay
     honoured on this side of the proxy and guessed at on the other."""
-    from core.inference import openai_codex_client as codex_client
-
     request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
     ms_only = httpx.Response(429, headers = {"retry-after-ms": "30000"}, request = request)
     assert codex_client._quota_metadata(ms_only) == {"retry_after": "30.0"}
@@ -2976,8 +2915,6 @@ def test_quota_metadata_falls_back_to_retry_after_ms():
 
 def _quota_error_for(monkeypatch, body):
     """Drive the real send/classify loop against one 429 and return the CodexQuotaError."""
-    from core.inference import openai_codex_client as codex_client
-
     request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
 
     async def _no_pause(delay, cancel_event):
@@ -3033,7 +2970,6 @@ def test_upstream_error_code_survives_a_body_that_cannot_be_read():
     """Parsing a body whose read failed raises StreamError, which is not an HTTPError. The
     classification runs after a failed read, so an uncaught one would replace the quota error
     the caller is supposed to see."""
-    from core.inference import openai_codex_client as codex_client
 
     class _FailingStream(httpx.AsyncByteStream):
         async def __aiter__(self):
@@ -3054,8 +2990,6 @@ def test_upstream_error_code_survives_a_body_that_cannot_be_read():
 
 
 def test_upstream_error_code_reads_code_then_type():
-    from core.inference import openai_codex_client as codex_client
-
     request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
 
     def _code_of(body):
@@ -3072,6 +3006,5 @@ def test_upstream_error_code_reads_code_then_type():
 
 
 def test_terminal_quota_detail_is_recognised():
-    from core.inference import openai_codex_client as codex_client
     assert codex_client._is_terminal_quota("You exceeded your current quota (insufficient_quota)")
     assert not codex_client._is_terminal_quota("Rate limit reached, try again in 30s")

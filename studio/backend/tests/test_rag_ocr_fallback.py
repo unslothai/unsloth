@@ -228,7 +228,9 @@ def test_ocr_override_false_skips_ocr_when_config_on(
     pdf = tmp_path / "scan.pdf"
     _image_only_pdf(pdf, pages = 1)
     doc = _ingest_with_ocr(rag_conn, "t1", pdf, ocr = False)
-    assert doc["num_chunks"] == 0  # scanned page left empty
+    assert doc["num_chunks"] == 0
+    assert doc["status"] == "failed"
+    assert "scanned PDF pages: 1" in doc["error"]
 
 
 def test_ocr_override_true_runs_ocr_when_config_off(
@@ -246,14 +248,16 @@ def test_ocr_override_true_runs_ocr_when_config_off(
     assert "quokka" in text
 
 
-def test_ocr_disabled_leaves_scanned_pdf_empty(rag_conn, stub_embeddings, monkeypatch, tmp_path):
+def test_ocr_disabled_reports_unreadable_scanned_pdf(
+    rag_conn, stub_embeddings, monkeypatch, tmp_path
+):
     monkeypatch.setattr(captioner.config, "OCR_SCANNED", False)
 
     pdf = tmp_path / "scan.pdf"
     _image_only_pdf(pdf, pages = 1)
     doc = _ingest(rag_conn, "t1", "scan.pdf", pdf)
 
-    # With OCR off, a text-less scanned page yields no chunks (prior behavior).
-    assert doc["status"] == "completed"
+    assert doc["status"] == "failed"
+    assert "scanned PDF pages: 1" in doc["error"]
     assert doc["num_chunks"] == 0
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None

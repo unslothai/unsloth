@@ -5,10 +5,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
 # Extract get_torch_index_url and its helper functions from install.sh.
 # Also replace the hardcoded /usr/bin/nvidia-smi fallback with a
 # controllable path so we can test the "no GPU" scenario on GPU machines.
@@ -91,17 +89,6 @@ done
 
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
 _SYS_PATH="/usr/local/bin:/usr/bin:/bin"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # Helper: create a mock nvidia-smi answering the version header, -L (so
 # _has_usable_nvidia_gpu sees a GPU) and --query-gpu=compute_cap. $1 is the CUDA version,
@@ -593,6 +580,4 @@ rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_FAKE_ROCM_DIR"
 rm -rf "$_TOOLS_DIR"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

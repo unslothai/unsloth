@@ -230,6 +230,74 @@ def test_start_ingestion_accepts_precomputed_content_hash(
         conn.close()
 
 
+@pytest.mark.parametrize("owner", ["knowledge_base", "thread", "project"])
+def test_upload_routes_hand_ingestion_the_digest_from_the_copy(
+    rag_home, stub_embeddings, monkeypatch, owner
+):
+    """Every upload route already reads the whole file to copy it into the uploads root,
+    so it hashes as it writes and start_ingestion is spared a second full read."""
+    import hashlib
+    import io
+
+    from routes import rag as rag_routes
+    from storage import studio_db
+
+    # Over one 1 MiB read block, so a digest built from a single block would not match.
+    payload = b"alpha bravo charlie delta\n" * 44_000
+
+    class _Up:
+        filename = "notes.txt"
+        file = io.BytesIO(payload)
+
+    rehashed = []
+    original = ingestion._sha256_file
+
+    def counting(path):
+        rehashed.append(path)
+        return original(path)
+
+    opened = []
+    builtin_open = open
+
+    def recording_open(path, *args, **kwargs):
+        opened.append((str(path), args[0] if args else kwargs.get("mode", "r")))
+        return builtin_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(ingestion, "_sha256_file", counting)
+    # A module global shadows the builtin, so only routes/rag.py's own opens are recorded.
+    monkeypatch.setattr(rag_routes, "open", recording_open, raising = False)
+
+    # Every Form/File parameter by name: called directly, the unpassed ones keep their
+    # FastAPI sentinel default, and a truthy sentinel would send this down the drop path.
+    call = dict(file = _Up(), native_path_lease = None, ocr = None, caption = None, subject = "test")
+    if owner == "knowledge_base":
+        conn = rag_db.get_connection()
+        try:
+            kb_id = store.create_kb(conn, name = "Digest")
+        finally:
+            conn.close()
+        result = rag_routes.upload_kb_document(kb_id, **call)
+    elif owner == "thread":
+        result = rag_routes.upload_thread_document("T1", **call)
+    else:
+        monkeypatch.setattr(studio_db, "get_chat_project", lambda value: {"id": value})
+        result = rag_routes.upload_project_document("P1", **call)
+
+    _drain(result["jobId"])
+    _wait_completed(result["jobId"])
+
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, result["documentId"])["sha256"] == (
+            hashlib.sha256(payload).hexdigest()
+        )
+    finally:
+        conn.close()
+    assert rehashed == []  # start_ingestion took the digest instead of reading the file again
+    # The copy is the only pass over the stored file; hashing it apart would open it twice.
+    assert [mode for path, mode in opened if path.endswith(".txt")] == ["wb"]
+
+
 def test_start_ingestion_rejects_malformed_content_hash(rag_home, stub_embeddings, tmp_path):
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
     scope = store.kb_scope("K1")
@@ -486,15 +554,15 @@ def test_ingestion_rejects_unsupported_ext(rag_home, stub_embeddings, tmp_path):
         ingestion.start_ingestion(store.kb_scope("K1"), "K1", None, "doc.xyz", path)
 
 
-def test_ingestion_empty_doc_completes_with_zero_chunks(rag_home, stub_embeddings, tmp_path):
+def test_ingestion_empty_doc_reports_failure(rag_home, stub_embeddings, tmp_path):
     path = _write(tmp_path, "empty.txt", "   \n  ")
     scope = store.kb_scope("K1")
     doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "empty.txt", path)
     events = _drain(job_id)
-    assert events[-1]["type"] == "complete"
-    assert events[-1]["num_chunks"] == 0
+    assert events[-1]["type"] == "error"
+    assert "No extractable text" in events[-1]["error"]
     status = _wait_completed(job_id)
-    assert status["status"] == "completed"
+    assert status["status"] == "failed"
 
 
 @pytest.mark.skipif(

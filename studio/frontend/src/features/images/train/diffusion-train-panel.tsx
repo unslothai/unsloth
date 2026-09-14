@@ -207,9 +207,9 @@ function datasetItemLabel(d: { image_count: number; clip_count?: number }): stri
 // and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
-// Every settings cell is a grid item, so it needs min-w-0 to shrink; grid-cols-1 carries that
-// shrink to the contents, since a bare `grid` froze the implicit track at its widest child's
-// min-content (150px) and painted over the next column.
+// Every settings cell is a grid item, so it needs min-w-0 to shrink; grid-cols-1 carries that shrink to the
+// contents, since a bare `grid` froze the implicit track at its widest child's min-content (150px) and painted
+// over the next column.
 const fieldClass = "grid grid-cols-1 min-w-0 gap-2";
 
 /** opens the folder picker; icon-only because the 416px rail already holds the select and the file-pick button. */
@@ -417,9 +417,9 @@ export function DiffusionTrainPanel({
   // sdxl trains the U-Net in mixed precision, so it uses mixed_precision instead of base_precision.
   // Everything else is a DiT family.
   const isDiT = familyName !== "sdxl";
-  // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the
-  // reason rides in vram_note); only an ABSENT field means an older backend. SDXL reports []
-  // too but is not precision-gated, hence the isDiT scope.
+  // An EMPTY precision_modes list on a DiT family means this host cannot train it at all (the reason rides in
+  // vram_note); only an ABSENT field means an older backend. SDXL reports [] too but is not precision-gated,
+  // hence the isDiT scope.
   const familyUntrainable =
     isDiT &&
     reportedFamily?.precision_modes != null &&
@@ -442,9 +442,9 @@ export function DiffusionTrainPanel({
   // Same for checkpoints: MiniMax-H3's loop writes no resume bundle and its validation REFUSES a
   // nonzero save_steps, so offering the field meant a rejected Start with nothing saying why.
   const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
-  // Same for the batch axis: MiniMax-H3's forward covers ONE packed sequence and its validation
-  // REFUSES a batch above 1 rather than clamping, so a value carried over from another family
-  // rejected Start with nothing saying why. Hidden when the family caps it at 1.
+  // Same for the batch axis: MiniMax-H3's forward covers ONE packed sequence and its validation REFUSES a batch
+  // above 1 rather than clamping, so a value carried over from another family rejected Start with nothing saying
+  // why. Hidden when the family caps it at 1.
   const maxBatchSize = reportedFamily?.max_train_batch_size ?? null;
   const batchIsFixed = maxBatchSize != null && maxBatchSize <= 1;
 
@@ -506,9 +506,9 @@ export function DiffusionTrainPanel({
   // Track whether the user hand-edited the numeric settings; if not, a family change re-seeds them
   // from that family's defaults.
   const settingsDirty = useRef(false);
-  // The LR schedule pair tracks its own edits rather than riding on settingsDirty: it is the one
-  // setting whose control DISAPPEARS ("Warmup steps" is hidden under plain "constant"), so a
-  // value carried past a family change is invisible rather than merely stale.
+  // The LR schedule pair tracks its own edits rather than riding on settingsDirty: it is the one setting whose
+  // control DISAPPEARS ("Warmup steps" is hidden under plain "constant"), so a value carried past a family change
+  // is invisible rather than merely stale.
   const lrScheduleDirty = useRef(false);
   // Track whether the user hand-picked a base precision; if not, a family change re-seeds it from
   // recommended_precision.
@@ -628,10 +628,10 @@ export function DiffusionTrainPanel({
       seededBaseFamily.current = family.name;
       baseDirty.current = false;
     }
-    // An already-valid base wins: the top bar sets family and base together. A loaded checkpoint may
-    // be the DISTILLED half of a pair, which is never in base_repos, so fall back to the paired
-    // training base before base_repos[0], or opening Train with the 9B model loaded seeds the 4B
-    // base. reportedFamily, since deploy_bases is backend-only.
+    // An already-valid base wins: the top bar sets family and base together. A loaded checkpoint may be the
+    // DISTILLED half of a pair, which is never in base_repos, so fall back to the paired training base before
+    // base_repos[0], or opening Train with the 9B model loaded seeds the 4B base. reportedFamily, since
+    // deploy_bases is backend-only.
     const pairedTrainingBase = loadedBaseRepo
       ? resolveDiffusionTrainingBase(reportedFamily, loadedBaseRepo)
       : null;
@@ -670,9 +670,8 @@ export function DiffusionTrainPanel({
     if (isDiT) setPrecision("bf16");
   }, [isDiT]);
 
-  // The base actually used everywhere. baseChoice can briefly hold another family's repo, where a
-  // raw <select value> would DISPLAY the first option while the request carried the stale repo,
-  // so clamp to the current family.
+  // The base actually used everywhere. baseChoice can briefly hold another family's repo, where a raw <select
+  // value> would DISPLAY the first option while the request carried the stale repo, so clamp to the current family.
   const effectiveBase =
     baseChoice === CUSTOM_BASE || (family?.base_repos ?? []).includes(baseChoice)
       ? baseChoice
@@ -683,9 +682,8 @@ export function DiffusionTrainPanel({
   const resolvedBase = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
   const basePrequantized = isDiT && repoIsPrequantized(resolvedBase);
 
-  // A prequantized base cannot serve the dense precisions; auto-flip a dense selection back to
-  // "auto" (nf4) so the run does not fail at the backend validator. Reuses precisionDirty so a
-  // later family change still re-seeds.
+  // A prequantized base cannot serve the dense precisions; auto-flip a dense selection back to "auto" (nf4) so
+  // the run does not fail at the backend validator. Reuses precisionDirty so a later family change still re-seeds.
   useEffect(() => {
     if (basePrequantized && DENSE_PRECISIONS.has(basePrecision)) {
       precisionDirty.current = false;
@@ -701,7 +699,6 @@ export function DiffusionTrainPanel({
     }
   }, []);
 
-  // Poll status while the panel is active.
   useEffect(() => {
     if (!active) return;
     void poll();
@@ -774,7 +771,6 @@ export function DiffusionTrainPanel({
       selectedDataset.caption_count >= selectedItemCount,
   );
 
-  // Map the backend's paired history arrays into the chart component's {step,value} series.
   const lossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = status?.metric_history;
     if (!h) return [];
@@ -821,7 +817,6 @@ export function DiffusionTrainPanel({
     }
   }, []);
 
-  // Chart series for a selected previous run (from its persisted metric logs).
   const viewLossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = viewRun?.metric_history;
     if (!h) return [];
@@ -880,9 +875,9 @@ export function DiffusionTrainPanel({
       setUploading(true);
       try {
         const misKeyed = await metadataKeyedOnSubfolders(files);
-        // the endpoint accumulates into the same folder, so a tree past the multipart part or byte cap
-        // goes up in slices. The cap decides where the slices fall, so it is forced past the cache,
-        // and a cap that cannot be read stops the upload.
+        // the endpoint accumulates into the same folder, so a tree past the multipart part or byte cap goes up in
+        // slices. The cap decides where the slices fall, so it is forced past the cache, and a cap that cannot be
+        // read stops the upload.
         let maxBytes: number;
         try {
           maxBytes = (await loadUploadLimitSettings({ force: true })).maxUploadSizeBytes;
@@ -1254,9 +1249,9 @@ export function DiffusionTrainPanel({
     value: number,
     set: (n: number) => void,
     fallback: number,
-    // markDirty overrides which dirty flag an edit claims. Only "Warmup steps" passes one: it is
-    // seeded from the family like rank/LR/resolution but tracked by lrScheduleDirty, so charging
-    // it to the shared flag would freeze the other three at the previous family's values.
+    // markDirty overrides which dirty flag an edit claims. Only "Warmup steps" passes one: it is seeded from the
+    // family like rank/LR/resolution but tracked by lrScheduleDirty, so charging it to the shared flag would
+    // freeze the other three at the previous family's values.
     extra?: { min?: number; step?: number; hint?: ReactNode; markDirty?: () => void },
   ) => (
     <div className={fieldClass}>
@@ -1340,10 +1335,9 @@ export function DiffusionTrainPanel({
     return "fp8 (experimental)";
   };
 
-  // The training settings, the run area's MAIN content before a run starts. Columns key off this
-  // pane's OWN width, not the window's, or a viewport breakpoint put three columns in a ~280px
-  // pane. A cell needs 150px (66px number field + 6px gap + 78px unit select), hence 324px for
-  // two columns and 498px for three.
+  // The training settings, the run area's MAIN content before a run starts. Columns key off this pane's OWN
+  // width, not the window's, or a viewport breakpoint put three columns in a ~280px pane. A cell needs 150px
+  // (66px number field + 6px gap + 78px unit select), hence 324px for two columns and 498px for three.
   const trainingSettings = (
     <div className="@container flex flex-col gap-6">
       <div className="grid grid-cols-1 gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">

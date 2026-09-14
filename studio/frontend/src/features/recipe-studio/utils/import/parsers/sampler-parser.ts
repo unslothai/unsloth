@@ -62,11 +62,10 @@ function parseCategoryConditionalParams(
 // The words buildSamplerParams reads as a mode rather than as a prefix.
 const UUID_RESERVED_FORMATS = new Set(["uuid4", "short", "short_form", "upper", "uppercase"]);
 
-// buildSamplerParams spreads a uuid format over the three fields data_designer
-// defines, so rebuild the single UI string from those rather than from a
-// `format` key nothing writes. A prefix whose own value is one of the reserved
-// words comes back in the builder's `prefix:` escaped form, so re-saving writes
-// the prefix again instead of turning it into a flag.
+// buildSamplerParams spreads a uuid format over the three fields data_designer defines, so rebuild
+// the single UI string from those rather than from a `format` key nothing writes. A prefix whose
+// own value is one of the reserved words comes back in the builder's `prefix:` escaped form, so
+// re-saving writes the prefix again instead of turning it into a flag.
 function readUuidFormat(params: Record<string, unknown>): string {
   const prefix = readString(params.prefix)?.trim();
   if (prefix) {
