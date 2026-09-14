@@ -1089,7 +1089,6 @@ def test_an_image_continuation_resumes_the_replayed_partial_after_the_no_system_
 )
 def test_an_image_only_turn_without_a_fallback_is_unchanged(content, structured, expected):
     from core.inference.chat_template_helpers import messages_with_attached_image
-
     out = messages_with_attached_image(
         [{"role": "user", "content": content}], structured_content = structured
     )
