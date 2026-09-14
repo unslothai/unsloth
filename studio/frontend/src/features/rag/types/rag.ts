@@ -24,6 +24,8 @@ export interface RagDocument {
   linkedFolderId?: string | null;
   managed: boolean;
   createdAt?: string | null;
+  /** Size of the stored bytes; null when the file behind the row is gone. */
+  sizeBytes?: number | null;
 }
 
 export function isLinkedFolderManaged(document: RagDocument): boolean {
@@ -32,7 +34,6 @@ export function isLinkedFolderManaged(document: RagDocument): boolean {
 
 /** RagDocument enriched for the global uploaded-files list (settings Data tab). */
 export interface UploadedDocument extends RagDocument {
-  sizeBytes?: number | null;
   kbName?: string | null;
   projectName?: string | null;
 }
