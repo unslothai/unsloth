@@ -350,3 +350,41 @@ def test_tool_end_payload_masks_a_leaked_studio_key():
     assert key not in completion.tool_end_payload()["result"]
     assert key not in completion.tool_end_event()["result"]
     assert key not in completion.model_message()["content"]
+
+
+def _stream_chunks(chunks):
+    """Feed `chunks` through the live-stream masking exactly as the generator does."""
+    from core.inference.tool_loop_controller import redact_studio_credentials
+    from core.inference.tool_stream_exec import _hold_back_partial_secret
+
+    carry = ""
+    out = []
+    for chunk in chunks:
+        combined = carry + chunk
+        split = _hold_back_partial_secret(combined)
+        out.append(redact_studio_credentials(combined[:split]))
+        carry = combined[split:]
+    out.append(redact_studio_credentials(carry))
+    return "".join(out)
+
+
+def test_a_key_is_masked_in_the_live_stream_however_it_is_chunked():
+    # tool_end is not the first thing the card paints. The live tool_output chunks are, so a key
+    # that is only masked at the end is still rendered in full and persisted that way. Found by
+    # screenshotting the card rather than by a unit test: the tool_end payload said [redacted]
+    # while the output block above it showed the key.
+    key = "sk-unsloth-0123456789abcdef0123456789abcdef"
+    for chunks in (
+        [key],
+        [key[:15], key[15:]],  # split mid-token
+        ["sk-unslo", key[8:]],  # split mid-PREFIX, which no per-chunk regex can see
+        ["out ", key[:20], key[20:], " tail"],
+        [("a" * 500) + key],
+    ):
+        rendered = _stream_chunks(chunks)
+        assert key not in rendered, chunks
+        assert "[redacted]" in rendered, chunks
+
+    # Held-back text that turns out to be ordinary must still be emitted, not swallowed.
+    assert _stream_chunks(["hello ", "sk-unslo"]) == "hello sk-unslo"
+    assert _stream_chunks(["plain output\n"]) == "plain output\n"
