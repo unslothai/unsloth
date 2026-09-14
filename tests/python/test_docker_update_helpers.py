@@ -162,6 +162,11 @@ def _studio_env(
     return env
 
 
+def _scratch(d: Path, pattern: str = ".src-*") -> list:
+    """The updater's scratch entries, minus the lock file it keeps on purpose."""
+    return [p for p in d.glob(pattern) if p.name != ".src-update.lock"]
+
+
 def _calls(env) -> str:
     log = Path(env["STUB_LOG"])
     return log.read_text() if log.exists() else ""
@@ -228,7 +233,7 @@ def test_studio_update_fails_when_supervisor_cannot_restart_studio(tmp_path: Pat
     assert "previous install is back in place" in res.stderr, res.stderr
     assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
     assert not (home / "src" / "NEW_TREE").exists()
-    assert not list(home.glob(".src-*"))
+    assert not _scratch(home)
     assert "install --no-deps --force-reinstall -r" in calls, calls
     sup = [l for l in calls.splitlines() if l.startswith("STUB-SUPERVISORCTL")]
     assert sup[-1] == "STUB-SUPERVISORCTL status studio", calls
@@ -266,7 +271,7 @@ def test_studio_update_refuses_to_run_beside_another_updater(tmp_path: Path):
     # the lock file shares the scratch prefix so the home linker never links it, and
     # the startup sweep must not take it for a leftover
     assert "left behind" not in res.stdout, res.stdout
-    assert not list(home.glob(".src-*")), "the lock file must not outlive the run"
+    assert not _scratch(home), "the lock file must not outlive the run"
 
 
 def test_studio_update_reports_an_unmanaged_studio(tmp_path: Path):
@@ -287,8 +292,8 @@ def test_studio_update_ref_builds_the_frontend_and_swaps_the_source_tree(tmp_pat
     assert (home / "src" / "NEW_TREE").exists(), "src was not replaced by the fetched ref"
     assert (home / "src" / "studio" / "frontend" / "dist" / "index.html").exists()
     assert not (home / "src" / ".git").exists()
-    assert not list(home.glob(".src-prev.*")), "the previous tree was not cleaned up"
-    assert not list(home.glob(".src-update.*")), "the staging tree was not cleaned up"
+    assert not _scratch(home, ".src-prev.*"), "the previous tree was not cleaned up"
+    assert not _scratch(home, ".src-update.*"), "the staging tree was not cleaned up"
     assert f"install --no-deps -e {home / 'src'}" in calls, calls
 
 
@@ -302,8 +307,8 @@ def test_studio_update_ref_writes_through_a_linked_source_tree(tmp_path: Path):
     assert res.returncode == 0, res.stderr + res.stdout
     assert (home / "src").is_symlink(), "the link was replaced by a directory"
     assert (real_src / "NEW_TREE").exists(), "the ref was not installed where the code lives"
-    assert not list(home.glob(".src-*")), "staging trees must not land in the data volume"
-    assert not list(real_src.parent.glob(".src-prev.*"))
+    assert not _scratch(home), "staging trees must not land in the data volume"
+    assert not _scratch(real_src.parent, ".src-prev.*")
     # pip records the home path, so the install keeps resolving through the link and
     # `unsloth-studio-home --restore` (back to a pre-split image) still finds it
     assert f"install --no-deps -e {home / 'src'}" in _calls(env), _calls(env)
@@ -317,7 +322,7 @@ def test_studio_update_ref_with_a_failed_frontend_build_changes_nothing(tmp_path
     assert res.returncode != 0
     assert (home / "src" / "OLD_TREE").exists(), "the running source tree was touched"
     assert "STUB-PIP" not in calls, calls
-    assert not list(home.glob(".src-update.*"))
+    assert not _scratch(home, ".src-update.*")
     # errexit is off inside `( ... ) || return`, so the build step has to stop by itself
     assert "npm run build failed" in res.stdout, res.stdout
     assert "oxc-validator" not in calls, (
@@ -385,8 +390,8 @@ def test_studio_update_ref_restores_the_tree_when_interrupted_after_the_swap(tmp
     assert res.returncode == 130, res.stderr + res.stdout
     assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
     assert not (home / "src" / "NEW_TREE").exists()
-    assert not list(home.glob(".src-prev.*")), "the previous tree was left beside src"
-    assert not list(home.glob(".src-update.*"))
+    assert not _scratch(home, ".src-prev.*"), "the previous tree was left beside src"
+    assert not _scratch(home, ".src-update.*")
     assert "interrupted" in res.stdout, res.stdout
 
 
@@ -522,7 +527,7 @@ def test_studio_update_puts_the_install_back_when_pip_itself_fails(tmp_path: Pat
     assert res.returncode != 0
     assert "previous install is back in place" in res.stderr, res.stderr
     assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
-    assert not list(home.glob(".src-*"))
+    assert not _scratch(home)
     assert "STUB-SUPERVISORCTL" not in _calls(env)
 
 
@@ -541,7 +546,7 @@ def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_p
     assert "previous install is back in place" in res.stderr, res.stderr
     assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
     assert not (home / "src" / "NEW_TREE").exists()
-    assert not list(home.glob(".src-*"))
+    assert not _scratch(home)
     assert "install --no-deps --force-reinstall -r" in calls, calls
     assert calls.splitlines()[-1] == "STUB-SUPERVISORCTL status studio", calls
     env = _studio_env(tmp_path / "ok")
@@ -552,7 +557,7 @@ def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_p
     assert res.returncode == 0, res.stdout
     assert "answering on port 8000" in res.stdout
     assert (home / "src" / "NEW_TREE").exists()
-    assert not list(home.glob(".src-*")), "the previous tree must go once Studio is up"
+    assert not _scratch(home), "the previous tree must go once Studio is up"
     env = _studio_env(tmp_path / "junk")
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "soon"
     _stub(tmp_path / "junk" / "bin", "curl", "exit 0\n")
@@ -573,7 +578,7 @@ def test_studio_update_health_wait_zero_commits_once_the_restart_command_succeed
     assert "the update is committed" in res.stdout, res.stdout
     assert "STUB-CURL" not in _calls(env)
     assert (home / "src" / "NEW_TREE").exists()
-    assert not list(home.glob(".src-*"))
+    assert not _scratch(home)
     # with a restart that fails there is still nothing to commit
     env = _studio_env(tmp_path / "down", restart_exit = 1)
     res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
@@ -595,7 +600,7 @@ def test_studio_update_clears_leftovers_of_a_killed_run_before_it_starts(tmp_pat
     assert "left behind by an earlier update" in res.stdout, res.stdout
     assert (home / "src" / "NEW_TREE").exists()
     assert not (home / "src" / "junk").exists(), "the tree was nested into the stale dir"
-    assert not list(home.glob(".src-*"))
+    assert not _scratch(home)
 
 
 def test_studio_update_recovers_a_source_tree_a_killed_run_moved_aside(tmp_path: Path):
@@ -608,7 +613,7 @@ def test_studio_update_recovers_a_source_tree_a_killed_run_moved_aside(tmp_path:
     assert res.returncode == 0, res.stderr + res.stdout
     assert "recovering the source tree" in res.stdout, res.stdout
     assert (home / "src" / "OLD_TREE").exists()
-    assert not list(home.glob(".src-prev.*"))
+    assert not _scratch(home, ".src-prev.*")
 
 
 def test_studio_update_puts_back_a_previous_tree_a_killed_run_never_committed(tmp_path: Path):
@@ -621,12 +626,13 @@ def test_studio_update_puts_back_a_previous_tree_a_killed_run_never_committed(tm
     (home / "src").rename(home / ".src-prev.abc123")
     (home / "src" / "studio").mkdir(parents = True)
     (home / "src" / "UNVERIFIED").write_text("never passed the health check\n")
+    (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert "putting it back over the unverified one" in res.stdout, res.stdout
     assert (home / "src" / "OLD_TREE").exists()
     assert not (home / "src" / "UNVERIFIED").exists()
-    assert not list(home.glob(".src-*")), "the unverified tree was left behind"
+    assert not _scratch(home), "the unverified tree was left behind"
 
 
 def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_path: Path):
@@ -696,7 +702,7 @@ def test_studio_update_finishes_the_package_restore_a_killed_run_left(tmp_path: 
     assert reqs[0] == "STUB-PIP-REQ transformers==3.9.0 ", reqs
     assert "-e file:///opt/prev-src" in reqs[1], reqs
     assert "STUB-PIP -m pip uninstall -y foo" in calls, calls
-    assert not list(home.glob(".src-update.*"))
+    assert not _scratch(home, ".src-update.*")
 
 
 def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
@@ -714,6 +720,30 @@ def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
     res = _run(STUDIO_UPDATE, ["--no-restart"], env)
     assert "putting the previous packages back first" in res.stdout, res.stdout
     assert not (home / ".src-update.rollback").exists()
+
+
+def test_studio_update_keeps_the_lock_file(tmp_path: Path):
+    """Unlinking the lock would let a run that opened the old inode take the lock after
+    this one exits while a later run locks a fresh file at the same path."""
+    env = _studio_env(tmp_path)
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert (Path(env["UNSLOTH_STUDIO_HOME"]) / ".src-update.lock").is_file()
+
+
+def test_studio_update_treats_a_previous_tree_without_a_record_as_scratch(tmp_path: Path):
+    """The record is unlinked before the previous tree is deleted, so a previous tree
+    with no record is a committed update that was killed mid-delete, and src is the
+    tree that passed the health check."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / ".src-prev.abc123" / "studio").mkdir(parents = True)
+    (home / ".src-prev.abc123" / "COMMITTED_AWAY").write_text("")
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert (home / "src" / "OLD_TREE").exists()
+    assert "putting it back" not in res.stdout, res.stdout
+    assert not _scratch(home)
 
 
 def test_studio_update_ref_uses_the_lockfile_and_does_not_fall_back_to_npm_install(tmp_path: Path):

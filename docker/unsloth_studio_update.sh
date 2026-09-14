@@ -127,24 +127,24 @@ fi
 # A run that was killed outright (docker stop ends in SIGKILL, so no trap ran) can leave
 # its previous tree beside src as .src-prev.*, or its staging tree as .src-update.*.
 # Nothing else writes those names here, and the lock above makes this the only updater,
-# so at start they are always leftovers. A previous tree is a swap that was never
-# committed (commit_update renames it away before deleting it): the tree in src was
-# never proven to serve, so the previous one goes back over it; with no src at all the
-# kill landed between the two moves. Everything else is cleared.
+# so at start they are always leftovers. The kept package record is the one marker of
+# an uncommitted update (commit_update unlinks it first, in one step): while it exists
+# a previous tree beside src goes back over the unverified tree and the recorded
+# packages are reinstalled; without it a previous tree is scratch. With no src at all
+# the kill landed between the two moves, and the lone previous tree goes back either way.
 shopt -s nullglob
 _prev=("$SRC_DIR"/.src-prev.*)
 if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
-    if [ -e "$SRC" ]; then
+    if [ ! -e "$SRC" ]; then
+        log "recovering the source tree an interrupted update left at ${_prev[0]}"
+        mv -T "${_prev[0]}" "$SRC"
+    elif [ -s "$KEEP_ROLLBACK" ]; then
         log "an interrupted update left its previous tree at ${_prev[0]}; putting it back over the unverified one"
         _drop="$(mktemp -d "$SRC_DIR/.src-update.XXXXXX")" && rmdir "$_drop"
         mv -T "$SRC" "$_drop"
-    else
-        log "recovering the source tree an interrupted update left at ${_prev[0]}"
+        mv -T "${_prev[0]}" "$SRC"
     fi
-    mv -T "${_prev[0]}" "$SRC"
 fi
-# the same kill after pip had started: the packages it replaced go back before anything
-# else is recorded as the previous install
 if [ -s "$KEEP_ROLLBACK" ]; then
     log "an interrupted update left its package record at $KEEP_ROLLBACK; putting the previous packages back first"
     if reinstall_recorded "$KEEP_ROLLBACK" "$KEEP_FREEZE"; then
@@ -242,9 +242,8 @@ cleanup() {
     [ -n "$ROLLBACK" ] && rm -f "$ROLLBACK"
     [ -n "$FREEZE" ] && rm -f "$FREEZE"
     [ -n "$CONSTRAINTS" ] && rm -f "$CONSTRAINTS"
-    # the lock is still held on fd 9 until exit; a waiter that opened this inode blocks
-    # on it until then, and one that starts later creates a fresh file
-    rm -f "$LOCK"
+    # the lock file stays: unlinking it would let a run that opened this inode lock it
+    # after we exit while a later run locks a fresh file at the same path
     return 0
 }
 trap cleanup EXIT
@@ -440,12 +439,14 @@ if ! studio_tree_ok; then
     exit 1
 fi
 # The previous tree stays beside src until the restarted service proves it can serve:
-# an import that passes says nothing about a backend that dies at startup. Committing
-# sets DONE before the previous tree goes, so a signal after that cannot "restore" the
-# old package pins on top of the new tree.
+# an import that passes says nothing about a backend that dies at startup. The record
+# goes first, in one unlink: a kill before it leaves a full recovery (tree and
+# packages) for the next run, a kill after it leaves scratch. Signals are held off so
+# the exit trap cannot restore old package pins on top of the committed tree.
 commit_update() {
-    DONE=1
+    trap '' INT TERM
     rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
+    DONE=1
     if [ "$SWAPPED" = "1" ]; then
         # renamed before it is deleted: a kill during the delete must not leave a half
         # tree that the next run takes for the previous one and puts back
