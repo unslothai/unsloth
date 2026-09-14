@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
+def rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     """Classify a ROCm device as unified-memory (APU) or discrete.
 
     Returns ``(gcn_arch, is_unified)``:

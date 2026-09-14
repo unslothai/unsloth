@@ -9912,7 +9912,7 @@ class LlamaCppBackend:
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
-            from utils.rocm_topology import _rocm_classify_unified_memory
+            from utils.rocm_topology import rocm_classify_unified_memory
 
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
@@ -9920,7 +9920,7 @@ class LlamaCppBackend:
             unified: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch, is_unified = _rocm_classify_unified_memory(
+                    _arch, is_unified = rocm_classify_unified_memory(
                         torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
@@ -9951,7 +9951,7 @@ class LlamaCppBackend:
                 return None
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return None
-            from utils.rocm_topology import _rocm_classify_unified_memory
+            from utils.rocm_topology import rocm_classify_unified_memory
 
             wanted = None if gpu_indices is None else set(gpu_indices)
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
@@ -9967,7 +9967,7 @@ class LlamaCppBackend:
                     continue
                 try:
                     props = torch.cuda.get_device_properties(ordinal)
-                    _arch, is_unified = _rocm_classify_unified_memory(props)
+                    _arch, is_unified = rocm_classify_unified_memory(props)
                 except Exception:
                     return None
                 if not is_unified:
@@ -10026,12 +10026,12 @@ class LlamaCppBackend:
                 return arch_by_id
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return arch_by_id
-            from utils.rocm_topology import _rocm_classify_unified_memory
+            from utils.rocm_topology import rocm_classify_unified_memory
 
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch, _is_unified = _rocm_classify_unified_memory(
+                    _arch, _is_unified = rocm_classify_unified_memory(
                         torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
@@ -10244,8 +10244,8 @@ class LlamaCppBackend:
             rocm_classifier = None
             rocm_arch_overridden = False
             if is_rocm:
-                from utils.rocm_topology import _rocm_classify_unified_memory
-                rocm_classifier = _rocm_classify_unified_memory
+                from utils.rocm_topology import rocm_classify_unified_memory
+                rocm_classifier = rocm_classify_unified_memory
                 # HSA_OVERRIDE_GFX_VERSION rewrites the reported arch for kernel
                 # compatibility, not topology: a gfx1035 APU presents as gfx1030.
                 rocm_arch_overridden = bool(

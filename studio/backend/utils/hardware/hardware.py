@@ -2237,9 +2237,9 @@ _ROCM_UNNAMED_APU_ARCHES = frozenset({"gfx1103"})
 
 def _rocm_props_unified_status(props: Any) -> Optional[bool]:
     try:
-        from utils.rocm_topology import _rocm_classify_unified_memory
+        from utils.rocm_topology import rocm_classify_unified_memory
 
-        classification = _rocm_classify_unified_memory(props)
+        classification = rocm_classify_unified_memory(props)
         arch = str(classification[0] or "")
         return bool(classification[1]) or (
             arch.split(":")[0].strip().lower() in _ROCM_UNNAMED_APU_ARCHES

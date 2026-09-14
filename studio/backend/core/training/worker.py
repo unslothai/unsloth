@@ -1551,7 +1551,9 @@ def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
 # imports, and the inference side silently read every ROCm device as
 # unclassifiable when it had to come through here. Re-exported so callers and
 # tests that import it from worker keep working.
-from utils.rocm_topology import _rocm_classify_unified_memory  # noqa: E402,F401
+from utils.rocm_topology import (  # noqa: E402,F401
+    rocm_classify_unified_memory as _rocm_classify_unified_memory,
+)
 
 
 # 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while 0.90 there reserves 12.8 GiB
