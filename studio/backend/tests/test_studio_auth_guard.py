@@ -1648,13 +1648,19 @@ def test_a_generic_cwd_keyword_is_not_a_child_process(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
     try:
-        ordinary = 'describe("auth/config.json", cwd = "../..")'
-        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
-            tools._STUDIO_CREDENTIAL_BLOCKED
-        )
+        for ordinary in (
+            'describe("auth/config.json", cwd = "../..")',
+            'import subprocess as sp\nsp.run(["ls"], cwd = "build")',
+        ):
+            assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
         for code in (
             'import subprocess\nsubprocess.run(["cat", "auth/auth.db"], cwd = "../..")',
             'from subprocess import run\nrun(["cat", "auth/auth.db"], cwd = "../..")',
+            # An import alias leaves the call spelled `sp.run(...)`.
+            'import subprocess as sp\nsp.run(["cat", "auth/auth.db"], cwd = "../..")',
+            'import asyncio as aio\naio.create_subprocess_exec("cat", "auth/auth.db", cwd = "../..")',
         ):
             assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED

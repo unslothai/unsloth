@@ -3186,6 +3186,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     chdir_modules = _chdir_modules(tree)
     chdir_names = _chdir_names(tree, chdir_modules)
     name_bases = _literal_name_bases(tree)
+    process_aliases = _process_module_aliases(tree)
     cwds: "list[str | None]" = [workdir]
     # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
     # is scoped to that body rather than carried forward. Treating it as permanent refused a later
@@ -3226,7 +3227,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
         if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
-            node, cwds, name_bases
+            node, cwds, name_bases, process_aliases
         ):
             # `subprocess.run(["strings", "auth/auth.db"], cwd = "../..")` moves nothing in this
             # process, but the child opens its arguments from the directory it is handed.
@@ -3421,18 +3422,37 @@ _CHILD_PROCESS_BARE_NAMES = frozenset(
 )
 
 
-def _launches_a_child_process(node: "ast.Call") -> bool:
-    """True for a call that starts a process, by module attribute or by a bare imported name."""
+def _process_module_aliases(tree) -> dict:
+    """Local name -> real module, for `import subprocess as sp` and `import asyncio as aio`."""
+    aliases: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Import):
+            continue
+        for entry in node.names:
+            root = entry.name.split(".")[0]
+            if root in _CHILD_PROCESS_RECEIVERS and entry.asname:
+                aliases[entry.asname] = root
+    return aliases
+
+
+def _launches_a_child_process(node: "ast.Call", aliases: "dict | None" = None) -> bool:
+    """True for a call that starts a process, by module attribute or by a bare imported name.
+
+    The receiver is resolved through the import aliases first. `import subprocess as sp` leaves the
+    call spelled `sp.run(...)`, and reading the receiver literally missed it, so a child handed a
+    `cwd` outside the sandbox went unchecked.
+    """
     func = node.func
     if isinstance(func, ast.Attribute):
         receiver = func.value
         name = receiver.id if isinstance(receiver, ast.Name) else getattr(receiver, "attr", "")
+        name = (aliases or {}).get(name, name)
         return func.attr in _CHILD_PROCESS_RECEIVERS.get(name, frozenset())
     return isinstance(func, ast.Name) and func.id in _CHILD_PROCESS_BARE_NAMES
 
 
 def _call_runs_from_a_credential_directory(
-    node: "ast.Call", cwds: "list", name_bases: "dict"
+    node: "ast.Call", cwds: "list", name_bases: "dict", process_aliases: "dict | None" = None
 ) -> bool:
     """True when a call hands a child process a directory that makes one of its paths a credential.
 
@@ -3445,7 +3465,7 @@ def _call_runs_from_a_credential_directory(
     `describe("auth/config.json", cwd = "../..")` was blocked in every permission mode even though
     the function may never touch that path.
     """
-    if not _launches_a_child_process(node):
+    if not _launches_a_child_process(node, process_aliases):
         return False
     given = next((kw.value for kw in node.keywords if kw.arg == "cwd"), None)
     if given is None:
