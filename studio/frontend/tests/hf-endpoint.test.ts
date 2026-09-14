@@ -46,56 +46,24 @@ test("a mirror reported by the backend is applied to both getters", () => {
   assert.equal(getHfDatasetsServerBase(), "https://ds.example.com");
 });
 
-test("endpoints are normalised the way the backend normalises them", () => {
+test("a reported endpoint is stored as sent, minus trailing slashes", () => {
+  // The backend has already sanitised, folded and canonicalised this value. The
+  // only thing done to it here is the trailing slash, since every consumer builds
+  // `${getHfEndpoint()}/path`.
   for (const [raw, expected] of [
+    ["https://hf-mirror.com", "https://hf-mirror.com"],
     ["https://hf-mirror.com/", "https://hf-mirror.com"],
     ["https://hf-mirror.com///", "https://hf-mirror.com"],
-    ["hf-mirror.com", "https://hf-mirror.com"],
-    ["hf-mirror.com/", "https://hf-mirror.com"],
     ["  https://hf-mirror.com  ", "https://hf-mirror.com"],
-    ["http://localhost:8080", "http://localhost:8080"],
     ["http://127.0.0.1:9700", "http://127.0.0.1:9700"],
+    ["http://[::1]:9700", "http://[::1]:9700"],
     ["https://hub.internal:8443/hf/", "https://hub.internal:8443/hf"],
+    ["https://xn--fsqu00a.xn--0zwm56d", "https://xn--fsqu00a.xn--0zwm56d"],
   ] as const) {
     resetHfEndpoints();
     setHfEndpoints(raw, null);
     assert.equal(getHfEndpoint(), expected, `for ${raw}`);
   }
-});
-
-test("the empty-port rule reads the authority, not the whole URL", () => {
-  // The backend tests parts.netloc: a whole-string check would reject a mirror
-  // it accepts, splitting the two apart again.
-  for (const [raw, expected] of [
-    ["https://hub.internal/hf:", "https://hub.internal/hf:"],
-    ["https://host:", DEFAULT_HF_ENDPOINT],
-    ["https://:8080", DEFAULT_HF_ENDPOINT],
-    ["https://[::1]:", DEFAULT_HF_ENDPOINT],
-  ] as const) {
-    resetHfEndpoints();
-    setHfEndpoints(raw, null);
-    assert.equal(getHfEndpoint(), expected, `for ${raw}`);
-  }
-});
-
-test("a Unicode host is refused, its punycode form is not", () => {
-  // new URL() would punycode it; the backend refuses it (latin-1 CSP header).
-  resetHfEndpoints();
-  setHfEndpoints("https://例子.测试", null);
-  assert.equal(getHfEndpoint(), DEFAULT_HF_ENDPOINT);
-  setHfEndpoints("https://xn--fsqu00a.xn--0zwm56d", null);
-  assert.equal(getHfEndpoint(), "https://xn--fsqu00a.xn--0zwm56d");
-});
-
-test("every IPv6 loopback spelling ends up as the compressed origin", () => {
-  for (const raw of ["http://[0:0:0:0:0:0:0:1]:9700", "http://[::1]:9700"]) {
-    resetHfEndpoints();
-    setHfEndpoints(raw, null);
-    assert.equal(getHfEndpoint(), "http://[::1]:9700", `for ${raw}`);
-  }
-  resetHfEndpoints();
-  setHfEndpoints("http://[2001:db8::1]:9700", null);
-  assert.equal(getHfEndpoint(), DEFAULT_HF_ENDPOINT);
 });
 
 test("an older backend that reports neither field keeps the configured mirror", () => {
@@ -113,39 +81,22 @@ test("an older backend that reports neither field keeps the configured mirror", 
   assert.equal(getHfDatasetsServerBase(), "https://ds.example.com");
 });
 
-test("a value that could widen the CSP is refused, not propagated", () => {
-  // The backend rejects these before they reach connect-src; so must this.
-  for (const hostile of [
-    "https://hf-mirror.com; script-src *",
-    "https://hf-mirror.com *",
-    "https://hf-mirror.com\nscript-src *",
-    "https://hf-mirror.com\tfoo",
-    "https://hf-mirror.com,https://evil.com",
+test("a value that does not parse as an http(s) URL is ignored", () => {
+  // Not a second copy of the backend's policy: this only keeps a value that would
+  // throw inside `new URL(getHfEndpoint())` from reaching a caller.
+  for (const junk of [
     "javascript:alert(1)",
     "file:///etc/passwd",
     "data:text/html,x",
     "ftp://hf-mirror.com",
     "https://",
-    "https://user:pass@hf-mirror.com",
-    "https://hf-mirror.com?x=1",
-    "https://hf-mirror.com#frag",
-    "https://hf-mirror.com:",
-    "https://hf-mirror.com:not-a-port",
-    "*",
-    "https://*",
-    "https://*.evil.com",
-    "http://192.168.1.10:8080",
-    "http://hf-mirror.com",
-    "http://10.0.0.5:8080",
+    "hf-mirror.com",
+    "not a url",
   ]) {
     resetHfEndpoints();
-    setHfEndpoints(hostile, hostile);
-    assert.equal(getHfEndpoint(), "https://huggingface.co", `for ${hostile}`);
-    assert.equal(
-      getHfDatasetsServerBase(),
-      "https://datasets-server.huggingface.co",
-      `for ${hostile}`,
-    );
+    setHfEndpoints(junk, junk);
+    assert.equal(getHfEndpoint(), DEFAULT_HF_ENDPOINT, `for ${junk}`);
+    assert.equal(getHfDatasetsServerBase(), DEFAULT_DATASETS_SERVER, `for ${junk}`);
   }
 });
 
