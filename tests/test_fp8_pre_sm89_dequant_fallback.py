@@ -235,7 +235,6 @@ def test_loader_admits_block_fp8_below_sm89(monkeypatch, capability, quant, allo
     # loader rejected every fp8 checkpoint below sm89, so the pre-sm89 path could only be
     # reached by calling the kernels directly.
     from unsloth.models._utils import verify_fp8_support_if_applicable
-
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     if allowed:
         verify_fp8_support_if_applicable(_Cfg(**quant))
