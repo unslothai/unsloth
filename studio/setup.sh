@@ -1840,9 +1840,8 @@ fi
 # On Colab (no venv), skip this version check (it needs $VENV_DIR/bin/python)
 # but still run install_python_stack below (it uses sys.executable).
 _setup_install_is_verified() {
-    # Does the venv on disk claim, and prove, a finished install? Exit 0 yes, 1 no. One
-    # implementation for the incomplete-install guard (forces the pass on no) and the offline rule
-    # (keeps the fast path on yes), so they cannot disagree about "complete".
+    # Does the venv prove a finished install? Exit 0 yes, 1 no. One implementation for the
+    # incomplete-install guard and the offline rule, so they cannot disagree about "complete".
     "$VENV_DIR/bin/python" -c "
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -1876,14 +1875,13 @@ _uv_offline_requested() {
 }
 
 _fast_path_escapes() {
-    # Every reason an "up to date" package is still not a working install. Both callers that can
-    # keep the fast path run it, so an offline skip meets the online bar. The incomplete-install
-    # check stays out: each caller words it differently.
+    # Every reason an "up to date" package is still not a working install. Both fast-path
+    # callers run it, so an offline skip meets the online bar. The incomplete-install check
+    # stays out: each caller words it differently.
 
     # First, costing no probe: the user asked by hand. This branch never starts
-    # install_python_stack.py, whose hatch this is, so the variable used to do nothing here.
-    # Inline so the suites can slice the function out whole. Values are that module's
-    # ("1", "true", "yes", "on"), deliberately NOT _uv_offline_requested's bare `t` and `y`.
+    # install_python_stack.py, whose hatch this is, so the variable did nothing here. Values are
+    # that module's ("1", "true", "yes", "on"), NOT _uv_offline_requested's bare `t` and `y`.
     _fpe_full=${UNSLOTH_STUDIO_FULL_DEPS:-}
     _fpe_full=${_fpe_full#"${_fpe_full%%[![:space:]]*}"}
     _fpe_full=${_fpe_full%"${_fpe_full##*[![:space:]]}"}
@@ -1910,9 +1908,8 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
         substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     fi
-    # Same shape: a pre-pin tokenizers the installed transformers rejects takes down every `import
-    # transformers` while $_PKG_NAME is current. Ask the metadata, not the broken import; an
-    # unreadable half exits 1 and changes nothing.
+    # Same shape: a pre-pin tokenizers the installed transformers rejects breaks every `import
+    # transformers` while $_PKG_NAME is current. Ask the metadata, not the broken import.
     if "$VENV_DIR/bin/python" -c "
 import sys
 from importlib.metadata import PackageNotFoundError, requires, version
@@ -1983,10 +1980,9 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         esac
         break
     done
-    # Correct torch is not enough: a leftover generic triton ("triton-<ver>", not
-    # pytorch_triton_xpu-*) shadows the XPU build, and only the pass swaps it. Non-XPU family
-    # leaves, EXACT as install.sh and install_python_stack classify them: a prefixed leaf
-    # (cu128-private) is a custom pin they never repair.
+    # Correct torch is not enough: a leftover generic triton shadows the XPU build and only the
+    # pass swaps it. Non-XPU leaves matched EXACTly, as install_python_stack does: a prefixed leaf
+    # (cu128-private) is a custom pin it never repairs.
     _setup_known_nonxpu_leaf() {
         case "$1" in
             cpu|gfx[0-9]*) return 0 ;;
@@ -2101,10 +2097,10 @@ sys.exit(2 if conflict else (0 if version else 1))
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
-        # PyPI unreachable: updating to be safe stays the default (a blip, and a warm-cache pass is
-        # cheap). UV_OFFLINE is not a blip: every install in that pass can only fail, so a verified
-        # tree is kept, on the incomplete-install guard's own evidence, and then held to the same
-        # escapes as the up-to-date branch (a verified tree can still be below the floor).
+        # PyPI unreachable: updating to be safe stays the default, since it is usually a blip.
+        # UV_OFFLINE is not a blip, so a verified tree is kept instead, on the incomplete-install
+        # guard's evidence and held to the up-to-date branch's escapes (it can still be below the
+        # floor).
         if [ -n "$INSTALLED_VER" ] && _uv_offline_requested && _setup_install_is_verified; then
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             _SKIP_PYTHON_DEPS=true
@@ -2205,16 +2201,8 @@ _sidecar_top_up_tiktoken() {
     [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
     # And under UV_OFFLINE without the fast path: the pip fallback would reach for the network.
     _uv_offline_requested && return 0
-    # The payload AND a complete dist-info (RECORD is written last), as
-    # Repair-SidecarTiktoken and the runtime's _optional_package_absent check: an
-    # interrupted install can leave the dist-info with no package beside it, or METADATA
-    # and the package without the native extension and RECORD; the sidecar predicate
-    # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
-    # check would skip this top-up forever while Qwen tokenizers fail.
-    # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
-    # the new version beside it, and importlib.metadata may keep answering the stale
-    # one. It goes before the package is declared present, so a complete install that
-    # a retry put beside an older recordless record does not keep the record forever.
+    # Payload AND dist-info (RECORD is written last): an interrupted install leaves one without the
+    # other. A recordless dist-info goes first; uv cannot uninstall it, metadata still reads it.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
         if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
             rm -rf "$_stt_info"
@@ -2352,10 +2340,9 @@ fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
 _sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
 _sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
-# Under the offline keep a sidecar rebuild (a wipe and four fetches, with a pip fallback that
-# reaches the network) is left for the next online update; the runtime self-heal
-# (transformers_version._ensure_venv_dir) covers a missing tier meanwhile. A deferred tier keeps its
-# own flag so the status line does not call it "current".
+# A sidecar rebuild is a wipe and four fetches, through a pip fallback that reaches the network,
+# so under the offline keep it waits for the next online update; the runtime self-heal covers a
+# missing tier meanwhile. A deferred tier keeps its own flag so it is not reported "current".
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false

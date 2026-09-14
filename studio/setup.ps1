@@ -4841,9 +4841,8 @@ $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
 } elseif ((Get-UvInstallDir) -and (Test-Path -LiteralPath (Join-Path (Get-UvInstallDir) "uv.exe"))) {
-    # Already installed, just not on this process's PATH: the install writes uv.exe here and
-    # prepends the user registry PATH, which an update inheriting its parent's PATH never sees,
-    # so every update re-downloaded it.
+    # Already installed, just not on this process's PATH. The install prepends the user registry
+    # PATH, which an update inheriting its parent's PATH never sees, so every update re-downloaded it.
     $env:PATH = (Get-UvInstallDir) + ";" + $env:PATH
     $UseUv = $true
 } elseif (-not $StageRoot) {
@@ -4865,10 +4864,10 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
         Enter-StudioVenv
-        # Refresh-Environment rebuilds PATH from the registry, and the user-PATH prepend does
-        # not always land there (UV_NO_MODIFY_PATH, UV_UNMANAGED_INSTALL, a runner that pins its
-        # own environment). Without this the installing run falls back to pip and records a
-        # manifest with no uv_version, which the next run rewrites.
+        # Refresh-Environment rebuilds PATH from the registry, where the user-PATH prepend does
+        # not always land (UV_NO_MODIFY_PATH, UV_UNMANAGED_INSTALL, a runner pinning its own
+        # environment). Without this the installing run falls back to pip and writes a manifest
+        # with no uv_version, which the next run rewrites.
         $uvDir = Get-UvInstallDir
         if ($uvDir -and (Test-Path -LiteralPath (Join-Path $uvDir "uv.exe"))) {
             $env:PATH = $uvDir + ";" + $env:PATH
@@ -4952,9 +4951,8 @@ function Fast-Download {
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
-# Does the venv on disk claim, and prove, a finished install? One implementation for the
-# incomplete-install guard (forces the pass on no) and the offline rule (keeps the fast path on
-# yes), so they cannot disagree about "complete".
+# Does the venv prove a finished install? One implementation for the incomplete-install guard
+# and the offline rule, so they cannot disagree about "complete".
 function Test-StudioInstallVerified {
     try {
         & python -c "
@@ -4986,16 +4984,15 @@ function Test-UvOfflineRequested {
 }
 
 function Invoke-FastPathEscapes {
-    # Every reason an "up to date" package is still not a working install. Both callers that can
-    # keep the fast path run it, so an offline skip meets the online bar. Test-StudioInstallVerified
-    # and the AMD/ROCm probe stay out (each caller words them differently). A plain assignment in a
-    # function is LOCAL, so the flag is copied in and published once on the way out.
+    # Every reason an "up to date" package is still not a working install. Both fast-path callers
+    # run it, so an offline skip meets the online bar. Test-StudioInstallVerified and the AMD/ROCm
+    # probe stay out: each caller words them differently. A plain assignment in a function is LOCAL,
+    # so the flag is copied in and published once on the way out.
     $SkipPythonDeps = $script:SkipPythonDeps
 
-    # The documented escape hatch, first: install_python_stack.py honours UNSLOTH_STUDIO_FULL_DEPS
-    # but is never invoked once the version compare skips, so it did nothing for exactly the "up to
-    # date" and broken install it exists for. Inline so the tests can slice this function out whole;
-    # the values are Test-UvOfflineRequested's.
+    # The documented escape hatch, first: install_python_stack.py honours
+    # UNSLOTH_STUDIO_FULL_DEPS but never runs once the version compare skips, so it did nothing
+    # for exactly the up-to-date broken install it exists for.
     $_fullDepsRequested = "$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim()
     if (@('1', 'true', 'yes', 'on') -contains $_fullDepsRequested.ToLowerInvariant()) {
         substep "UNSLOTH_STUDIO_FULL_DEPS is set -- forcing dependency pass..." "Cyan"
@@ -5022,9 +5019,8 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
         substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
         $SkipPythonDeps = $false
     }
-    # As setup.sh: a pre-pin tokenizers the installed transformers rejects takes down every `import
-    # transformers` while $_PkgName is current. Ask the metadata, not the broken import; an
-    # unreadable half exits 1 and changes nothing.
+    # As setup.sh: a pre-pin tokenizers the installed transformers rejects breaks every `import
+    # transformers` while $_PkgName is current. Ask the metadata, not the broken import.
     $_tokenizersBad = $false
     try {
         & python -c "
@@ -5072,9 +5068,9 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             $SkipPythonDeps = $false
         }
     }
-    # ...and for an Intel GPU, or a CPU wheel stays forever. Both escapes reach the XPU install and
-    # its remediations, gated on $XpuIndexUrl, so $_xpuIsReachable holds them back where a pin or
-    # no-torch mode sends this host elsewhere and they would re-fire forever.
+    # ...and for an Intel GPU, or a CPU wheel stays forever. Both escapes reach the XPU install,
+    # gated on $XpuIndexUrl, so $_xpuIsReachable holds them back where a pin or no-torch mode
+    # sends this host elsewhere and they would re-fire forever.
     $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
     $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
     if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
@@ -5086,8 +5082,8 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         }
     }
     # The installed wheel as well as the scan: an explicit xpu pin on a mixed NVIDIA + Intel box
-    # ends up on XPU with $script:IsIntelXpu false, and would fast-path past the bitsandbytes floor
-    # and Triton replacement forever.
+    # ends up on XPU with $script:IsIntelXpu false, fast-pathing past the bitsandbytes floor and
+    # the Triton replacement forever.
     if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
         $_xpuDepsCode = "import importlib.metadata as m; " +
             "print('BNB=' + next((d.version for d in m.distributions() " +
@@ -5160,10 +5156,10 @@ sys.exit(2 if conflict else (0 if version else 1))
     } elseif ($InstalledVer -and $LatestVer) {
         substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
     } elseif (-not $LatestVer) {
-        # PyPI unreachable: updating to be safe stays the default (a blip, and a warm-cache pass is
-        # cheap). UV_OFFLINE is not a blip: every install in that pass can only fail, so a verified
-        # tree is kept, on the incomplete-install guard's own evidence, and then held to the same
-        # escapes as the up-to-date branch (a verified tree can still be below the floor).
+        # PyPI unreachable: updating to be safe stays the default, since it is usually a blip.
+        # UV_OFFLINE is not a blip, so a verified tree is kept instead, on the incomplete-install
+        # guard's evidence and held to the up-to-date branch's escapes (it can still be below the
+        # floor).
         if ($InstalledVer -and (Test-UvOfflineRequested) -and (Test-StudioInstallVerified)) {
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             $SkipPythonDeps = $true
@@ -5175,8 +5171,7 @@ sys.exit(2 if conflict else (0 if version else 1))
     }
 
     # A current package can still have CPU torch on an AMD host. After the chain and gated on the
-    # flag, as setup.sh keeps it, so it covers the UV_OFFLINE branch too; a probe whose answer
-    # cannot change a forced pass is skipped.
+    # flag, as setup.sh keeps it, so it covers the UV_OFFLINE branch too.
     if ($SkipPythonDeps) {
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
@@ -6123,10 +6118,10 @@ if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Te
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.0")) { $_NeedT5_550 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.10.2")) { $_NeedT5_510 = $true }
-# Under the offline keep a sidecar rebuild (a wipe and four fetches, with a pip fallback that
-# reaches the network) is left for the next online update; the runtime self-heal covers a missing
-# tier meanwhile. Mirrors setup.sh's _OFFLINE_FAST_PATH guard. A deferred tier keeps its own flag so
-# the status line does not call it "current".
+# A sidecar rebuild is a wipe and four fetches, through a pip fallback that reaches the network,
+# so under the offline keep it waits for the next online update; the runtime self-heal covers a
+# missing tier meanwhile. Mirrors setup.sh. A deferred tier keeps its own flag so it is not
+# reported "current".
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
