@@ -16,6 +16,8 @@ export interface DiffusionResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 export interface DiffusionStatus {

@@ -5464,6 +5464,7 @@ def test_diffusion_status_response_carries_resolved():
             "source": "auto",
             "status": "applied",
             "reason": "blackwell",
+            "artifact": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -5485,7 +5486,27 @@ def test_diffusion_status_response_carries_requested_precision():
         }
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
-    assert resp.model_dump()["resolved"] == rec
+    assert resp.model_dump()["resolved"] == {
+        "transformer_quant": {**rec["transformer_quant"], "artifact": None}
+    }
+
+
+def test_diffusion_status_response_carries_the_prequant_artifact():
+    # The loader records which hosted file the engaged precision came from; undeclared here,
+    # pydantic drops it and no API client ever sees the provenance.
+    from models.inference import DiffusionStatusResponse
+
+    rec = {
+        "transformer_quant": {
+            "value": "fp8",
+            "source": "auto",
+            "reason": "seeded",
+            "artifact": "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt",
+        }
+    }
+    resp = DiffusionStatusResponse(loaded = True, resolved = rec)
+    dumped = resp.model_dump()["resolved"]["transformer_quant"]
+    assert dumped["artifact"] == "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt"
 
 
 def test_diffusion_status_response_carries_gguf_variant():

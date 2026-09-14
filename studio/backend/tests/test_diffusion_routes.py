@@ -1388,10 +1388,35 @@ def test_status_passes_through_resolved(client, monkeypatch):
     # The cpu_offload value stays a real boolean (not coerced to a string).
     assert body["resolved"]["cpu_offload"]["value"] is False
     # A declined explicit precision keeps BOTH sides across the boundary: ask and outcome.
-    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
+    assert body["resolved"]["transformer_quant"] == {
+        **resolved["transformer_quant"],
+        "artifact": None,
+    }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"
+
+
+def test_status_carries_the_prequant_artifact_through_the_route(client, monkeypatch):
+    # A seeded load records WHICH hosted file the precision came from; dropped at the boundary the
+    # UI cannot tell a hosted checkpoint from a runtime quantise of the same scheme.
+    backend = diffusion_module.get_diffusion_backend()
+    resolved = {
+        "transformer_quant": {
+            "value": "fp8",
+            "source": "auto",
+            "reason": "seeded",
+            "artifact": "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt",
+        }
+    }
+    monkeypatch.setattr(
+        backend, "status", lambda: {**_unloaded_status(), "loaded": True, "resolved": resolved}
+    )
+    body = client.get("/api/inference/images/status").json()
+    assert (
+        body["resolved"]["transformer_quant"]["artifact"]
+        == "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt"
+    )
 
 
 def test_status_resolved_defaults_to_null(client):

@@ -4099,6 +4099,13 @@ class DiffusionResolvedControl(BaseModel):
         "so a client reading an older backend's payload still parses.",
     )
     reason: str = Field("", description = "Short human-readable reason for the resolved value.")
+    artifact: Optional[str] = Field(
+        None,
+        description = "The hosted or local file the engaged value came from, as "
+        '"prequant:<repo>/<file>", when a pre-quantized checkpoint was seeded rather than the '
+        "weights being quantised in memory. Declared here or pydantic drops it and no API client "
+        "ever sees the provenance. Null on every other control and on a runtime quantise.",
+    )
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
