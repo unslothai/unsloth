@@ -89,6 +89,8 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
+    extra_args_image_max_tokens,
+    extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
@@ -4308,6 +4310,17 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+# Non-causal image decoding requires one image chunk to fit in the micro-batch.
+# These are the per-image limits from clip.cpp. Exact values avoid excess VRAM use.
+_MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
+    "gemma3": 256,
+    "deepseek4v": 384,
+}
+# A projector whose family we cannot read gets headroom instead of a ceiling.
+_MMPROJ_UNKNOWN_UBATCH = 2048
+_GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 _LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
@@ -5748,26 +5761,22 @@ def _extra_args_n_parallel(
     return found
 
 
-def _extra_args_n_ubatch(
+def _named_batch_sizes(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
-    n_ctx: Optional[int] = None,
-    *,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
-) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+) -> tuple[int, int, bool, bool]:
+    """Resolve batch sizes and whether each was explicitly set.
 
-    Precedence mirrors the launched command line: env, then the first-class
-    n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
-    extra_args (appended last, so they last-wins-override the emitted flags).
+    Precedence is environment, first-class fields, then extra arguments.
     """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
     }
+    named = {"batch": False, "ubatch": False}
     source_env = os.environ if env is None else env
-    overridden = False
     for key, env_name in (
         ("batch", "LLAMA_ARG_BATCH"),
         ("ubatch", "LLAMA_ARG_UBATCH"),
@@ -5776,16 +5785,16 @@ def _extra_args_n_ubatch(
         if raw:
             try:
                 values[key] = int(raw)
-                overridden = True
+                named[key] = True
             except (TypeError, ValueError):
                 pass
 
     if n_batch is not None:
         values["batch"] = int(n_batch)
-        overridden = True
+        named["batch"] = True
     if n_ubatch is not None:
         values["ubatch"] = int(n_ubatch)
-        overridden = True
+        named["ubatch"] = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -5803,10 +5812,26 @@ def _extra_args_n_ubatch(
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         try:
             values[key] = int(value)
-            overridden = True
+            named[key] = True
         except (TypeError, ValueError):
             continue
-    if not overridden:
+    return values["batch"], values["ubatch"], named["batch"], named["ubatch"]
+
+
+def _extra_args_n_ubatch(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+) -> Optional[int]:
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    _batch, _ubatch, _batch_named, _ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    values = {"batch": _batch, "ubatch": _ubatch}
+    if not (_batch_named or _ubatch_named):
         return None
 
     # common_params stores signed values, then llama_context_params converts
@@ -5819,6 +5844,135 @@ def _extra_args_n_ubatch(
     if n_ctx is not None and n_ctx > 0:
         effective = min(effective, n_ctx)
     return effective
+
+
+def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
+    """``{arch}.embedding_length``, cached, or None. Thin import-local wrapper."""
+    if not path:
+        return None
+    try:
+        from utils.models.gguf_metadata import read_gguf_embedding_length
+        return read_gguf_embedding_length(str(path))
+    except Exception as e:
+        logger.debug(f"embedding length read failed: {e}")
+        return None
+
+
+def _unknown_projector_ubatch(
+    extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> int:
+    """Return conservative headroom for an unclassified projector."""
+    return max(_MMPROJ_UNKNOWN_UBATCH, extra_args_image_max_tokens(extra_args, env) or 0)
+
+
+def _mmproj_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Return the required micro-batch, or 0 when the default is sufficient.
+
+    Inspect the image tower because audio-only projectors may still be marked as vision.
+    """
+    if not mmproj_path:
+        return 0
+    try:
+        from utils.models.gguf_metadata import (
+            mmproj_accepts_image,
+            read_mmproj_vision_projector_type,
+        )
+        if not mmproj_accepts_image(mmproj_path):
+            return 0
+        family = (read_mmproj_vision_projector_type(mmproj_path) or "").strip().lower()
+    except Exception as e:
+        logger.debug(f"mmproj capability read failed: {e}")
+        family = ""
+    custom = extra_args_image_max_tokens(extra_args, env) or 0
+    if not family:
+        return _unknown_projector_ubatch(extra_args, env)
+    if family not in _MMPROJ_NON_CAUSAL_IMAGE_TOKENS:
+        return 0
+    if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
+        return 0
+    # A custom image limit can exceed the family's built-in ceiling.
+    ceiling = max(_MMPROJ_NON_CAUSAL_IMAGE_TOKENS[family], custom)
+    return ceiling if ceiling > _DEFAULT_LLAMA_N_UBATCH else 0
+
+
+def _launch_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    *,
+    is_vision: bool = True,
+    vision_off: bool = False,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Return the largest micro-batch required by any possible launch projector.
+
+    Taking the maximum avoids duplicating llama.cpp's projector precedence and only
+    over-reserves when multiple image towers are supplied.
+    """
+    required = 0
+
+    # Pass-through arguments override managed projector flags.
+    override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+    if override:
+        required = max(
+            required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
+        )
+
+    if not vision_off:
+        # Inherited projectors survive --no-mmproj but not the vision switch.
+        source_env = os.environ if env is None else env
+        if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
+            required = max(required, _unknown_projector_ubatch(extra_args, env))
+        inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
+        if inherited:
+            required = max(
+                required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args, env)
+            )
+
+    if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
+        if mmproj_path:
+            required = max(
+                required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
+            )
+
+    if not vision_off and extra_args_mmproj_auto(extra_args, env):
+        # llama-server's adjacent-projector search can disagree with ours.
+        required = max(
+            required,
+            _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
+            if mmproj_path
+            else _unknown_projector_ubatch(extra_args, env),
+        )
+
+    return required
+
+
+def _batch_ubatch_for_mmproj(
+    required_ubatch: int,
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Raise an unset micro-batch, capped by the effective batch size."""
+    if required_ubatch <= 0:
+        return n_batch, n_ubatch
+    batch, ubatch, batch_named, ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    if ubatch_named:
+        return n_batch, n_ubatch
+    # Match llama_context_params, which converts the signed batch to uint32_t.
+    batch &= 0xFFFFFFFF
+    target = min(required_ubatch, batch)
+    if target <= ubatch:
+        return n_batch, n_ubatch
+    return n_batch, target
 
 
 def _build_ngram_mod_flags(
@@ -21225,6 +21379,26 @@ class LlamaCppBackend:
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
+
+            # Decide after downloading the projector and before pricing the load.
+            n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+                _launch_required_ubatch(
+                    None
+                    if (disable_vision or not is_vision)
+                    else self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    ),
+                    # Use the same order-independent metadata read as the estimators.
+                    _read_gguf_embedding_length(model_path),
+                    extra_args,
+                    is_vision = is_vision,
+                    vision_off = disable_vision,
+                ),
+                n_batch,
+                n_ubatch,
+                extra_args,
+            )
 
             # Backstop for everything the pre-teardown probes fail open on: refuse from the
             # header rather than watching llama-server die as "failed to start".
