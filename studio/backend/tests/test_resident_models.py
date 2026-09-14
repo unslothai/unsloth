@@ -454,6 +454,41 @@ def test_flag_off_keeps_the_module_backend_and_ignores_residents(monkeypatch):
     assert inference_route.iter_resident_llama_backends() == []
 
 
+def test_flag_off_serving_seam_is_always_the_module_backend(monkeypatch):
+    """Default single-slot mode, backend loaded: every model-field shape the
+    endpoints hand ``_serving_llama_backend`` resolves to the module-level
+    backend -- the exact object ``get_llama_cpp_backend()`` returned before the
+    registry existed."""
+    monkeypatch.delenv("UNSLOTH_RESIDENT_MODEL_SLOTS", raising = False)
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    # Class-level property patches so the real module backend reads as loaded
+    # without spawning anything; monkeypatch restores them after the test.
+    monkeypatch.setattr(LlamaCppBackend, "is_loaded", property(lambda self: True))
+    monkeypatch.setattr(LlamaCppBackend, "model_identifier", property(lambda self: "org/A-GGUF"))
+    monkeypatch.setattr(LlamaCppBackend, "hf_variant", property(lambda self: "Q4_K_M"))
+
+    module_backend = inference_route._llama_cpp_backend
+    assert inference_route.get_llama_cpp_backend() is module_backend
+    assert inference_route.iter_resident_llama_backends() == [module_backend]
+
+    # Omitted, blank, non-string and reload-only: no resident is chosen, the
+    # seam answers the module backend.
+    for model in (None, "", "   ", 123, inference_route._RELOAD_ONLY_MODEL):
+        assert inference_route.resolve_resident_llama(model) is None
+        assert inference_route._serving_llama_backend(model) is module_backend
+
+    # A name the loaded backend answers to resolves to that same backend.
+    assert inference_route._serving_llama_backend("org/A-GGUF") is module_backend
+    assert inference_route._serving_llama_backend("org/A-GGUF:Q4_K_M") is module_backend
+
+    # A wrong quant never resolves (the upstream refusal gates own that 404),
+    # and an unknown unattributable id keeps the drop-in rule: the active --
+    # here module -- backend, never a different one.
+    assert inference_route.resolve_resident_llama("org/A-GGUF:Q8_0") is None
+    assert inference_route._serving_llama_backend("gpt-4o") is module_backend
+
+
 def test_keep_existing_is_rejected_on_a_single_model_server(monkeypatch):
     monkeypatch.delenv("UNSLOTH_RESIDENT_MODEL_SLOTS", raising = False)
     request = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q4_K_M")
