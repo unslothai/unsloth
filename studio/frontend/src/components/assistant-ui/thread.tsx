@@ -2656,6 +2656,28 @@ const Composer: FC<{
     const contentHeight = el.scrollHeight - padding;
     if (contentHeight > lineHeight * 1.5) setIsMultiline(true);
   }, [composerText, isMultiline]);
+  // Autosize's own count: it measures a detached clone, so the expanded
+  // editor's min/max-height can't inflate it the way scrollHeight would.
+  const [editorRows, setEditorRows] = useState(1);
+  const handleEditorHeightChange = useCallback(
+    (height: number, meta: { rowHeight: number }) => {
+      setEditorHeight(height);
+      if (meta.rowHeight <= 0) return;
+      const el = inputRef.current;
+      if (el && !lineMetricsRef.current) {
+        const cs = getComputedStyle(el);
+        const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+        const padTop = Number.parseFloat(cs.paddingTop) || 0;
+        const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+        lineMetricsRef.current = { lineHeight, padding: padTop + padBottom };
+      }
+      const padding = lineMetricsRef.current?.padding ?? 0;
+      setEditorRows(Math.round((height - padding) / meta.rowHeight));
+    },
+    [],
+  );
+  // Only once the draft outgrows the compact box: a hard break, or past row 3.
+  const showWritingToggle = composerText.includes("\n") || editorRows > 3;
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
   );
@@ -4944,7 +4966,7 @@ const Composer: FC<{
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
                 maxRows={12}
-                onHeightChange={setEditorHeight}
+                onHeightChange={handleEditorHeightChange}
                 autoFocus={!disabled}
                 disabled={disabled}
                 aria-label={overlay ? "Image edit instructions" : "Message input"}
@@ -4959,7 +4981,7 @@ const Composer: FC<{
                 addAttachmentOnPaste={false}
                 onPaste={handleFilePaste}
               />
-              {(composerText.length > 0 || isWritingExpanded) && (
+              {(showWritingToggle || isWritingExpanded) && (
                 <TooltipIconButton
                   type="button"
                   tooltip={
@@ -4968,7 +4990,7 @@ const Composer: FC<{
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute right-0 top-1 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
