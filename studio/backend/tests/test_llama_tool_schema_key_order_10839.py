@@ -76,7 +76,44 @@ def _tool(parameters, name = "mcp__notion__notion-query-data-sources"):
 
 
 def _relaxed(original):
-    return {"anyOf": [_PERMISSIVE_OBJECT, original]}
+    if "$ref" in original or "anyOf" in original or "oneOf" in original:
+        return {"anyOf": [_PERMISSIVE_OBJECT, original]}
+    kind = original.get("type")
+    others = [{"type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
+    return {**original, "anyOf": [_PERMISSIVE_OBJECT, *others]}
+
+
+_PAGING = {
+    "type": "object",
+    "description": "Paging",
+    "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
+}
+
+
+def test_wrapper_keeps_the_fields_chat_templates_read():
+    parameters = {"type": "object", "properties": {"filter": copy.deepcopy(_PAGING)}}
+    assert relax_nested_object_key_order(parameters)["properties"]["filter"] == {
+        "type": "object",
+        "description": "Paging",
+        "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
+        "anyOf": [{"type": "object", "additionalProperties": True}],
+    }
+
+
+@pytest.mark.parametrize("template", ["gemma-4.jinja", "gemma-4-edge.jinja"])
+def test_gemma_prompt_still_declares_nested_fields(template):
+    sandbox = pytest.importorskip("jinja2.sandbox")
+    source = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / template).read_text()
+    tool = _tool({"type": "object", "properties": {"filter": copy.deepcopy(_PAGING)}}, name = "query")
+    environment = sandbox.ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    rendered = environment.from_string(source).render(
+        messages = [{"role": "user", "content": "hi"}],
+        tools = llama_grammar_tools([tool]),
+        add_generation_prompt = True,
+        bos_token = "<bos>",
+    )
+    assert "start_cursor" in rendered
+    assert "page_size" in rendered
 
 
 def test_flat_parameters_are_returned_unchanged():
@@ -352,5 +389,5 @@ def test_passthrough_body_carries_the_relaxed_catalog():
         backend_ctx = 4096,
     )
     data = body["tools"][0]["function"]["parameters"]["properties"]["data"]
-    assert data["anyOf"][1]["anyOf"][0] == _PERMISSIVE_OBJECT
-    assert data["anyOf"][1]["anyOf"][1]["properties"] == _VIEW_BRANCH["properties"]
+    assert data["anyOf"][1]["anyOf"] == [_PERMISSIVE_OBJECT]
+    assert data["anyOf"][1]["properties"] == _VIEW_BRANCH["properties"]

@@ -6613,7 +6613,7 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
     )
 
     wire = payloads[0]["tools"][0]["function"]["parameters"]["properties"]["data"]
-    assert wire["anyOf"] == [{"type": "object", "additionalProperties": True}, data]
+    assert wire == {**data, "anyOf": [{"type": "object", "additionalProperties": True}]}
     assert calls == [
         ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
     ]

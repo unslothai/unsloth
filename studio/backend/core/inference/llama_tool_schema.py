@@ -34,7 +34,20 @@ _LIST_KEYWORDS = {"allOf": False, "anyOf": None, "items": True, "oneOf": None, "
 
 # A generated wrapper, so a caller's own union of the same shape is never mistaken for one.
 class _RelaxedUnion(dict):
-    pass
+    original: Any = None
+
+
+def _wrap(schema: dict) -> _RelaxedUnion:
+    if "$ref" in schema or "anyOf" in schema or "oneOf" in schema:
+        wrapped = _RelaxedUnion(anyOf = [dict(_PERMISSIVE_OBJECT), schema])
+    else:
+        # Chat templates read the node's own type/properties/required; llama.cpp's grammar takes
+        # anyOf before them, so both stay and a type list keeps its other types as branches.
+        kind = schema.get("type")
+        others = [{"type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
+        wrapped = _RelaxedUnion({**schema, "anyOf": [dict(_PERMISSIVE_OBJECT), *others]})
+    wrapped.original = schema
+    return wrapped
 
 
 def _optional_key_count(schema: Any) -> int:
@@ -113,7 +126,7 @@ def _relax(schema: Any, *, nested: bool, root: dict) -> Any:
             if any(new is not old for new, old in zip(relaxed, children)):
                 out = {**out, keyword: relaxed}
     if nested and _reorderable(out, root):
-        return _RelaxedUnion(anyOf = [dict(_PERMISSIVE_OBJECT), out])
+        return _wrap(out)
     return out
 
 
@@ -123,7 +136,7 @@ def relax_nested_object_key_order(parameters: Any) -> Any:
 
 
 def unrelaxed(schema: Any) -> Any:
-    return schema["anyOf"][1] if isinstance(schema, _RelaxedUnion) else schema
+    return schema.original if isinstance(schema, _RelaxedUnion) else schema
 
 
 def llama_grammar_tools(tools: Any) -> Any:
