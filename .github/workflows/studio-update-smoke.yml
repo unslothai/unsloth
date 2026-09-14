@@ -96,6 +96,10 @@ on:
       # that depend on it.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      # The Windows job restores and saves the uv download cache directly, as the
+      # pull_request list above already records.
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:
@@ -452,6 +456,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # install-unsloth-local restores this for the Linux and macOS jobs above; this
+      # hand-written pwsh install never had it, so every run re-downloaded every wheel.
+      # install.ps1 preserves the UV_CACHE_DIR the action exports.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
@@ -472,6 +483,13 @@ jobs:
             Tee-Object -FilePath logs/install.log |
             ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: A second update does nothing, and proves it
         # The Windows leg is the one that can catch a path or marker written with the
