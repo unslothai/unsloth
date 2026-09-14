@@ -1487,6 +1487,23 @@ test("a retryable drafter failure declines the shortcut", () => {
   }
 });
 
+test("a drafter that cannot be opened is not a repair the load can make", () => {
+  // The sidecar is present and structurally unusable, so the next identical load reaches
+  // the same verdict and the backend dedupes it. Treating it as retryable is what made
+  // Apply keep sending a reload the backend refused, leaving the panel offering a remedy
+  // that changes nothing.
+  for (const mode of ["auto", "mtp", "mtp+ngram"]) {
+    assert.equal(
+      residentSpeculativeNeedsRepair(
+        { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
+        mode,
+      ),
+      false,
+      `drafter_unloadable under ${mode} must not reload`,
+    );
+  }
+});
+
 test("an Auto-mode policy downgrade is not a repair the load can make", () => {
   for (const reason of [
     "drafter_no_vram",

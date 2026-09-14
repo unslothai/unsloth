@@ -6463,6 +6463,11 @@ class LlamaCppBackend:
         # Metal with no draft-layer flag. The caller keeps detecting it on disk, so
         # without this record every repeat Apply tears down a healthy server.
         self._mtp_draft_suppressed_path: Optional[str] = None
+        # WHICH of those two drops it was: "unloadable" or "paravirtual". The path alone
+        # cannot answer the two questions that differ between them -- whether repairing
+        # the file should reload, and which fallback reason the UI is told -- because
+        # only the unloadable drop is a verdict on the file's CONTENTS.
+        self._mtp_draft_suppressed_reason: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -7680,6 +7685,20 @@ class LlamaCppBackend:
             except OSError:
                 return False
             if requested_draft != loaded_draft:
+                return False
+            # Except when the drop was a verdict on the CONTENTS and the contents have
+            # since changed for the better: repair a rejected sidecar in place, press
+            # Apply, and a path-only comparison keeps the drafter-free server, leaving
+            # speculative decoding off until an unrelated reload. Only the unloadable
+            # drop is re-asked -- the paravirtual one is a property of the build, so the
+            # same bytes would be dropped again and the reload would buy nothing. The
+            # predicate is cached on (path, mtime, size), so an untouched file is not
+            # reparsed and a repaired one answers afresh.
+            if (
+                self._mtp_draft_suppressed_reason == "unloadable"
+                and self._mtp_draft_suppressed_path
+                and _mtp_drafter_loads_standalone(self._mtp_draft_suppressed_path)
+            ):
                 return False
         return True
 
@@ -20922,6 +20941,7 @@ class LlamaCppBackend:
                 # reloads a healthy diffusion server on every Apply.
                 self._mtp_draft_path = None
                 self._mtp_draft_suppressed_path = None
+                self._mtp_draft_suppressed_reason = None
                 # And the verdict on why the last load had no drafter, for the same
                 # reason once more: _build_speculative_flags clears it at the top of
                 # every load that reaches it, and this path never does. Both retry
@@ -24193,6 +24213,9 @@ class LlamaCppBackend:
                     drafter_label = _DRAFTER_DISPLAY_LABELS.get(_spec_canon, "MTP"),
                 )
                 _suppressed_draft_path: Optional[str] = _unloadable_mtp_draft_path
+                _suppressed_draft_reason: Optional[str] = (
+                    "unloadable" if _unloadable_mtp_draft_path else None
+                )
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
                 # Same shape as the projector drop above: the CPU pin below needs a
                 # draft-layer flag from the probe, and without one the drafter keeps its
@@ -24245,6 +24268,9 @@ class LlamaCppBackend:
                     # launched, and None would clear a record an earlier drop made.
                     if launch_mtp_draft_path:
                         _suppressed_draft_path = launch_mtp_draft_path
+                        # Not a verdict on the file: the same bytes launch fine on a build
+                        # that can pin the drafter, so repairing it must NOT force a reload.
+                        _suppressed_draft_reason = "paravirtual"
                     launch_mtp_draft_path = None
                     if extra_args:
                         # Same reason: record the extras as REQUESTED next to the
@@ -24296,6 +24322,9 @@ class LlamaCppBackend:
                     dspark_fit_sized = not use_fit,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
+                    # So the fallback can say the sidecar is here and unopenable rather
+                    # than missing. DSpark and DFlash never reach the drop.
+                    mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
                     drafter_no_vram = _spec_dropped_no_vram,
                     embedded_mtp_partial_offload = bool(
                         _spec_canon == "auto"
@@ -26436,6 +26465,7 @@ class LlamaCppBackend:
                     # unloadable sidecar can be suppressed on any platform.
                     self._mtp_draft_path = launch_mtp_draft_path
                     self._mtp_draft_suppressed_path = _suppressed_draft_path
+                    self._mtp_draft_suppressed_reason = _suppressed_draft_reason
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
                         "auto-selected Vulkan backend crashed. GPU acceleration "
@@ -26453,6 +26483,7 @@ class LlamaCppBackend:
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
                 self._mtp_draft_suppressed_path = _suppressed_draft_path
+                self._mtp_draft_suppressed_reason = _suppressed_draft_reason
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -27788,6 +27819,7 @@ class LlamaCppBackend:
         drafter_no_vram: bool = False,
         embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
+        mtp_drafter_unloadable: bool = False,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -28138,17 +28170,29 @@ class LlamaCppBackend:
 
         def _fallback_drafter_not_found() -> None:
             """Drafterless Gemma: use ngram-mod (or spec-default) and record why."""
-            logger.warning(
-                "Model %s is MTP-capable but no drafter or head was found; "
-                "falling back. Check network or run `unsloth studio update`.",
-                model_identifier,
-            )
+            if mtp_drafter_unloadable:
+                logger.warning(
+                    "Model %s had an MTP drafter that llama-server cannot open as "
+                    "--model-draft; falling back without it.",
+                    model_identifier,
+                )
+            else:
+                logger.warning(
+                    "Model %s is MTP-capable but no drafter or head was found; "
+                    "falling back. Check network or run `unsloth studio update`.",
+                    model_identifier,
+                )
             if caps.get("supports_ngram_mod"):
                 _emit_ngram_mod()
             else:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
-            self._spec_fallback_reason = "drafter_not_found"
+            # A file that IS here and cannot be opened needs its own reason: the
+            # drafter_not_found copy tells a local load to place a file already on disk,
+            # and offers a remote load a refetch this load deliberately stands down.
+            self._spec_fallback_reason = (
+                "drafter_unloadable" if mtp_drafter_unloadable else "drafter_not_found"
+            )
 
         if effective_mode == "ngram":
             _emit_ngram_mod()
@@ -28539,6 +28583,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
+            self._mtp_draft_suppressed_reason = None
             self._spec_fallback_reason = None
 
             self._mmproj_fallback_reason = None

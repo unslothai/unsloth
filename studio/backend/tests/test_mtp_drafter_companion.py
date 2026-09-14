@@ -2189,6 +2189,41 @@ def test_forced_dflash_without_a_sidecar_falls_back(monkeypatch):
     assert backend._spec_drafter_kind == "dflash"
 
 
+def test_a_dropped_unloadable_drafter_reports_its_own_reason(monkeypatch):
+    """"Present but unopenable" is not "not found", and the remedies differ.
+
+    drafter_not_found tells a local load to place an mtp-*.gguf that is already on disk,
+    and offers a remote load a refetch that returns the same file -- which this branch
+    deliberately stands down. It is also in the frontend's RETRYABLE_SPEC_FALLBACKS, so
+    Apply kept sending a reload the backend then deduped.
+    """
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        # The arm is _mtp_drafter_missing, which is the name-only (Gemma) MTP shape.
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        speculative_type = "mtp",
+        mtp_draft_path = None,
+        mtp_drafter_unloadable = True,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_unloadable"
+    assert "--model-draft" not in flags
+
+
+def test_a_genuinely_absent_drafter_still_reports_not_found(monkeypatch):
+    """The negative: the new reason must not swallow the case it was split out of."""
+    backend = _spec_backend(monkeypatch)
+    _spec_flags(
+        backend,
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        speculative_type = "mtp",
+        mtp_draft_path = None,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_not_found"
+
+
 def test_dspark_keeps_first_refusal_when_a_repo_ships_both(monkeypatch):
     """Mirrors llama.cpp's own downloader, which ranks dspark ahead of dflash.
     In practice a repo ships one kind or neither; this pins that adding DFlash

@@ -131,8 +131,10 @@ type SettingCheck = {
 
 /** Fallback reasons the backend retries on an IDENTICAL next load, from the arms of
  *  `LlamaCppBackend._runtime_matches_intent` that return False to force a repair. The rest are
- *  excluded on purpose: "drafter_no_vram" and "mla_mtp_disabled" are Auto-mode policy, and
- *  "runtime_error" only reopens when the draft count changes, which the comparison sees. */
+ *  excluded on purpose: "drafter_no_vram" and "mla_mtp_disabled" are Auto-mode policy,
+ *  "runtime_error" only reopens when the draft count changes, which the comparison sees, and
+ *  "drafter_unloadable" names a file whose contents the next identical load would reject again
+ *  (the backend dedupes it, so retrying only costs a round trip through already_loaded). */
 const RETRYABLE_SPEC_FALLBACKS = new Set([
   "drafter_not_found",
   "binary_no_mtp",
