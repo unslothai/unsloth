@@ -240,3 +240,60 @@ def test_non_tensor_token_types_do_not_raise(gemma_like):
     module = sys.modules[type(gemma_like).__module__]
     model = _gemma4_shaped(module, "vision")
     assert not _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": "not a tensor"})
+
+
+def _resolve_cache_choice(force_dynamic, cache_implementation, kwargs):
+    """The assignment block from unsloth_base_fast_generate, isolated."""
+    if "generation_config" in kwargs:
+        kwargs["generation_config"].cache_implementation = (
+            "dynamic" if force_dynamic else cache_implementation
+        )
+        return kwargs["generation_config"].cache_implementation
+    kwargs["cache_implementation"] = "dynamic" if force_dynamic else cache_implementation
+    return kwargs["cache_implementation"]
+
+
+class _GenCfg:
+    cache_implementation = "static"
+
+
+def test_media_request_pins_the_literal_dynamic():
+    """None is refilled from the model default by _prepare_generation_config, so
+    the guard has to name the cache it wants."""
+    assert _resolve_cache_choice(True, None, {}) == "dynamic"
+    assert _resolve_cache_choice(True, None, {"generation_config": _GenCfg()}) == "dynamic"
+
+
+def test_caller_generation_config_is_overridden():
+    """The reported hole: a caller-supplied config whose field says static."""
+    cfg = _GenCfg()
+    assert cfg.cache_implementation == "static"
+    _resolve_cache_choice(True, None, {"generation_config": cfg})
+    assert cfg.cache_implementation == "dynamic"
+
+
+def test_text_only_still_gets_the_static_cache():
+    assert _resolve_cache_choice(False, "static", {}) == "static"
+    cfg = _GenCfg()
+    _resolve_cache_choice(False, "static", {"generation_config": cfg})
+    assert cfg.cache_implementation == "static"
+
+
+def test_none_is_preserved_when_not_forcing():
+    """bfloat16 mixed precision clears the cache by setting None; that path must
+    keep its own meaning."""
+    assert _resolve_cache_choice(False, None, {}) is None
+
+
+def test_dynamic_is_a_cache_implementation_transformers_accepts():
+    """Pin the literal against upstream so a rename does not silently no-op."""
+    import inspect
+
+    generation_utils = pytest.importorskip("transformers.generation.utils")
+    prepare = getattr(generation_utils.GenerationMixin, "_prepare_cache_for_generation", None)
+    if prepare is None:
+        pytest.skip("no _prepare_cache_for_generation in this transformers")
+    source = inspect.getsource(prepare)
+    assert '"dynamic"' in source or "'dynamic'" in source
+    static = getattr(generation_utils, "ALL_STATIC_CACHE_IMPLEMENTATIONS", ())
+    assert "dynamic" not in static

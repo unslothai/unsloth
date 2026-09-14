@@ -923,16 +923,25 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         cache_implementation = None
     # A static cache drops the media block mask at prefill (#6028); text-only
-    # is causal anyway and keeps the static path.
-    if cache_implementation is not None and _needs_bidirectional_multimodal_mask(self, kwargs):
+    # is causal anyway and keeps the static path. Pin the literal "dynamic" like
+    # the FlashAttention path above: _prepare_generation_config refills a None
+    # from the model default, so None alone leaves the static cache in place.
+    force_dynamic_cache = (
+        cache_implementation is not None
+        and kwargs.get("past_key_values") is None
+        and _needs_bidirectional_multimodal_mask(self, kwargs)
+    )
+    if force_dynamic_cache:
         cache_implementation = None
 
     if "generation_config" in kwargs:
-        kwargs["generation_config"].cache_implementation = cache_implementation
+        kwargs["generation_config"].cache_implementation = (
+            "dynamic" if force_dynamic_cache else cache_implementation
+        )
         if cache_implementation is not None:
             kwargs["generation_config"].compile_config = _compile_config
     else:
-        kwargs["cache_implementation"] = cache_implementation
+        kwargs["cache_implementation"] = "dynamic" if force_dynamic_cache else cache_implementation
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
 
