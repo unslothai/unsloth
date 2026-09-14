@@ -14,7 +14,15 @@ name: Cache janitor
 # warning could never fire. If someone raises it, this number and the threshold
 # at the bottom are the two places to change.
 #
-# Four families are pruned.
+# Six families are pruned.
+#
+#   0. Dead families, deleted on sight regardless of ref or age:
+#        buildkit-blob-* / buildkit-index-* / index-*   docker/build-push-action
+#          `cache-to: type=gha`. docker-publish.yml moved its layer cache to a
+#          registry tag in #10429; nothing restores these any more. The last
+#          pre-#10429 run left 67 entries / 20 GB on main (2026-09-07), which
+#          nothing would have touched until the 7-day expiry. The rule is a
+#          backstop for any future workflow that reintroduces type=gha.
 #
 #   1. Caches on refs/pull/N/*, on two grounds. Lookup is scoped by ref and
 #      nothing but that PR's own runs can restore its merge ref, so once the PR
@@ -38,8 +46,18 @@ name: Cache janitor
 #      all keep the cache.
 #
 #   2. Superseded generations of families whose keys embed a build identity:
-#        codeql-overlay-base-database-*  keys embed commit SHA + run id
+#        codeql-overlay-base-database-*  keys embed commit SHA + run id; keep 1
+#        codeql-trap-*                   keys embed commit SHA; keep 1
 #        v0-rust-*                       Swatinem/rust-cache
+#
+#      CodeQL default setup writes a new overlay-base database (420 MB python
+#      + 330 MB javascript) on EVERY push to main, keyed by commit SHA, and a
+#      PR analysis restores by prefix, so only the newest one is ever read.
+#      Measured 2026-09-08: 27 overlay bases / 10.3 GB accumulated in the 13 h
+#      between two daily sweeps. That family keeps 1, not `keep`, and the
+#      sweep now runs every two hours so the peak stays near 1.5 GB. Stopping
+#      the writes at the source is the `github-codeql-disable-overlay`
+#      repository property (needs an org-level custom property schema).
 #
 #   3. Superseded generations of pip-v2-*, the pip HTTP caches written by
 #      .github/actions/pip-cache-save. `name` is inside the prefix as of the
@@ -76,7 +94,9 @@ name: Cache janitor
 
 on:
   schedule:
-    - cron: '17 6 * * *'
+    # Every two hours. The sweep is API-only and finishes in seconds; a daily
+    # cadence let CodeQL's per-push overlay bases pile up 10+ GB between runs.
+    - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -187,7 +207,7 @@ jobs:
           count=$(grep -c . "$all" || true)
           echo "$count caches, $(gib "$total") GiB, delete=$DELETE keep=$KEEP"
 
-          freed=0; deleted=0; stale_pr=0; idle_open_pr=0
+          freed=0; deleted=0; stale_pr=0; idle_open_pr=0; dead=0
 
           # Pass 1: caches belonging to a PR that is no longer open. Unreachable
           # regardless of generation, so this runs before ranking and removes
@@ -197,6 +217,20 @@ jobs:
           : > "$live"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
+            # Pass 0: dead families (see the header). No reader exists on any
+            # ref, so neither PR state nor generation matters.
+            case "$key" in
+              buildkit-blob-*|buildkit-index-*|index-*)
+                echo "dead family ($(gib "$size") GiB): $key"
+                dead=$(( dead + 1 ))
+                if [ "$DELETE" != "yes" ]; then
+                  freed=$(( freed + size )); deleted=$(( deleted + 1 )); continue
+                fi
+                if gh api -X DELETE "repos/$repo/actions/caches/$id" --silent < /dev/null 2>/dev/null; then
+                  freed=$(( freed + size )); deleted=$(( deleted + 1 ))
+                fi
+                continue ;;
+            esac
             num=""
             case "$ref" in
               refs/pull/*/merge|refs/pull/*/head)
@@ -262,9 +296,15 @@ jobs:
           : > "$grouped"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
+            # Per-family keep. `keep` (the input) is for families where an older
+            # generation can still answer an exact-key restore; CodeQL restores
+            # by prefix and takes the newest, so its second copy answers nothing.
+            fkeep="$KEEP"
             case "$key" in
               codeql-overlay-base-database-*)
-                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}-[0-9]+-[0-9]+$//') ;;
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}-[0-9]+-[0-9]+$//'); fkeep=1 ;;
+              codeql-trap-*)
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               v0-rust-*)
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//') ;;
               pip-v2-*|uv-*|fe-dist-*)
@@ -284,16 +324,16 @@ jobs:
             # compression change mints a new version that is restored
             # independently. Ranking them together lets two entries from one
             # scope evict every usable entry of another.
-            printf '%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" >> "$grouped"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" "$fkeep" >> "$grouped"
           done < "$live"
 
           sort -t"$(printf '\t')" -k1,1 -k2,2r -o "$grouped" "$grouped"
 
           prev=""; n=0; superseded=0
-          while IFS=$'\t' read -r pre created id size; do
+          while IFS=$'\t' read -r pre created id size fkeep; do
             [ -z "${pre:-}" ] && continue
             if [ "$pre" != "$prev" ]; then prev="$pre"; n=1; else n=$(( n + 1 )); fi
-            [ "$n" -le "$KEEP" ] && continue
+            [ "$n" -le "$fkeep" ] && continue
             superseded=$(( superseded + 1 ))
             if [ "$DELETE" != "yes" ]; then
               freed=$(( freed + size )); deleted=$(( deleted + 1 )); continue
@@ -315,6 +355,7 @@ jobs:
             echo "| mode | $([ "$DELETE" = yes ] && echo delete || echo 'report only') |"
             echo "| kept per prefix | $KEEP |"
             echo "| caches total | $count |"
+            echo "| dead-family candidates | $dead |"
             echo "| closed-PR candidates | $stale_pr |"
             echo "| idle open-PR candidates | $idle_open_pr |"
             echo "| superseded candidates | $superseded |"

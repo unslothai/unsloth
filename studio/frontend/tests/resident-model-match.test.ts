@@ -9,11 +9,9 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const { residentModelMatchesPick } = await import(
@@ -139,15 +137,7 @@ test("nothing resident matches nothing", () => {
  * dialog is what the report is about, and /load answers already_loaded without stopping
  * anything. */
 test("selectModel checks residency before prompting to stop running chats", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const residencyCheck = source.indexOf(
     "residentModelMatchesPick(status",
   );

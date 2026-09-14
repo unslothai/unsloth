@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
+import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { store: localStorageFake } = installLocalStorageFake();
 // Skip the legacy import path: it would look for settings this test never wrote.
@@ -563,13 +563,7 @@ test("an edit made before hydration is kept by the model's entry", async () => {
 // A safetensors reload at a smaller sequence length: the load sets the budget
 // to that context and the memory would replay a larger one over it.
 test("a remembered budget is capped by a non-GGUF load", () => {
-  const runtime = readFileSync(
-    new URL(
-      "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   // One cap for both sites: the load response and the Qwen3 thinking defaults.
   // The reported window leads, and the request stands in only for a backend that
   // sizes nothing -- a self-sizing one is sent the auto-size sentinel. Through the
@@ -584,10 +578,7 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     "the thinking-defaults replay is capped too",
   );
 
-  const adapter = readFileSync(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
     /maxTokensCap: replayMaxTokensCap\(\s*candidate\.kind === "gguf"\s*\? loadedContextFields\(loadResp\)\.loadedContextLength\s*: loadedWindow,\s*\),/,
@@ -595,22 +586,13 @@ test("a remembered budget is capped by a non-GGUF load", () => {
 
   // Compare loads the same way: a pane with no context pin sends the sentinel, and
   // capping its budget at 0 would leave the pane asking for no output at all.
-  const composer = readFileSync(
-    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(
     composer,
     /maxTokensCap: replayMaxTokensCap\(\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
   );
 
-  const status = readFileSync(
-    new URL(
-      "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const status = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   // Reported for a safetensors load too, so the cap is not narrowed to GGUF, and
   // through the same floor the load paths use: hydration must not clamp Max Tokens
   // below its own slider either.

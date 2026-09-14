@@ -52,10 +52,9 @@ _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 # what a PowerShell source must never print, and folding them together let a .ps1 emit
 # it and still pass (an added-bare-setter mutant survived the whole file).
 _POSIX_ASSIGNMENT = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
-# `export`, not a bare assignment: a POSIX assignment without it is a shell variable,
-# invisible to the installer the next line tells the user to run, so they get the CPU
-# bundle again and conclude the advice was wrong (the #8458 mistake). The README block
-# has always used export; these messages have to agree with it.
+# `export`, not a bare assignment: a POSIX assignment without it is a shell variable, invisible to the installer the
+# next line tells the user to run, so they get the CPU bundle again and conclude the advice was wrong (the #8458
+# mistake).
 _POSIX_SETTER = f"export {_POSIX_ASSIGNMENT}"
 _PWSH_SETTER = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
 _SETTER = {
@@ -79,8 +78,8 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 
-# Windows WMI reports the marketing name; Linux lspci reports the chip plus a
-# slash-joined list of the boards built on it. Both must resolve.
+# Windows WMI reports the marketing name; Linux lspci reports the chip plus a slash-joined list of the boards built
+# on it. Both must resolve.
 _RDNA1_NAMES = [
     ("AMD Radeon RX 5700 XT", "gfx1010"),
     ("AMD Radeon RX 5700", "gfx1010"),
@@ -91,10 +90,9 @@ _RDNA1_NAMES = [
     ("AMD Radeon Pro 5600M", "gfx1011"),
     ("AMD Radeon RX 5500 XT", "gfx1012"),
     ("Navi 14 [Radeon RX 5500/5500M / Pro 5500M]", "gfx1012"),
-    # The professional boards LLVM's table omits. Die confirmed from libdrm
-    # data/amdgpu.ids read against pci.ids, which names 7312/7310 Navi 10 and
-    # 7340/7341/7347/734f Navi 14, and the kernel's amdgpu table, which files those
-    # ids under CHIP_NAVI10 / CHIP_NAVI14.
+    # The professional boards LLVM's table omits.
+    # Die confirmed from libdrm data/amdgpu.ids read against pci.ids, which names 7312/7310 Navi 10 and
+    # 7340/7341/7347/734f Navi 14, and the kernel's amdgpu table, which files those ids under CHIP_NAVI10 / CHIP_NAVI14.
     ("AMD Radeon Pro W5700", "gfx1010"),
     ("Navi 10 [Radeon Pro W5700X]", "gfx1010"),
     ("AMD Radeon Pro W5500", "gfx1012"),
@@ -102,15 +100,14 @@ _RDNA1_NAMES = [
     ("Navi 14 [Radeon Pro W5300M]", "gfx1012"),
     ("AMD Radeon RX 5300", "gfx1012"),
     ("AMD Radeon RX 5300M", "gfx1012"),
-    # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10: the only Navi 10
-    # retail parts naming neither "RX 5700" nor a W prefix.
+    # The Mac Pro MPX boards, pci.ids 7319 and 731b under Navi 10: the only Navi 10 retail parts naming neither
+    # "RX 5700" nor a W prefix.
     ("Navi 10 [Radeon Pro 5700 XT]", "gfx1010"),
     ("Navi 10 [Radeon Pro 5700]", "gfx1010"),
     ("AMD Radeon Pro 5700 XT", "gfx1010"),
 ]
 
-# Cards the supported table owns, plus a non-AMD one. A hit here would print
-# "ROCm does not cover this" at a user whose GPU has wheels.
+# Cards the supported table owns, plus a non-AMD one.
 _NOT_RDNA1_NAMES = [
     "AMD Radeon RX 9070 XT",
     "AMD Radeon RX 9060 XT",
@@ -277,9 +274,8 @@ class TestWindowsArm64GetsNoVulkanAdvice:
             "no Windows ARM64 Vulkan bundle is published" in src
         ), "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
 
-    # The Python stack emits the PowerShell setter too, and setup.ps1 runs it before
-    # reaching its own throw, so it is the last advice an ARM64 user sees. The tests
-    # above pin the one offer it has today; this one covers any offer added later.
+    # The Python stack emits the PowerShell setter too, and setup.ps1 runs it before reaching its own throw, so it is
+    # the last advice an ARM64 user sees.
     @pytest.mark.parametrize(
         "path,guard",
         [
@@ -298,8 +294,8 @@ class TestWindowsArm64GetsNoVulkanAdvice:
         ]
         assert offers, f"{path.name}: no Vulkan offer found"
         for i in offers:
-            # The resolver itself, not a boolean named after it: a mutant that kept the
-            # branch and hardcoded $unsupArm64 = $false survived that spelling.
+            # The resolver itself, not a boolean named after it: a mutant that kept the branch and hardcoded
+            # $unsupArm64 = $false survived that spelling.
             back = "\n".join(lines[max(i - 20, 0) : i])
             assert guard in back, (
                 f"{path.name}:{i + 1}: offers the Vulkan variable without checking for "
@@ -548,8 +544,8 @@ class TestAdviceIsNotEmittedForRdna1:
         self, path, unsupported_marker, unknown_marker
     ):
         src = _normalised(path)
-        # The "was found" guard: without it a renamed branch makes both finds -1
-        # and -1 < -1 is False, so the ordering claim would pass vacuously.
+        # The "was found" guard: without it a renamed branch makes both finds -1 and -1 < -1 is False, so the ordering
+        # claim would pass vacuously.
         assert unsupported_marker in src, f"{path.name}: unsupported arm not found"
         assert unknown_marker in src, f"{path.name}: arch-unknown arm not found"
         assert src.index(unsupported_marker) < src.index(unknown_marker)
@@ -679,8 +675,8 @@ class TestAdviceIsNotEmittedForRdna1:
         a CI failure with nothing untrue on the page.
         """
         src = _normalised(PACKAGE_ROOT / "README.md")
-        # Any spelling of the cutoff, not one literal: "every AMD GPU older than RDNA 2"
-        # slipped past an exact-string ban while contradicting the gfx906 carve-out.
+        # Any spelling of the cutoff, not one literal: "every AMD GPU older than RDNA 2" slipped past an
+        # exact-string ban while contradicting the gfx906 carve-out.
         blanket = re.search(r"AMD GPUs? older than RDNA ?2", src, re.IGNORECASE)
         assert not blanket, (
             f"README: {blanket.group(0)!r} claims ROCm PyTorch covers nothing older "
@@ -691,8 +687,8 @@ class TestAdviceIsNotEmittedForRdna1:
         describes_group = re.search(r"no ROCm PyTorch wheels|Polaris|RDNA ?1", src, re.IGNORECASE)
         if not describes_group:
             return
-        # It does describe the group, so it has to describe it completely: named by its
-        # members, and with the one member that is covered cut back out.
+        # It does describe the group, so it has to describe it completely: named by its members, and with the one
+        # member that is covered cut back out.
         for _member in ("Polaris", "RDNA 1"):
             assert _member in src, (
                 f"README describes the uncovered AMD group ({describes_group.group(0)!r}) "
@@ -725,8 +721,7 @@ def _run_setup_kfd_lookup(gpu_name: str, lspci_lines: "list[str] | None", tmp_pa
     )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    # PATH is bin_dir and nothing else, so "lspci absent" really is absent rather than
-    # the host's own lspci answering. The shell itself has to be linked in for that.
+    # PATH is bin_dir and nothing else, so "lspci absent" really is absent rather than the host's own lspci answering.
     real_sh = shutil.which("sh")
     assert real_sh, "no POSIX sh on this host"
     (bin_dir / "sh").symlink_to(real_sh)
@@ -858,7 +853,6 @@ def test_setup_ps1_hoists_the_unsupported_arch_variable_too():
 
 # ── An identified uncovered card outranks the generic ROCm report ────────────
 
-
 _ROCM_ARM = {
     "install.ps1": ("} elseif ($HasROCm", "$ROCmUnsupportedGfxArch"),
     "setup.ps1": ("} elseif ($HasROCm", "$script:ROCmUnsupportedGfxArch"),
@@ -918,12 +912,12 @@ def test_the_rocm_summary_chain_yields_to_an_identified_uncovered_card():
 
 # ── Scope: these sentences speak for one card, not for the host ───────────
 
+# A host is not one GPU.
+# An RX 580 beside an RX 7900 XTX is a host where masking to the other card and pinning its arch DOES install wheels, so
+# a host-wide "nothing can enable ROCm here" is false there.
+# Deciding it at runtime was tried and dropped: "any adapter we cannot name" misfires on the Vega-class iGPU on most
+# Ryzen desktops, and "any covered peer" misses the Instinct and V620 parts no name table carries.
 
-# A host is not one GPU. An RX 580 beside an RX 7900 XTX is a host where masking to the
-# other card and pinning its arch DOES install wheels, so a host-wide "nothing can enable
-# ROCm here" is false there. Deciding it at runtime was tried and dropped: "any adapter we
-# cannot name" misfires on the Vega-class iGPU on most Ryzen desktops, and "any covered
-# peer" misses the Instinct and V620 parts no name table carries.
 _ALL_SOURCES = [_INSTALL_SH, _SETUP_SH, _INSTALL_PS1, _SETUP_PS1, _STACK_PY]
 
 _HOST_WIDE_CLAIMS = [
@@ -1059,9 +1053,8 @@ def _arm_window(lines: "list[str]", start: int) -> "list[str]":
     here, and cap the span so a missing closer cannot swallow the file.
     """
     indent = len(lines[start]) - len(lines[start].lstrip())
-    # One step out, not the anchor's own indent: the claim it anchors now sits in a
-    # nested if/else, and the Vulkan offer is its SIBLING branch, so stopping at the
-    # anchor's own level would cut the window before the thing under test.
+    # One step out, not the anchor's own indent: the claim it anchors now sits in a nested if/else, and the Vulkan offer
+    # is its SIBLING branch, so stopping at the anchor's own level would cut the window before the thing under test.
     floor = max(indent - 4, 0)
     out = [lines[start]]
     for line in lines[start + 1 : start + 25]:
@@ -1099,13 +1092,12 @@ class TestVulkanAdvice:
     # (stronger) live-output tests below cover it instead.
     _SHELL_SOURCES = [_INSTALL_PS1, _SETUP_PS1, _INSTALL_SH, _SETUP_SH]
 
-    # Everything the advice has to carry, asserted against EMITTED text only: every
-    # phrase here also appears in the comments explaining the branch, so a whole-file
-    # search stays green after the message is gutted (three such mutants survived). The
-    # setter is per-file (see _SETTER) and gets its own tests below.
+    # Everything the advice has to carry, asserted against EMITTED text only: every phrase here also appears in the
+    # comments explaining the branch, so a whole-file search stays green after the message is gutted (three such
+    # mutants survived). The setter is per-file (see _SETTER) and gets its own tests below.
     _REQUIRED = [
-        # The offer must survive, not just the variable name: "no GPU acceleration is
-        # available" followed by a GPU backend's name is worse than either half alone.
+        # The offer must survive, not just the variable name: "no GPU acceleration is available" followed by a GPU
+        # backend's name is worse than either half alone.
         ("through Vulkan", "the affirmative Vulkan offer"),
     ]
 
@@ -1154,12 +1146,9 @@ class TestVulkanAdvice:
             not offenders
         ), f"{path.name}: prints a POSIX assignment PowerShell cannot parse: {offenders}"
 
-    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with the expected
-    # occurrence count. The count is the point: the tests either side of this one are
-    # file-scoped, so a site deleted outright leaves both green. Anchors are each arm's
-    # announcement line, so a deleted arm fails the count and a gutted one fails the window
-    # below. install.ps1's second anchor names $ROCmUnsupportedGfxArch deliberately: the
-    # same sentence four lines earlier is for a supported card.
+    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with the expected occurrence count.
+    # install.ps1's second anchor names $ROCmUnsupportedGfxArch deliberately: the same sentence four lines earlier is
+    # for a supported card.
     _ADVICE_SITES = [
         (_INSTALL_SH, "Unsloth has no ROCm PyTorch wheels for that arch", 2),
         (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
@@ -1202,17 +1191,16 @@ class TestVulkanAdvice:
             f"duplicated; the advice must follow it either way."
         )
         for i in hits:
-            # Comments stripped from the WINDOW, not just the anchor: every phrase
-            # below also appears in the comment explaining the branch, so raw lines
-            # stay green after the message is demoted to a comment (observed mutant).
+            # Comments stripped from the WINDOW, not just the anchor: every phrase below also appears in the
+            # comment explaining the branch, so raw lines stay green after the message is demoted to a comment
+            # (observed mutant).
             window = "\n".join(
                 line for line in _arm_window(lines, i) if not line.lstrip().startswith(("#", "//"))
             )
-            # The offer, not one phrasing of it: these arms are hard-wrapped to different
-            # widths. Both halves are required -- a backend without what it buys, or GGUF
-            # chat without the backend, is half an answer. "Vulkan" is matched
-            # case-sensitively in PROSE, so the setter's lowercase spelling cannot stand
-            # in for the sentence explaining it.
+            # The offer, not one phrasing of it: these arms are hard-wrapped to different widths. Both halves are
+            # required -- a backend without what it buys, or GGUF chat without the backend, is half an answer.
+            # "Vulkan" is matched case-sensitively in PROSE, so the setter's lowercase spelling cannot stand in
+            # for the sentence explaining it.
             assert "GGUF chat" in window and "Vulkan" in window, (
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"
@@ -1348,8 +1336,8 @@ class TestVulkanAdvice:
         prebuilt = (PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py").read_text(
             encoding = "utf-8"
         )
-        # Scoped to the routing function: `if host.is_macos:` appears many times, and an
-        # earlier cut of this test matched the DYLD_LIBRARY_PATH one instead.
+        # Scoped to the routing function: `if host.is_macos:` appears many times, and an earlier cut of this test
+        # matched the DYLD_LIBRARY_PATH one instead.
         routing = next(
             (
                 ast.get_source_segment(prebuilt, node)
@@ -1376,7 +1364,6 @@ class TestVulkanAdvice:
 
 # ── Polaris, the second card in the cluster (#8458) ──────────────────────────
 
-
 _POLARIS_NAMES = [
     ("AMD Radeon RX 580", "gfx803"),
     ("AMD Radeon RX 580 Series", "gfx803"),
@@ -1385,8 +1372,8 @@ _POLARIS_NAMES = [
     ("AMD Radeon RX 480", "gfx803"),
     ("AMD Radeon RX 470", "gfx803"),
     ("Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]", "gfx803"),
-    # The Polaris 10 workstation boards: pci.ids groups them on Ellesmere, the RX 580
-    # die from #8458, and their names carry no RX number for the consumer rows to hit.
+    # The Polaris 10 workstation boards: pci.ids groups them on Ellesmere, the RX 580 die from #8458, and their
+    # names carry no RX number for the consumer rows to hit.
     ("Ellesmere [Radeon Pro WX 7100 / WX 7100 Mobile / WX 5100 / V7300X / V7350x2]", "gfx803"),
     ("AMD Radeon Pro WX 7100", "gfx803"),
     ("AMD Radeon Pro WX 5100", "gfx803"),

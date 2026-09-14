@@ -226,7 +226,8 @@ def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():
     assert "sentinel" in src
     # EXECUTABLE LINES ONLY. The engine names belong in the comment explaining which engine was
     # observed failing and with what numbers; what must not exist is a BRANCH on one. The word
-    # "engine" is allowed because it appears in the refusal MESSAGE; a specific engine's NAME is not.
+    # "engine" is allowed because it appears in the refusal MESSAGE; a specific engine's NAME is not,
+    # because a name is what a branch would need.
     code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
     for name in ("webkit", "WebKit", "firefox", "Firefox", "browser_name", "browser_type"):
         assert name not in code, f"the guard branches on {name!r} rather than on the clipboard"

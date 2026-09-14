@@ -62,12 +62,11 @@ def mtp_precision_rank(name: str) -> int:
 def mtp_preference_key(name: str) -> tuple[int, int, str]:
     """Sort key picking the preferred MTP head by name alone.
 
-    A head borrowing the target's token_embd/output wins the tie: 1.35 GB smaller
-    at Q8_0 and no worse, accepting identically (159 of 284) on the shipped
-    prebuilt. Only the qwen4exp path reaches a repo publishing both forms, and
-    qwen4exp MTP and the borrow ship in one fork, so the borrow always resolves.
+    The self-contained head wins the tie over the borrowing (``-shared-``) form:
+    ``--fit`` budgets a draft by loading it alone, which a borrowing head cannot do,
+    so the MTP context OOMs (unsloth#10322). Worth the 1.35 GB it costs at Q8_0.
     """
-    borrows = 0 if "shared" in Path(name).name.lower() else 1
+    borrows = 1 if "shared" in Path(name).name.lower() else 0
     return mtp_precision_rank(name), borrows, Path(name).name.lower()
 
 

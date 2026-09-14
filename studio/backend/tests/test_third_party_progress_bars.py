@@ -84,6 +84,45 @@ def test_the_hub_is_not_imported_just_to_quiet_it():
     assert "HUB_ABSENT" in out.stdout, out.stdout + out.stderr
 
 
+def test_direct_tqdm_users_are_quiet_too():
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import os\n"
+        "os.environ.pop('HF_HUB_DISABLE_PROGRESS_BARS', None)\n"
+        "os.environ.pop('UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS', None)\n"
+        "os.environ.pop('UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS', None)\n"
+        "from loggers.config import quiet_third_party_progress_bars\n"
+        "quiet_third_party_progress_bars()\n"
+        "from tqdm import tqdm\n"
+        "for _ in tqdm(range(2), desc='Encoding video chunks'): pass\n"
+        "from tqdm.auto import tqdm as auto_tqdm\n"
+        "for _ in auto_tqdm(range(2), desc='Denoising video'): pass\n"
+        "print('DONE')\n"
+    ) % str(_BACKEND)
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 300)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "DONE" in out.stdout
+    assert "Encoding video chunks" not in out.stdout + out.stderr
+    assert "Denoising video" not in out.stdout + out.stderr
+
+
+def test_verbose_keeps_direct_tqdm_users_visible():
+    code = (
+        "import sys; sys.path.insert(0, %r)\n"
+        "import os\n"
+        "os.environ.pop('HF_HUB_DISABLE_PROGRESS_BARS', None)\n"
+        "os.environ['UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS'] = '0'\n"
+        "os.environ['UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS'] = '0'\n"
+        "from loggers.config import quiet_third_party_progress_bars\n"
+        "quiet_third_party_progress_bars()\n"
+        "from tqdm.auto import tqdm\n"
+        "for _ in tqdm(range(2), desc='Denoising video'): pass\n"
+    ) % str(_BACKEND)
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 300)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "Denoising video" in out.stdout + out.stderr
+
+
 def test_allow_progress_bars_only_undoes_our_own_default(monkeypatch):
     monkeypatch.setattr(log_config, "_BARS_RESTORED", False)
     monkeypatch.setenv(_HUB, "1")

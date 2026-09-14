@@ -255,10 +255,10 @@ def check(engine: str, candidate: str) -> Tally:
             page.add_script_tag(content = candidate)
             sentinel = f"__s{index}__"
             page.evaluate(f"() => {{ {SELECT_ALL} }}")
-            # THE SERIALISED DOM, not the computed style. The unit test asserted the computed
-            # value came back and passed while every copy was leaving `style=""` behind, because
-            # `removeAttribute` does not remove a style attribute whose declaration has been
-            # touched. The structural parity digest caught it; this keeps it caught.
+            # THE SERIALISED DOM, not the computed style. The unit test asserted the computed value came back and
+            # passed while every copy was leaving `style=""` behind, because `removeAttribute` does not remove a
+            # style attribute whose declaration has been touched. The structural parity digest caught it; this keeps
+            # it caught.
             dom_before = page.evaluate("() => document.getElementById('v').outerHTML")
             verdict = page.evaluate("() => window.__fastCopy()")
             dom_after = page.evaluate("() => document.getElementById('v').outerHTML")
@@ -273,15 +273,15 @@ def check(engine: str, candidate: str) -> Tally:
             if after != before:
                 problems.append(f"{engine}/{name}: the serialiser did not restore the selection")
 
-            # Both engines' clipboards fold a no-break space to a plain one and neither
-            # `toString()` does, so that difference is not evidence of a divergence.
+            # Both engines' clipboards fold a no-break space to a plain one and neither `toString()` does, so that
+            # difference is not evidence of a divergence.
             raw = before.replace("\u00a0", " ")
             prime_clipboard(page, sentinel)
             native = read_clipboard(page, sentinel, SELECT_ALL)
 
             if name in MUST_REFUSE:
-                # Not merely "did not answer": the gate has to refuse for the stated reason, or
-                # a form control could be passing only because the engine was unmapped.
+                # Not merely "did not answer": the gate has to refuse for the stated reason, or a form control
+                # could be passing only because the engine was unmapped.
                 if verdict["text"] is not None:
                     problems.append(f"{engine}/{name}: ANSWERED a construct measured as divergent")
                 elif verdict["reason"] not in (FORM_CONTROL, UNMAPPED):
@@ -292,8 +292,8 @@ def check(engine: str, candidate: str) -> Tally:
                 continue
             if name in NO_COPY or native is None:
                 continue
-            # An engine-wide refusal is only honest if this engine's clipboard really does
-            # disagree with its own `toString()`. Counted here, and asserted non-zero below.
+            # An engine-wide refusal is only honest if this engine's clipboard really does disagree with its own
+            # `toString()`. Counted here, and asserted non-zero below.
             if verdict["reason"] == UNMAPPED and native != raw:
                 tally.diverged += 1
             tally.record(engine, name, verdict, native)
@@ -325,10 +325,9 @@ def check(engine: str, candidate: str) -> Tally:
             tally.record(engine, label, verdict, native)
 
         # ---- A BACKWARD SELECTION MUST COME BACK BACKWARD ----
-        # A cloned Range carries ordered boundaries and no direction, so rebuilding with
-        # `addRange` silently turns a selection dragged upwards into a forward one and the user's
-        # next Shift+Arrow moves the opposite edge. Only the patched path rebuilds, so the
-        # fixture needs an image in it.
+        # A cloned Range carries ordered boundaries and no direction, so rebuilding with `addRange` silently turns a
+        # selection dragged upwards into a forward one and the user's next Shift+Arrow moves the opposite edge. Only
+        # the patched path rebuilds, so the fixture needs an image in it.
         page.set_content(
             PAGE.replace(
                 "__BODY__",
