@@ -13,6 +13,7 @@ HELPERS=$(awk '
     /^_prepare_studio_uv_cache_for_launch\(\) \{/ { grab = 1 }
     /^_record_uv_cache_choice\(\) \{/ { grab = 1 }
     /^_uv_is_bucket_name\(\) \{/ { grab = 1 }
+    /^_uv_no_cache_requested\(\) \{/ { grab = 1 }
     /^_uv_cache_root_is_writable\(\) \{/ { grab = 1 }
     /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
     /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
@@ -21,7 +22,7 @@ HELPERS=$(awk '
 ' "$INSTALL_SH")
 for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
     _restore_uv_cache_marker _absolutize_uv_cache_dir _uv_is_bucket_name \
-    _uv_cache_root_is_writable; do
+    _uv_cache_root_is_writable _uv_no_cache_requested; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
         exit 1
@@ -490,6 +491,65 @@ EXPORTED
     else
         bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
     fi
+
+    # UV_NO_CACHE leaves the caller's UV_CACHE_DIR completely empty, CACHEDIR.TAG included
+    # (checked against uv 0.10.7), so recording it would point the next repair at a cache this
+    # install never filled. Both branches that choose a directory without probing have to ask.
+    NOCACHE_PROBE="$WORK/$shell nocache.sh"
+    for _nc_mode in custom isolated; do
+        {
+            printf '%s\n' "$HELPERS"
+            cat <<NOCACHED
+step() { :; }
+substep() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+UV_NO_CACHE=1
+export UV_NO_CACHE
+NOCACHED
+            if [ "$_nc_mode" = custom ]; then
+                printf "UV_CACHE_DIR='%s'\n_ISOLATE_UV_CACHE=false\n" "$OVERRIDE"
+            else
+                printf "unset UV_CACHE_DIR\n_ISOLATE_UV_CACHE=true\n"
+            fi
+            printf '%s\n' '_configure_uv_cache' 'printf "%s" "$_UV_CACHE_MODE"'
+        } > "$NOCACHE_PROBE"
+        rm -f "$MARKER"
+        _nc_out=$($shell "$NOCACHE_PROBE")
+        if [ "$_nc_out" = "$_nc_mode" ] && [ ! -e "$MARKER" ]; then
+            ok "$shell: $_nc_mode under UV_NO_CACHE records nothing"
+        else
+            bad "$shell: $_nc_mode under UV_NO_CACHE (mode [$_nc_out], marker [$(cat "$MARKER" 2>/dev/null)])"
+        fi
+    done
+    # ...and with UV_NO_CACHE absent the same two branches still record, so the guard above is
+    # not simply switching recording off.
+    for _nc_mode in custom isolated; do
+        {
+            printf '%s\n' "$HELPERS"
+            cat <<RECORDED
+step() { :; }
+substep() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+unset UV_NO_CACHE
+RECORDED
+            if [ "$_nc_mode" = custom ]; then
+                printf "UV_CACHE_DIR='%s'\n_ISOLATE_UV_CACHE=false\n" "$OVERRIDE"
+            else
+                printf "unset UV_CACHE_DIR\n_ISOLATE_UV_CACHE=true\n"
+            fi
+            printf '%s\n' '_configure_uv_cache' 'printf "%s" "$_UV_CACHE_MODE"'
+        } > "$NOCACHE_PROBE"
+        rm -f "$MARKER"
+        _nc_out=$($shell "$NOCACHE_PROBE")
+        if [ "$_nc_out" = "$_nc_mode" ] && [ -s "$MARKER" ]; then
+            ok "$shell: $_nc_mode still records without UV_NO_CACHE"
+        else
+            bad "$shell: $_nc_mode without UV_NO_CACHE (mode [$_nc_out], marker [$(cat "$MARKER" 2>/dev/null)])"
+        fi
+    done
+    rm -f "$MARKER"
 
     # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
     rm -rf "$ROOT/cache"

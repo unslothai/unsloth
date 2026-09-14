@@ -132,6 +132,7 @@ def _uv_cache_functions(source: str) -> str:
             # failure as an uninspectable cache, so a helper missing here does not raise: it
             # turns every case in this file into "studio, could not be inspected", which reads
             # as a product bug.
+            "Test-StudioUvNoCache",
             "Test-StudioUvBucketName",
             "Test-StudioUvCacheWritable",
             "Test-StudioUvCachePopulated",

@@ -1152,10 +1152,16 @@ class TestInstallUvCacheRootParity:
 
         # Written after the choice is made.
         assert "_record_uv_cache_choice() {" in sh
-        # Every mode records, custom included, or a previous install's marker survives.
+        # Every mode records, custom included, or a previous install's marker survives. The
+        # no-cache guard may precede the call, since uv fills nothing under it, but a branch
+        # that stops calling it at all is the bug this counts.
         call_sites = [
             match.start()
-            for match in re.finditer(r"^[ \t]+_record_uv_cache_choice[ \t]*$", sh, re.MULTILINE)
+            for match in re.finditer(
+                r"^[ \t]+(?:_uv_no_cache_requested \|\| )?_record_uv_cache_choice[ \t]*$",
+                sh,
+                re.MULTILINE,
+            )
         ]
         assert len(call_sites) == 3, f"one call site per mode branch, found {len(call_sites)}"
         assert (
@@ -1174,7 +1180,7 @@ class TestInstallUvCacheRootParity:
         # do use -ErrorAction Stop, and on purpose.
         marker_write = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
-                "function Test-StudioUvBucketName"
+                "function Test-StudioUvNoCache"
             )
         ]
         # Covers both marker functions, which sit together above the selector.
@@ -1204,6 +1210,23 @@ class TestInstallUvCacheRootParity:
         assert "1|y|yes|t|true|on)" in sh
         assert '@("1", "y", "yes", "t", "true", "on")' in ps1
         assert '_UV_TRUE = ("1", "y", "yes", "t", "true", "on")' in cli
+        # and it is honoured BEFORE a caller's cache is recorded, on both sides: uv leaves
+        # UV_CACHE_DIR completely empty under --no-cache, so a marker naming it would send the
+        # next repair to a cache this install never filled. The CLI already checked first.
+        assert "_uv_no_cache_requested() {" in sh
+        assert "function Test-StudioUvNoCache" in ps1
+        sh_custom = sh[sh.index("_UV_CACHE_MODE=custom") :].split("return 0", 1)[0]
+        assert "_uv_no_cache_requested" in sh_custom, sh_custom
+        sh_iso = sh[sh.index("_UV_CACHE_MODE=isolated") :].split("return 0", 1)[0]
+        assert "_uv_no_cache_requested" in sh_iso, sh_iso
+        ps1_custom = ps1[ps1.index('$script:StudioUvCacheMode = "custom"') :].split(
+            "if ($Isolated)", 1
+        )[0]
+        assert "Test-StudioUvNoCache" in ps1_custom, ps1_custom
+        ps1_iso = ps1[ps1.index('$script:StudioUvCacheMode = "isolated"') :].split(
+            "Test-StudioUvNoCache)", 1
+        )
+        assert len(ps1_iso) == 2, "the isolated branch no longer guards its marker write"
         #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
         assert "_uv_is_bucket_name() {" in sh
         assert "function Test-StudioUvBucketName" in ps1
@@ -1291,7 +1314,7 @@ class TestInstallUvCacheRootParity:
             assert '[ -L "$_uv_marker_file" ]' in body[unlink:write], body[unlink:write]
         ps1_marker = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
-                "function Test-StudioUvBucketName"
+                "function Test-StudioUvNoCache"
             )
         ]
         # One helper for every path that must end up absolute, or they disagree the moment

@@ -193,6 +193,33 @@ def test_isolation_wins_over_a_warm_default(tmp_path):
     assert verdict["marker"] == str(root / "cache" / "uv"), verdict
 
 
+@requires_pwsh
+@pytest.mark.parametrize("isolated", [False, True])
+def test_uv_no_cache_records_nothing_even_when_the_directory_is_decided(tmp_path, isolated):
+    """uv leaves the chosen directory completely empty under --no-cache.
+
+    Both branches that pick a directory without probing returned before the no-cache check, so
+    the marker named a cache this install never filled and the next repair could prefer it.
+    """
+    root = tmp_path / "studio"
+    env = {"UV_NO_CACHE": "1"}
+    if not isolated:
+        env["UV_CACHE_DIR"] = str(tmp_path / "callercache")
+    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated = isolated, env = env)
+    assert verdict["mode"] == ("isolated" if isolated else "custom"), verdict
+    assert verdict["marker"] == "", verdict
+
+
+@requires_pwsh
+@pytest.mark.parametrize("isolated", [False, True])
+def test_the_same_two_branches_do_record_without_uv_no_cache(tmp_path, isolated):
+    """So the guard above is not simply switching recording off."""
+    root = tmp_path / "studio"
+    env = {} if isolated else {"UV_CACHE_DIR": str(tmp_path / "callercache")}
+    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated = isolated, env = env)
+    assert verdict["marker"] != "", verdict
+
+
 # ── the four rules install.sh gained and install.ps1 did not ───────────────────────────────
 
 

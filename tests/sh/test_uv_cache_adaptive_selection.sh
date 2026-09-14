@@ -45,6 +45,7 @@ awk '/^_configure_uv_cache\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN"
 awk '/^_prepare_studio_uv_cache_for_launch\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_absolutize_uv_cache_dir\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_uv_is_bucket_name\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
+awk '/^_uv_no_cache_requested\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_EARLY"; then

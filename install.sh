@@ -574,6 +574,18 @@ _resolve_studio_destinations() {
 # same base, so two different bases cannot miss a warm cache.
 # True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
 # is not uv's. One rule for the probe and the warmth scan; tightening one is how they drift.
+# uv --no-cache neither reads nor writes a cache: on uv 0.10.7 a caller's UV_CACHE_DIR stays
+# completely empty, CACHEDIR.TAG included. So nothing this install did belongs in the marker,
+# whichever branch chose the directory. Lowercased, since uv takes it case-insensitively; not
+# trimmed, since uv rejects a padded value outright. The literals are clap's BoolishValueParser
+# set, `y` and `t` included. Mirrors _uv_no_cache_requested() in unsloth_cli/commands/studio.py.
+_uv_no_cache_requested() {
+    case "$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|y|yes|t|true|on) return 0 ;;
+    esac
+    return 1
+}
+
 _uv_is_bucket_name() {
     case "$1" in
         *-v[0-9]*) ;;
@@ -688,9 +700,13 @@ _configure_uv_cache() {
             *[![:space:]]*)
                 _UV_CACHE_MODE=custom
                 export UV_CACHE_DIR
-                # Recorded like any other choice; a caller still outranks the marker.
-                _record_uv_cache_choice
-                step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+                if _uv_no_cache_requested; then
+                    step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR); uv caching is off (UV_NO_CACHE), so nothing is recorded"
+                else
+                    # Recorded like any other choice; a caller still outranks the marker.
+                    _record_uv_cache_choice
+                    step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+                fi
                 return 0
                 ;;
         esac
@@ -700,28 +716,19 @@ _configure_uv_cache() {
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
-        _record_uv_cache_choice
+        _uv_no_cache_requested || _record_uv_cache_choice
         step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
         return 0
     fi
 
-    # uv --no-cache neither reads nor writes a cache, so there is nothing to select: probing
-    # touches a cache the caller told uv to leave alone, and a marker here names one this
-    # install never filled. Mirrors _uv_no_cache_requested() in unsloth_cli/commands/studio.py.
-    # Lowercased, since uv takes it case-insensitively; not trimmed, since uv rejects a padded
-    # value outright. The literals are clap's BoolishValueParser set, `y` and `t` included.
-    _uv_no_cache=$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')
-    case "$_uv_no_cache" in
-        1|y|yes|t|true|on)
-            unset _uv_no_cache
-            UV_CACHE_DIR="$_uv_studio_cache"
-            _UV_CACHE_MODE=studio
-            export UV_CACHE_DIR
-            step "uv cache" "uv caching is off (UV_NO_CACHE); nothing to select or record"
-            return 0
-            ;;
-    esac
-    unset _uv_no_cache
+    # Nothing to select either: probing would touch a cache the caller told uv to leave alone.
+    if _uv_no_cache_requested; then
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=studio
+        export UV_CACHE_DIR
+        step "uv cache" "uv caching is off (UV_NO_CACHE); nothing to select or record"
+        return 0
+    fi
 
     # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank inherited value cannot override them; last line so a notice ahead of the path does not become the path.
     _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \

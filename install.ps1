@@ -1730,6 +1730,15 @@ exit 1
         $script:StudioUvMarkerSaved = $false
     }
 
+    # uv --no-cache neither reads nor writes a cache: on uv 0.10.7 a caller's UV_CACHE_DIR stays
+    # completely empty, CACHEDIR.TAG included, so nothing this install did belongs in the marker
+    # whichever branch chose the directory. Lowercased, since uv takes it case-insensitively; not
+    # trimmed, since uv rejects a padded value outright. The literals are clap's
+    # BoolishValueParser set, `y` and `t` included. Mirrors _uv_no_cache_requested in install.sh.
+    function Test-StudioUvNoCache {
+        return (([string]$env:UV_NO_CACHE).ToLowerInvariant() -in @("1", "y", "yes", "t", "true", "on"))
+    }
+
     # True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
     # is not uv's. Mirrors _uv_is_bucket_name, suffix from the LAST `-v` included.
     function Test-StudioUvBucketName {
@@ -1862,6 +1871,10 @@ exit 1
             # Absolute before anything uses it, so every phase of one install and the
             # marker name the same directory (see _absolutize_uv_cache_dir in install.sh).
             $env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR
+            if (Test-StudioUvNoCache) {
+                step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR); uv caching is off (UV_NO_CACHE), so nothing is recorded"
+                return
+            }
             # Recorded like any other choice; a caller still outranks the marker.
             Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
             step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
@@ -1871,17 +1884,15 @@ exit 1
         if ($Isolated) {
             Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $studioCache
             $script:StudioUvCacheMode = "isolated"
-            Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
+            if (-not (Test-StudioUvNoCache)) {
+                Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
+            }
             step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
             return
         }
 
-        # uv --no-cache neither reads nor writes a cache, so there is nothing to select:
-        # probing touches a cache the caller told uv to leave alone, and a marker here names one
-        # this install never filled. Lowercased, since uv takes it case-insensitively; not
-        # trimmed, since uv rejects a padded value outright. The literals are clap's
-        # BoolishValueParser set, `y` and `t` included. Mirrors the branch in install.sh.
-        if (([string]$env:UV_NO_CACHE).ToLowerInvariant() -in @("1", "y", "yes", "t", "true", "on")) {
+        # Nothing to select either: probing would touch a cache the caller told uv to leave alone.
+        if (Test-StudioUvNoCache) {
             Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $studioCache
             $script:StudioUvCacheMode = "studio"
             step "uv cache" "uv caching is off (UV_NO_CACHE); nothing to select or record"
