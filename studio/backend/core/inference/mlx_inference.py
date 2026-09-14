@@ -4,13 +4,14 @@ interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading 
 
 import copy
 import hashlib
+import importlib
 import os
 import re
 import sys
 import threading
 import time
 from collections import OrderedDict
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
@@ -47,18 +48,32 @@ logger = get_logger(__name__)
 
 
 # Prefix reuse for mlx-vlm generation, owned by Studio. A forward is not shape-invariant, so a reused turn answers as
-# an unreused one only when both chunk the same rows: every request prefills on one grid and snapshots where a chunk
-# of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
+# an unreused one only when both chunk the same rows: every request prefills on mlx-vlm's own grid and snapshots where
+# a chunk of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
 # prefill_step_size.
 
-# The grid the boundary sits on: a prompt shorter than the step has no boundary at all.
-VLM_PROMPT_CACHE_PREFILL_STEP = 256
+# mlx-vlm's default step, for when it cannot be read: a prompt no longer than it has no boundary.
+VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
-def shape_stable_prefix(token_count, origin = 0):
+def vlm_prefill_step():
+    """mlx-vlm's own step, so an unreused request prefills as mlx-vlm does. It divides every
+    boundary, so a step no grid can be built on falls back here rather than reaching a request."""
+    try:
+        from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
+        step = int(DEFAULT_PREFILL_STEP_SIZE)
+    except Exception:
+        return VLM_PREFILL_STEP
+    return step if step > 0 else VLM_PREFILL_STEP
+
+
+def shape_stable_prefix(
+    token_count,
+    origin = 0,
+    step = VLM_PREFILL_STEP,
+):
     """Rows whole chunks produced from ``origin``; mlx-vlm holds the last token back."""
-    step = VLM_PROMPT_CACHE_PREFILL_STEP
     rows = token_count - 1
     if rows < origin:
         return 0
@@ -242,7 +257,8 @@ def _recording_class(base):
                 record.resume_offset = offset or 0
                 if record.on_resume is not None:
                     record.on_resume(record.resume_offset)
-            if _prompt_wide_position_ids(args, kwargs):
+            # Only after a resume: a Qwen VL model fed no positions reuses the previous request's.
+            if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
                 kwargs.pop("position_ids")
             _place_per_layer_inputs(
                 kwargs, _chunk_rows(args, kwargs), (offset or 0) - record.resume_offset
@@ -400,7 +416,9 @@ class VLMPromptCacheSession:
         releases_unserved = False,
         media_block = None,
         policy_hosts = (),
+        step = VLM_PREFILL_STEP,
     ):
+        self.step = step
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
@@ -442,7 +460,7 @@ class VLMPromptCacheSession:
         self._token_ids = token_ids
         origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
         self._origin = origin
-        boundary = shape_stable_prefix(len(token_ids), origin)
+        boundary = shape_stable_prefix(len(token_ids), origin, self.step)
         self._media_end = media_prefix_end(token_ids, self._media_token_ids)
         record = self._forward.record
         if boundary < self._media_end:
@@ -470,7 +488,7 @@ class VLMPromptCacheSession:
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
-        record.capture_at = (boundary - prefix_len) // VLM_PROMPT_CACHE_PREFILL_STEP
+        record.capture_at = (boundary - prefix_len) // self.step
         self.reused_tokens = prefix_len
         return prefix_len
 
@@ -509,13 +527,12 @@ class VLMPromptCacheSession:
             return False
         # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
-        step = VLM_PROMPT_CACHE_PREFILL_STEP
         if (
             not held
             or held < self._origin
-            or (held - self._origin) % step
+            or (held - self._origin) % self.step
             or held < self._media_end
-            or held > shape_stable_prefix(len(self._token_ids), self._origin)
+            or held > shape_stable_prefix(len(self._token_ids), self._origin, self.step)
         ):
             logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
             return False
@@ -537,6 +554,65 @@ def _mlx_adapter_modules(model):
         else:
             adapters.append((path, module, base))
     return adapters, unsupported
+
+
+_MLX_FUSION_UNAVAILABLE = set()
+
+
+def _mlx_fusion_unavailable(name, error):
+    """Log once per cause: this is a per-request path, so repeating would flood."""
+    key = (name, type(error).__name__, str(error))
+    if key not in _MLX_FUSION_UNAVAILABLE:
+        _MLX_FUSION_UNAVAILABLE.add(key)
+        logger.warning(
+            "Optional MLX fusion %s is unavailable, continuing with native inference: %s: %s",
+            name,
+            type(error).__name__,
+            error,
+        )
+
+
+def _mlx_inference_patch(name):
+    """An optional Zoo fusion helper, or None. Never raises: these are a throughput
+    optimization, so no Zoo state may fail a load or a request that worked without it."""
+    try:
+        patches = importlib.import_module("unsloth_zoo.mlx.inference")
+    except ModuleNotFoundError as error:
+        if error.name != "unsloth_zoo.mlx.inference":
+            _mlx_fusion_unavailable(name, error)  # a transitive import inside Zoo failed
+        return None
+    except Exception as error:
+        # A partial or skewed install raises ImportError rather than ModuleNotFoundError.
+        _mlx_fusion_unavailable(name, error)
+        return None
+    return getattr(patches, name, None)
+
+
+@contextmanager
+def _mlx_optional_fusion(name, model):
+    """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
+    an open scope must unwind through the ExitStack as an unguarded `with` would, or an
+    interrupted generation stops restoring the module tree."""
+    patch = _mlx_inference_patch(name)
+    with ExitStack() as scope:
+        active = model
+        if patch is not None:
+            try:
+                entered = scope.enter_context(patch(model))
+            except Exception as error:
+                _mlx_fusion_unavailable(name, error)
+            else:
+                if entered is not None:
+                    active = entered
+        yield active
+
+
+def _mlx_fused_moe_gate_up(model):
+    return _mlx_optional_fusion("fused_moe_gate_up", model)
+
+
+def _mlx_fused_decode_conv_silu(model):
+    return _mlx_optional_fusion("fused_decode_conv_silu", model)
 
 
 @contextmanager
@@ -1924,6 +2000,7 @@ class MLXInferenceBackend:
         self.last_generation_stats = None
 
         self._model = None
+        self._model_fusion = ExitStack()
         self._tokenizer = None
         self._processor = None
         self._is_vlm = False
@@ -2069,6 +2146,7 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
+                step = vlm_prefill_step(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -2353,6 +2431,7 @@ class MLXInferenceBackend:
                 load_kwargs["tensor_group"] = distributed_group
 
         # Freed before the replacement weights are allocated, for headroom.
+        self._model_fusion.close()
         self._clear_prompt_cache()
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
@@ -2470,6 +2549,9 @@ class MLXInferenceBackend:
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
+        # The worker owns fixed base weights until unload; adapter requests stay scoped.
+        if not is_lora:
+            self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -2564,6 +2646,7 @@ class MLXInferenceBackend:
         import mlx.core as mx
         import gc
 
+        self._model_fusion.close()
         if model_name in self.models:
             del self.models[model_name]
         self._model = None
@@ -2907,7 +2990,12 @@ class MLXInferenceBackend:
         # MLX consumers diff cumulative snapshots. Keep a prompt-prefilled <think> prefix on every native-protocol
         # snapshot just as the normal decoding path does below.
         normalized_output = think_prefix
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, _adapter_state),
+            _mlx_fused_moe_gate_up(self._model),
+            _mlx_fused_decode_conv_silu(self._model),
+        ):
             (
                 gen_prompt,
                 prompt_cache,
@@ -3314,7 +3402,7 @@ class MLXInferenceBackend:
             if session.media_block is not None:
                 vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
-            vlm_kwargs["prefill_step_size"] = VLM_PROMPT_CACHE_PREFILL_STEP
+            vlm_kwargs["prefill_step_size"] = session.step
         session_scope = session if session is not None else nullcontext()
 
         def _stream_vlm_snapshots():
@@ -3326,11 +3414,14 @@ class MLXInferenceBackend:
             with (
                 self._generation_lock,
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
+                ExitStack() as generation_scope,
                 session_scope,
             ):
                 if images and session is None:
                     # The vision pass gets the headroom, under the lock so nothing refills it.
                     self._release_vlm_snapshots()
+                generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
+                generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
                 final_response = None
                 try:
                     # Emit any prefilled <think> block before the first token so the UI renders it during prefill,
@@ -3489,11 +3580,17 @@ class MLXInferenceBackend:
         sampled = ""
         released = 0
         stopped = False
-        # Hold the adapter state for the whole stream, as text and vision do, so Base-vs-LoRA compare doesn't run the
-        # adapter on both sides.
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
+        # Hold the adapter state for the whole stream, as text and vision do,
+        # so Base-vs-LoRA compare doesn't run the adapter on both sides.
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, use_adapter),
+            ExitStack() as generation_scope,
+        ):
             # As on the image path: the tower gets the headroom, under the lock.
             self._release_vlm_snapshots()
+            generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
+            generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
             final_response = None
             try:
                 for response in vlm_stream(

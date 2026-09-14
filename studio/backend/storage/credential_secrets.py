@@ -12,6 +12,7 @@ import logging
 import os
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -33,7 +34,7 @@ _FORMAT_VERSION = 1
 _NONCE_BYTES = 12
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 
 
 def _associated_data(credential_kind: str, scope_id: str) -> bytes:
@@ -60,8 +61,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
-    global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path), timeout = 5.0)
@@ -71,12 +76,13 @@ def get_connection() -> sqlite3.Connection:
         os.chmod(db_path, 0o600)
     except OSError:
         pass
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise

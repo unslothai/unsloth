@@ -22,8 +22,8 @@
 #   UNSLOTH_GPUS=none UNSLOTH_ALLOW_CPU=1 \
 #       UNSLOTH_PORTS="-p 8000:8000 -p 8888:8888" bash docker/run.sh
 #
-# AMD hosts: --rocm runs the ROCm image and passes the AMD device nodes instead
-# of --gpus, which is NVIDIA-only.
+# AMD hosts: a leading --rocm (or UNSLOTH_ROCM=1) runs the ROCm image and passes
+# the AMD device nodes instead of --gpus, which is NVIDIA-only.
 #   bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
 #
 # Overridable env:
@@ -34,18 +34,23 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
+#                                           chats, outputs) at /opt/unsloth-studio;
+#                                           set it empty to run without one
 # --rocm only:
+#   UNSLOTH_ROCM=1                          same as a leading --rocm
 #   HSA_OVERRIDE_GFX_VERSION                force a gfx target (e.g. 10.3.0)
 #   UNSLOTH_ROCM_GFX_ARCH                   gfx arch override (e.g. gfx1151)
 set -euo pipefail
 
-# --rocm is ours; everything else is the container's command line.
+# --rocm is ours only as the FIRST argument; everything after it is the
+# container's command line, so a command's own --rocm is left alone.
 ROCM=0
-PASSTHROUGH=()
-for arg in "$@"; do
-    if [[ "$arg" == "--rocm" ]]; then ROCM=1; else PASSTHROUGH+=("$arg"); fi
-done
-set -- ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}
+[[ "${UNSLOTH_ROCM:-}" == "1" ]] && ROCM=1
+if [[ $# -gt 0 && "$1" == "--rocm" ]]; then
+    ROCM=1
+    shift
+fi
 
 # UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom). It exists so the
 # regression tests can stage a fake device tree; leave it unset in normal use.
@@ -66,12 +71,21 @@ amd_device_flags() {
     done
     return 0
 }
+# Into GPU_FLAG, one flag per line. A read loop rather than mapfile: this runs on
+# the host, and macOS ships bash 3.2, which has no mapfile.
+collect_amd_device_flags() {
+    local _flag
+    GPU_FLAG=()
+    while IFS= read -r _flag; do
+        GPU_FLAG+=("$_flag")
+    done < <(amd_device_flags)
+}
 
 if [[ $ROCM -eq 1 ]]; then
     IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth-rocm:latest}"
     GPUS=none
     if [[ -e "$DEV_ROOT/dev/kfd" ]]; then
-        mapfile -t GPU_FLAG < <(amd_device_flags)
+        collect_amd_device_flags
     else
         GPU_FLAG=()
         printf "\033[1;33mWARN:\033[0m /dev/kfd is not present, so no AMD GPU can be passed through.\n" >&2
@@ -98,6 +112,14 @@ fi
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
+# Studio's data lives under /opt/unsloth-studio and the image relinks its code there at
+# every start, so the volume survives `docker rm` without pinning the code. `-` (not `:-`):
+# an explicitly empty value disables the mount. On :core it is an empty dir the image never reads.
+STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
+STUDIO_MOUNT=()
+if [ -n "$STUDIO_VOLUME" ]; then
+    STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 
@@ -107,10 +129,12 @@ mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 # print. Drop the flag instead and let the container start, so the user gets the
 # entrypoint's explanation (or, on :latest, Studio in CPU mode).
 host_has_nvidia() {
+    local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
-    command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | grep -q '^GPU' && return 0
-    return 1
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    # buffer before grep -q: under pipefail the producer's SIGPIPE can become the pipeline status, which reads as "no GPU" and silently drops --gpus
+    listing="$(nvidia-smi -L 2>/dev/null || true)"
+    grep -q '^GPU' <<< "${listing}"
 }
 
 if [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
@@ -122,8 +146,19 @@ if [[ $ROCM -eq 0 && ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
     # -- torch in the image is cu128 and torch.cuda.is_available() stays False here.
     # Run --rocm instead for a torch that can use the card.
     if [[ -e "$DEV_ROOT/dev/kfd" && -d "$DEV_ROOT/dev/dri" ]]; then
-        mapfile -t GPU_FLAG < <(amd_device_flags)
+        collect_amd_device_flags
         printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        # published images only (untagged is :latest); a custom image may carry a HIP or Vulkan build
+        if [[ "$IMAGE" == unsloth/unsloth || "$IMAGE" == unsloth/unsloth:* ]]; then
+            printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
+            printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+            if [[ "$IMAGE" == unsloth/unsloth:core* ]]; then
+                printf "      :core refuses a CPU-only start unless UNSLOTH_ALLOW_CPU=1 is set (:latest allows it).\n" >&2
+            fi
+        else
+            printf "      The published unsloth/unsloth images cannot use them (cu128 torch, no HIP\n" >&2
+            printf "      or Vulkan llama.cpp); whether %s does is up to that image.\n" "$IMAGE" >&2
+        fi
     fi
     printf "\n" >&2
 fi
@@ -203,6 +238,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

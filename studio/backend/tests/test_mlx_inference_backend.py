@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import builtins
 import contextlib
 import copy
 import json
@@ -13,6 +14,116 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture(autouse = True)
+def mlx_inference_patches(monkeypatch):
+    module = types.ModuleType("unsloth_zoo.mlx.inference")
+    module.fused_moe_gate_up = contextlib.nullcontext
+    module.fused_decode_conv_silu = contextlib.nullcontext
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
+    return module
+
+
+@pytest.fixture
+def mlx_moe(mlx_inference_patches):
+    return mlx_inference_patches
+
+
+@pytest.fixture
+def mlx_decode(mlx_inference_patches):
+    return mlx_inference_patches
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError("injected", name = "unsloth_zoo.mlx.inference"),
+        # Zoo installed without the mlx extras its fusion module imports.
+        ModuleNotFoundError("injected", name = "mlx"),
+        ModuleNotFoundError("injected", name = "unsloth_zoo"),
+        # A skewed or partial install raises ImportError, not ModuleNotFoundError.
+        ImportError("cannot import name 'gather_qmm'"),
+        RuntimeError("zoo fusion module failed at import"),
+    ],
+    ids = ["feature", "mlx", "unsloth_zoo", "import-error", "raising-module"],
+)
+def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
+    """No Zoo state may fail a load or a generation: raising would take down a path that
+    worked before the optimization existed, so a transitive failure is logged instead."""
+    from core.inference import mlx_inference
+
+    module_name = "unsloth_zoo.mlx.inference"
+    helper = getattr(mlx_inference, f"_mlx_fused_{feature}")
+
+    original_import = mlx_inference.importlib.import_module
+
+    def fail(name, *args, **kwargs):
+        if name == module_name:
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(mlx_inference.importlib, "import_module", fail)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with helper(model) as active:
+        assert active is model
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_fusion_that_cannot_be_entered_keeps_native(
+    monkeypatch, mlx_inference_patches, feature
+):
+    """Packing can fail on the model in hand (headroom, an unsupported layout) after the
+    module imported cleanly. That must degrade to native, not fail the request."""
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("cannot pack this model")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+        assert active is model
+
+
+def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
+    """The base-model scope is entered inside load_model, so a fusion that refuses there
+    must not turn a good load into a failed one."""
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("no headroom to pack")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config) is True
+    assert backend.active_model_name == "fake/text"
+    assert backend._model is not None
+    assert backend.unload_model("fake/text")
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
+    from core.inference import mlx_inference
+
+    name = f"fused_{feature}"
+    monkeypatch.delattr(mlx_inference_patches, name)
+    model = object()
+    helper = getattr(mlx_inference, f"_mlx_{name}")
+    with helper(model) as active:
+        assert active is model
 
 
 class _Resp:
@@ -221,6 +332,72 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     assert isinstance(backend._tokenizer, _DummyTokenizer)
     # Non-LoRA text model: no base_model on the record.
     assert backend.models["fake/text"]["base_model"] is None
+
+
+@pytest.mark.parametrize("is_lora", [False, True])
+def test_mlx_base_fusion_lifetime_and_lora_request_scope(monkeypatch, mlx_moe, is_lora):
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    tokenizer = backend._tokenizer
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    events = []
+
+    class FusedModel(_DummyModel):
+        pass
+
+    @contextmanager
+    def fusion(model):
+        if type(model) is FusedModel:
+            yield model
+            return
+        original = type(model)
+        model.__class__ = FusedModel
+        events.append(("enter", model))
+        try:
+            yield model
+        finally:
+            assert backend._model is model
+            model.__class__ = original
+            events.append(("exit", model))
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", fusion)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = is_lora)
+    assert backend.load_model(config)
+    first = backend._model
+    expected_class = _DummyModel if is_lora else FusedModel
+    assert type(first) is expected_class
+    backend._tokenizer = tokenizer
+    stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
+    assert next(stream) == "7"
+    assert type(first) is FusedModel
+    stream.close()
+    assert type(first) is expected_class
+    assert events == ([("enter", first), ("exit", first)] if is_lora else [("enter", first)])
+    backend.reset_generation_state()
+    assert type(first) is expected_class
+
+    assert backend.load_model(config)
+    second = backend._model
+    assert second is not first and type(first) is _DummyModel
+    assert type(second) is expected_class
+    backend.unload_model(config.identifier)
+    assert type(second) is _DummyModel and backend._model is None
+
+    assert backend.load_model(config)
+    third = backend._model
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("load failed")
+
+    loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
+    monkeypatch.setattr(loader, "from_pretrained", fail)
+    with pytest.raises(RuntimeError, match = "load failed"):
+        backend.load_model(config)
+    assert type(third) is _DummyModel
+    backend.unload_model(config.identifier)
+    assert sum(event == "enter" for event, _ in events) == sum(
+        event == "exit" for event, _ in events
+    )
 
 
 def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
@@ -577,7 +754,10 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
         ), f"{name!r} must default to None so existing callers stay valid"
 
 
-def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
+    monkeypatch, mlx_moe, mlx_decode, feature
+):
     """A prefilled <think> block must be re-emitted as the first VLM snapshot,
     inside the adapter context (so unsupported requests still raise first), so
     the UI renders the thinking block during prefill and a pre-first-token
@@ -588,6 +768,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
     order = []
+    stream_state = {"fail": False}
 
     @contextmanager
     def _adapter_state(_model, state):
@@ -599,6 +780,21 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
             order.append("adapter_exit")
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model and backend._generation_lock.locked()
+        assert order[-1] == "snapshots_released"
+        order.append("fusion_enter")
+        try:
+            yield
+        finally:
+            assert backend._generation_lock.locked()
+            order.append("fusion_exit")
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.detect_think_prefill",
         lambda *_a, **_k: "<think>\n",
@@ -613,7 +809,9 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
 
     def _vlm_stream(*_a, **_k):
         # The prefill must have been emitted before any generated token.
-        assert order[-1] == "adapter_enter"
+        assert order[-1] == "fusion_enter"
+        if stream_state["fail"]:
+            raise RuntimeError("generation failed")
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _vlm_stream
@@ -626,16 +824,27 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    monkeypatch.setattr(
+        backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
+    )
     args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
     assert next(gen) == "<think>\n"
-    assert order == ["adapter_enter"]
+    entered = ["adapter_enter", "snapshots_released", "fusion_enter"]
+    assert order == entered
     # Subsequent snapshots are cumulative (prefill + generated text).
     assert next(gen) == "<think>\nok"
     gen.close()
-    assert order == ["adapter_enter", "adapter_exit"]
+    completed = entered + ["fusion_exit", "adapter_exit"]
+    assert order == completed
+    assert not backend._generation_lock.locked()
+    stream_state["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(backend._generate_vlm(*args, _adapter_state = False))
+    assert order == completed * 2
+    assert not backend._generation_lock.locked()
 
 
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
@@ -778,7 +987,10 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_generate_text_forwards_kwargs_into_template_helper(
+    monkeypatch, mlx_moe, mlx_decode, feature
+):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""
     from core.inference import mlx_inference
@@ -829,12 +1041,28 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
 
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model
+        assert adapter_active["value"] and backend._generation_lock.locked()
+        adapter_events.append(("fusion_enter", False))
+        try:
+            yield
+        finally:
+            assert adapter_active["value"] and backend._generation_lock.locked()
+            adapter_events.append(("fusion_exit", False))
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
+
     class _Resp:
         def __init__(self, tok):
             self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         assert adapter_active["value"]
+        assert adapter_events[-1] == ("fusion_enter", False)
         if stream_state["fail"]:
             raise RuntimeError("generation failed")
         yield _Resp(1)
@@ -870,7 +1098,8 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert next(generator) == "hi"
     assert adapter_active["value"] and backend._generation_lock.locked()
     generator.close()
-    assert adapter_events == [("enter", False), ("exit", False)]
+    completed = [(name, False) for name in ("enter", "fusion_enter", "fusion_exit", "exit")]
+    assert adapter_events == completed
     stream_state["fail"] = True
     with pytest.raises(RuntimeError, match = "generation failed"):
         list(
@@ -880,7 +1109,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
                 max_new_tokens = 1,
             )
         )
-    assert adapter_events[-2:] == [("enter", False), ("exit", False)]
+    assert adapter_events == completed * 2
     assert not backend._generation_lock.locked()
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", real_adapter_state)
@@ -2294,7 +2523,8 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 
     The audio stream has to enter _temporary_mlx_adapter_state like the text and
@@ -2304,16 +2534,41 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     seen = {}
+    order = []
 
     @contextlib.contextmanager
     def _fake_adapter_state(model, use_adapter):
         seen["use_adapter"] = use_adapter
         seen["entered"] = True
-        yield
-        seen["exited"] = True
+        seen["exited"] = False
+        order.append("adapter_enter")
+        try:
+            yield
+        finally:
+            seen["exited"] = True
+            order.append("adapter_exit")
+
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model and backend._generation_lock.locked()
+        assert seen["entered"] and not seen["exited"]
+        assert order[-1] == "snapshots_released"
+        order.append("fusion_enter")
+        try:
+            yield
+        finally:
+            assert not seen["exited"] and backend._generation_lock.locked()
+            order.append("fusion_exit")
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
 
     def _fake_stream(model, processor, prompt, **kwargs):
         seen["inside"] = seen.get("entered") and not seen.get("exited")
+        assert order[-1] == "fusion_enter"
+        if seen.get("fail"):
+            raise RuntimeError("generation failed")
         yield SimpleNamespace(
             text = "x",
             prompt_tokens = 1,
@@ -2338,19 +2593,39 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
     backend.active_model_name = "m"
     backend.last_generation_stats = None
     backend.models = {"m": {"audio_type": "audio_vlm"}}
-
-    list(
-        backend.generate_audio_input_response(
-            messages = [{"role": "user", "content": "hi"}],
-            system_prompt = "",
-            audio_array = [0.0],
-            max_new_tokens = 8,
-            use_adapter = False,
-        )
+    monkeypatch.setattr(
+        backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
     )
+
+    args = dict(
+        messages = [{"role": "user", "content": "hi"}],
+        system_prompt = "",
+        audio_array = [0.0],
+        max_new_tokens = 8,
+        use_adapter = False,
+    )
+    list(backend.generate_audio_input_response(**args))
     assert seen["use_adapter"] is False
     # Held for the whole stream, and restored afterwards.
     assert seen["inside"] is True and seen["exited"] is True
+    completed = [
+        "adapter_enter",
+        "snapshots_released",
+        "fusion_enter",
+        "fusion_exit",
+        "adapter_exit",
+    ]
+    assert order == completed
+    stream = backend.generate_audio_input_response(**args)
+    assert next(stream) == "x"
+    stream.close()
+    assert order == completed * 2
+    assert not backend._generation_lock.locked()
+    seen["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(backend.generate_audio_input_response(**args))
+    assert order == completed * 3
+    assert not backend._generation_lock.locked()
 
 
 def test_worker_forwards_use_adapter_on_the_audio_command():
@@ -4898,6 +5173,32 @@ def test_mlx_keeps_a_think_closer_whose_opener_came_from_the_prefill(monkeypatch
     final = snapshots[-1]
     assert final.startswith("<think>"), final
     assert "</think>" in final, f"the closer was trimmed, leaving the block open: {final!r}"
+
+
+def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend, VLMPromptSnapshotStore
+
+    names = ("mlx_vlm", "mlx_vlm.generate", "mlx_vlm.generate.common", "mlx_vlm.models")
+    modules = {name: types.ModuleType(name) for name in names + ("mlx_vlm.models.cache",)}
+    modules["mlx_vlm.generate.common"].DEFAULT_PREFILL_STEP_SIZE = 1234
+    modules["mlx_vlm.models.cache"].make_prompt_cache = lambda _model, max_kv_size = None: []
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class LanguageModel:
+        pass
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._vlm_snapshot_store = VLMPromptSnapshotStore(10**6)
+    backend._vlm_snapshot_store_unavailable = False
+    backend._vlm_is_diffusion_model = lambda _model: False
+    backend._model = SimpleNamespace(config = SimpleNamespace(), language_model = LanguageModel())
+    backend._kv_cache_window = None
+    backend.active_model_name = "m"
+    session = backend._vlm_prompt_cache_session("base")
+    assert mlx_inference.vlm_prefill_step() == 1234 and session.step == 1234
+    assert mlx_inference.shape_stable_prefix(1300, step = session.step) == 1234
 
 
 # ── Unset generation budget ──────────────────────────────────────────────
