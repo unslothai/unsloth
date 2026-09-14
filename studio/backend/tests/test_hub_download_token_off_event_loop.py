@@ -42,7 +42,7 @@ def download(monkeypatch, tmp_path, request):
     proc = SimpleNamespace(pid = 4242, poll = lambda: None)
 
     def popen(*args, **kwargs):
-        spawned.append(kwargs["env"]["HF_TOKEN"])
+        spawned.append(kwargs["env"].get("HF_TOKEN"))
         return proc
 
     def register(registry, key, proc, **kwargs):
@@ -193,8 +193,29 @@ def test_cancel_stops_worker_registered_after_initial_lookup(monkeypatch, downlo
     assert killed == [True]
 
 
+def test_a_failed_token_resolution_downloads_anonymously(monkeypatch, download):
+    """The ambient lookup is a fallback, so losing it must not fail a download that needed no
+    credential. Before it existed this branch was an os.environ read and could not raise."""
+
+    def resolve(token):
+        raise RuntimeError("fixture token exchange failed")
+
+    monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", resolve)
+
+    result = asyncio.run(download.handler(download.body, None))
+
+    assert result["accepted"] is True
+    assert download.spawned == [None]
+    assert download.registry.get_process(download.key) is download.proc
+
+
 @pytest.mark.parametrize("cancel_download", [False, True])
-def test_token_failure_preserves_download_cancellation(monkeypatch, download, cancel_download):
+def test_launch_failure_preserves_download_cancellation(monkeypatch, download, cancel_download):
+    """The launch still runs in a thread, so a failure there has to settle the claim either way.
+
+    The failure is injected at the spawn rather than at token resolution: resolution is the ambient
+    fallback and no longer raises, so a launch failure is what reaches this path now.
+    """
     from fastapi import HTTPException
     from hub.schemas.downloads import CancelDownloadRequest, CancelDatasetDownloadRequest
 
@@ -204,9 +225,13 @@ def test_token_failure_preserves_download_cancellation(monkeypatch, download, ca
     def resolve(token):
         entered.set()
         assert release.wait(10), "test did not release token resolution"
-        raise RuntimeError("fixture token exchange failed")
+        return None
+
+    def failing_popen(*args, **kwargs):
+        raise RuntimeError("fixture launch failure")
 
     monkeypatch.setattr(huggingface_hub.utils, "get_token_to_send", resolve)
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", failing_popen)
 
     async def run():
         task = asyncio.create_task(download.handler(download.body, None))
@@ -234,7 +259,7 @@ def test_token_failure_preserves_download_cancellation(monkeypatch, download, ca
                 with pytest.raises(HTTPException) as exc:
                     await task
                 assert exc.value.status_code == 500
-                assert "fixture token exchange failed" in exc.value.detail
+                assert "fixture launch failure" in exc.value.detail
         finally:
             release.set()
             if not task.done():
@@ -243,7 +268,7 @@ def test_token_failure_preserves_download_cancellation(monkeypatch, download, ca
     asyncio.run(run())
     state = download.registry.get_job(download.key)
     assert state.state == ("cancelled" if cancel_download else "error")
-    assert state.error == (None if cancel_download else "fixture token exchange failed")
+    assert state.error == (None if cancel_download else "fixture launch failure")
     assert download.spawned == []
     assert download.registry.get_process(download.key) is None
 
@@ -301,7 +326,9 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
             "fixture/public", "@diffusion", None, use_xet = False, files = files
         )
 
-    if failure_at is None:
+    if failure_at in (None, "token"):
+        # A failed ambient lookup is not a spawn failure: the worker starts anonymously and, having
+        # started, owns its manifest.
         assert spawn() is proc
         assert len(created) == 1
         assert created[0].exists(), "a started worker must retain its manifest"
@@ -310,9 +337,7 @@ def test_scoped_manifest_ownership_on_spawn_failure(monkeypatch, tmp_path, failu
             spawn()
         assert exc.value is error
         assert list(tmp_path.glob("unsloth-dl-files-*.json")) == []
-    if failure_at == "token":
-        assert created == []
-    assert len(commands) == (1 if failure_at in (None, "popen") else 0)
+    assert len(commands) == (0 if failure_at == "manifest" else 1)
 
 
 @pytest.mark.parametrize(

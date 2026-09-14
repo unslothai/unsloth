@@ -177,8 +177,15 @@ def spawn_worker(
         from huggingface_hub.utils import get_token_to_send
         try:
             hf_token = get_token_to_send(None)
-        except (OSError, UnicodeError):
-            logger.warning("Could not read the saved Hugging Face token; downloading anonymously")
+        except Exception as e:  # noqa: BLE001
+            # Best effort, like the env lookup this replaced: hub's OIDC path raises OIDCError, httpx
+            # errors and NotImplementedError past the unreadable-file OSError/UnicodeError, and a public
+            # download must not 500 on those. An escape would also skip bind_worker_budget below,
+            # stranding the reservation apply_xet_env just took.
+            detail = download_registry.scrub_secrets(f"{type(e).__name__}: {e}")
+            logger.warning(
+                f"Could not resolve a saved Hugging Face login ({detail}); downloading anonymously"
+            )
             hf_token = None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
     # hf_transfer's parallel Range chunks can leave sparse partials even in "http" mode, so disable it and keep the worker's writer sequential.
