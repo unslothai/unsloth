@@ -215,34 +215,6 @@ def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch, weight
     assert X.grad is not None and torch.isfinite(X.grad).all()
 
 
-class _Cfg:
-    def __init__(self, **quant):
-        self.quantization_config = dict(quant_method = "fp8", **quant)
-
-
-@pytest.mark.parametrize(
-    "capability, quant, allowed",
-    [
-        ((8, 0), {"weight_block_size": [128, 128]}, True),  # A100, block: the fallback runs
-        ((8, 6), {"weight_block_size": [128, 128]}, True),  # A10 / 3090
-        ((8, 0), {}, False),  # per-tensor has no fallback, so keep rejecting it
-        ((8, 9), {}, True),  # L4 was always allowed
-        ((9, 0), {"weight_block_size": [128, 128]}, True),
-    ],
-)
-def test_loader_admits_block_fp8_below_sm89(monkeypatch, capability, quant, allowed):
-    # Without this the fallback is unreachable from FastLanguageModel / FastVisionModel: the
-    # loader rejected every fp8 checkpoint below sm89, so the pre-sm89 path could only be
-    # reached by calling the kernels directly.
-    from unsloth.models._utils import verify_fp8_support_if_applicable
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
-    if allowed:
-        verify_fp8_support_if_applicable(_Cfg(**quant))
-    else:
-        with pytest.raises(ValueError, match = "compute capability"):
-            verify_fp8_support_if_applicable(_Cfg(**quant))
-
-
 def test_grouped_fp8_eval_is_guarded_in_source():
     # The grouped layer only exists in newer transformers, so the runtime test below skips on
     # most installs. Assert statically that eval does not bypass the guard, or admitting these

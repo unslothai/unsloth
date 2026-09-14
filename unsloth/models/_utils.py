@@ -3763,14 +3763,6 @@ def patch_hf_quantizer():
 patch_hf_quantizer()
 
 
-def _is_block_fp8_config(model_config):
-    """True for a block quantized fp8 checkpoint, the kind with a weight_block_size scale grid."""
-    quant = getattr(model_config, "quantization_config", None)
-    if hasattr(quant, "to_dict"):
-        quant = quant.to_dict()
-    return bool(isinstance(quant, dict) and quant.get("weight_block_size"))
-
-
 def verify_fp8_support_if_applicable(model_config):
     quant_method = get_quant_type(model_config)
     if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE != "cuda":
@@ -3786,15 +3778,9 @@ def verify_fp8_support_if_applicable(model_config):
             raise ValueError(
                 f"Unsloth: FBGEMM FP8 quantization is only supported on H100 and higher GPUs. L4 is not supported. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
-        if (
-            quant_method == "fp8"
-            and major_version * 10 + minor_version < 89
-            and not _is_block_fp8_config(model_config)
-        ):
-            # Block quantized is the exception: those kernels dequantize to bf16 on pre-sm89,
-            # where triton cannot compile fp8e4nv, so an A100 or A10 runs them fine.
+        if quant_method == "fp8" and major_version * 10 + minor_version < 89:
             raise ValueError(
-                f"Unsloth: FP8 quantization is only supported on L4 and higher GPUs with compute capability 8.9 or higher, except block quantized FP8 which also runs below that. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
+                f"Unsloth: FP8 quantization is only supported on L4 and higher GPUs with compute capability 8.9 or higher. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
 
 
