@@ -59,7 +59,14 @@ DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 # --group-add needs NUMERIC gids: a name is resolved INSIDE the container, where
 # the host's video/render groups do not exist.
 amd_device_flags() {
-    printf '%s\n' --device /dev/kfd --device /dev/dri
+    printf '%s\n' --device /dev/kfd
+    # docker refuses to start at all over a missing host device, so name /dev/dri
+    # only when it exists and let the entrypoint explain the incomplete driver.
+    if [[ -e "$DEV_ROOT/dev/dri" ]]; then
+        printf '%s\n' --device /dev/dri
+    else
+        printf "\033[1;33mWARN:\033[0m /dev/kfd is present but /dev/dri is not; passing the compute node alone.\n" >&2
+    fi
     command -v getent >/dev/null 2>&1 || return 0
     local _grp _gid
     for _grp in video render; do

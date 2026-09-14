@@ -40,7 +40,7 @@ def _stub(path, body):
 # ── run.sh --rocm ────────────────────────────────────────────────────────────
 
 
-def _run_sh(tmp_path, args, *, kfd = True, nvidia = False, groups = "both", extra_env = None):
+def _run_sh(tmp_path, args, *, kfd = True, dri = True, nvidia = False, groups = "both", extra_env = None):
     # a fresh sandbox per call: a test may drive run.sh twice
     tmp_path = tmp_path / f"run{len(os.listdir(tmp_path))}"
     tmp_path.mkdir()
@@ -71,7 +71,8 @@ def _run_sh(tmp_path, args, *, kfd = True, nvidia = False, groups = "both", extr
         (dev_root / "dev" / "nvidiactl").write_text("")
     if kfd:
         (dev_root / "dev" / "kfd").write_text("")
-        (dev_root / "dev" / "dri").mkdir()
+        if dri:
+            (dev_root / "dev" / "dri").mkdir()
     env = dict(os.environ)
     env["PATH"] = str(bindir) + ":/usr/bin:/bin"
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
@@ -120,6 +121,12 @@ class TestRunShRocm:
         image, cmd = _image_and_cmd(argv)
         assert image == "unsloth/unsloth-rocm:latest"
         assert cmd == ["true"]
+
+    def test_a_missing_dri_node_is_left_out_so_docker_still_starts(self, tmp_path):
+        """docker rejects a --device path that does not exist on the host."""
+        argv, err = _run_sh(tmp_path, ["--rocm", "true"], dri = False)
+        assert "/dev/kfd" in argv and "/dev/dri" not in argv, argv
+        assert "/dev/dri is not" in err, err
 
     def test_the_wrapper_option_is_only_taken_from_the_front(self, tmp_path):
         """A container command's own --rocm belongs to that command."""
