@@ -5031,6 +5031,7 @@ class TestWindowsRocmTorchaoGuard:
         with patch.object(stack_mod, "IS_WINDOWS", False):
             assert stack_mod._installed_torch_is_windows_rocm() is False
 
+    @patch.object(stack_mod, "_repair_bad_accelerate")
     @patch.object(stack_mod, "_repair_bad_anyio")
     @patch.object(stack_mod, "_ensure_rocm_torch")
     @patch.object(stack_mod, "_ensure_cuda_torch")
@@ -5038,7 +5039,15 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
     def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
-        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+        self,
+        mock_pip,
+        mock_run,
+        mock_has_nvidia,
+        mock_cuda,
+        mock_rocm,
+        mock_anyio,
+        mock_accelerate,
+        tmp_path,
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -5081,6 +5090,7 @@ class TestProgressStepCountMatchesTotal:
         is_macos,
         is_mac_arm,
         skip_base = True,
+        no_torch = False,
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -5096,12 +5106,13 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
-            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "NO_TORCH", no_torch),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
             patch.object(stack_mod, "_bootstrap_uv", return_value = False),
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
             patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
             patch.object(stack_mod, "_repair_bad_anyio"),
+            patch.object(stack_mod, "_repair_bad_accelerate"),
             patch.object(stack_mod, "_ensure_cuda_torch"),
             patch.object(stack_mod, "_ensure_rocm_torch"),
             patch.object(stack_mod, "_ensure_cpu_torch"),
@@ -5140,6 +5151,116 @@ class TestProgressStepCountMatchesTotal:
             skip_base = skip_base,
         )
         assert step == total, f"progress {step} != total {total}"
+
+    @pytest.mark.parametrize("skip_base", [True, False])
+    @pytest.mark.parametrize(
+        "is_windows, is_macos, is_mac_arm",
+        [(False, False, False), (True, False, False), (False, True, True)],
+        ids = ["linux", "windows", "macos_arm"],
+    )
+    def test_progress_reaches_total_without_torch(
+        self, tmp_path, is_windows, is_macos, is_mac_arm, skip_base
+    ):
+        """--no-torch, on both core paths. The no-torch runtime deps step announces its own
+        progress slot, which the denominator has to count: an update printed 15/14 without it."""
+        step, total = self._run_stack(
+            tmp_path,
+            is_windows = is_windows,
+            is_macos = is_macos,
+            is_mac_arm = is_mac_arm,
+            skip_base = skip_base,
+            no_torch = True,
+        )
+        assert step == total, f"progress {step} != total {total}"
+
+
+class TestAccelerateRepair:
+    """accelerate 1.15 reaches torch._C._distributed_c10d, absent from AMD's Windows ROCm
+    wheels (#4249). The constraints cap misses a fresh install, which sets SKIP_STUDIO_BASE=1."""
+
+    def _repair(
+        self,
+        installed,
+        *,
+        is_windows = True,
+        succeeds = True,
+    ):
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", is_windows),
+            patch.object(stack_mod, "_installed_version", return_value = installed),
+            patch.object(stack_mod, "pip_install_try", return_value = succeeds) as mock_pip,
+        ):
+            stack_mod._repair_bad_accelerate()
+        return mock_pip
+
+    def test_a_failed_repair_does_not_abort_the_install(self):
+        """pip_install exits, and this fires on nearly every fresh Windows install, so one
+        unreachable index would fail an install that used to finish."""
+        mock_pip = self._repair((1, 15), succeeds = False)
+        assert mock_pip.call_count == 1
+
+    def test_the_repair_is_never_the_fatal_variant(self):
+        """At source level: swapping the call back changes nothing the mock above sees."""
+        src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        body = src.split("def _repair_bad_accelerate()")[1].split("\ndef ")[0]
+        assert "pip_install_try(" in body
+        assert "\n    pip_install(" not in body
+
+    @pytest.mark.parametrize("installed", [(1, 15), (1, 16), (2, 0)])
+    def test_repairs_a_capped_out_accelerate_on_windows(self, installed):
+        mock_pip = self._repair(installed)
+        args = [str(a) for a in mock_pip.call_args.args]
+        assert "accelerate<1.15.0" in args
+
+    @pytest.mark.parametrize("installed", [None, (1, 14), (1, 9), (0, 34)])
+    def test_leaves_a_good_or_missing_accelerate_alone(self, installed):
+        """(1, 9) guards a string compare, where "1.9" sorts above "1.15"."""
+        assert self._repair(installed).call_count == 0
+
+    @pytest.mark.parametrize("is_windows", [False, True])
+    def test_only_windows_is_touched(self, is_windows):
+        """WSL reports sys.platform "linux", and every non-Windows build ships c10d."""
+        assert self._repair((1, 15), is_windows = is_windows).call_count == int(is_windows)
+
+    def test_repair_is_no_deps(self):
+        """accelerate requires torch>=2.0.0: with deps, the reinstall replaces the ROCm wheel."""
+        args = [str(a) for a in self._repair((1, 15)).call_args.args]
+        assert "--no-deps" in args
+        assert "--force-reinstall" not in args
+
+    def test_repair_survives_flag_translation_to_uv(self):
+        """pip_install prefers uv, so --no-deps must reach uv too, not just pip."""
+        args = ("--no-cache-dir", "--no-deps", "accelerate<1.15.0")
+        assert "--no-deps" in stack_mod._translate_pip_args_for_uv(args)
+        assert "--no-deps" in stack_mod._build_pip_cmd(args)
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("1.15.0", (1, 15)),
+            ("1.15", (1, 15)),
+            ("1.15.0.dev0", (1, 15)),
+            ("1.14.0", (1, 14)),
+            ("1.9.0", (1, 9)),
+            ("unknown", None),
+        ],
+    )
+    def test_version_parsing(self, raw, expected):
+        with patch.object(stack_mod, "_installed_version", wraps = stack_mod._installed_version):
+            with patch("importlib.metadata.version", return_value = raw):
+                assert stack_mod._installed_version("accelerate") == expected
+
+    def test_constraints_file_caps_accelerate_on_win32_only(self):
+        """The repair and the constraint must agree, or install and update disagree."""
+        text = (
+            PACKAGE_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
+        ).read_text(encoding = "utf-8")
+        line = next(
+            ln
+            for ln in text.splitlines()
+            if ln.strip().startswith("accelerate") and not ln.strip().startswith("#")
+        )
+        assert line.strip() == 'accelerate<1.15.0; sys_platform == "win32"'
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
@@ -7257,3 +7378,192 @@ class TestRocmMiscomputingArchDemotion:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST: install_python_stack.py -- the AMD bitsandbytes reinstall is evidence-gated
+
+
+class TestBnbRocmProvenance:
+    """A no-op `studio update` on an AMD host must not refetch the bnb wheel.
+
+    Measured on gfx1151: two 43 MB downloads from release-assets.githubusercontent.com
+    per Linux update (39 MB twice on Windows), because --force-reinstall from a release
+    URL fetches the wheel before it can decide it already has it, and _ensure_rocm_torch
+    is called twice by one dependency pass.
+    """
+
+    URL = "https://example.invalid/bitsandbytes-1.33.7.preview-py3-none-manylinux.whl"
+    # What the release URL served when the last run looked: an ETag and a size.
+    ASSET = '"3f2a"|43000000'
+
+    @pytest.fixture(autouse = True)
+    def _healthy_payload(self, monkeypatch):
+        monkeypatch.setattr(stack_mod.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(stack_mod, "_bnb_asset_identity", lambda _url: self.ASSET)
+        monkeypatch.setattr(stack_mod, "_BNB_ROCM_PASS_ASSET", None)
+
+    def _evidence(self, monkeypatch, **extra):
+        monkeypatch.setattr(
+            stack_mod,
+            "_PASS_EVIDENCE",
+            {"bnb_rocm": f"url:{self.URL}", "bnb_rocm_asset": self.ASSET, **extra},
+        )
+
+    def test_a_republished_wheel_at_the_same_url_is_fetched_again(self, monkeypatch):
+        """continuous-release_main replaces the bytes under a fixed asset path, so the URL
+        pip recorded says where the wheel came from, not which one it is."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setattr(stack_mod, "_bnb_asset_identity", lambda _url: '"9c1d"|43100000')
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_an_unreachable_release_page_keeps_the_recorded_build(self, monkeypatch):
+        """Offline, the reinstall could not fetch anything either; the build on disk is one
+        the last run recorded landing deliberately."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setattr(stack_mod, "_bnb_asset_identity", lambda _url: None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+        assert stack_mod._BNB_ROCM_PASS_ASSET == self.ASSET
+
+    def test_a_run_that_recorded_no_asset_identity_reinstalls_once(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", {"bnb_rocm": f"url:{self.URL}"})
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_the_kept_asset_identity_is_what_the_pass_records(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+        assert stack_mod._BNB_ROCM_PASS_ASSET == self.ASSET
+        # A second HEAD would only repeat the first.
+        monkeypatch.setattr(
+            stack_mod,
+            "_bnb_asset_identity",
+            lambda _url: (_ for _ in ()).throw(AssertionError("second HEAD")),
+        )
+        stack_mod._record_bnb_rocm_provenance()
+        assert stack_mod._BNB_ROCM_PASS_ASSET == self.ASSET
+
+    def _installed(self, monkeypatch, version, direct_url):
+        monkeypatch.setattr(stack_mod, "_installed_distribution_version", lambda _n: version)
+        monkeypatch.setattr(stack_mod, "_installed_direct_url", lambda _n: direct_url)
+
+    def test_a_matching_direct_url_recorded_last_run_is_kept(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+
+    def test_a_forced_pass_reinstalls(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_the_escape_hatch_reinstalls(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setenv(stack_mod._FULL_DEPS_ENV, "1")
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_damaged_payload_reinstalls(self, monkeypatch):
+        """Metadata survives a quarantined payload, and the reinstall this would skip is
+        the only thing that puts the shared objects back."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(
+            stack_mod.install_manifest,
+            "damaged_payload_files",
+            lambda *a, **k: ["bitsandbytes/libbitsandbytes_rocm.so"],
+        )
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_an_absent_bitsandbytes_reinstalls(self, monkeypatch):
+        self._installed(monkeypatch, None, None)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_wheel_url_that_moved_reinstalls(self, monkeypatch):
+        """A new installer release naming a newer wheel must fetch it exactly once."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL + ".new") is False
+
+    def test_a_wheel_nobody_recorded_reinstalls(self, monkeypatch):
+        """The PyPI wheel another step pulled in reads identically on disk to the one
+        this path installs on purpose, so only the manifest can tell them apart."""
+        self._installed(monkeypatch, "0.50.0", None)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", {"bnb_rocm": None})
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_recorded_pypi_fallback_is_kept(self, monkeypatch):
+        """The fallback this path takes when the release page is unreachable. Recorded
+        deliberately last run, so reinstalling it every update buys nothing."""
+        self._installed(monkeypatch, "0.50.0", None)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", {"bnb_rocm": "version:0.50.0"})
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+
+    def test_a_filename_version_match_stands_in_for_a_missing_direct_url(self, monkeypatch):
+        """1.33.7.preview in the filename is 1.33.7rc0 in the metadata."""
+        assert stack_mod._bnb_wheel_version(self.URL) == "1.33.7.preview"
+        assert stack_mod._versions_are_same_release("1.33.7rc0", "1.33.7.preview") is True
+        assert stack_mod._bnb_provenance_matches_request("version:1.33.7rc0", self.URL) is True
+
+    def test_the_second_call_of_one_pass_does_not_repeat_the_install(self, monkeypatch):
+        """_ensure_rocm_torch runs twice per dependency pass. The first call settles it."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", None)
+        monkeypatch.setattr(stack_mod, "_BNB_ROCM_PASS_PROVENANCE", None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+        stack_mod._record_bnb_rocm_provenance()
+        assert stack_mod._BNB_ROCM_PASS_PROVENANCE == f"url:{self.URL}"
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+
+    def test_a_clobber_between_the_two_calls_is_still_repaired(self, monkeypatch):
+        """The with-deps steps run BETWEEN the two calls and can re-resolve bnb to a
+        generic wheel, which is the whole reason the torch repair runs twice."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", None)
+        monkeypatch.setattr(stack_mod, "_BNB_ROCM_PASS_PROVENANCE", None)
+        stack_mod._record_bnb_rocm_provenance()
+        self._installed(monkeypatch, "0.50.0", None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_kept_wheel_is_still_recorded_for_the_next_update(self, monkeypatch):
+        """Without this the manifest this pass writes forgets what is installed and the
+        next update fetches the wheel again."""
+        import ast
+
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        calls = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_record_bnb_rocm_provenance"
+        ]
+        # Two per platform path: the install arm and the keep arm.
+        assert len(calls) == 4
+        assert '"bnb_rocm": _BNB_ROCM_PASS_PROVENANCE,' in source
+
+    def test_a_current_wheel_makes_the_linux_path_install_nothing(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_bnb_rocm_prerelease_url", lambda: self.URL)
+        self._evidence(monkeypatch)
+        pip, pip_try = run_ensure_rocm_torch(
+            probe = json.dumps({"version": "2.10.0+rocm7.1", "hip": "7.1", "cuda": None}),
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 1),
+        )
+        assert pip.call_count == 0
+        assert pip_try.call_count == 0
+
+    def test_a_current_wheel_makes_the_windows_path_install_nothing(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setitem(stack_mod._BNB_ROCM_PRERELEASE_URLS, "win_amd64", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setattr(stack_mod, "_persist_bnb_rocm_version", lambda _v: True)
+        monkeypatch.setattr(stack_mod, "_detect_bnb_rocm_dll_ver", lambda: "72")
+        with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
+            assert stack_mod._install_bnb_windows_rocm() is True
+        assert mock_pip.call_count == 0
