@@ -3976,3 +3976,89 @@ def test_a_note_containing_the_closing_tag_text_cannot_leak_bullets():
     )
     assert rendered.count("</self_note>") == 1
     assert checkpoint._block_items(rendered) == ["always use a markdown table"]
+
+
+def test_the_note_is_dropped_when_the_user_instructions_fill_the_budget(monkeypatch):
+    # The note loses ties: the user's actual words are worth more than the model's
+    # notes about them, so a budget that fits only one of the two keeps the user's.
+    monkeypatch.setattr(checkpoint.self_note_module, "SELF_NOTE_ENABLED", True)
+    monkeypatch.setattr(checkpoint, "MAX_TOKENS", 40)
+
+    messages = _thread(pad = 6, chars = 400)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "self_note", "content": "N" * 4000},
+                {"type": "text", "text": "ok"},
+            ],
+        }
+    )
+    messages.append({"role": "user", "content": "and now the newest turn"})
+
+    fitted, _ = fit_checkpoint_context(
+        messages,
+        context_length = 900,
+        max_tokens = 128,
+        count_tokens = count,
+        can_reset = True,
+    )
+    system = next(m for m in fitted if m.get("role") == "system")
+    text = str(system.get("content", ""))
+    if "<carried_forward>" in text:
+        # Whatever survived, the note did not crowd out the user's instruction.
+        assert "N" * 200 not in text
+
+
+def test_a_note_within_budget_survives_the_reset(monkeypatch):
+    monkeypatch.setattr(checkpoint.self_note_module, "SELF_NOTE_ENABLED", True)
+
+    messages = _thread(pad = 6, chars = 600)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "self_note", "content": "Approach A fails: re-entrant lock."},
+                {"type": "text", "text": "ok"},
+            ],
+        }
+    )
+    messages.append({"role": "user", "content": "and now the newest turn"})
+
+    fitted, _ = fit_checkpoint_context(
+        messages,
+        context_length = 1200,
+        max_tokens = 256,
+        count_tokens = count,
+        can_reset = True,
+    )
+    system = next(m for m in fitted if m.get("role") == "system")
+    assert "Approach A fails: re-entrant lock." in str(system.get("content", ""))
+
+
+def test_the_feature_off_carries_no_note(monkeypatch):
+    monkeypatch.setattr(checkpoint.self_note_module, "SELF_NOTE_ENABLED", False)
+
+    messages = _thread(pad = 6, chars = 600)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "self_note", "content": "Approach A fails: re-entrant lock."},
+                {"type": "text", "text": "ok"},
+            ],
+        }
+    )
+    messages.append({"role": "user", "content": "and now the newest turn"})
+
+    fitted, _ = fit_checkpoint_context(
+        messages,
+        context_length = 1200,
+        max_tokens = 256,
+        count_tokens = count,
+        can_reset = True,
+    )
+    system = next(m for m in fitted if m.get("role") == "system")
+    text = str(system.get("content", ""))
+    assert "<self_note>" not in text
+    assert "Approach A fails" not in text

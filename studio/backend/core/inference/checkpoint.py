@@ -578,6 +578,22 @@ def fit_checkpoint_context(
             return _without_block(kept), ""
         # Gated on the toggle, so a disabled install renders the block it always did.
         note = latest_self_note(messages) if self_note_module.enabled() else ""
+        if note:
+            # One budget, and the user's instructions are served first: the note is the
+            # model's commentary on the user's words, so it is worth less than the words.
+            # `budget` is already what the block may spend; what the items left is what
+            # the note may have, capped again by its own ceiling.
+            spent = sum(
+                estimate_message({"role": "user", "content": item}) for item in items
+            )
+            room = min(self_note_module.MAX_NOTE_TOKENS, max(0, budget - spent))
+            if room <= 0:
+                note = ""
+            elif estimate_message({"role": "user", "content": note}) > room:
+                # Trim rather than drop: the opening of a note says what it is about, and
+                # half a note is worth more here than none. 4 chars/token is the same
+                # rough ratio the estimator uses.
+                note = note[: max(0, room * 4)].rstrip()
         text = render_checkpoint(items, searchable = _resolved(searchable), self_note = note)
         return _append_to_system(kept, text), text
 
