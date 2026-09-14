@@ -811,13 +811,6 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
-# Host headroom kept back on an integrated (unified-memory) GPU, whose reported
-# "free VRAM" is really free system RAM. Sizing a context against all of it puts
-# the host into swap or under the OOM killer, so leave the margin llama.cpp's
-# --fit leaves. Absolute, not a fraction: the risk is the OS needing a fixed
-# working set, which does not scale with the size of the pool.
-_INTEGRATED_GPU_HOST_RESERVE_MIB = 1024
-
 
 def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     """Bytes per KV-cache element for a llama.cpp cache type (f16 default)."""
@@ -2262,85 +2255,28 @@ class LlamaCppBackend:
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable. ``total`` lets the fit reserve absolute headroom.
         """
-        smi_gpus, smi_skipped_ids = LlamaCppBackend._get_gpu_memory_via_nvidia_smi()
-        if smi_gpus and not smi_skipped_ids:
+        smi_gpus, smi_skipped = LlamaCppBackend._get_gpu_memory_via_nvidia_smi()
+        # A line skipped for non-numeric memory is the integrated-GPU signal:
+        # GB10 / Jetson report [N/A] free, so on a mixed host nvidia-smi would
+        # return only the discrete cards and drop the unified-memory one. Defer to
+        # torch, which enumerates every device and gives the integrated GPU the
+        # system-RAM budget. Keep the nvidia-smi result only if torch produced
+        # nothing (e.g. torch absent), so a clean discrete host is never lost.
+        if smi_gpus and not smi_skipped:
             return smi_gpus
         torch_gpus = LlamaCppBackend._get_gpu_memory_via_torch()
-        if not smi_gpus:
-            # Nothing priced by nvidia-smi: the pre-existing fallback, unchanged.
-            # A lone GB10 lands here, because its only line is [N/A].
-            return torch_gpus or smi_gpus
-        # MIXED host: nvidia-smi priced some devices and skipped others. Do NOT
-        # discard the ones it priced. A non-numeric memory column is not specific
-        # to unified memory -- a MIG parent reports [N/A] for memory.free by
-        # design (nvidia-smi docs), and so do a vGPU guest, a card in ERR!, and
-        # "[Insufficient Permissions]". Replacing the whole reading with torch's
-        # enumeration re-introduces exactly the devices nvidia-smi refused to
-        # price, carrying mem_get_info numbers that mean nothing for them, and
-        # hands them to auto placement.
-        #
-        # So MERGE instead: keep every device nvidia-smi could price, and fill in
-        # a skipped one only when torch says it is INTEGRATED, which is the case
-        # this PR exists for. A skipped discrete device stays dropped, exactly as
-        # before this change.
-        integrated_ids = LlamaCppBackend._integrated_gpu_physical_ids()
-        by_id = {idx: (idx, free, total) for idx, free, total in smi_gpus}
-        for idx, free, total in torch_gpus:
-            if idx in smi_skipped_ids and idx in integrated_ids and idx not in by_id:
-                by_id[idx] = (idx, free, total)
-        return sorted(by_id.values(), key = lambda g: g[0])
+        if torch_gpus:
+            return torch_gpus
+        return smi_gpus
 
     @staticmethod
-    def _integrated_gpu_physical_ids() -> set[int]:
-        """PHYSICAL ids of visible integrated (unified-memory) CUDA devices.
-
-        Same ordinal -> physical translation `_get_gpu_memory_via_torch` uses, so
-        a masked host answers for the right card. Empty on ROCm (AMD APUs have
-        their own unified path), on any error, and off CUDA -- so every caller
-        keeps its discrete-GPU default."""
-        try:
-            import torch
-
-            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
-                return set()
-            if LlamaCppBackend._torch_is_rocm_build(torch):
-                return set()
-            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            out: set[int] = set()
-            for ordinal in range(torch.cuda.device_count()):
-                if not LlamaCppBackend._gpu_is_integrated(ordinal):
-                    continue
-                out.add(
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-            return out
-        except Exception as e:
-            logger.debug(f"integrated GPU probe failed: {e}")
-            return set()
-
-    @staticmethod
-    def _torch_is_rocm_build(torch) -> bool:
-        """True for a ROCm wheel. `torch.version` is a submodule and has been
-        absent on stripped-down builds, so reach it with getattr rather than
-        attribute access: an AttributeError here used to escape to the caller's
-        `except` and drop EVERY GPU, leaving Studio on the CPU."""
-        return getattr(getattr(torch, "version", None), "hip", None) is not None
-
-    @staticmethod
-    def _get_gpu_memory_via_nvidia_smi() -> tuple[list[tuple[int, int, int]], set[int]]:
+    def _get_gpu_memory_via_nvidia_smi() -> tuple[list[tuple[int, int, int]], bool]:
         """Parse ``(index, free_mib, total_mib)`` from nvidia-smi, honoring
-        ``CUDA_VISIBLE_DEVICES``. Returns ``(gpus, skipped_ids)``, where
-        ``skipped_ids`` holds the INDEX of every visible line dropped for a
-        non-numeric memory column.
-
-        The ids, not a bool: the caller has to tell "the unified-memory device
-        reported [N/A]" from "a MIG parent / vGPU / ERR! device did", and it can
-        only do that per device. A line whose index itself is unparseable cannot
-        be attributed to a device and is simply dropped, as before."""
+        ``CUDA_VISIBLE_DEVICES``. Returns ``(gpus, skipped_nonnumeric)``; skipped
+        is True when a visible line was dropped for a non-numeric memory column --
+        the integrated-GPU ([N/A]) signal that should defer to the torch budget."""
         gpus: list[tuple[int, int, int]] = []
-        skipped: set[int] = set()
+        skipped = False
         try:
             result = subprocess.run(
                 [
@@ -2370,19 +2306,14 @@ class LlamaCppBackend:
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) < 2:
                     continue
-                # Index and free required. A non-numeric free records the index
-                # as skipped so the caller can decide per device whether torch
-                # should price it; an unparseable index is not attributable to
-                # any device, so it is dropped silently as it always was.
+                # Index and free required. A non-numeric free ([N/A] on an
+                # integrated GPU) flags the line skipped so the caller defers to
+                # torch rather than returning a partial discrete-only result.
                 try:
                     idx = int(parts[0])
-                except ValueError:
-                    continue
-                try:
                     free_mib = int(parts[1])
                 except ValueError:
-                    if allowed is None or idx in allowed:
-                        skipped.add(idx)
+                    skipped = True
                     continue
                 # Total parsed separately: a two-column line or a non-integer
                 # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
@@ -2430,22 +2361,10 @@ class LlamaCppBackend:
             # utils/hardware/hardware.py::_get_parent_visible_gpu_spec). An empty
             # mask yields an empty list -> no GPUs, consistent with nvidia-smi.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            is_rocm = LlamaCppBackend._torch_is_rocm_build(torch)
+            is_rocm = getattr(torch.version, "hip", None) is not None
             budget_avail_mib, budget_total_mib = LlamaCppBackend._system_memory_budget_mib()
-            device_count = torch.cuda.device_count()
-            # One RAM pool, however many integrated devices draw on it. Handing
-            # each of them the whole budget lets a caller that sums across cards
-            # commit the pool twice, so share it. Almost always a division by 1.
-            # Floored at 1: _gpu_is_integrated answers False on a transient error,
-            # so this count and the per-device test below can in principle
-            # disagree, and a ZeroDivisionError here would be caught by the outer
-            # handler and drop EVERY GPU.
-            shared = max(1, sum(
-                1 for o in range(device_count)
-                if not is_rocm and LlamaCppBackend._gpu_is_integrated(o)
-            ))
             gpus = []
-            for ordinal in range(device_count):
+            for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
                 free_mib = free_bytes // (1024 * 1024)
                 total_mib = total_bytes // (1024 * 1024)
@@ -2454,15 +2373,11 @@ class LlamaCppBackend:
                     and budget_avail_mib is not None
                     and LlamaCppBackend._gpu_is_integrated(ordinal)
                 ):
-                    # Hold back host headroom before anything else: this "VRAM" is
-                    # the RAM the OS is running in, and sizing a context against
-                    # all of it is how a unified-memory host meets the OOM killer.
-                    # Mirrors the reserve the AMD APU path already takes.
-                    free_mib = max(0, budget_avail_mib - _INTEGRATED_GPU_HOST_RESERVE_MIB) // shared
+                    free_mib = budget_avail_mib
                     if budget_total_mib is not None and budget_total_mib > 0:
                         total_mib = (
                             min(total_mib, budget_total_mib) if total_mib > 0 else budget_total_mib
-                        ) // shared
+                        )
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
@@ -2532,17 +2447,9 @@ class LlamaCppBackend:
             try:
                 limit = int(raw)
                 usage = int(_read(f"{base}/{usage_name}"))
-            except Exception:
-                return None
-            # An unreadable memory.stat must NOT discard a limit that was read
-            # cleanly: dropping the level here reports the cgroup as uncapped and
-            # hands the caller the whole host, which is the direction that gets a
-            # container OOM-killed. Counting nothing as reclaimable is the
-            # conservative reading of the same data.
-            try:
                 reclaimable = _stat_val(f"{base}/memory.stat", reclaim_key)
             except Exception:
-                reclaimable = 0
+                return None
             return max(0, limit - max(0, usage - reclaimable)), limit
 
         def _walk(root, rel, limit_name, usage_name, reclaim_key):
