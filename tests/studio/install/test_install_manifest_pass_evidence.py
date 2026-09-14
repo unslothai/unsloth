@@ -1096,6 +1096,7 @@ def test_the_presence_check_reads_the_errno_itself(monkeypatch, code, expected) 
     """Not Path.exists(): 3.13 raises EACCES out of it and 3.14 returns False (gh-101357), so
     it means "absent" on one interpreter and "unknown" on the other. Only the four pathlib
     treated as absent before 3.14 are absent here; anything else is a marker still in place."""
+
     def refuse(self, *args, **kwargs):
         raise OSError(code, os.strerror(code))
 
