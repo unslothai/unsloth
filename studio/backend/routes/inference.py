@@ -2599,6 +2599,12 @@ def _first_token_timeout_s() -> float:
     takes longer. Unlike the stall guard, 0 does not disable it: the deadline is
     unconditional downstream, so an unparseable or non-positive value keeps the
     default rather than removing the bound.
+
+    Raising it is the intended direction. Lowering it also tightens the
+    non-streaming generation timeout, which is built from this same value and,
+    passed positionally to httpx.Timeout, covers connect/read/write/pool -- and
+    for a non-streaming request time-to-first-byte is time-to-last-byte. That
+    sharing predates the env var; the knob only makes it reachable.
     """
     value = _positive_float_env(
         _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
@@ -2633,50 +2639,6 @@ def _openai_passthrough_upstream_headers(*, llama_backend = None) -> dict:
         headers.update(auth_headers)
     headers["Connection"] = "close"
     return headers
-
-
-class _CompatSameTaskTimeout:
-    """Same-task timeout fallback for Python versions before asyncio.timeout."""
-
-    def __init__(self, timeout_s: float):
-        self.timeout_s = timeout_s
-        self._task = None
-        self._handle = None
-        self._timed_out = False
-        self._cancelling = 0
-
-    async def __aenter__(self):
-        self._task = asyncio.current_task()
-        if self._task is None:
-            return self
-        if hasattr(self._task, "cancelling"):
-            self._cancelling = self._task.cancelling()
-        loop = asyncio.get_running_loop()
-        self._handle = loop.call_later(max(self.timeout_s, 0), self._cancel_task)
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self._handle is not None:
-            self._handle.cancel()
-        if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
-            if self._timed_out:
-                if self._task is not None and hasattr(self._task, "uncancel"):
-                    if self._task.uncancel() > self._cancelling:
-                        return None
-                raise asyncio.TimeoutError from exc
-        return None
-
-    def _cancel_task(self) -> None:
-        self._timed_out = True
-        if self._task is not None:
-            self._task.cancel()
-
-
-def _same_task_timeout(timeout_s: float):
-    timeout_ctx = getattr(asyncio, "timeout", None)
-    if timeout_ctx is not None:
-        return timeout_ctx(timeout_s)
-    return _CompatSameTaskTimeout(timeout_s)
 
 
 class _SameTaskStreamingResponse(StreamingResponse):
@@ -2839,15 +2801,17 @@ async def _tunnel_safe_json(coro, *, label: str):
 async def _aclose_stream_resources(
     *,
     watchers = (),
+    items = None,
     iterator = None,
     resp = None,
     client = None,
 ) -> None:
     """Tear down an httpx streaming generator's resources in the required order:
-    cancel + bounded-wait each watcher task, then aclose() the byte/line iterator,
-    the response, and the client. Each step swallows its own exceptions so teardown
-    always completes; a close-time CancelledError is re-raised only after every
-    step has run. See _anthropic_passthrough_stream for the ordering rationale."""
+    cancel + bounded-wait each watcher task, then aclose() the relay pump, the
+    byte/line iterator, the response, and the client. Each step swallows its own
+    exceptions so teardown always completes; a close-time CancelledError is
+    re-raised only after every step has run. See _anthropic_passthrough_stream
+    for the ordering rationale."""
     # Bounded: a watcher parked in Request.is_disconnected() can swallow cancel(), so an
     # unbounded await holds the response open. Stopped together, so N watchers cost one
     # bound before the closes, which are what stop llama-server decoding. #7617
@@ -2865,6 +2829,19 @@ async def _aclose_stream_resources(
         except (asyncio.CancelledError, Exception):
             pass
     close_cancelled = False
+    # Before `iterator`, and awaited to completion: the keepalive pump can be parked
+    # at a yield with a live __anext__ on that iterator, and closing a running async
+    # generator raises "asynchronous generator is already running", which the
+    # swallow below would hide and leave the iterator open. Cancelling the pump's
+    # read is not enough on its own, because cancel() only requests it and the
+    # iterator stays ag_running until the pump's own finally has finished. #7617
+    if items is not None:
+        try:
+            await items.aclose()
+        except asyncio.CancelledError:
+            close_cancelled = True
+        except Exception:
+            pass
     if iterator is not None:
         try:
             await iterator.aclose()
@@ -27555,6 +27532,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             )
             resp = None
             bytes_iter = None
+            items_iter = None
             disconnect_event = threading.Event()
             disconnect_watcher = None
             # This proxy relays straight from llama-server, so the swap gate has to see it: without an
@@ -27590,14 +27568,17 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
-                async for chunk in _aiter_llama_stream_items(
+                # Bound, not inlined: teardown has to aclose() this pump before the
+                # iterator it is reading, or that close lands on a running generator.
+                items_iter = _aiter_llama_stream_items(
                     bytes_iter,
                     cancel_event = disconnect_event,
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
                     keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
-                ):
+                )
+                async for chunk in items_iter:
                     # Keep it out of `buffer`: it is not upstream SSE, and the
                     # split below would hand the comment to the API monitor.
                     if chunk is _LLAMA_STREAM_KEEPALIVE:
@@ -27671,6 +27652,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 try:
                     await _aclose_stream_resources(
                         watchers = (disconnect_watcher,),
+                        items = items_iter,
                         iterator = bytes_iter,
                         resp = resp,
                         client = client,
@@ -29872,6 +29854,7 @@ async def _responses_stream(
         )
         resp = None
         lines_iter = None
+        items_iter = None
         disconnect_watcher = None
         # Tracked per-run event: a client disconnect and a forced reload both land here.
         disconnect_event = cancel_event
@@ -29948,14 +29931,15 @@ async def _responses_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, disconnect_event)
             )
-            async for raw_line in _aiter_llama_stream_items(
+            items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
                 keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
-            ):
+            )
+            async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
@@ -30103,6 +30087,7 @@ async def _responses_stream(
         finally:
             await _aclose_stream_resources(
                 watchers = (disconnect_watcher,),
+                items = items_iter,
                 iterator = lines_iter,
                 resp = resp,
                 client = client,
@@ -33456,6 +33441,7 @@ async def _anthropic_passthrough_stream(
         )
         resp = None
         lines_iter = None
+        items_iter = None
         cancel_watcher = None
         disconnect_watcher = None
         try:
@@ -33515,14 +33501,15 @@ async def _anthropic_passthrough_stream(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
             lines_iter = resp.aiter_lines()
-            async for raw_line in _aiter_llama_stream_items(
+            items_iter = _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = cancel_event,
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
                 keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
-            ):
+            )
+            async for raw_line in items_iter:
                 # Must not reach the emitter: this is transport liveness, not an
                 # Anthropic event. Their SSE reader drops ":" comments.
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
@@ -33586,6 +33573,7 @@ async def _anthropic_passthrough_stream(
             try:
                 await _aclose_stream_resources(
                     watchers = (cancel_watcher, disconnect_watcher),
+                    items = items_iter,
                     iterator = lines_iter,
                     resp = resp,
                     client = client,
@@ -34806,6 +34794,7 @@ async def _openai_passthrough_stream_admitted(
             # save resp.aiter_lines() so the finally block can aclose() it on
             # our task. See that function for full rationale.
             lines_iter = None
+            items_iter = None
             # Watchers unblock aiter_lines() during prefill, before in-loop
             # cancel/disconnect checks can run.
             cancel_watcher = None
@@ -35140,7 +35129,7 @@ async def _openai_passthrough_stream_admitted(
                     _await_disconnect_then_close(request, resp, cancel_event)
                 )
                 lines_iter = resp.aiter_lines()
-                async for raw_line in _aiter_llama_stream_items(
+                items_iter = _aiter_llama_stream_items(
                     lines_iter,
                     cancel_event = cancel_event,
                     request = request,
@@ -35148,7 +35137,8 @@ async def _openai_passthrough_stream_admitted(
                     response = resp,
                     post_first_item_read_timeout_s = _terminal_read_timeout_s,
                     keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
-                ):
+                )
+                async for raw_line in items_iter:
                     # Before every other branch: a keepalive is not an upstream
                     # item, so it must not set saw_stream_item, reach the healer
                     # or the monitor, or touch the last-chunk id/model/created.
@@ -35403,6 +35393,7 @@ async def _openai_passthrough_stream_admitted(
                     try:
                         await _aclose_stream_resources(
                             watchers = (cancel_watcher, disconnect_watcher),
+                            items = items_iter,
                             iterator = lines_iter,
                             resp = resp,
                             client = client,
