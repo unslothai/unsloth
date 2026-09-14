@@ -528,7 +528,9 @@ class UnslothTrainer(SFTTrainer):
         if q_galore_config is not None and self.optimizer is None:
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
             return self._create_q_galore_optimizer(
-                q_galore_config, embedding_lr, model = target_model,
+                q_galore_config,
+                embedding_lr,
+                model = target_model,
             )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
