@@ -319,6 +319,54 @@ def test_a_message_deleted_here_is_not_recreated(cursor_home):
     assert summary.messages == 0
 
 
+def test_an_interrupted_first_import_writes_its_messages_on_retry(cursor_home):
+    # upsert_chat_thread can commit before the messages and the ledger mark.
+    # The retry then sees a shell thread with no mark, which used to skip the
+    # body and record the session as already imported.
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    studio_db.sync_chat_messages(thread_id, [], prune_missing = True)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM external_import_sessions WHERE source = ? AND session_id = ?",
+            ("cursor", "session-one"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = import_cursor_chats()
+
+    assert len(studio_db.list_chat_messages(thread_id)) == 2
+    assert summary.messages == 2
+    assert studio_db.get_external_import_mark("cursor", "session-one")["turnsImported"] == 2
+
+
+def test_a_pre_ledger_import_does_not_rewrite_existing_messages(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    first = studio_db.list_chat_messages(thread_id)[0]
+    studio_db.upsert_chat_message(
+        {**first, "content": [{"type": "text", "text": "Fix the header, carefully"}]}
+    )
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM external_import_sessions WHERE source = ? AND session_id = ?",
+            ("cursor", "session-one"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    import_cursor_chats()
+
+    messages = studio_db.list_chat_messages(thread_id)
+    assert messages[0]["content"] == [{"type": "text", "text": "Fix the header, carefully"}]
+    assert len(messages) == 2
+
+
 def test_a_chat_no_longer_in_studio_is_imported_whole_again(cursor_home):
     # The ledger outlives the chats it describes -- a cleared history, a rolled
     # back database -- and must not leave those conversations half imported.
@@ -459,7 +507,7 @@ def test_cursor_marks_from_the_old_table_still_apply(cursor_home):
         conn.commit()
     finally:
         conn.close()
-    studio_db._schema_ready = False
+        studio_db._schema_ready = set()
     write_transcript(
         cursor_home,
         "Users-me-app",

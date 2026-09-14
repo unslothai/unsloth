@@ -185,9 +185,11 @@ def _messages_to_write(transcript: CursorTranscript, existing_thread: dict) -> l
         return list(transcript.messages)
     mark = studio_db.get_external_import_mark(_SOURCE, transcript.session_id)
     if mark is None:
-        # Imported before this ledger existed. Its rows are the only record of
-        # how far it got, and rewriting them would overwrite any edit made
-        # since, so the chat keeps what it has and picks up new turns from here.
+        # A thread committed before its messages (crash mid-import) has no
+        # rows and no mark. Treat that shell as a first import. Rows already
+        # in Studio are the pre-ledger case: leave them alone.
+        if not studio_db.list_chat_messages(transcript.thread_id):
+            return list(transcript.messages)
         return []
     # Count, not mtime: a filesystem that does not bump the file's clock when
     # Cursor appends would otherwise record the new length as imported without
