@@ -41,7 +41,8 @@ if [ "${1:-}" = "--restore" ]; then
             link="$(readlink "$target")"
             case "$link" in "$APP"/*) ;; *) continue;; esac
             name="${target##*/}"
-            if [ -e "$link" ]; then
+            # the uv cache is this image's scratch (9 GB); no image before the split reads it
+            if [ -e "$link" ] && [ "$name" != "uv-cache" ]; then
                 rm -f -- "$target"
                 cp -a -- "$link" "$target" || die "cannot copy $link to $target; the home now lacks $name, rerun --restore"
                 copied+=("$name")

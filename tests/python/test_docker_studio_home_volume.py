@@ -32,7 +32,16 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs ba
 
 def _app(tmp_path: Path) -> Path:
     app = tmp_path / "app"
-    for name in ("unsloth_studio", "src", "node", "bin", "share", "cache", ".venv_t5_550"):
+    for name in (
+        "unsloth_studio",
+        "src",
+        "node",
+        "bin",
+        "share",
+        "cache",
+        ".venv_t5_550",
+        "uv-cache",
+    ):
         (app / name).mkdir(parents = True)
     (app / "unsloth_studio" / "VERSION").write_text("new\n")
     (app / ".node.install.lock").write_text("")
