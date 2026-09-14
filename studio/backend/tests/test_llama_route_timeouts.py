@@ -217,6 +217,47 @@ def test_latched_read_ceiling_covers_the_stall_guard():
     asyncio.run(_run())
 
 
+def test_a_callable_bound_latches_no_socket_ceiling():
+    """A callable bound can RISE later, so no first-read value is safe.
+
+    The passthrough's `_terminal_read_timeout_s` returns the stall timeout until
+    a finish chunk lands and the terminal grace (2s) after it. With the stall
+    timeout set below that grace, any ceiling latched from the arm-time value
+    would cut the promised grace short and drop a late usage chunk, and httpcore
+    ignores the re-arm that was supposed to raise it. The range of an opaque
+    callable is not knowable here, so the socket is left unbounded and the
+    wall-clock deadline -- authoritative either way -- does the enforcing.
+    """
+    async def _run():
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
+        armed = []
+        # Below the 2.0s terminal grace, which is the case that used to lose usage.
+        values = iter([0.5, inf_mod._OPENAI_PASSTHROUGH_TERMINAL_GRACE_S])
+
+        class _Items:
+            def __init__(self):
+                self.count = 0
+
+            async def __anext__(self):
+                armed.append(response.request.extensions["timeout"].get("read"))
+                self.count += 1
+                if self.count > 2:
+                    raise StopAsyncIteration
+                return "data: {}"
+
+        async for _ in inf_mod._aiter_llama_stream_items(
+            _Items(),
+            response = response,
+            first_token_deadline = time.monotonic() + 0.5,
+            post_first_item_read_timeout_s = lambda: next(values, 0.5),
+        ):
+            pass
+
+        assert armed[0] is None, armed
+
+    asyncio.run(_run())
+
+
 def test_deadline_does_not_discard_a_read_that_already_landed():
     """A token that arrives while the pump is suspended on a keepalive yield.
 
@@ -312,10 +353,7 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
     # not captured once at generator start.
     async def _run():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
-        # The leading value is consumed by the pre-first-read ceiling, which now
-        # resolves the post-token bound too so the latched socket timeout cannot
-        # come in under it. The rest is the sequence this test is about.
-        values = iter([50.0, 100.0, 2.0])
+        values = iter([100.0, 2.0])
         seen = []
 
         class _Items:

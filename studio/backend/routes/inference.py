@@ -2983,6 +2983,19 @@ async def _send_stream_with_preheader_cancel(
             pass
 
 
+def _ceiling_for_first_read(
+    first_token_deadline: float, post_first_item_read_timeout_s: Optional[float]
+) -> Optional[float]:
+    """The latched socket read timeout for a fixed post-token bound.
+
+    None means the operator disabled the stall guard, so nothing bounds the
+    socket either.
+    """
+    if post_first_item_read_timeout_s is None:
+        return None
+    return max(first_token_deadline - time.monotonic(), post_first_item_read_timeout_s)
+
+
 async def _aiter_llama_stream_items(
     async_iter,
     *,
@@ -3024,17 +3037,22 @@ async def _aiter_llama_stream_items(
             waiting_first_item = last_item_at is None
             if item_task is None:
                 if response is not None:
-                    # Socket ceiling only; the wall-clock deadlines below bound a
-                    # stall. httpcore latches this once per body, so the first arm
-                    # has to cover the post-token stall too: a lowered first-token
-                    # env would otherwise cap the body under the stall guard.
-                    post_first_s = _post_first_timeout_s()
+                    # httpcore latches this once per body, so the first arm is the
+                    # ceiling for every later read and must not undercut a deadline
+                    # this pump will later enforce. A callable bound can RISE (the
+                    # passthrough switches to the terminal grace on a finish chunk)
+                    # and its range is unknowable here, so it latches nothing and
+                    # leaves the wall clock, authoritative anyway, to enforce.
                     if waiting_first_item:
-                        ceiling = None if post_first_s is None else max(
-                            first_token_deadline - time.monotonic(), post_first_s
+                        ceiling = (
+                            None
+                            if callable(post_first_item_read_timeout_s)
+                            else _ceiling_for_first_read(
+                                first_token_deadline, post_first_item_read_timeout_s
+                            )
                         )
                     else:
-                        ceiling = post_first_s
+                        ceiling = _post_first_timeout_s()
                     _set_stream_response_read_timeout(response, ceiling)
                 item_task = asyncio.ensure_future(async_iter.__anext__())
 
