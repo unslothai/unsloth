@@ -954,6 +954,44 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
     assert _inference.find_studio_server() is None
 
 
+def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tmp_path):
+    import importlib
+    import os
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: pid == os.getpid())
+    (tmp_path / "studio-8887-424242.pid").write_text("424242", encoding = "utf-8")
+    (tmp_path / f"studio-8889-{os.getpid()}.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    probed = []
+
+    class _OK:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def default_port_taken(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("HTTP Error 404: File not found")
+        return _OK()
+
+    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+    probed.clear()
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    assert _inference.find_studio_server() is None
+    assert probed == ["http://127.0.0.1:8888/api/health"]
+
+
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
     # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1: discovery tries each
     # loopback address and returns the one that answers.

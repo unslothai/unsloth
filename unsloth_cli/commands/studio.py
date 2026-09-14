@@ -2570,6 +2570,7 @@ def run(
 
         api_key = _create_api_key_inprocess(api_key_name)
         if start_api_key_marker:
+            typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
         if not silent:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.client
+import http.server
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import shlex
 import signal
 import sys
+import threading
 import time
 import urllib.error
 from pathlib import Path
@@ -3041,7 +3043,7 @@ def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monke
         captured["load"] = load
         captured["server_options"] = server_options
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -3072,7 +3074,7 @@ def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch
     ):
         captured["load"] = load
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -3347,7 +3349,7 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     ):
         captured["server_options"] = server_options
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -3895,7 +3897,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-abc123")
     monkeypatch.setattr(start.time, "sleep", lambda _s: None)
 
-    server = start._start_studio_server(
+    returned_base, server = start._start_studio_server(
         "http://127.0.0.1:8888",
         "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL",
         start.LoadOptions(
@@ -3920,6 +3922,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
     assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"
     assert cmd[cmd.index("-p") + 1] == "8888"
+    assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
@@ -3971,17 +3974,89 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
         lambda message = "", **_kwargs: created.append(("echo", message)),
     )
 
-    server = start._start_studio_server(
+    returned_base, server = start._start_studio_server(
         BASE,
         "owner/model-GGUF",
         start.LoadOptions(gguf_variant = "Q4_K_M"),
     )
 
-    assert server.pid == 4321
+    assert (returned_base, server.pid) == (BASE, 4321)
     assert (BASE, "sk-unsloth-early", "owner/model-GGUF", "Q4_K_M", "created") in created
     assert created.count("poll") == 2
     assert created[-2:] == ["complete", "close"]
     assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
+
+
+def test_start_studio_server_follows_the_port_the_child_bound(monkeypatch, tmp_path):
+    requests = {"occupant": [], "studio": []}
+
+    def handler(name, status, body):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests[name].append(self.path)
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        return Handler
+
+    occupant = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler("occupant", 404, b"{}"))
+    studio = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), handler("studio", 200, b'{"status": "healthy"}')
+    )
+    for httpd in (occupant, studio):
+        threading.Thread(target = httpd.serve_forever, daemon = True).start()
+    requested_port, bound_port = occupant.server_address[1], studio.server_address[1]
+    fake = SimpleNamespace(pid = 4242, poll = lambda: None)
+    commands = []
+    progress_bases = []
+
+    def fake_popen(command, **kwargs):
+        commands.append(command)
+        kwargs["stdout"].write(
+            f"UNSLOTH_START_PORT: {bound_port}\n"
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\n"
+            "Model loaded: owner/model\n".encode()
+        )
+        kwargs["stdout"].flush()
+        return fake
+
+    class FakeProgress:
+        downloaded_bytes = 0
+
+        def __init__(self, base, *_args):
+            progress_bases.append(base)
+
+        def poll(self):
+            pass
+
+        def complete(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(start.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(start.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start, "_SERVER_START_TIMEOUT_S", 5)
+    try:
+        base, server = start._start_studio_server(
+            f"http://127.0.0.1:{requested_port}", "owner/model", start.LoadOptions()
+        )
+    finally:
+        for httpd in (occupant, studio):
+            httpd.shutdown()
+            httpd.server_close()
+
+    assert (base, server) == (f"http://127.0.0.1:{bound_port}", fake)
+    assert commands[0][commands[0].index("-p") + 1] == str(requested_port)
+    assert progress_bases == [base]
+    assert requests == {"occupant": [], "studio": ["/api/health"]}
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
@@ -4333,7 +4408,7 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     ):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
@@ -4359,6 +4434,29 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     assert "unsloth studio stop" in result.output
 
 
+def test_auto_served_session_uses_the_port_the_server_bound(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    bound = "http://127.0.0.1:8889"
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+    launched = {}
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return bound, fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_launch", lambda command, env, **_kwargs: launched.update(env) or 0)
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Unsloth ready at {bound} " in result.output
+    assert launched["ANTHROPIC_BASE_URL"] == bound
+    assert fake_studio and all(
+        url.startswith(f"{bound}/") for _method, url, _payload in fake_studio
+    )
+
+
 def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     stopped = []
@@ -4366,7 +4464,7 @@ def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch)
 
     def fake_start(*_args):
         start._auto_served_server = fake
-        return fake
+        return _args[0], fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", stopped.append)
@@ -4392,7 +4490,7 @@ def test_auto_served_server_exit_is_not_reported_as_running(fake_studio, monkeyp
 
     def fake_start(*_args):
         start._auto_served_server = fake
-        return fake
+        return _args[0], fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_launch", lambda *a, **k: 0)
@@ -4496,7 +4594,7 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
@@ -4596,7 +4694,7 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     ):
         started["base"] = base
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -5610,7 +5708,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     ):
         captured["server_options"] = server_options
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -8498,7 +8596,7 @@ def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeyp
     ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
@@ -8703,7 +8801,7 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
     ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
