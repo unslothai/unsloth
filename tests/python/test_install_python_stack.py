@@ -999,6 +999,34 @@ class TestHardenedPipConfigRelaxation:
             )
         assert env["PIP_CERT"] == "/home/me/mine.pem"
 
+    @pytest.mark.parametrize(
+        "configured, exported, expected",
+        [
+            ("numpy", "scipy", "numpy,scipy"),
+            (":all:", ":none:", ":all:,:none:"),
+            (":none:", ":all:", ":none:,:all:"),
+        ],
+    )
+    def test_only_binary_from_the_environment_adds_to_the_file(
+        self, configured, exported, expected
+    ):
+        """only-binary accumulates: measured on pip 26.2, the file's entries apply first and the
+        environment's after them. Letting the variable replace the file lost the file's rule."""
+        with (
+            mock.patch.object(
+                ips,
+                "_pinned_pip_config_overrides",
+                lambda *a, **k: {"PIP_ONLY_BINARY": configured},
+            ),
+            mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": exported}),
+        ):
+            cmd, env = ips._pinned_cmd_and_env(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_ONLY_BINARY"] == expected
+        flags = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--only-binary"]
+        assert flags == expected.split(",")
+
     def test_no_uv_env_var_is_invented_for_a_uv_toml_no_build(self):
         """Measured on uv 0.10.7: UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
         environment variables, so nothing here may pretend to carry a uv.toml no-build

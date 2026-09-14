@@ -7792,6 +7792,10 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         # config file (verified with `pip config debug`), which devnull has just removed.
         if not env.get(name):
             env[name] = value
+        elif name in _PINNED_PIP_ENV_ACCUMULATING:
+            # pip adds the environment's entries after the file's, in that order (pip 26.2:
+            # file :all: then env :none: allows an sdist), so an env value must not replace it.
+            env[name] = f"{value},{env[name]}"
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
     return env
@@ -7828,6 +7832,9 @@ _PINNED_PIP_CONFIG_SEPARATORS = {"trusted-host": " ", "only-binary": ","}
 # (assigned per section) while `format_control` holds both (a callback that mutates in
 # place). Accumulating trusted-host would re-trust a host install dropped, a TLS decision.
 _PINNED_PIP_CONFIG_ACCUMULATING = frozenset({"only-binary"})
+_PINNED_PIP_ENV_ACCUMULATING = frozenset(
+    f"PIP_{option.upper().replace('-', '_')}" for option in _PINNED_PIP_CONFIG_ACCUMULATING
+)
 
 _PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
 
