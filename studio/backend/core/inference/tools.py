@@ -15989,9 +15989,7 @@ def _python_exec(
             popen_kwargs.update(cwd = workdir, env = safe_env)
             if sys.platform != "win32":
                 popen_kwargs["preexec_fn"] = base_preexec
-            argv = _apply_confinement(
-                confinement, popen_kwargs, [sys.executable, "-u", tmp_path]
-            )
+            argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
             proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
