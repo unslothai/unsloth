@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """create_stopping_criteria must not assume CUDA.
 
-Before the fix these failed with a cuda/cpu device mismatch, and on a non-CUDA build
-at construction. The first two need no accelerator, so they also run on CPU-only CI.
+Before the fix these failed with a cuda/cpu device mismatch, and at construction on a
+non-CUDA build.
 """
 
 import types
