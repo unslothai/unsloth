@@ -218,8 +218,9 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     # `extra(name)` helper so a renamed or deleted group names itself instead of raising a
     # bare KeyError mid-step, and the question this asserts is that both halves still look
     # the group up, not which spelling they use to do it.
-    indexed = text.count('optional-dependencies"]["audio-torch211"]') \
-        + text.count('extra("audio-torch211")')
+    indexed = text.count('optional-dependencies"]["audio-torch211"]') + text.count(
+        'extra("audio-torch211")'
+    )
     assert indexed == 2, f"both halves must index audio-torch211, found {indexed}"
     assert text.count("for extra in audio-torch210 audio-torch290 audio-torch280; do") == 2
     for extra in audited[1:]:
