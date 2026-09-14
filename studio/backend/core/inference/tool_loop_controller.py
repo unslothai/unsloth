@@ -183,8 +183,12 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+    """The one JSON encoding of an argument mapping, so the card and the replay agree.
+
+    Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
+    `canonical_tool_call_key` keeps its own sorted key for dedup.
+    """
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
 @dataclass(frozen = True)

@@ -4,13 +4,14 @@ interface, using mlx-lm/mlx-vlm instead of torch/transformers for model loading 
 
 import copy
 import hashlib
+import importlib
 import os
 import re
 import sys
 import threading
 import time
 from collections import OrderedDict
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
@@ -553,6 +554,65 @@ def _mlx_adapter_modules(model):
         else:
             adapters.append((path, module, base))
     return adapters, unsupported
+
+
+_MLX_FUSION_UNAVAILABLE = set()
+
+
+def _mlx_fusion_unavailable(name, error):
+    """Log once per cause: this is a per-request path, so repeating would flood."""
+    key = (name, type(error).__name__, str(error))
+    if key not in _MLX_FUSION_UNAVAILABLE:
+        _MLX_FUSION_UNAVAILABLE.add(key)
+        logger.warning(
+            "Optional MLX fusion %s is unavailable, continuing with native inference: %s: %s",
+            name,
+            type(error).__name__,
+            error,
+        )
+
+
+def _mlx_inference_patch(name):
+    """An optional Zoo fusion helper, or None. Never raises: these are a throughput
+    optimization, so no Zoo state may fail a load or a request that worked without it."""
+    try:
+        patches = importlib.import_module("unsloth_zoo.mlx.inference")
+    except ModuleNotFoundError as error:
+        if error.name != "unsloth_zoo.mlx.inference":
+            _mlx_fusion_unavailable(name, error)  # a transitive import inside Zoo failed
+        return None
+    except Exception as error:
+        # A partial or skewed install raises ImportError rather than ModuleNotFoundError.
+        _mlx_fusion_unavailable(name, error)
+        return None
+    return getattr(patches, name, None)
+
+
+@contextmanager
+def _mlx_optional_fusion(name, model):
+    """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
+    an open scope must unwind through the ExitStack as an unguarded `with` would, or an
+    interrupted generation stops restoring the module tree."""
+    patch = _mlx_inference_patch(name)
+    with ExitStack() as scope:
+        active = model
+        if patch is not None:
+            try:
+                entered = scope.enter_context(patch(model))
+            except Exception as error:
+                _mlx_fusion_unavailable(name, error)
+            else:
+                if entered is not None:
+                    active = entered
+        yield active
+
+
+def _mlx_fused_moe_gate_up(model):
+    return _mlx_optional_fusion("fused_moe_gate_up", model)
+
+
+def _mlx_fused_decode_conv_silu(model):
+    return _mlx_optional_fusion("fused_decode_conv_silu", model)
 
 
 @contextmanager
@@ -1940,6 +2000,7 @@ class MLXInferenceBackend:
         self.last_generation_stats = None
 
         self._model = None
+        self._model_fusion = ExitStack()
         self._tokenizer = None
         self._processor = None
         self._is_vlm = False
@@ -2370,6 +2431,7 @@ class MLXInferenceBackend:
                 load_kwargs["tensor_group"] = distributed_group
 
         # Freed before the replacement weights are allocated, for headroom.
+        self._model_fusion.close()
         self._clear_prompt_cache()
         model, tokenizer_or_processor = FastMLXModel.from_pretrained(
             model_name,
@@ -2487,6 +2549,9 @@ class MLXInferenceBackend:
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
 
+        # The worker owns fixed base weights until unload; adapter requests stay scoped.
+        if not is_lora:
+            self._model_fusion.enter_context(_mlx_fused_moe_gate_up(model))
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -2581,6 +2646,7 @@ class MLXInferenceBackend:
         import mlx.core as mx
         import gc
 
+        self._model_fusion.close()
         if model_name in self.models:
             del self.models[model_name]
         self._model = None
@@ -2924,7 +2990,12 @@ class MLXInferenceBackend:
         # MLX consumers diff cumulative snapshots. Keep a prompt-prefilled <think> prefix on every native-protocol
         # snapshot just as the normal decoding path does below.
         normalized_output = think_prefix
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, _adapter_state),
+            _mlx_fused_moe_gate_up(self._model),
+            _mlx_fused_decode_conv_silu(self._model),
+        ):
             (
                 gen_prompt,
                 prompt_cache,
@@ -3343,11 +3414,14 @@ class MLXInferenceBackend:
             with (
                 self._generation_lock,
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
+                ExitStack() as generation_scope,
                 session_scope,
             ):
                 if images and session is None:
                     # The vision pass gets the headroom, under the lock so nothing refills it.
                     self._release_vlm_snapshots()
+                generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
+                generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
                 final_response = None
                 try:
                     # Emit any prefilled <think> block before the first token so the UI renders it during prefill,
@@ -3506,11 +3580,17 @@ class MLXInferenceBackend:
         sampled = ""
         released = 0
         stopped = False
-        # Hold the adapter state for the whole stream, as text and vision do, so Base-vs-LoRA compare doesn't run the
-        # adapter on both sides.
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
+        # Hold the adapter state for the whole stream, as text and vision do,
+        # so Base-vs-LoRA compare doesn't run the adapter on both sides.
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, use_adapter),
+            ExitStack() as generation_scope,
+        ):
             # As on the image path: the tower gets the headroom, under the lock.
             self._release_vlm_snapshots()
+            generation_scope.enter_context(_mlx_fused_moe_gate_up(self._model))
+            generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
             final_response = None
             try:
                 for response in vlm_stream(
