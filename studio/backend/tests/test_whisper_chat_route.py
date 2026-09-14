@@ -44,6 +44,7 @@ def whisper_chat(monkeypatch):
     monkeypatch.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
+
     # Keep this a route test: decoding and model inference have their own tests.
     def decode_audio(encoded):
         with wave.open(io.BytesIO(base64.b64decode(encoded)), "rb") as recording:
