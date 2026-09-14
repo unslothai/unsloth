@@ -108,7 +108,7 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
-            monkeypatch.setattr(module, "_schema_ready", False)
+            monkeypatch.setattr(module, "_schema_ready", set())
 
 
 # Pytest CLI options
@@ -290,6 +290,25 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_leftover_generation_account(monkeypatch):
+    """Clear the media-generation owner, which is a process global no route ever resets.
+
+    ``routes.video._note_generation_account()`` records who started a generation and
+    nothing writes it back to ``None``, so any test that POSTs a generate leaves the
+    next test's poll looking like a foreign account's job -- the progress route then
+    answers the hidden shape, and an unrelated test dies on ``KeyError: 'active'``
+    somewhere else in the run. Six files already reset this by hand; doing it here
+    covers the rest, and the six keep their explicit version because there it IS the
+    thing under test.
+    """
+    # sys.modules, not an import: a module nothing imported has no global to leak.
+    routes_video = sys.modules.get("routes.video")
+    if routes_video is None:
+        return
+    monkeypatch.setattr(routes_video, "_generation_account", None, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -781,7 +800,7 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root = linkable_temp_base / tmp_path.name
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
-    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
     return root
 
 
@@ -807,8 +826,10 @@ def stub_embeddings(monkeypatch):
     import hashlib
     import math
 
-    from core.rag import embeddings
+    from core.rag import config, embeddings
 
+    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
     def _vec(text: str):

@@ -3092,7 +3092,10 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     """Dropping an own row mid-flight loses the request outright: active_count falls to
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
-    assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+    assert (
+        "if entry.shared or not self._attributed(entry, subject) or "
+        'entry.status == "running"' in monitor
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
