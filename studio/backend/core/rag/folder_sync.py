@@ -68,6 +68,24 @@ _IGNORE_SCAN_DIRS = frozenset(
         ".mypy_cache",
     }
 )
+_IGNORE_SCAN_EXACT_FILES = frozenset(
+    {
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "npm-shrinkwrap.json",
+        "pipfile.lock",
+    }
+)
+
+
+def _is_ignored_scan_file(name: str) -> bool:
+    lower = name.lower()
+    if lower.startswith(".env") or lower.endswith(".env"):
+        return True
+    if lower.endswith(".lock") or lower.endswith(".lockb"):
+        return True
+    return lower in _IGNORE_SCAN_EXACT_FILES
 
 
 class _SyncStopped(Exception):
@@ -219,7 +237,7 @@ def _mount_points() -> frozenset[str]:
     escaped = {"\\040": " ", "\\011": "\t", "\\012": "\n", "\\134": "\\"}
     points = set()
     try:
-        with open("/proc/self/mountinfo", encoding = "utf-8") as mountinfo:
+        with open("/proc/self/mountinfo", encoding="utf-8") as mountinfo:
             for line in mountinfo:
                 fields = line.split()
                 if len(fields) < 5:
@@ -367,12 +385,12 @@ def create_folder_with_sync(
     )
     with _scope_lock(scope):
         folder = create_folder(
-            scope_type = scope_type,
-            scope_id = scope_id,
-            path = path,
-            expected_identity = expected_identity,
-            name = name,
-            auto_sync = auto_sync,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            path=path,
+            expected_identity=expected_identity,
+            name=name,
+            auto_sync=auto_sync,
         )
         return folder, request_sync(folder["id"])
 
@@ -403,7 +421,7 @@ def update_folder(
     auto_sync: bool | None = None,
 ) -> dict:
     with _folder_lock(folder_id):
-        return _update_folder(folder_id, name = name, auto_sync = auto_sync)
+        return _update_folder(folder_id, name=name, auto_sync=auto_sync)
 
 
 def _update_folder(
@@ -446,7 +464,7 @@ def _remove_snapshot(path: str | None) -> None:
         if _is_within(root, target) and os.path.isfile(target):
             os.remove(target)
     except Exception:
-        logger.warning("failed to remove linked-folder snapshot", exc_info = True)
+        logger.warning("failed to remove linked-folder snapshot", exc_info=True)
 
 
 def _remove_retired_snapshot(path: str | None) -> None:
@@ -494,7 +512,7 @@ def _delete_retired_folder(folder_id: str) -> bool | None:
         conn.execute("DELETE FROM linked_folder_files WHERE folder_id=?", (folder_id,))
         for doc in docs:
             if folder["delete_remove_index"]:
-                store.delete_document(conn, doc["id"], commit = False)
+                store.delete_document(conn, doc["id"], commit=False)
             else:
                 conn.execute(
                     "UPDATE documents SET linked_folder_id=NULL, linked_relative_path=NULL "
@@ -682,7 +700,7 @@ def retire_and_delete_kb(kb_id: str) -> bool:
             conn.rollback()
             return False
         _retire_scope_rows(conn, scope)
-        store.delete_kb(conn, kb_id, commit = False, delete_documents = False)
+        store.delete_kb(conn, kb_id, commit=False, delete_documents=False)
         conn.commit()
         return True
     except Exception:
@@ -737,7 +755,7 @@ def delete_retired_scope(scope: str) -> bool:
         for stored_path in dict.fromkeys(document["stored_path"] for document in documents):
             _remove_retired_snapshot(stored_path)
         for document in documents:
-            store.delete_document(conn, document["id"], commit = False)
+            store.delete_document(conn, document["id"], commit=False)
         conn.execute(
             "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
             "(SELECT id FROM ingestion_jobs WHERE scope=?)",
@@ -808,7 +826,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
             retired_scopes.add(scope)
             retired.append(scope)
         except Exception:
-            logger.warning("failed to retire orphaned RAG scope %s", scope, exc_info = True)
+            logger.warning("failed to retire orphaned RAG scope %s", scope, exc_info=True)
     for scope in sorted(retired_scopes):
         try:
             if scope.startswith("project_"):
@@ -831,7 +849,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
             elif delete_retired_scope(scope):
                 deleted.append(scope)
         except Exception:
-            logger.warning("failed to reconcile retired RAG scope %s", scope, exc_info = True)
+            logger.warning("failed to reconcile retired RAG scope %s", scope, exc_info=True)
     if retired:
         logger.info("retired %s orphaned RAG scope(s)", len(retired))
     if deleted:
@@ -876,7 +894,7 @@ def scope_lock(scope: str) -> threading.RLock:
 
 def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
     with _folder_lock(folder_id):
-        return _request_sync(folder_id, rebuild = rebuild)
+        return _request_sync(folder_id, rebuild=rebuild)
 
 
 def _fold_into_active_job(conn, active, kind: str) -> None:
@@ -997,7 +1015,7 @@ def _scan(
                 full = entry.path
                 if entry.is_symlink():
                     continue
-                if entry.is_dir(follow_symlinks = False):
+                if entry.is_dir(follow_symlinks=False):
                     if entry.name in _IGNORE_SCAN_DIRS:
                         continue
                     resolved = os.path.realpath(full)
@@ -1010,7 +1028,7 @@ def _scan(
                     resolved_key = _path_key(resolved)
                     if resolved_key in ancestor_paths:
                         continue
-                    directory_stat = entry.stat(follow_symlinks = False)
+                    directory_stat = entry.stat(follow_symlinks=False)
                     directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
                     identity_usable = directory_identity[1] not in (None, 0)
                     if (
@@ -1035,7 +1053,9 @@ def _scan(
                         )
                     )
                     continue
-                if not entry.is_file(follow_symlinks = False):
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if _is_ignored_scan_file(entry.name):
                     continue
                 if os.path.splitext(entry.name)[1].lower() not in config.ALL_UPLOAD_EXTS:
                     continue
@@ -1043,7 +1063,7 @@ def _scan(
                 # real chunk.
                 if is_appledouble_metadata(Path(full)):
                     continue
-                st = entry.stat(follow_symlinks = False)
+                st = entry.stat(follow_symlinks=False)
                 from_path = False
                 if st.st_ino in (None, 0):
                     # Windows DirEntry.stat leaves st_dev/st_ino at 0 (FindFirstFileW carries no file index); os.lstat
@@ -1106,7 +1126,7 @@ def _snapshot(root: str, metadata: dict) -> str:
             raise RuntimeError("Linked source changed during reconciliation")
         if config.MAX_UPLOAD_BYTES and before.st_size > config.MAX_UPLOAD_BYTES:
             raise RuntimeError("Linked source exceeds the RAG file size limit")
-        with os.fdopen(fd, "rb", closefd = False) as src, open(target, "xb") as dst:
+        with os.fdopen(fd, "rb", closefd=False) as src, open(target, "xb") as dst:
             _copy_exact(src, dst, before.st_size)
         after = os.fstat(fd)
         # Both sides are fstat here, so the identity is always comparable.
@@ -1219,7 +1239,7 @@ def _discard_document(document_id: str) -> None:
         doc = store.get_document(conn, document_id)
         if doc is not None:
             _remove_retired_snapshot(doc.get("stored_path"))
-            store.delete_document(conn, document_id, commit = False)
+            store.delete_document(conn, document_id, commit=False)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1261,7 +1281,7 @@ def _install_mapping(
         )
         for old in old_rows:
             if old["document_id"] != document_id:
-                store.delete_document(conn, old["document_id"], commit = False)
+                store.delete_document(conn, old["document_id"], commit=False)
                 replaced.append(old["stored_path"])
         conn.commit()
     except Exception:
@@ -1309,7 +1329,7 @@ def _delete_mapping(folder_id: str, rel: str) -> None:
             "DELETE FROM linked_folder_files WHERE folder_id=? AND relative_path=?",
             (folder_id, rel),
         )
-        store.delete_document(conn, row["document_id"], commit = False)
+        store.delete_document(conn, row["document_id"], commit=False)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -1387,10 +1407,10 @@ def _reconcile_folder(job_id: str) -> None:
     if folder is None or folder["status"] == "retired" or folder["delete_remove_index"] is not None:
         _set_job(
             job_id,
-            status = "failed",
-            stage = "error",
-            error = "Linked folder not found" if folder is None else "Owning scope was removed",
-            completed_at = _now(),
+            status="failed",
+            stage="error",
+            error="Linked folder not found" if folder is None else "Owning scope was removed",
+            completed_at=_now(),
         )
         return
     embedding_model = config.effective_embedding_model()
@@ -1410,7 +1430,7 @@ def _reconcile_folder(job_id: str) -> None:
     except Exception as exc:
         # A partial/unavailable scan is never authoritative for deletion.
         error = _error_text(exc, folder["path"])
-        _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
+        _set_job(job_id, status="failed", stage="error", error=error, completed_at=_now())
         with closing(rag_db.get_connection()) as conn:
             conn.execute(
                 "UPDATE linked_folders SET status='error', last_error=?, updated_at=? WHERE id=?",
@@ -1450,7 +1470,7 @@ def _reconcile_folder(job_id: str) -> None:
                 missing_by_content.setdefault(key, []).append(rel)
     already_withheld = _load_withheld(folder)
     total = len(work) + len(missing)
-    _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
+    _set_job(job_id, stage="ingesting", discovered=len(current), renamed=renamed)
     added = changed_count = 0
     failures: list[str] = []
     withheld: set[str] = set()
@@ -1469,7 +1489,7 @@ def _reconcile_folder(job_id: str) -> None:
                 _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
                 _remove_snapshot(snapshot)
                 snapshot = None
-                _set_job(job_id, progress = (index + 1) / max(total, 1))
+                _set_job(job_id, progress=(index + 1) / max(total, 1))
                 continue
             if not rebuild and rel in new:
                 rename_key = (content_hash, os.path.splitext(rel)[1].lower())
@@ -1485,8 +1505,8 @@ def _reconcile_folder(job_id: str) -> None:
                     renamed += 1
                     _set_job(
                         job_id,
-                        renamed = renamed,
-                        progress = (index + 1) / max(total, 1),
+                        renamed=renamed,
+                        progress=(index + 1) / max(total, 1),
                     )
                     continue
             document_id, ingestion_job = ingestion.start_ingestion(
@@ -1495,13 +1515,13 @@ def _reconcile_folder(job_id: str) -> None:
                 None,
                 rel,
                 snapshot,
-                project_id = folder["scope_id"] if folder["scope_type"] == "project" else None,
-                dedupe = False,
-                linked_folder_id = folder["id"],
-                linked_relative_path = rel,
-                model_name = embedding_model,
-                background = False,
-                content_hash = content_hash,
+                project_id=folder["scope_id"] if folder["scope_type"] == "project" else None,
+                dedupe=False,
+                linked_folder_id=folder["id"],
+                linked_relative_path=rel,
+                model_name=embedding_model,
+                background=False,
+                content_hash=content_hash,
             )
             result = ingestion.get_job_status(ingestion_job)
             if result is None:
@@ -1537,7 +1557,7 @@ def _reconcile_folder(job_id: str) -> None:
             failures.append(rel)
             # a failed file may be a rename or copy of a vanished path, so grant one pass
             withheld.update(missing - already_withheld)
-            logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
+            logger.warning("linked-folder ingestion failed for %s", rel, exc_info=True)
             if document_id:
                 _discard_document(document_id)
             else:
@@ -1550,14 +1570,14 @@ def _reconcile_folder(job_id: str) -> None:
                     logger.warning(
                         "failed to prune linked-folder ingestion job %s",
                         ingestion_job,
-                        exc_info = True,
+                        exc_info=True,
                     )
         _set_job(
             job_id,
-            added = added,
-            changed = changed_count,
-            failed = len(failures),
-            progress = (index + 1) / max(total, 1),
+            added=added,
+            changed=changed_count,
+            failed=len(failures),
+            progress=(index + 1) / max(total, 1),
         )
 
     deleted = 0
@@ -1571,8 +1591,8 @@ def _reconcile_folder(job_id: str) -> None:
         deleted += 1
         _set_job(
             job_id,
-            deleted = deleted,
-            progress = (len(work) + deleted) / max(total, 1),
+            deleted=deleted,
+            progress=(len(work) + deleted) / max(total, 1),
         )
 
     _check_running()
@@ -1580,11 +1600,11 @@ def _reconcile_folder(job_id: str) -> None:
     error = _failure_summary(failures)
     _set_job(
         job_id,
-        status = "completed" if error is None else "failed",
-        stage = "done" if error is None else "error",
-        progress = 1.0,
-        error = error,
-        completed_at = _now(),
+        status="completed" if error is None else "failed",
+        stage="done" if error is None else "error",
+        progress=1.0,
+        error=error,
+        completed_at=_now(),
     )
     with closing(rag_db.get_connection()) as conn:
         conn.execute(
@@ -1600,7 +1620,7 @@ def _fail_job(job_id: str, exc: Exception) -> None:
     job = get_job(job_id)
     folder = get_folder(job["folder_id"]) if job is not None else None
     error = _error_text(exc, folder["path"] if folder else None)
-    _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
+    _set_job(job_id, status="failed", stage="error", error=error, completed_at=_now())
     if job is None:
         return
     with closing(rag_db.get_connection()) as conn:
@@ -1616,7 +1636,7 @@ def _pause_job(job_id: str) -> None:
     job = get_job(job_id)
     if job is None:
         return
-    _set_job(job_id, status = "pending", stage = "queued", started_at = None)
+    _set_job(job_id, status="pending", stage="queued", started_at=None)
     with closing(rag_db.get_connection()) as conn:
         conn.execute(
             "UPDATE linked_folders SET status='ready', updated_at=? WHERE id=?",
@@ -1766,7 +1786,7 @@ def _next_job() -> tuple[str, str] | None:
     return _claim_job(row["id"]) if row else None
 
 
-def _worker(stop_event: threading.Event | None = None, project_exists = None) -> None:
+def _worker(stop_event: threading.Event | None = None, project_exists=None) -> None:
     global _thread, _thread_stop
     stop_event = stop_event or _stop
     try:
@@ -1776,19 +1796,19 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 try:
                     accounts = job_accounts()
                 except Exception:
-                    logger.warning("linked-folder worker initialization failed", exc_info = True)
+                    logger.warning("linked-folder worker initialization failed", exc_info=True)
                     stop_event.wait(1.0)
                     continue
                 initialized = 0
                 for account in accounts:
                     try:
-                        run_as(account, _initialize_account_sync, project_exists, recover = True)
+                        run_as(account, _initialize_account_sync, project_exists, recover=True)
                         initialized += 1
                     except Exception:
                         # One bad account database must not keep the worker out of the loop.
                         logger.warning(
                             "linked-folder worker initialization failed for one account",
-                            exc_info = True,
+                            exc_info=True,
                         )
                 if initialized or not accounts:
                     break
@@ -1799,7 +1819,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                 except Exception:
                     # Writer-lock contention must not retire the only worker; the initialization and periodic paths
                     # retry.
-                    logger.warning("linked-folder queue selection failed", exc_info = True)
+                    logger.warning("linked-folder queue selection failed", exc_info=True)
                     stop_event.wait(1.0)
                     continue
                 if job:
@@ -1815,7 +1835,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                             logger.warning(
                                 "could not record the failure of linked-folder job %s",
                                 job_id,
-                                exc_info = True,
+                                exc_info=True,
                             )
                     continue
                 _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
@@ -1824,7 +1844,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                     try:
                         accounts = job_accounts()
                     except Exception:
-                        logger.warning("linked-folder periodic scheduling failed", exc_info = True)
+                        logger.warning("linked-folder periodic scheduling failed", exc_info=True)
                         accounts = []
                     for account in accounts:
                         try:
@@ -1832,7 +1852,7 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                         except Exception:
                             logger.warning(
                                 "linked-folder periodic scheduling failed for one account",
-                                exc_info = True,
+                                exc_info=True,
                             )
     finally:
         _worker_state.stop_event = None
@@ -1885,7 +1905,7 @@ def _reap_orphaned_documents(conn, now: str) -> None:
     ).fetchall()
     for orphan in orphans:
         _remove_retired_snapshot(orphan["stored_path"])
-        store.delete_document(conn, orphan["id"], commit = False)
+        store.delete_document(conn, orphan["id"], commit=False)
         conn.execute(
             "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
             "(SELECT id FROM ingestion_jobs WHERE document_id=?)",
@@ -1896,9 +1916,9 @@ def _reap_orphaned_documents(conn, now: str) -> None:
 
 def start_auto_sync(
     *,
-    admission_lock = None,
-    admit = None,
-    project_exists = None,
+    admission_lock=None,
+    admit=None,
+    project_exists=None,
 ) -> bool:
     global _thread, _thread_stop
     try:
@@ -1922,10 +1942,10 @@ def start_auto_sync(
             _stop.clear()
             _thread_stop = stop_event
             _thread = account_thread(
-                target = _worker,
-                args = (stop_event, project_exists),
-                daemon = True,
-                name = "rag-folder-sync",
+                target=_worker,
+                args=(stop_event, project_exists),
+                daemon=True,
+                name="rag-folder-sync",
             )
             _thread.start()
             return True
@@ -1947,7 +1967,7 @@ def stop_auto_sync(timeout: float = 2.0) -> None:
     if stop_event is not None:
         stop_event.set()
     if thread is not None:
-        thread.join(timeout = timeout)
+        thread.join(timeout=timeout)
 
 
 def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
@@ -1974,7 +1994,7 @@ def _next_account_job():
             job = run_as(account, _next_job)
         except Exception:
             # The order is stable, so one corrupt database would shadow the accounts behind it.
-            logger.warning("linked-folder queue selection failed for one account", exc_info = True)
+            logger.warning("linked-folder queue selection failed for one account", exc_info=True)
             continue
         if job:
             _last_job_account = account.account_id
