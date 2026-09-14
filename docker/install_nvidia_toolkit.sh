@@ -24,40 +24,36 @@ command -v docker >/dev/null 2>&1 \
 # Measured on `docker info` with a 50ms pause mid-output: status 141, the Docker Desktop guard skipped,
 # and the script elevating to install on the one daemon it exists to leave alone.
 
-# No Mac takes an NVIDIA GPU, whatever runs the daemon. Before the endpoint check below,
-# which sent colima and Rancher Desktop users off to configure a socket by hand. The one
-# Mac the toolkit concerns is a CLI pointed at a remote Linux daemon (tcp:// or ssh://):
-# that host needs it, and gets the same answer as any remote endpoint. Same precedence as
-# the endpoint check: DOCKER_CONTEXT over DOCKER_HOST over the selected context.
-# A Windows shell (Git Bash, MSYS2, Cygwin) drives Docker Desktop, whose WSL 2 backend brings
-# the GPU support itself; the toolkit is a Linux package and belongs inside a WSL 2 distro only
-# when that distro runs its own Docker Engine. Say so instead of treating Desktop as "Docker
-# Desktop for Linux" and the Windows driver as missing.
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
-        say "Windows: Docker Desktop with the WSL 2 backend brings its own GPU support, nothing to install here."
-        say "Keep a current NVIDIA Windows driver installed (from nvidia.com), then: docker run --gpus all ..."
-        say "Only a WSL 2 distro running its own Docker Engine needs this script; run it inside that distro."
+# No Mac takes an NVIDIA GPU, and a Windows shell (Git Bash, MSYS2, Cygwin) drives Docker
+# Desktop, whose WSL 2 backend brings its own GPU support; the toolkit is a Linux package.
+# Both are answered before the endpoint check below, which sent colima and Rancher Desktop
+# users off to configure a socket by hand. The one case either host needs the toolkit is a
+# CLI pointed at a remote Linux daemon (tcp://, ssh://, a bare host:port), which gets the
+# same answer as any remote endpoint. Same precedence as the endpoint check: DOCKER_CONTEXT
+# over DOCKER_HOST over the selected context.
+host_os="$(uname -s)"
+case "$host_os" in
+    Darwin|MINGW*|MSYS*|CYGWIN*)
+        if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
+            host_endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" \
+                || fail "cannot inspect the Docker context '${DOCKER_CONTEXT:-current}' (it may exist only in the invoking user's Docker config); refusing to guess which daemon it drives." 2
+        else
+            host_endpoint="$DOCKER_HOST"
+        fi
+        case "$host_endpoint" in
+            ""|unix://*|npipe://*) ;;
+            *) fail "the Docker CLI on this machine talks to a remote daemon (${host_endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
+        esac
+        if [[ "$host_os" == Darwin ]]; then
+            say "macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
+            say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
+        else
+            say "Windows: Docker Desktop with the WSL 2 backend brings its own GPU support, nothing to install here."
+            say "Keep a current NVIDIA Windows driver installed (from nvidia.com), then: docker run --gpus all ..."
+            say "Only a WSL 2 distro running its own Docker Engine needs this script; run it inside that distro."
+        fi
         exit 0 ;;
 esac
-
-if [[ "$(uname -s)" == Darwin ]]; then
-    if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
-        mac_endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" \
-            || fail "cannot inspect the Docker context '${DOCKER_CONTEXT:-current}' (it may exist only in the invoking user's Docker config); refusing to guess which daemon it drives." 2
-    else
-        mac_endpoint="$DOCKER_HOST"
-    fi
-    # Same classes as the endpoint check below: any local socket is a Mac daemon, anything
-    # else (tcp://, ssh://, a bare host:port, which Docker reads as tcp) is a remote one.
-    case "$mac_endpoint" in
-        ""|unix://*|npipe://*) ;;
-        *) fail "the Docker CLI on this Mac talks to a remote daemon (${mac_endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
-    esac
-    say "macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
-    say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
-    exit 0
-fi
 
 # Docker Desktop ships its own GPU integration; installing here would configure a daemon it does not use. Checked before elevating.
 docker_info="$(docker info 2>/dev/null || true)"

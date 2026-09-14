@@ -597,6 +597,27 @@ def test_a_windows_shell_is_sent_to_docker_desktops_wsl2_backend(tmp_path: Path,
     assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
 
 
+@pytest.mark.parametrize("kernel", ["MINGW64_NT-10.0-22631", "MSYS_NT-10.0"])
+def test_a_windows_shell_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path, kernel: str):
+    """Same rule as on a Mac: DOCKER_HOST or a context pointing at a Linux box means that
+    box may need the toolkit, so the Desktop shortcut must not answer for it."""
+    _, log, env = _setup(tmp_path, desktop = True, driver = False)
+    _stub(
+        tmp_path / "bin" / "uname", f'if [ "$1" = -s ]; then echo {kernel}; else echo x86_64; fi\n'
+    )
+    res = _run(env, extra_env = {"DOCKER_HOST": "tcp://gpu-box:2376"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    assert "WSL 2 backend" not in res.stdout
+    res = _run(env, extra_env = {"DOCKER_CONTEXT": "remote-gpu"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    res = _run(env, extra_env = {"DOCKER_CONTEXT": "missing-in-root-config"})
+    assert res.returncode == 2
+    assert "cannot inspect the Docker context" in res.stderr
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
 def test_a_mac_with_an_uninspectable_context_gets_the_error_not_nothing_to_install(tmp_path: Path):
     """Same rule as the endpoint check further down: a context lookup failure is an
     error, not a local daemon."""
