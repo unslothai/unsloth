@@ -5734,7 +5734,9 @@ async def delete_local_path(
                                 if not c.is_file():
                                     return True
                                 if Path(c.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                                    return _local_weight_belongs_to_model(c, display_name, sub_weights)
+                                    return _local_weight_belongs_to_model(
+                                        c, display_name, sub_weights
+                                    )
                                 return _is_local_model_related_file(c)
 
                             if sub and all(_sub_belongs(c) for c in sub):
