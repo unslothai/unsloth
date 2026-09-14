@@ -19197,9 +19197,7 @@ class LlamaCppBackend:
         total_weight = sum(split)
         for i, idx in enumerate(gpu_indices):
             alloc_bytes = total_bytes * split[i] / total_weight
-            capacity_bytes = (
-                (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
-            )
+            capacity_bytes = (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
             if alloc_bytes > capacity_bytes:
                 return False
         return True
