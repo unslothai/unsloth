@@ -206,6 +206,28 @@ def test_image_and_audio_share_one_note():
     assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
 
 
+def test_independent_structured_content_is_kept_beside_attachments():
+    flat = _flatten_result(_result(_image(), structured = {"rows": 3, "max": 41.5}))
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body == "{'rows': 3, 'max': 41.5}\n[1 image attached; displayed to the user]"
+    assert json.loads(payload) == [{"data": PNG_B64, "mimeType": "image/png"}]
+    assert _flatten_result(_result(_audio(), structured = {"duration_s": 1.0})) == (
+        "{'duration_s': 1.0}\n[audio attachment (audio/wav) not shown to the model]"
+    )
+
+
+def test_zero_byte_attachments_are_noted():
+    assert _flatten_result(_result(_audio(data = ""))) == (
+        "[audio attachment (audio/wav) not shown to the model]"
+    )
+    assert (
+        _flatten_result(
+            _result(_blob_resource(data = "", mime = "text/csv", uri = "file:///out/empty.csv"))
+        )
+        == "[file attachment (text/csv) <file:///out/empty.csv> not shown to the model]"
+    )
+
+
 def test_audio_only_error_keeps_error_prefix():
     flat = _flatten_result(_result(_audio(), is_error = True))
     assert flat == "Error: [audio attachment (audio/wav) not shown to the model]"

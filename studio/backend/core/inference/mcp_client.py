@@ -1617,14 +1617,17 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
     return None
 
 
-def _block_attachment(block: Any) -> Optional[str]:
-    if getattr(block, "data", None):
+def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
+    # presence, not truthiness: a zero-byte file arrives as ""
+    data = getattr(block, "data", None)
+    if data is not None:
         kind = getattr(block, "type", "binary")
         mime = _resource_mime(block)
         uri = None
     else:
         resource = getattr(block, "resource", None)
-        if resource is None or not getattr(resource, "blob", None):
+        data = getattr(resource, "blob", None) if resource is not None else None
+        if data is None:
             return None
         kind = "file"
         mime = _resource_mime(resource)
@@ -1634,13 +1637,24 @@ def _block_attachment(block: Any) -> Optional[str]:
         label += f" ({mime})"
     if uri and not str(uri).lower().startswith("data:"):
         label += f" <{uri}>"
-    return f"{label} not shown to the model"
+    return f"{label} not shown to the model", str(data)
+
+
+def _mirrors_payload(value: Any, payloads: set[str]) -> bool:
+    if isinstance(value, str):
+        return value in payloads
+    if isinstance(value, dict):
+        return any(_mirrors_payload(v, payloads) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_mirrors_payload(v, payloads) for v in value)
+    return False
 
 
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
     unshown = []
+    payloads = set()
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
@@ -1657,6 +1671,7 @@ def _flatten_result(result: Any) -> str:
         image = _block_image(block)
         if image is not None:
             data, mime = image
+            payloads.add(data)
             if len(data) > budget:
                 omitted += 1
                 continue
@@ -1664,13 +1679,15 @@ def _flatten_result(result: Any) -> str:
             images.append({"data": data, "mimeType": mime})
             continue
         attachment = _block_attachment(block)
-        if attachment:
-            unshown.append(attachment)
+        if attachment is not None:
+            note, data = attachment
+            unshown.append(note)
+            payloads.add(data)
     body = "\n".join(parts)
-    if not (has_text or images or omitted or unshown):
-        structured = getattr(result, "structured_content", None)
-        if structured is not None:
-            body = f"{structured}\n{body}" if body else str(structured)
+    # the filesystem server mirrors binary blocks in structured_content; keep anything else
+    structured = None if has_text else getattr(result, "structured_content", None)
+    if structured is not None and not _mirrors_payload(structured, payloads - {""}):
+        body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted or unshown:
         notes = []
         if images:
