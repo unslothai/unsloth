@@ -328,9 +328,10 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        assert _base_total(IS_WINDOWS = True) == 15
-        # 14, not 13: an update installs the no-torch runtime deps on their own slot.
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 14
+        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
+        # no-torch case also gets the runtime-deps slot an update announces separately.
+        assert _base_total(IS_WINDOWS = True) == 16
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 15
 
     @pytest.mark.parametrize(
         "flags,total",
