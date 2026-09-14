@@ -376,11 +376,21 @@ def _read_json(path):
 def _host_serves_mlx() -> bool:
     """Whether this host's inference worker would pick MLXInferenceBackend.
 
-    Reads the detected verdict without triggering detection, so an unknown device
-    reads as "not MLX" and the entry is simply withheld until startup has decided.
+    Reads the detected verdict without awaiting detection, so an unknown device
+    reads as "not MLX" for this call. But a standalone API process can reach the
+    catalog before the FastAPI lifespan detection has run — or without it ever
+    running — so an unknown device also kicks the single background detector;
+    otherwise every MLX weights entry stays withheld from /v1/models forever and
+    an installed model requested by its exact id 404s until a manual preload
+    (#10951). The next index snapshot (5s TTL) then sees the settled verdict.
     """
     try:
         from utils.hardware import hardware as hw
+        if hw.DEVICE is None:
+            try:
+                hw.start_background_detection()
+            except Exception:
+                pass
         return hw.DEVICE == hw.DeviceType.MLX
     except Exception:
         return False
