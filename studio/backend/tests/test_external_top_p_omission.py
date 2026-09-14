@@ -34,7 +34,11 @@ class _Handler(BaseHTTPRequestHandler):
         self.server.recorded.append(body)  # type: ignore[attr-defined]
         if "temperature" in body and "top_p" in body:
             payload = json.dumps(
-                {"error": {"message": "`temperature` and `top_p` cannot both be specified for this model."}}
+                {
+                    "error": {
+                        "message": "`temperature` and `top_p` cannot both be specified for this model."
+                    }
+                }
             ).encode()
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
