@@ -13,6 +13,8 @@ requests, and only those.
 import sys
 import types
 
+import torch
+
 import pytest
 
 from unsloth.models.vision import (
@@ -129,3 +131,112 @@ def test_causal_vlms_never_expose_a_mask_builder():
         except Exception:
             continue
         assert not any(hasattr(module, h) for h in _BIDIRECTIONAL_MASK_BUILDERS), name
+
+
+class _Cfg:
+    def __init__(self, bidir):
+        self.use_bidirectional_attention = bidir
+
+    def get_text_config(self):
+        return self
+
+
+def _gemma4_shaped(module, bidir):
+    """A model whose create_masks_for_generate takes mm_token_type_ids, which is
+    the Gemma 4 form and the one upstream gates on the config value."""
+
+    class Model:
+        config = _Cfg(bidir)
+
+        @staticmethod
+        def create_masks_for_generate(
+            config,
+            inputs_embeds,
+            attention_mask,
+            past_key_values,
+            position_ids,
+            mm_token_type_ids = None,
+            **kwargs,
+        ):
+            return None
+
+    Model.__module__ = module.__name__
+    return Model()
+
+
+def _gemma3_shaped(module):
+    """Gemma 3 takes token_type_ids and overlays regardless of the config flag,
+    which it sets to False."""
+
+    class Model:
+        config = _Cfg(False)
+
+        @staticmethod
+        def create_masks_for_generate(
+            config,
+            inputs_embeds,
+            attention_mask,
+            past_key_values,
+            position_ids,
+            token_type_ids = None,
+            **kwargs,
+        ):
+            return None
+
+    Model.__module__ = module.__name__
+    return Model()
+
+
+def test_causal_gemma4_variant_keeps_the_static_cache(gemma_like):
+    """E2B / E4B leave use_bidirectional_attention None, so upstream builds no
+    overlay and they must not lose the compiled path."""
+    module = sys.modules[type(gemma_like).__module__]
+    assert not _needs_bidirectional_multimodal_mask(
+        _gemma4_shaped(module, None), {"pixel_values": object()}
+    )
+
+
+def test_vision_gemma4_variant_is_gated(gemma_like):
+    module = sys.modules[type(gemma_like).__module__]
+    assert _needs_bidirectional_multimodal_mask(
+        _gemma4_shaped(module, "vision"), {"pixel_values": object()}
+    )
+
+
+def test_gemma3_is_gated_despite_the_flag_being_false(gemma_like):
+    module = sys.modules[type(gemma_like).__module__]
+    assert _needs_bidirectional_multimodal_mask(_gemma3_shaped(module), {"pixel_values": object()})
+
+
+def test_precomputed_embeds_with_media_tokens_are_gated(gemma_like):
+    """inputs_embeds carries no media kwarg; the token types are the signal."""
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma4_shaped(module, "vision")
+    ids = torch.tensor([[0, 0, 1, 1, 0]])
+    assert _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": ids})
+
+
+def test_text_only_token_types_keep_the_static_cache(gemma_like):
+    """The processor emits mm_token_type_ids for text-only prompts too, all
+    zeros, so presence alone must not cost the static path."""
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma4_shaped(module, "vision")
+    ids = torch.zeros(1, 5, dtype = torch.long)
+    assert not _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": ids})
+
+
+def test_gemma3_token_type_ids_are_read(gemma_like):
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma3_shaped(module)
+    assert _needs_bidirectional_multimodal_mask(
+        model, {"token_type_ids": torch.tensor([[0, 1, 0]])}
+    )
+    assert not _needs_bidirectional_multimodal_mask(
+        model, {"token_type_ids": torch.zeros(1, 3, dtype = torch.long)}
+    )
+
+
+def test_non_tensor_token_types_do_not_raise(gemma_like):
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma4_shaped(module, "vision")
+    assert not _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": "not a tensor"})

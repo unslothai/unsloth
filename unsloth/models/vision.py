@@ -595,6 +595,50 @@ _BIDIRECTIONAL_MASK_BUILDERS = (
     "get_block_sequence_ids_for_mask",
     "create_masks_for_vision_model",
 )
+# Gemma 3 names it token_type_ids, Gemma 4 mm_token_type_ids.
+_TOKEN_TYPE_KWARGS = ("mm_token_type_ids", "token_type_ids")
+
+
+def _overlay_is_configured(model):
+    """Mirror upstream's own condition for building the overlay.
+
+    The two families disagree: Gemma 4 only overlays when the text config says
+    `"vision"` (E2B / E4B leave it None and are causal), while Gemma 3 has no
+    such field, sets it False, and overlays anyway off `token_type_ids`. Tell
+    them apart by which token-type argument the model's own
+    `create_masks_for_generate` takes.
+    """
+    builder = getattr(type(model), "create_masks_for_generate", None)
+    if builder is None:
+        return True
+    try:
+        params = inspect.signature(builder).parameters
+    except (TypeError, ValueError):
+        return True
+    if "mm_token_type_ids" not in params:
+        return True
+    config = getattr(model, "config", None)
+    text_config = config.get_text_config() if hasattr(config, "get_text_config") else config
+    return getattr(text_config, "use_bidirectional_attention", None) == "vision"
+
+
+def _has_media_token_types(kwargs):
+    """Media markers in the token-type ids, which is what upstream keys on.
+
+    Needed for `inputs_embeds` requests, where no raw media kwarg is present.
+    The tensor is emitted for text-only prompts too, so test the values: any
+    non-zero entry is a media token.
+    """
+    for name in _TOKEN_TYPE_KWARGS:
+        ids = kwargs.get(name)
+        if ids is None:
+            continue
+        try:
+            if bool((ids != 0).any()):
+                return True
+        except (AttributeError, TypeError, RuntimeError):
+            continue
+    return False
 
 
 def _needs_bidirectional_multimodal_mask(model, kwargs):
@@ -603,12 +647,16 @@ def _needs_bidirectional_multimodal_mask(model, kwargs):
     that overlay, leaving media tokens causal; Qwen2-VL, Llava and PaliGemma
     have no overlay and stay on the static path.
     """
-    if not any(kwargs.get(name) is not None for name in _MEDIA_GENERATE_KWARGS):
-        return False
     module = sys.modules.get(type(model).__module__, None)
     if module is None:
         return False
-    return any(hasattr(module, name) for name in _BIDIRECTIONAL_MASK_BUILDERS)
+    if not any(hasattr(module, name) for name in _BIDIRECTIONAL_MASK_BUILDERS):
+        return False
+    if not _overlay_is_configured(model):
+        return False
+    if any(kwargs.get(name) is not None for name in _MEDIA_GENERATE_KWARGS):
+        return True
+    return _has_media_token_types(kwargs)
 
 
 def _uses_flash_attention_for_generation(config):
