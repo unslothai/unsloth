@@ -1433,6 +1433,24 @@ def fix_unsloth_zoo_fused_ce_nan():
     if "chunks = []" in source and "len(chunks) == 0" in source:
         return  # zoo already skips fully ignored chunks
 
+    def _unusable_divisor(n_items):
+        """True when n_items cannot normalise, so forward would divide by zero.
+
+        An explicit ZERO is as unusable as None, and it is reachable: when
+        model_accepts_loss_kwargs is true, _unsloth_get_batch_samples keeps its
+        count instead of nulling it, and that count is 0 for a fully masked
+        gradient-accumulation window.
+        """
+        if n_items is None: return True
+        try:
+            if torch.is_tensor(n_items):
+                # Mirror forward()'s own DataParallel handling of a gathered count.
+                scalar = n_items.ravel()[0] if n_items.numel() != 1 else n_items
+                return bool(scalar.item() == 0)
+            return float(n_items) == 0.0
+        except Exception:
+            return False
+
     def _forward(*args, **kwargs):
         try:
             bound = _forward.__signature__.bind(*args, **kwargs)
@@ -1443,8 +1461,8 @@ def fix_unsloth_zoo_fused_ce_nan():
 
         try:
             n_items = arguments.get("n_items")
-            # Only the no-divisor case can divide by zero.
-            if n_items is not None:
+            # A usable positive divisor means forward cannot divide by zero.
+            if not _unusable_divisor(n_items):
                 return original(*args, **kwargs)
 
             ctx = arguments["ctx"]
