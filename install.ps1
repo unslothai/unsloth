@@ -1744,14 +1744,12 @@ exit 1
     function Test-StudioUvBucketName {
         param(
             [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name,
-            # Off by default, so only the write probe folds, and only where it measured a
-            # folding directory. Warmth stays exact-case like install.sh's lowercase globs:
-            # counting bytes under `Archive-V0` that uv will not find at `archive-v0` picks a
-            # cache that cannot serve them, where missing them only costs a fallback.
+            # Off by default: warmth counting bytes under `Archive-V0` that uv looks for at
+            # `archive-v0` picks a cache that cannot serve them. Only the write probe folds.
             [switch]$Fold
         )
-        # Whole name, not just the kind, since the `-v` marker varies with it. Invariant, or a
-        # Turkish locale maps I to a dotless one and `flat-Index-v4` escapes.
+        # Whole name, since the `-v` marker varies with the kind. Invariant: a Turkish
+        # locale dots the I in `flat-Index-v4`.
         $lower = if ($Fold) { $Name.ToLowerInvariant() } else { $Name }
         $at = $lower.LastIndexOf("-v")
         if ($at -lt 0) { return $false }
@@ -1760,10 +1758,8 @@ exit 1
         # \A and \z, not ^ and $: in .NET `$` also matches before a final newline, so
         # `archive-v1<LF>` passed here while the sh helper rejected it.
         if (-not ($suffix -match '\A[0-9]+\z')) { return $false }
-        # And the KIND has to be one uv creates. A read-only `unused-v999` sitting beside a warm
-        # cache is not uv's to write, but it condemned the whole cache, so the install
-        # redownloaded what it already had and an offline one failed outright. Every CacheBucket
-        # in uv 0.12.1, $UvPinnedVersion below; keep in step with install.sh on a pin bump.
+        # Every CacheBucket in uv 0.12.1 ($UvPinnedVersion) plus built-wheels; keep in step
+        # with install.sh on a pin bump.
         return ($lower.Substring(0, $at) -in @(
             "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
             "git", "interpreter", "osv", "python", "sdists", "simple", "wheels"))
@@ -1777,11 +1773,8 @@ exit 1
         param([Parameter(Mandatory = $true)][string]$Cache)
         $probeDirs = [System.Collections.Generic.List[string]]::new()
         $probeDirs.Add($Cache)
-        # Does THIS directory fold case? Windows does unless fsutil setCaseSensitiveInfo was
-        # applied to it, which is how a WSL-created tree behaves, so the OS name answers this no
-        # better than uname does on POSIX. Measured with a directory we make ourselves, the same
-        # way _uv_cache_is_writable does, because an existing `Python-V0` beside `python-v0` is
-        # one entry when the directory folds and two when it does not.
+        # Measured like _uv_cache_is_writable does: NTFS folds unless fsutil
+        # setCaseSensitiveInfo says otherwise, which is how a WSL-created tree behaves.
         $fold = $false
         $probeRoot = Join-Path $Cache (".unsloth-case-probe." +
             [guid]::NewGuid().ToString("N").Substring(0, 8) + "-A")
@@ -1826,8 +1819,7 @@ exit 1
         try {
             $buckets = Get-ChildItem -LiteralPath $Cache -Directory -Force -ErrorAction Stop |
                 Where-Object {
-                    # No -Fold: warmth is exact-case, so every name here is already lowercase
-                    # and LastIndexOf being case-sensitive cannot miss the marker.
+                    # No -Fold: warmth is exact-case, so every name here is lowercase.
                     (Test-StudioUvBucketName -Name $_.Name) -and
                     ($_.Name.Substring(0, $_.Name.LastIndexOf("-v")) -in
                         @("archive", "builds", "built-wheels", "wheels", "sdists"))

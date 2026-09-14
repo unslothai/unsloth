@@ -1235,17 +1235,14 @@ class TestInstallUvCacheRootParity:
         # rejected it from the start, so this was a real split.
         bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
-        # To the NEXT function, not the first "\n}": the body is indented, so that split ran
-        # two functions on and every assertion below it read the wrong code.
+        # To the NEXT function: the body is indented, so splitting on "\n}" ran two
+        # functions on and every assertion below it read the wrong code.
         bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
             "function Test-StudioUvCacheWritable", 1
         )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
-        # Both sides resolve a casing variant to uv's bucket, and both MEASURE whether to.
-        # Neither platform answers it: default APFS folds and ext4 does not, NTFS folds unless
-        # fsutil setCaseSensitiveInfo says otherwise, which is how a WSL-created tree behaves.
-        # Folding blind condemns a cache for a directory uv never opens, which is what this
-        # allowlist exists to prevent, so the fold is off until a probe says so on both sides.
+        # Both sides MEASURE whether to fold: default APFS folds and ext4 does not, NTFS
+        # folds unless fsutil setCaseSensitiveInfo says otherwise. Blind folding condemns.
         assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
         assert "-cin" not in bucket_ps1, bucket_ps1
         assert "[switch]$Fold" in bucket_ps1, bucket_ps1
@@ -1256,27 +1253,15 @@ class TestInstallUvCacheRootParity:
         assert "-Fold:$fold" in writable_ps1, writable_ps1
         writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
         assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
-        # By a directory the probe MAKES, not by reading the names already there. An existing
-        # `Python-V0` beside `python-v0` is one entry when the volume folds and two when it
-        # does not, and the pair cannot say which, so inferring it condemned a cache on ext4
-        # for a directory uv never opens.
+        # By a directory the probe MAKES: an existing pair cannot say whether it is one.
         assert ".unsloth-case-probe." in writable_sh, writable_sh
         assert "_uv_w_fold=1" in writable_sh, writable_sh
-        # and the fold decides only the NAME: a colliding file or dangling link has to reach
-        # the rejection below, which is the branch that answers uv's mkdir.
+        # and it decides only the NAME: a colliding file must reach the rejection below.
         assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
-        # and the KIND has to be one uv creates, on BOTH sides with the same list: a
-        # bucket-shaped `unused-v999` is not uv's to write, and condemning a warm cache for it
-        # redownloaded what the cache already held. A list that drifts splits the two answers.
-        # Every CacheBucket in uv 0.12.1 (crates/uv-cache/src/lib.rs), plus built-wheels from
-        # before it was folded into archive. A kind missing here is a bucket never probed, so
-        # an unwritable python-v0 reads as usable and the managed-Python install fails.
         probe_kinds = {
             "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
             "git", "interpreter", "osv", "python", "sdists", "simple", "wheels",
         }
-        # Tied to the pin: bumping uv without re-reading its bucket list fails here rather than
-        # silently leaving the new kind unprobed.
         assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
         case_body = re.search(
             r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S

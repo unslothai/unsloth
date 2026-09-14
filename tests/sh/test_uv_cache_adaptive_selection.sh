@@ -174,37 +174,32 @@ mkdir -p "$_alien/archive-v0/torch" "$_alien/lost+found"
 : > "$_alien/archive-v0/torch/libtorch.so"
 : > "$_alien/CACHEDIR.TAG"
 chmod 000 "$_alien/lost+found"
-# Bucket-SHAPED but not a kind uv creates, and closed. uv never opens it, so it must not
-# condemn the cache: it did, and the install redownloaded a Torch it already had.
+# Bucket-SHAPED but not a kind uv creates, so uv never opens it.
 _alien_bucket="$_TMP/uvalienbucket"
 mkdir -p "$_alien_bucket/archive-v0/torch" "$_alien_bucket/unused-v999"
 : > "$_alien_bucket/archive-v0/torch/libtorch.so"
 : > "$_alien_bucket/CACHEDIR.TAG"
 chmod 000 "$_alien_bucket/unused-v999"
-# python-v0 IS uv's, since 0.8.16: the installer installs a managed CPython, so a bucket left
-# read-only by a privileged run has to condemn the cache rather than fail mid-install.
+# python-v0 IS uv's, since 0.8.16, and the installer installs a managed CPython.
 _managed_python="$_TMP/uvpython"
 mkdir -p "$_managed_python/archive-v0/torch" "$_managed_python/python-v0"
 : > "$_managed_python/archive-v0/torch/libtorch.so"
 : > "$_managed_python/CACHEDIR.TAG"
 chmod a-w "$_managed_python/python-v0"
-# On a case-SENSITIVE filesystem `Python-V0` and `python-v0` are two directories and only the
-# lowercase one is uv's, so a read-only uppercase one must NOT condemn the cache. Inferring the
-# fold from the pair existing would: that is why the probe makes its own directory instead.
+# Case-SENSITIVE: two directories, only the lowercase one uv's. Inferring the fold from the
+# pair existing would condemn the cache, which is why the probe makes its own directory.
 _cased_bucket="$_TMP/uvcased"
 mkdir -p "$_cased_bucket/archive-v0/torch" "$_cased_bucket/Python-V0" "$_cased_bucket/python-v0"
 : > "$_cased_bucket/archive-v0/torch/libtorch.so"
 : > "$_cased_bucket/CACHEDIR.TAG"
 chmod a-w "$_cased_bucket/Python-V0"
-# Same, with no lowercase sibling at all.
 _cased_only="$_TMP/uvcasedonly"
 mkdir -p "$_cased_only/archive-v0/torch" "$_cased_only/Python-V0"
 : > "$_cased_only/archive-v0/torch/libtorch.so"
 : > "$_cased_only/CACHEDIR.TAG"
 chmod a-w "$_cased_only/Python-V0"
-# Whether this filesystem folds case at all, asked the same way install.sh asks. True on a
-# default APFS runner, false on the ext4 CI gives us, so the fold assertions below run where
-# they mean something instead of being simulated into always-true.
+# Asked the same way install.sh asks, so the fold cases below run for real on an APFS runner
+# rather than being simulated into always-true on ext4.
 _cased_file="$_TMP/uvcasedfile"
 mkdir -p "$_cased_file/archive-v0/torch"
 : > "$_cased_file/archive-v0/torch/libtorch.so"
@@ -303,17 +298,14 @@ else
     _out=$(_run "$_TMP/q3" '' "$_managed_python")
     assert_eq "a read-only python-v0 still does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
     if [ "$_FOLDS" = true ]; then
-        # One entry under two spellings, so uv writes it and it has to be probed.
         _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
         assert_eq "a cased bucket condemns when folded" "studio" "$(echo "$_out" | cut -d' ' -f1)"
         _out=$(_run "$_TMP/q5" '' "$_cased_only")
         assert_eq "so does a lone cased bucket"         "studio" "$(echo "$_out" | cut -d' ' -f1)"
-        # A FILE under a cased bucket name still collides with uv's mkdir. Reached only if the
-        # name check hands it to the rejection branch rather than skipping it on -d.
+        # A FILE collides with uv's mkdir, and only the rejection branch catches it.
         _out=$(_run "$_TMP/q6" '' "$_cased_file")
         assert_eq "and a cased FILE does too"           "studio" "$(echo "$_out" | cut -d' ' -f1)"
     else
-        # Two directories, only the lowercase one uv's, so the cache stays usable.
         _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
         assert_eq "a cased sibling does not condemn" "shared" "$(echo "$_out" | cut -d' ' -f1)"
         _out=$(_run "$_TMP/q5" '' "$_cased_only")
@@ -426,8 +418,7 @@ _out=$(_run "$_TMP/crlf" '' "$_populated")
 assert_eq "a BOM+CRLF marker is honoured"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "and names the right directory"  "$_TMP/crlf/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
 
-# Stripping every CR instead of the trailing one turned a cache whose name contains a CR into
-# a name that does not exist, so the marker read as stale and the next run chose elsewhere.
+# Stripping every CR made a cache whose name holds one read as a path that does not exist.
 _cr=$(printf '\r')
 mkdir -p "$_TMP/embedcr/cache" "$_TMP/sha${_cr}red/archive-v0/torch"
 : > "$_TMP/sha${_cr}red/archive-v0/torch/libtorch.so"

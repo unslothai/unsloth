@@ -597,13 +597,8 @@ _uv_is_bucket_name() {
     case "${1##*-v}" in
         ''|*[!0-9]*) return 1 ;;
     esac
-    # And the KIND has to be one uv creates. A read-only `unused-v999` sitting beside a warm
-    # cache is not uv's to write, but it condemned the whole cache, so the install redownloaded
-    # what it already had and an offline one failed outright.
-    # Every CacheBucket in uv 0.12.1, the UV_PINNED_VERSION below, plus built-wheels from
-    # before it was folded into archive. Bumping that pin means re-reading uv-cache/src/lib.rs:
-    # a kind missing here is a bucket we never probe, so an unwritable python-v0 left by a sudo
-    # run reads as usable and the managed-Python install fails instead of falling back.
+    # Every CacheBucket in uv 0.12.1 (UV_PINNED_VERSION) plus built-wheels; re-read
+    # uv-cache/src/lib.rs on a pin bump, or a missing kind goes unprobed and uv fails on it.
     case "${1%-v*}" in
         archive|binaries|builds|built-wheels|environments|flat-index) ;;
         git|interpreter|osv|python|sdists|simple|wheels) ;;
@@ -669,12 +664,8 @@ _uv_cache_root_is_writable() {
 _uv_cache_is_writable() {
     _uv_cache_root_is_writable "$1" || return 1
     _uv_w_bad=0
-    # Does THIS filesystem fold case? Default APFS does, ext4 does not, and either can turn up
-    # on either OS, so uname cannot answer it. Neither can an existing pair of names: on a
-    # case-sensitive volume `Python-V0` and `python-v0` are two directories and only the second
-    # is uv's, while on APFS they are one entry, and nothing about the pair says which. A
-    # directory we make ourselves is the only unambiguous answer. The root is writable here,
-    # since the check above already returned otherwise.
+    # Measured, not assumed: default APFS folds, ext4 does not, and an existing `Python-V0`
+    # beside `python-v0` is one entry on the first and two on the second. Root already writable.
     _uv_w_fold=0
     _uv_w_probe="$1/.unsloth-case-probe.$$-A"
     if mkdir "$_uv_w_probe" 2>/dev/null; then
@@ -688,9 +679,7 @@ _uv_cache_is_writable() {
     for _uv_w_dir in "$1"/*; do
         _uv_w_name="${_uv_w_dir##*/}"
         if ! _uv_is_bucket_name "$_uv_w_name"; then
-            # Where the filesystem folds, `Python-V0` IS uv's python-v0 and uv writes it. Only
-            # the NAME is decided here; whether it is a directory, a file or a dangling link is
-            # left to the rejection below, which is the branch that answers uv's mkdir.
+            # Only the NAME is folded here; file or dangling link is the rejection below.
             [ "$_uv_w_fold" = 1 ] || continue
             case "$_uv_w_name" in *[[:upper:]]*) ;; *) continue ;; esac
             _uv_w_lower=$(printf '%s' "$_uv_w_name" | tr '[:upper:]' '[:lower:]')
@@ -820,9 +809,7 @@ _configure_uv_cache() {
     # CRLF, and a WSL install shares $STUDIO_HOME with the Windows one. The other two readers
     # already defend. Untreated, a CR fails [ -d ] and abandons the warm cache in silence, and
     # a BOM makes the value non-absolute so $PWD gets prepended.
-    # The TRAILING CR only, like Read-StudioUvCacheMarker's Trim(): `tr -d` also deleted a CR
-    # from inside a pathname, so a marker that named a real directory became one that did not
-    # and the next run silently chose somewhere else.
+    # Trailing CR only, like Read-StudioUvCacheMarker's Trim(): `tr -d` ate CRs inside the path.
     _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || _uv_recorded=""
     _uv_cr=$(printf '\r')
     _uv_recorded="${_uv_recorded%"$_uv_cr"}"
