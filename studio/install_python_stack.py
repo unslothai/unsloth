@@ -7318,9 +7318,18 @@ def _pinned_cmd_and_env(cmd: "list[str]") -> "tuple[list[str], dict[str, str] | 
     return cmd + _pinned_binary_policy_args(cmd, env), env
 
 
-# Wheel-less dependencies of the indexes this installer pins: every torch on repo.amd.com's gfx*
-# indexes requires rocm[libraries], which AMD publishes only as an sdist (7.9 through 7.13).
-_PINNED_SDIST_ONLY_PACKAGES = ("rocm",)
+# Wheel-less dependencies of AMD's per-arch (gfx*) indexes: every torch there requires
+# rocm[libraries], which AMD publishes only as an sdist (7.9 through 7.13). Exempted on those
+# pins alone, so no other index can use the name to get a build past the operator's policy.
+_AMD_ARCH_INDEX_SDIST_ONLY_PACKAGES = ("rocm",)
+
+
+def _pins_amd_arch_index(cmd: "list[str]") -> bool:
+    """True when the index ``cmd`` pins has a gfx leaf, the shape of every AMD per-arch index."""
+    for flag, value in zip(cmd, cmd[1:]):
+        if flag in ("--index-url", "--default-index"):
+            return bool(re.match(r"gfx\d", _torch_index_leaf(value)))
+    return False
 
 
 def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -> "list[str]":
@@ -7346,9 +7355,13 @@ def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -
         # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
         for part in parts:
             args.extend(["--only-binary", part])
+    if not _pins_amd_arch_index(cmd):
+        return args
     named = {_canonical_package_name(part) for part in parts}
     exempt = [
-        name for name in _PINNED_SDIST_ONLY_PACKAGES if _canonical_package_name(name) not in named
+        name
+        for name in _AMD_ARCH_INDEX_SDIST_ONLY_PACKAGES
+        if _canonical_package_name(name) not in named
     ]
     return args + _sdist_only_build_args(*exempt)
 
@@ -7394,7 +7407,7 @@ _PM_FORCE_SOURCE_ENV_VARS = (
 )
 
 # PIP_ONLY_BINARY stays in force: the pinned indexes serve wheels, rocm aside (see
-# _PINNED_SDIST_ONLY_PACKAGES), so it costs the pin nothing. Measured on uv 0.10.7, UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
+# _AMD_ARCH_INDEX_SDIST_ONLY_PACKAGES), so it costs the pin nothing. Measured on uv 0.10.7, UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
 # environment variables at all, so no uv.toml no-build can reach a pinned command.
 
 

@@ -94,6 +94,7 @@ class TestUvOnlyBinaryOnPinnedCommands:
     it."""
 
     PINNED = ("torch", "--index-url", "https://pin.example/whl")
+    AMD = ("torch", "--index-url", "https://repo.amd.com/rocm/whl/gfx1151/")
 
     def _uv_cmd(self, args):
         return ips._pinned_cmd_and_env(ips._build_uv_cmd(args))[0]
@@ -104,36 +105,66 @@ class TestUvOnlyBinaryOnPinnedCommands:
     def test_a_pinned_uv_command_carries_only_binary_as_flags(self):
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
             cmd = self._uv_cmd(self.PINNED)
-        assert cmd[-4:] == ["--only-binary", ":all:", "--no-binary", "rocm"]
+        assert cmd[-2:] == ["--only-binary", ":all:"]
 
     def test_each_entry_becomes_its_own_flag(self):
         """uv takes the option repeatably, not comma joined the way pip spells it."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
             cmd = self._uv_cmd(self.PINNED)
-        assert cmd[-6:] == [
-            "--only-binary",
-            ":none:",
-            "--only-binary",
-            "numpy",
-            "--no-binary",
-            "rocm",
-        ]
+        assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
 
-    def test_a_pinned_pip_command_keeps_the_policy_in_env_and_the_exemption_in_argv(self):
-        """pip reads PIP_ONLY_BINARY itself; the command line only has to exempt rocm, which
-        repo.amd.com's gfx* torch requires and publishes as an sdist alone."""
+    def test_an_amd_arch_pin_exempts_rocm_on_the_uv_leg(self):
+        """Every torch on a gfx* index requires rocm[libraries], published as an sdist alone."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
-            cmd, env = ips._pinned_cmd_and_env(ips._build_pip_cmd(self.PINNED))
+            cmd = self._uv_cmd(self.AMD)
+        assert cmd[-4:] == ["--only-binary", ":all:", "--no-binary", "rocm"]
+
+    def test_an_amd_arch_pip_command_keeps_the_policy_in_env_and_the_exemption_in_argv(self):
+        """pip reads PIP_ONLY_BINARY itself; the command line only has to exempt rocm."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd, env = ips._pinned_cmd_and_env(ips._build_pip_cmd(self.AMD))
         assert "--only-binary" not in cmd
         assert cmd[-2:] == ["--no-binary", "rocm"]
         assert env["PIP_ONLY_BINARY"] == ":all:"
+
+    @pytest.mark.parametrize(
+        "index",
+        (
+            "https://download.pytorch.org/whl/cu128",
+            "https://download.pytorch.org/whl/cpu",
+            "https://download.pytorch.org/whl/xpu",
+            "https://download.pytorch.org/whl/rocm7.2",
+            "https://mirror.corp/gfx1151/cu128",
+            "https://mirror.corp/gfx-private",
+        ),
+    )
+    @pytest.mark.parametrize("leg", ("uv", "pip"))
+    def test_no_other_pin_is_exempted(self, index, leg):
+        """Anywhere else the name would only let an index get a build past the policy."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            args = ("torch", "--index-url", index)
+            cmd = self._uv_cmd(args) if leg == "uv" else self._pip_cmd(args)
+        assert "--no-binary" not in cmd
+
+    @pytest.mark.parametrize(
+        "index",
+        (
+            "https://mirror.corp/amd/gfx120X-all/",
+            "https://mirror.corp/amd/gfx110X-all?token=x",
+        ),
+    )
+    def test_a_mirrored_amd_arch_index_is_exempted_too(self, index):
+        """UNSLOTH_AMD_ROCM_MIRROR / UNSLOTH_ROCM_WINDOWS_MIRROR keep the gfx leaf."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._pip_cmd(("torch", "--index-url", index))
+        assert cmd[-2:] == ["--no-binary", "rocm"]
 
     @pytest.mark.parametrize("policy", ("rocm", ":all:,rocm", ":all:,ROCm"))
     @pytest.mark.parametrize("leg", ("uv", "pip"))
     def test_a_package_the_operator_names_is_not_exempted(self, policy, leg):
         """A command-line --no-binary overrides the operator's own rule for that package."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": policy}):
-            cmd = self._uv_cmd(self.PINNED) if leg == "uv" else self._pip_cmd(self.PINNED)
+            cmd = self._uv_cmd(self.AMD) if leg == "uv" else self._pip_cmd(self.AMD)
         assert "--no-binary" not in cmd
 
     @pytest.mark.reads_real_pip_config  # stubbed below with a read that fails once
@@ -173,7 +204,7 @@ class TestUvOnlyBinaryOnPinnedCommands:
             return subprocess.CompletedProcess(cmd, 1 if cmd[:1] == ["uv"] else 0, b"")
 
         monkeypatch.setattr(ips.subprocess, "run", fake_run)
-        ips.pip_install("torch", *self.PINNED, constrain = False)
+        ips.pip_install("torch", *self.AMD, constrain = False)
         pip_cmd, pip_env = runs[-1]
         assert pip_cmd[:3] == [sys.executable, "-m", "pip"]
         assert ("--no-binary" in pip_cmd) == bool((pip_env or {}).get("PIP_ONLY_BINARY"))
@@ -188,8 +219,9 @@ class TestUvOnlyBinaryOnPinnedCommands:
         """An unconfigured host must run exactly the command main ran, AMD indexes included."""
         env = {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}
         with mock.patch.dict(os.environ, env, clear = True):
-            assert self._uv_cmd(self.PINNED) == ips._build_uv_cmd(self.PINNED)
-            assert self._pip_cmd(self.PINNED) == ips._build_pip_cmd(self.PINNED)
+            for args in (self.PINNED, self.AMD):
+                assert self._uv_cmd(args) == ips._build_uv_cmd(args)
+                assert self._pip_cmd(args) == ips._build_pip_cmd(args)
 
 
 class TestBuildUvCmdTorchBackend:
