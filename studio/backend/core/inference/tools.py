@@ -2980,6 +2980,32 @@ _MAX_WALKED_CWDS = 2048
 _PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/cwd")
 
 
+def _unquoted_parens(text: str):
+    """Yield `(index, char)` for each bracket that is shell syntax, skipping quoted ones.
+
+    `echo '('; cd ../..; echo ')'` writes two brackets no shell ever opens, and counted as syntax
+    they ended a subshell that was never entered, dropping the `cd` that came between them.
+    """
+    quote = ""
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char in "()":
+            yield index, char
+
+
 def _subshell_end(text: str, start: int) -> int:
     """Where the subshell containing *start* closes, or the end of *text* when it is not in one.
 
@@ -2987,21 +3013,18 @@ def _subshell_end(text: str, start: int) -> int:
     subshell's `cd` dies with the subshell, so its move must not reach past the closing bracket.
     """
     depth = 0
-    for char in text[:start]:
-        if char == "(":
-            depth += 1
-        elif char == ")" and depth:
-            depth -= 1
+    for index, char in _unquoted_parens(text):
+        if index >= start:
+            break
+        depth = depth + 1 if char == "(" else max(0, depth - 1)
     if not depth:
         return len(text)
-    for index in range(start, len(text)):
-        char = text[index]
-        if char == "(":
-            depth += 1
-        elif char == ")":
-            depth -= 1
-            if not depth:
-                return index
+    for index, char in _unquoted_parens(text):
+        if index < start:
+            continue
+        depth = depth + 1 if char == "(" else depth - 1
+        if char == ")" and not depth:
+            return index
     return len(text)
 
 
@@ -3177,6 +3200,12 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                             return True
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
+        if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
+            node, cwds, name_bases
+        ):
+            # `subprocess.run(["strings", "auth/auth.db"], cwd = "../..")` moves nothing in this
+            # process, but the child opens its arguments from the directory it is handed.
+            return True
         folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)
         if not folded:
             continue
@@ -3323,6 +3352,51 @@ def _parent_walk_targets(
             base = parent
         out.append(os.path.normpath(os.path.join(base, tail)) if tail else base)
     return out
+
+
+def _call_runs_from_a_credential_directory(
+    node: "ast.Call", cwds: "list", name_bases: "dict"
+) -> bool:
+    """True when a call hands a child process a directory that makes one of its paths a credential.
+
+    `subprocess.run([...], cwd = "../..")` leaves this process where it is, so the walk above never
+    moves, and each literal argument was tested against the sandbox instead of against the
+    directory the child actually runs from.
+    """
+    given = next((kw.value for kw in node.keywords if kw.arg == "cwd"), None)
+    if given is None:
+        return False
+    folded = _folded_path(given)
+    if not folded or "\x00" in folded:
+        return False
+    targets = (
+        _parent_walk_targets(given, folded, cwds, name_bases) if "\x02" in folded else [folded]
+    )
+    directories: "list[str]" = []
+    for target in targets:
+        for cwd in cwds:
+            here = (
+                target
+                if os.path.isabs(target) or not cwd
+                else os.path.normpath(os.path.join(cwd, target))
+            )
+            if here not in directories:
+                directories.append(here)
+    if any(_references_studio_credential(here) for here in directories):
+        return True
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Constant) and isinstance(inner.value, str) and inner.value:
+            piece = inner.value
+        else:
+            piece = _folded_path(inner) if isinstance(inner, (ast.BinOp, ast.Call)) else ""
+        if not piece or "\x00" in piece or "\x02" in piece or os.path.isabs(piece):
+            continue
+        for here in directories:
+            if _references_studio_credential(
+                os.path.normpath(os.path.join(here, piece.replace("\\", "/")))
+            ):
+                return True
+    return False
 
 
 def _chdir_argument(node: "ast.Call"):

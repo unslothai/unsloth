@@ -860,6 +860,65 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_quoted_bracket_is_not_a_subshell(monkeypatch, tmp_path):
+    # `echo '('; cd ../..; echo ')'` opens no subshell at all. Counted as syntax, the quoted
+    # brackets ended a subshell that was never entered and dropped the real `cd` between them.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            "echo '('; cd ../..; echo ')'; strings auth/auth.db",
+            'echo "("; cd ../..; cat auth/auth.db',
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # A real subshell still ends there, and quoted brackets around ordinary work are ordinary.
+        for ordinary in (
+            "(cd ../..; ls models); cat auth/config.json",
+            "echo '('; ls; echo ')'; cat auth/config.json",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_child_process_runs_from_the_directory_it_is_handed(monkeypatch, tmp_path):
+    # `subprocess.run([...], cwd = "../..")` moves nothing in this process, so the walk never
+    # moved and each literal argument was tested against the sandbox instead of against the
+    # directory the child actually opens them from.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import subprocess\nsubprocess.run(["strings", "auth/auth.db"], cwd = "../..")',
+            'import subprocess\nsubprocess.run("cat auth/.desktop_secret", shell = True, cwd = "../..")',
+            'import subprocess\nsubprocess.run(["ls"], cwd = "../../auth")',
+            'import subprocess\nfrom pathlib import Path\nsubprocess.run(["strings", "auth/auth.db"], cwd = Path.cwd().parents[1])',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        for code in (
+            'import subprocess\nsubprocess.run(["ls", "auth"], cwd = "/tmp/project")',
+            'import subprocess\nsubprocess.run(["ls", "models"], cwd = "../..")',
+            'import subprocess\nsubprocess.run(["cat", "auth/config.json"], cwd = ".")',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_subshell_cd_does_not_outlive_the_subshell(monkeypatch, tmp_path):
     # `(cd ../..; ls models); cat auth/config.json` runs the `cat` where it started, because a
     # subshell's directory dies with it. Carried past the bracket, the move refused a project's
