@@ -122,7 +122,22 @@ jobs:
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
             sha="$REF"
           else
-            sha="$(git ls-remote https://github.com/unslothai/unsloth_zoo "$REF" | cut -f1)"
+            # Retried like the clone in core-cpu-setup, and for the same reason: github.com
+            # occasionally 500s. This job gates both Core halves, so an unretried blip here
+            # would skip all six matrix jobs rather than fail one step.
+            sha=""
+            for attempt in 1 2 3; do
+              if sha="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" | cut -f1)" \
+                && [ -n "$sha" ]; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                break
+              fi
+              delay=$((5 * attempt))
+              echo "::warning::ls-remote failed (attempt $attempt/3), retrying in ${delay}s..."
+              sleep "$delay"
+            done
           fi
           if [ -z "$sha" ]; then
             echo "::error::could not resolve unsloth_zoo ref '$REF' to a commit"
