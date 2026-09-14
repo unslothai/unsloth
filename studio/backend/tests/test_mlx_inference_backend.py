@@ -4287,6 +4287,7 @@ class _SpmTurn:
         reports_finish_reason = True,
         block = False,
         shares_detokenizer = False,
+        detokenizer_class = "spm",
     ):
         detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
         self.vocab = {}
@@ -4303,7 +4304,11 @@ class _SpmTurn:
             eos_ids = [self.vocab[piece] for piece in ((eos,) if isinstance(eos, str) else eos)]
             self.eos_token_ids = tuple(eos_ids)
             self.eos_token_id = eos_ids[-1]
-        self.detokenizer = detokenizers.SPMStreamingDetokenizer(self, trim_space = False)
+        self.detokenizer = (
+            detokenizers.NaiveStreamingDetokenizer(self)
+            if detokenizer_class == "naive"
+            else detokenizers.SPMStreamingDetokenizer(self, trim_space = False)
+        )
 
     def convert_ids_to_tokens(self, token_id):
         return self._by_id[token_id]
@@ -4580,6 +4585,52 @@ def test_mlx_stream_detokenizer_handles_one_that_cannot_be_copied():
     own.add_token(7)
     own.finalize()
     assert own.text == "<7>"
+
+
+def test_mlx_stream_detokenizer_rebuilds_the_one_a_retained_source_cannot_copy():
+    """mlx-vlm's processor hands back a single retained instance, and below 0.6.0 -- which is
+    where ``__copy__`` arrives -- copying the naive one raises. Falling back to no detokenizer
+    there would pass the runtime's text through unfiltered for the whole turn, so a control the
+    allowlist suppresses would reach the reply."""
+    detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+    from core.inference.mlx_inference import _mlx_stream_detokenizer
+
+    class _Tok:
+        def decode(self, token_ids, **_kwargs):
+            return "".join(f"<{token_id}>" for token_id in token_ids)
+
+    class _Retained:
+        def __init__(self):
+            self.detokenizer = detokenizers.NaiveStreamingDetokenizer(_Tok())
+
+    source = _Retained()
+    with pytest.raises(AttributeError):
+        copy.copy(source.detokenizer)
+
+    own = _mlx_stream_detokenizer(source)
+    assert own is not None, "a detokenizer that cannot be copied can still be rebuilt"
+    assert own is not source.detokenizer
+
+    own.add_token(7)
+    own.finalize()
+    assert own.text == "<7>"
+    # and driving ours left the one the runtime streams through alone
+    source.detokenizer.add_token(9)
+    source.detokenizer.finalize()
+    assert source.detokenizer.text == "<9>"
+
+
+def test_mlx_vlm_suppresses_a_control_on_a_runtime_whose_detokenizer_cannot_be_copied(monkeypatch):
+    """The end of that: on the supported mlx-vlm floor the reply still owes only what the
+    allowlist keeps, rather than every control the runtime rendered."""
+    turn = _SpmTurn(
+        ("▁Hello", "<pad>", "▁world"),
+        specials = ("<pad>",),
+        ends = "exhausted",
+        shares_detokenizer = True,
+        detokenizer_class = "naive",
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == " Hello world"
 
 
 @pytest.mark.parametrize("ends", ("stop", "exhausted"))

@@ -874,6 +874,22 @@ def _mlx_stop_sequences(stop):
     return [x for x in ([stop] if isinstance(stop, str) else stop or []) if x]
 
 
+def _rebuilt_detokenizer(detokenizer):
+    """A fresh one of ``detokenizer``'s kind, for the versions whose own cannot be copied.
+
+    Only the naive detokenizer needs this, and it is also the only one that keeps the tokenizer it
+    wraps -- SPM and BPE build decoded tables in ``__init__`` and copy cleanly -- so that attribute
+    doubles as the test for "can be rebuilt at all"."""
+    tokenizer = getattr(detokenizer, "_tokenizer", None)
+    if tokenizer is None:
+        return None
+    try:
+        return type(detokenizer)(tokenizer)
+    except Exception as exc:  # noqa: BLE001 -- third-party detokenizers vary; caller falls back
+        logger.debug("MLX streaming detokenizer could not be rebuilt (%s)", exc)
+        return None
+
+
 def _mlx_stream_detokenizer(source):
     """One of ``source``'s own kind, independent of the detokenizer the runtime drives.
 
@@ -888,8 +904,16 @@ def _mlx_stream_detokenizer(source):
         try:
             independent = copy.copy(detokenizer)
         except Exception as exc:  # noqa: BLE001 -- third-party detokenizers vary; caller falls back
-            logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
-            return None
+            # mlx-vlm gained ``__copy__`` only at 0.6.0, and below it the naive detokenizer --
+            # what every model resolves to whose decoder is neither SPM nor a top-level ByteLevel
+            # -- cannot be copied at all. Rebuilding one is what that ``__copy__`` does. Giving up
+            # here instead leaves the turn with no detokenizer, and the branch that handles that
+            # can only pass the runtime's text through, so every control the allowlist suppresses
+            # would reach the reply on the whole supported floor.
+            independent = _rebuilt_detokenizer(detokenizer)
+            if independent is None:
+                logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
+                return None
     try:
         independent.reset()
     except Exception as exc:  # noqa: BLE001 -- as above
