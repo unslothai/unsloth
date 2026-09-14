@@ -998,11 +998,26 @@ def test_only_a_module_that_owns_the_process_directory_changes_it(monkeypatch, t
             )
             != tools._STUDIO_CREDENTIAL_BLOCKED
         )
+        # An ALIAS of somebody else's chdir is not one either.
+        assert (
+            tools._python_exec(
+                'import ftplib\nftp = ftplib.FTP("h")\nmove = ftp.chdir\nmove("../..")\nprint(open("auth/config.json").read())',
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
         for code in (
             'import os\nos.chdir("../..")\nprint(open("auth/auth.db", "rb").read())',
             'import os as o\no.chdir("../..")\nprint(open("auth/auth.db", "rb").read())',
             'from os import chdir\nchdir("../..")\nprint(open("auth/auth.db", "rb").read())',
             'import contextlib\nwith contextlib.chdir("../.."):\n    print(open("auth/auth.db", "rb").read())',
+            'import os\nmove = os.chdir\nmove("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'import os as o\ngo = o.chdir\ngo("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'from contextlib import chdir as cd\nwith cd("../.."):\n    print(open("auth/auth.db", "rb").read())',
+            'import os\nmove = os.chdir\nagain = move\nagain("../..")\nprint(open("auth/auth.db", "rb").read())',
         ):
             assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED

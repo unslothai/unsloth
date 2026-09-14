@@ -3183,8 +3183,8 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     )
     # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
     # path that does not exist raises, and code that catches it carries on from where it was.
-    chdir_names = _chdir_names(tree)
     chdir_modules = _chdir_modules(tree)
+    chdir_names = _chdir_names(tree, chdir_modules)
     name_bases = _literal_name_bases(tree)
     cwds: "list[str | None]" = [workdir]
     for node in nodes:
@@ -3424,15 +3424,17 @@ def _chdir_argument(node: "ast.Call"):
     return None
 
 
-def _chdir_names(tree) -> "set[str]":
+def _chdir_names(tree, modules: "set[str] | None" = None) -> "set[str]":
     """Every name that refers to `os.chdir` in this snippet, including aliases.
 
     `from os import chdir as move` and `move = os.chdir` are both ordinary python, and a walk that
     only knows the literal name resolves everything after `move('../..')` against the wrong place.
+    An alias of somebody else's `chdir`, `move = ftp.chdir`, is not one of them.
     """
+    modules = modules or {"os", "contextlib"}
     names = {"chdir"}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "os":
+        if isinstance(node, ast.ImportFrom) and node.module in ("os", "contextlib"):
             for alias in node.names:
                 if alias.name == "chdir" and alias.asname:
                     names.add(alias.asname)
@@ -3440,9 +3442,12 @@ def _chdir_names(tree) -> "set[str]":
             target, value = node.targets[0], node.value
             if not isinstance(target, ast.Name):
                 continue
-            if (isinstance(value, ast.Attribute) and value.attr == "chdir") or (
-                isinstance(value, ast.Name) and value.id in names
-            ):
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr == "chdir"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in modules
+            ) or (isinstance(value, ast.Name) and value.id in names):
                 names.add(target.id)
     return names
 
