@@ -597,6 +597,21 @@ _BIDIRECTIONAL_MASK_BUILDERS = (
 )
 # Gemma 3 names it token_type_ids, Gemma 4 mm_token_type_ids.
 _TOKEN_TYPE_KWARGS = ("mm_token_type_ids", "token_type_ids")
+# Only these preallocate; offloaded and quantized caches still grow per step.
+try:
+    from transformers.generation.configuration_utils import (
+        ALL_STATIC_CACHE_IMPLEMENTATIONS as _STATIC_CACHE_IMPLEMENTATIONS,
+    )
+except ImportError:
+    _STATIC_CACHE_IMPLEMENTATIONS = (
+        "static",
+        "offloaded_static",
+        "sliding_window",
+        "hybrid",
+        "hybrid_chunked",
+        "offloaded_hybrid",
+        "offloaded_hybrid_chunked",
+    )
 
 
 def _overlay_is_configured(model):
@@ -651,6 +666,19 @@ def _needs_bidirectional_multimodal_mask(model, kwargs):
     if any(kwargs.get(name) is not None for name in _MEDIA_GENERATE_KWARGS):
         return True
     return _has_media_token_types(kwargs)
+
+
+def _dynamic_cache_choice(kwargs):
+    """Cache to force for a media request. Only a static one drops the mask, so
+    keep a growing cache the caller named, like offloaded, and the memory budget
+    that came with it.
+    """
+    requested = kwargs.get("cache_implementation")
+    if requested is None and "generation_config" in kwargs:
+        requested = getattr(kwargs["generation_config"], "cache_implementation", None)
+    if requested is None or requested in _STATIC_CACHE_IMPLEMENTATIONS:
+        return "dynamic"
+    return requested
 
 
 def _uses_flash_attention_for_generation(config):
@@ -924,18 +952,21 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
     if force_dynamic_cache:
         cache_implementation = None
+        dynamic_implementation = _dynamic_cache_choice(kwargs)
 
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
-            "dynamic" if force_dynamic_cache else cache_implementation
+            dynamic_implementation if force_dynamic_cache else cache_implementation
         )
         # kwargs are applied after the config merge, so an explicit value survives.
         if force_dynamic_cache:
-            kwargs["cache_implementation"] = "dynamic"
+            kwargs["cache_implementation"] = dynamic_implementation
         if cache_implementation is not None:
             kwargs["generation_config"].compile_config = _compile_config
     else:
-        kwargs["cache_implementation"] = "dynamic" if force_dynamic_cache else cache_implementation
+        kwargs["cache_implementation"] = (
+            dynamic_implementation if force_dynamic_cache else cache_implementation
+        )
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
 

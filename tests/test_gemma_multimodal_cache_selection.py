@@ -20,6 +20,8 @@ import pytest
 from unsloth.models.vision import (
     _BIDIRECTIONAL_MASK_BUILDERS,
     _MEDIA_TOKEN_TYPES,
+    _STATIC_CACHE_IMPLEMENTATIONS,
+    _dynamic_cache_choice,
     _needs_bidirectional_multimodal_mask,
 )
 
@@ -251,12 +253,13 @@ def test_non_tensor_token_types_do_not_raise(gemma_like):
 
 def _resolve_cache_choice(force_dynamic, cache_implementation, kwargs):
     """The assignment block from unsloth_base_fast_generate, isolated."""
+    forced = _dynamic_cache_choice(kwargs) if force_dynamic else None
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = (
-            "dynamic" if force_dynamic else cache_implementation
+            forced if force_dynamic else cache_implementation
         )
         return kwargs["generation_config"].cache_implementation
-    kwargs["cache_implementation"] = "dynamic" if force_dynamic else cache_implementation
+    kwargs["cache_implementation"] = forced if force_dynamic else cache_implementation
     return kwargs["cache_implementation"]
 
 
@@ -383,3 +386,41 @@ def test_a_caller_supplied_cache_is_never_overridden():
 
 def test_text_only_never_forces_even_with_a_cleared_default():
     assert not _force_gate(None, {}, is_media = False)
+
+
+@pytest.mark.parametrize("requested", ["offloaded", "quantized"])
+def test_a_growing_cache_the_caller_asked_for_survives(requested):
+    """offloaded and quantized grow per step, so they keep the media mask.
+    Downgrading them to plain dynamic would throw away the memory they buy."""
+    assert _dynamic_cache_choice({"cache_implementation": requested}) == requested
+    cfg = _GenCfg()
+    cfg.cache_implementation = requested
+    assert _dynamic_cache_choice({"generation_config": cfg}) == requested
+    assert _resolve_cache_choice(True, None, {"generation_config": cfg}) == requested
+
+
+@pytest.mark.parametrize("requested", ["static", "offloaded_static"])
+def test_a_static_cache_the_caller_asked_for_is_replaced(requested):
+    assert _dynamic_cache_choice({"cache_implementation": requested}) == "dynamic"
+    cfg = _GenCfg()
+    cfg.cache_implementation = requested
+    assert _resolve_cache_choice(True, None, {"generation_config": cfg}) == "dynamic"
+
+
+def test_the_kwarg_outranks_the_config_when_both_are_given():
+    cfg = _GenCfg()
+    cfg.cache_implementation = "offloaded"
+    assert (
+        _dynamic_cache_choice({"generation_config": cfg, "cache_implementation": "static"})
+        == "dynamic"
+    )
+
+
+def test_static_implementations_match_upstream():
+    """A name upstream treats as static must be replaced, not preserved."""
+    configuration_utils = pytest.importorskip("transformers.generation.configuration_utils")
+    upstream = getattr(configuration_utils, "ALL_STATIC_CACHE_IMPLEMENTATIONS", None)
+    if upstream is None:
+        pytest.skip("no ALL_STATIC_CACHE_IMPLEMENTATIONS in this transformers")
+    assert set(upstream) <= set(_STATIC_CACHE_IMPLEMENTATIONS)
+    assert "dynamic" not in _STATIC_CACHE_IMPLEMENTATIONS
