@@ -950,10 +950,10 @@ def _installed_torch_is_windows_rocm() -> bool:
 _ANYIO_BAD_FLOOR = (4, 14)
 
 
-def _installed_anyio_version() -> tuple[int, int] | None:
+def _installed_version(package: str) -> tuple[int, int] | None:
     try:
         from importlib.metadata import version as _pkg_version
-        raw = _pkg_version("anyio")
+        raw = _pkg_version(package)
     except Exception:
         return None
     parts = raw.split(".")
@@ -966,7 +966,7 @@ def _installed_anyio_version() -> tuple[int, int] | None:
 
 
 def _repair_bad_anyio() -> None:
-    installed = _installed_anyio_version()
+    installed = _installed_version("anyio")
     if installed is None or installed < _ANYIO_BAD_FLOOR:
         return
     _note(f"anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14...")
@@ -977,6 +977,34 @@ def _repair_bad_anyio() -> None:
         "anyio<4.14.0",
         constrain = False,
     )
+
+
+# The constraints cap cannot reach a fresh install: install.ps1 resolves accelerate with no -c,
+# then hands off with SKIP_STUDIO_BASE=1, and no later step re-resolves it (#10819).
+_ACCELERATE_BAD_FLOOR = (1, 15)
+
+
+def _repair_bad_accelerate() -> None:
+    if not IS_WINDOWS:
+        return
+    installed = _installed_version("accelerate")
+    if installed is None or installed < _ACCELERATE_BAD_FLOOR:
+        return
+    _note(f"accelerate {installed[0]}.{installed[1]} found -- reinstalling accelerate<1.15...")
+    # --no-deps: accelerate requires torch>=2.0.0, and a with-deps reinstall replaces the ROCm
+    # wheel. _try, not pip_install: that exits, and this fires on nearly every Windows install.
+    if not pip_install_try(
+        "Repairing accelerate version",
+        "--no-cache-dir",
+        "--no-deps",
+        "accelerate<1.15.0",
+        constrain = False,
+    ):
+        _note(
+            "could not install accelerate<1.15 -- training on a Windows AMD GPU will fail "
+            "at trainer start until it is downgraded (huggingface/accelerate#4249)",
+            _red,
+        )
 
 
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
@@ -8956,9 +8984,11 @@ def install_python_stack() -> int:
     # reinstall path too, not just the two calls below
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Three lettered steps beside the numbered ones: anyio repair (8b), diffusers pin (11b),
-    # torchcodec (13b).
+    # Four lettered steps beside the numbered ones: anyio repair (8b), accelerate repair
+    # (8c, Windows only), diffusers pin (11b), torchcodec (13b).
     base_total = 13 if IS_WINDOWS else 14
+    if IS_WINDOWS:
+        base_total += 1  # 8c, gated exactly as the step is
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -8991,7 +9021,7 @@ def install_python_stack() -> int:
     # update stops at the same point.
     _parked = install_manifest.previous_manifest_path()
     install_manifest.consume_previous_manifest()
-    if _parked.exists():
+    if install_manifest.manifest_is_present(_parked):
         _safe_print(
             f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
             f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
@@ -9001,7 +9031,7 @@ def install_python_stack() -> int:
         return 1
     if install_manifest.remove_manifest():
         install_manifest.consume_previous_manifest()
-        if _parked.exists():
+        if install_manifest.manifest_is_present(_parked):
             _safe_print(
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
@@ -9361,6 +9391,11 @@ def install_python_stack() -> int:
     # 8b. anyio repair (#6483)
     _progress("anyio check")
     _repair_bad_anyio()
+
+    # 8c. Outside skip_base on purpose: install.ps1 sets it and is the path that lands 1.15.
+    if IS_WINDOWS:
+        _progress("accelerate check")
+        _repair_bad_accelerate()
 
     # 9. Data-designer dependencies
     _dd_deps_ran = not _skip_step(

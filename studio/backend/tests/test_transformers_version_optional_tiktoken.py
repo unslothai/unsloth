@@ -1024,3 +1024,57 @@ def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_
     assert tv._sidecar_has_content(str(root2)) is False
     (root2 / "keep.txt").write_text("", encoding = "utf-8")
     assert tv._sidecar_has_content(str(root2)) is True
+def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> None:
+    """A mount that cannot lock answers at once. Retrying it spent the whole 120 second
+    bound asleep inside a model activation, to arrive at the same answer."""
+    import errno
+    import fcntl
+    import time as _time
+
+    root = tmp_path / "sidecar"
+    root.mkdir()
+    attempts = []
+
+    def unsupported(fd, op):
+        attempts.append(op)
+        raise OSError(errno.ENOTSUP, "locking not supported")
+
+    slept = []
+    monkeypatch.setattr(fcntl, "flock", unsupported)
+    monkeypatch.setattr(_time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(tv.time, "sleep", lambda s: slept.append(s))
+    with tv._optional_top_up_lock(str(root)) as held:
+        assert held is False
+    assert len(attempts) == 1, f"asked {len(attempts)} times for an answer that cannot change"
+    assert not slept, "waited on a filesystem that cannot lock"
+
+
+def test_an_interpreter_without_fcntl_does_not_break_activation(tmp_path, monkeypatch) -> None:
+    """No fcntl and no msvcrt means no lock, which reads as someone else's turn, not a crash."""
+    import builtins
+
+    root = tmp_path / "sidecar"
+    root.mkdir()
+    real_import = builtins.__import__
+
+    def no_fcntl(name, *args, **kwargs):
+        if name in ("fcntl", "msvcrt"):
+            raise ImportError(f"no {name} here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_fcntl)
+    with tv._optional_top_up_lock(str(root)) as held:
+        assert held is False
+
+
+def test_a_close_that_fails_does_not_escape(tmp_path) -> None:
+    class _Handle:
+        closed = False
+
+        def close(self):
+            _Handle.closed = True
+            raise OSError("close refused")
+
+    tv._close_quietly(_Handle())
+    assert _Handle.closed
+    tv._close_quietly(None)

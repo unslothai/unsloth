@@ -529,6 +529,29 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
         return _remove_manifest_locked(root, path, parked)
 
 
+# What "not there" looks like, which is what pathlib ignored before 3.14: the name is absent,
+# a path component is not a directory, the descriptor is bad, or a symlink chain does not land.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
+def manifest_is_present(path: Path) -> bool:
+    """Whether *path* is there, answering True when the filesystem refuses to say.
+
+    stat, not Path.exists(): 3.13 raises EACCES out of exists() and 3.14 returns False from it
+    (gh-101357), so exists() means "absent" on one and "unknown" on the other. Every caller here
+    is deciding whether a marker still blocks the pass, and a marker that cannot be read is
+    still a marker. Never raises: remove_manifest reported a refusal before this existed.
+    """
+    try:
+        path.stat()
+    except OSError as exc:
+        return exc.errno not in _ABSENT_ERRNOS
+    except ValueError:
+        # A path this interpreter cannot encode holds no manifest.
+        return False
+    return True
+
+
 def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> bool:
     try:
         os.replace(path, parked)
@@ -538,14 +561,14 @@ def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> b
         # reads it as evidence and refuses behind one it cannot clear -- on Windows after
         # setup.ps1's mutations. Losing a dead run's evidence only costs a full pass.
         consume_previous_manifest(root)
-        return not parked.exists()
+        return not manifest_is_present(parked)
     except OSError:
         # The rename was refused. Clear the reserved name and retry before falling back to
         # the unlink: setup.ps1 reads True as permission to replace pip, torch and triton, and
         # the pass refuses behind a parked copy it cannot clear. Dropping the live manifest
         # first would put that refusal after the mutations, on a venv that cannot verify.
         consume_previous_manifest(root)
-        if parked.exists():
+        if manifest_is_present(parked):
             return False
         try:
             os.replace(path, parked)

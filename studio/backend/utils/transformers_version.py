@@ -34,6 +34,7 @@ import importlib.util
 import json
 import structlog
 from loggers import get_logger
+import errno
 import contextlib
 import os
 import re
@@ -2709,6 +2710,23 @@ _OPTIONAL_TOP_UP_LOCK = ".optional-top-up.lock"
 _OPTIONAL_TOP_UP_WAIT_SECONDS = 120.0
 
 
+# The errnos that mean a peer holds the lock. Anything else is a filesystem that cannot
+# lock, and waiting on it only delays the same answer.
+_LOCK_CONTENDED_ERRNOS = frozenset(
+    {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR, errno.EDEADLK}
+)
+
+
+def _close_quietly(handle) -> None:
+    """Drop the handle. Never raises: a close that fails must not fail an activation."""
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
 @contextlib.contextmanager
 def _file_lock(path: str, wait_seconds: float):
     """A cross-process lock on *path*, waited for up to *wait_seconds*. Yields True when
@@ -2728,13 +2746,19 @@ def _file_lock(path: str, wait_seconds: float):
                     import fcntl
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as exc:
+                # Only contention is worth waiting out. A mount that does not implement
+                # locking answers at once, and retrying it spent the whole bound sleeping
+                # inside a model activation before giving the same answer.
+                if exc.errno not in _LOCK_CONTENDED_ERRNOS:
+                    raise
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.25)
-    except OSError:
-        if handle is not None:
-            handle.close()
+    except (OSError, ImportError):
+        # ImportError too: an interpreter with neither fcntl nor msvcrt cannot lock, and an
+        # activation must not die for it.
+        _close_quietly(handle)
         yield False
         return
     try:
@@ -2748,9 +2772,9 @@ def _file_lock(path: str, wait_seconds: float):
             else:
                 import fcntl
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        except OSError:
+        except (OSError, ImportError):
             pass
-        handle.close()
+        _close_quietly(handle)
 
 
 _REBUILD_LOCK_DIR = ".sidecar-locks"
