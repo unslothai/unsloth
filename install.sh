@@ -3577,10 +3577,9 @@ _rocminfo_gpu_records() {
 }
 
 _amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
-    # output line reports which index space the records came back in; the caller needs to
-    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
+    # on stdin ahead of the map, sentinel-separated. Line 1 reports the index space: a mask
+    # cannot be applied to an untranslated list of unlike adapters.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -3597,9 +3596,8 @@ _amd_smi_hip_order() {
             next
         }
         END {
-            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
-            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
-            # colliding map is not a 1:1 device mapping, so keep discovery order.
+            # All or nothing, like get_hip_id_by_gpu_index: -e may be rejected and hip_id may
+            # read N/A, and a partial or colliding map is not 1:1, so keep discovery order.
             if (r == 0 || n != r) { keep(); exit }
             for (i = 1; i <= n; i++) {
                 if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
@@ -3613,14 +3611,10 @@ _amd_smi_hip_order() {
 }
 
 # amd-smi enumerates in discovery order over its KFD view, while HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch. `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); utils/hardware/amd.py get_hip_id_by_gpu_index reads the same field. Keep in sync with studio/setup.sh.
-# `gfx|marketing name` records to one arch per adapter, ordinals intact.
-#
-# An adapter whose arch the probe could not read keeps its slot as `unknown` rather than
-# vanishing. A visible-device mask indexes this list, so dropping the unreadable adapter
-# shifts every device after it and the arch policies land on a card the mask did not
-# select. `unknown` matches no policy, which is the right answer for an arch nobody knows.
-# Prints nothing when NO adapter has an arch, so the caller still falls through to the
-# next probe instead of stopping on a list of placeholders.
+# `gfx|marketing name` records to one arch per adapter, ordinals intact. An unreadable arch
+# keeps its slot as `unknown` (dropping it would shift every later device under a mask, and
+# `unknown` matches no policy). Prints nothing when NO adapter has an arch, so the caller
+# falls through to the next probe.
 _gfx_arch_slots() {
     awk -F'|' '
         NF { rec[n++] = $1; if ($1 != "") any = 1 }
@@ -3644,12 +3638,10 @@ _amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        #
-        # Two header shapes. `GPU: 0` opens a keyed block and the arch arrives later;
-        # `GPU[0]  : gfx1100` IS the whole record, arch on the header and nothing after it.
-        # Matching only the first answered no arch at all on an amd-smi-only host.
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys); matched
+        # case-folded so older spellings work. Two header shapes: `GPU: 0` opens a keyed block
+        # with the arch later, while `GPU[0] : gfx1100` IS the record. Matching only the first
+        # answered no arch at all on an amd-smi-only host.
         /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
             flush(); started = 1
             if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
@@ -4738,9 +4730,8 @@ case "$_torch_index_leaf" in
 esac
 
 _amd_gpu_radeon=false
-# Set when the runtime GPU has a generic-wheel floor at all, independent of whether the leaf had
-# to be rerouted, with the floor itself beside it: it is per arch, and the migrated-venv repair
-# far below has to compare against the same number the reroute used.
+# Set when the runtime GPU has a generic-wheel floor at all, rerouted or not, with the floor
+# beside it: it is per arch, and the migrated-venv repair below must use the same number.
 _gfx_rocm64_target=false
 _gfx_rocm64_floor_maj=""
 _gfx_rocm64_floor_min=""
@@ -4774,9 +4765,8 @@ _venv_torch_rocm_below() {
 # gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/, which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167, and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks them, and the Radeon repo can be offline (#7264), so reroute a detected Strix GPU whenever the picked index is older than the arch build; rocm7.13+ already has the fixes.
 case "$_torch_index_leaf" in
     rocm[0-9]*)
-        # Re-declared here as well as beside _amd_gpu_radeon above: this arm is lifted out
-        # whole by tests/studio/install/test_rocm_support.py, and under `set -u` a block that
-        # depends on an initialiser it does not contain aborts rather than routes.
+        # Re-declared: tests/studio/install/test_rocm_support.py lifts this arm out whole, and
+        # under `set -u` a block depending on an outside initialiser aborts rather than routes.
         _gfx_rocm64_target=false
         _gfx_rocm64_floor_maj=""
         _gfx_rocm64_floor_min=""
@@ -4790,9 +4780,8 @@ case "$_torch_index_leaf" in
         _gfx_space=hip
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
             _gfx_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_records | _gfx_arch_slots || true)
-            # rocminfo is an ROCr client and enumerates in ROCr order, which is the order
-            # HIP numbers from. That is the premise the mask handling below already runs
-            # on ("its output IS the runtime order"), not a new claim.
+            # rocminfo is an ROCr client, so it enumerates in the order HIP numbers from. The
+            # mask handling below already runs on that premise; not a new claim.
             [ -n "$_gfx_all" ] && { _gfx_probe=rocminfo; _gfx_space=hip; }
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
@@ -4819,9 +4808,8 @@ case "$_torch_index_leaf" in
                 _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
                 [ -z "$_gfx_all" ] && \
                     _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
-                # Deliberately left in discovery space. A single-GPU box, which is what this
-                # rescue is for, has one distinct arch and routes normally; a mixed one
-                # declines below rather than guess which card the runtime will pick.
+                # Left in discovery space: the single-GPU box this rescue is for has one arch
+                # and routes normally, while a mixed one declines below rather than guess.
                 [ -n "$_gfx_all" ] && _gfx_space=discovery
             fi
         fi
@@ -4835,13 +4823,10 @@ case "$_torch_index_leaf" in
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
             # first-set-wins, mirroring _pick_visible_index in studio/install_python_stack.py.
-            # WHICH layers are still live depends on who probed. rocminfo is an ROCr client,
-            # so its output is ALREADY filtered by ROCR_VISIBLE_DEVICES, and indexing by that
-            # same variable would apply one layer twice. The HIP layer then selects among the
-            # survivors, so CUDA_VISIBLE_DEVICES (its alias) has to stay reachable instead of
-            # being shadowed by an ROCr mask that has already done its work: with
-            # ROCR_VISIBLE_DEVICES=2,1 and CUDA_VISIBLE_DEVICES=1, the target is the SECOND
-            # survivor. Mirrors _HIP_LAYER_MASKS in studio/install_python_stack.py.
+            # rocminfo output is ALREADY ROCr-filtered, so indexing it by
+            # ROCR again applies one layer twice and shadows CUDA (the HIP alias) that should
+            # pick among the survivors: ROCR=2,1 + CUDA=1 means the SECOND survivor.
+            # Mirrors _HIP_LAYER_MASKS in studio/install_python_stack.py.
             if [ "$_gfx_probe" = rocminfo ]; then
                 _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
             else
@@ -4871,12 +4856,9 @@ case "$_torch_index_leaf" in
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
                 }')
-            # No HIP_ID map, and the adapters are not alike: these records are in amd-smi
-            # discovery order, which is not the order HIP numbers devices, so ordinal 0 is
-            # already a guess and a mask ordinal doubly so. Routing on it installs wheels
-            # for a card the runtime will not use, which is worse than not routing at all.
-            # This is the call the GPU summary below already makes, on the same evidence.
-            # Interchangeable adapters are unaffected: every ordinal gives the same answer.
+            # No HIP_ID map and unlike adapters: these are in amd-smi discovery order, so no
+            # ordinal names a known device and routing would install wheels for a card the
+            # runtime will not use. Alike adapters are unaffected, every ordinal agrees.
             if [ "$_gfx_space" != hip ] && \
                [ "$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" -gt 1 ]; then
                 echo "" >&2
