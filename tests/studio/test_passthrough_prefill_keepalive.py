@@ -345,10 +345,10 @@ def _load_env_accessors():
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        (None, 5.0),      # unset: pace like the header wait already does
-        ("", 5.0),        # blank: same as unset
-        ("0", None),       # documented off switch
-        ("-1", None),      # non-positive is also off
+        (None, 5.0),  # unset: pace like the header wait already does
+        ("", 5.0),  # blank: same as unset
+        ("0", None),  # documented off switch
+        ("-1", None),  # non-positive is also off
         ("2.5", 2.5),
         ("garbage", 5.0),  # unparseable falls back, never crashes a stream
     ],
@@ -367,7 +367,7 @@ def test_keepalive_interval_env(monkeypatch, raw, expected):
     [
         (None, 1200.0),
         ("", 1200.0),
-        ("0", 1200.0),      # unlike the stall guard, 0 must NOT remove the bound
+        ("0", 1200.0),  # unlike the stall guard, 0 must NOT remove the bound
         ("-5", 1200.0),
         ("garbage", 1200.0),
         ("2400", 2400.0),
@@ -432,9 +432,9 @@ def test_pump_is_bound_not_inlined_so_teardown_can_close_it():
         f"found {len(made)}"
     )
     for node, call, targets in made:
-        assert targets == [_PUMP_LOCAL], (
-            f"pump at line {node.lineno} must bind to {_PUMP_LOCAL!r}, got {targets}"
-        )
+        assert targets == [
+            _PUMP_LOCAL
+        ], f"pump at line {node.lineno} must bind to {_PUMP_LOCAL!r}, got {targets}"
         keywords = {kw.arg for kw in call.keywords}
         assert "keepalive_interval_s" in keywords, (
             f"pump at line {node.lineno} must pass keepalive_interval_s, or it "
@@ -464,9 +464,9 @@ def test_every_teardown_closes_the_pump_before_the_iterator():
         and node.func.id == "_aclose_stream_resources"
     ]
     with_iterator = [c for c in calls if any(kw.arg == "iterator" for kw in c.keywords)]
-    assert len(with_iterator) == 4, (
-        f"expected 4 teardowns closing a relay iterator; found {len(with_iterator)}"
-    )
+    assert (
+        len(with_iterator) == 4
+    ), f"expected 4 teardowns closing a relay iterator; found {len(with_iterator)}"
     for call in with_iterator:
         names = [kw.arg for kw in call.keywords]
         assert "items" in names, (
@@ -480,17 +480,18 @@ def test_every_teardown_closes_the_pump_before_the_iterator():
 
     # And the helper must actually close items first.
     helper = next(
-        n for n in ast.walk(_TREE)
+        n
+        for n in ast.walk(_TREE)
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "_aclose_stream_resources"
     )
     args = [a.arg for a in helper.args.kwonlyargs]
-    assert "items" in args and args.index("items") < args.index("iterator"), (
-        f"_aclose_stream_resources must take `items` before `iterator`; got {args}"
-    )
+    assert "items" in args and args.index("items") < args.index(
+        "iterator"
+    ), f"_aclose_stream_resources must take `items` before `iterator`; got {args}"
     body_src = ast.get_source_segment(SRC, helper) or ""
-    assert body_src.index("items.aclose()") < body_src.index("iterator.aclose()"), (
-        "_aclose_stream_resources must await items.aclose() before iterator.aclose()"
-    )
+    assert body_src.index("items.aclose()") < body_src.index(
+        "iterator.aclose()"
+    ), "_aclose_stream_resources must await items.aclose() before iterator.aclose()"
 
 
 def test_every_relay_loop_translates_the_sentinel_first():
