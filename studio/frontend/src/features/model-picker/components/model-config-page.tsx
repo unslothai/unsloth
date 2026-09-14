@@ -103,6 +103,7 @@ import {
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
+  clearExtraArgsEditForDraft,
   clearModelConfigDraftEdited,
   isExtraArgsHydratedForDraft,
   isModelConfigDraftEdited,
@@ -3209,6 +3210,10 @@ export function ModelConfigPage({
             onClick={() => {
               // Reset writes through setConfig rather than update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
+              // Reset replaces llamaExtraArgs from outside the box, so the raw edit goes with it.
+              // It cannot be left to token equality: a later value formatting to the same tokens
+              // would make the discarded text current again, with the verdict it carried.
+              clearExtraArgsEditForDraft(draftKey);
               setConfig({
                 // null, not the default's absent: absent omits the field, and the load then INHERITS the
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.

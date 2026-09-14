@@ -164,6 +164,8 @@ export function primeModelConfigDraft(
     };
     drafts.set(key, next);
     editedDrafts.delete(key);
+    // Re-seeded from the resident process, which is as external as a hydration. See above.
+    extraArgsEditByDraftKey.delete(key);
     notify();
     return next;
   }
@@ -191,6 +193,11 @@ export function replaceModelConfigDraft(
   };
   drafts.set(key, next);
   editedDrafts.delete(key);
+  // The raw edit described the value being replaced. Kept, it would be treated as current again
+  // the moment a later external value happened to format to the same tokens, resurrecting the
+  // old text and its verdict: token equality alone cannot tell an A -> B -> A round trip from
+  // never having changed.
+  extraArgsEditByDraftKey.delete(key);
   notify();
 }
 
@@ -265,6 +272,11 @@ export function readExtraArgsEditForDraft(
   key: string,
 ): ModelConfigExtraArgsEdit | undefined {
   return extraArgsEditByDraftKey.get(key);
+}
+
+/** Retires the raw edit, so a replacement from outside the box is not re-quoted over. */
+export function clearExtraArgsEditForDraft(key: string): boolean {
+  return extraArgsEditByDraftKey.delete(key);
 }
 
 export function setExtraArgsEditForDraft(

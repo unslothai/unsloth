@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clearExtraArgsEditForDraft,
   clearModelConfigDraftEdited,
   isExtraArgsHydratedForDraft,
   isModelConfigDraftEdited,
@@ -241,5 +242,33 @@ test("re-seeding or replacing a draft retires the edited mark", () => {
   markModelConfigDraftEdited(key);
   replaceModelConfigDraft(key, SEED, { remember: true, savedRemember: true });
   assert.equal(isModelConfigDraftEdited(key), false);
+  release();
+});
+
+test("an external replacement retires the raw edit, so an A to B to A round trip cannot resurrect it", () => {
+  const key = modelConfigDraftKey("unsloth/Aba-GGUF", VARIANT);
+  const release = retainModelConfigDraft(key);
+  primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-a");
+  // Noncanonical raw text whose tokens format back to something else, carrying a refusal.
+  setExtraArgsEditForDraft(key, {
+    text: '--chat-template "a b',
+    source: '--chat-template "a b"',
+  });
+  setExtraArgsEditLoadableForDraft(key, false);
+
+  // Hydration replaces llamaExtraArgs from outside the box.
+  replaceModelConfigDraft(key, SEED, { remember: true, savedRemember: true });
+  // Gone, rather than merely out of date: left in place, a later value that happened to format
+  // to '--chat-template "a b"' would make this text current again, refusal and all.
+  assert.equal(readExtraArgsEditForDraft(key), undefined);
+
+  // Same for a re-seed from the resident process.
+  setExtraArgsEditForDraft(key, { text: "--verbose", source: "--verbose" });
+  primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-b");
+  assert.equal(readExtraArgsEditForDraft(key), undefined);
+
+  setExtraArgsEditForDraft(key, { text: "--verbose", source: "--verbose" });
+  assert.equal(clearExtraArgsEditForDraft(key), true);
+  assert.equal(readExtraArgsEditForDraft(key), undefined);
   release();
 });
