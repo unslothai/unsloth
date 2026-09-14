@@ -40,6 +40,19 @@ test("an always-on catalog model sends thinking on even when the chat stored it 
   assert.deepEqual(externalReasoningFields(magistral, false), { thinking: { type: "enabled" } });
 });
 
+test("every Thinking control resolves reasoning for the id the adapter sends, not the router's last pick", () => {
+  const modelArguments = (relative: string): string[] => {
+    const calls = [...readSrc(relative).matchAll(/getExternalReasoningCapabilities\(\s*[^,]+,\s*(?:\/\/[^\n]*\n\s*)?([^,]+),/g)];
+    assert.ok(calls.length > 0, relative);
+    return calls.map((match) => match[1].trim().replace("?.", "."));
+  };
+  assert.deepEqual(modelArguments("features/chat/api/chat-adapter.ts"), ["externalSelection.modelId"]);
+  for (const file of ["features/chat/shared-composer.tsx", "components/assistant-ui/thread.tsx"]) {
+    assert.deepEqual(modelArguments(file), ["externalSelection.modelId"], file);
+  }
+  assert.equal(getExternalReasoningCapabilities("openrouter", "openrouter/free").reasoningStyle, "enable_thinking");
+});
+
 test("a toggleable catalog model still sends the stored choice", () => {
   const qwen = getExternalReasoningCapabilities("qwen", "qwen3.5-plus");
   assert.equal(qwen.reasoningStyle, "enable_thinking");
