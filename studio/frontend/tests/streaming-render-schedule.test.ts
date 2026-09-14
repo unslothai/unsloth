@@ -509,6 +509,47 @@ test("an angle-bracketed destination keeps moving the render key", () => {
   );
 });
 
+// The probe scans a window back from each `]:` rather than the whole reply, so
+// the window has to be wide enough for the widest label: 999 repetitions of an
+// escape plus an astral code point. Sizing it in code points rather than UTF-16
+// units cuts the opening `[` off these and the definition stops being seen,
+// which is the false negative the whole probe exists to avoid. The padding is
+// what forces the window to be the thing under test.
+test("the widest label is still found far into a reply", () => {
+  const padding = "ordinary prose. ".repeat(400);
+  for (const filler of ["z", "\u{1F600}", "\\z", "\\\u{1F600}"]) {
+    const reply = `See [guide][g].\n\n${padding}\n\n[${filler.repeat(999)}]: /url`;
+    assert.equal(
+      markdownRenderScope(reply),
+      "document",
+      `a 999-repetition label of ${JSON.stringify(filler)} was not found`,
+    );
+  }
+});
+
+// A reply is scanned for a definition on every render, and every `[` used to be
+// a start position that ran to the bound before it could fail, so one long line
+// dense with `[` cost about half a second (1072ms on JavaScriptCore).
+//
+// A wall-clock budget rather than a ratio against a plain reply of the same
+// length: most of what is left is marked's own block split, which is genuinely
+// dearer over 100,000 `[` than over 100,000 `x` (0.2ms against 10.6ms here), so
+// a ratio measures marked and not this probe. Measured: 10.6ms with the window
+// scan, 435ms without it, so the budget sits an order of magnitude above the
+// first and well below the second.
+test("a bracket-dense reply does not stall the scan", () => {
+  const reply = `See [guide][g].\n\n${"[".repeat(100_000)}\n\n[g]: /guide`;
+  for (let run = 0; run < 3; run += 1) markdownRenderScope(reply);
+  const samples = [];
+  for (let run = 0; run < 5; run += 1) {
+    const started = performance.now();
+    markdownRenderScope(reply);
+    samples.push(performance.now() - started);
+  }
+  const median = samples.sort((a, b) => a - b)[2];
+  assert.ok(median < 150, `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`);
+});
+
 // Scope decides what is committed, so it cannot follow the reply's line ending.
 // This label is 999 normalised, 1000 raw under CRLF.
 test("the render scope does not depend on the reply's line ending", () => {

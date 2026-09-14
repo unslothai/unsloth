@@ -77,9 +77,32 @@ const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 // it `{1,999}` counts UTF-16 units, so the real bound is 499 emoji).
 // The bound stays although Marked has none: every `[` is a start position, so
 // bound B costs O(n*B) and none costs O(n^2). 999 is CommonMark's limit, so only
-// an out-of-spec label stays mis-lexed. Admitting `\n` is what makes
-// `documentProse` expensive; unslothai/unsloth#10529.
+// an out-of-spec label stays mis-lexed.
 const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
+// Widest a match can be in UTF-16 units: 999 repetitions of at most `\` plus an
+// astral code point, and the opening `[`. Sizing this to code points instead cut
+// the `[` off a 999-emoji label.
+const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
+
+// `hasLinkDefinition` over a whole reply, rather than the regex over a whole
+// reply. Same predicate: the pattern carries no anchor or lookaround, so a match
+// inside a window is a match in the reply, and a match in the reply ends at some
+// `]:` whose window holds it. Verified equal on 607 inputs.
+//
+// The saving is that `]:` is rare while `[` is not, and every `[` is a start
+// position that scans to the bound before it can fail. Median of 5 on one 100k
+// line dense with `[`: 571ms for the plain scan, 7.5ms here, and 0.001ms when
+// the reply holds no `]:` at all. That cost is what unslothai/unsloth#10529 is
+// about, and it is why admitting `\n` to the class above is affordable.
+function hasLinkDefinition(text: string): boolean {
+  for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
+    const start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
+    if (LINK_DEFINITION_RE.test(text.slice(start, end + 2))) {
+      return true;
+    }
+  }
+  return false;
+}
 // A label may sit behind any mix of container markers. A list marker needs
 // whitespace after it or no list opens: `-[label]:` is prose, not a bullet.
 const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
@@ -175,7 +198,7 @@ function blocksOf(markdown: string): readonly string[] {
 // CRLF reply two splits per render.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
-  if (!LINK_REFERENCE_RE.test(normalized) || !LINK_DEFINITION_RE.test(normalized)) {
+  if (!LINK_REFERENCE_RE.test(normalized) || !hasLinkDefinition(normalized)) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -302,7 +325,7 @@ const createRepairParity = (
 // Marked reads a fenced block as code, so those do not count; anything else
 // that merely looks like a definition costs retention, never correctness.
 function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
-  if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
+  if (!FENCED_CODE_BLOCK_RE.test(text) && hasLinkDefinition(text)) {
     parity.linkDefinition = true;
   }
 }
