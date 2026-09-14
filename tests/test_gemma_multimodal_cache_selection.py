@@ -19,6 +19,7 @@ import pytest
 
 from unsloth.models.vision import (
     _BIDIRECTIONAL_MASK_BUILDERS,
+    _MEDIA_TOKEN_TYPES,
     _needs_bidirectional_multimodal_mask,
 )
 
@@ -55,9 +56,15 @@ def causal_vlm(request):
     sys.modules.pop(name, None)
 
 
-@pytest.mark.parametrize("media_kwarg", ["pixel_values", "pixel_values_videos", "input_features"])
+@pytest.mark.parametrize("media_kwarg", ["pixel_values", "pixel_values_videos"])
 def test_media_request_on_gemma_uses_dynamic_cache(gemma_like, media_kwarg):
     assert _needs_bidirectional_multimodal_mask(gemma_like, {media_kwarg: object()})
+
+
+def test_audio_only_keeps_the_static_cache(gemma_like):
+    """get_block_sequence_ids_for_mask blocks token types 1 and 2 only, so audio
+    stays causal and must not lose the compiled path."""
+    assert not _needs_bidirectional_multimodal_mask(gemma_like, {"input_features": object()})
 
 
 def test_text_only_keeps_static_cache(gemma_like):
@@ -297,3 +304,52 @@ def test_dynamic_is_a_cache_implementation_transformers_accepts():
     assert '"dynamic"' in source or "'dynamic'" in source
     static = getattr(generation_utils, "ALL_STATIC_CACHE_IMPLEMENTATIONS", ())
     assert "dynamic" not in static
+
+
+def test_audio_token_type_alone_keeps_the_static_cache(gemma_like):
+    """Audio marks a different token type than the blocked 1 and 2."""
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma4_shaped(module, "vision")
+    audio_only = torch.tensor([[0, 3, 3, 0]])
+    assert not _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": audio_only})
+
+
+def test_image_token_type_beside_audio_is_gated(gemma_like):
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma4_shaped(module, "vision")
+    mixed = torch.tensor([[0, 3, 1, 0]])
+    assert _needs_bidirectional_multimodal_mask(model, {"mm_token_type_ids": mixed})
+
+
+def test_video_token_type_is_gated(gemma_like):
+    module = sys.modules[type(gemma_like).__module__]
+    model = _gemma4_shaped(module, "vision")
+    assert _needs_bidirectional_multimodal_mask(
+        model, {"mm_token_type_ids": torch.tensor([[0, 2, 0]])}
+    )
+
+
+def test_explicit_static_kwarg_is_overridden_alongside_the_config():
+    """Generation kwargs are applied after the config merge, so an explicit
+    cache_implementation would otherwise outlive the config assignment."""
+    cfg = _GenCfg()
+    kwargs = {"generation_config": cfg, "cache_implementation": "static"}
+    _resolve_cache_choice(True, None, kwargs)
+    if kwargs.get("cache_implementation") is not None:
+        kwargs["cache_implementation"] = "dynamic"
+    assert cfg.cache_implementation == "dynamic"
+    assert kwargs["cache_implementation"] == "dynamic"
+
+
+def test_blocked_token_types_match_upstream():
+    """Pin the values upstream actually blocks, so a change there is caught."""
+    import inspect
+
+    modeling = pytest.importorskip("transformers.models.gemma4_unified.modeling_gemma4_unified")
+    builder = getattr(modeling, "get_block_sequence_ids_for_mask", None)
+    if builder is None:
+        pytest.skip("no block mask builder in this transformers version")
+    source = inspect.getsource(builder)
+    for value in _MEDIA_TOKEN_TYPES:
+        assert f"== {value}" in source
+    assert "== 3" not in source  # audio is not blocked

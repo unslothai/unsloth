@@ -588,7 +588,11 @@ except:
     torch_compiler_set_stance = None
 
 
-_MEDIA_GENERATE_KWARGS = ("pixel_values", "pixel_values_videos", "input_features")
+# Image and video only. Audio is not in the overlay: get_block_sequence_ids_for_mask
+# blocks token types 1 and 2, and leaves audio causal.
+_MEDIA_GENERATE_KWARGS = ("pixel_values", "pixel_values_videos")
+# The token type values that form a block, same source.
+_MEDIA_TOKEN_TYPES = (1, 2)
 # Either name marks a bidirectional block overlay: the first exists from
 # transformers 5.10, the second from 5.17. Keep both or the guard goes inert.
 _BIDIRECTIONAL_MASK_BUILDERS = (
@@ -634,7 +638,7 @@ def _has_media_token_types(kwargs):
         if ids is None:
             continue
         try:
-            if bool((ids != 0).any()):
+            if bool(sum((ids == v).any() for v in _MEDIA_TOKEN_TYPES)):
                 return True
         except (AttributeError, TypeError, RuntimeError):
             continue
@@ -938,6 +942,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         kwargs["generation_config"].cache_implementation = (
             "dynamic" if force_dynamic_cache else cache_implementation
         )
+        # Generation kwargs are applied after the config is merged, so an explicit
+        # cache_implementation would otherwise outlive the line above.
+        if force_dynamic_cache and "cache_implementation" in kwargs:
+            kwargs["cache_implementation"] = "dynamic"
         if cache_implementation is not None:
             kwargs["generation_config"].compile_config = _compile_config
     else:
