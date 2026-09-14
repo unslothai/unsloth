@@ -80,6 +80,32 @@ def _studio_home_root(tmp_path_factory):
 _studio_home_counter = itertools.count()
 
 
+@pytest.fixture(scope = "session")
+def _skills_home_root(tmp_path_factory):
+    # One mktemp per session; see _studio_home_root for why a per-test mktemp is quadratic.
+    return tmp_path_factory.mktemp("skills_homes")
+
+
+_skills_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_agent_skills(_skills_home_root, monkeypatch):
+    # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
+    from core.inference import skills as _skills
+
+    home = _skills_home_root / f"h{next(_skills_home_counter)}"
+    home.mkdir()
+    # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.setattr(_skills, "_owner_home", lambda: home)
+    monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
+    try:
+        from routes import inference as _inference_routes
+    except Exception:
+        return
+    monkeypatch.setattr(_inference_routes, "_AGENT_SKILLS_CACHE", {})
+
+
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     """Mechanism: tests/_shared/installer_venv_root.py.
@@ -290,6 +316,25 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_leftover_generation_account(monkeypatch):
+    """Clear the media-generation owner, which is a process global no route ever resets.
+
+    ``routes.video._note_generation_account()`` records who started a generation and
+    nothing writes it back to ``None``, so any test that POSTs a generate leaves the
+    next test's poll looking like a foreign account's job -- the progress route then
+    answers the hidden shape, and an unrelated test dies on ``KeyError: 'active'``
+    somewhere else in the run. Six files already reset this by hand; doing it here
+    covers the rest, and the six keep their explicit version because there it IS the
+    thing under test.
+    """
+    # sys.modules, not an import: a module nothing imported has no global to leak.
+    routes_video = sys.modules.get("routes.video")
+    if routes_video is None:
+        return
+    monkeypatch.setattr(routes_video, "_generation_account", None, raising = False)
 
 
 @pytest.fixture(autouse = True)

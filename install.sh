@@ -597,6 +597,13 @@ _uv_is_bucket_name() {
     case "${1##*-v}" in
         ''|*[!0-9]*) return 1 ;;
     esac
+    # Every CacheBucket in uv 0.12.1 (UV_PINNED_VERSION) plus built-wheels; re-read
+    # uv-cache/src/lib.rs on a pin bump, or a missing kind goes unprobed and uv fails on it.
+    case "${1%-v*}" in
+        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        git|interpreter|osv|python|sdists|simple|wheels) ;;
+        *) return 1 ;;
+    esac
     return 0
 }
 
@@ -657,11 +664,27 @@ _uv_cache_root_is_writable() {
 _uv_cache_is_writable() {
     _uv_cache_root_is_writable "$1" || return 1
     _uv_w_bad=0
+    # Measured, not assumed: default APFS folds, ext4 does not, and an existing `Python-V0`
+    # beside `python-v0` is one entry on the first and two on the second. Root already writable.
+    _uv_w_fold=0
+    _uv_w_probe="$1/.unsloth-case-probe.$$-A"
+    if mkdir "$_uv_w_probe" 2>/dev/null; then
+        [ -d "$1/.unsloth-case-probe.$$-a" ] && _uv_w_fold=1
+        rmdir "$_uv_w_probe" 2>/dev/null || true
+    fi
+    unset _uv_w_probe
     _uv_w_glob=on
     case $- in *f*) _uv_w_glob=off ;; esac
     set +f
     for _uv_w_dir in "$1"/*; do
-        _uv_is_bucket_name "${_uv_w_dir##*/}" || continue
+        _uv_w_name="${_uv_w_dir##*/}"
+        if ! _uv_is_bucket_name "$_uv_w_name"; then
+            # Only the NAME is folded here; file or dangling link is the rejection below.
+            [ "$_uv_w_fold" = 1 ] || continue
+            case "$_uv_w_name" in *[[:upper:]]*) ;; *) continue ;; esac
+            _uv_w_lower=$(printf '%s' "$_uv_w_name" | tr '[:upper:]' '[:lower:]')
+            _uv_is_bucket_name "$_uv_w_lower" || continue
+        fi
         if [ ! -d "$_uv_w_dir" ]; then
             # A file, or a symlink dangling or not, is an existing path to mkdir(2).
             if [ -e "$_uv_w_dir" ] || [ -L "$_uv_w_dir" ]; then
@@ -672,7 +695,7 @@ _uv_cache_is_writable() {
         _uv_cache_root_is_writable "$_uv_w_dir" || _uv_w_bad=1
     done
     if [ "$_uv_w_glob" = off ]; then set -f; fi
-    unset _uv_w_dir _uv_w_glob
+    unset _uv_w_dir _uv_w_glob _uv_w_name _uv_w_lower _uv_w_fold
     if [ "$_uv_w_bad" -ne 0 ]; then
         unset _uv_w_bad
         return 1
@@ -786,7 +809,11 @@ _configure_uv_cache() {
     # CRLF, and a WSL install shares $STUDIO_HOME with the Windows one. The other two readers
     # already defend. Untreated, a CR fails [ -d ] and abandons the warm cache in silence, and
     # a BOM makes the value non-absolute so $PWD gets prepended.
-    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null | tr -d '\r') || _uv_recorded=""
+    # Trailing CR only, like Read-StudioUvCacheMarker's Trim(): `tr -d` ate CRs inside the path.
+    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || _uv_recorded=""
+    _uv_cr=$(printf '\r')
+    _uv_recorded="${_uv_recorded%"$_uv_cr"}"
+    unset _uv_cr
     _uv_bom=$(printf '\357\273\277')
     _uv_recorded="${_uv_recorded#"$_uv_bom"}"
     unset _uv_bom

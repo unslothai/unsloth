@@ -12,6 +12,7 @@
 # Original paper: "Q-GaLore: Quantized GaLore with INT4 Projection and
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
 
+import inspect
 import torch
 from typing import Optional, List
 
@@ -80,19 +81,30 @@ class QGaLoreAdamW8bit(Optimizer2State):
         is_paged: bool = False,
     ):
         _require_bnb()
+        bnb_parameters = inspect.signature(Optimizer2State.__init__).parameters
+        legacy_kwargs = {}
+        for name, value, default in (
+            ("percentile_clipping", percentile_clipping, 100),
+            ("block_wise", block_wise, True),
+        ):
+            if name in bnb_parameters:
+                legacy_kwargs[name] = value
+            elif value != default:
+                raise ValueError(
+                    f"This bitsandbytes version no longer supports {name}={value}; "
+                    f"use {name}={default}."
+                )
         super().__init__(
             "adam",
             params,
-            lr,
-            betas,
-            eps,
-            weight_decay,
-            8,  # optim_bits
-            None,  # args
-            min_8bit_size,
-            percentile_clipping,
-            block_wise,
+            lr = lr,
+            betas = betas,
+            eps = eps,
+            weight_decay = weight_decay,
+            optim_bits = 8,
+            min_8bit_size = min_8bit_size,
             is_paged = is_paged,
+            **legacy_kwargs,
         )
 
     @torch.no_grad()
