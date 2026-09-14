@@ -3109,10 +3109,17 @@ async def _aiter_llama_stream_items(
             if not item_task.done():
                 item_task.cancel()
             item_task.add_done_callback(_discard_task_outcome)
+            stop_cancelled = False
             try:
                 await asyncio.wait({item_task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
             except asyncio.CancelledError:
-                pass
+                # Recorded, not swallowed: _aclose_stream_resources reads a
+                # cancellation out of this aclose() to re-raise once every
+                # resource is shut, and absorbing it here would return the pump
+                # normally and let a cancelled stream run on to emit a finish.
+                stop_cancelled = True
+            if stop_cancelled:
+                raise asyncio.CancelledError()
 
 
 from models.inference import (

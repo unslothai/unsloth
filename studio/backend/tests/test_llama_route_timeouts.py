@@ -217,6 +217,55 @@ def test_latched_read_ceiling_covers_the_stall_guard():
     asyncio.run(_run())
 
 
+def test_closing_the_pump_under_cancellation_re_raises_it():
+    """The pump must not absorb a cancellation aimed at the request task.
+
+    `_aclose_stream_resources` closes the pump, the iterator, the response and
+    the client, records a CancelledError from any of them, and re-raises it only
+    once everything is shut. If the pump's own teardown swallows that
+    cancellation instead, `aclose()` returns normally, the recording never
+    happens, and the caller carries on down its completion path -- the Anthropic
+    surface would emit `emitter.finish()` for a stream the client cancelled.
+    """
+    async def _run():
+        class _Blocks:
+            async def __anext__(self):
+                await asyncio.Future()
+
+        agen = inf_mod._aiter_llama_stream_items(
+            _Blocks(),
+            first_token_deadline = time.monotonic() + 30,
+            keepalive_interval_s = 0.01,
+        )
+        # One keepalive, so a read task is in flight when the close arrives.
+        assert await agen.__anext__() is inf_mod._LLAMA_STREAM_KEEPALIVE
+
+        # The bounded stop is where an ambient cancellation lands, since awaiting
+        # a cancelled task re-raises immediately. Forcing it is what separates
+        # "recorded and re-raised" from "swallowed"; the pump's own loop is past
+        # its last wait by now, so only the teardown sees this.
+        real_wait = asyncio.wait
+
+        async def _cancelled_wait(*args, **kwargs):
+            raise asyncio.CancelledError()
+
+        inf_mod.asyncio.wait = _cancelled_wait
+        try:
+            await agen.aclose()
+            outcome = "swallowed"
+        except asyncio.CancelledError:
+            outcome = "re-raised"
+        finally:
+            inf_mod.asyncio.wait = real_wait
+
+        assert outcome == "re-raised", (
+            "the pump absorbed a cancellation that _aclose_stream_resources "
+            "needs to see, so a cancelled stream would report a clean close"
+        )
+
+    asyncio.run(_run())
+
+
 def test_a_callable_bound_latches_no_socket_ceiling():
     """A callable bound can RISE later, so no first-read value is safe.
 
