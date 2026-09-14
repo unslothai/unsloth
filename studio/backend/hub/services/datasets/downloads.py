@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_hf_token, account_is_retired, managed_account
+from utils.account_context import current_account
 import asyncio
 import threading
 import time
@@ -22,6 +24,7 @@ from hub.schemas.downloads import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
+from hub.services.models import account_access
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
@@ -48,10 +51,63 @@ _DATASET_SIZE_TIMEOUT_SECONDS = 5.0
 _dataset_size_cache_lock = threading.Lock()
 
 _registry = download_registry.get_datasets_registry()
+_account_registries = {}
+_account_registry_lock = threading.Lock()
+# The HF cache is shared across per-account registries, so a reservation must reach all of them.
+_deleting: set[str] = set()
+
+
+def _account_registry():
+    if not managed_account():
+        return _registry
+    with _account_registry_lock:
+        account_id = current_account().account_id
+        registry = _account_registries.get(account_id)
+        if registry is None:
+            registry = download_registry.DownloadRegistry()
+            for reserved in _deleting:
+                registry.begin_delete(reserved)
+            _account_registries[account_id] = registry
+        return registry
+
+
+def begin_delete(repo_id: str) -> bool:
+    """Reserve *repo_id* until :func:`end_delete`: deleting under a live download strands blobs."""
+    key = download_registry.normalize_repo_key(repo_id)
+    with _account_registry_lock:
+        reserved = []
+        for registry in (_registry, *_account_registries.values()):
+            if not registry.begin_delete(repo_id):
+                for done in reserved:
+                    done.end_delete(repo_id)
+                return False
+            reserved.append(registry)
+        _deleting.add(key)
+        return True
+
+
+def end_delete(repo_id: str) -> None:
+    key = download_registry.normalize_repo_key(repo_id)
+    with _account_registry_lock:
+        _deleting.discard(key)
+        for registry in (_registry, *_account_registries.values()):
+            registry.end_delete(repo_id)
 
 
 def _download_job_key(repo_id: str) -> str:
     return download_registry.normalize_repo_key(repo_id)
+
+
+def _claim_dataset_download(registry, key: str, transport: str, **kwargs) -> tuple[bool, str]:
+    """One dataset repo at a time across accounts: a second worker purges the first one's partials."""
+    repo_id = kwargs.get("repo_id") or key
+    with _account_registry_lock:
+        for other in (_registry, *_account_registries.values()):
+            if other is registry:
+                continue
+            for ref in other.active_job_refs(repo_id):
+                return False, ref.state
+        return registry.claim(key, transport, **kwargs)
 
 
 def get_dataset_snapshot_metadata_cached(
@@ -62,6 +118,7 @@ def get_dataset_snapshot_metadata_cached(
     The dataset worker downloads every sibling, so the denominator is the full
     sibling-size sum and the hashes cover every file. Consumed by the shared
     ``snapshot_progress`` accounting."""
+    hf_token = account_hf_token(hf_token)
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
     cache_key = (repo_id, token_fp)
     with _dataset_size_cache_lock:
@@ -121,20 +178,27 @@ async def get_dataset_download_progress_response(
     Scans the ``datasets--owner--name`` cache dir and shares the blob accounting
     with the model path via ``snapshot_progress``. Returns ``cache_path`` for the
     UI."""
+    hf_token = account_hf_token(hf_token)
+    registry = _account_registry()
+    if managed_account():
+        # The dataset cache is shared, so reading it needs the same grant as the model path.
+        await asyncio.to_thread(
+            account_access.require_download_progress_access, registry, repo_id, "dataset"
+        )
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "dataset",
         repo_id = repo_id,
         job_key = _download_job_key(repo_id),
         expected_bytes = expected_bytes,
         hf_token = hf_token,
-        registry = _registry,
+        registry = registry,
         metadata_resolver = get_dataset_snapshot_metadata_cached,
     )
 
 
 def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownloadJobStatus:
     state, error, generation = download_lifecycle.idle_status(
-        _registry,
+        _account_registry(),
         key,
         repo_type = "dataset",
         repo_id = repo_id,
@@ -154,12 +218,19 @@ async def download_dataset_response(
     ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent no token, for
     repos named over the API rather than chosen here.
     """
+    if account_is_retired():
+        raise HTTPException(status_code = 403, detail = "Account is retired")
+    hf_token = account_hf_token(hf_token)
+    allow_ambient_token = allow_ambient_token and not managed_account()
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    if managed_account():
+        # Before the claim: a conflict reply would otherwise reveal another account's job.
+        await asyncio.to_thread(account_access.authorize_download, repo_id, "dataset", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
@@ -178,7 +249,9 @@ async def download_dataset_response(
     cache_paths = get_hf_cache_paths()
     cache_env = cache_paths.child_env({})
 
-    claimed, claim_state = _registry.claim(
+    registry = _account_registry()
+    claimed, claim_state = _claim_dataset_download(
+        registry,
         key,
         transport,
         repo_type = "dataset",
@@ -186,11 +259,11 @@ async def download_dataset_response(
         hub_cache = str(cache_paths.hub_cache),
         xet_cache = str(cache_paths.xet_cache),
     )
-    generation = _registry.current_generation(key)
+    generation = registry.current_generation(key)
     if not claimed:
         # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
         # repo attached to anything.
-        adoptable = _registry.adoptable(key)
+        adoptable = registry.adoptable(key)
         return {
             "repo_id": repo_id,
             "state": claim_state,
@@ -199,11 +272,14 @@ async def download_dataset_response(
             "generation": generation,
             # An adopted job keeps the transport it started on, so report it rather than let the caller assume
             # the one it asked for.
-            "transport": _registry.job_transport(key),
+            "transport": registry.job_transport(key),
             # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
             # partial.
-            "cancel_transport": _registry.job_cancel_transport(key),
+            "cancel_transport": registry.job_cancel_transport(key),
         }
+    # Record ownership with the claim, not at launch: retirement scans this registry, and an
+    # unattributed job makes its cancel raise "Download not found" and abort the deletion.
+    download_lifecycle.record_download_account(registry, key)
     download_manifest.clear_cancel_marker(
         "dataset",
         repo_id,
@@ -212,7 +288,7 @@ async def download_dataset_response(
     )
 
     state = download_lifecycle.launch_worker(
-        _registry,
+        registry,
         key,
         spawn = lambda: download_lifecycle.spawn_worker(
             ["--repo-id", repo_id, "--dataset"],
@@ -255,7 +331,7 @@ async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -
     key = _download_job_key(repo_id)
 
     state = download_lifecycle.cancel_worker(
-        _registry,
+        _account_registry(),
         key,
         generation = body.generation,
         label = f"dataset {repo_id}",
@@ -284,7 +360,7 @@ async def get_active_dataset_downloads_response(repo_id: str = "") -> ActiveDown
     )
     return ActiveDownloadsResponse(
         downloads = download_lifecycle.active_download_refs(
-            _registry,
+            _account_registry(),
             canonical_repo_id,
             with_variant = False,
         )
@@ -298,6 +374,13 @@ async def get_dataset_transport_status_response(repo_id: str) -> dict:
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
+    if managed_account():
+        await asyncio.to_thread(
+            account_access.require_download_progress_access,
+            _account_registry(),
+            repo_id,
+            "dataset",
+        )
     return {
         "has_partial": has_active_incomplete_blobs("dataset", repo_id),
         "last_transport": download_registry.read_active_transport_marker("dataset", repo_id),
@@ -306,3 +389,29 @@ async def get_dataset_transport_status_response(repo_id: str) -> dict:
 
 
 registry = _registry
+
+
+def retire_account_downloads() -> None:
+    registry = (
+        _registry
+        if current_account().is_owner
+        else _account_registries.get(current_account().account_id)
+    )
+    if registry is None:
+        return
+    stragglers = []
+    for job in registry.active_job_refs():
+        download_lifecycle.cancel_worker(
+            registry, job.key, generation = job.generation, label = "dataset", logger = logger
+        )
+        proc = registry.get_process(job.key)
+        if proc is None:
+            continue
+        try:
+            proc.wait(timeout = 10)
+        except Exception:
+            stragglers.append(job.key)
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account dataset downloads have not stopped: {sorted(stragglers)}"
+        )

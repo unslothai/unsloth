@@ -6369,6 +6369,19 @@ exit 0
             $script:TorchOverridesFile = $null
             throw
         }
+        # uv splits --overrides on spaces (#10722); the 8.3 name keeps relative includes resolving.
+        if ($f.Contains(" ")) {
+            $short = $null
+            try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($f).ShortPath } catch { }
+            if (-not $short -or $short.Contains(" ")) {
+                # No short name: skip the freeze rather than fail.
+                substep "[WARN] the torch overrides path has a space and no 8.3 short name;" "Yellow"
+                substep "installing unsloth without freezing the installed PyTorch." "Yellow"
+                Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+                return $null
+            }
+            $f = $short
+        }
         return $f
     }
 
