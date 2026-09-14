@@ -672,6 +672,7 @@ MCP_MODEL_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
 _WINDOWS_BATCH_UNQUOTED_UNSAFE_ARGUMENT_CHARS = frozenset("&|<>^()")
 
+
 def mcp_tool_model_visible(tool: dict) -> bool:
     """Whether an MCP tool is available to the model rather than only to an MCP App."""
     for key in ("meta", "_meta"):
