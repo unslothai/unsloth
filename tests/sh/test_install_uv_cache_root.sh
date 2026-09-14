@@ -597,10 +597,11 @@ ISOLATED
         chmod 0755 "$STRAY/notes from someone" 2>/dev/null || true
     fi
 
-    # uv opens its own control files on every command, so an unreadable one aborts cache init
-    # ("Failed to initialize cache ... Permission denied", uv 0.10.7, exit 2) before any package
-    # is touched. Package bytes are different: with those unreadable uv still installs anything
-    # not cached there, so they must NOT disqualify the cache.
+    # uv opens its control files FOR WRITING on every command, so one that is merely readable
+    # (0444 from another account) aborts cache init just as an unreadable one does: "Failed to
+    # initialize cache ... Permission denied", uv 0.10.7, exit 2, before any package is touched.
+    # Package bytes are different: with those unreadable uv still installs anything not cached
+    # there, so they must NOT disqualify the cache.
     CTRL="$CASE/unreadable control/uv"
     mkdir -p "$CTRL/archive-v0/pkg"
     : > "$CTRL/archive-v0/pkg/payload.whl"
@@ -608,6 +609,15 @@ ISOLATED
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$CTRL/CACHEDIR.TAG" 2>/dev/null \
        && [ ! -r "$CTRL/CACHEDIR.TAG" ]; then
         run_case "$shell" "an unreadable uv control file disqualifies the cache" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$CTRL" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $CTRL holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 644 "$CTRL/CACHEDIR.TAG" 2>/dev/null || true
+    fi
+    # ...and a read-only control file is rejected for the same reason, since uv writes to it.
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$CTRL/CACHEDIR.TAG" 2>/dev/null \
+       && [ ! -w "$CTRL/CACHEDIR.TAG" ]; then
+        run_case "$shell" "a read-only uv control file disqualifies the cache" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$CTRL" "$STUDIO_CACHE" studio \
             "using new Studio-owned cache ($STUDIO_CACHE); $CTRL holds packages but is not writable, so cached packages may download again" \
             "$STUDIO_CACHE"

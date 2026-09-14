@@ -3329,12 +3329,12 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
                 pass
         except OSError:
             return False
-    # uv opens its own control files on every command, so an unreadable one aborts cache init.
-    # Only these, not package files, which uv tolerates.
+    # uv opens its control files FOR WRITING on every command, so a merely readable one aborts
+    # cache init. Only these, not package files, which uv tolerates.
     for target in probes:
         for name in ("CACHEDIR.TAG", ".gitignore", ".git", ".lock"):
             control = target / name
-            if control.is_file() and not os.access(control, os.R_OK):
+            if control.is_file() and not os.access(control, os.R_OK | os.W_OK):
                 return False
     return True
 
