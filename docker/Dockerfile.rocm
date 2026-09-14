@@ -2,33 +2,26 @@
 # ---------------------------------------------------------------------------
 # Unsloth for AMD GPUs (ROCm).
 #
-# Default build: ROCm 7.2.4 base + the pytorch.org rocm7.2 wheels. That index
-# carries kernels for RDNA2 (gfx1030), RDNA3 (gfx1100-1102), RDNA4
-# (gfx1200/1201) and CDNA (gfx908, gfx90a, gfx942); gfx906 (Radeon VII, MI50)
-# was dropped from ROCm after 6.3, so a gfx906 host needs the last base that
-# carries it, and no bitsandbytes (no prebuilt gfx906 kernels; install.sh
-# skips it for gfx906 as well):
+# Default build: ROCm 7.2.4 base + the pytorch.org rocm7.2 wheels, which carry
+# RDNA2 (gfx1030), RDNA3 (gfx1100-1102), RDNA4 (gfx1200/1201) and CDNA
+# (gfx908/90a/942). gfx906 (Radeon VII, MI50) ended with ROCm 6.3 and has no
+# prebuilt bitsandbytes kernels, so it gets the 6.3 base without bitsandbytes:
 #   ROCM_GFX=gfx906 ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3 \
 #     bash docker/build.sh --rocm
-#
-# Strix APUs (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan) and
-# RDNA4 get AMD's per-arch wheels instead, which carry fixes the generic index
-# below rocm7.13 lacks (the _grouped_mm segfault on gfx1151 among them):
+# Strix APUs (gfx1150/1151/1152) and RDNA4 get AMD's per-arch wheels, which fix
+# what the generic index below rocm7.13 lacks (the _grouped_mm segfault on
+# gfx1151 among them); the index becomes repo.amd.com/rocm/whl/<family>/ and
+# torch is pinned to 2.11, as install.sh routes them on a bare host:
 #   ROCM_GFX=gfx1151 bash docker/build.sh --rocm      # or --gfx gfx1151
-# That switches the index to https://repo.amd.com/rocm/whl/<family>/ and pins
-# torch 2.11, the same routing install.sh applies on a bare host.
 #
-# Why single-stage (unlike the CUDA Dockerfile): ROCm publishes no runtime-only
-# base image, so a builder/runtime split saves nothing here.
-#
-# Build host: Docker with buildkit, no GPU needed, amd64 only (no ROCm wheels
-# for arm64 on either index).
+# Single-stage: ROCm publishes no runtime-only base, so a split saves nothing.
+# Build host: Docker with buildkit, no GPU, amd64 only (no arm64 ROCm wheels).
 #
 # Build:
 #   bash docker/build.sh --rocm
-# build.sh freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to commits first; a bare
-# `docker build` with the default "main" keeps the cached git-install layer
-# after upstream moves, so pass resolved shas if you call docker directly:
+# build.sh freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to commits; a bare `docker build`
+# with the default "main" reuses the cached git-install layer after upstream
+# moves, so pass resolved shas when calling docker directly:
 #   docker build -f docker/Dockerfile.rocm --build-arg UNSLOTH_REF=<sha> \
 #     --build-arg UNSLOTH_ZOO_REF=<sha> -t unsloth-rocm:latest docker/
 # Run:
@@ -98,19 +91,15 @@ RUN set -eu; \
         "$IDX" "$SPEC" "${ROCM_GFX}" "${ROCM_VERSION}" > /etc/unsloth-rocm-build; \
     cat /etc/unsloth-rocm-build
 
-# The whole Python stack in ONE layer, resolved once. Two things go wrong
-# with the obvious two-step (torch from the ROCm index, then the rest):
-#   * unsloth-zoo bounds torch (<2.13 at the time of writing), so the second
-#     step swaps the 14 GB torch the first step installed; the discarded one
-#     stays in the image as a dead layer (measured: 70 GB image, 16 GB live).
-#   * with pypi as a fallback under unsafe-best-match, uv takes the highest
-#     version across both indexes. Same base version: the +rocm local build
-#     wins. But whenever pypi's torch is newer than the ROCm index's, the "best
-#     match" is pypi's CUDA build, which drags in nvidia-* wheels.
-# So: resolve the stack, read the torch version it settled on, ask the ROCm
-# index alone for its torch family at that version (or the newest below it),
-# resolve the stack again under those constraints, and install the lock. The
-# build-time check below still asserts torch.version.hip on the result.
+# The whole Python stack in ONE layer, resolved once. The obvious two-step
+# (torch from the ROCm index, then the rest) fails twice: unsloth-zoo bounds
+# torch (<2.13 now), so the second step swaps the 14 GB torch and the old one
+# stays as a dead layer (measured: 70 GB image, 16 GB live); and under
+# unsafe-best-match uv takes the highest version across indexes, so a newer
+# pypi torch wins as a CUDA build and drags in nvidia-* wheels.
+# So: resolve the stack, read its torch version, ask the ROCm index alone for
+# the torch family at or below it, resolve again under those constraints, and
+# install the lock. The build check below asserts torch.version.hip anyway.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -eu; . /etc/unsloth-rocm-build; \
     UV="${VENV}/bin/uv"; PY="${VENV}/bin/python"; \
@@ -137,12 +126,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     cp /tmp/stack.lock ${VENV}/stack.lock.txt; rm -f /tmp/stack.in /tmp/stack.lock /tmp/family.in /tmp/family.lock /tmp/family.txt
 
 # Repair the triton tree. unsloth-zoo and cut-cross-entropy declare a bare
-# `triton` on Linux, which resolves to pypi's NVIDIA-targeted wheel; the ROCm
-# torch pins its own build (`triton-rocm` on the pytorch.org rocmX.Y indexes,
-# a `triton` with a +rocm local version on repo.amd.com). Every one of them
-# unpacks into the same site-packages/triton/, so the layer above leaves a
-# spliced tree. Take out whatever triton-named dists are present, then put
-# torch's own pin back from the index it came from.
+# `triton` (pypi's NVIDIA wheel) while the ROCm torch pins its own build
+# (`triton-rocm` on pytorch.org, `triton` +rocm on repo.amd.com); both unpack
+# into site-packages/triton/, so the layer above leaves a spliced tree. Remove
+# every triton-named dist, then reinstall torch's pin from its own index.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -eu; . /etc/unsloth-rocm-build; \
     PIN="$(${VENV}/bin/python -c "import re;from importlib.metadata import requires;print(next(re.split(r'[;]', r)[0].strip() for r in requires('torch') if re.match(r'(pytorch-)?triton', r)))")"; \
@@ -154,14 +141,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
         --index-url "${TORCH_INDEX_URL}" --reinstall "${PIN}"
 
-# bitsandbytes via pip (NOT uv) from the pre-release wheel that carries the ROCm
-# 4-bit GEMV fix (bitsandbytes PR #1887): the wheel's filename version
-# (1.33.7rc0) does not match its metadata version, and uv refuses that mismatch.
-# The fallback is the first PyPI release with the fix; 0.49.x and below produce
-# NaNs at decode shape on every AMD GPU, so it is never installed here.
-# Same URL and fallback as install.sh's _install_bnb_rocm(). No prebuilt wheel
-# carries gfx906 kernels, so a gfx906 build ships without bitsandbytes (as
-# install.sh does) rather than with one that fails on the first 4-bit op.
+# bitsandbytes via pip (uv refuses the pre-release wheel's filename/metadata
+# version mismatch) from the build with the ROCm 4-bit GEMV fix (bitsandbytes
+# PR #1887); the fallback is the first PyPI release with it, since 0.49.x and
+# below produce NaNs at decode shape on every AMD GPU. Same URL and fallback
+# as install.sh's _install_bnb_rocm(). No wheel carries gfx906 kernels, so a
+# gfx906 build ships without bitsandbytes (as install.sh does).
 RUN if grep -q '^ROCM_GFX=gfx906$' /etc/unsloth-rocm-build; then \
         echo "gfx906: no prebuilt bitsandbytes kernels; removing bitsandbytes from the stack"; \
         ${VENV}/bin/python -m pip uninstall -y bitsandbytes || true; \
@@ -224,9 +209,8 @@ present = sorted(
     if re.match(r"(pytorch-)?triton", d.metadata["Name"] or "")
 )
 assert present == [pin_name], f"FAIL: triton dists {present}, torch pins {pin_name}"
-# Base versions: AMD's per-arch triton is 3.6.0+rocm7.13.0 by metadata and reports
-# triton.__version__ 3.6.0 (measured on the gfx1151 build), so the local tag is not
-# part of the comparison. A pypi triton over a ROCm pin still differs in the base.
+# Base versions only: AMD's per-arch triton is 3.6.0+rocm7.13.0 by metadata but
+# reports 3.6.0 (measured on gfx1151); a pypi triton still differs in the base.
 assert version(pin_name).split("+")[0] == triton.__version__.split("+")[0], (
     f"FAIL: {pin_name} {version(pin_name)} by metadata but triton.__version__ is {triton.__version__}"
 )

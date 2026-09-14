@@ -45,9 +45,8 @@ UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
 if [[ $ROCM -eq 1 ]]; then
     IMAGE_NAME="${IMAGE_NAME:-unsloth-rocm}"
-    # 7.2 is the floor, not a preference: rocm6.2 tops out at torch 2.5.1 and
-    # rocm6.4 at 2.9.1, both far below what current unsloth-zoo / transformers
-    # want, and RDNA4 (gfx1200/1201) has no kernels before 7.x either.
+    # 7.2 is the floor: rocm6.4 tops out at torch 2.9.1, below what unsloth-zoo
+    # wants, and RDNA4 (gfx1200/1201) has no kernels before 7.x.
     ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
     # the index follows the base unless named (7.2.4 -> rocm7.2)
     TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm${ROCM_VERSION%.*}}"

@@ -70,16 +70,14 @@ amd_device_flags() {
     command -v getent >/dev/null 2>&1 || return 0
     local _grp _gid
     for _grp in video render; do
-        # getent exits nonzero when the name is not in NSS, and under pipefail
-        # that would take the assignment down with set -e. Minimal hosts really
-        # do ship without a render group.
+        # getent exits nonzero for an unknown group (minimal hosts have no
+        # render group), which under pipefail + set -e would kill the assignment.
         _gid="$(getent group "$_grp" | cut -d: -f3)" || _gid=""
         [[ -n "$_gid" ]] && printf '%s\n' --group-add "$_gid"
     done
     return 0
 }
-# Into GPU_FLAG, one flag per line. A read loop rather than mapfile: this runs on
-# the host, and macOS ships bash 3.2, which has no mapfile.
+# Into GPU_FLAG, one flag per line, with a read loop: macOS ships bash 3.2.
 collect_amd_device_flags() {
     local _flag
     GPU_FLAG=()

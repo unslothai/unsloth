@@ -27,10 +27,9 @@ if [[ -r "$BUILD_INFO" ]]; then
     IMAGE_ROCM="$(sed -n 's/^ROCM_VERSION=//p' "$BUILD_INFO")"
     IMAGE_GFX="$(sed -n 's/^ROCM_GFX=//p' "$BUILD_INFO")"
 fi
-# A per-arch image carries native kernels for its gfx, so a host's leftover
-# HSA_OVERRIDE_GFX_VERSION (the generic-wheel workaround for Strix/RDNA4) would
-# only hide them: ROCr would present the device as the override's arch, which
-# this image has no kernels for. install.sh clears it the same way.
+# A per-arch image has native kernels for its gfx; a leftover
+# HSA_OVERRIDE_GFX_VERSION (the generic-wheel workaround) would make ROCr present
+# an arch this image has no kernels for. install.sh clears it the same way.
 case "$IMAGE_GFX" in
     gfx1150|gfx1151|gfx1152|gfx1200|gfx1201)
         if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
@@ -85,9 +84,8 @@ MSG
 fi
 
 # --- Check 2: what rocm-smi sees (advisory) --------------------------------
-# rocm-smi enumerates through sysfs and does not list every APU (measured on a
-# gfx1151 Strix Halo runner: no GPU[..] line inside the container), so its
-# answer cannot be the gate; check 3 asks torch itself.
+# rocm-smi does not list every APU (measured on gfx1151: no GPU[..] line inside
+# the container), so it cannot be the gate; check 3 asks torch itself.
 if ! command -v rocm-smi >/dev/null 2>&1; then
     warn "rocm-smi not found inside the container; skipping its listing."
 elif ! rocm-smi --showid 2>/dev/null | grep -q 'GPU\['; then
@@ -100,9 +98,8 @@ else
 fi
 
 # --- Check 3: a HIP torch that can see the device ---------------------------
-# ROCm maps the CUDA Python API, so torch.cuda.is_available() is the runtime
-# test; torch.version.hip first, so a CUDA or CPU torch that crept in is named
-# as such rather than blamed on the host driver.
+# ROCm maps the CUDA Python API, so torch.cuda.is_available() is the test;
+# torch.version.hip first, so a CUDA or CPU torch is named, not the host driver.
 IMAGE_ROCM="$IMAGE_ROCM" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -135,9 +132,8 @@ sys.exit(1)
 PY
 
 # --- Check 4: the card's gfx arch against this image's wheels ---------------
-# PyTorch ROCm surfaces the gfx code in gcnArchName (e.g. "gfx1100:sramecc+").
-# Not a gate (ROCm can often run an unlisted arch, and HSA_OVERRIDE_GFX_VERSION
-# exists for the rest), but the one place the user is told which build to use.
+# gcnArchName carries the gfx code (e.g. "gfx1100:sramecc+"). Not a gate (ROCm
+# often runs unlisted arches), but where the user learns which build to use.
 IMAGE_ROCM="$IMAGE_ROCM" IMAGE_GFX="$IMAGE_GFX" python - >&2 <<'PY' || exit 1
 import os
 import sys
@@ -227,11 +223,10 @@ for i in range(torch.cuda.device_count()):
         continue
     fam = FAMILY.get(arch)
     if arch == "gfx1033":
-        # Van Gogh (Steam Deck): ROCm wheels install and forward math looks fine,
-        # but training diverges to NaN and fails gradcheck (studio/ROCM_RDNA2_APU.md).
-        # install.sh routes this arch to CPU torch for the same reason; an image
-        # whose torch is HIP-only can only refuse. Spoofing it as gfx1030 would hide
-        # the silicon from this check, not fix the arithmetic.
+        # Van Gogh (Steam Deck): forward math looks fine but training diverges to
+        # NaN and fails gradcheck (studio/ROCM_RDNA2_APU.md); install.sh routes it
+        # to CPU torch, a HIP-only image can only refuse. Spoofing gfx1030 hides
+        # the silicon from this check, not the arithmetic.
         print(f"ERROR: {arch} (Van Gogh, Steam Deck) computes incorrect results under ROCm:")
         print("       training diverges to NaN even though forward passes look valid, so this")
         print("       image refuses to train on it. Use the CPU image path (unsloth/unsloth")
