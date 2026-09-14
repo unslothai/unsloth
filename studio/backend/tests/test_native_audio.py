@@ -74,6 +74,20 @@ from core.inference.native_audio import (
     native_audio_type_from_local_path,
 )
 
+# Bind the dependency the stubs exist for while they still stand, then drop them. Left in
+# place they outlive this module: every file collected after it on the same xdist worker sees
+# "unsloth" already in sys.modules, so its own _stub_if_missing returns before recording
+# ownership and cannot clean up what it did not create. The cost is not hypothetical --
+# utils.hardware.hardware._shared_policy branches on `"unsloth" in sys.modules`, and off a
+# spec-less non-package stub the inner import raises and it returns None, never reaching the
+# find_spec disk fallback below it that loads the real dataset_num_proc.py without importing
+# the package. Same reason and same shape as test_trainer_stdout_quiet.py. A real install
+# stubs nothing, so this is a no-op there.
+import core.inference.inference  # noqa: F401,E402 - imported to bind it under the stubs
+
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
 
 def _backend(audio_type: str, **entry):
     backend = NativeAudioBackend.__new__(NativeAudioBackend)
