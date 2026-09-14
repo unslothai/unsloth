@@ -646,6 +646,25 @@ def test_no_reprompt_on_crlf_complete_python_game():
 
 # ── ReDoS guards ───────────────────────────────────────────────────
 
+# What these guards are looking for is catastrophic backtracking, which costs seconds or
+# minutes, not a few extra milliseconds. A single wall-clock sample cannot tell a regressed
+# quantifier from a shared runner descheduling the process mid-match: the tilde case below
+# measures about 11ms and has been seen at 60.9ms on CI for that reason alone. Take the
+# fastest of several runs, which drops preemption noise while leaving a real blow-up
+# untouched, since every repeat pays it.
+_REDOS_BUDGET_MS = 50
+
+
+def _guard_ms(payload, repeats = 5):
+    best = None
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        _has_answer_artifact(payload)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if best is None or elapsed_ms < best: best = elapsed_ms
+    return best
+
+
 
 def test_no_backtrack_on_crlf_spam():
     """10K of `\\r\\n` repeats must complete fast.
@@ -655,10 +674,8 @@ def test_no_backtrack_on_crlf_spam():
     10 KB). The current `[ \\t]*` indent restriction plus length-bounded
     `[\\s\\S]{...}?` runs keep every alternative linear."""
     payload = "\r\n" * 5000
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
 
 
 def test_no_backtrack_on_open_html_spam():
@@ -666,10 +683,8 @@ def test_no_backtrack_on_open_html_spam():
     quickly. Bounded `[\\s\\S]{0,4000}?` between the open and close caps
     the scan per occurrence."""
     payload = "<html " * 200  # ~1200 chars, under _REPROMPT_MAX_CHARS
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on <html spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on <html spam"
 
 
 def test_no_backtrack_on_doctype_html_alternation_worst_case():
@@ -680,19 +695,15 @@ def test_no_backtrack_on_doctype_html_alternation_worst_case():
     generous budget so future quantifier changes that drop the inner
     ``{0,4000}`` bound fail loudly."""
     payload = ("<!doctype html><html foo " * 60)[:1999]
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
 
 
 def test_no_backtrack_on_tilde_fence_spam():
     """Open ``~~~`` fences without close must terminate quickly."""
     payload = "~~~a\n" * 400  # ~2000 chars, near _REPROMPT_MAX_CHARS
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
 
 
 # ── Closing-fence-must-end-line edge cases ────────────────────────
