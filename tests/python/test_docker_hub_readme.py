@@ -188,4 +188,8 @@ def test_the_studio_image_does_not_ship_the_uv_download_cache():
     """install.sh keeps its uv cache under the Studio home, which the /root/.cache
     cleanup never reached: ~9 GB baked into :latest, 5 GB of it referenced by nothing."""
     body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding = "utf-8")
-    assert '"${UNSLOTH_STUDIO_HOME}/cache/uv"' in body
+    # ${UV_CACHE_DIR:-...}: an image that points uv elsewhere (the code/data split does)
+    # must drop that cache, not the default path
+    assert "rm -rf" in body
+    cleanup = body[body.index("rm -rf") :]
+    assert '"${UV_CACHE_DIR:-${UNSLOTH_STUDIO_HOME}/cache/uv}"' in cleanup
