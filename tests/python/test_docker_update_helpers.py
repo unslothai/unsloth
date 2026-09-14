@@ -111,6 +111,9 @@ def _studio_env(
         f'    : > "{site}/studio/backend/main.py"\n'
         f'    mkdir -p "{site}/studio/frontend/dist"; echo ok > "{site}/studio/frontend/dist/index.html" ;;\n'
         "  esac\n"
+        # STUB_PIP_INSTALL_EXIT fails the update's own install and lets the restore's -r
+        # installs through; STUB_PIP_EXIT fails every pip call, the restore included
+        '  case " $* " in *" -r "*) ;; *) [ -n "${STUB_PIP_INSTALL_EXIT:-}" ] && exit "$STUB_PIP_INSTALL_EXIT" ;; esac\n'
         '  exit "${STUB_PIP_EXIT:-0}"\n'
         "fi\n"
         f'PYTHONPATH="{site}" exec "{shutil.which("python3")}" "$@"\n',
@@ -513,7 +516,7 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
 
 def test_studio_update_puts_the_install_back_when_pip_itself_fails(tmp_path: Path):
     env = _studio_env(tmp_path)
-    env["STUB_PIP_EXIT"] = "1"
+    env["STUB_PIP_INSTALL_EXIT"] = "1"
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     assert res.returncode != 0
@@ -675,6 +678,42 @@ def test_studio_update_with_deps_stops_when_the_dependency_snapshot_fails(tmp_pa
     assert res.returncode != 0
     assert "pip freeze failed" in res.stderr and "nothing was changed" in res.stderr, res.stderr
     assert "install" not in _calls(env), _calls(env)
+
+
+def test_studio_update_finishes_the_package_restore_a_killed_run_left(tmp_path: Path):
+    """SIGKILL after pip had replaced the packages but before the commit: the record
+    kept beside the tree says what to put back, and the next run does that before it
+    records anything as the previous install."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n# absent: foo\n")
+    (home / ".src-update.freeze").write_text("transformers==3.9.0\n")
+    res = _run(STUDIO_UPDATE, [], env)
+    calls = _calls(env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "putting the previous packages back first" in res.stdout, res.stdout
+    reqs = [l for l in calls.splitlines() if l.startswith("STUB-PIP-REQ")]
+    assert reqs[0] == "STUB-PIP-REQ transformers==3.9.0 ", reqs
+    assert "-e file:///opt/prev-src" in reqs[1], reqs
+    assert "STUB-PIP -m pip uninstall -y foo" in calls, calls
+    assert not list(home.glob(".src-update.*"))
+
+
+def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
+    """pip failing during the restore itself must not be reported as the previous
+    install being back; the record stays so the next run finishes it."""
+    env = _studio_env(tmp_path, import_ok = False)
+    env["STUB_PIP_EXIT"] = "1"
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode != 0
+    assert "back in place" not in res.stderr, res.stderr
+    assert "could not put every previous package back" in res.stderr, res.stderr
+    assert (home / ".src-update.rollback").is_file(), "the record was dropped after a failed restore"
+    del env["STUB_PIP_EXIT"]
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env)
+    assert "putting the previous packages back first" in res.stdout, res.stdout
+    assert not (home / ".src-update.rollback").exists()
 
 
 def test_studio_update_ref_uses_the_lockfile_and_does_not_fall_back_to_npm_install(tmp_path: Path):

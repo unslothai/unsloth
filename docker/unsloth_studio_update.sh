@@ -80,6 +80,35 @@ version_of() { (cd / && "$PY" -c "from importlib.metadata import version; print(
 
 log() { echo "[studio-update] $*"; }
 
+# The package record and dependency snapshot of the install being replaced, kept beside
+# the source tree from the moment pip starts until the update is committed, so a run
+# that is killed outright leaves the next one enough to finish the restore.
+KEEP_ROLLBACK="$SRC_DIR/.src-update.rollback"
+KEEP_FREEZE="$SRC_DIR/.src-update.freeze"
+
+# Puts recorded packages back: the dependency snapshot as pinned, the packages by force
+# (pip takes a same-version editable tree as already satisfying `unsloth==<version>`
+# and would leave the new tree's metadata in place), and what the update added taken
+# out. Returns 1 when pip could not do all of it.
+reinstall_recorded() {
+    local rollback="$1" freeze="$2" ok=0 _absent
+    if [ -n "$freeze" ] && [ -s "$freeze" ]; then
+        "$PY" -m pip install --no-deps -r "$freeze" >/dev/null \
+            || { log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"; ok=1; }
+    fi
+    if [ -n "$rollback" ] && [ -s "$rollback" ]; then
+        "$PY" -m pip install --no-deps --force-reinstall -r "$rollback" >/dev/null \
+            || { log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$rollback")"; ok=1; }
+        _absent="$(sed -n 's/^# absent: //p' "$rollback" | tr '\n' ' ')"
+        if [ -n "${_absent// /}" ]; then
+            # shellcheck disable=SC2086
+            "$PY" -m pip uninstall -y $_absent >/dev/null \
+                || { log "CRITICAL: pip could not remove what the update added: $_absent"; ok=1; }
+        fi
+    fi
+    return "$ok"
+}
+
 log "Studio venv: $PY"
 log "before: unsloth $(version_of)"
 
@@ -113,6 +142,17 @@ if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
         log "recovering the source tree an interrupted update left at ${_prev[0]}"
     fi
     mv -T "${_prev[0]}" "$SRC"
+fi
+# the same kill after pip had started: the packages it replaced go back before anything
+# else is recorded as the previous install
+if [ -s "$KEEP_ROLLBACK" ]; then
+    log "an interrupted update left its package record at $KEEP_ROLLBACK; putting the previous packages back first"
+    if reinstall_recorded "$KEEP_ROLLBACK" "$KEEP_FREEZE"; then
+        rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
+    else
+        echo "unsloth-studio-update: could not put the previous packages back (see the CRITICAL lines above); fix the cause and run this again. Nothing else was changed." >&2
+        exit 1
+    fi
 fi
 if [ -d "$SRC" ]; then
     for _stale in "$SRC_DIR"/.src-update.* "$SRC_DIR"/.src-prev.*; do
@@ -150,6 +190,9 @@ DONE=0
 ROLLBACK=""
 FREEZE=""
 CONSTRAINTS=""
+RESTORE_FAILED=0
+# Returns 1 when the previous install is not fully back; the kept record then stays
+# for the next run to finish from.
 restore() {
     log "restoring the previous install"
     # a restore runs to completion: a signal now would leave a half-restored install,
@@ -162,24 +205,27 @@ restore() {
             SWAPPED=0
         else
             log "CRITICAL: could not put $PREV_SRC back at $SRC; move it there by hand"
+            RESTORE_FAILED=1
         fi
     fi
-    if [ -n "$FREEZE" ] && [ -s "$FREEZE" ]; then
-        "$PY" -m pip install --no-deps -r "$FREEZE" >/dev/null \
-            || log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"
+    reinstall_recorded "$ROLLBACK" "$FREEZE" || RESTORE_FAILED=1
+    [ "$RESTORE_FAILED" = "1" ] && return 1
+    rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
+    return 0
+}
+# A failed install ends here: exit 1, saying how far the restore got.
+fail_after_restore() {
+    if restore; then
+        echo "unsloth-studio-update: $1; the previous install is back in place." >&2
+    else
+        echo "unsloth-studio-update: $1; the previous source tree is back but pip could not put every previous package back (see the CRITICAL lines above). Fix the cause and run this again: the next run finishes the restore first." >&2
     fi
-    if [ -n "$ROLLBACK" ] && [ -s "$ROLLBACK" ]; then
-        # --force-reinstall: pip takes a same-version editable tree as already satisfying
-        # `unsloth==<version>`, and would leave the new tree's metadata in place
-        "$PY" -m pip install --no-deps --force-reinstall -r "$ROLLBACK" >/dev/null \
-            || log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$ROLLBACK")"
-        _absent="$(sed -n 's/^# absent: //p' "$ROLLBACK" | tr '\n' ' ')"
-        if [ -n "${_absent// /}" ]; then
-            # shellcheck disable=SC2086
-            "$PY" -m pip uninstall -y $_absent >/dev/null \
-                || log "CRITICAL: pip could not remove what the update added: $_absent"
-        fi
-    fi
+    exit 1
+}
+# Kept from the moment pip can change the venv until commit_update or a finished restore.
+keep_record() {
+    cp -- "$ROLLBACK" "$KEEP_ROLLBACK"
+    if [ -n "$FREEZE" ] && [ -s "$FREEZE" ]; then cp -- "$FREEZE" "$KEEP_FREEZE"; else rm -f "$KEEP_FREEZE"; fi
 }
 # Runs on every exit. An interrupt (Ctrl-C, or a TERM) after the swap started would
 # otherwise leave the half-installed tree in place and the previous one beside it.
@@ -190,7 +236,7 @@ cleanup() {
     # the recorded previous pins go back the same as after a swap
     if [ "$DONE" != "1" ] && { [ "$SWAPPED" = "1" ] || [ "$INSTALLING" = "1" ]; }; then
         log "interrupted after the install started; putting the previous install back"
-        restore
+        restore || log "the previous install is not fully back; the next run finishes the restore first"
     fi
     [ -n "$STAGE" ] && rm -rf "$STAGE"
     [ -n "$ROLLBACK" ] && rm -f "$ROLLBACK"
@@ -347,6 +393,7 @@ if [ -n "$REF" ]; then
     # nest the tree inside it, and restore would then move that wrapper over src
     PREV_SRC="$(mktemp -d "$SRC_DIR/.src-prev.XXXXXX")" && rmdir "$PREV_SRC"
     # SWAPPED before the first move: a signal between the two moves must still restore
+    keep_record
     SWAPPED=1
     mv -T "$SRC" "$PREV_SRC"
     if ! mv -T "$STAGE" "$SRC"; then
@@ -362,9 +409,7 @@ if [ -n "$REF" ]; then
     # shellcheck disable=SC2086
     if ! "$PY" -m pip install $NO_DEPS ${DEP_ARGS[@]+"${DEP_ARGS[@]}"} -e "$_spec" \
             "git+https://github.com/unslothai/unsloth-zoo.git@${_zoo_ref}#egg=unsloth_zoo"; then
-        restore
-        echo "unsloth-studio-update: pip could not install '${REF}'; the previous install is back in place." >&2
-        exit 1
+        fail_after_restore "pip could not install '${REF}'"
     fi
 else
     _pkgs="$PACKAGES"
@@ -373,12 +418,11 @@ else
         _pkgs="$(printf '%s\n' $PACKAGES | sed 's/^unsloth$/unsloth[studio]/' | tr '\n' ' ')"
     fi
     log "installing latest release of: $_pkgs"
+    keep_record
     INSTALLING=1
     # shellcheck disable=SC2086
     if ! "$PY" -m pip install -U $NO_DEPS ${DEP_ARGS[@]+"${DEP_ARGS[@]}"} $_pkgs; then
-        restore
-        echo "unsloth-studio-update: pip failed; the previous install is back in place." >&2
-        exit 1
+        fail_after_restore "pip failed"
     fi
 fi
 
@@ -387,8 +431,7 @@ log "after:  unsloth $(version_of)"
 # Restarting into a tree that cannot start kills a Studio that is serving fine and
 # parks supervisord's program in FATAL, so check first and put the old one back.
 if ! studio_tree_ok; then
-    restore
-    if studio_tree_ok; then
+    if restore && studio_tree_ok; then
         log "the update could not start Studio, so the previous install was restored and Studio was not restarted."
     else
         log "CRITICAL: the previous install could not be restored cleanly; Studio will fail to start until this is fixed."
@@ -402,6 +445,7 @@ fi
 # old package pins on top of the new tree.
 commit_update() {
     DONE=1
+    rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
     if [ "$SWAPPED" = "1" ]; then
         # renamed before it is deleted: a kill during the delete must not leave a half
         # tree that the next run takes for the previous one and puts back
@@ -414,14 +458,19 @@ commit_update() {
 # so the container is not left without a Studio.
 back_out() {
     log "ERROR: $1; putting the previous install back"
-    restore
+    local _clean=1
+    restore || _clean=0
     "$SUPCTL" restart studio >/dev/null 2>&1 || "$SUPCTL" start studio >/dev/null 2>&1 || true
     if "$SUPCTL" status studio; then
         log "the previous install is running again"
     else
         log "CRITICAL: the previous install is back but supervisorctl could not start it either (see docker logs)"
     fi
-    echo "unsloth-studio-update: $1; the previous install is back in place." >&2
+    if [ "$_clean" = "1" ]; then
+        echo "unsloth-studio-update: $1; the previous install is back in place." >&2
+    else
+        echo "unsloth-studio-update: $1; the previous source tree is back but pip could not put every previous package back (see the CRITICAL lines above). Fix the cause and run this again: the next run finishes the restore first." >&2
+    fi
     exit 1
 }
 
