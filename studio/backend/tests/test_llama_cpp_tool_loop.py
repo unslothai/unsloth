@@ -6596,7 +6596,11 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
         },
     }
     arguments = {"data": {"view_url": "u", "page_size": "1", "start_cursor": "c"}}
-    stream = [_tool_call_sse("mcp__notion__query", arguments, "call_a"), _finish("tool_calls"), _done()]
+    stream = [
+        _tool_call_sse("mcp__notion__query", arguments, "call_a"),
+        _finish("tool_calls"),
+        _done(),
+    ]
     final_stream = [_sse({"content": "done"}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
     calls = _record_tool_calls(monkeypatch, "row 2")
