@@ -2639,6 +2639,31 @@ def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
     assert req.companion_hashes == frozenset({"q8"})
 
 
+def test_qwen38_flash_next_plan_skips_incomplete_preferred_mtp_family():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf", 18_000, "main"),
+            # Q8_0 ranks first but cannot launch without shard 2. Planning must
+            # select the complete BF16 fallback, as detect_mtp_file does.
+            _sibling(
+                "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+                2_100,
+                "q8-1",
+            ),
+            _sibling("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 7_700, "bf16"),
+        ]
+    )
+
+    req = requirements["ud-q4_k_xl"]
+
+    assert req.target_filenames == (
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf",
+    )
+    assert req.download_size_bytes == 25_700
+    assert req.companion_hashes == frozenset({"bf16"})
+
+
 def test_qwen38_embedded_head_family_does_not_plan_its_nested_mtp_copy():
     requirements = gguf_variants._build_gguf_variant_requirements(
         [

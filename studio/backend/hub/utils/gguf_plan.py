@@ -109,7 +109,18 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
 
 def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     """Choose the root MTP drafter used by normal llama.cpp discovery, or the loader-compatible nested sidecar required by Qwen3.8 Flash Next."""
-    from utils.models.drafters import is_published_drafter_filename
+    from utils.models.drafters import (
+        is_published_drafter_filename,
+        split_listing_is_complete,
+    )
+
+    gguf_names = [name for sibling in siblings if (name := _gguf_rfilename(sibling))]
+
+    def _complete(name: str) -> bool:
+        # Match detect_mtp_file's launchability gate. A half-published family
+        # must step aside before preference ranking so a complete fallback can
+        # be selected instead of making the plan omit MTP entirely.
+        return split_listing_is_complete(gguf_names, name)
 
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
@@ -119,6 +130,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
             if (name := _gguf_rfilename(s))
             and "/" not in name
             and is_published_drafter_filename(name, kind = "mtp", allow_legacy_suffix = False)
+            and _complete(name)
         ),
         key = lambda s: getattr(s, "rfilename"),
     )
@@ -146,6 +158,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
         and "/" in name.replace("\\", "/")
         and is_mtp_drafter_path(name)
         and is_published_drafter_filename(name.replace("\\", "/").rsplit("/", 1)[-1], kind = "mtp")
+        and _complete(name)
     ]
     return (
         min(nested, key = lambda sibling: mtp_preference_key(sibling.rfilename)) if nested else None
