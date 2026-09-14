@@ -3190,7 +3190,14 @@ def _uv_is_bucket_name(name: str) -> bool:
     """A name uv itself creates: <kind>-v<N>, whole suffix numeric, kind from the LAST `-v`.
     Mirrors _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in install.ps1."""
     kind, marker, version = name.rpartition("-v")
-    return bool(marker) and version.isdigit() and kind in _UV_CACHE_BUCKETS
+    # isascii too: str.isdigit() is true for Arabic-Indic and superscript digits, which the sh
+    # `*[!0-9]*` case and the PowerShell \A[0-9]+\z both reject. uv writes ASCII.
+    return (
+        bool(marker)
+        and version.isascii()
+        and version.isdigit()
+        and kind in _UV_CACHE_BUCKETS
+    )
 
 
 def _uv_cache_has_packages(cache_dir: Path) -> bool:

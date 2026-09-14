@@ -179,6 +179,16 @@ def test_the_windows_branch_gets_the_same_cache(monkeypatch, tmp_path, caches):
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
 
 
+def test_a_unicode_digit_version_is_not_a_bucket(monkeypatch, tmp_path, caches):
+    """str.isdigit() is true for Arabic-Indic and superscript digits; the sh `*[!0-9]*` case
+    and the PowerShell \\A[0-9]+\\z both reject them, and uv writes ASCII. Python was the
+    only one of the three that would have counted such a directory as warmth."""
+    studio = _studio()
+    assert studio._uv_is_bucket_name("archive-v0")
+    assert not studio._uv_is_bucket_name("archive-v\u0661")
+    assert not studio._uv_is_bucket_name("archive-v\u00b2")
+
+
 def test_a_bucket_lookalike_is_not_warmth_for_the_update_either(monkeypatch, tmp_path, caches):
     """`archive-v0.backup` holds bytes uv cannot reuse, so a prefix match read a cache that is
     cold in practice as warm. The installers check the whole `-v` suffix; this did not, and an
