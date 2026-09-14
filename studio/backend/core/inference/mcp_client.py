@@ -1641,25 +1641,34 @@ def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
 
 
 _BLOCK_KEYS = frozenset({"type", "mimeType", "mime_type", "uri"})
+# _MIRRORED: a payload or the block that carried it; _EMPTIED: a container left with nothing
 _MIRRORED = object()
+_EMPTIED = object()
 
 
 def _strip_payloads(value: Any, payloads: set[str]) -> Any:
-    # drop mirrored payloads and any block left holding only its descriptors
     if isinstance(value, str):
         return _MIRRORED if value in payloads else value
     if isinstance(value, dict):
         kept = {}
+        carried = False
         for key, item in value.items():
             item = _strip_payloads(item, payloads)
-            if item is not _MIRRORED:
+            if item is _MIRRORED:
+                carried = True
+            elif item is not _EMPTIED:
                 kept[key] = item
-        return _MIRRORED if len(kept) < len(value) and kept.keys() <= _BLOCK_KEYS else kept
+        # only the carrying block loses its descriptors; a wrapper keeps its own fields
+        if carried and kept.keys() <= _BLOCK_KEYS:
+            return _MIRRORED
+        return _EMPTIED if value and not kept else kept
     if isinstance(value, (list, tuple)):
-        kept = [
-            s for s in (_strip_payloads(item, payloads) for item in value) if s is not _MIRRORED
-        ]
-        return _MIRRORED if value and not kept else kept
+        kept = []
+        for item in value:
+            item = _strip_payloads(item, payloads)
+            if item is not _MIRRORED and item is not _EMPTIED:
+                kept.append(item)
+        return _EMPTIED if value and not kept else kept
     return value
 
 
@@ -1702,7 +1711,7 @@ def _flatten_result(result: Any) -> str:
     structured = None if has_text else getattr(result, "structured_content", None)
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
-    if structured is not None and structured is not _MIRRORED:
+    if structured is not None and structured is not _MIRRORED and structured is not _EMPTIED:
         body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted or unshown:
         notes = []
