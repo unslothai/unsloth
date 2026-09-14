@@ -172,6 +172,10 @@ test("Mistral models outside the table get the documented none / high form", () 
   assert.deepEqual([...caps.reasoningEffortLevels], ["none", "high"]);
   const known = getExternalReasoningCapabilities("mistral", "mistral-small-latest");
   assert.deepEqual([...known.reasoningEffortLevels], ["none", "high"]);
+  const magistral = getExternalReasoningCapabilities("mistral", "magistral-small");
+  assert.equal(magistral.reasoningStyle, "enable_thinking");
+  assert.equal(magistral.reasoningAlwaysOn, true);
+  assert.equal(magistral.supportsReasoningOff, false);
   assert.equal(getExternalReasoningCapabilities("mistral", "mistral-large-latest").supportsReasoning, false);
 });
 
@@ -189,6 +193,10 @@ test("vLLM and llama.cpp resolve by bare model name and clamp to low / medium / 
   const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3-14B");
   assert.equal(qwen.reasoningStyle, "enable_thinking");
   assert.equal(qwen.supportsReasoningOff, true);
+  const family = getExternalReasoningCapabilities("llama_cpp", "Qwen3-0.6B-Q4_K_M.gguf");
+  assert.equal(family.reasoningStyle, "enable_thinking");
+  assert.equal(family.supportsReasoning, true);
+  assert.equal(getExternalReasoningCapabilities("llama_cpp", "Llama-3.2-1B-Instruct-Q4_K_M.gguf").supportsReasoning, false);
   assert.equal(getExternalReasoningCapabilities("llama_cpp", "mystery-7b.gguf").supportsReasoning, false);
   assert.equal(getExternalReasoningCapabilities("custom", "openai/gpt-oss-20b").supportsReasoning, false);
 });

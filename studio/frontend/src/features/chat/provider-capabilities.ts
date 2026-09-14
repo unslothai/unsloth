@@ -1001,7 +1001,6 @@ function resolveConnectionLevelReasoning(
 type ReasoningWire = {
   levels: readonly ReasoningEffortLevel[] | null;
   aliases?: Partial<Record<ReasoningEffortLevel, ReasoningEffortLevel>>;
-  fallbackLevels?: readonly ReasoningEffortLevel[];
   off: "unified" | "none-level";
 };
 
@@ -1019,12 +1018,7 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   openai_codex: { levels: null, off: "none-level" },
   anthropic: { levels: null, off: "unified" },
   gemini: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
-  mistral: {
-    levels: ["high"],
-    aliases: { minimal: "high", low: "high", medium: "high", xhigh: "high", max: "high" },
-    fallbackLevels: ["high"],
-    off: "unified",
-  },
+  mistral: { levels: ["high"], off: "unified" },
   kimi: { levels: [], off: "unified" },
   deepseek: { levels: ["low", "high", "max"], aliases: { minimal: "low", medium: "high", xhigh: "high" }, off: "unified" },
   qwen: { levels: [], off: "unified" },
@@ -1048,7 +1042,6 @@ function projectCatalogEntry(
       .map((level) => wire.aliases?.[level] ?? level)
       .filter((level) => wire.levels === null || wire.levels.includes(level));
     levels = sortReasoningEfforts(mapped);
-    if (levels.length === 0 && wire.fallbackLevels) levels = [...wire.fallbackLevels];
   }
   if (levels.length === 0) {
     return withEnableThinkingStyle({

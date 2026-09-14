@@ -231,6 +231,7 @@ const NAME_INDEX_NAMESPACES = [
   "anthropic",
 ];
 let nameIndex: Map<string, ModelCatalogSnapshotEntry> | null = null;
+let familyIndex: Map<string, ModelCatalogSnapshotEntry> | null = null;
 
 function bareModelName(modelId: string): string {
   let name = modelId.trim().toLowerCase();
@@ -238,25 +239,38 @@ function bareModelName(modelId: string): string {
   name = name.replace(/\.gguf$/, "");
   const tag = name.indexOf(":");
   if (tag > 0) name = name.slice(0, tag);
-  return name.replace(/-(?:i?q\d[a-z0-9_]*|f16|bf16|fp16|fp8)$/, "");
+  return name.replace(/-(?:ud-)?(?:i?q\d[a-z0-9_]*|f16|bf16|fp16|fp8)$/, "");
+}
+
+function modelFamily(bareName: string): string {
+  return bareName
+    .split("-")
+    .filter((part) => !/^(?:\d+(?:\.\d+)?[bm]|a\d+b)$/.test(part))
+    .join("-");
+}
+
+function buildNameIndexes(): void {
+  nameIndex = new Map();
+  familyIndex = new Map();
+  for (const namespace of NAME_INDEX_NAMESPACES) {
+    const models = MODEL_CATALOG_SNAPSHOT[namespace];
+    if (!models) continue;
+    for (const [id, entry] of Object.entries(models)) {
+      const name = bareModelName(id);
+      if (!nameIndex.has(name)) nameIndex.set(name, entry);
+      const family = modelFamily(name);
+      if (family !== name && !familyIndex.has(family)) familyIndex.set(family, entry);
+    }
+  }
 }
 
 export function resolveModelCatalogEntryByName(
   modelId: string | null | undefined,
 ): ModelCatalogEntry | null {
   if (!modelId) return null;
-  if (!nameIndex) {
-    nameIndex = new Map();
-    for (const namespace of NAME_INDEX_NAMESPACES) {
-      const models = MODEL_CATALOG_SNAPSHOT[namespace];
-      if (!models) continue;
-      for (const [id, entry] of Object.entries(models)) {
-        const name = bareModelName(id);
-        if (!nameIndex.has(name)) nameIndex.set(name, entry);
-      }
-    }
-  }
-  const entry = nameIndex.get(bareModelName(modelId));
+  if (!nameIndex || !familyIndex) buildNameIndexes();
+  const name = bareModelName(modelId);
+  const entry = nameIndex?.get(name) ?? familyIndex?.get(modelFamily(name));
   return entry ? fromSnapshotEntry(entry) : null;
 }
 
