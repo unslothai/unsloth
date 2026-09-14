@@ -293,8 +293,7 @@ patch_datasets()
 # Apple Silicon M4+ only: psutil <= 7.2.2 reads the clock 1000x too small.
 patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
-# Repairs an older pinned unsloth_zoo whose fused CE NaNs on a fully masked
-# microbatch. No-ops once unsloth_zoo carries the fix itself.
+# No-ops once unsloth_zoo carries the fix itself.
 fix_unsloth_zoo_fused_ce_nan()
 patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()

@@ -1404,15 +1404,13 @@ def fix_unsloth_zoo_fused_ce_nan():
     if getattr(cls, "_unsloth_fused_ce_nan_patched", False):
         return
 
-    # Read the descriptor off __dict__ so the staticmethod wrapper is visible and can
-    # be restored in the same form.
+    # __dict__, not getattr: keeps the staticmethod wrapper visible.
     current = cls.__dict__.get("forward")
     if current is None:
         return
     original = getattr(current, "__func__", current)
 
-    # Structural detection, not a version compare: the PR is not in a numbered release
-    # yet and dev builds share release metadata, so a version gate would be a guess.
+    # Structural, not a version gate: dev builds share release metadata.
     try:
         source = inspect.getsource(original)
     except Exception:
@@ -1448,7 +1446,6 @@ def fix_unsloth_zoo_fused_ce_nan():
 
         try:
             n_items = arguments.get("n_items")
-            # A usable positive divisor means forward cannot divide by zero.
             if not _unusable_divisor(n_items):
                 return original(*args, **kwargs)
 
