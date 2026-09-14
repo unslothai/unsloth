@@ -176,6 +176,14 @@ def test_modern_launch_treats_auto_env_as_absent_override(monkeypatch):
 
 
 def test_inconclusive_probe_preserves_explicit_reasoning_env(monkeypatch):
+    """An unreadable --help must not cost the operator their reasoning setting.
+
+    Sending nothing here relied on the binary being new enough to read
+    LLAMA_ARG_REASONING itself, which is exactly what an inconclusive probe
+    failed to establish; on a build that is in fact old, the override vanished.
+    The kwarg is safe on both, because it is resolved from that same environment
+    and so sets enable_thinking to the value the environment already asked for.
+    """
     monkeypatch.setenv(_LLAMA_REASONING_ENV, _REASONING_ON)
     backend = _backend()
     command = [_SERVER_COMMAND]
@@ -189,7 +197,7 @@ def test_inconclusive_probe_preserves_explicit_reasoning_env(monkeypatch):
         },
     )
 
-    assert command == [_SERVER_COMMAND]
+    assert command == [_SERVER_COMMAND, _CHAT_TEMPLATE_KWARGS_FLAG, '{"enable_thinking": true}']
     assert backend._reasoning_default is True
 
 

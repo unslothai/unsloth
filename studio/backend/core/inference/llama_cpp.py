@@ -7295,16 +7295,17 @@ class LlamaCppBackend:
             thinking_default if env_thinking is None else env_thinking
         )
         supports_flag = bool(server_caps.get(_SUPPORTS_REASONING_FLAG_CAPABILITY))
-        probe_inconclusive = bool(server_caps.get(_MTP_PROBE_INCONCLUSIVE_CAPABILITY))
-        if _ENABLE_THINKING_KWARG in reasoning_kwargs:
-            if supports_flag:
-                enabled = reasoning_kwargs.pop(_ENABLE_THINKING_KWARG)
-                if not env_overrides:
-                    cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
-            elif env_overrides and probe_inconclusive:
-                # The probe told us nothing. A build new enough to read the
-                # environment must not also be handed a kwarg contradicting it.
-                reasoning_kwargs.pop(_ENABLE_THINKING_KWARG, None)
+        # Only a build that positively advertises --reasoning gets it; a failed or
+        # empty --help leaves this False, and the kwargs below are what every
+        # other build understands. Dropping them when the probe was inconclusive
+        # would leave an actually-old binary with no reasoning instruction at all,
+        # and they cannot fight an inherited LLAMA_ARG_REASONING on a build that
+        # turned out to be modern: both write the same enable_thinking, and the
+        # value here was resolved from that same environment just above.
+        if supports_flag and _ENABLE_THINKING_KWARG in reasoning_kwargs:
+            enabled = reasoning_kwargs.pop(_ENABLE_THINKING_KWARG)
+            if not env_overrides:
+                cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
         if self._supports_preserve_thinking:
             reasoning_kwargs[_PRESERVE_THINKING_KWARG] = self._preserve_thinking_default
         if reasoning_kwargs:
