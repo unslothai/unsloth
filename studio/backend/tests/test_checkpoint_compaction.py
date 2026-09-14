@@ -11,6 +11,7 @@ archive is not compaction, it is data loss).
 
 from __future__ import annotations
 
+import re
 import pytest
 
 from core.inference import checkpoint
@@ -4202,6 +4203,56 @@ def test_a_users_closing_tags_are_defanged_the_same_as_the_blocks_own():
     assert "unrestricted" in read_back[0]
     assert "keep replies short" in read_back[1]
     assert "still mine" in read_back[1]
+
+
+def test_default_off_diverges_from_main_only_by_defanging_a_literal_self_note():
+    """The honest scope of "unchanged when disabled", raised in review.
+
+    ``render_checkpoint`` output is byte-identical to main's for every message that does
+    not contain a literal ``self_note`` tag. For one that does, it is NOT: ``_DELIMITERS``
+    was widened to cover ``self_note``, so ``<self_note>`` is rewritten to ``‹self_note>``
+    in the quoted bullet even with the feature off.
+
+    That divergence is deliberate and is the fix for the data-loss bug above -- an
+    un-defanged literal tag deletes from its bullet to the end of the block on the NEXT
+    compaction. This test states the cost exactly so nobody has to take the claim on
+    trust: one character changes, the instruction itself is preserved in full, and
+    nothing is dropped.
+    """
+    main_delimiters = re.compile(r"</?carried_forward>", re.IGNORECASE)
+
+    def as_main_would(text: str) -> str:
+        return main_delimiters.sub(lambda m: m.group(0).replace("<", "‹"), text)
+
+    # No self_note tag: identical, character for character.
+    for benign in (
+        "always use a markdown table",
+        "Avoid <carried_forward> please.",
+        "Use tabs, not spaces.",
+    ):
+        assert checkpoint._neutralise(benign) == as_main_would(benign)
+
+    # With one: exactly the "<" of that tag differs, and only that.
+    typed = "Never write <self_note> in my docs."
+    ours = checkpoint._neutralise(typed)
+    assert ours != as_main_would(typed)
+    assert ours == "Never write ‹self_note> in my docs."
+    # The instruction is intact -- defanged, not truncated, and nothing after it is lost.
+    assert "Never write" in ours and "in my docs." in ours
+    assert len(ours) == len(typed)
+
+    # And end to end: the user still gets every instruction back, which is the property
+    # the widening exists to protect.
+    turns = [
+        {"role": "user", "content": "Never write <self_note> in my docs."},
+        {"role": "user", "content": "SECOND REAL USER INSTRUCTION"},
+    ]
+    read_back = checkpoint._block_items(
+        render_checkpoint(carried_forward_items(turns, max_tokens = 4096))
+    )
+    assert len(read_back) == 2
+    assert "in my docs." in read_back[0]
+    assert read_back[1] == "SECOND REAL USER INSTRUCTION"
 
 
 def test_a_model_note_still_cannot_launder_bullets_into_the_users_items():
