@@ -2552,14 +2552,31 @@ _STUDIO_AUTH_DIR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# `cd <studio home> && ls -a auth`: the directory named relative to a root the same command just
+# entered. Only counted together with a `cd` INTO the studio root, not a mere mention of it:
+# `grep -rn auth <studio root>/logs/studio.log` is ordinary work and must keep running.
+_BARE_AUTH_SEGMENT_RE = re.compile(r"(?:^|[/\\\s'\"=])auth(?:[/\\]|$|[\s'\"])", re.IGNORECASE)
+
+# Every spelling the guard recognises contains one of these, so a text carrying none of them cannot
+# match and skips the regexes entirely. Kept next to the patterns: a new pattern needs a hint here.
+_STUDIO_CREDENTIAL_HINTS = (
+    "auth",
+    ".cli_api_key",
+    ".bootstrap_password",
+    ".desktop_secret",
+    "llama_api_key",
+)
+
 _studio_auth_markers_cache: "tuple | None" = None
 
 
 def _studio_auth_dir_markers() -> tuple:
-    """Spellings of this install's auth directory. Resolved once per process: STUDIO_HOME is fixed
-    at startup, and a custom UNSLOTH_STUDIO_HOME is only covered by asking for the real root rather
-    than assuming the default layout. A failure is not cached, so a root that could not be resolved
-    during startup import ordering does not leave the guard half-blind for the process lifetime."""
+    """``(auth directory spellings, "cd into the studio root" pattern)`` for this install.
+
+    Resolved once per process: STUDIO_HOME is fixed at startup, and a custom UNSLOTH_STUDIO_HOME is
+    only covered by asking for the real root rather than assuming the default layout. A failure is
+    not cached, so a root that could not be resolved during startup import ordering does not leave
+    the guard half-blind for the process lifetime."""
     global _studio_auth_markers_cache
     if _studio_auth_markers_cache is not None:
         return _studio_auth_markers_cache
@@ -2567,17 +2584,29 @@ def _studio_auth_dir_markers() -> tuple:
         from utils.paths.storage_roots import auth_root
         resolved = str(auth_root())
     except Exception:  # noqa: BLE001 - an unresolvable root leaves the literal patterns above
-        return ()
+        return (), None
     if not resolved:
-        return ()
-    markers = [resolved]
+        return (), None
+    auth_markers = [resolved]
+    # dirname, not studio_root(): one resolution point, and the two cannot drift apart.
+    root_markers = [os.path.dirname(resolved.rstrip("/\\"))]
     home = os.path.expanduser("~")
     # Boundary-aware: a plain startswith makes /home/u2/... look like it is under /home/u and mints
     # markers ("~2/...") that would refuse unrelated commands.
     if home and (resolved == home or resolved.startswith(home.rstrip(os.sep) + os.sep)):
-        tail = resolved[len(home.rstrip(os.sep)) :]
-        markers.extend(("~" + tail, "$HOME" + tail))
-    _studio_auth_markers_cache = tuple(m.lower() for m in markers if m)
+        for target, base in ((auth_markers, resolved), (root_markers, root_markers[0])):
+            tail = base[len(home.rstrip(os.sep)) :]
+            target.extend(("~" + tail, "$HOME" + tail))
+    roots = [m for m in root_markers if m and m not in ("/", "\\")]
+    cd_re = (
+        re.compile(
+            r"cd\s+(?:/d\s+)?[\"']?(?:" + "|".join(re.escape(m) for m in roots) + r")",
+            re.IGNORECASE,
+        )
+        if roots
+        else None
+    )
+    _studio_auth_markers_cache = (tuple(m.lower() for m in auth_markers if m), cd_re)
     return _studio_auth_markers_cache
 
 
@@ -2592,10 +2621,23 @@ def _references_studio_credential(text: str) -> bool:
     """True if *text* names Studio's auth directory or one of the credential files in it."""
     if not text:
         return False
+    lowered = text.lower()
+    # Literal prefilter. Every pattern below needs one of these substrings, and the terminal
+    # classifier calls this once per candidate token of every command, so the regexes are worth
+    # skipping for the ordinary command that mentions none of them.
+    if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
+        return False
+    if _STUDIO_CREDENTIAL_BASENAME_RE.search(text) or _STUDIO_AUTH_DIR_RE.search(text):
+        return True
+    auth_markers, cd_into_root_re = _studio_auth_dir_markers()
+    if not auth_markers:
+        return False
+    if any(marker in lowered for marker in auth_markers):
+        return True
     return bool(
-        _STUDIO_CREDENTIAL_BASENAME_RE.search(text)
-        or _STUDIO_AUTH_DIR_RE.search(text)
-        or any(marker in text.lower() for marker in _studio_auth_dir_markers())
+        cd_into_root_re is not None
+        and _BARE_AUTH_SEGMENT_RE.search(text)
+        and cd_into_root_re.search(text)
     )
 
 

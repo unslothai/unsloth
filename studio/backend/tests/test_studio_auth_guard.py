@@ -109,6 +109,26 @@ def test_a_custom_studio_home_is_covered(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_the_auth_dir_named_relative_to_a_cd_into_the_studio_root(monkeypatch, tmp_path):
+    # `cd <studio home> && ls -a auth` carries no absolute auth path and no Studio-specific
+    # basename, so it is only recognisable through the root the same command entered.
+    import utils.paths.storage_roots as roots
+
+    home = tmp_path / "studio-home"
+    monkeypatch.setattr(roots, "auth_root", lambda: home / "auth")
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert tools._references_studio_credential(f"cd {home} && ls -a auth")
+        assert tools._references_studio_credential(f'cd "{home}"; ls auth/')
+        # ...while merely naming the studio root is ordinary work: reading your own Studio logs,
+        # or grepping them for the word, must not turn into a refusal.
+        assert not tools._references_studio_credential(f"grep -rn auth {home}/logs/studio.log")
+        assert not tools._references_studio_credential(f"ls {home}/models && grep -c auth app.log")
+        assert not tools._references_studio_credential(f"cd {home} && ls models")
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_mcp_call_at_the_auth_dir_is_refused():
     name = f"{MCP_TOOL_PREFIX}fs__read_file"
     args = {"path": "~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742"}
@@ -152,6 +172,12 @@ def test_redaction_is_idempotent_and_leaves_other_output_alone():
     # The desktop credential (`desktop-` + token_urlsafe(48)) goes the same way.
     desktop = "desktop-" + "Ab3_-x9Z" * 8
     assert desktop not in redact_studio_credentials(f"secret={desktop}\n")
+    # A key cut in half by the window fit is still credential material, so it is masked too, while
+    # prose about the prefix itself reads through.
+    assert redact_studio_credentials(_FAKE_KEY[:24]) == "[redacted]"
+    assert redact_studio_credentials("keys look like sk-unsloth-<hex>") == (
+        "keys look like sk-unsloth-<hex>"
+    )
 
 
 def test_the_envelope_split_still_sees_a_suffix_only_strip():

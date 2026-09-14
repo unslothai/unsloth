@@ -943,7 +943,10 @@ _WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 # machine, so it is masked on the way out. Only the model-bound copy: the tool card the user is looking at is their own
 # output and stays as it was. The mask carries neither prefix, so re-running this is a no-op.
 _STUDIO_API_KEY_RE = re.compile(
-    r"sk-unsloth-[A-Za-z0-9]{16,}"
+    # 8 rather than the full 32 hex: a result cut to fit the window can end mid-key, and half a key
+    # is still credential material. The prefix is Unsloth's own, so a short floor costs nothing;
+    # `sk-unsloth-` with no token after it (prose about the format) still reads through.
+    r"sk-unsloth-[A-Za-z0-9]{8,}"
     # The desktop credential is `desktop-` + token_urlsafe(48); the length floor keeps an ordinary
     # hyphenated word ("desktop-app") out of it.
     r"|desktop-[A-Za-z0-9_-]{40,}"
