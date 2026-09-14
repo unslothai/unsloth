@@ -7,6 +7,7 @@ import ast
 import sys
 import types
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -147,17 +148,118 @@ def test_the_probe_follows_the_smoke_cache_as_it_warms(monkeypatch):
     assert result is False
 
 
-def test_only_the_capability_bit_is_published():
-    """One bit, not a scheme list.
+def test_the_scheme_ladder_is_published_beside_the_bit():
+    """The bit AND the ladder.
 
-    A per-scheme list has to be kept in step with every input the loader's selector reads
-    (precision, speed, memory, the family deny list, a per-card kernel probe, the ladder's own
-    ordering). The picker cannot see the request, so it states the capability and lets ``resolved``
-    report the precision that actually ran.
+    One bit cannot tell an Ampere host (int8) from an Ada one (fp8), and both have hosted
+    checkpoints an official pick now defaults to, so a row that names the precision it is offering
+    needs the list. It comes from ``auto_scheme_candidates``, the same ladder, deny list and smoke
+    probe the loader's own selector reads, so the row and the load cannot disagree about what auto
+    allows. What actually ran is still reported by ``resolved``.
     """
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-    for gone in ("dense_quant_schemes", "dense_quant_auto_schemes", "dense_quant_probed_schemes"):
-        assert gone not in src, gone
+    assert '"dense_quant_schemes": _dense_quant_schemes()' in src
+    assert "auto_scheme_candidates" in _src("_probe_dense_quant_schemes")
+
+
+def test_the_ladder_is_read_off_the_same_refresh_as_the_bit():
+    """The published list must not walk the cards a second time on every poll.
+
+    ``/api/system`` resolves the bit first, and that refresh fills both, so the reader beside it is
+    a pure read. A reader that probed again would double the per-poll device walk and could publish
+    a ladder from a different pass than the bit next to it.
+    """
+    reader = _src("_dense_quant_schemes")
+    assert "_probe_dense_quant_schemes" not in reader
+    assert "_refresh_dense_quant_capability" not in reader
+    refresh = _src("_refresh_dense_quant_capability")
+    assert "_probe_dense_quant_schemes()" in refresh
+    src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    # Order matters in the payload: the bit refreshes, then the list is read.
+    assert src.index('"dense_quant_supported": _dense_quant_supported()') < src.index(
+        '"dense_quant_schemes": _dense_quant_schemes()'
+    )
+
+
+def _run_schemes(monkeypatch, *, device_count, schemes_by_ordinal):
+    """Run an uncached copy of ``_probe_dense_quant_schemes`` with mocked dependencies."""
+    scoped: list = []
+
+    fake_torch = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(
+            is_available = lambda: device_count > 0,
+            device_count = lambda: device_count,
+        )
+    )
+
+    class _Scope:
+        def __init__(self, ordinal):
+            self.ordinal = ordinal
+
+        def __enter__(self):
+            scoped.append(self.ordinal)
+            return None
+
+        def __exit__(self, *exc):
+            return False
+
+    fake_device = types.ModuleType("core.inference.diffusion_device")
+    fake_device.diffusion_device_scope = _Scope
+    fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
+    fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
+    fake_quant.auto_scheme_candidates = lambda target: schemes_by_ordinal[target]
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", fake_quant)
+
+    namespace: dict = {"Optional": Optional}
+    exec(_src("_probe_dense_quant_schemes"), namespace)  # noqa: S102 -- the real body
+    return namespace["_probe_dense_quant_schemes"](), scoped
+
+
+def test_an_ada_host_publishes_fp8_first(monkeypatch):
+    result, scoped = _run_schemes(
+        monkeypatch, device_count = 1, schemes_by_ordinal = {None: ("fp8", "int8")}
+    )
+    assert result == ["fp8", "int8"]
+    assert scoped == []
+
+
+def test_an_ampere_host_publishes_int8(monkeypatch):
+    result, _ = _run_schemes(monkeypatch, device_count = 1, schemes_by_ordinal = {None: ("int8",)})
+    assert result == ["int8"]
+
+
+def test_a_mixed_host_publishes_only_what_every_card_runs(monkeypatch):
+    """The picker cannot see which card a load lands on, so a scheme one card lacks is not offered."""
+    result, scoped = _run_schemes(
+        monkeypatch,
+        device_count = 2,
+        schemes_by_ordinal = {0: ("fp8", "int8"), 1: ("int8",)},
+    )
+    assert result == ["int8"]
+    assert scoped == [0, 1]
+
+
+def test_an_unsupported_host_publishes_nothing(monkeypatch):
+    result, _ = _run_schemes(monkeypatch, device_count = 0, schemes_by_ordinal = {None: ()})
+    assert result == []
+
+
+def test_a_scheme_probe_failure_publishes_nothing(monkeypatch):
+    class _Boom(dict):
+        def __getitem__(self, key):
+            raise RuntimeError("driver went away")
+
+    result, _ = _run_schemes(monkeypatch, device_count = 1, schemes_by_ordinal = _Boom())
+    assert result == []
+
+
+def test_an_incapable_host_never_publishes_a_ladder():
+    """`[]` whenever the bit is False, so a client can read the list on its own."""
+    refresh = _src("_refresh_dense_quant_capability")
+    assert "if _dense_quant_capability else []" in refresh
 
 
 def test_the_warm_refresh_honours_the_torch_kill_switch():
