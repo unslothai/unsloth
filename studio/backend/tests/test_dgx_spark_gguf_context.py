@@ -511,9 +511,7 @@ def test_two_integrated_devices_do_not_each_claim_the_whole_pool(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 61850)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None))
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
