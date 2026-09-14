@@ -472,20 +472,22 @@ export function ExecutionsView({
             )}
 
             <Tabs value={detailTab} onValueChange={setDetailTab}>
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <TabsList className="border border-border/60 bg-card/40">
                   <TabsTrigger value="data">Data</TabsTrigger>
                   <TabsTrigger value="overview">Overview</TabsTrigger>
                   <TabsTrigger value="columns">Columns</TabsTrigger>
                   <TabsTrigger value="raw">Raw</TabsTrigger>
                 </TabsList>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {canDownload && (
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       disabled={downloadingDataset}
+                      aria-label={downloadingDataset ? "Downloading dataset" : "Download dataset"}
+                      title="Download dataset as JSONL"
                       onClick={() => {
                         if (!selectedExecution) {
                           return;
@@ -507,8 +509,8 @@ export function ExecutionsView({
                           });
                       }}
                     >
-                      <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
-                      {downloadingDataset ? "Downloading..." : "Download Dataset"}
+                      <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                      {downloadingDataset ? "Downloading..." : "Download"}
                     </Button>
                   )}
                   {canPublish && (
@@ -549,30 +551,6 @@ export function ExecutionsView({
                   modelUsageRows={modelUsageRows}
                   terminalLines={terminalLines}
                   terminalRef={terminalRef}
-                  canPublish={canPublish}
-                  onOpenPublish={() => setPublishDialogOpen(true)}
-                  canDownload={canDownload}
-                  downloadingDataset={downloadingDataset}
-                  onDownloadDataset={() => {
-                    if (!selectedExecution) {
-                      return;
-                    }
-                    setDownloadingDataset(true);
-                    downloadExecutionDataset(selectedExecution)
-                      .then((outcome) => {
-                        toastSuccess(downloadOutcomeMessage(outcome));
-                      })
-                      .catch((error: unknown) => {
-                        const message =
-                          error instanceof Error
-                            ? error.message
-                            : "Could not download this dataset.";
-                        toastError("Download failed", message);
-                      })
-                      .finally(() => {
-                        setDownloadingDataset(false);
-                      });
-                  }}
                   onTerminalScroll={(event) => {
                     const element = event.currentTarget;
                     const distanceFromBottom =
