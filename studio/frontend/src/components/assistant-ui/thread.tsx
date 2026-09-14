@@ -6821,8 +6821,8 @@ const ComposerRightControls: FC<{
           the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
         <TooltipIconButton
-          tooltip="Start dictation"
-          aria-label="Start dictation"
+          tooltip="Dictate"
+          aria-label="Dictate"
           type="button"
           variant="ghost"
           className="size-9 rounded-full text-foreground"
