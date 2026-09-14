@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for the Gemma 4 micro-batch default.
-
-llama.cpp aborts a non-causal image decode when the chunk mtmd cuts exceeds n_ubatch.
-Only the Gemma 4 towers produce such a chunk at the stock 512, so only they get the
-raise, and only as far as their own per-image ceiling; see
-``_MMPROJ_NON_CAUSAL_IMAGE_TOKENS``.
-"""
+"""Regression tests for projector-aware llama.cpp micro-batch sizing."""
 
 import inspect
 
@@ -236,12 +230,7 @@ class TestBatchUbatchForMmproj:
 
 
 def test_the_target_is_the_per_image_ceiling_not_a_round_number():
-    """The micro-batch only has to hold ONE image, and the difference is not cosmetic.
-
-    The ubatch scales ``_estimate_compute_buffer_bytes``, which feeds ``model_size_fit``,
-    so rounding 1120 up to 2048 priced Gemma 4 12B at 13.45 GiB against 10.27 GiB and
-    put it over the budget of a 16 GB Mac and a 12 GB card that both hold it today.
-    """
+    """Use exact image ceilings to avoid unnecessary compute-buffer VRAM."""
     assert _MMPROJ_NON_CAUSAL_IMAGE_TOKENS == {
         "gemma4v": 1120,
         "gemma4uv": 1120,
@@ -288,11 +277,7 @@ def test_image_max_tokens_is_honoured_for_every_non_causal_family(
     ],
 )
 def test_image_max_tokens_reaches_the_unclassifiable_projectors_too(extras, env):
-    """An unfetched URL and --mmproj-auto discovery get headroom, not a fixed number.
-
-    The flag lifts whatever ceiling clip.cpp would have applied, so a chunk over the
-    assumed size aborts the server exactly as it would for a family we can read.
-    """
+    """Custom limits also raise the fallback for unknown projectors."""
     assert _launch_required_ubatch(None, 3840, extras, env = env) == 4096
 
 
@@ -353,32 +338,19 @@ def test_the_batch_still_caps_what_is_emitted():
 
 
 def test_the_decision_lands_after_the_download_and_before_the_fit():
-    """Order inside ``load_model``: download, resolve, decide, then price.
-
-    ``_resolve_gguf_load_intent`` leaves ``intent.mmproj_path`` unset for a repo id and
-    ``_download_mmproj`` assigns it, so deciding at the intent unpack reads None on the
-    ordinary loading path and never raises at all. The decision also has to land before
-    the fit, which prices the compute buffer off the micro-batch that launches.
-    """
+    """Resolve the downloaded projector before pricing its micro-batch."""
     source = inspect.getsource(LlamaCppBackend.load_model)
     download = source.index("self._download_mmproj(")
     decide = source.index("_batch_ubatch_for_mmproj(")
     price = source.index("_ubatch_for_slots(n_parallel)")
     assert download < decide < price
-    # And it decides from the resolved projector, not the requested one: a missing or
-    # family-mismatched file launches a text-only server that must not pay for images.
+    # A missing or mismatched projector must not add image overhead.
     decision = source[decide : source.index("\n\n", decide)]
     assert "self._resolve_launch_mmproj_path(" in decision
 
 
 def test_both_sides_read_the_embedding_length_the_same_way():
-    """GGUF does not guarantee KV order, and the two readers disagree when it varies.
-
-    ``_read_gguf_metadata`` only matches ``{arch}.`` keys once ``general.architecture``
-    has gone past, so a file writing ``embedding_length`` first leaves it unset;
-    ``read_gguf_embedding_length`` buffers instead. Only the E2B/E4B test reads this,
-    so a split would have the launch raise while the panel priced 512.
-    """
+    """Use the order-independent embedding reader on both sizing paths."""
     source = inspect.getsource(LlamaCppBackend.load_model)
     decision = source[
         source.index("_batch_ubatch_for_mmproj(") : source.index(
@@ -390,13 +362,7 @@ def test_both_sides_read_the_embedding_length_the_same_way():
 
 
 def test_the_estimators_ask_the_same_question_as_the_launch():
-    """One helper, called with a config on one side and load state on the other.
-
-    ``_gguf_resident_file_gb`` reports files as ``_estimate_gguf_required_gb`` minus the
-    context term that function added, branching on the same local-vs-remote condition
-    to stay paired: a term added at 2048 and taken away at 512 would move the weights
-    figure by the difference.
-    """
+    """Keep launch, admission, and displayed memory estimates consistent."""
     from studio.backend.routes import inference as routes
 
     assert "_launch_required_ubatch" in inspect.getsource(routes._launch_required_ubatch_for_config)

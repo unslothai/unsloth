@@ -182,12 +182,7 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
 
 
 def read_gguf_embedding_length(path: str) -> Optional[int]:
-    """``{arch}.embedding_length`` from a GGUF header, or None if absent or unreadable.
-
-    Cached by (path, mtime, size) like the dims above, and separate from
-    ``read_gguf_staged_dims`` so a caller needing only this does not pay a full
-    metadata walk on every settings change.
-    """
+    """Return the cached ``{arch}.embedding_length`` value, if readable."""
     key = _cache_key(path)
     if key is None:
         return None
@@ -894,13 +889,7 @@ def read_mmproj_projector_type(path: str) -> Optional[str]:
 
 
 def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
-    """The IMAGE tower's projector family, or None if absent or unreadable.
-
-    Separate from :func:`read_mmproj_projector_type` because a projector carrying both
-    towers spells it per-modality: Gemma 4 writes ``clip.vision.projector_type =
-    gemma4uv`` beside ``clip.audio.projector_type`` and no bare ``clip.projector_type``
-    at all. Per-modality key first, then the bare one single-tower converts still use.
-    """
+    """Return the image tower family, falling back to the single-tower key."""
     return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
         path, "clip.projector_type"
     )

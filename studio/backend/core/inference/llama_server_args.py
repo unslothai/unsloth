@@ -995,14 +995,7 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
 def extra_args_image_max_tokens(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """The ``--image-max-tokens N`` this launch ends up with, or None.
-
-    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``, and the
-    ``LLAMA_ARG_IMAGE_MAX_TOKENS`` twin arg.cpp gives it, applied first so argv wins.
-    clip.cpp reads the result as ``custom_image_max_tokens`` and lets it raise a
-    projector's own per-image ceiling, so a caller sizing the micro-batch has to
-    honour it.
-    """
+    """Return the effective positive ``--image-max-tokens`` value."""
     found: Optional[int] = None
     raw_env = (os.environ if env is None else env).get("LLAMA_ARG_IMAGE_MAX_TOKENS")
     if raw_env:
@@ -1032,16 +1025,7 @@ def extra_args_image_max_tokens(
 def extra_args_mmproj_auto(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True when this launch leaves llama-server discovering a projector itself.
-
-    The last-wins boolean :func:`extra_args_disable_mmproj` reads, asked the other way:
-    a winning ``--mmproj-auto`` makes the child look for an adjacent mmproj Unsloth
-    never put on the command line, so a caller sizing the launch must assume one.
-
-    Seeded from the ``LLAMA_ARG_MMPROJ_AUTO`` twin before argv, as arg.cpp applies it,
-    including the ``LLAMA_ARG_NO_MMPROJ_AUTO`` form it reads for a flag with a negative
-    spelling: present at all, whatever its value, and the flag is off.
-    """
+    """Return whether llama-server will discover an adjacent projector."""
     source_env = os.environ if env is None else env
     enabled = False
     if source_env.get("LLAMA_ARG_NO_MMPROJ_AUTO") is not None:

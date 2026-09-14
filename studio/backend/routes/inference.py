@@ -1888,11 +1888,7 @@ def _openai_llama_admission_output_allowance(
 
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
-    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
-
-    Delegates so the admission ceiling and the micro-batch sizing read the flag the
-    same way; see :func:`extra_args_image_max_tokens`.
-    """
+    """Return the effective ``--image-max-tokens`` value."""
     from core.inference.llama_server_args import extra_args_image_max_tokens
     return extra_args_image_max_tokens(extra_args)
 
@@ -10266,11 +10262,7 @@ def _launch_required_ubatch_for_config(
     llama_extra_args: Optional[list[str]] = None,
     disable_vision: bool = False,
 ) -> int:
-    """``_launch_required_ubatch`` for a local GGUF, from what the panel knows.
-
-    Same question ``load_model`` asks, projector resolved the same way, so the panel
-    and the admission guard price the micro-batch the child launches at.
-    """
+    """Return the required micro-batch for a local GGUF config."""
     from core.inference.llama_cpp import _launch_required_ubatch
     from utils.models.gguf_metadata import read_gguf_embedding_length
 
@@ -10284,9 +10276,7 @@ def _launch_required_ubatch_for_config(
         )
     return _launch_required_ubatch(
         resolved,
-        # Only the text n_embd tells Gemma 4 E2B and E4B, which decode causally, from
-        # the rest. Its own cached read: the estimator's full metadata walk runs after
-        # this and costs ~77ms on every settings change.
+        # The text embedding size identifies the causal Gemma 4 variants.
         read_gguf_embedding_length(gguf_file) if gguf_file else None,
         llama_extra_args,
         is_vision = bool(getattr(config, "is_vision", False)),
@@ -10299,16 +10289,7 @@ def _remote_required_ubatch(
     llama_extra_args: Optional[list[str]] = None,
     disable_vision: bool = False,
 ) -> int:
-    """``_launch_required_ubatch_for_config`` for a repo nothing has downloaded yet.
-
-    Coarser on purpose: with no file to read, a vision repo is charged as if its
-    projector needs the bigger micro-batch, the direction ``include_mmproj`` already
-    takes. Only the training-admission guard reads this -- the layer fit runs in
-    load_model after the download, off the real file -- so the cost is one conservative
-    pre-download estimate rather than a smaller offload. Off the config, not a Hub
-    listing, because ``_gguf_resident_file_gb`` subtracts this term and pairs with it
-    on every settings change.
-    """
+    """Return a conservative micro-batch for an undownloaded GGUF config."""
     from core.inference.llama_cpp import _launch_required_ubatch, extra_args_disable_mmproj
 
     from core.inference.llama_cpp import _unknown_projector_ubatch
@@ -10318,9 +10299,7 @@ def _remote_required_ubatch(
         and not disable_vision
         and not extra_args_disable_mmproj(llama_extra_args)
     ):
-        # Nothing to read yet, so headroom, raised by --image-max-tokens exactly as the
-        # post-download launch raises it; pricing less would admit a load the child
-        # then over-allocates against a training job.
+        # Match the worst-case post-download allocation.
         return _unknown_projector_ubatch(llama_extra_args)
     # No repo projector in play, but the extras or the environment may still name one.
     return _launch_required_ubatch(
@@ -10372,8 +10351,7 @@ def _gguf_runtime_bytes(
         probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
-        # Price the pair load_model raises, or the panel quotes and admission approves
-        # a micro-batch the child does not run at.
+        # Price the same batch sizes used by load_model.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
             0 if is_diffusion else launch_required_ubatch,
             n_batch,
@@ -10701,9 +10679,7 @@ def _remote_gguf_compute_reserve_gb(
     else, a drafter for instance, can hold it at zero the way it already holds
     _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
 
-    ``required_ubatch`` is the raise load_model applies once the download finishes;
-    without it the guard admits an uncached vision load against a micro-batch four times
-    smaller than the one it launches with.
+    ``required_ubatch`` matches the post-download launch.
     """
     # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
     from core.inference.llama_cpp import _batch_ubatch_for_mmproj
@@ -11588,8 +11564,7 @@ def _gguf_resident_file_gb(
             0,
             llama_extra_args,
             model_identifier = getattr(config, "identifier", None),
-            # Paired with the arm above: a term added at 2048 and taken away at 512
-            # would move the weights figure by the difference.
+            # Subtract the same runtime term added above.
             launch_required_ubatch = _launch_required_ubatch_for_config(
                 config, llama_extra_args, disable_vision
             ),

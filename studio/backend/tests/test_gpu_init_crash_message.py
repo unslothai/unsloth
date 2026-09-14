@@ -966,9 +966,7 @@ def test_env_projector_cpu_recovery_keeps_audio_input(monkeypatch, tmp_path):
     )
 
     assert loaded is True
-    # Which file the load asks about, not how many times: the batch-size decision asks
-    # the same question earlier in the load, and _BOOL_CACHE answers the second one
-    # without touching the disk.
+    # The batch-size decision may inspect the same projector earlier in the load.
     assert read and set(read) == {str(projector)}
     assert backend._is_vision is True
     assert backend._mmproj_has_audio is True
