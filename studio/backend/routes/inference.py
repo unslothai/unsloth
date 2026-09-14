@@ -35903,6 +35903,9 @@ async def diffusion_download_plan(
             memory_mode = request.memory_mode,
             cpu_offload = request.cpu_offload,
             transformer_prequant_path = request.transformer_prequant_path,
+            # A forced accumulate the hosted checkpoint cannot bake declines the seed, so the plan has
+            # to read it or it stages a file the load then refuses and replaces with dense shards.
+            transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             loras = request.loras,
             # Only the verdict, not the probe: the panel stages exactly what this reports.
             # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit

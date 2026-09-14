@@ -1684,6 +1684,7 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
         transformer_quant = "int8",
         memory_mode = "low_vram",
         cpu_offload = True,
+        transformer_quant_fast_accum = False,
         loras = [{"id": "unsloth/some-lora", "weight": 0.8}],
     )
 
@@ -1693,6 +1694,9 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
     assert seen["memory_mode"] == "low_vram"
     assert seen["cpu_offload"] is True
+    # A forced accumulate the hosted checkpoint cannot bake declines the seed: dropped here, the plan
+    # stages the artifact and the load refuses it and pulls the dense shards outside the staging.
+    assert seen["transformer_quant_fast_accum"] is False
     assert len(seen["loras"] or []) == 1
 
 
