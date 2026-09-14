@@ -61,13 +61,18 @@ def test_q_galore_refuses_a_model_with_no_projectable_parameters():
     flattened = nn.Module()
     flattened.register_parameter("_flat_param", nn.Parameter(torch.ones(64)))
     args = SimpleNamespace(
-        learning_rate = 1e-3, weight_decay = 0.0,
-        adam_beta1 = 0.9, adam_beta2 = 0.999, adam_epsilon = 1e-8,
+        learning_rate = 1e-3,
+        weight_decay = 0.0,
+        adam_beta1 = 0.9,
+        adam_beta2 = 0.999,
+        adam_epsilon = 1e-8,
     )
     trainer = SimpleNamespace(args = args, model = flattened, optimizer = None)
     with pytest.raises(ValueError, match = "no parameter matched"):
         UnslothTrainer._create_q_galore_optimizer(
-            trainer, QGaloreConfig(rank = 8, weight_quant = False), None,
+            trainer,
+            QGaloreConfig(rank = 8, weight_quant = False),
+            None,
         )
 
 
@@ -81,12 +86,17 @@ def test_q_galore_still_builds_when_parameters_are_projectable():
     model = nn.Sequential()
     model.add_module("q_proj", nn.Linear(64, 64, bias = False))
     args = SimpleNamespace(
-        learning_rate = 1e-3, weight_decay = 0.0,
-        adam_beta1 = 0.9, adam_beta2 = 0.999, adam_epsilon = 1e-8,
+        learning_rate = 1e-3,
+        weight_decay = 0.0,
+        adam_beta1 = 0.9,
+        adam_beta2 = 0.999,
+        adam_epsilon = 1e-8,
     )
     trainer = SimpleNamespace(args = args, model = model, optimizer = None)
     optimizer = UnslothTrainer._create_q_galore_optimizer(
-        trainer, QGaloreConfig(rank = 8, weight_quant = False), None,
+        trainer,
+        QGaloreConfig(rank = 8, weight_quant = False),
+        None,
     )
     assert any("rank" in group for group in optimizer.param_groups)
 
@@ -105,7 +115,10 @@ def test_embedding_lr_is_rejected_when_wrapping_hid_the_embeddings():
     assert [n for n, _ in wrapped.named_parameters()] == ["_fsdp_wrapped_module._flat_param"]
     with pytest.raises(ValueError, match = "no embedding parameter matched"):
         _create_unsloth_optimizer(
-            wrapped, torch.optim.AdamW, {"lr": 1e-3}, 5e-5,
+            wrapped,
+            torch.optim.AdamW,
+            {"lr": 1e-3},
+            5e-5,
             require_embedding_match = True,
         )
 
