@@ -321,19 +321,29 @@ def test_an_intact_studio_cache_is_still_the_ordinary_answer(tmp_path):
 
 
 @requires_pwsh
-def test_a_marker_naming_a_deleted_cache_keeps_the_studio_cache(tmp_path):
-    """A stale pointer is not a decision.
+def test_a_marker_naming_a_deleted_cache_is_no_more_evidence_than_none(tmp_path):
+    """A stale pointer is not a decision, so it gets the same ordering as an absent marker:
+    behind uv's default when that is warm, ahead of it when it is cold."""
+    # A fresh root per half: the selector RECORDS its choice, so a second call against the
+    # same root is no longer reading a stale marker.
+    warm_root = tmp_path / "studio-warm"
+    _warm(warm_root / "cache" / "uv")
+    (warm_root / "cache" / "uv-cache-dir").write_text(
+        str(tmp_path / "deleted-cache"), encoding = "utf-8"
+    )
+    chosen = _select(warm_root, str(_warm(tmp_path / "uvdefault")))
+    assert chosen["mode"] == "shared", chosen
 
-    Treating it as one skipped a warm Studio cache holding Torch and CUDA and took uv's
-    default instead, which is the abandonment the marker exists to prevent. Offline, that is
-    an install that used to succeed and then failed.
-    """
-    root = tmp_path / "studio"
-    _warm(root / "cache" / "uv")
-    (root / "cache" / "uv-cache-dir").write_text(str(tmp_path / "deleted-cache"), encoding = "utf-8")
-    chosen = _select(root, str(_warm(tmp_path / "uvdefault")))
+    cold_root = tmp_path / "studio-cold"
+    studio_cache = _warm(cold_root / "cache" / "uv")
+    (cold_root / "cache" / "uv-cache-dir").write_text(
+        str(tmp_path / "deleted-cache"), encoding = "utf-8"
+    )
+    cold = tmp_path / "colddefault"
+    cold.mkdir()
+    chosen = _select(cold_root, str(cold))
     assert chosen["mode"] == "studio", chosen
-    assert chosen["dir"].rstrip("\\/") == str(root / "cache" / "uv").rstrip("\\/"), chosen
+    assert chosen["dir"].rstrip("\\/") == str(studio_cache).rstrip("\\/"), chosen
 
 
 @requires_pwsh
@@ -429,15 +439,33 @@ def test_a_bucket_that_is_not_a_directory_is_refused(tmp_path):
 
 
 @requires_pwsh
-def test_an_unmarked_warm_studio_cache_is_kept(tmp_path):
-    """Every install from before the marker shipped looks like this: gigabytes of Torch and
-    CUDA in the Studio cache and nothing recording it. One unrelated wheel in uv's default
-    must not be enough to abandon it."""
+def test_an_unmarked_warm_studio_cache_is_kept_when_the_default_is_cold(tmp_path):
+    """An install from before the marker can hold gigabytes of Torch and CUDA in the Studio
+    cache with nothing recording it, and abandoning that costs the downloads again.
+
+    It is the LAST candidate though, behind uv's default: the marker arrived in b66d2a4c8 and
+    the installer's early UV_CACHE_DIR block only in e12963071 the day after, so an install
+    with no marker is old enough that `shared` was reachable, and there the launch repoint
+    leaves backend wheels in the Studio cache while the real bytes sit in the default.
+    """
     root = tmp_path / "studio"
     studio_cache = _warm(root / "cache" / "uv")
-    verdict = _select(root, str(_warm(tmp_path / "uvdefault")))
+    cold = tmp_path / "colddefault"
+    cold.mkdir()
+    verdict = _select(root, str(cold))
     assert verdict["mode"] == "studio", verdict
     assert verdict["dir"] == str(studio_cache), verdict
+
+
+@requires_pwsh
+def test_a_warm_default_outranks_an_unmarked_studio_cache(tmp_path):
+    """The other half of the same rule, and what the CLI updater has always done."""
+    root = tmp_path / "studio"
+    _warm(root / "cache" / "uv")
+    default = _warm(tmp_path / "uvdefault")
+    verdict = _select(root, str(default))
+    assert verdict["mode"] == "shared", verdict
+    assert verdict["dir"] == str(default), verdict
 
 
 @requires_pwsh

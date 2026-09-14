@@ -332,14 +332,22 @@ assert_eq "unwritable home -> shared"    "shared" "$(echo "$_out" | cut -d' ' -f
 
 echo "=== an install that predates the marker keeps the cache it already has ==="
 # The installed base from before the marker has a populated $STUDIO_HOME/cache/uv and nothing
-# recording it. One unrelated wheel in uv's default reads as warm, and without this the
-# selection abandons gigabytes of Torch and CUDA.
+# recording it, and abandoning it costs gigabytes of Torch and CUDA. It is the LAST candidate,
+# though, behind uv's default: the marker arrived in b66d2a4c8 and the early block only in
+# e12963071 the day after, so an install with no marker is old enough that `shared` was
+# reachable, and there the launch repoint leaves backend wheels in the Studio cache while the
+# real bytes sit in the default. So it wins when the default is cold, and loses when it is warm.
+_cold_home="$_TMP/colddefault2"
+mkdir -p "$_cold_home"
 mkdir -p "$_TMP/pre/cache/uv/archive-v0/torch"
 : > "$_TMP/pre/cache/uv/archive-v0/torch/libtorch.so"
 : > "$_TMP/pre/cache/uv/CACHEDIR.TAG"
-_out=$(_run "$_TMP/pre" '' "$_populated")
-assert_eq "an unmarked warm Studio cache is kept" "studio" "$(echo "$_out" | cut -d' ' -f1)"
-assert_eq "and it is the one that is used"        "$_TMP/pre/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+_out=$(_run "$_TMP/pre" '' "$_cold_home")
+assert_eq "unmarked warm Studio beats a cold default" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "and it is the one that is used"            "$_TMP/pre/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+# ...and loses to a WARM one, because content cannot say whose the Studio cache is.
+assert_eq "a warm default outranks it"                "shared" \
+    "$(_run "$_TMP/pre3" '' "$_populated" | cut -d' ' -f1)"
 # An unmarked but EMPTY Studio cache is not a reason to skip the shared one.
 assert_eq "an unmarked cold Studio cache does not" "shared" \
     "$(_run "$_TMP/pre2" '' "$_populated" | cut -d' ' -f1)"
@@ -466,9 +474,12 @@ mkdir -p "$_stale/studio/cache/uv/archive-v0/torch"
 : > "$_stale/studio/cache/uv/archive-v0/torch/libtorch.so"
 : > "$_stale/studio/cache/uv/CACHEDIR.TAG"
 printf '%s\n' "$_TMP/deleted-cache" > "$_stale/studio/cache/uv-cache-dir"
-_out=$(_run "$_stale/studio" '' "$_populated")
+_out=$(_run "$_stale/studio" '' "$_cold_home")
 assert_eq "stale marker -> keep the Studio cache" "studio" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "and not uv's default"                  "$_stale/studio/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+# A stale marker is no more evidence than no marker, so a warm default still outranks it.
+assert_eq "a warm default still outranks a stale marker" "shared" \
+    "$(_run "$_stale/studio" '' "$_populated" | cut -d' ' -f1)"
 
 echo "=== a root we can create in but not unlink from is not writable ==="
 # NTFS carries DELETE as its own ACE and an append-only directory does the same on ext4, so

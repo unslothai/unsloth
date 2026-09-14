@@ -194,13 +194,7 @@ def test_a_bucket_lookalike_is_not_warmth_for_the_update_either(monkeypatch, tmp
 
 
 def test_windows_keeps_uv_s_default_when_both_are_warm_and_unmarked(monkeypatch, tmp_path, caches):
-    """Windows does NOT get the POSIX rule above, and the difference is historical.
-
-    install.ps1's selection already worked before the marker shipped, so a pre-marker Windows
-    install could have chosen the shared cache and then repointed the backend at the Studio one.
-    That leaves a few on-demand wheels in the Studio cache while Torch and CUDA sit in the
-    shared one, so preferring the Studio cache there would abandon the cache that has the bytes.
-    """
+    """The same rule, asserted through the PowerShell spawn rather than the POSIX one."""
     studio = _studio()
     studio_cache, default_cache = caches
     _fill(studio_cache)
@@ -299,38 +293,43 @@ def test_a_studio_mode_install_wins_over_a_cold_default(monkeypatch, tmp_path, c
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
-def test_two_warm_caches_and_no_marker_keep_the_studio_cache_on_posix(
-    monkeypatch, tmp_path, caches
-):
-    """A pre-marker install on POSIX cannot say which cache it used, but history can.
+def test_two_warm_caches_and_no_marker_keep_uv_s_default(monkeypatch, tmp_path, caches):
+    """An install with no marker cannot say which cache it used, and content cannot either.
 
-    install.sh always took its `custom` branch and filled the Studio cache, so shared mode was
-    unreachable there and nothing else wrote to that directory. Confirmed by running the
-    selector from b66d2a4c8~1, the commit before the marker shipped. So a warm Studio cache
-    with no marker is this install's own, and taking uv's default instead abandons the Torch
-    and CUDA it already holds the moment one unrelated wheel makes the default read as warm.
-
-    The installers pick the Studio cache here. An update that picked the other one would
-    disagree with the installer about the same machine.
+    The marker arrived in b66d2a4c8 and the installer's early UV_CACHE_DIR block only in
+    e12963071 the day after, so an install old enough to have no marker is old enough that
+    `shared` was reachable, and there the launch repoint leaves backend wheels in the Studio
+    cache while Torch and CUDA sit in uv's default. So the default keeps its priority when both
+    are warm, and the installers order the same three candidates the same way.
     """
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
     seen = _run_posix(monkeypatch, tmp_path)
 
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_warm_studio_cache_still_wins_when_the_default_is_cold(monkeypatch, tmp_path, caches):
+    """The other half: the pre-marker install this rule exists for, whose user never filled
+    uv's own cache. Nothing is lost by keeping the cache that has the bytes."""
+    studio_cache, _default_cache = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
-def test_a_stale_marker_also_keeps_the_studio_cache_on_posix(monkeypatch, tmp_path, caches):
-    """A marker naming a directory that is gone is a stale pointer, not a decision. The
-    installers stopped treating it as one; an update that still did would undo that."""
+def test_a_stale_marker_is_no_more_evidence_than_no_marker(monkeypatch, tmp_path, caches):
+    """A marker naming a directory that is gone is a stale pointer, not a decision, so it gets
+    the same ordering as an absent one rather than promoting the Studio cache."""
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
     _record(tmp_path / "StudioHome", tmp_path / "deleted-cache")
     seen = _run_posix(monkeypatch, tmp_path)
 
-    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
 
 
 def test_a_cold_recorded_cache_that_still_exists_keeps_losing(monkeypatch, tmp_path, caches):

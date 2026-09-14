@@ -1941,14 +1941,18 @@ exit 1
             # the repoint below leaves backend bytes in the losing cache; that is what the marker
             # is for. Same order as _configure_uv_cache and _with_studio_uv_cache.
             # An install from before the marker has a populated Studio cache and nothing
-            # recording it. Nothing else writes there, so a warm one is ours.
+            # recording it, so it is worth keeping. But it goes LAST, behind uv's default: an
+            # install old enough to have no marker is old enough that `shared` was reachable,
+            # and in that mode the launch repoint leaves backend wheels in the Studio cache
+            # while Torch and CUDA sit in the default. Ahead of the default it picked those
+            # leftovers. Mirrors install.sh and unsloth_cli/commands/studio.py.
             $recorded = Read-StudioUvCacheMarker -StudioRoot $StudioRoot
-            # Only when there is no marker, or when it names a directory that is gone: that is
-            # a stale pointer, not a decision. Mirrors install.sh.
+            # A marker naming a directory that is gone is a stale pointer, not a decision, so
+            # it lands in the same place.
             $unmarkedStudio = if ($recorded -and (Test-Path -LiteralPath $recorded -PathType Container -ErrorAction SilentlyContinue)) {
                 $null
             } else { $studioCache }
-            foreach ($candidate in @($recorded, $unmarkedStudio, $defaultCache)) {
+            foreach ($candidate in @($recorded, $defaultCache, $unmarkedStudio)) {
                 if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
                 if ($chosenCache) { continue }
                 # SilentlyContinue: under "Stop" a Test-Path inside an ACL-denied directory
@@ -1994,9 +1998,15 @@ exit 1
             # beats landing there: the populated cache that only failed the probe first, then
             # uv's own default, which at worst costs the downloads this cache never saved.
             if (-not (Test-StudioUvCacheUsable -Cache $studioCache)) {
-                if ($warnCache -and $warnCache -ne $studioCache) {
+                # A cache that is WARM and merely failed the probe beats a cold one we can
+                # write, including when it is the Studio cache itself: the probe refuses a
+                # whole cache for one bucket-shaped entry uv may never touch, where a cold
+                # cache guarantees the downloads and offline guarantees failure.
+                if ($warnCache) {
                     $selectedCache = $warnCache
-                    $script:StudioUvCacheMode = "shared"
+                    if ($warnCache -ne $studioCache) {
+                        $script:StudioUvCacheMode = "shared"
+                    }
                 } elseif ($defaultCache -and $defaultCache -ne $studioCache -and
                           (Test-StudioUvCacheUsable -Cache $defaultCache)) {
                     $selectedCache = $defaultCache

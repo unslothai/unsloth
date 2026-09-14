@@ -796,10 +796,15 @@ _configure_uv_cache() {
     esac
 
     # An install from before the marker has a populated $STUDIO_HOME/cache/uv and nothing
-    # recording it, and without this the loop below abandons it for uv's default. Nothing else
-    # writes there, so a warm one is ours. Only when there is no marker, or when the marker
-    # names a directory that is gone: that is a stale pointer, not a decision, and treating it
-    # as one cost us the warm Studio cache the marker exists to keep.
+    # recording it, so it is worth keeping rather than abandoning for uv's default. But it goes
+    # LAST, behind uv's default, because content cannot prove whose it is: the marker arrived in
+    # b66d2a4c8 on 2026-09-06 and the early block only in e12963071 the day after, so an install
+    # old enough to have no marker is old enough that `shared` was reachable, and in that mode
+    # the launch repoint leaves backend wheels in the Studio cache while Torch and CUDA sit in
+    # the default. Ordering it ahead of the default picked those leftovers and redownloaded
+    # gigabytes. Behind it, a warm Studio cache still wins whenever the default is cold, which
+    # is the install this was added for. A marker naming a directory that is gone is a stale
+    # pointer rather than a decision, so it lands in the same place.
     _uv_unmarked_studio=""
     if [ -z "$_uv_recorded" ] || [ ! -d "$_uv_recorded" ]; then
         _uv_unmarked_studio="$_uv_studio_cache"
@@ -812,7 +817,7 @@ _configure_uv_cache() {
     _uv_blocked_cache=""
     _uv_warn_cache=""
     _uv_chosen_cache=""
-    for _uv_candidate in "$_uv_recorded" "$_uv_unmarked_studio" "$_uv_default_cache"; do
+    for _uv_candidate in "$_uv_recorded" "$_uv_default_cache" "$_uv_unmarked_studio"; do
         { [ -n "$_uv_candidate" ] && [ -z "$_uv_chosen_cache" ]; } || continue
         _uv_cand_populated=false
         _uv_cand_writable=true
@@ -894,9 +899,15 @@ _configure_uv_cache() {
         # certain failure and the merely suspect cache are both on the table, then uv's own
         # default, which at worst costs the downloads this cache was never going to save.
         if ! _uv_cache_is_writable "$_uv_studio_cache"; then
-            if [ -n "$_uv_warn_cache" ] && [ "$_uv_warn_cache" != "$_uv_studio_cache" ]; then
+            # A cache that is WARM and merely failed the probe beats a cold one we can write:
+            # the probe refuses a whole cache for one bucket-shaped entry uv may never touch,
+            # where a cold cache guarantees the downloads, and offline guarantees failure. That
+            # holds when the refused cache is the Studio cache itself.
+            if [ -n "$_uv_warn_cache" ]; then
                 UV_CACHE_DIR="$_uv_warn_cache"
-                _UV_CACHE_MODE=shared
+                if [ "$_uv_warn_cache" != "$_uv_studio_cache" ]; then
+                    _UV_CACHE_MODE=shared
+                fi
             elif [ -n "$_uv_default_cache" ] \
                  && [ "$_uv_default_cache" != "$_uv_studio_cache" ] \
                  && _uv_cache_is_writable "$_uv_default_cache"; then
