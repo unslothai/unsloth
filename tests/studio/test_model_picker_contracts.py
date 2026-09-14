@@ -2990,9 +2990,7 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     # config change deletes and remounts the instance under the same draft key in one commit,
     # and only a layout cleanup runs before the incoming instance re-primes. Released passively
     # it deleted the draft the new instance had just seeded, and the panel stopped taking edits.
-    assert (
-        "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
-    )
+    assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
     # And the server-override read is marked once per draft rather than once per mounted
     # editor, so opening the second host cannot write the stored row back over what the
     # first one is showing.
