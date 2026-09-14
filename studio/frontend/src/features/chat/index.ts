@@ -77,6 +77,7 @@ export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
   toolOutputKey,
+  toolResultText,
   toolThreadScope,
   useToolOutputFor,
   useUnresolvedToolPaneScope,
@@ -165,6 +166,10 @@ export {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
+export {
+  planUserPromptQueueStop,
+  userStopTargetCancelMode,
+} from "./utils/prompt-queue-user-stop";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 export { rangeBetween, toggleSelected } from "./utils/row-selection";
 export {
@@ -371,3 +376,13 @@ export {
   generateStudioTtsAudio,
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
+export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export {
+  SKILL_MENTION_PATTERN,
+  listSkills,
+  refreshSkillsCatalog,
+  setSkillEnabled,
+  settleSkillsForText,
+  useSkillsCatalog,
+  type SkillRecord,
+} from "./api/skills-api";

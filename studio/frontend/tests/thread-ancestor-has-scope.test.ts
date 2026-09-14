@@ -44,19 +44,16 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
-const read = (rel: string): string =>
-  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+import { readText } from "./helpers/kit.ts";
 
 const parse = (rel: string): ts.SourceFile =>
-  ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  ts.createSourceFile(rel, readText(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 /** Every string literal in the file, so a className built by `cn(...)` is covered too. */
 const stringLiterals = (source: ts.SourceFile): string[] => {

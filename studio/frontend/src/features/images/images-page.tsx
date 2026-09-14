@@ -203,7 +203,6 @@ const ASPECT_RATIOS: Record<string, [number, number]> = {
   "21:9": [21, 9],
 };
 const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
-// Names read faster than bare ratios; Flip covers the portrait side of each.
 const ASPECT_LABELS: Record<string, string> = {
   "1:1": "Square",
   "3:2": "Photo",
@@ -228,7 +227,6 @@ const DIM_OPTIONS = [
   1408, 1536, 1664, 1792, 1920, 2048,
 ];
 
-/** Compact size control: type a value, or pick one of the usual sizes from the menu. */
 function DimensionSelect({
   icon,
   label,
@@ -313,8 +311,8 @@ function matchAspect(width: number, height: number): { key: string; portrait: bo
 }
 
 // Module cache of the backend-persisted gallery, so a tab switch re-renders instantly; object
-// URLs are revoked only on delete. The 192 MB blob budget never evicts a visible image.
-// 192 MB is ~100-200 images, far more than a viewport holds.
+// URLs are revoked only on delete. The 192 MB blob budget (~100-200 images) never evicts a
+// visible image.
 const IMAGE_BLOB_BUDGET_BYTES = 192 * 1024 * 1024;
 
 const galleryCache: {
@@ -442,7 +440,6 @@ function formatTimestamp(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-// Bar label for an in-flight generation: step count plus an ETA once known.
 function genStepLabel(p: DiffusionGenerateProgress): string {
   // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
@@ -570,7 +567,8 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   error: null,
 };
 
-// One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one control.
+// One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one
+// control.
 function SliderField({
   label,
   hint,
@@ -658,7 +656,6 @@ function ResolvedBadge({
   );
 }
 
-// A compact labeled Select row for the Advanced Options panel.
 function AdvancedSelect({
   label,
   hint,
@@ -670,9 +667,7 @@ function AdvancedSelect({
 }: {
   label: string;
   hint?: ReactNode;
-  // An optional inline badge next to the label (e.g. the "Auto: X" resolved-value pill).
   badge?: ReactNode;
-  // A short always-visible description under the row.
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
@@ -944,7 +939,6 @@ async function buildOutpaint(
   return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 
-// One labeled row in the recipe popover.
 function RecipeRow({
   label,
   value,
@@ -972,7 +966,6 @@ function RecipeRow({
   );
 }
 
-// The full generation recipe for an image, with a one-click "restore to inputs".
 function RecipePopover({
   image,
   onRestore,
@@ -1047,7 +1040,6 @@ function RecipePopover({
   );
 }
 
-// One "what actually ran" line in the loaded-build summary below.
 function BuildRow({ label, value, badge }: { label: string; value: string; badge?: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -1302,9 +1294,7 @@ export function ImagesPage({
   const seededResident = useRef<string | null>(null);
 
   const [busy, setBusy] = useState<Busy>(null);
-  // {done, total} while a multi-run generation is in flight (null = idle).
   const [genDone, setGenDone] = useState<number | null>(null);
-  // Live per-step progress (step / total + ETA) polled during generation.
   const [genStep, setGenStep] = useState<DiffusionGenerateProgress | null>(null);
   const genPollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // visibilitychange handler active while a generation poll runs: background tabs clamp
@@ -1332,10 +1322,9 @@ export function ImagesPage({
   // Set by Stop for one handleGenerate call: the backend cancel only reaches the denoise running
   // RIGHT NOW, so a count > 1 request would start its next run straight after.
   const cancelRequested = useRef(false);
-  // True only once the backend answered {cancelled: true}. Anything else means the run was NOT
-  // stopped, so an error it raises afterwards is a real failure.
-  // Anything else -- a POST that never landed, or {cancelled: false} because the run was already past
-  // its last cancellation check -- means it was NOT stopped.
+  // True only once the backend answered {cancelled: true}. Anything else, a POST that never landed
+  // or {cancelled: false} because the run was already past its last cancellation check, means it was
+  // NOT stopped, so an error raised afterwards is a real failure.
   const cancelAcked = useRef(false);
   // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
   const runToken = useRef(0);
@@ -1944,7 +1933,6 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
     setPrompt(image.prompt);
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
@@ -2094,9 +2082,9 @@ export function ImagesPage({
     () =>
       subscribeModelEjected("image", () => {
         dropResidentState();
-        // That eject cancelled the replacement load, and its progress poll is the only thing that
-        // clears `busy`, which dropResidentState just stopped; leaving it set locks the page.
-        // Narrowed to "loading" so a generation is left alone, and held until the start settles.
+        // That eject cancelled the replacement load, and its progress poll is the only thing that clears
+        // `busy`, which dropResidentState just stopped; leaving it set locks the page. Narrowed to
+        // "loading" so a generation is left alone, and held until the start settles.
         const pending = pendingStart.current;
         if (pending) {
           setBusy((prev) => (prev === "loading" ? "unloading" : prev));
@@ -2522,9 +2510,9 @@ export function ImagesPage({
   // Set when a staged download finished while this page was hidden: both diffusion pages stay
   // mounted and a load evicts whatever holds the GPU. The pick fires on return.
   const stagedLoadDeferred = useRef(false);
-  // Both deferred paths run the load minutes after the pick was reported started, so both need
-  // the same rollback: a deferred load can still be REFUSED, and staging polls nothing.
-  // `owned` is read BEFORE the call, so a newer pick's label is left alone.
+  // Both deferred paths run the load minutes after the pick was reported started, so both need the
+  // same rollback: a deferred load can still be REFUSED, and staging polls nothing. `owned` is read
+  // BEFORE the call, so a newer pick's label is left alone.
   const runStagedLoad = useCallback(
     (pending: NonNullable<typeof pendingStagedLoad.current>) => {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
@@ -2611,11 +2599,9 @@ export function ImagesPage({
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
     ): Promise<boolean> => {
-      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight,
-      // and plans resolve in response order rather than pick order. Bumped before the non-hub
-      // return too, so a local pick invalidates an in-flight hub plan.
-      // Plans resolve in response order, not pick order. Bumped before the non-hub return too: a local
-      // pick must invalidate an in-flight hub plan.
+      // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
+      // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
+      // a local pick invalidates an in-flight hub plan.
       const pick = ++pickSeq.current;
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
@@ -2653,10 +2639,9 @@ export function ImagesPage({
               bytes: e.bytes,
               ggufFilename: e.gguf_filename,
               // The entry carrying the picked checkpoint file, so the panel can label it without guessing:
-              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint
-              // shares its repo with cached companions. The backend's answer wins, since a gated pipeline
-              // is staged from an ungated MIRROR. Nullish coalescing, not `or`: a planner
-              // answering false is still an answer.
+              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint shares
+              // its repo with cached companions. The backend's answer wins, since a gated pipeline is staged
+              // from an ungated MIRROR. Nullish coalescing, not `or`: a planner answering false is still an answer.
               checkpoint:
                 e.checkpoint ??
                 (opts.filename
@@ -3040,11 +3025,11 @@ export function ImagesPage({
     try {
       setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
-      // Hold the page until any load start still in flight has run to its END, compensating unload
-      // and all. Without the fence an eject landing before the start registered returned success
-      // and cleared busy, so the next pick was refused while the older load carried on.
-      // That older handler, seeing the newer loadSeq, skips its compensating unload and returns without
-      // restarting its poll, leaving a multi-gigabyte load running with no toast and no cancel control.
+      // Hold the page until any load start still in flight has run to its END, compensating unload and
+      // all. Without the fence an eject landing before the start registered returned success and cleared
+      // busy, so the next pick was refused while the older load carried on: that older handler, seeing
+      // the newer loadSeq, skips its compensating unload and leaves a multi-gigabyte load running with
+      // no toast and no cancel control.
       const pending = pendingStart.current;
       if (pending) {
         try {
@@ -3345,10 +3330,10 @@ export function ImagesPage({
         genVisibilityListener.current = null;
       }
       cancelRequested.current = false;
-      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes back:
-      // a generation can change server-side status and a cancelled native run can leave no model
-      // at all, so re-enabling first would offer a button that 409s.
-      // Speed=Auto compiles on the 3rd LoRA-free run and supports_lora flips false.
+      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes back: a
+      // generation can change server-side status (Speed=Auto compiles on the 3rd LoRA-free run and
+      // supports_lora flips false) and a cancelled native run can leave no model at all, so re-enabling
+      // first would offer a button that 409s.
       if (isMounted.current) await refreshStatus();
       setBusy(null);
       setGenDone(null);
@@ -3411,7 +3396,6 @@ export function ImagesPage({
   const activeWorkflowTab =
     WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
 
-  // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
       <AdvancedSelect

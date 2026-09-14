@@ -84,6 +84,8 @@ def test_missing_description_symbol_keeps_igpu_detection():
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
+    # The type WAS read, which separates a real "not integrated" from a failed query;
+    # only the former may be trusted for a DirectIO decision.
     assert known == [True]
 
 
@@ -345,8 +347,7 @@ def test_an_unreachable_registry_reports_every_device_unknown():
 
 
 def test_the_reader_carries_the_type_known_column(tmp_path):
-    """Six columns carry it; a five-column line from an older probe answered every
-    device, so its silence is the absence of an unknown state, not one."""
+    """Six columns carry it; an older probe cannot distinguish a failed type read."""
     binary = _make_vulkan_install(tmp_path)
     rows = [
         f"0\t{23 * GIB}\t0\t{24 * GIB}\tKnown dGPU\t1",
@@ -355,7 +356,7 @@ def test_the_reader_carries_the_type_known_column(tmp_path):
     ]
     with _mock_probe(rows):
         inventory = LlamaCppBackend._run_vulkan_probe(binary)
-    assert [r["type_known"] for r in inventory] == [True, False, True]
+    assert [r["type_known"] for r in inventory] == [True, False, False]
 
 
 @pytest.mark.parametrize(

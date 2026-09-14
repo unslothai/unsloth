@@ -6,17 +6,14 @@
 Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
-``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>\\t<type_known>`` line per
-device to stdout. Indices are ggml's own Vulkan device ordinals, which need not
-match nvidia-smi order. ``is_igpu`` (from ggml's device type) is ``1`` for an
+``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>\\t<type_known>`` line per device to
+stdout. Indices are ggml's own Vulkan device ordinals, which need not match
+nvidia-smi order. ``is_igpu`` (from ggml's device type) is ``1`` for an
 integrated GPU sharing system RAM. ``total_bytes`` is the device-local heap;
 the reader uses it to reserve absolute headroom on a discrete card (parity
 with the CUDA/ROCm fit) and ignores it for an iGPU, whose "VRAM" is shared
 system RAM. ``name`` is ggml's device description (the marketing name, e.g.
 "AMD Radeon RX 9070 XT"); empty when the registry lookup fails.
-``type_known`` is ``1`` only when ggml really answered with a device type: ``is_igpu
-= 0`` alone conflates a proved dGPU with an unreadable one, and a caller that must
-not credit an iGPU's shared pool as VRAM needs that difference.
 
 Uses only the standard library so it stays runnable as a bare script.
 """
@@ -30,14 +27,18 @@ _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
 def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
-    """Per-device integrated-GPU flags, descriptions and type-read success.
+    """Per-device integrated-GPU flags, descriptions, and whether the type was READ.
 
     The Vulkan reg enumerates devices in the same order as
     ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
     i``), so reg index == device ordinal. Returns all-False / empty-name on any
-    failure so the memory readings still get through; the third list says which
-    of those Falses were answers, since a discrete-only credit must not read the
-    fallback as proof of a dGPU.
+    failure so the reader never over-caps a discrete card and the memory
+    readings still get through.
+
+    The third list says whether each flag is an ANSWER. Without it "not integrated"
+    and "could not tell" are the same value, which is safe for a caller that only
+    skips a page-lock and wrong for one choosing a loader: a DirectIO decision taken
+    on an unread type buffers an iGPU's host-backed weights.
     """
     flags = [False] * count
     names = [""] * count

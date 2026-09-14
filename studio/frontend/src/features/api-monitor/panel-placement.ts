@@ -127,12 +127,11 @@ function candidates(
   const steps = [...obstacles]
     .sort((a, b) => b.top - a.top)
     .map((box) => ({ left: right, top: box.top - PANEL_GAP - size.height }));
-  // The corner each candidate came from, kept rather than inferred back out of
-  // its coordinates. A 400px panel in a 768px window is anchored right at
-  // left=352, which is left of the midpoint, so reading the side off `left`
-  // ranked the right-hand corner as a left-hand refuge. Being first, it then
-  // won the tie and the panel stayed exactly where it was, over the Close
-  // button and the resize grip this fallback exists to keep reachable.
+  // The corner each candidate came from, kept rather than inferred back out of its coordinates. A
+  // 400px panel in a 768px window is anchored right at left=352, which is left of the midpoint, so
+  // reading the side off `left` ranked the right-hand corner as a left-hand refuge. Being first, it
+  // then won the tie and the panel stayed exactly where it was, over the Close button and the
+  // resize grip this fallback exists to keep reachable.
   const ordered: Array<PanelAnchor & { rightSide: boolean }> = [
     { left: right, top: bottom, rightSide: true },
     ...steps.map((step) => ({ ...step, rightSide: true })),
@@ -145,9 +144,8 @@ function candidates(
     return {
       anchor: placed,
       clearRank: index,
-      // Left half first, and within a half the bottom first: this panel and
-      // the stack both live along the bottom edge, so a refuge up top is the
-      // bigger surprise.
+      // Left half first, and within a half the bottom first: this panel and the stack both live
+      // along the bottom edge, so a refuge up top is the bigger surprise.
       refugeRank:
         (anchor.rightSide ? 2 : 0) +
         (placed.top > viewport.height / 2 ? 0 : 1),

@@ -10,9 +10,7 @@
 // own ceiling, and the extractor that turns a stored part back into base64.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
@@ -24,14 +22,13 @@ import {
 } from "../src/lib/video-utils.ts";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 // chat-adapter.ts drags in the stores, the toast layer and the whole runtime for
 // one pure extractor, so lift the shipped source instead of importing it -- the
 // same trick tests/auto-load-target-key.test.ts uses. This still asserts against
 // the real code: a rename or a rewrite fails the slice below.
-const adapterSource = readFileSync(
-  fileURLToPath(new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url)),
-  "utf8",
-);
+const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function lift(name: string, opener: string): string {
   const start = adapterSource.indexOf(opener);
@@ -336,12 +333,7 @@ test("a thread with no video and no user turn returns nothing rather than throwi
 // E. the context-usage recount must decline a turn carrying a clip
 // ---------------------------------------------------------------------------
 
-const recountSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/utils/refresh-context-usage.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const recountSource = readSrc("features/chat/utils/refresh-context-usage.ts");
 
 test("the recount declines a video turn, as it already declines image and audio", () => {
   // toOpenAIMessages has no video branch, so a turn carrying a clip would be

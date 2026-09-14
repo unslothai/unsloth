@@ -14,7 +14,7 @@ import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
-import { toolArgText } from "./tool-arg-text";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToolAwaitingApproval } from "@/features/chat";
 import {
@@ -141,7 +141,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   const kind = parsedArgs.kind ?? "bash";
   const command = toolArgText(parsedArgs.command);
   const path = toolArgText(parsedArgs.path);
-  const isRunning = status?.type === "running";
+  const isRunning = isToolCallRunning(status);
 
   const commandLabel = command ? truncateCommandLabel(command) : "";
 
