@@ -1488,10 +1488,9 @@ test("a retryable drafter failure declines the shortcut", () => {
 });
 
 test("a repaired drafter has to reach the backend to be re-checked", () => {
-  // The settings sheet tells the user to replace the sidecar in place. `adoptable` skips
-  // /load when this returns false, so the backend's content re-check would never run and
-  // the repair would do nothing. An unchanged file still dedupes server-side, which is
-  // what makes declining the shortcut cheap rather than a teardown.
+  // The sheet's remedy is to replace the sidecar in place, and `adoptable` skips /load
+  // when this returns false, so the re-check would never run. An unchanged file still
+  // dedupes server-side, so declining the shortcut is cheap rather than a teardown.
   for (const mode of ["auto", "mtp", "mtp+ngram"]) {
     assert.equal(
       residentSpeculativeNeedsRepair(

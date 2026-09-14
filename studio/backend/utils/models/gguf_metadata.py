@@ -55,7 +55,7 @@ _TTS_AUDIO_TYPE_CACHE: Dict[_CacheKey, Optional[str]] = {}
 # Whether the GGUF tensor table contains a sequence-classification head. None means the file could not be read or parsed, so callers can fail closed.
 _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
-# Whether the GGUF tensor table lists one exact tensor name, keyed by (file cache key, tensor name). None = unreadable, so callers can fail open. Backs the MTP drafter launchability check, which the memory-estimate route asks on a path the panel fires on every settings change.
+# Whether the GGUF tensor table lists one exact tensor name, keyed by (file cache key, tensor name). None = unreadable, so callers can fail open. Backs the MTP drafter launchability check, which the memory-estimate route asks on every settings change.
 _NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 # GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
@@ -463,9 +463,8 @@ def _gguf_has_classifier_head(path: str) -> Optional[bool]:
 def _parse_gguf_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
     """Whether the GGUF tensor table lists exactly ``wanted_name``.
 
-    Same stream and the same bounds as ``_parse_gguf_has_classifier_head``, which
-    matches a prefix; this one matches a full name, so it can answer "does this
-    file carry its own ``token_embd.weight``" without mapping the tensor data in.
+    Same stream and bounds as ``_parse_gguf_has_classifier_head``, which matches a
+    prefix; this matches a full name, without mapping the tensor data in.
     """
     try:
         with open(path, "rb") as f:
@@ -545,17 +544,15 @@ def mtp_drafter_loads_standalone(path: str) -> bool:
     A draft head is opened as a complete model unless it can borrow the target's
     embeddings, so one carrying neither its own ``token_embd.weight`` nor
     ``<arch>.nextn_shared_target_tensors`` ends the launch with
-    ``check_tensor_dims: tensor 'token_embd.weight' not found``. Measured against
-    the shipped llama.cpp rather than inferred: the metadata flag is what admits a
-    head into ``borrow_shared_tensor``, and without it the tensor gate refuses the
-    file even though a target is present. Only that one tensor decides, because the
-    rest of the borrowable set is per-architecture -- ``qwen4exp`` creates no
-    ``output_norm`` at all -- so a stricter refusal would reject heads that work.
+    ``check_tensor_dims: tensor 'token_embd.weight' not found``. Measured against the
+    shipped llama.cpp: the metadata flag is what admits a head into
+    ``borrow_shared_tensor``. Only that one tensor decides, since the rest of the
+    borrowable set is per-architecture (``qwen4exp`` creates no ``output_norm``), so a
+    stricter refusal would reject heads that work.
 
-    Split-aware for the same reason ``_gguf_has_classifier_head`` is: llama-server
-    opens the sibling shards implicitly, so a tensor absent from shard 1 may simply
-    live in shard 2. Fails open on anything it cannot see -- an unreadable header,
-    or a set whose shards are not all here -- leaving the verdict to llama-server.
+    Split-aware like ``_gguf_has_classifier_head``: llama-server opens sibling shards
+    implicitly, so a tensor absent from shard 1 may live in shard 2. Fails open on
+    anything it cannot see, leaving the verdict to llama-server.
     """
     from utils.models.model_config import colocated_split_shards
 

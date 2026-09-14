@@ -2289,8 +2289,8 @@ class TestAnUnloadableSidecarIsNotCharged:
     """
 
     def _config(self, tmp_path, sidecar):
-        # A target per case: the files cache is keyed by the main weight's path, not
-        # the sidecar's, so one directory would serve the first answer twice.
+        # A target per case: the files cache keys on the main weight's path, not the
+        # sidecar's, so one directory would serve the first answer twice.
         home = tmp_path / sidecar.stem
         home.mkdir()
         return SimpleNamespace(

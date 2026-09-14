@@ -4009,10 +4009,10 @@ _HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_pr
 @pytest.mark.parametrize(
     "tensors,shared,expected",
     [
-        # Published shapes: a bare head extract, unsloth's MTP/ head, a -shared- head.
-        # Each verdict is the one llama-server b10909-mix-bea84f7 actually gives when the
-        # file is passed as --model-draft beside its target: the first ends the launch with
-        # "check_tensor_dims: tensor 'token_embd.weight' not found", the other two serve.
+        # Published shapes: a bare head extract, unsloth's MTP/ head, a -shared- head. Each
+        # verdict is what llama-server b10909-mix-bea84f7 gives for that file as
+        # --model-draft: the first ends the launch on a missing token_embd.weight, the
+        # other two serve.
         (_HEAD_EXTRACT, False, False),
         (["token_embd.weight", "output_norm.weight", *_HEAD_EXTRACT], False, True),
         (_HEAD_EXTRACT, True, True),
@@ -4099,7 +4099,7 @@ def test_the_drafter_verdict_is_cached_per_file_version(tmp_path):
         assert len(calls) == 1
 
         # Rewritten in place with its embeddings: a new (mtime, size) is a new answer, so
-        # repairing a rejected sidecar is picked up rather than served from the cache.
+        # a repaired sidecar is picked up rather than served from the cache.
         _write_drafter_gguf(
             tmp_path / "mtp-model.gguf", tensors = ["token_embd.weight", *_HEAD_EXTRACT]
         )

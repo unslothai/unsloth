@@ -3381,11 +3381,8 @@ def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
 def _mtp_drafter_loads_standalone(path: str) -> bool:
     """Does *path* have the embeddings a ``--model-draft`` file needs?
 
-    The rule itself lives with every other GGUF header read, in ``gguf_metadata``.
-    The memory-estimate route asks this question too, on a path the panel fires on
-    every settings change, so it has to come from the same ``(path, mtime, size)``
-    cache the projector capability read beside it already uses: one rule, two
-    callers, one parse per file version rather than a fresh mmap per keystroke.
+    The rule lives in ``gguf_metadata`` so the memory-estimate route, which asks on
+    every settings change, shares its ``(path, mtime, size)`` cache.
     """
     from utils.models.gguf_metadata import mtp_drafter_loads_standalone
     return mtp_drafter_loads_standalone(path)
@@ -6462,10 +6459,8 @@ class LlamaCppBackend:
         # Metal with no draft-layer flag. The caller keeps detecting it on disk, so
         # without this record every repeat Apply tears down a healthy server.
         self._mtp_draft_suppressed_path: Optional[str] = None
-        # WHICH of those two drops it was: "unloadable" or "paravirtual". The path alone
-        # cannot answer the two questions that differ between them -- whether repairing
-        # the file should reload, and which fallback reason the UI is told -- because
-        # only the unloadable drop is a verdict on the file's CONTENTS.
+        # WHICH drop it was, "unloadable" or "paravirtual": only the unloadable one is a
+        # verdict on the CONTENTS, so only it reloads on repair and renames the reason.
         self._mtp_draft_suppressed_reason: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
@@ -7685,14 +7680,10 @@ class LlamaCppBackend:
                 return False
             if requested_draft != loaded_draft:
                 return False
-            # Except when the drop was a verdict on the CONTENTS and the contents have
-            # since changed for the better: repair a rejected sidecar in place, press
-            # Apply, and a path-only comparison keeps the drafter-free server, leaving
-            # speculative decoding off until an unrelated reload. Only the unloadable
-            # drop is re-asked -- the paravirtual one is a property of the build, so the
-            # same bytes would be dropped again and the reload would buy nothing. The
-            # predicate is cached on (path, mtime, size), so an untouched file is not
-            # reparsed and a repaired one answers afresh.
+            # Repair a rejected sidecar in place and a path-only comparison would keep the
+            # drafter-free server. Only the unloadable drop is re-asked: the paravirtual
+            # one is a property of the build, so the same bytes drop again. Cached on
+            # (path, mtime, size), so only a repaired file is reparsed.
             if (
                 self._mtp_draft_suppressed_reason == "unloadable"
                 and self._mtp_draft_suppressed_path
@@ -20900,15 +20891,13 @@ class LlamaCppBackend:
             # Before the fit prices it, or a drafter that never launches pushes layers
             # off the GPU. DSpark/DFlash borrow token_embd from the target by design.
             #
-            # Not when the extras name their own drafter. Draft flags are last-wins, so
-            # the user's --model-draft is the file llama-server opens and the head-only
-            # sibling is never touched: there is nothing here to protect against. Worse,
-            # dropping it makes the load read as drafterless, and the fallback emits
-            # ngram-mod or --spec-default BEFORE the extras are appended, so the
-            # override stops running as MTP at all. Same question the paravirtual drop
-            # below asks, through the same helper and the same child-env rule: the
-            # inherited LLAMA_ARG_SPEC_DRAFT_* counts only where it survives to the
-            # child, which is only when the extras own --spec-type.
+            # Not when the extras name their own drafter: draft flags are last-wins, so
+            # that file is the one llama-server opens and the sibling is never touched.
+            # Dropping it anyway reads as drafterless, and the fallback emits ngram-mod
+            # or --spec-default BEFORE the extras are appended, so the override stops
+            # running as MTP. Same helper and child-env rule as the paravirtual drop
+            # below: inherited LLAMA_ARG_SPEC_DRAFT_* reaches the child only when the
+            # extras own --spec-type.
             if (
                 mtp_draft_path
                 and _spec_canon not in ("dspark", "dflash")
@@ -24278,8 +24267,7 @@ class LlamaCppBackend:
                     # launched, and None would clear a record an earlier drop made.
                     if launch_mtp_draft_path:
                         _suppressed_draft_path = launch_mtp_draft_path
-                        # Not a verdict on the file: the same bytes launch fine on a build
-                        # that can pin the drafter, so repairing it must NOT force a reload.
+                        # A property of the build, not the file, so a repair must not reload.
                         _suppressed_draft_reason = "paravirtual"
                     launch_mtp_draft_path = None
                     if extra_args:
@@ -24332,8 +24320,8 @@ class LlamaCppBackend:
                     dspark_fit_sized = not use_fit,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
-                    # So the fallback can say the sidecar is here and unopenable rather
-                    # than missing. DSpark and DFlash never reach the drop.
+                    # So the fallback says unopenable, not missing. DSpark/DFlash never
+                    # reach the drop.
                     mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
                     drafter_no_vram = _spec_dropped_no_vram,
                     embedded_mtp_partial_offload = bool(
@@ -26465,14 +26453,13 @@ class LlamaCppBackend:
                         avail_mib = _preflight_avail_mib,
                         pageable_note = _cpu_pageable_note,
                     )
-                    # This return skips the commit block below, so the drafter records
-                    # are written here too. Left alone they still describe the PREVIOUS
-                    # load: the reload comparator would judge this child against another
-                    # model's drafter, and a suppressed path carried over would stand the
-                    # drafter_not_found refetch down for a load that dropped nothing of
-                    # its own. Inert while only virtualised Metal could suppress a
-                    # drafter, since an auto-Vulkan fallback cannot happen there; an
-                    # unloadable sidecar can be suppressed on any platform.
+                    # This return skips the commit block below, so write the drafter
+                    # records here too: left describing the PREVIOUS load, the comparator
+                    # judges this child against another model's drafter and a carried-over
+                    # suppressed path stands the refetch down for a load that dropped
+                    # nothing. Inert while only virtualised Metal could suppress, where
+                    # auto-Vulkan fallback cannot happen; an unloadable sidecar can be
+                    # suppressed anywhere.
                     self._mtp_draft_path = launch_mtp_draft_path
                     self._mtp_draft_suppressed_path = _suppressed_draft_path
                     self._mtp_draft_suppressed_reason = _suppressed_draft_reason
@@ -27900,10 +27887,9 @@ class LlamaCppBackend:
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
             # A dropped sidecar was this quant's ONLY MTP signal: the motivating
-            # RVN-Q6_K.gguf reports no nextn_predict_layers and carries no -mtp in its
-            # name, so clearing mtp_draft_path made it read as a plain model and every
-            # arm below was skipped, leaving spec_fallback_reason null and the drop
-            # unexplained. Kept as a signal, it reaches the fallback instead.
+            # RVN-Q6_K.gguf has no nextn_predict_layers and no -mtp in its name, so
+            # clearing mtp_draft_path read as a plain model, skipping every arm below and
+            # leaving the drop unexplained. Kept as a signal, it reaches the fallback.
             or mtp_drafter_unloadable
         )
         _mtp_size_b = _extract_model_size_b(model_identifier)
@@ -27914,8 +27900,8 @@ class LlamaCppBackend:
         )
         # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
         # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
-        # every mode below falls back instead. Without the second case the fallback is
-        # Gemma-only, and a dropped sidecar on any other repo disables MTP in silence.
+        # every mode below falls back. Without the second case a dropped sidecar on any
+        # non-Gemma repo disables MTP in silence.
         _mtp_drafter_missing = (
             not mtp_draft_path
             and not self._nextn_predict_layers
@@ -28205,9 +28191,8 @@ class LlamaCppBackend:
             else:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
-            # A file that IS here and cannot be opened needs its own reason: the
-            # drafter_not_found copy tells a local load to place a file already on disk,
-            # and offers a remote load a refetch this load deliberately stands down.
+            # Its own reason: the drafter_not_found copy tells a local load to place a file
+            # already on disk, and offers a refetch this load deliberately stands down.
             self._spec_fallback_reason = (
                 "drafter_unloadable" if mtp_drafter_unloadable else "drafter_not_found"
             )

@@ -10775,8 +10775,8 @@ def _estimate_gguf_required_gb(
                 ):
                     _sized_attrs.append("gguf_dflash_file")
             else:
-                # The launch drops a drafter it cannot open, so charging one here would
-                # refuse a load that fits.
+                # The launch drops a drafter it cannot open, so charging one would refuse
+                # a load that fits.
                 _mtp = getattr(config, "gguf_mtp_file", None)
                 if not (
                     _mtp and Path(_mtp).is_file() and not _mtp_drafter_loads_standalone(str(_mtp))
