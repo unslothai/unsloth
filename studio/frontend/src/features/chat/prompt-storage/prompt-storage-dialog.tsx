@@ -390,7 +390,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 
 // ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+  });
   if (!messages) return;
 
   const conversations: Array<{ from: string; value: string }> = [];
