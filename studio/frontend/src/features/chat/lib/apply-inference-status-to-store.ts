@@ -190,8 +190,7 @@ export function applyActiveModelStatusToStore(
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
   // GLM-5.2-style models report their own effort levels; everything else keeps the default
-  // low/medium/high.
-  // They report high|max.
+  // low/medium/high. They report high|max.
   const reasoningEffortLevels =
     status.reasoning_effort_levels && status.reasoning_effort_levels.length > 0
       ? (status.reasoning_effort_levels as ReasoningEffort[])
@@ -217,18 +216,16 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = options.seedLoadParams ?? !prevState.modelLoading;
-  // A model/variant change underneath this tab. The controls in the store belong
-  // to the model that just left, so they are reseeded here the way every other
-  // load param at this site already is: the echo cannot stand in, since a new
-  // model can report the old count.
+  // A model/variant change underneath this tab. The controls in the store belong to the model that
+  // just left, so they are reseeded here the way every other load param at this site already is:
+  // the echo cannot stand in, since a new model can report the old count.
   const slotsModelChanged = hydratingExistingModel;
-  // This model's remembered override, read only on a fresh store or a model
-  // change, so a steady poll cannot re-pin a control the user just blanked. A
-  // self-sizing backend has no slot fields, so an unseeded store says nothing
-  // about it and it goes by the checkpoint alone.
-  // Through the resident resolver, not the raw id: an API-driven load reports the
-  // snapshot path a cached repo loaded from, while its settings are keyed by the
-  // repo id, and the plain lookup misses that record.
+  // This model's remembered override, read only on a fresh store or a model change, so a steady
+  // poll cannot re-pin a control the user just blanked. A self-sizing backend has no slot fields,
+  // so an unseeded store says nothing about it and it goes by the checkpoint alone. Through the
+  // resident resolver, not the raw id: an API-driven load reports the snapshot path a cached repo
+  // loaded from, while its settings are keyed by the repo id, and the plain lookup misses that
+  // record.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
   // same rule for the batch-size pair
@@ -317,8 +314,7 @@ export function applyActiveModelStatusToStore(
     isMlx: status.is_mlx ?? false,
     seedLoadParams,
     modelChanged: slotsModelChanged,
-    // Both fields: a record written before the MLX pin moved still carries it
-    // in maxSeqLength.
+    // Both fields: a record written before the MLX pin moved still carries it in maxSeqLength.
     remembered: remembered?.remembered ? savedContextPin(remembered.config) : null,
     // Raw, not the normalised incomingGpuMode/incomingGpuLayers below: the rule
     // needs "Manual with AUTO layers", and those normalise layers to null off
@@ -425,34 +421,44 @@ export function applyActiveModelStatusToStore(
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
-    // The spec / KV seeds share the GPU-fields reseed below: a non-GGUF status leaves their
-    // baselines null so the "unseeded" guard re-fires every refresh -- hold them too while a
-    // staged pick is being edited. hydratingExistingModel reopens every seed, since after an
-    // auto-switch the old model's baselines are stale.
+    // Controls follow the server while clean; loaded baselines always describe
+    // the settled resident, including same-model reloads from another client.
     ...(seedLoadParams &&
-      (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
-        speculativeType: currentSpecType,
+      (status.speculative_type !== undefined ||
+        prevState.loadedSpeculativeType === null ||
+        hydratingExistingModel) && {
         loadedSpeculativeType: currentSpecType,
+        ...((prevState.loadedSpeculativeType === null ||
+          hydratingExistingModel ||
+          prevState.speculativeType === prevState.loadedSpeculativeType) && {
+          speculativeType: currentSpecType,
+        }),
       }),
     ...(seedLoadParams &&
-      status.spec_draft_n_max !== undefined &&
-      (hydratingExistingModel ||
-        (prevState.loadedSpecDraftNMax === null &&
-          prevState.specDraftNMax === null)) && {
-        specDraftNMax: status.spec_draft_n_max ?? null,
+      status.spec_draft_n_max !== undefined && {
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftNMax === prevState.loadedSpecDraftNMax) && {
+          specDraftNMax: status.spec_draft_n_max ?? null,
+        }),
       }),
     ...(seedLoadParams &&
-      status.cache_type_kv !== undefined &&
-      (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
-        kvCacheDtype: status.cache_type_kv,
+      status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
+        ...((prevState.loadedKvCacheDtype === null ||
+          hydratingExistingModel ||
+          prevState.kvCacheDtype === prevState.loadedKvCacheDtype) && {
+          kvCacheDtype: status.cache_type_kv,
+        }),
       }),
     ...(seedLoadParams &&
-      status.tensor_parallel !== undefined &&
-      (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
-        tensorParallel: status.tensor_parallel,
+      status.tensor_parallel !== undefined && {
         loadedTensorParallel: status.tensor_parallel,
+        ...((prevState.loadedTensorParallel === null ||
+          hydratingExistingModel ||
+          prevState.tensorParallel === prevState.loadedTensorParallel) && {
+          tensorParallel: status.tensor_parallel,
+        }),
       }),
     // A load knob like tensorParallel above. Without a reseed a tab that never performed the
     // load shows Vision ON over a projector-off server and the next Reload puts it back.
@@ -518,10 +524,10 @@ export function applyActiveModelStatusToStore(
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     // "server default" control. The rollback re-sends the baseline, so without this a rollback
-    // after a tab reload loses the override.
+    // after a tab reload loses the override. Refresh on every echo: another client
+    // can reload the same model with a different count.
     ...(seedLoadParams &&
-      status.requested_parallel_slots != null &&
-      (prevState.loadedNParallel === null || hydratingExistingModel) && {
+      status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
     // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends
@@ -627,9 +633,8 @@ export function applyActiveModelStatusToStore(
     hydratingExistingModel &&
     storedReasoningEnabled === null
   ) {
-    // Anchored regex: first "Xb"/"X.Xb" after start or [-_/.] so the version literal in
-    // "qwen3.5" / "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3
-    // (active).
+    // Anchored regex: first "Xb"/"X.Xb" after start or [-_/.] so the version literal in "qwen3.5" /
+    // "qwen3.6" does not match first, and "Qwen3.5-35B-A3B" yields 35 (total), not 3 (active).
     // Mirrors use-chat-model-runtime.ts and the inline regex in llama_cpp.py.
     let reasoningDefault = true;
     const mid = checkpointId.toLowerCase();
@@ -658,11 +663,10 @@ export function applyActiveModelStatusToStore(
     reasoningAlwaysOn || useChatRuntimeStore.getState().reasoningEnabled,
   );
 
-  // Every status merge carries the base family recommendation, including the
-  // refresh immediately after performLoad. Layer the active Qwen mode over it
-  // so that refresh cannot undo performLoad's thinking table. This also covers
-  // startup/CLI/external adoption, while model memory still wins because this
-  // remains a defaults update.
+  // Every status merge carries the base family recommendation, including the refresh immediately
+  // after performLoad. Layer the active Qwen mode over it so that refresh cannot undo performLoad's
+  // thinking table. This also covers startup/CLI/external adoption, while model memory still wins
+  // because this remains a defaults update.
   if (status.inference && supportsReasoning) {
     const current = useChatRuntimeStore.getState();
     const qwenParams = resolveQwenThinkingParams(

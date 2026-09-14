@@ -599,3 +599,58 @@ def cached_dataset_candidates(
         )
 
     return sorted(files, key = score)
+
+
+def dataset_cache_can_answer(repo_id: str) -> bool:
+    """True if some cached copy of *repo_id* could satisfy a preview without the Hub.
+
+    Both caches count. ``datasets`` answers a streaming load from its own PREPARED cache,
+    which is where the measured leak was, while the hub snapshot backs the file-level
+    readers.
+    """
+    if not repo_id:
+        return False
+    try:
+        if latest_processed_dataset_cache_path(repo_id) is not None:
+            return True
+        return latest_cached_dataset_snapshot(repo_id) is not None
+    except Exception:
+        # Never let the guard's own failure open the path it guards.
+        return True
+
+
+def refuse_unauthorized_dataset_preview(
+    hf_token,
+    dataset_name: str,
+    *,
+    offline: bool = False,
+) -> None:
+    """Raise 404 when a cached dataset preview would be served to a caller who cannot reach it.
+
+    ``datasets`` satisfies a load from its own prepared cache without consulting the
+    credential, so an explicit token that cannot reach the repo is a leak online as well as
+    off. Both preview routes spelled this out separately, and not equivalently, under
+    comments claiming they mirrored each other; stating it once removes that trap.
+
+    The anonymous sentinel was refused only under a declared offline env, which left the
+    case that matters: a Hub merely unreachable is not a Hub declared absent, and the load
+    then falls back to the prepared cache all the same. It is now refused whenever the repo
+    is not public, which ``cached_read_refused`` answers for every reader alike.
+
+    ``offline`` is the caller's own cache-only intent, forwarded so a prefer-local request
+    does not put its credential and repo id on the wire for a branch that will not use them.
+    """
+    from fastapi import HTTPException
+    from hub.utils.hf_tokens import cached_read_refused
+
+    if cached_read_refused(
+        hf_token,
+        repo_id = dataset_name,
+        repo_type = "dataset",
+        is_cached = lambda: dataset_cache_can_answer(dataset_name),
+        offline = offline,
+    ):
+        raise HTTPException(
+            status_code = 404,
+            detail = "Dataset preview is not available without Hub authorization.",
+        )

@@ -184,6 +184,34 @@ export const ru = {
     },
   },
   settings: {
+    accounts: {
+      title: "Учётные записи",
+      description: "Создавайте отдельные учётные записи Studio. Новые пользователи входят по одноразовому коду настройки и задают пароль.",
+      username: "Имя пользователя",
+      create: "Создать учётную запись",
+      setupCode: "Код настройки",
+      setupFor: "Код настройки для {username}",
+      shownOnce: "Скопируйте этот код сейчас и передайте владельцу учётной записи. Он показывается только здесь и действует один раз в течение 60 минут.",
+      expires: "Истекает {expiry}",
+      copy: "Скопировать код настройки",
+      copied: "Скопировано",
+      copyFailed: "Не удалось скопировать. Выделите и скопируйте код настройки выше.",
+      dismiss: "Готово",
+      owner: "Владелец установки",
+      active: "Активна",
+      inactive: "Неактивна",
+      regenerate: "Создать новый код настройки",
+      resetTitle: "Сбросить пароль {username}?",
+      resetDescription: "Создание нового кода настройки заменяет пароль {username}, завершает его сеансы и отзывает его ключи API. Передайте ему новый код, чтобы он снова выбрал пароль.",
+      deactivate: "Деактивировать",
+      reactivate: "Активировать снова",
+      delete: "Удалить учётную запись",
+      deleteTitle: "Удалить {username}?",
+      deleteDescription: "Это отзывает сеансы {username} и отменяет текущую работу. Чаты, настройки, учётные данные, загрузки, наборы данных, обучения, результаты, экспорты, галереи, песочницы, проекты и временные файлы выводятся из использования. Каталоги переименовываются и откладываются, но не удаляются. Повторное создание этого имени пользователя начнёт новую учётную запись без этих данных.",
+      cancel: "Отмена",
+      retry: "Обновить список",
+      failed: "Запрос к учётной записи не выполнен.",
+    },
     title: "Настройки",
     dialog: {
       title: "Настройки",
@@ -195,6 +223,7 @@ export const ru = {
       panelReload: "Перезагрузить",
     },
     tabs: {
+      accounts: "Учётные записи",
       general: "Общие",
       profile: "Профиль",
       appearance: "Оформление",
@@ -467,6 +496,17 @@ export const ru = {
       droppedNotice: "Часть строк пропущена: журнал записывался быстрее, чем его удавалось читать.",
       morePending: "Ещё строки продолжают читаться; они появятся при следующем обновлении.",
       staleSession: "Запись журнала в файл отключена, поэтому это предыдущий сеанс, который не будет обновляться.",
+      downloadAllLogs: "Скачать все журналы (.zip)",
+      downloadingAllLogs: "Упаковка журналов...",
+      exportMaskedNote: "В экспортированных файлах учётные данные скрыты. Очень большие журналы сохраняют только самые свежие строки, а некоторые могут быть исключены целиком; смотрите EXPORT_WARNINGS.txt в архиве.",
+      downloadedTo: "Сохранено в {path}",
+      downloadedToBrowser: "Загрузка началась.",
+      showInFolder: "Показать в папке",
+      openLogsFolder: "Открыть папку журналов",
+      openLogsFolderFailed: "Не удалось открыть папку журналов.",
+      exportFailed: "Не удалось скачать журналы.",
+      exportTooOld: "Запущенный сервер Unsloth слишком старый для экспорта журналов. Обновите его и перезапустите.",
+      exportForbidden: "Для скачивания всех журналов нужен вход в сеанс Studio. Ключа API недостаточно.",
       keywords: "отладка журнал журналы лог логи ошибка ошибки сбой трассировка диагностика поиск неисправностей debug log",
     },
     voice: {
@@ -925,7 +965,11 @@ export const ru = {
         currentStreak: "Текущая серия",
         longestStreak: "Самая длинная серия",
         activityTitle: "Активность по токенам",
-        activityDescription: "Период: {weeks} · {total}",
+        activityDescription: {
+          daily: "Период: {weeks} · {total}",
+          weekly: "Пиковая неделя {total} · последние {weeks}",
+          cumulative: "{total} накоплено за последние {weeks}",
+        },
         mode: {
           daily: "По дням",
           weekly: "По неделям",
@@ -1201,8 +1245,8 @@ export const ru = {
         keepResidentDescription: "Остаётся в видеопамяти между запросами.",
         keepResidentHint: "Веса не возвращаются в системную ОЗУ, пока модель загружена. Отключает автовыгрузку по простою, а если веса действительно находятся в ОЗУ хоста (единая память или частичная выгрузка на GPU), дополнительно передаёт --mlock, чтобы ОС не вытесняла их и не загружала заново при следующем запросе.",
         noRamReserve: "Не резервировать системную ОЗУ под модель",
-        noRamReserveDescription: "Не хранит полную копию в ОЗУ.",
-        noRamReserveHint: "Веса передаются в видеопамять вместо хранения полной копии в ОЗУ. Сохраняет загрузку через отображение файла в память в llama.cpp и убирает --no-mmap и --mlock.",
+        noRamReserveDescription: "Уменьшает объём ОЗУ, занятый весами модели.",
+        noRamReserveHint: "Пропускает загрузку через отображение файла в память в поддерживаемых сборках Windows, когда модель полностью выгружена на видеокарту, чтобы её страницы не оставались в памяти. В остальных случаях сохраняет загрузку через отображение файла в память. Необходимые буферы ЦП всё равно могут занимать ОЗУ. Убирает --no-mmap и --mlock.",
         mlockVetoed: "--mlock остаётся выключенным: закрепление модели зарезервировало бы ОЗУ под неё целиком. Автовыгрузка по простою по-прежнему отключена.",
         memlockCapped: "Система ограничивает блокируемую память значением {limit}. Модель большего размера не будет закреплена полностью; увеличьте лимит через ulimit -l.",
         reloadRequired: "Перезагрузите модель, чтобы применить новые параметры памяти.",
@@ -1261,6 +1305,7 @@ export const ru = {
       copy: "Копировать",
       copied: "Скопировано",
       commandBuilder: "Конструктор команды",
+      commandShell: "Оболочка для всех команд",
       agent: "Кодинг-агент",
       model: "Модель",
       searchModels: "Поиск моделей GGUF…",
@@ -1278,9 +1323,8 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1727,7 +1771,7 @@ export const ru = {
         desktopAvailable:
           "Доступна версия {version} настольного приложения",
         desktopAvailableDescription:
-          "Установите обновление сейчас, чтобы подготовить его в фоновом режиме. Вы можете продолжать работу и перезапустить приложение, когда всё будет готово.",
+          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
         desktopExternalServer:
           "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
         desktopManualInstall:
@@ -1739,20 +1783,11 @@ export const ru = {
           "Установлена последняя версия настольного приложения",
         desktopCurrentDescription:
           "Unsloth продолжит автоматически проверять наличие обновлений.",
-        desktopPreparingDescription:
-          "Обновление готовится в фоновом режиме. Вы можете продолжать работу.",
-        desktopReadyToRestartDescription:
-          "Всё готово. Перезапустите приложение, чтобы завершить установку обновления.",
-        desktopReadyToInstallDescription:
-          "Обновление приложения загружено. Завершите обновление бэкенда, чтобы установить его.",
         checkForUpdates: "Проверить наличие обновлений",
         checkAgain: "Проверить снова",
         retryCheck: "Повторить попытку",
         checking: "Проверка…",
-        preparing: "Подготовка…",
         updateNow: "Обновить сейчас",
-        restartToUpdate: "Перезапустить для обновления",
-        finishUpdate: "Завершить обновление",
         openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",
@@ -1891,6 +1926,7 @@ export const ru = {
       sourceHfCache: "Кэш HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Пользовательская папка",
       sourceLocalModel: "Локальная модель",
       scanningLocal: "Сканирование локальных моделей…",
@@ -2172,6 +2208,7 @@ export const ru = {
       memoryEfficient: "Экономия памяти",
       weightDecomposed: "Декомпозиция весов",
       notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
+      doraNeedsVisionLayersOff: "Отключите обучение слоёв зрения, чтобы использовать DoRA",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",

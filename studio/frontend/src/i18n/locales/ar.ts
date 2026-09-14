@@ -182,6 +182,34 @@ export const ar = {
     },
   },
   settings: {
+    accounts: {
+      title: "الحسابات",
+      description: "أنشئ حسابات Studio خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
+      username: "اسم المستخدم",
+      create: "إنشاء حساب",
+      setupCode: "رمز الإعداد",
+      setupFor: "رمز الإعداد لـ {username}",
+      shownOnce: "انسخ هذا الرمز الآن وشاركه مع صاحب الحساب. يظهر هنا فقط ويمكن استخدامه مرة واحدة خلال 60 دقيقة.",
+      expires: "ينتهي {expiry}",
+      copy: "نسخ رمز الإعداد",
+      copied: "تم النسخ",
+      copyFailed: "تعذّر النسخ. حدّد رمز الإعداد أعلاه وانسخه.",
+      dismiss: "تم",
+      owner: "مالك التثبيت",
+      active: "نشط",
+      inactive: "غير نشط",
+      regenerate: "إعادة إنشاء رمز الإعداد",
+      resetTitle: "إعادة تعيين كلمة مرور {username}؟",
+      resetDescription: "إعادة إنشاء رمز الإعداد تستبدل كلمة مرور {username} وتُنهي جلساته وتُلغي مفاتيح API الخاصة به. أعطه الرمز الجديد ليختار كلمة مرور من جديد.",
+      deactivate: "تعطيل",
+      reactivate: "إعادة التفعيل",
+      delete: "حذف الحساب",
+      deleteTitle: "حذف {username}؟",
+      deleteDescription: "سيؤدي هذا إلى إلغاء جلسات {username} وإيقاف أعماله الجارية. تُسحب محادثاته وإعداداته وبيانات اعتماده وملفاته المرفوعة ومجموعات بياناته وعمليات التدريب والمخرجات والتصديرات والمعارض وبيئات العزل والمشاريع والملفات المؤقتة. يُعاد تسمية المجلدات وتُنحّى جانبًا ولا تُحذف أبدًا. إنشاء اسم المستخدم هذا مرة أخرى يبدأ حسابًا جديدًا دون أيٍّ من هذه البيانات.",
+      cancel: "إلغاء",
+      retry: "تحديث الحسابات",
+      failed: "فشل طلب الحساب.",
+    },
     title: "الإعدادات",
     dialog: {
       title: "الإعدادات",
@@ -193,6 +221,7 @@ export const ar = {
       panelReload: "إعادة التحميل",
     },
     tabs: {
+      accounts: "الحسابات",
       general: "عام",
       profile: "الملف الشخصي",
       appearance: "المظهر",
@@ -465,6 +494,17 @@ export const ar = {
       droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
       morePending: "لا يزال يجري قراءة أسطر إضافية، وستظهر عند التحديث التالي.",
       staleSession: "تسجيل الملفات معطل، لذا هذه جلسة سابقة ولن يتم تحديثها.",
+      downloadAllLogs: "تنزيل كل السجلات (‎.zip)",
+      downloadingAllLogs: "يجري تجميع السجلات...",
+      exportMaskedNote: "تُخفى بيانات الاعتماد في الملفات المصدَّرة. تحتفظ السجلات الكبيرة بأحدث أسطرها فقط، وقد يُستبعد بعضها بالكامل؛ راجع ملف EXPORT_WARNINGS.txt داخل الأرشيف.",
+      downloadedTo: "حُفظ في {path}",
+      downloadedToBrowser: "بدأ التنزيل.",
+      showInFolder: "إظهار في المجلد",
+      openLogsFolder: "فتح مجلد السجلات",
+      openLogsFolderFailed: "تعذّر فتح مجلد السجلات.",
+      exportFailed: "تعذّر تنزيل السجلات.",
+      exportTooOld: "خادم Unsloth العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
+      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Studio مسجّل الدخول إليها. لا يكفي مفتاح API.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
@@ -921,7 +961,11 @@ export const ar = {
         currentStreak: "التتابع الحالي",
         longestStreak: "أطول تتابع",
         activityTitle: "نشاط التوكنات",
-        activityDescription: "{total} خلال آخر {weeks}",
+        activityDescription: {
+          daily: "{total} خلال آخر {weeks}",
+          weekly: "أسبوع الذروة {total} · آخر {weeks}",
+          cumulative: "{total} متراكمة خلال آخر {weeks}",
+        },
         mode: {
           daily: "يومي",
           weekly: "أسبوعي",
@@ -1195,8 +1239,8 @@ export const ar = {
         keepResidentDescription: "يبقى في ذاكرة كرت الرسوميات بين الرسائل.",
         keepResidentHint: "لا تُعاد الأوزان إلى ذاكرة النظام ما دام النموذج محمَّلاً. يعطّل التفريغ التلقائي عند الخمول، وإذا كانت الأوزان موجودة فعلاً في ذاكرة المضيف (ذاكرة موحّدة أو تفريغ جزئي إلى المعالج الرسومي) فإنه يمرّر ‎--mlock‎ أيضاً حتى لا يُخرجها النظام من الذاكرة ويعيد رفعها عند رسالتك التالية.",
         noRamReserve: "عدم حجز ذاكرة النظام للنموذج",
-        noRamReserveDescription: "لا يحتفظ بنسخة كاملة في ذاكرة النظام.",
-        noRamReserveHint: "ينقل الأوزان إلى ذاكرة كرت الرسوميات بدل الاحتفاظ بنسخة كاملة في ذاكرة النظام. يُبقي تحميل llama.cpp المعتمد على تعيين الذاكرة ويحذف ‎--no-mmap‎ و‎--mlock‎.",
+        noRamReserveDescription: "يقلل ذاكرة النظام المحجوزة لأوزان النموذج.",
+        noRamReserveHint: "يتخطى التحميل المعتمد على تعيين الذاكرة في إصدارات ويندوز المدعومة عندما يكون النموذج محمّلاً بالكامل على كرت الرسوميات، فلا تبقى صفحاته مقيمة. وإلا يُبقي التحميل المعتمد على تعيين الذاكرة. قد تستهلك مخازن المعالج المطلوبة ذاكرة النظام. ويحذف ‎--no-mmap‎ و‎--mlock‎.",
         mlockVetoed: "يبقى ‎--mlock‎ معطَّلاً: تثبيت النموذج سيحجز ذاكرة تكفي حجمه كاملاً. ولا يزال التفريغ التلقائي عند الخمول معطَّلاً.",
         memlockCapped: "يحدّ هذا النظام الذاكرة المقفلة عند {limit}. لن يُثبَّت نموذج أكبر بالكامل؛ ارفع الحد باستخدام ulimit -l.",
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
@@ -1255,6 +1299,7 @@ export const ar = {
       copy: "نسخ",
       copied: "تم النسخ",
       commandBuilder: "منشئ الأوامر",
+      commandShell: "الصدفة لجميع الأوامر",
       agent: "وكيل البرمجة",
       model: "النموذج",
       searchModels: "ابحث عن نماذج GGUF...",
@@ -1272,9 +1317,8 @@ export const ar = {
       docs: "التوثيق",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1707,7 +1751,7 @@ export const ar = {
         desktopCheckingDescription: "يستغرق ذلك عادةً بضع ثوانٍ.",
         desktopAvailable: "يتوفر إصدار جديد من تطبيق سطح المكتب: {version}",
         desktopAvailableDescription:
-          "حدّث الآن ليُجهَّز التحديث في الخلفية. يمكنك متابعة عملك وإعادة التشغيل عندما يصبح جاهزًا.",
+          "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
           "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
         desktopManualInstall:
@@ -1716,20 +1760,11 @@ export const ar = {
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
         desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
-        desktopPreparingDescription:
-          "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
-        desktopReadyToRestartDescription:
-          "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
-        desktopReadyToInstallDescription:
-          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
         checking: "جارٍ التحقق...",
-        preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
-        restartToUpdate: "إعادة التشغيل للتحديث",
-        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",
@@ -1894,6 +1929,7 @@ export const ar = {
       sourceHfCache: "ذاكرة HF المؤقتة",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "مجلد مخصّص",
       sourceLocalModel: "نموذج محلي",
       vramOomBadge: "OOM",
@@ -2142,6 +2178,7 @@ export const ar = {
       memoryEfficient: "موفّر للذاكرة",
       weightDecomposed: "أوزان مُفكَّكة",
       notSupportedAppleSilicon: "غير مدعوم على Apple Silicon",
+      doraNeedsVisionLayersOff: "أوقف تدريب طبقات الرؤية لاستخدام DoRA",
       optimization: "التحسين",
       schedule: "الجدولة",
       memory: "الذاكرة",

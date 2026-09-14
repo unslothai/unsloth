@@ -138,3 +138,179 @@ def test_the_installer_reports_duplicate_metadata_on_every_platform(script: path
     assert (
         "duplicate metadata found" in text
     ), f"{script.name} detects the conflict but never says so"
+
+
+def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
+    """No venv interpreter on Colab; the shim is stdlib-only and the installer's own
+    `python` asks it. The version grep alone read a sidecar interrupted after
+    transformers landed as current on every later run."""
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    start = text.index("_sidecar_current() {")
+    body = text[start : text.index("\n}\n", start)]
+    assert "command -v python" in body
+    assert '"$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar' in body
+    # Exactly one grep may precede the interpreter search: the guard for a tree that ships no
+    # shim at all. Every other fall back to the grep is a last resort behind `command -v python`,
+    # or Colab (venv-less but with an ambient python) would never reach the shim.
+    shim_guard = body.index('[ ! -f "$SCRIPT_DIR/install_manifest.py" ]')
+    assert shim_guard < body.index("command -v python")
+    assert body.index("command -v python") < body.rindex("_target_has_pkg_version")
+
+
+def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
+    """Two reasons, one mechanism. The shim answers "stale" with exit 1, which a native
+    command turns into a terminating error under $PSNativeCommandUseErrorActionPreference,
+    and the shim's scan budget cannot interrupt a stalled read on a wedged mount. A bounded
+    process has neither problem; a timeout reads as stale."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index("function Test-SidecarCurrent {")
+    body = text[start : text.index("\nfunction ", start + 1)]
+    assert "& python $shim" not in body
+    assert "Invoke-BoundedPythonProbe -PythonExe $pythonExe -Code $code -TimeoutSec 60" in body
+    # The argv travels base64-encoded: a path with quotes or backslashes cannot break -c.
+    assert "[Convert]::ToBase64String" in body and "base64.b64decode" in body
+    assert "runpy.run_path(sys.argv[0], run_name='__main__')" in body
+    assert body.index("$probe.TimedOut") < body.index('$out = "sidecar: audit did not answer')
+    # The shell mirror: the shim call is bounded where a timeout exists and a timeout is stale.
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
+    window = sh[call - 400 : call + 900]
+    assert "timeout -k 5 60" in window
+    assert '[ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]' in window
+    assert "sidecar: audit did not answer" in window
+
+
+def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
+    """setup.sh routes every sidecar install through fast_install_sidecar, which unsets
+    UV_OVERRIDE; an override naming huggingface_hub or hf_xet would otherwise install
+    another version than the exact pin and the audit would rebuild the sidecar to the
+    same wrong answer on every run. The PowerShell helper mirrors it."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index("function Fast-Install-Sidecar {")
+    body = text[start : text.index("\nfunction ", start + 1)]
+    assert "Remove-Item Env:UV_OVERRIDE" in body and "Fast-Install @Args_" in body
+    assert "finally" in body and "$env:UV_OVERRIDE = $savedOverride" in body
+    for name in ("function Repair-SidecarTiktoken {", "function Install-T5Sidecar {"):
+        start = text.index(name)
+        body = text[start : text.index("\nfunction ", start + 1)]
+        assert "Fast-Install --target" not in body, name
+        assert "Fast-Install-Sidecar --target" in body, name
+
+
+def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
+    """An interrupted install leaves tiktoken-*.dist-info with no package beside it; the
+    sidecar predicate accepts that sidecar (tiktoken is optional), so the top-up is the
+    only repair left, and a dist-info-only check would skip it forever."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_sidecar_top_up_tiktoken() {")
+    assert '"$_stt_dir/tiktoken/__init__.py"' in sh[start : sh.index("\n}\n", start)]
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Repair-SidecarTiktoken {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert 'Join-Path $payload "__init__.py"' in body
+    # ...and the repair replaces what is there (--target without --upgrade keeps damaged files).
+    assert "--no-deps --upgrade tiktoken" in body
+    sh_body = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
+    assert '--no-deps --upgrade "tiktoken"' in sh_body[: sh_body.index("\n}\n")]
+
+
+def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
+    """$PSNativeCommandUseErrorActionPreference exists from PowerShell 7.3 and reading an
+    absent variable under Set-StrictMode is a terminating error; the predicate no longer
+    touches it at all, and must not grow a version check in its place."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "$PSNativeCommandUseErrorActionPreference =" not in body
+    assert "PSVersion.Major -ge 7" not in body
+
+
+def test_the_installer_pins_come_from_the_audited_pin_list():
+    """The list the audit demands and the list the install performs must be one variable: a
+    pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale every
+    run, silently wiping and refetching all three tiers on every update.
+    """
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_install_sidecar() {")
+    body = sh[start : sh.index("\n}\n", start)]
+    assert "$_SIDECAR_COMMON_PINS" in body, (
+        "_install_sidecar hardcodes the common pins instead of reading "
+        "$_SIDECAR_COMMON_PINS; the audit and the install can now drift apart."
+    )
+    assert "huggingface_hub==" not in body, "a second copy of the pins crept back in"
+
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Install-T5Sidecar {")
+    body = (
+        ps1[start : ps1.index("\nfunction ", start + 1)]
+        if "\nfunction " in ps1[start + 1 :]
+        else ps1[start:]
+    )
+    assert (
+        "$SidecarCommonPins" in body
+    ), "Install-T5Sidecar hardcodes the common pins instead of reading $SidecarCommonPins."
+    assert "huggingface_hub==" not in body, "a second copy of the pins crept back in"
+
+
+def test_a_tree_without_the_shim_falls_back_to_the_version_grep():
+    """Both shells must answer from `_target_has_pkg_version` when install_manifest.py is
+    absent. Treating the missing file as a failed audit reports every tier stale and rebuilds
+    all three, and the two shells would disagree about the same tree."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_sidecar_current() {")
+    body = sh[start : sh.index("\n}\n", start)]
+    assert '[ ! -f "$SCRIPT_DIR/install_manifest.py" ]' in body, (
+        "_sidecar_current no longer checks that the shim exists before running it; a tree "
+        "without install_manifest.py now rebuilds all three sidecars."
+    )
+
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "Test-Path -LiteralPath $shim -PathType Leaf" in body
+
+
+def test_the_sidecar_cleanups_cannot_abort_the_installer():
+    """setup.sh runs under `set -euo pipefail` and these functions are called bare. Every `rm`
+    here is best effort by construction, since the paths that reach them are already
+    undeletable, and an unguarded one turns a skipped rebuild into a silent exit 1.
+    """
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    for fn in ("_sidecar_retire_after_failed_tiktoken() {", "_sidecar_top_up_tiktoken() {"):
+        start = sh.index(fn)
+        body = sh[start : sh.index("\n}\n", start)]
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("rm -rf") and "&& rm -rf" not in stripped:
+                continue
+            assert "|| true" in stripped, (
+                f"unguarded `rm` in {fn.rstrip('( {')}: {stripped!r}. Under `set -e` this "
+                "aborts the whole installer when the entry cannot be removed."
+            )
+
+
+def test_the_ps1_marker_reason_is_parsed_without_substring():
+    """`-like 'sidecar:*'` also matches the bare marker, and Substring past the end throws.
+
+    The sh side uses `${_sc_out#sidecar: }`, which degrades to the empty string; the two must
+    not differ on a malformed answer."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert ".Substring(" not in body, (
+        "Test-SidecarCurrent parses the audit's reason with Substring again; a bare "
+        "'sidecar:' answer makes that throw."
+    )
+    assert "-replace '^sidecar:" in body
+
+
+def test_the_ps1_predicate_prefers_the_venv_interpreter():
+    """As setup.sh does. A PATH `python` on Windows can be the Store App Execution Alias
+    stub, whose failure reads as "audit died" and rebuilds all three tiers every run."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "$VenvPyExe" in body, (
+        "Test-SidecarCurrent goes straight to a PATH python; setup.sh prefers "
+        "$VENV_DIR/bin/python and the two shells must pick the same interpreter."
+    )
