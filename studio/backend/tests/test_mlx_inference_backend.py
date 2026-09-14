@@ -30,6 +30,7 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     module.fused_moe_gate_up = contextlib.nullcontext
     module.fused_decode_conv_silu = contextlib.nullcontext
+    module.fused_residual_norm = contextlib.nullcontext
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
 
@@ -44,7 +45,7 @@ def mlx_decode(mlx_inference_patches):
     return mlx_inference_patches
 
 
-@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu", "residual_norm"])
 @pytest.mark.parametrize(
     "error",
     [
@@ -80,7 +81,7 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
         assert active is model
 
 
-@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu", "residual_norm"])
 def test_mlx_fusion_that_cannot_be_entered_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -123,7 +124,7 @@ def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
     assert backend.unload_model("fake/text")
 
 
-@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu", "residual_norm"])
 def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
     from core.inference import mlx_inference
 
@@ -819,7 +820,7 @@ def test_vlm_iterator_restores_each_callers_stream_and_closes_on_generation_stre
     assert closed == [generation]
 
 
-@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu", "residual_norm"])
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -1069,7 +1070,7 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu", "residual_norm"])
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -2597,7 +2598,7 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu", "residual_norm"])
 def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 
