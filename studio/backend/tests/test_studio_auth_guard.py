@@ -846,6 +846,40 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_shell_punctuation_ends_a_credential_name(monkeypatch, tmp_path):
+    # A name ends where the shell ends a word, so `cat /tmp/.bootstrap_password; echo done` names
+    # the file. Accepting only whitespace or a quote as the boundary matched none of these.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            "cat /tmp/.bootstrap_password; echo done",
+            "cat /tmp/llama_api_key;",
+            "(cat /tmp/.desktop_secret)",
+            "cat /tmp/.cli_api_key_cli_1;echo x",
+            "cat /opt/agent_api_key.json|head",
+            "cat /tmp/.bootstrap_password&",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # The same punctuation after ordinary work is still ordinary work.
+        for ordinary in (
+            "cat notes.txt; echo done",
+            "grep -rn auth src/;",
+            "cat auth.py;",
+            'python -c "import auth"',
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_builtin_wrapped_cd_moves_the_directory(monkeypatch, tmp_path):
     # `builtin cd ..` and `command cd ..` run the same shell builtin with the same argument, so
     # everything after them is relative to the new directory. Matched on the bare name only, the

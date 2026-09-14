@@ -2645,26 +2645,34 @@ _SENSITIVE_PATH_RE = re.compile(
 # $STUDIO_HOME/auth holds this install's credentials in the clear, and tool subprocesses run as the
 # backend's own OS user, so their 0600 modes are no boundary against them. Narrow on purpose: these
 # basenames and the auth directory itself, so an app's own auth/ package or auth.py stays ordinary.
+# A name ends where the shell ends a word, so the punctuation that separates commands, redirects and
+# subshells closes it too: without them `cat /tmp/.bootstrap_password; echo done` named the file and
+# matched nothing.
+_WORD_END = r"(?:$|[\s'\";&|)(<>`])"
 _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # Dotted names nothing else spells, so they match bare too.
-    r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\"]*|\.bootstrap_password|\.desktop_secret)"
-    r"(?:$|[\s'\"])"
+    r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
+    + _WORD_END
     # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
     # and Studio's copy is covered by the auth-directory patterns below.
-    r"|[/\\]llama_api_key(?:$|[\s'\"])"
+    + r"|[/\\]llama_api_key"
+    + _WORD_END
     # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
     # refused `print('agent_api_key.json')`.
-    r"|[/\\]agent_api_key\.json(?:$|[\s'\"])",
+    + r"|[/\\]agent_api_key\.json"
+    + _WORD_END,
     re.IGNORECASE,
 )
 _STUDIO_AUTH_DIR_RE = re.compile(
-    r"(?:^|[/\\\s'\"=])\.unsloth[/\\]studio[/\\]auth(?:[/\\]|$|[\s'\"])",
+    r"(?:^|[/\\\s'\"=])\.unsloth[/\\]studio[/\\]auth(?:[/\\]|" + _WORD_END + r")",
     re.IGNORECASE,
 )
 
 # Only counted with a `cd` INTO the studio root, never a mere mention of it: `grep -rn auth
 # <studio root>/logs/studio.log` is ordinary work.
-_BARE_AUTH_SEGMENT_RE = re.compile(r"(?:^|[/\\\s'\"=])auth(?:[/\\]|$|[\s'\"])", re.IGNORECASE)
+_BARE_AUTH_SEGMENT_RE = re.compile(
+    r"(?:^|[/\\\s'\"=])auth(?:[/\\]|" + _WORD_END + r")", re.IGNORECASE
+)
 
 # Prefilter: a new pattern needs a hint here or it never runs.
 _STUDIO_CREDENTIAL_HINTS = (
