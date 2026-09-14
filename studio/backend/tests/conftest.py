@@ -97,17 +97,16 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
 
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
-    original_roots = _skills._skill_roots
-    monkeypatch.setattr(
-        _skills,
-        "_skill_roots",
-        lambda explicit = None: original_roots(explicit if explicit is not None else home),
-    )
+    # The owner's home moves under tmp and the bundled root points at nothing, so tests see
+    # exactly the skills they write. Managed-account roots (workspace_root()/skills) are left
+    # alone: the account matrix relies on them.
+    monkeypatch.setattr(_skills, "_owner_home", lambda: home)
+    monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
         from routes import inference as _inference_routes
     except Exception:
         return
-    monkeypatch.setattr(_inference_routes, "_AGENT_SKILLS_CACHE", (0.0, []))
+    monkeypatch.setattr(_inference_routes, "_AGENT_SKILLS_CACHE", {})
 
 
 @pytest.fixture(autouse = True)

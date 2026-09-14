@@ -49,6 +49,7 @@ from utils.account_context import (
     account_thread,
     current_account,
     current_account_id,
+    is_owner_context,
     run_as,
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
@@ -3843,7 +3844,11 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
-def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
+def _selects_only_provider_hosted_tools(
+    payload,
+    provider_type: str | None,
+    enabled_skills: list[dict] | None = None,
+) -> bool:
     """True when the request's tool selection is nothing but the provider's own
     hosted builtins, so the provider must execute them as it always has.
 
@@ -3876,10 +3881,15 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     if not enabled or not isinstance(enabled, list):
         return False
 
-    if not _enabled_agent_skills() and ({"read_skill", "create_skill"} & set(enabled)):
-        enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
-        if not enabled:
-            return True
+    # Skill tools named with no skill enabled select nothing; the async caller passes the
+    # catalog it already fetched off the event loop.
+    if {"read_skill", "create_skill"} & set(enabled):
+        if enabled_skills is None:
+            enabled_skills = _enabled_agent_skills()
+        if not enabled_skills:
+            enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
+            if not enabled:
+                return True
     if not provider_hosted_tools(provider_type):
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
@@ -4855,20 +4865,32 @@ _TOOL_ARTIFACT_TIP = (
 
 _AGENT_SKILLS_CACHE_TTL_S = 1.0
 _AGENT_SKILLS_CACHE_LOCK = threading.Lock()
-_AGENT_SKILLS_CACHE: tuple[float, list[dict]] = (0.0, [])
+# One entry per acting account (None is the owner): a managed account's catalog is read from
+# its own workspace and must never be served to, or from, another account.
+_AGENT_SKILLS_CACHE: dict[Optional[str], tuple[float, list[dict]]] = {}
+
+
+def _agent_skills_cache_key() -> Optional[str]:
+    return None if is_owner_context() else current_account_id()
 
 
 def _invalidate_agent_skills_cache() -> None:
-    global _AGENT_SKILLS_CACHE
     with _AGENT_SKILLS_CACHE_LOCK:
-        _AGENT_SKILLS_CACHE = (0.0, [])
+        _AGENT_SKILLS_CACHE.clear()
 
 
 def _enabled_agent_skills() -> list[dict]:
+    """The acting account's enabled skills, at most one filesystem scan per second.
+
+    Synchronous: the scan opens every SKILL.md under the roots, so async callers go through
+    ``asyncio.to_thread`` (which carries the account ContextVar) instead of calling this on
+    the event loop.
+    """
     from core.inference.skills import SkillError, enabled_skills
-    global _AGENT_SKILLS_CACHE
+
+    key = _agent_skills_cache_key()
     with _AGENT_SKILLS_CACHE_LOCK:
-        cached_at, cached = _AGENT_SKILLS_CACHE
+        cached_at, cached = _AGENT_SKILLS_CACHE.get(key, (0.0, []))
         if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
             return cached
         try:
@@ -4876,7 +4898,7 @@ def _enabled_agent_skills() -> list[dict]:
         except SkillError as exc:
             logger.warning("Agent Skills unavailable: %s", exc)
             current = []
-        _AGENT_SKILLS_CACHE = (time.monotonic(), current)
+        _AGENT_SKILLS_CACHE[key] = (time.monotonic(), current)
         return current
 
 
@@ -5295,6 +5317,9 @@ async def _select_request_tools(
     tools = [
         tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
     ]
+    # Inline, not on a worker thread: the api_monitor row is already open here and only
+    # the generation hop finalizes it on CancelledError, so an extra await would leave a
+    # cancelled request's row running. The per-account 1 s cache bounds the scan cost.
     enabled_skills = _enabled_agent_skills() if tools_on else []
     if enabled_skills:
         from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
@@ -20997,6 +21022,9 @@ async def _proxy_to_external_provider(
     # protocol (tool_start / tool_end and the approval handshake all ride the
     # stream), so a non-streaming request still cannot honour confirm_tool_calls
     # and must still be refused below rather than silently proxied without it.
+    # Fetched once here (cached per account for 1 s), so the hosted-tool check below does
+    # not scan the skill roots a second time.
+    _loop_agent_skills = _enabled_agent_skills()
     studio_tool_loop = (
         # Model-aware: Gemini's image models drop the function catalog inside the
         # native translator, so entering the loop for them would advertise tools
@@ -21008,7 +21036,7 @@ async def _proxy_to_external_provider(
         # a request for this loop. Checked here rather than inside the loop so the
         # whole path (catalog selection, nudge, confirm gate) is skipped and the
         # request proxies through byte-for-byte as it did before the loop existed.
-        and not _selects_only_provider_hosted_tools(payload, provider_type)
+        and not _selects_only_provider_hosted_tools(payload, provider_type, _loop_agent_skills)
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
