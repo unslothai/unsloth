@@ -147,7 +147,10 @@ first_dir() {
 host_path() {
     local path="$1"
     case "$path" in
-        "~" | "~/"*) path="$HOME${path:1}" ;;
+        # backslash, not quotes: a quoted ~ reads to shellcheck as a literal tilde
+        # that will never expand (SC2088), and an unquoted one would be expanded
+        # in the pattern itself. Escaped, it matches the literal character.
+        \~ | \~/*) path="$HOME${path:1}" ;;
         [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
     esac
     printf '%s' "$path"
