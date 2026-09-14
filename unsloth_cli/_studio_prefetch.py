@@ -109,7 +109,8 @@ SDIST_ONLY_PACKAGES = frozenset(
 
 VENV_NAME = "unsloth_studio"
 
-_UV_TRUE = ("1", "true", "yes", "on")
+# commands/studio.py:_UV_TRUE, clap's boolish set: uv reads UV_NO_CACHE=t or y as true too.
+_UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 class PrefetchError(RuntimeError):
@@ -807,7 +808,8 @@ def _is_editable_install(name: str = "unsloth") -> bool:
 
 
 def uv_no_cache_requested() -> bool:
-    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+    # Not stripped, as commands/studio.py:_uv_no_cache_requested: uv rejects a padded value.
+    return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
 def _nearest_existing(path: Path) -> Path:

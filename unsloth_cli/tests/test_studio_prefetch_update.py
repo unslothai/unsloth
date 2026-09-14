@@ -777,6 +777,13 @@ def test_an_install_with_nothing_to_prepare_is_skipped_without_a_marker(
     assert not _studio_prefetch.marker_path(managed).is_file()
 
 
+@pytest.mark.parametrize("value", ["1", "y", "t", "yes", "true", "on", "TRUE", "0", "n", " true "])
+def test_uv_no_cache_is_read_as_the_update_reads_it(monkeypatch, value):
+    from unsloth_cli.commands import studio
+    monkeypatch.setenv("UV_NO_CACHE", value)
+    assert _studio_prefetch.uv_no_cache_requested() == studio._uv_no_cache_requested()
+
+
 def test_a_full_disk_stops_the_prefetch_before_it_writes_anything(managed, monkeypatch):
     monkeypatch.setattr(_studio_prefetch, "_free_bytes", lambda path: 512 * 1024 * 1024)
     monkeypatch.setattr(
