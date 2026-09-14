@@ -751,7 +751,6 @@ export function useRagDocuments(
         }
         return true;
       } catch (err) {
-      } catch (err) {
         // 404 means someone else removed it first -- another client, or a replacement
         // retiring the source it was edited from. The state this asked for is the state
         // the server is in, so restoring the row would put back a document that does not

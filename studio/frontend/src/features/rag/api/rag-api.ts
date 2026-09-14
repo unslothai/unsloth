@@ -20,7 +20,6 @@ import type {
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
-import { RagRequestError } from "../types/rag";
 import { pollJobUntilTerminal } from "../lib/poll-job";
 import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 

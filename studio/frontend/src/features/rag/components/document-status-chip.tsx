@@ -27,6 +27,7 @@ export function DocumentStatusChip({
   onRemove,
   shared = false,
   selected = false,
+  onOpen,
 }: {
   filename: string;
   status: DocumentStatus;
@@ -40,6 +41,8 @@ export function DocumentStatusChip({
   /** Highlight only. Bulk selection is all-or-nothing via the panel's Select
    * all, so the chip shows the state but never owns a per-file toggle. */
   selected?: boolean;
+  /** The chip body opens the source in the preview modal. */
+  onOpen?: () => void;
 }) {
   const processing = status === "pending" || status === "running";
   return (
@@ -67,7 +70,17 @@ export function DocumentStatusChip({
         strokeWidth={2}
         className="size-3 shrink-0"
       />
-      <span className="truncate">{filename}</span>
+      {onOpen ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          className="min-w-0 truncate text-left underline-offset-2 hover:underline"
+        >
+          {filename}
+        </button>
+      ) : (
+        <span className="truncate">{filename}</span>
+      )}
       {/* spinner while indexing, else close button */}
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">

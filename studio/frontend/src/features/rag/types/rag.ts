@@ -229,4 +229,3 @@ export function isSupportedSourceName(name: string): boolean {
 export function isAlreadyGone(err: unknown): boolean {
   return err instanceof Error && (err as { status?: unknown }).status === 404;
 }
-}

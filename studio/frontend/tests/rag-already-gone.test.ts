@@ -8,7 +8,7 @@ import { isAlreadyGone } from "../src/features/rag/types/rag.ts";
 
 /** The error `ragError` throws: an Error carrying the HTTP status, which is what the
  * delete paths have to branch on. */
-function ragFailure(status: number, message: string): Error {
+function ragFailure(status: number, message: string): Error & { status: number } {
   return Object.assign(new Error(message), { status });
 }
 
@@ -44,6 +44,6 @@ test("a transport error is not a 404", () => {
 test("the status survives being carried as an Error", () => {
   const err = ragFailure(404, "Document not found");
   assert.ok(err instanceof Error, "callers still catch it as an Error");
-  assert.equal((err as { status: number }).status, 404);
+  assert.equal(err.status, 404);
   assert.equal(err.message, "Document not found");
 });
