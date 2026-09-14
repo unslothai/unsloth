@@ -126,7 +126,9 @@ def test_lmstudio_downloads_folder_tilde_is_expanded(tmp_path):
     home = tmp_path / "home"
     custom = _dir(home / "tilde-models")
     (home / ".lmstudio").mkdir()
-    (home / ".lmstudio" / "settings.json").write_text(json.dumps({"downloadsFolder": "~/tilde-models"}))
+    (home / ".lmstudio" / "settings.json").write_text(
+        json.dumps({"downloadsFolder": "~/tilde-models"})
+    )
 
     mounts, _ = _run(tmp_path)
 
