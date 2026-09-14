@@ -1135,3 +1135,30 @@ export function getExternalReasoningCapabilities(
 
   return withEnableThinkingStyle();
 }
+
+export type RuntimeReasoningFields = Pick<
+  ExternalReasoningCapabilities,
+  "supportsReasoning" | "reasoningAlwaysOn" | "reasoningStyle" | "supportsReasoningOff" | "reasoningEffortLevels"
+> & { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean };
+
+/** Runtime reasoning fields for a catalog that lands after the model is selected. A chosen effort the new ladder
+ *  still offers is kept and one it dropped is clamped; the model-selection defaults and pills are left alone. */
+export function reasoningFieldsAfterCatalogRefresh(
+  current: { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean },
+  caps: ExternalReasoningCapabilities,
+): RuntimeReasoningFields {
+  const levels = caps.reasoningEffortLevels;
+  return {
+    supportsReasoning: caps.supportsReasoning,
+    reasoningAlwaysOn: caps.reasoningAlwaysOn,
+    reasoningStyle: caps.reasoningStyle,
+    supportsReasoningOff: caps.supportsReasoningOff,
+    reasoningEffortLevels: levels,
+    reasoningEffort:
+      levels.length > 0 && !levels.includes(current.reasoningEffort)
+        ? clampReasoningEffortToLevels(current.reasoningEffort, levels)
+        : current.reasoningEffort,
+    reasoningEnabled:
+      caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
+  };
+}

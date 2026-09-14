@@ -17,8 +17,11 @@ const {
   setProviderModelCatalog,
   subscribeModelCatalog,
 } = await import("../src/features/chat/model-catalog.ts");
-const { getExternalReasoningCapabilities, getPublishedExternalMaxOutputTokens } =
-  await import("../src/features/chat/provider-capabilities.ts");
+const {
+  getExternalReasoningCapabilities,
+  getPublishedExternalMaxOutputTokens,
+  reasoningFieldsAfterCatalogRefresh,
+} = await import("../src/features/chat/provider-capabilities.ts");
 const { providerModelSupportsVision } = await import(
   "../src/features/chat/external-providers.ts"
 );
@@ -166,4 +169,28 @@ test("every catalog write notifies subscribers, so a composer already on screen 
   setProviderModelCatalog("openrouter", [{ id: "acme/late" }], 1);
   clearProviderModelCatalog("openrouter");
   assert.equal(notified, 2, "an unsubscribed listener is not called");
+});
+
+test("a catalog that lands after selection refreshes the stored reasoning fields without resetting a valid effort", () => {
+  const generic = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
+  assert.equal(generic.reasoningStyle, "enable_thinking");
+  withLiveCatalog(() => {
+    const caps = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
+    const kept = reasoningFieldsAfterCatalogRefresh({ reasoningEffort: "high", reasoningEnabled: false }, caps);
+    assert.equal(kept.supportsReasoning, true);
+    assert.equal(kept.reasoningStyle, "reasoning_effort");
+    assert.deepEqual([...kept.reasoningEffortLevels], ["none", "high", "max"]);
+    assert.equal(kept.reasoningEffort, "high", "a chosen effort the ladder still offers is kept");
+    assert.equal(kept.reasoningEnabled, false, "a toggleable model keeps the stored choice");
+
+    const clamped = reasoningFieldsAfterCatalogRefresh({ reasoningEffort: "medium", reasoningEnabled: true }, caps);
+    assert.equal(clamped.reasoningEffort, "high", "an effort the ladder dropped is clamped onto an offered one");
+
+    const alwaysOn = reasoningFieldsAfterCatalogRefresh(
+      { reasoningEffort: "medium", reasoningEnabled: false },
+      getExternalReasoningCapabilities("openrouter", "acme/always-thinking"),
+    );
+    assert.equal(alwaysOn.reasoningAlwaysOn, true);
+    assert.equal(alwaysOn.reasoningEnabled, true, "a model without an off switch is forced on");
+  });
 });
