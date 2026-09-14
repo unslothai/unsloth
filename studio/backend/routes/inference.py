@@ -11681,11 +11681,15 @@ def _launch_raises_projector_batch(
     Arguments, which does not, because the extras are appended last and hand the child a
     projector whatever the config says.
     """
-    from core.inference.llama_cpp import _extra_args_device, extra_args_disable_mmproj
+    from core.inference.llama_cpp import (
+        _MMPROJ_PATH_FLAGS,
+        _extra_args_device,
+        extra_args_disable_mmproj,
+    )
 
     # An explicitly named projector opens even under --no-mmproj, which only stops the
     # resolve and the auto-download; server-context.cpp gates on a non-empty mmproj.path.
-    override = _extra_args_device(extras, {"--mmproj", "-mm"})
+    override = _extra_args_device(extras, _MMPROJ_PATH_FLAGS)
     if override and Path(override).is_file():
         return True
     # An inherited LLAMA_ARG_MMPROJ / _URL and a remembered --mmproj-auto are NOT

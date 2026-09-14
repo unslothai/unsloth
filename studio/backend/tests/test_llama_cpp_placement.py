@@ -3210,7 +3210,7 @@ def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
 
     def fake_health(timeout = None, **_kw):
         launched = captured["cmds"][-1] if captured["cmds"] else []
-        if "--mmproj" in launched:
+        if any(str(tok).split("=", 1)[0] in ("--mmproj", "-mm") for tok in launched):
             backend._stdout_lines = _PROJECTOR_ABORT_OUT.splitlines()
             return False
         backend._stdout_lines = []
@@ -3770,10 +3770,10 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
 def test_an_inherited_projector_is_deliberately_not_floored(tmp_path, monkeypatch, var):
     """arg.cpp applies these before argv, so the environment alone does load a
     projector that encodes non-causally, and it does hit the assert. It is still not
-    floored, because the projector-recovery gate is a literal `"--mmproj" in cmd` and
-    cannot see this source: quadrupling its compute buffers would turn a launch that
-    used to fit into a startup failure with no fallback. It was already broken this way
-    and is no worse for the change. The follow-up has to teach recovery first."""
+    floored, because the projector-recovery gate reads only argv and cannot see this
+    source: quadrupling its compute buffers would turn a launch that used to fit into a
+    startup failure with no fallback. It was already broken this way and is no worse
+    for the change. The follow-up has to teach recovery first."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3789,6 +3789,31 @@ def test_an_inherited_projector_is_deliberately_not_floored(tmp_path, monkeypatc
 
     assert "--batch-size" not in cmd
     assert "--ubatch-size" not in cmd
+
+
+@pytest.mark.parametrize("extras", [["-mm", "{p}"], ["--mmproj={p}"]], ids = ["short", "inline"])
+def test_an_aliased_extras_projector_keeps_the_text_only_fallback(tmp_path, extras):
+    """The floor recognises -mm and --mmproj=, so recovery has to as well: a floored
+    launch that fails at startup must still reach the text-only retry, with the
+    projector really gone and the requested batch given back."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+
+    captured = _launch_with_text_only_fallback(
+        backend, gguf, extra_args = [tok.format(p = mmproj) for tok in extras]
+    )
+
+    first, last = captured["cmds"][0], captured["cmds"][-1]
+    assert first[first.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert len(captured["cmds"]) > 1
+    assert not any(str(mmproj) in tok for tok in last), last
+    assert "--batch-size" not in last
+    assert "--ubatch-size" not in last
+    assert backend.mmproj_fallback_reason == "projector_incompatible"
 
 
 def test_an_inherited_projector_the_vision_switch_scrubs_is_not_floored(tmp_path, monkeypatch):

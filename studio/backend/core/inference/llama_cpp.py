@@ -5647,6 +5647,9 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
 # launching at all, not on the modality it serves. 2048 clears every Gemma 4 visual
 # token budget (the largest is 1120) and the 600-token audio chunk in #21816.
 _MMPROJ_NON_CAUSAL_MIN_BATCH = 2048
+# Spellings of an explicit projector path. The floor, the recovery gate and the
+# text-only strip must all agree, or a floored launch loses its fallback.
+_MMPROJ_PATH_FLAGS = frozenset({"--mmproj", "-mm"})
 
 
 def _mmproj_batch_floor(
@@ -20020,8 +20023,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
-        """Return cmd without the '--mmproj <path>' pair (text-only retry).
-        Every other flag is preserved; a no-op when --mmproj is absent.
+        """Return cmd without any --mmproj / -mm projector path (text-only retry).
+        Both the split and the `=` spellings go; every other flag is preserved.
         """
         out: list[str] = []
         skip_value = False
@@ -20029,8 +20032,8 @@ class LlamaCppBackend:
             if skip_value:
                 skip_value = False
                 continue
-            if tok == "--mmproj":
-                skip_value = True
+            if _flag_name(str(tok)) in _MMPROJ_PATH_FLAGS:
+                skip_value = "=" not in str(tok)
                 continue
             out.append(tok)
         return out
@@ -21718,17 +21721,17 @@ class LlamaCppBackend:
                 # opt-out still governs Studio's own resolution above, where it does
                 # decide whether a --mmproj is emitted at all; here the file is already
                 # on the command line and the child will load it.
-                _extras_mmproj = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+                _extras_mmproj = _extra_args_device(extra_args, _MMPROJ_PATH_FLAGS)
                 _launch_opens_projector = bool(effective_is_vision) or bool(
                     _extras_mmproj and os.path.isfile(_extras_mmproj)
                 )
                 # An inherited LLAMA_ARG_MMPROJ / _URL and a remembered --mmproj-auto
                 # reach the child too, and they hit the same assert. They are NOT floored
-                # here, deliberately. The projector-recovery gate is a literal
-                # `"--mmproj" in cmd` (see launched_with_mmproj), so neither source can
-                # reach the CPU-projector or text-only retries: raising their compute
-                # buffers fourfold would make a launch that used to fit fail outright
-                # with no fallback, which is a worse trade than the crash it prevents.
+                # here, deliberately. The projector-recovery gate reads only argv (see
+                # launched_with_mmproj), so neither source can reach the CPU-projector
+                # or text-only retries: raising their compute buffers fourfold would
+                # make a launch that used to fit fail outright with no fallback, which
+                # is a worse trade than the crash it prevents.
                 # Both were already failing this way before this change and are no worse
                 # for it. Fixing them needs the recovery gate to learn the same sources
                 # and the text-only retry to scrub the env and emit --no-mmproj-auto, so
@@ -26454,7 +26457,7 @@ class LlamaCppBackend:
                 self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
-                launched_with_mmproj = "--mmproj" in cmd
+                launched_with_mmproj = _extra_args_set_any_flag(cmd, _MMPROJ_PATH_FLAGS)
 
                 # One-shot --fit off retry: recent llama.cpp runs a "fitting
                 # params to device memory" step by default (--fit defaults to

@@ -269,6 +269,13 @@ class TestStripMmprojArgs:
         cmd = ["llama-server", "--mmproj", "/p/mm.gguf", "-c", "4096", "--jinja"]
         assert _strip(cmd) == ["llama-server", "-c", "4096", "--jinja"]
 
+    @pytest.mark.parametrize(
+        "spelling", [["-mm", "/p/mm.gguf"], ["--mmproj=/p/mm.gguf"], ["-mm=/p/mm.gguf"]]
+    )
+    def test_strips_every_projector_spelling(self, spelling):
+        cmd = ["llama-server", *spelling, "--mmproj-offload", "-c", "4096"]
+        assert _strip(cmd) == ["llama-server", "--mmproj-offload", "-c", "4096"]
+
     def test_noop_when_no_mmproj(self):
         cmd = ["llama-server", "-m", "/p/model.gguf", "-c", "4096", "--jinja"]
         assert _strip(cmd) == cmd
