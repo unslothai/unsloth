@@ -523,6 +523,44 @@ def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
     assert applied["compiled_vae_decode"] is True
 
 
+def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
+    # Wan is not merely unmeasured: compiling its decode measured SLOWER on a B200 (1280x704x121, 35.76 -> 37.41 s
+    # p50, decode 11.29 -> 11.64 s of GPU time, 193 s cold compile), so it is denied as well as unlisted, and stays
+    # off if a later pass adds it to the allow set.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    assert "AutoencoderKLWan" in ds_mod._VAE_COMPILE_DENY
+    monkeypatch.setattr(
+        ds_mod, "_VAE_COMPILE_ALLOW", ds_mod._VAE_COMPILE_ALLOW | {"AutoencoderKLWan"}
+    )
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
+def test_video_wan_vae_decode_stays_denied_on_max(monkeypatch):
+    # The deny set beats the tier: `max` must not autotune a decode that is not worth compiling at all.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_MAX,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
 def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):
     # Offload hooks graph-break exactly as on the regional path.
     _stub_torch(monkeypatch)

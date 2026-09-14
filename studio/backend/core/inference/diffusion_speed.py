@@ -577,8 +577,13 @@ COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
 _VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
 _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 
-# Not a correctness list: AutoencoderKLQwenImage decodes fine compiled, it just measured SLOWER than eager.
-_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage"})
+# Not a correctness list: AutoencoderKLQwenImage decodes fine compiled, it just measured SLOWER than eager. So does
+# AutoencoderKLWan (wan2.2-ti2v-5b, the Wan 14B families): its decode is a Python loop over spatial tiles x latent
+# frames carrying a mutated feat_cache, so compile trims 572k kernel launches to 493k without fusing the decode, and
+# a 1280x704x121 clip on a B200 goes 35.76 -> 37.41 s p50 (decode 11.29 -> 11.64 s of GPU, denoise unmoved at
+# 18.10 s) for a 193 s cold compile. Denied although nothing about it is wrong: no NaN, max-abs 0.0099 and LPIPS
+# 8.1e-05 against its own eager decode on the same latent.
+_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 # ``auto`` compiles only these: the video backend runs apply_speed_optims for every video DiT view, unmeasured.
 _VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
