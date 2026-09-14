@@ -149,7 +149,7 @@ def test_cpu_load_cancellation_requires_its_owner(
     backend.unload()
 
 
-@pytest.mark.parametrize("phase", ["prefetch", "construction"])
+@pytest.mark.parametrize("phase", ["prefetch", "construction", "resident"])
 @pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
 def test_pending_caller_cannot_block_load_owner_eject(
     monkeypatch, accounts, fake_runtime, tmp_path, phase, unloader
@@ -189,8 +189,9 @@ def test_pending_caller_cannot_block_load_owner_eject(
     original = getattr(target, name)
 
     def parked(*args, **kwargs):
-        entered.set()
-        assert release.wait(10), "load barrier timed out"
+        if phase != "resident":
+            entered.set()
+            assert release.wait(10), "load barrier timed out"
         return original(*args, **kwargs)
 
     monkeypatch.setattr(target, name, parked)
@@ -215,20 +216,36 @@ def test_pending_caller_cannot_block_load_owner_eject(
             responses[account] = client.post("/api/inference/images/unload")
         response_ready.set()
 
-    start("alice", load)
     try:
-        assert entered.wait(10), errors
-        assert backend._loading.account_id == accounts["alice"].account_id
-        assert backend._state is None
+        if phase == "resident":
+            account_token = bind_account(accounts["alice"])
+            try:
+                backend.load_pipeline(
+                    str(tmp_path), family_override = "z-image", local_files_only = True
+                )
+                access.note_resident_account("diffusion", str(tmp_path))
+            finally:
+                reset_account(account_token)
+            assert backend.is_loaded
+            assert backend._loading is None
+        else:
+            start("alice", load)
+            assert entered.wait(10), errors
+            assert backend._loading.account_id == accounts["alice"].account_id
+            assert backend._state is None
         assert gpu_arbiter.current_owner() is None
         start("bob", load)
         assert pending.wait(10), errors
         token, cancel = backend._load_token, backend._cancel_event
         start(unloader, lambda: unload(unloader))
-        if unloader != "alice":
+        can_eject = unloader == "alice" or (phase == "resident" and accounts[unloader].is_owner)
+        if not can_eject:
             assert response_ready.wait(5), "foreign eject waited on construction"
-            assert responses[unloader].status_code == 409, responses[unloader].text
-            assert responses[unloader].json()["error"] == "gpu_busy"
+            if phase == "resident":
+                assert responses[unloader].status_code == 404, responses[unloader].text
+            else:
+                assert responses[unloader].status_code == 409, responses[unloader].text
+                assert responses[unloader].json()["error"] == "gpu_busy"
             assert not cancel.is_set()
             assert backend._load_token == token
             start("alice", lambda: unload("alice"))
@@ -238,7 +255,8 @@ def test_pending_caller_cannot_block_load_owner_eject(
         for thread in threads:
             thread.join(10)
             assert not thread.is_alive()
-    assert responses["alice"].status_code == 200, responses["alice"].text
+    response = responses[unloader if can_eject else "alice"]
+    assert response.status_code == 200, response.text
     assert backend._state is None
     assert backend._loading is None
     assert not backend._load_accounts

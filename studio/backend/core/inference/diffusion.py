@@ -6369,10 +6369,12 @@ class DiffusionBackend:
                 ):
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 require_resident_control(DIFFUSION, getattr(self._state, "repo_id", None))
-                # Prefer the admitted load over callers still validating.
+                # Prefer admitted loads and authorized residents over pending callers.
                 loading = self._loading
                 if loading is not None and loading.error is None:
                     foreign_load = loading.account_id != expected_account
+                elif self._state is not None:
+                    foreign_load = False
                 else:
                     foreign_load = any(
                         token == self._load_token and account != expected_account
