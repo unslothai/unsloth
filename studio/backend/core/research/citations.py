@@ -32,7 +32,7 @@ _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 # \x00 stops a URL glued to masked code from swallowing its placeholder.
 _RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
-_PLACEHOLDER_KINDS = ("research-code", "research-citation", "document-citation")
+_PLACEHOLDER_KINDS = ("research-code", "research-citation")
 # Kept beside the kinds so a new one cannot be restored by a pass that does not know it, which
 # would leave the raw sentinel in the delivered report.
 _PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-\d+\x00")
@@ -285,14 +285,15 @@ def _validate_masked_document_sources(
     report: str, sources: list[dict], placeholders: dict[str, str]
 ) -> str:
     allowed = _allowed_document_citations(sources)
-    # Tokenize valid citations first so a "]" inside a filename ("budget [final].pdf") does not
-    # truncate them, then strip the invalid ones and restore the valid.
-    for index, citation in enumerate(sorted(allowed, key = len, reverse = True)):
-        if citation in report:
-            token = _placeholder("document-citation", index)
-            placeholders[token] = citation
-            report = report.replace(citation, token)
-    return _DOCUMENT_CITATION.sub("", report)
+
+    def keep_if_allowed(match: re.Match) -> str:
+        # Judge the citation as the model wrote it. The pattern already spans a "]" inside a
+        # filename ("budget [final].pdf"), and a filename may also contain backticks, which
+        # _mask_code replaced with a placeholder before this pass ran.
+        citation = _restore_placeholders(match.group(0), placeholders)
+        return match.group(0) if citation in allowed else ""
+
+    return _DOCUMENT_CITATION.sub(keep_if_allowed, report)
 
 
 def _validate_report_document_sources(report: str, sources: list[dict]) -> str:

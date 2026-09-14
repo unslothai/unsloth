@@ -3453,7 +3453,7 @@ def test_restoring_code_does_not_rescan_it_for_later_tokens():
 
 def test_every_allocated_token_is_one_restoration_recognises():
     """A kind missing from _PLACEHOLDER_KINDS would leave its raw sentinel in the report, so
-    exercise all three producers and check the pattern matches everything they allocate."""
+    exercise both producers and check the pattern matches everything they allocate."""
     placeholders: dict[str, str] = {}
     report = "Run `curl https://a.com` per [1] and [Document: real.pdf]."
     masked = _validate_masked_sources(
@@ -3464,6 +3464,40 @@ def test_every_allocated_token_is_one_restoration_recognises():
     assert kinds == set(_PLACEHOLDER_KINDS)
     assert all(_PLACEHOLDER.fullmatch(key) for key in placeholders)
     assert "\x00" not in _restore_placeholders(masked, placeholders)
+
+
+@pytest.mark.parametrize(
+    ("report", "sources", "expected"),
+    [
+        # Backticks in a filename are masked as code before the document pass runs, so an exact
+        # string match against the catalog misses and a real citation gets stripped.
+        (
+            "Text [Document: readme`x`.md] end",
+            [{"filename": "readme`x`.md"}],
+            "Text [Document: readme`x`.md] end",
+        ),
+        (
+            "See [Document: gu`ide`.md, p. 3] and [Document: plain.md].",
+            [{"filename": "gu`ide`.md", "page": 3}, {"filename": "plain.md"}],
+            "See [Document: gu`ide`.md, p. 3] and [Document: plain.md].",
+        ),
+        # A "]" inside the filename must still not truncate the citation.
+        (
+            "Bracket [Document: budget [final].pdf] ok.",
+            [{"filename": "budget [final].pdf"}],
+            "Bracket [Document: budget [final].pdf] ok.",
+        ),
+        # An uncatalogued document is still dropped.
+        (
+            "Plain [Document: real.pdf] and [Document: missing.pdf].",
+            [{"filename": "real.pdf"}],
+            "Plain [Document: real.pdf] and .",
+        ),
+    ],
+)
+def test_document_citation_survives_backticks_in_the_filename(report, sources, expected):
+    assert _validate_report(report, [], sources) == expected
+    assert _validate_report_document_sources(report, sources) == expected
 
 
 def test_unknown_placeholder_shaped_text_survives_restoration():
