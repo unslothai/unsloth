@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import hashlib
 import re
@@ -1038,6 +1040,21 @@ async def get_gguf_variants_answer(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    if local_path:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, local_path)
+    hf_token = account_access.account_hf_token(hf_token)
+    if account_access.managed_account():
+        try:
+            await asyncio.to_thread(account_access.require_model_access, repo_id)
+        except HTTPException:
+            # No grant exists before the first download, so for a private repo the caller's own
+            # token proves Hub access instead. A cache-only request without a token needs the grant.
+            if not isinstance(hf_token, str) or not hf_token.strip():
+                raise
+            if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
+                raise
+            await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
     # the copy from the request alone.
     answered_from: list[Optional[str]] = [None]

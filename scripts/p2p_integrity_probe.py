@@ -30,6 +30,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 SENTINEL = -7.0
 SIZES_MIB = (1, 4, 16, 64)
@@ -65,6 +66,56 @@ def _print_topology() -> None:
     print()
 
 
+def _print_nvml_agreement() -> None:
+    """Compare the NVML fast path (~230 ms) against `nvidia-smi topo -m` (~1.2 s).
+
+    They agree exactly on an 8x B200 NVSwitch host, but PCIe-only and partially
+    bridged boxes were not available to test. The line that matters is an
+    NVML-positive / topo-negative pair, the fast path claiming a link the slow path
+    denies. Please report it on #10613 if you see one."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "studio" / "backend"))
+        from core.inference.llama_cpp import LlamaCppBackend as backend
+    except Exception as e:  # noqa: BLE001 -- diagnostic, never fatal
+        print(f"could not import the Studio backend to cross-check NVML: {e}\n")
+        return
+    try:
+        nvml = backend._probe_nvml_nvlink_topology()
+        topo = backend._probe_nvlink_topology()
+    except Exception as e:  # noqa: BLE001
+        print(f"topology cross-check failed: {e}\n")
+        return
+    print("=== NVML vs nvidia-smi topo -m ===")
+    if nvml is None:
+        print("NVML gave no verdict here; Studio would use `nvidia-smi topo -m`.\n")
+        return
+    if topo is None:
+        print("`nvidia-smi topo -m` gave no verdict; nothing to compare against.\n")
+        return
+    nvml_yes = {k for k, v in nvml.items() if backend._label_is_nvlink(v)}
+    topo_yes = {k for k, v in topo.items() if backend._label_is_nvlink(v)}
+    print(f"NVLinked pairs: NVML {len(nvml_yes)}, topo -m {len(topo_yes)}")
+    if nvml_yes == topo_yes:
+        print("They agree exactly.\n")
+        return
+    only_nvml = sorted(nvml_yes - topo_yes)
+    if only_nvml:
+        print(
+            f"MISMATCH, and in the direction that matters: {only_nvml} are NVLink to\n"
+            "NVML but not to topo -m. Please report this on #10613 with the output of\n"
+            "`nvidia-smi topo -m`, and set UNSLOTH_DISABLE_DC_P2P=1 meanwhile."
+        )
+    if topo_yes - nvml_yes:
+        print(
+            f"{sorted(topo_yes - nvml_yes)} are NVLink to topo -m but not to NVML.\n"
+            "This is the conservative direction: by default NVML answers first, so "
+            "Studio\nwould not enable P2P for them. Setting "
+            "UNSLOTH_P2P_TOPO_CROSSCHECK=1 makes topo -m\nwin any disagreement, which "
+            "would enable them instead."
+        )
+    print()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
     parser.add_argument(
@@ -90,6 +141,7 @@ def main() -> int:
         parser.error("--sizes-mib values must all be positive")
 
     _print_topology()
+    _print_nvml_agreement()
 
     try:
         import torch

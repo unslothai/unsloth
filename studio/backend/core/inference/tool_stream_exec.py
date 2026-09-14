@@ -21,6 +21,7 @@ and healing downstream are untouched.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import queue
 import threading
@@ -179,8 +180,10 @@ def stream_tool_execution(
             # poll-interval latency.
             output_queue.put(done_sentinel)
 
+    # The worker runs in the caller's context, so a tool started for one account cannot resolve another's roots.
     worker = threading.Thread(
-        target = _run,
+        target = contextvars.copy_context().run,
+        args = (_run,),
         daemon = True,
         name = f"tool-exec-{tool_name or 'unknown'}",
     )
