@@ -289,10 +289,8 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        # Masked here, not only in model_message(): this payload is what the frontend renders AND
-        # persists, and on the user's next turn the stored value is serialized back into a
-        # role="tool" message and sent to the provider. Redacting only the in-memory continuation
-        # would hide a leaked key from this turn and replay it on the next one.
+        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
+        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
         result = self.result
         return {
             "tool_name": self.decision.tool_name,
@@ -947,20 +945,16 @@ _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 _WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
-# This install's API keys are `sk-unsloth-` + 32 hex (auth/storage.py), and one of them is cached in the clear so the
-# CLI can reuse it across launches. Whatever route put it in a tool result, the model turn is where it would leave the
-# machine, so it is masked on the way out. Only the model-bound copy: the tool card the user is looking at is their own
-# output and stays as it was. The mask carries neither prefix, so re-running this is a no-op.
+# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
+# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
+# so re-running is a no-op.
 _STUDIO_API_KEY_RE = re.compile(
-    # 8 rather than the full 32 hex: a result cut to fit the window can end mid-key, and half a key
-    # is still credential material. The prefix is Unsloth's own, so a short floor costs nothing;
-    # `sk-unsloth-` with no token after it (prose about the format) still reads through.
-    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote the
-    # repository's own `sk-unsloth-internal-workflow` to `[redacted]-workflow` in source listings
-    # and test output, which is text that cannot be a key.
+    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
+    # `sk-unsloth-` (prose about the format) still reads through.
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
+    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
     r"sk-unsloth-[0-9a-fA-F]{8,}"
-    # The desktop credential is `desktop-` + token_urlsafe(48); the length floor keeps an ordinary
-    # hyphenated word ("desktop-app") out of it.
+    # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
     r"|desktop-[A-Za-z0-9_-]{40,}"
 )
 _STUDIO_SECRET_MASK = "[redacted]"
@@ -968,8 +962,7 @@ _STUDIO_SECRET_MASK = "[redacted]"
 
 def redact_studio_credentials(text: str) -> str:
     """Mask any Unsloth Studio credential in text bound for the model/provider."""
-    # Two substring scans before the alternation: a result carrying neither prefix is every ordinary result, and the
-    # regex costs ~20x a `in` test per megabyte because an alternation has no single literal to anchor on.
+    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
     if "sk-unsloth-" not in text and "desktop-" not in text:
         return text
     return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
