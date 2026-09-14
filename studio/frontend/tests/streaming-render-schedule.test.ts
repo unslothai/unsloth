@@ -418,6 +418,56 @@ test("a definition that spans lines still moves the render key", () => {
   }
 });
 
+// The other half of the same contract, and the expensive half to get wrong: the
+// key is a React key, so text it captures that marked does NOT store remounts the
+// whole Streamdown subtree once per character of that text -- every highlighted
+// code block, KaTeX node and Mermaid diagram, plus the selection the reader holds.
+//
+// A definition in a container keeps its continuation in the SAME block, so these
+// reach the key suffix rather than being separated by a block boundary the way
+// plain prose after a plain definition is.
+test("prose after a definition does not move the render key", () => {
+  const tails = [
+    "ordinary prose that follows on the next line",
+    // Opens like a title and never closes, which is what prose usually does.
+    // marked stores a title only once one closes, so neither may move the key.
+    '"a quoted sentence that keeps going',
+    "'a quoted sentence that keeps going",
+    "(a parenthetical that keeps going",
+  ];
+
+  for (const [container, indent] of [
+    ["", ""],
+    ["> ", "> "],
+    ["- ", "  "],
+    ["1. ", "   "],
+  ] as const) {
+    for (const definition of [
+      `${container}[g]: /guide`,
+      `${container}[g]: /guide "settled"`,
+      // Destination on its own line, then more words on that line.
+      `${container}[g]:\n${indent}/guide`,
+    ]) {
+      for (const tail of tails) {
+        const settled = `See [g][g].\n\n${definition}`;
+        const key = markdownRenderKey(settled);
+        const shape = JSON.stringify(`${definition}⏎${tail}`);
+
+        // Stream the tail on one character at a time: a key that moves at any
+        // prefix is a remount, so the whole sweep has to hold, not its endpoint.
+        for (let index = 1; index <= tail.length; index += 1) {
+          const separator = definition.includes("\n") ? " " : `\n${indent}`;
+          assert.equal(
+            markdownRenderKey(`${settled}${separator}${tail.slice(0, index)}`),
+            key,
+            `render key moved for prose after ${shape} at prefix ${index}`,
+          );
+        }
+      }
+    }
+  }
+});
+
 // The scope decides what the cache commits, so it cannot depend on the reply's
 // line ending. This label is 999 characters normalised and 1000 raw with CRLF.
 test("the render scope does not depend on the reply's line ending", () => {

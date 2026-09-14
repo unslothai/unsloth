@@ -111,8 +111,32 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
 // means modelling the title grammar, and the one construct that avoids that,
 // capturing to the end of the definition's paragraph, remounts the tree once a
 // frame on any prose that follows a definition.
+//
+// Both pieces are spelled as marked spells them rather than as "the rest of the
+// line", because the key is a React key: anything captured that marked does not
+// store remounts the whole subtree on every character of it.
+//
+//   destination -- `<?([^\s>]+)>?`, one whitespace-free run. Taking the line
+//   instead put `[g]:` + a following prose line in the key, and a definition in
+//   a container holds its continuation in the SAME block, so `> [g]:` followed
+//   by `> ordinary prose` churned once per character of that prose.
+//
+//   title -- `(["(][^\n]+[")])`, so it CLOSES on its line, and there is one of
+//   them, reached EITHER on the destination's line or on the line below it,
+//   never both, which is the choice marked's rule makes. Admitting both let a
+//   definition that had already closed its title capture the next paragraph
+//   whenever that paragraph opened with a quote or a paren.
+//
+// Requiring the closing delimiter is what keeps a streaming title off the key.
+// marked stores no title until one closes, so a key that followed the opener
+// moved once per character while an ordinary quoted sentence arrived and bought
+// nothing: it moves once, when the title closes, which is when marked stores it.
+// An unterminated opener therefore reads as the prose it usually is.
+const LINK_DEFINITION_DESTINATION = "<?[^\\s>]*>?";
+const LINK_DEFINITION_TITLE = "[\"'(][^\\n]*[\"')]";
 const LINK_DEFINITION_KEY_RE = new RegExp(
-  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?[^\\n]*(?:\\n${CONTAINER_PREFIX}["'(][^\\n]*)?`,
+  `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?${LINK_DEFINITION_DESTINATION}` +
+    `(?:[ \\t]+${LINK_DEFINITION_TITLE}|\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
 // The two block shapes whose body is literal code: an opening fence, and an indent that
