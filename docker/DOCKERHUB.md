@@ -33,12 +33,13 @@ docker run -d --gpus all --ipc=host \
   -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
 
 `docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
 
-The `docker/run.sh` helper in the repository sets these flags for you:
+The `docker/run.sh` helper in the repository sets these flags, including the `unsloth-studio` volume, for you:
 
 ```bash
 git clone https://github.com/unslothai/unsloth && cd unsloth
@@ -120,17 +121,27 @@ The working directory is `/workspace`. Mount what you want to keep:
 |---|---|
 | `/workspace/host` | Your files. Mount your project directory here. |
 | `/workspace/.cache/huggingface` | Model downloads. Mount your host HF cache to reuse it. |
+| `/opt/unsloth-studio` | Studio's accounts, chats, outputs, exports and runs (`latest`). Use a named volume: without one, `docker rm` loses them. A new image still brings new Studio code (see below). |
 | `/workspace/.cache/triton` | Compiled kernels. Optional, speeds up restarts. |
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |
 
 The container runs as root by default. On `core`, `--user <uid>:<gid>` is supported and keeps files on your mounts owned by you. `latest` runs its services as root and does not start under `--user`.
 
+### Studio data and Studio code
+
+Studio's code (its venv, source tree, Node, prebuilt tools) ships in the image under `/opt/unsloth-studio-app` and is linked into `/opt/unsloth-studio` at every start, so the volume holds only your data and every image runs its own code. What that means in practice:
+
+- A volume created by an image from before this split holds that image's code as real directories. The first start of a newer image moves each of them aside to `/opt/unsloth-studio/.unsloth-studio-legacy/<name>` on the volume and links the new code in; nothing is deleted, and the log lists what moved. Delete the legacy directory once the new image works (`docker exec <c> rm -rf /opt/unsloth-studio/.unsloth-studio-legacy`), or start with `-e UNSLOTH_STUDIO_KEEP_LEGACY=0` to skip keeping it. Such a volume also holds that image's uv download cache at `/opt/unsloth-studio/cache/uv` (about 9 GB, hardlinked with the legacy venv); once the legacy directory is gone, `rm -rf /opt/unsloth-studio/cache/uv` frees it.
+- To go back to an image from before the split on the same volume, move the legacy entries back first: `docker run --rm -v unsloth-studio:/h alpine sh -c 'cd /h && for e in .unsloth-studio-legacy/* .unsloth-studio-legacy/.[!.]*; do [ -e "$e" ] || [ -L "$e" ] || continue; rm -rf "${e##*/}"; mv "$e" .; done'`. Images from after the split need nothing. A volume that never held old code (first used after the split, or its legacy directory deleted) gets a copy of the current image's code instead: `docker run --rm -v unsloth-studio:/opt/unsloth-studio --entrypoint unsloth-studio-home <current image> --restore` (about 5 GB, half a minute), after which the older image runs it.
+- `docker rm` still discards anything written into the image's copy: an in-container `unsloth-studio-update` and the `cloudflared` binary `unsloth-jupyter-tunnel` downloads. Studio's caches under `/opt/unsloth-studio/cache` (download resume state, dataset caches) are in the home, so they stay with the volume. Models stay in the Hugging Face cache mount.
+- Use a named volume, not a bind mount of a Windows or macOS host directory. The Studio home needs symlinks, and bind mounts through Docker Desktop's file sharing (a Windows drive under WSL 2 in particular) may refuse to create them; the container then stops at start with the linker's error instead of running a half-linked Studio. A bind mount of a Linux directory (including a directory inside the WSL 2 distribution) works.
+
 ## Updating inside a running container
 
 On the `latest` image:
 
-- `unsloth-studio-update` upgrades Studio and Unsloth in place.
+- `unsloth-studio-update` upgrades Studio and Unsloth in place (in the image's copy: survives `docker restart`, not `docker rm`).
 - `unsloth-llama-update` fetches the newest prebuilt llama.cpp.
 - `unsloth-jupyter-tunnel` opens a Cloudflare quick tunnel to JupyterLab.
 
