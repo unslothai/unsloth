@@ -5588,7 +5588,13 @@ fi
 # _torch_flavor_tag, which would report a working install as broken. Bounded because a
 # half-working HIP runtime can hang the probe.
 if [ "$SKIP_TORCH" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
-    _extra_probe=$(_run_bounded "$_VENV_PY" -c "import torch; print(torch.cuda.is_available())" 2>/dev/null || true)
+    # A sentinel line, not all of stdout. A venv carrying a sitecustomize or an import hook
+    # prints before torch does, and command substitution keeps that text, so the equality
+    # below failed and a working GPU was reported as "training will run on CPU". The same
+    # reason _PREV_TORCH_VER above takes only its own line.
+    _extra_probe=$(_run_bounded "$_VENV_PY" -c \
+        "import torch; print('UNSLOTH_CUDA_OK=%s' % torch.cuda.is_available())" 2>/dev/null \
+        | sed -n 's/^UNSLOTH_CUDA_OK=//p' | tail -n 1 || true)
     if [ "$_extra_probe" = "True" ]; then
         substep "torch reports the GPU is usable (UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA)."
     else
