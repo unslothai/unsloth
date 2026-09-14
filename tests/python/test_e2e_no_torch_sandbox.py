@@ -436,8 +436,6 @@ class TestDataclassInstantiation:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
-            # cells.py is stdlib-only, so the exec sites import the real module
-            # rather than another stub: the suite checks what actually ships.
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
@@ -555,8 +553,6 @@ class TestEdgeCasesBrokenTorch:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
-            # cells.py is stdlib-only, so the exec sites import the real module
-            # rather than another stub: the suite checks what actually ships.
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
