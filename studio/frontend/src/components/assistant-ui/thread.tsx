@@ -4917,9 +4917,8 @@ const Composer: FC<{
                   event.key === "Escape" &&
                   isWritingExpanded &&
                   !event.nativeEvent.isComposing &&
-                  // The @-mention popover closes from a document capture:true
-                  // listener, which runs first: collapsing too would spend one
-                  // Escape on two levels.
+                  // The mention popover already consumed it from a document
+                  // capture:true listener; one Escape, one level.
                   !event.nativeEvent.defaultPrevented
                 ) {
                   setIsWritingExpanded(false);
