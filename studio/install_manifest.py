@@ -151,10 +151,18 @@ def _metadata_scan_paths() -> List[str]:
 
 def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
     """Every matching metadata version and its directory, when available."""
-    from importlib.metadata import distributions
+    from importlib.metadata import MetadataPathFinder, distributions
 
     wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
+    # The listing cache is keyed on the directory's st_mtime, so a dist-info added since an earlier
+    # scan in this process stays invisible while that mtime holds (two writes in one tick; exFAT 2s,
+    # HFS+ 1s), and a damaged install verifies as healthy. Via an INSTANCE: invalidate_caches only
+    # became a classmethod in 3.11.9 / 3.12.3 (gh-116811), and importlib.invalidate_caches() gained
+    # its delegation there too, so before those neither the class call nor the caller works. 3.9
+    # resolves it to MetaPathFinder's no-op, which is right: its FastPath does not cache.
+    if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
+        MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
     found: List[Tuple[str, Optional[Path]]] = []
     for dist in distributions(**kwargs):
