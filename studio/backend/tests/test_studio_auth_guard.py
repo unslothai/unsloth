@@ -218,6 +218,40 @@ def test_a_studio_home_whose_name_contains_a_space(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_traversal_out_of_the_sandbox_into_the_auth_dir(monkeypatch, tmp_path):
+    # The tool cwd is <studio home>/sandbox/<session>, a sibling of the auth directory, so
+    # `open('../../auth/auth.db')` reads the protected database while naming neither the directory
+    # nor a credential basename. Bypass Permissions skips the blocklist, so only this guard is left.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "auth" / "auth.db").write_text("not a real database", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for call, args in (
+            (tools._bash_exec, "cat ../../auth/auth.db"),
+            (tools._python_exec, "print(open('../../auth/auth.db').read())"),
+        ):
+            assert call(args, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), args
+        # Traversal that lands anywhere else is ordinary work: it is not refused. (The suite blocks
+        # real subprocesses, so the refusal string is what is checked, not the output.)
+        for ordinary in ("cat ../notes.txt", "ls ../../models", "cp ../a.txt ../../b.txt"):
+            assert (
+                tools._bash_exec(
+                    ordinary,
+                    None,
+                    30,
+                    _SESSION,
+                    disable_sandbox = True,
+                )
+                != tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_mcp_call_at_the_auth_dir_is_refused():
     name = f"{MCP_TOOL_PREFIX}fs__read_file"
     args = {"path": "~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742"}

@@ -2772,6 +2772,40 @@ def _references_studio_credential(text: str) -> bool:
     )
 
 
+# A path-shaped run of text containing a `..` segment. Only traversal is worth resolving against the
+# working directory: a relative path without one stays inside the sandbox, which is not where the
+# credentials are.
+_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
+
+
+def _references_studio_credential_here(text: str, workdir: "str | None") -> bool:
+    """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
+
+    The tool cwd is `<studio home>/sandbox/<session>`, a sibling of the auth directory, so
+    `open('../../auth/auth.db')` reads the protected database while naming neither the directory
+    nor a credential basename. Resolving only the `..` tokens keeps this to the one shape that can
+    leave the sandbox at all."""
+    if _references_studio_credential(text):
+        return True
+    if not workdir or ".." not in text:
+        return False
+    for token in _TRAVERSAL_TOKEN_RE.findall(text):
+        if "/" not in token and "\\" not in token:
+            continue
+        resolved = os.path.normpath(os.path.join(workdir, token.replace("\\", "/")))
+        if _references_studio_credential(resolved):
+            return True
+    return False
+
+
+def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":
+    """The cwd the executor is about to use, or None if it cannot be resolved cheaply."""
+    try:
+        return _get_workdir(session_id)
+    except Exception:  # noqa: BLE001 - an unresolvable workdir leaves the textual match in place
+        return None
+
+
 # A shell redirection with no following space (cat <../../notes) keeps `..` adjacent to `<`/`>`, so those count as
 # leading delimiters here too.
 _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:<>])\.\.(?:[/\\]|$|[\s'\"])")
@@ -15518,7 +15552,10 @@ def _python_exec(
         return "No code provided."
 
     # Refused in every mode, for the same reason _bash_exec refuses it: this install's credentials are not tool input.
-    if _references_studio_credential(code):
+    # Relative too: the cwd is a sibling of the auth directory, so `open('../../auth/auth.db')` reaches it.
+    if _references_studio_credential_here(
+        code, _tool_workdir_for_guard(session_id) if ".." in code else None
+    ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
@@ -15693,7 +15730,9 @@ def _bash_exec(
     # Studio's own credentials, refused in every mode. Unlike the blocklist below this is not a sandbox rule that
     # Bypass Permissions opts out of: handing the model this install's live bearer token exfiltrates it to whatever
     # provider is serving the turn, and no user flow asks a tool to read Studio's auth directory.
-    if _references_studio_credential(command):
+    if _references_studio_credential_here(
+        command, _tool_workdir_for_guard(session_id) if ".." in command else None
+    ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
