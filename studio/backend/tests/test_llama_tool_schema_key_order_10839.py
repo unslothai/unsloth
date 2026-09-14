@@ -77,7 +77,10 @@ def _tool(parameters, name = "mcp__notion__notion-query-data-sources"):
 
 def _relaxed(original):
     if "$ref" in original or "anyOf" in original or "oneOf" in original:
-        return {"anyOf": [_PERMISSIVE_OBJECT, original]}
+        notes = {
+            key: original[key] for key in ("description", "nullable", "title") if key in original
+        }
+        return {**notes, "anyOf": [_PERMISSIVE_OBJECT, original]}
     kind = original.get("type")
     others = [{"type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
     return {**original, "anyOf": [_PERMISSIVE_OBJECT, *others]}
@@ -88,15 +91,26 @@ _PAGING = {
     "description": "Paging",
     "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
 }
+_DESCRIBED_REF = {"$ref": "#/$defs/Paging", "description": "Pagination for the next page"}
 
 
 def test_wrapper_keeps_the_fields_chat_templates_read():
-    parameters = {"type": "object", "properties": {"filter": copy.deepcopy(_PAGING)}}
-    assert relax_nested_object_key_order(parameters)["properties"]["filter"] == {
+    parameters = {
+        "type": "object",
+        "properties": {"filter": copy.deepcopy(_PAGING), "next": copy.deepcopy(_DESCRIBED_REF)},
+        "$defs": {"Paging": copy.deepcopy(_PAGING)},
+    }
+    relaxed = relax_nested_object_key_order(parameters)["properties"]
+
+    assert relaxed["filter"] == {
         "type": "object",
         "description": "Paging",
         "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
         "anyOf": [{"type": "object", "additionalProperties": True}],
+    }
+    assert relaxed["next"] == {
+        "description": "Pagination for the next page",
+        "anyOf": [{"type": "object", "additionalProperties": True}, _DESCRIBED_REF],
     }
 
 
@@ -104,16 +118,21 @@ def test_wrapper_keeps_the_fields_chat_templates_read():
 def test_gemma_prompt_still_declares_nested_fields(template):
     sandbox = pytest.importorskip("jinja2.sandbox")
     source = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / template).read_text()
-    tool = _tool({"type": "object", "properties": {"filter": copy.deepcopy(_PAGING)}}, name = "query")
+    parameters = {
+        "type": "object",
+        "properties": {"filter": copy.deepcopy(_PAGING), "next": copy.deepcopy(_DESCRIBED_REF)},
+        "$defs": {"Paging": copy.deepcopy(_PAGING)},
+    }
     environment = sandbox.ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     rendered = environment.from_string(source).render(
         messages = [{"role": "user", "content": "hi"}],
-        tools = llama_grammar_tools([tool]),
+        tools = llama_grammar_tools([_tool(parameters, name = "query")]),
         add_generation_prompt = True,
         bos_token = "<bos>",
     )
     assert "start_cursor" in rendered
     assert "page_size" in rendered
+    assert "Pagination for the next page" in rendered
 
 
 def test_flat_parameters_are_returned_unchanged():

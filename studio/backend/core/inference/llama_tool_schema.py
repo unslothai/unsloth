@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 _PERMISSIVE_OBJECT = {"type": "object", "additionalProperties": True}
+_ANNOTATIONS = ("description", "nullable", "title")
 # True wraps, False never (llama.cpp merges $ref/allOf parts by their own keys), None inherits.
 _MAP_KEYWORDS = {
     "$defs": False,
@@ -39,7 +40,9 @@ class _RelaxedUnion(dict):
 
 def _wrap(schema: dict) -> _RelaxedUnion:
     if "$ref" in schema or "anyOf" in schema or "oneOf" in schema:
-        wrapped = _RelaxedUnion(anyOf = [dict(_PERMISSIVE_OBJECT), schema])
+        # Templates read annotations off the node itself; the grammar ignores them next to anyOf.
+        notes = {key: schema[key] for key in _ANNOTATIONS if key in schema}
+        wrapped = _RelaxedUnion({**notes, "anyOf": [dict(_PERMISSIVE_OBJECT), schema]})
     else:
         # Chat templates read the node's own type/properties/required; llama.cpp's grammar takes
         # anyOf before them, so both stay and a type list keeps its other types as branches.
