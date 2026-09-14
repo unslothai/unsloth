@@ -27,6 +27,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "studio-backend-ci.yml"
 
@@ -46,25 +47,70 @@ def _pytest_commands(text: str) -> list[str]:
     Read off the raw text rather than the parsed YAML: a `run:` block is one
     scalar and the interesting structure is inside it, so parsing buys nothing and
     would make this depend on the job/step layout instead of the commands.
+
+    The one thing that cannot be read off the text is `${{ matrix.selection }}`: since
+    repo-cpu-tests became three shards, its parallel command is a template and its paths
+    live in the matrix. Those are substituted in, one command per shard, so a scan of the
+    commands is still a scan of what actually runs.
     """
     joined = re.sub(r"\\\s*\n\s*", " ", text)
-    return [
+    commands = [
         line.strip()
         for line in joined.splitlines()
         if "python -m pytest" in line and not line.lstrip().startswith("#")
     ]
+    expanded = []
+    for command in commands:
+        if "${{ matrix.selection }}" not in command:
+            expanded.append(command)
+            continue
+        for selection in _shard_selections():
+            expanded.append(command.replace("${{ matrix.selection }}", selection))
+    return expanded
+
+
+def _shard_selections() -> list[str]:
+    job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["repo-cpu-tests"]
+    return [" ".join(entry["selection"].split()) for entry in job["strategy"]["matrix"]["include"]]
+
+
+def _collects(command: str, path: str) -> bool:
+    """Whether a pytest command would collect `path`, by its roots and its --ignore flags.
+
+    An isolated path used to be kept out of the parallel run by naming it in an --ignore.
+    A shard that does not name its directory at all keeps it out just as effectively, so
+    the question the guard asks is whether the run reaches the path, not how."""
+    tokens = command.split()
+    roots, ignores = [], []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("--ignore="):
+            ignores.append(token.split("=", 1)[1].rstrip("/"))
+        elif token == "--deselect":
+            index += 1
+        elif token.startswith("tests/") or token == "tests":
+            roots.append(token.rstrip("/"))
+        index += 1
+
+    def under(prefix, candidate):
+        return candidate == prefix or candidate.startswith(prefix + "/")
+
+    if any(under(ignore, path) for ignore in ignores):
+        return False
+    return any(under(root, path) for root in roots)
 
 
 # Two different trees are run in parallel now, and the isolation below belongs to exactly one of them. The repo-root
 # job runs `tests/` from the checkout; the matrix job runs the backend's own suite with
 # `working-directory: studio/backend`, so `tests/studio/...` is not a path that exists for it.
-# Told apart by what they ignore, because that is the thing both the ignores and this scan are about: only the
-# repo-root run excludes directories that live at the repo root.
-REPO_ROOT_MARKER = "--ignore=tests/qlora"
+# Told apart by the selection they carry. This used to be one flag, `--ignore=tests/qlora`, which only the repo-root
+# run had; the repo-root run is three shards now and only one of them carries that flag, so the test is membership of
+# the matrix instead. The backend matrix run is not in it.
 
 
-def _over_the_repo_root(command: str) -> bool:
-    return REPO_ROOT_MARKER in command
+def _over_the_repo_tests(command: str) -> bool:
+    return any(selection in command for selection in _shard_selections())
 
 
 # The same pairing, for the backend matrix run. Ignoring a file from the parallel run and running it again serially is
@@ -256,6 +302,9 @@ def _is_timed(node: ast.AST, names: set, helpers: set) -> bool:
     return False
 
 
+_FRAGILE_CACHE: dict = {}
+
+
 def _fragile_timing_asserts(path: Path) -> list:
     """Assertions whose outcome depends on how the process was scheduled.
 
@@ -268,10 +317,24 @@ def _fragile_timing_asserts(path: Path) -> list:
 
     Read with ast, not a regex: grepping `< 0.05` matches a float tolerance, and grepping
     `elapsed` matches whatever a variable happens to be called.
+
+    Memoised on (resolved path, file text). Two tests below scan all 924 backend test
+    files and the dict comprehension in one of them calls this twice per path, so the
+    same parse-and-walk ran roughly three times over: 19.0s + 20.6s of the file's 37.8s.
+    The read is deliberately still done every call and the text is part of the key, so a
+    file rewritten mid-session is rescanned rather than served a stale verdict; only the
+    parse and the walks are shared. The stored list is copied out, so no caller can
+    mutate another's result, and the tree never leaves this function.
     """
+    source = path.read_text(encoding = "utf-8", errors = "replace")
+    key = (str(path.resolve()), source)
+    cached = _FRAGILE_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
     try:
-        tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
+        tree = ast.parse(source)
     except SyntaxError:
+        _FRAGILE_CACHE[key] = []
         return []
     # Helpers first: a name can hold a duration only because a helper returned one.
     helpers = _timing_helpers(tree)
@@ -311,16 +374,17 @@ def _fragile_timing_asserts(path: Path) -> list:
                 elif isinstance(upper, ast.Constant) and isinstance(upper.value, (int, float)):
                     if upper.value <= TIGHT_BOUND_S:
                         found.append(f"{path.name}:{node.lineno} duration < {upper.value}")
-    return found
+    _FRAGILE_CACHE[key] = found
+    return list(found)
 
 
 @pytest.mark.parametrize("path, reason", ISOLATED, ids = [p for p, _ in ISOLATED])
 def test_an_isolated_path_is_ignored_by_every_parallel_pytest_run(path, reason):
     for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8")):
-        if " -n " not in f" {command} " or not _over_the_repo_root(command):
+        if " -n " not in f" {command} " or not _over_the_repo_tests(command):
             continue
-        assert f"--ignore={path}" in command, (
-            f"{path} ({reason}) is not ignored by a parallel pytest run in "
+        assert not _collects(command, path), (
+            f"{path} ({reason}) is collected by a parallel pytest run in "
             f"{WORKFLOW.name}, so it shares four workers on the runner's four vCPUs: {command}"
         )
 
@@ -344,20 +408,24 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 2, (
-        f"expected two parallel pytest runs, the backend matrix and repo-cpu-tests, got "
-        f"{parallel}. If a job stopped running in parallel, say so here rather than "
-        f"letting this scan quietly cover one run."
+    assert len(parallel) == 4, (
+        f"expected four parallel pytest runs, the backend matrix and repo-cpu-tests' three "
+        f"shards, got {parallel}. If a job stopped running in parallel, or a shard was added "
+        f"or removed, say so here rather than letting this scan quietly cover fewer runs."
     )
-    root = [command for command in parallel if _over_the_repo_root(command)]
-    assert len(root) == 1, (
-        f"expected exactly one parallel run over the repo root, got {root}. The isolation "
-        f"checks above apply to that one, and a scan that matched none of them would pass "
-        f"on nothing."
+    root = [command for command in parallel if _over_the_repo_tests(command)]
+    assert len(root) == 3, (
+        f"expected the three repo-root shards, got {root}. The isolation checks above apply "
+        f"to those, and a scan that matched none of them would pass on nothing."
     )
-    # The line joins have to be resolved, or the parallel command reads as `pytest tests/ -q` with none of its --ignore
-    # flags and the first test above passes on nothing.
-    assert "--ignore=" in root[0]
+    # The line joins and the matrix substitution both have to be resolved, or a shard command reads as
+    # `pytest ${{ matrix.selection }} -q` with no paths at all and the first test above passes on nothing.
+    assert all("${{" not in command for command in root)
+    assert any("--ignore=" in command for command in root)
+    assert {command for command in root} == set(root), "a shard selection appears twice"
+    # Non-vacuous the other way too: the shards between them must reach the repo's test root, or "not collected by any
+    # parallel run" would be true of every path in the repo.
+    assert any(_collects(command, "tests/test_model_registry.py") for command in root)
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 
 
