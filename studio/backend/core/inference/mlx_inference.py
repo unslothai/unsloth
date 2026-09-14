@@ -21,6 +21,8 @@ from core.inference.native_tool_tokens import (
 )
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
+    UNSET_GENERATION_BUDGET,
+    generation_budget_for_window,
     runtime_context_length,
 )
 from core.inference.chat_template_helpers import (
@@ -45,18 +47,32 @@ logger = get_logger(__name__)
 
 
 # Prefix reuse for mlx-vlm generation, owned by Studio. A forward is not shape-invariant, so a reused turn answers as
-# an unreused one only when both chunk the same rows: every request prefills on one grid and snapshots where a chunk
-# of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
+# an unreused one only when both chunk the same rows: every request prefills on mlx-vlm's own grid and snapshots where
+# a chunk of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
 # prefill_step_size.
 
-# The grid the boundary sits on: a prompt shorter than the step has no boundary at all.
-VLM_PROMPT_CACHE_PREFILL_STEP = 256
+# mlx-vlm's default step, for when it cannot be read: a prompt no longer than it has no boundary.
+VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
-def shape_stable_prefix(token_count, origin = 0):
+def vlm_prefill_step():
+    """mlx-vlm's own step, so an unreused request prefills as mlx-vlm does. It divides every
+    boundary, so a step no grid can be built on falls back here rather than reaching a request."""
+    try:
+        from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
+        step = int(DEFAULT_PREFILL_STEP_SIZE)
+    except Exception:
+        return VLM_PREFILL_STEP
+    return step if step > 0 else VLM_PREFILL_STEP
+
+
+def shape_stable_prefix(
+    token_count,
+    origin = 0,
+    step = VLM_PREFILL_STEP,
+):
     """Rows whole chunks produced from ``origin``; mlx-vlm holds the last token back."""
-    step = VLM_PROMPT_CACHE_PREFILL_STEP
     rows = token_count - 1
     if rows < origin:
         return 0
@@ -240,7 +256,8 @@ def _recording_class(base):
                 record.resume_offset = offset or 0
                 if record.on_resume is not None:
                     record.on_resume(record.resume_offset)
-            if _prompt_wide_position_ids(args, kwargs):
+            # Only after a resume: a Qwen VL model fed no positions reuses the previous request's.
+            if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
                 kwargs.pop("position_ids")
             _place_per_layer_inputs(
                 kwargs, _chunk_rows(args, kwargs), (offset or 0) - record.resume_offset
@@ -398,7 +415,9 @@ class VLMPromptCacheSession:
         releases_unserved = False,
         media_block = None,
         policy_hosts = (),
+        step = VLM_PREFILL_STEP,
     ):
+        self.step = step
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
@@ -440,7 +459,7 @@ class VLMPromptCacheSession:
         self._token_ids = token_ids
         origin = self.media_block.rows(token_ids) if self.media_block is not None else 0
         self._origin = origin
-        boundary = shape_stable_prefix(len(token_ids), origin)
+        boundary = shape_stable_prefix(len(token_ids), origin, self.step)
         self._media_end = media_prefix_end(token_ids, self._media_token_ids)
         record = self._forward.record
         if boundary < self._media_end:
@@ -468,7 +487,7 @@ class VLMPromptCacheSession:
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
-        record.capture_at = (boundary - prefix_len) // VLM_PROMPT_CACHE_PREFILL_STEP
+        record.capture_at = (boundary - prefix_len) // self.step
         self.reused_tokens = prefix_len
         return prefix_len
 
@@ -507,13 +526,12 @@ class VLMPromptCacheSession:
             return False
         # Read off the snapshot: a declined offer captures an earlier boundary.
         held = cache_entries_offset(snapshot)
-        step = VLM_PROMPT_CACHE_PREFILL_STEP
         if (
             not held
             or held < self._origin
-            or (held - self._origin) % step
+            or (held - self._origin) % self.step
             or held < self._media_end
-            or held > shape_stable_prefix(len(self._token_ids), self._origin)
+            or held > shape_stable_prefix(len(self._token_ids), self._origin, self.step)
         ):
             logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
             return False
@@ -1937,6 +1955,7 @@ class MLXInferenceBackend:
         # Bound now so a load that fails before installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
         self._kv_cache_window = None
+        self._served_context = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -2066,6 +2085,7 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
+                step = vlm_prefill_step(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -2110,6 +2130,23 @@ class MLXInferenceBackend:
             return prompt, None, None, None, 0
         return rest, cache, key, tokens, len(tokens) - len(rest)
 
+    def _unset_generation_budget(
+        self,
+        prompt,
+        prompt_tokens = None,
+    ):
+        """Free context for an unset limit, or the default if the prompt cannot be counted."""
+        try:
+            prompt_n = (
+                len(prompt_tokens)
+                if prompt_tokens is not None
+                else self._count_prompt_tokens(prompt)
+            )
+        except Exception as exc:
+            logger.debug("MLX prompt count for an unset budget failed: %s", exc)
+            return UNSET_GENERATION_BUDGET
+        return generation_budget_for_window(self._served_context, prompt_n, None)
+
     def _kv_quant_generate_kwargs(self):
         """Load-time runtime knobs for a generate call, empty when unset. quantized_kv_start is
         deliberately not passed: mlx-lm and mlx-vlm ship different defaults (0 and 5000) and each
@@ -2134,6 +2171,14 @@ class MLXInferenceBackend:
                 prompt, add_special_tokens = bos is None or not prompt.startswith(bos)
             )
         )
+
+    def _count_prompt_tokens(self, prompt):
+        """Prompt length as generation tokenizes it; vision models follow mlx_vlm's marker rule."""
+        if not self._is_vlm:
+            return len(self._encode_prompt(prompt))
+        model_type = getattr(getattr(self._model, "config", None), "model_type", None)
+        add_special = _vlm_add_special_tokens(model_type, self._processor)
+        return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
 
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model. memory_limit = 85% of recommended
@@ -2353,6 +2398,7 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
+        self._served_context = _served_ctx
         # Classify before the first generation: an ineligible cache would otherwise raise inside
         # maybe_quantize_kv_cache mid-stream, after converting the leading entries.
         self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
@@ -2646,12 +2692,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            # Whether the markers belong to the template or to tokenization is a per-model answer mlx_vlm makes for
-            # every generation; ask it rather than guess, or the count is off by whatever the generation's own choice
-            # would have added.
-            _model_type = getattr(getattr(self._model, "config", None), "model_type", None)
-            add_special = _vlm_add_special_tokens(_model_type, self._processor)
-            return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
+            return self._count_prompt_tokens(prompt)
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -2660,7 +2701,7 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
         )
-        return len(self._encode_prompt(render_result.prompt))
+        return self._count_prompt_tokens(render_result.prompt)
 
     def generate_chat_response(
         self,
@@ -2891,6 +2932,8 @@ class MLXInferenceBackend:
                 prompt_tokens,
                 cached_n,
             ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            if max_new_tokens is None:
+                max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
                 len(prompt),
@@ -3207,6 +3250,12 @@ class MLXInferenceBackend:
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
+        if max_new_tokens is None:
+            max_new_tokens = self._unset_generation_budget(prompt)
+            if image is not None:
+                # An image expands past its one placeholder token, so the counted prompt is short
+                # of the real one: cap at the default, but stay under the rotating cache window.
+                max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -3282,7 +3331,7 @@ class MLXInferenceBackend:
             if session.media_block is not None:
                 vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
-            vlm_kwargs["prefill_step_size"] = VLM_PROMPT_CACHE_PREFILL_STEP
+            vlm_kwargs["prefill_step_size"] = session.step
         session_scope = session if session is not None else nullcontext()
 
         def _stream_vlm_snapshots():
@@ -3443,6 +3492,11 @@ class MLXInferenceBackend:
                 "mlx-vlm has no registered prompt renderer for this model family; "
                 "cannot build an audio prompt."
             )
+
+        if max_new_tokens is None:
+            # Audio expands past its placeholder token exactly as an image does, so the counted
+            # prompt is short of the real one: cap at the default, but stay under the window.
+            max_new_tokens = min(self._unset_generation_budget(prompt), UNSET_GENERATION_BUDGET)
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)

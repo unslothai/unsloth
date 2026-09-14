@@ -279,6 +279,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -1347,7 +1348,10 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return serializeAssistantReplayMessages(message, includeReasoningContent);
+    return fillStoppedAssistantReplay(
+      message,
+      serializeAssistantReplayMessages(message, includeReasoningContent),
+    );
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1384,6 +1388,46 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
     message.status?.type === "incomplete" ||
     readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
   );
+}
+
+/** #10428: an empty Stop loses its prompt to the prune. Only `cancelled` in `status` is deliberate. */
+function stoppedAssistantReplayText(message: RunMessage): string {
+  const info = readIncompleteInfo(
+    (message as { metadata?: unknown }).metadata,
+  );
+  const status = message.status;
+  const fromStatus: IncompleteReason =
+    status?.type !== "incomplete" || status.reason === "cancelled"
+      ? "cancelled"
+      : status.reason === "length"
+        ? "length"
+        : "interrupted";
+  return incompleteLabel(info?.reason ?? fromStatus);
+}
+
+function fillStoppedAssistantReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  if (!assistantTurnEndedEarly(message)) {
+    return serialized;
+  }
+  if (serialized.length === 0) {
+    // Only a refusal serialises to nothing; filling it puts a stop label back on a dropped turn.
+    return serialized;
+  }
+  const [only, ...rest] = serialized;
+  if (rest.length !== 0 || only?.role !== "assistant") {
+    return serialized;
+  }
+  if (
+    hasReplayContent(only.content) ||
+    only.tool_calls ||
+    only.reasoning_content
+  ) {
+    return serialized;
+  }
+  return [{ ...only, content: stoppedAssistantReplayText(message) }];
 }
 
 /** A Stop before the turn produced anything serialises to a lone empty assistant message,
@@ -1993,7 +2037,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       if (abortSignal?.aborted) {
-        reject(new Error("Aborted"));
+        // Uncaught in the adapter, and a Stop that is not an AbortError files as a failure (#10428).
+        reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
         return;
       }
       if (!useChatRuntimeStore.getState().modelLoading) {
@@ -5903,8 +5948,9 @@ export function createOpenAIStreamAdapter(
                     // Self-hosted models often write a call as text rather than emitting structured tool_calls, so
                     // the external loop heals like the local one; omitting this left the process default.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    // Keep the external server-side loop under the same user setting as the local paths.
-                    nudge_tool_calls: runtime.nudgeToolCalls,
+                    // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
+                    // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
+                    nudge_tool_calls: false,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
@@ -6242,7 +6288,17 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    if (generationDecision === "durable") return;
+                    // Null when the Stop won the race AND when json() could not parse a 2xx body;
+                    // a bare return settles both "complete" (#10428).
+                    if (generationDecision === "durable") {
+                      if (runSignal.aborted) {
+                        throw runSignal.reason ??
+                          new DOMException("Aborted", "AbortError");
+                      }
+                      throw new Error(
+                        "The server accepted the request without starting a generation run",
+                      );
+                    }
                   } else {
                     generationRunId = generationRun.id;
                     // Normally the same id claimed above; claimed again in case the server echoes a different one.
@@ -7834,41 +7890,39 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          if (partialContent.length > 0) {
-            const partialTiming = buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(partialText),
-              toolCallParts.length,
-            );
-            yield {
-              content: partialContent,
-              metadata: {
-                timing: partialTiming,
-                custom: {
-                  ...reasoningDurationTracker.metadata(),
-                  contextTruncation,
-                  // Unfinished too, so it also offers Continue -- unless the provider already
-                  // said why the model stopped.
-                  incomplete: {
-                    reason: resolveIncompleteReason(
-                      err instanceof GenerationLengthError
-                        ? ("length" as const)
-                        : err instanceof ChatGenerationTerminalError &&
-                            err.generationStatus === "cancelled"
-                          ? ("cancelled" as const)
-                          : ("interrupted" as const),
-                      contextWindowExceeded,
-                    ),
-                  },
-                  timing: partialTiming,
-                  ...generationCustom(),
+          const partialTiming = buildTiming(
+            streamStartTime,
+            totalChunks,
+            firstTokenTime,
+            Date.now() - streamStartTime,
+            estimateTokenCount(partialText),
+            toolCallParts.length,
+          );
+          yield {
+            content: partialContent,
+            metadata: {
+              timing: partialTiming,
+              custom: {
+                ...reasoningDurationTracker.metadata(),
+                contextTruncation,
+                // Unfinished too, so it also offers Continue -- unless the provider already
+                // said why the model stopped.
+                incomplete: {
+                  reason: resolveIncompleteReason(
+                    err instanceof GenerationLengthError
+                      ? ("length" as const)
+                      : err instanceof ChatGenerationTerminalError &&
+                          err.generationStatus === "cancelled"
+                        ? ("cancelled" as const)
+                        : ("interrupted" as const),
+                    contextWindowExceeded,
+                  ),
                 },
+                timing: partialTiming,
+                ...generationCustom(),
               },
-            };
-          }
+            },
+          };
         }
         throw err;
       } finally {
