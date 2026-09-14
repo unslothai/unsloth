@@ -489,6 +489,16 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     previous = key;
   }
 
+  // `>` closes the ANGLE form and only the angle form. marked registers
+  // `[g]: https://x.test/a>b` with the `>` in the URL, so a bare destination
+  // that stopped there settled one character in and never moved again.
+  let bareStep = markdownRenderKey(`${usage}[g]: `);
+  for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
+    const key = markdownRenderKey(`${usage}[g]: ${step}`);
+    assert.notEqual(key, bareStep, `render key did not move for ${step}`);
+    bareStep = key;
+  }
+
   // The bare form still stops at whitespace, which is what keeps prose after a
   // definition out of the key. Both forms have to hold at once.
   const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
