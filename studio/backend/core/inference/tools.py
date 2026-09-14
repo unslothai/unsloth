@@ -3208,6 +3208,21 @@ _PATH_ARG_SKIP = {
 # be classified. grep and sed are NOT in here: their skipped positional is a pattern, which is the
 # first POSITIONAL rather than the first argument, so their skip stays unconditional.
 _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
+# Flags that supply the pattern or program themselves. `_PATH_ARG_SKIP` spends a positional on it by
+# default, but `grep -f patterns.txt FILE` and `sed -e s/a/b/ FILE` already have theirs, so keeping
+# the skip would discard the first real input path and leave the read unclassified.
+_PATTERN_SUPPLYING_FLAGS = {
+    "grep": {"-f", "--file", "-e", "--regexp"},
+    "egrep": {"-f", "--file", "-e", "--regexp"},
+    "fgrep": {"-f", "--file", "-e", "--regexp"},
+    "rg": {"-f", "--file", "-e", "--regexp"},
+    "ag": {"-f", "--file", "-e"},
+    "ack": {"-f", "--file"},
+    "sed": {"-f", "--file", "-e", "--expression"},
+    "awk": {"-f", "--file"},
+    "gawk": {"-f", "--file"},
+    "mawk": {"-f", "--file"},
+}
 # Module-level `open()` functions, whose path is the FIRST ARGUMENT even though the call is spelled
 # as an attribute. Contrast `Path(p).open()`, where the receiver is the path.
 _PY_MODULE_OPEN_RECEIVERS = frozenset(
@@ -3249,6 +3264,7 @@ _PATH_FLAG_SPECS = {
     "grep": {
         "-f": "read",
         "--file": "read",
+        "--exclude-from": "read",
         "-e": "skip",
         "--regexp": "skip",
         "--include": "skip",
@@ -3425,9 +3441,19 @@ def _split_attached_redirections(tokens) -> "list[str]":
         return list(tokens)
     out: "list[str]" = []
     for token in tokens:
-        if ("<" not in token and ">" not in token) or _REDIR_PREFIX_RE.match(token):
+        if "<" not in token and ">" not in token:
             out.append(token)
             continue
+        prefix = _REDIR_PREFIX_RE.match(token)
+        tail = token[prefix.end() :] if prefix else token
+        if prefix and "<" not in tail and ">" not in tail:
+            # One leading redirection with its target attached (`>out.txt`), which the redirection
+            # handling upstream already understands. Leave it whole.
+            out.append(token)
+            continue
+        # More than one redirection in the token. bash accepts `</dev/null>/media/x cmd`, and
+        # keeping that whole recorded a single read of `/dev/null>/media/x` under the silent /dev
+        # root while the real write to /media/x was never seen.
         parts = [piece for piece in _ATTACHED_REDIR_RE.split(token) if piece]
         out.extend(parts if len(parts) > 1 else [token])
     return out
@@ -3501,6 +3527,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     skip = _PATH_ARG_SKIP.get(command, 0)
     operands: "list[tuple[str, bool]]" = []
     positionals: "list[str]" = []
+    pattern_flags = _PATTERN_SUPPLYING_FLAGS.get(command, frozenset())
     pending_flag = None
     for index, arg in enumerate(args):
         if pending_flag is not None:
@@ -3511,6 +3538,10 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             # A flag can carry a path (`sort -o /abs` writes, `grep -f /abs` reads, `cp -t /abs` is the destination)
             # or carry DATA that merely looks like one (`cut -d /`). Both must be consumed, with the right meaning.
             name, sep, attached = arg.partition("=")
+            # The pattern came from a flag, so no positional is owed to one and the first input file
+            # is a real operand rather than something to step over.
+            if name in pattern_flags:
+                skip = 0
             kind = spec.get(name)
             if sep and kind:
                 _add_flag_operand(operands, kind, attached, write_cmd, creating)
@@ -3519,6 +3550,8 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 pending_flag = arg
                 continue
             flag, value = _short_flag_with_value(arg, spec)
+            if flag in pattern_flags:
+                skip = 0
             if flag and value:
                 _add_flag_operand(operands, spec.get(flag), value, write_cmd, creating)
             elif flag:
@@ -3803,6 +3836,26 @@ _PY_PATH_KWARGS = (
 )
 
 
+def _python_function_aliases(tree) -> dict:
+    """Local name -> real function, for `from io import open as fopen`.
+
+    Only names imported FROM a module whose `open` takes the path first are recorded, so the alias
+    dispatches exactly as the bare builtin would. Without this the call is a plain `Name` under a
+    name in no table and its path argument is never looked at.
+    """
+    aliases: dict = {}
+    for node in _tree_nodes(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        root = (node.module or "").split(".", 1)[0]
+        if root not in _PY_MODULE_OPEN_RECEIVERS:
+            continue
+        for entry in node.names:
+            if entry.asname and entry.name in ("open", "fdopen"):
+                aliases[entry.asname] = entry.name
+    return aliases
+
+
 def _python_module_aliases(tree) -> dict:
     """Local name -> real module, for `import io as stream` and `import os.path as p`.
 
@@ -3854,12 +3907,33 @@ def _python_path_bindings(tree) -> dict:
                 folded = _folded_path(bound, bindings)
             except Exception:  # noqa: BLE001 - folding is best effort
                 continue
+            # A name this value is DERIVED from may itself have held other paths, and folding with
+            # the primary binding alone loses them: `base = 'local'; base = '/media/x'; p = base +
+            # '/f'` folded p to `local/f` only, so the out-of-sandbox read through p was invisible.
+            # One alternate is substituted at a time rather than the full cartesian product, which
+            # keeps this linear in the number of rebindings.
+            derived: "list[str]" = []
+            if extra:
+                for used in {n.id for n in ast.walk(bound) if isinstance(n, ast.Name)}:
+                    for alternate in extra.get(used, ())[:_MAX_REBOUND_ALTERNATES]:
+                        try:
+                            other = _folded_path(bound, {**bindings, used: alternate})
+                        except Exception:  # noqa: BLE001 - folding is best effort
+                            continue
+                        if isinstance(other, str) and other and "\x00" not in other:
+                            derived.append(other)
             if not isinstance(folded, str) or not folded or "\x00" in folded:
+                # The primary fold failed, but a rebound dependency can still make it resolvable.
+                for candidate in derived[:_MAX_REBOUND_ALTERNATES]:
+                    extra.setdefault(target.id, []).append(candidate)
                 continue
             if target.id in bindings and bindings[target.id] != folded:
                 extra.setdefault(target.id, []).append(folded)
             else:
                 bindings[target.id] = folded
+            for candidate in derived[:_MAX_REBOUND_ALTERNATES]:
+                if candidate != bindings.get(target.id):
+                    extra.setdefault(target.id, []).append(candidate)
     # Rebindings ride along under a private key so `add` can test every value a name ever held.
     if extra:
         bindings[_REBOUND_PATHS_KEY] = extra
@@ -3868,6 +3942,9 @@ def _python_path_bindings(tree) -> dict:
 
 # Private key inside the bindings map holding `name -> [other paths it was bound to]`.
 _REBOUND_PATHS_KEY = "\x00__rebound__"
+# Ceiling on alternates carried through a derived binding. A loop that rebinds a name many times
+# would otherwise grow this without bound for no extra signal.
+_MAX_REBOUND_ALTERNATES = 8
 
 
 def _python_path_operands(tree) -> "list[tuple[str, bool]]":
@@ -3880,6 +3957,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     bindings = _python_path_bindings(tree)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
+    function_aliases = _python_function_aliases(tree)
     operands: "list[tuple[str, bool]]" = []
 
     def add_subprocess_operands(call) -> None:
@@ -3929,7 +4007,8 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if isinstance(func, ast.Attribute):
             name = func.attr
         elif isinstance(func, ast.Name):
-            name = func.id
+            # `from io import open as fopen` leaves a plain Name in no table; resolve it back.
+            name = function_aliases.get(func.id, func.id)
         else:
             continue
         first = node.args[0] if node.args else None

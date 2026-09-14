@@ -3326,6 +3326,12 @@ _ALLOWLISTED_TERMINAL = (
     "tar -C /usr/share -cf out.tar .",
     'echo "$(date)"',
     'echo "$(ls)"',
+    # The pattern-flag fix must not make an ordinary grep or a plain redirect prompt.
+    "grep -e needle local.log",
+    "grep -f patterns.txt local.log",
+    "grep --exclude-from=filters needle local.txt",
+    "cat notes.txt > out.txt",
+    "echo hi > /dev/null",
 )
 
 _ALLOWLISTED_PYTHON = (
@@ -3342,6 +3348,9 @@ _ALLOWLISTED_PYTHON = (
     "import gzip\ngzip.open('data.gz', 'rb').read()",
     "import io as stream\nprint(stream.open('notes.txt').read())",
     "import os.path as p\nprint(p.join('data', 'train.csv'))",
+    "from io import open as fopen\nprint(fopen('notes.txt').read())",
+    "from os.path import join as j\nprint(j('data', 'train.csv'))",
+    "base = 'local'\np = base + '/report.txt'\nopen(p).read()",
     # ... and the receiver IS the path for Path.open, which must keep working.
     "from pathlib import Path\nPath('out.txt').open('w').write('hi')",
 )
@@ -3373,6 +3382,17 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f'cat "$(printf {_OUTSIDE_FILE})"',
     f"cat `echo {_OUTSIDE_FILE}`",
     f'cp local.txt "$(echo {_OUTSIDE_DIR}/out)"',
+    # A flag supplied the pattern, so no positional is owed to one and the first input file is a
+    # real operand. Keeping the skip discarded it and the read went unclassified.
+    f"grep -f patterns.txt {_OUTSIDE_FILE}",
+    f"sed -f prog.sed {_OUTSIDE_FILE}",
+    f"grep -e needle {_OUTSIDE_FILE}",
+    f"sed -e s/a/b/ {_OUTSIDE_FILE}",
+    f"grep --exclude-from={_OUTSIDE_DIR}/filters needle local.txt",
+    f"grep --exclude-from {_OUTSIDE_DIR}/filters needle local.txt",
+    # bash accepts several redirections before the command word. Kept whole, the token read as one
+    # silent /dev read and the write past it was never seen.
+    f"</dev/null>{_OUTSIDE_DIR}/out printf payload",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3394,6 +3414,13 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # method and its first argument was never looked at.
     f"import io as stream\nstream.open({_OUTSIDE_FILE!r}).read()",
     f"import gzip as gz\ngz.open({_OUTSIDE_DIR!r} + '/d.gz', 'rb').read()",
+    # `from io import open as fopen` leaves a plain Name in no table.
+    f"from io import open as fopen\nfopen({_OUTSIDE_FILE!r}).read()",
+    f"from gzip import open as gopen\ngopen({_OUTSIDE_DIR!r} + '/d.gz', 'rb').read()",
+    # A DERIVED binding has to carry every value its dependency ever held, or the rebinding is lost
+    # the moment the path is assembled rather than used directly.
+    f"base = 'local'\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()",
+    f"import os\nb = 'local'\nb = {_OUTSIDE_DIR!r}\np = os.path.join(b, 'r.txt')\nopen(p).read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
