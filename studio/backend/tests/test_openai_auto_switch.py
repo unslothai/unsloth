@@ -284,7 +284,7 @@ def _cold_start_empty_backend(monkeypatch):
     )
 
 
-def test_cold_start_loads_requested_model_when_auto_switch_off(monkeypatch):
+def test_cold_start_does_not_load_when_auto_switch_off(monkeypatch):
     backend, rec = _wired(
         monkeypatch,
         _FakeBackend(loaded_id = None),
@@ -293,17 +293,50 @@ def test_cold_start_loads_requested_model_when_auto_switch_off(monkeypatch):
     )
     _cold_start_empty_backend(monkeypatch)
     _run_hook("unsloth/B-GGUF:Q4_K_M")
-    assert len(rec.calls) == 1
-    assert rec.calls[0].model_path == "unsloth/B-GGUF"
-    assert rec.calls[0].gguf_variant == "Q4_K_M"
+    assert rec.calls == []
 
 
-def test_cold_start_reload_only_loads_last_local_model(monkeypatch):
+def test_cold_start_reload_only_does_not_load_last_local_when_auto_switch_off(monkeypatch):
     backend, rec = _wired(
         monkeypatch,
         _FakeBackend(loaded_id = None),
         ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
         enabled = False,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "tester"
+        )
+    )
+    assert rec.calls == []
+
+
+def test_cold_start_loads_requested_model_when_auto_switch_on(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        enabled = True,
+    )
+    _cold_start_empty_backend(monkeypatch)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/B-GGUF"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+
+
+def test_cold_start_reload_only_loads_last_local_when_auto_switch_on(monkeypatch):
+    backend, rec = _wired(
+        monkeypatch,
+        _FakeBackend(loaded_id = None),
+        ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        enabled = True,
     )
     _cold_start_empty_backend(monkeypatch)
     monkeypatch.setattr(

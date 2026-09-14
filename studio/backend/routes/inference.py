@@ -9069,11 +9069,11 @@ async def _maybe_auto_switch_model(
                 _claim_slot_for_non_preview(fastapi_request)
             return
         if not keyless_caller:
-            # Credentialed /v1 cold start: load a downloaded request model (or
-            # last-local when the field is omitted). Auto-switch stays opt-in
-            # for swapping a model that is already serving.
-            cold_start_load = True
-            auto_switch_on = True
+            # Credentialed cold start must not flip auto-switch on when Settings
+            # has it off; PocketPal-style loads require explicit opt-in above.
+            if claim_resident:
+                _claim_slot_for_non_preview(fastapi_request)
+            return
         # Keyless cold start: do not enable auto-switch. Last-local — or a
         # request that names that same model — is the only load allowed below.
     elif not auto_switch_on and idle_unload_is_configured() and cold_start and not keyless_caller:
