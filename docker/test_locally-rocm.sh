@@ -12,7 +12,7 @@
 #   bash docker/test_locally-rocm.sh                   # all blocks
 #   bash docker/test_locally-rocm.sh --skip-notebook   # blocks 1-3a only (fast)
 #   bash docker/test_locally-rocm.sh --skip-build      # assume $TAG already built
-#   TAG=my-image:latest bash docker/test_locally-rocm.sh
+#   TAG=my-image:latest bash docker/test_locally-rocm.sh   # name:tag, built via build.sh
 #   HF_TOKEN=hf_xxx bash docker/test_locally-rocm.sh
 #
 # Strix APUs / RDNA4 cards (AMD per-arch wheels, see Dockerfile.rocm):
@@ -26,7 +26,7 @@ LOG_DIR="${LOG_DIR:-/tmp/unsloth-rocm-test}"
 SKIP_BUILD=0
 SKIP_NOTEBOOK=0
 ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm7.2}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm${ROCM_VERSION%.*}}"
 ROCM_GFX="${ROCM_GFX:-}"
 
 while [[ $# -gt 0 ]]; do
@@ -115,37 +115,28 @@ if [[ $SKIP_BUILD -eq 1 ]]; then
 else
     banner "Block 2: build $TAG"
 
-    if [[ -f "Dockerfile.rocm" && -f "smoke_test_rocm.py" ]]; then
-        BUILD_CTX="$PWD"
-    elif [[ -f "docker/Dockerfile.rocm" ]]; then
-        BUILD_CTX="$PWD/docker"
+    if [[ -x "build.sh" && -f "Dockerfile.rocm" ]]; then
+        BUILD_SH="$PWD/build.sh"
+    elif [[ -x "docker/build.sh" ]]; then
+        BUILD_SH="$PWD/docker/build.sh"
     else
-        fail "Cannot find Dockerfile.rocm. Run from the repo root or docker/ directory."
+        fail "Cannot find docker/build.sh. Run from the repo root or docker/ directory."
     fi
-    echo "  build context: $BUILD_CTX"
     echo "  ROCm version:  $ROCM_VERSION"
     echo "  torch index:   ${ROCM_GFX:+AMD per-arch wheels for $ROCM_GFX}${ROCM_GFX:-$TORCH_INDEX_URL}"
 
     BUILD_LOG="$LOG_DIR/build.log"
     echo "  log:           $BUILD_LOG"
 
-    if ! docker buildx version >/dev/null 2>&1; then
-        fail "docker buildx is not installed. Install: sudo apt-get install -y docker-buildx"
-    fi
-    echo "  builder:       docker buildx ($(docker buildx version | head -1))"
-
-    docker buildx build \
-        --progress=plain \
-        --load \
-        --build-arg ROCM_VERSION="${ROCM_VERSION}" \
-        --build-arg TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
-        --build-arg ROCM_GFX="${ROCM_GFX}" \
-        -f "${BUILD_CTX}/Dockerfile.rocm" \
-        -t "$TAG" \
-        "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"
+    # Through build.sh, not a bare docker build: it freezes UNSLOTH_REF and
+    # UNSLOTH_ZOO_REF to commits first, so a rerun after main moved cannot reuse
+    # the install layer of an earlier build and validate stale code.
+    IMAGE_NAME="${TAG%%:*}" TAG="${TAG#*:}" ROCM_VERSION="$ROCM_VERSION" \
+        TORCH_INDEX_URL="$TORCH_INDEX_URL" ROCM_GFX="$ROCM_GFX" \
+        bash "$BUILD_SH" --rocm 2>&1 | tee "$BUILD_LOG"
     rc=${PIPESTATUS[0]}
     if [[ $rc -ne 0 ]]; then
-        fail "docker build exited $rc -- see $BUILD_LOG"
+        fail "build exited $rc -- see $BUILD_LOG"
     fi
 
     # Sanity-check the build's own self-test ran and passed.

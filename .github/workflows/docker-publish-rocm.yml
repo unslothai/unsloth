@@ -163,7 +163,9 @@ jobs:
           IN_GFX: ${{ github.event.inputs.rocm_gfx }}
         run: |
           ROCM="${IN_ROCM:-$DEFAULT_ROCM_VERSION}"
-          INDEX="${IN_INDEX:-$DEFAULT_TORCH_INDEX_URL}"
+          # the index follows the base unless named: a 6.3.4 base with the 7.2
+          # wheels would build (torch.version.hip is set either way) and not run
+          INDEX="${IN_INDEX:-https://download.pytorch.org/whl/rocm${ROCM%.*}}"
           GFX="${IN_GFX}"
           case "$GFX" in
               ""|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;

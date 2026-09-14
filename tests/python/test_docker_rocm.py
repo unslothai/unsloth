@@ -259,6 +259,28 @@ class TestBuildShRocm:
         _, argv = _build_sh(tmp_path, ["--rocm"], extra_env = {"ROCM_GFX": "gfx1150"})
         assert _build_arg(argv, "ROCM_GFX") == "gfx1150"
 
+    def test_the_index_follows_the_rocm_version_unless_named(self, tmp_path):
+        """ROCM_VERSION=6.3.4 alone must not pair a 6.3 base with the 7.2 wheels: the
+        build would pass (torch.version.hip is set either way) and not run."""
+        _, argv = _build_sh(tmp_path, ["--rocm"], extra_env = {"ROCM_VERSION": "6.3.4"})
+        assert _build_arg(argv, "ROCM_VERSION") == "6.3.4"
+        assert _build_arg(argv, "TORCH_INDEX_URL") == "https://download.pytorch.org/whl/rocm6.3"
+        _, argv = _build_sh(tmp_path, ["--rocm"], extra_env = {
+            "ROCM_VERSION": "6.3.4", "TORCH_INDEX_URL": "https://example/whl/custom"})
+        assert _build_arg(argv, "TORCH_INDEX_URL") == "https://example/whl/custom"
+        body = open(_WORKFLOW, encoding = "utf-8").read()
+        assert 'https://download.pytorch.org/whl/rocm${ROCM%.*}' in body
+        local = open(os.path.join(_DOCKER, "test_locally-rocm.sh"), encoding = "utf-8").read()
+        assert 'rocm${ROCM_VERSION%.*}' in local
+
+    def test_the_local_end_to_end_script_builds_through_build_sh(self):
+        """A bare docker build there passed mutable main refs, so a rerun after main
+        moved could reuse the install layer and validate stale code."""
+        local = open(os.path.join(_DOCKER, "test_locally-rocm.sh"), encoding = "utf-8").read()
+        code = "\n".join(ln for ln in local.splitlines() if not ln.lstrip().startswith("#"))
+        assert "docker buildx build" not in code and "docker build" not in code, "builds outside build.sh"
+        assert 'bash "$BUILD_SH" --rocm' in code
+
     def test_gfx_without_rocm_is_refused(self, tmp_path):
         proc, argv = _build_sh(tmp_path, ["--gfx", "gfx1151"], expect_rc = 2)
         assert argv == [], "docker build ran anyway"

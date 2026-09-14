@@ -47,7 +47,8 @@ if [[ $ROCM -eq 1 ]]; then
     # rocm6.4 at 2.9.1, both far below what current unsloth-zoo / transformers
     # want, and RDNA4 (gfx1200/1201) has no kernels before 7.x either.
     ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
-    TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm7.2}"
+    # the index follows the base unless named (7.2.4 -> rocm7.2)
+    TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm${ROCM_VERSION%.*}}"
 else
     IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
     CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
