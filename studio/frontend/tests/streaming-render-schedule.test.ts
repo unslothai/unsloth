@@ -100,18 +100,16 @@ const MARKDOWN_CASES = [
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
-  // Marked registers every label up to CommonMark's 999, so one past 200 has to
-  // be held like any other; committing it away lexes it apart from its twin.
+  // Every label to CommonMark's 999 is registered, so one past 200 must be held.
   `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
   `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
-  // Marked normalises label whitespace, so `[foo\nbar]` registers as `foo bar`.
+  // Label whitespace is normalised: `[foo\nbar]` registers as `foo bar`.
   `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
   `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
-  // 520 characters but 1040 UTF-16 code units, so the bound only holds it if it
-  // counts code points. Streaming it also cuts surrogate pairs in half.
+  // 1040 UTF-16 units, 520 code points: the bound must count the latter. Also
+  // cuts surrogate pairs in half while streaming.
   `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
-  // Marked registers this as `foo\ bar`, so the escape has to admit a line
-  // ending; `.` never would.
+  // Registers as `foo\ bar`, so the escape must admit a line ending; `.` cannot.
   `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
@@ -375,9 +373,8 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
-// Everything Marked stores about a definition has to move the key as it arrives,
-// or the reference rendered before it keeps the stale link. Run over every line
-// ending, because the key is built from text the cache has not normalised.
+// Everything Marked stores must move the key as it arrives, or the reference
+// keeps the stale link. Every line ending: the key reads un-normalised text.
 test("a definition that spans lines still moves the render key", () => {
   const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
 
@@ -385,8 +382,8 @@ test("a definition that spans lines still moves the render key", () => {
     const eol = (text: string) => text.replaceAll("\n", newline);
     const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
 
-    // marked accounts for a container marker before it stores the definition, so
-    // the label, the destination and the title each have to be found behind one.
+    // A container marker is stripped before storing, so label, destination and
+    // title each have to be found behind one.
     for (const label of labels) {
       for (const [container, indent] of [
         ["", "  "],
@@ -418,19 +415,14 @@ test("a definition that spans lines still moves the render key", () => {
   }
 });
 
-// The other half of the same contract, and the expensive half to get wrong: the
-// key is a React key, so text it captures that marked does NOT store remounts the
-// whole Streamdown subtree once per character of that text -- every highlighted
-// code block, KaTeX node and Mermaid diagram, plus the selection the reader holds.
-//
-// A definition in a container keeps its continuation in the SAME block, so these
-// reach the key suffix rather than being separated by a block boundary the way
-// plain prose after a plain definition is.
+// The other half of that contract: text the key captures that marked does NOT
+// store remounts the whole Streamdown subtree once per character of it. A
+// definition in a container keeps its continuation in the SAME block, so these
+// reach the key suffix where plain prose after a plain definition does not.
 test("prose after a definition does not move the render key", () => {
   const tails = [
     "ordinary prose that follows on the next line",
-    // Opens like a title and never closes, which is what prose usually does.
-    // marked stores a title only once one closes, so neither may move the key.
+    // Opens like a title and never closes: marked stores none until one does.
     '"a quoted sentence that keeps going',
     "'a quoted sentence that keeps going",
     "(a parenthetical that keeps going",
@@ -445,7 +437,6 @@ test("prose after a definition does not move the render key", () => {
     for (const definition of [
       `${container}[g]: /guide`,
       `${container}[g]: /guide "settled"`,
-      // Destination on its own line, then more words on that line.
       `${container}[g]:\n${indent}/guide`,
     ]) {
       for (const tail of tails) {
@@ -453,8 +444,7 @@ test("prose after a definition does not move the render key", () => {
         const key = markdownRenderKey(settled);
         const shape = JSON.stringify(`${definition}⏎${tail}`);
 
-        // Stream the tail on one character at a time: a key that moves at any
-        // prefix is a remount, so the whole sweep has to hold, not its endpoint.
+        // A key that moves at ANY prefix is a remount, so sweep, not endpoints.
         for (let index = 1; index <= tail.length; index += 1) {
           const separator = definition.includes("\n") ? " " : `\n${indent}`;
           assert.equal(
@@ -468,10 +458,9 @@ test("prose after a definition does not move the render key", () => {
   }
 });
 
-// An angle-bracketed destination may hold spaces, and marked stores them: both
-// 16.4.2 and 17.0.6 register `[g]: <https://x.test/a b>` with the space. So the
-// key has to follow one to its `>`, or it settles on the first word and stops
-// moving, and a reference already on screen keeps a missing or stale URL.
+// marked stores the space in `[g]: <https://x.test/a b>` (16.4.2 and 17.0.6), so
+// the key must follow an angle destination to its `>` or it settles on the first
+// word and stops moving.
 test("an angle-bracketed destination keeps moving the render key", () => {
   const usage = "See [guide][g].\n\n";
   const streamed = [
@@ -489,9 +478,8 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     previous = key;
   }
 
-  // `>` closes the ANGLE form and only the angle form. marked registers
-  // `[g]: https://x.test/a>b` with the `>` in the URL, so a bare destination
-  // that stopped there settled one character in and never moved again.
+  // `>` closes the ANGLE form only: marked keeps the `>` in
+  // `[g]: https://x.test/a>b`, so a bare destination stopping there froze.
   let bareStep = markdownRenderKey(`${usage}[g]: `);
   for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
     const key = markdownRenderKey(`${usage}[g]: ${step}`);
@@ -499,8 +487,7 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     bareStep = key;
   }
 
-  // The bare form still stops at whitespace, which is what keeps prose after a
-  // definition out of the key. Both forms have to hold at once.
+  // Bare still stops at whitespace, which is what keeps prose out of the key.
   const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
   assert.equal(
     markdownRenderKey(`${usage}[g]: https://x.test/ab\nordinary prose follows`),
@@ -508,8 +495,8 @@ test("an angle-bracketed destination keeps moving the render key", () => {
   );
 });
 
-// The scope decides what the cache commits, so it cannot depend on the reply's
-// line ending. This label is 999 characters normalised and 1000 raw with CRLF.
+// Scope decides what is committed, so it cannot follow the reply's line ending.
+// This label is 999 normalised, 1000 raw under CRLF.
 test("the render scope does not depend on the reply's line ending", () => {
   const label = `foo${" ".repeat(995)}`;
   const usage = `Before [reference][foo].\n\n${paragraphs(20)}`;
