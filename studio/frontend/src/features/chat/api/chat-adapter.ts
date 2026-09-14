@@ -7870,7 +7870,15 @@ export function createOpenAIStreamAdapter(
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
             ...sourceParts,
             ...documentCitationParts,
-            ...(selfNotePart ? [selfNotePart] : []),
+            // `self_note` is Unsloth's own extension, not one of assistant-ui's
+            // `ThreadAssistantMessagePart` variants, so the literal widens the yielded
+            // type and fails the run-result assignment. Cast here rather than widening
+            // the union: the part is inert for the renderer -- nothing matches on it --
+            // and only has to survive the round trip back to the backend, where
+            // `latest_self_note` reads it off the re-sent assistant message.
+            ...(selfNotePart
+              ? [selfNotePart as unknown as (typeof sourceParts)[number]]
+              : []),
           ],
           metadata: {
             timing: finalTiming,

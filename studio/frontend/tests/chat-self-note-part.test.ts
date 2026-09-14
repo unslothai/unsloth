@@ -155,9 +155,14 @@ test("the final yielded content splices in the self_note part, mirroring documen
     "...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),",
   );
   assert.ok(finalContentAt > 0);
-  const region = adapter.slice(finalContentAt, finalContentAt + 400);
+  // Widened from 400: the splice carries an explanatory comment about the cast that
+  // `self_note` needs (it is not an assistant-ui part variant), which pushed the spread
+  // itself past a 400-char window.
+  const region = adapter.slice(finalContentAt, finalContentAt + 900);
   assert.match(region, /\.\.\.documentCitationParts,/);
-  assert.match(region, /\.\.\.\(selfNotePart \? \[selfNotePart\] : \[\]\),/);
+  // Matched loosely around the cast, so a change to HOW the part is typed does not fail a
+  // test whose subject is WHETHER the part reaches the final content.
+  assert.match(region, /\.\.\.\(selfNotePart\s*\?\s*\[selfNotePart[\s\S]*?\]\s*:\s*\[\]\),/);
 });
 
 test("an assistant message with no note produces no self_note part in the final content splice", () => {
