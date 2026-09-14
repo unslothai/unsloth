@@ -55,8 +55,11 @@ import { toast } from "@/lib/toast";
 import {
   type ReactNode,
   type Ref,
+  type SetStateAction,
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -99,6 +102,27 @@ import {
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
+import {
+  clearExtraArgsEditForDraft,
+  clearModelConfigDraftEdited,
+  isExtraArgsHydratedForDraft,
+  isModelConfigDraftEdited,
+  markModelConfigDraftEdited,
+  markExtraArgsHydratedForDraft,
+  modelConfigDraftKey,
+  patchModelConfigDraft,
+  primeModelConfigDraft,
+  readExtraArgsEditForDraft,
+  readModelConfigDraft,
+  replaceModelConfigDraft,
+  retainModelConfigDraft,
+  setExtraArgsEditForDraft,
+  setExtraArgsEditLoadableForDraft,
+  setModelConfigDraftRemember,
+  setModelConfigDraftSavedRemember,
+  subscribeModelConfigDraft,
+} from "../model-config/model-config-draft";
+import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
@@ -1074,6 +1098,7 @@ function GgufAdvancedSettings({
   gpuLayersInputRef,
   moeLayersInputRef,
   onExtraArgsLoadableChange,
+  draftKey,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1089,6 +1114,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
+  draftKey: string;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1550,6 +1576,7 @@ function GgufAdvancedSettings({
           config={config}
           update={update}
           onLoadableChange={onExtraArgsLoadableChange}
+          draftKey={draftKey}
         />
       )}
     </>
@@ -1564,30 +1591,25 @@ function ExtraArgsRow({
   config,
   update,
   onLoadableChange,
+  draftKey,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   onLoadableChange: (loadable: boolean) => void;
+  draftKey: string;
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
-  // What is typed, which is not what is stored: the stored value is argv tokens. Seeded from the
-  // config, then owned by the box, or a re-render would re-quote a half-typed line.
-  const [text, setText] = useState(() =>
-    formatExtraArgs(config.llamaExtraArgs),
-  );
   const adviceId = useId();
-  // What the box last put INTO the config, so an external change can be told from the echo of
-  // the user's own typing. Reset and hydration both replace llamaExtraArgs while this row is
-  // mounted, and re-seeding on every config change would re-quote on each keystroke.
-  const selfWritten = useRef(formatExtraArgs(config.llamaExtraArgs));
+  // What is typed, not what is stored (argv tokens). On the draft, or the second editor
+  // re-quotes a half-typed line into balanced text and judges it loadable.
+  const edit = useSyncExternalStore(
+    subscribeModelConfigDraft,
+    () => readExtraArgsEditForDraft(draftKey),
+  );
   const external = formatExtraArgs(config.llamaExtraArgs);
-  useEffect(() => {
-    if (external === selfWritten.current) {
-      return;
-    }
-    selfWritten.current = external;
-    setText(external);
-  }, [external]);
+  // Comparing against what the edit published, not the config, is what stops a re-quote per
+  // keystroke. Reset and hydration drop the edit outright.
+  const text = edit && edit.source === external ? edit.text : external;
 
   // Re-read on invalidation, not only on mount: updating llama.cpp from the banner replaces the
   // binary while this panel stays open, and the old catalogue would judge arity against help
@@ -1650,16 +1672,22 @@ function ExtraArgsRow({
   const loadable = extraArgsAreLoadable(diagnostics);
   useEffect(() => {
     onLoadableChange(loadable);
+    // On the draft too: only this row reads the raw text. An unprobed row may only LOWER the
+    // verdict, or it clears a refusal another row verified; a parse failure still holds.
+    if (catalog !== null || !loadable) {
+      setExtraArgsEditLoadableForDraft(draftKey, loadable);
+    }
     // Deliberately no cleanup: collapsing Advanced settings unmounts this row while the tokens
     // stay in the config and still go out with the load. The panel clears it on model change.
-  }, [loadable, onLoadableChange]);
+  }, [loadable, onLoadableChange, draftKey, catalog]);
 
   const commit = (next: string) => {
-    setText(next);
     const { tokens } = parseExtraArgs(next);
-    // Recorded before the update, so the config change this causes reads as the box's own and does
-    // not bounce back through the effect above.
-    selfWritten.current = formatExtraArgs(tokens.length > 0 ? tokens : null);
+    // Before the update, so the config change it causes still matches this edit's own source.
+    setExtraArgsEditForDraft(draftKey, {
+      text: next,
+      source: formatExtraArgs(tokens.length > 0 ? tokens : null),
+    });
     // null, not [], so the panel's own "no flags" reads the same as the stored one; toApiOverride
     // turns it into the explicit [] that clears the server's copy.
     update({ llamaExtraArgs: tokens.length > 0 ? tokens : null });
@@ -1800,18 +1828,83 @@ export function ModelConfigPage({
     }
     return resolved;
   };
-  const [initial] = useState(resolveInitial);
-  const [configState, setConfig] = useState<PerModelConfig>(() =>
-    reconcileConfigGpuSelection(initial.config, isDiffusion, gpuDevices),
+  const draftKey = modelConfigDraftKey(configId, target.ggufVariant);
+  const liveSignature = loadedConfigSignature(loadedConfig);
+  // LAYOUT, above the prime: a live change remounts under the same key, and only layout
+  // cleanups run before the new instance re-primes. Released passively it deleted its draft.
+  useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: liveSignature summarizes loadedConfig
+  useLayoutEffect(() => {
+    const resolved = resolveInitial();
+    primeModelConfigDraft(
+      draftKey,
+      {
+        config: reconcileConfigGpuSelection(
+          resolved.config,
+          isDiffusion,
+          gpuDevices,
+        ),
+        remembered: resolved.remembered,
+      },
+      liveSignature,
+    );
+  }, [draftKey, liveSignature]);
+  const draftSnapshot = useSyncExternalStore(
+    subscribeModelConfigDraft,
+    () => readModelConfigDraft(draftKey),
   );
+  const initialFallback = useMemo(
+    () => resolveInitial(),
+    [configId, target.ggufVariant, loadedConfig, initialConfig],
+  );
+  const configState =
+    draftSnapshot?.config ??
+    reconcileConfigGpuSelection(initialFallback.config, isDiffusion, gpuDevices);
+  const remember = draftSnapshot?.remember ?? initialFallback.remembered;
+  const savedRemember =
+    draftSnapshot?.savedRemember ?? initialFallback.remembered;
+  // The peer's row may be refusing what is typed while this editor has none: Advanced starts
+  // collapsed, and the check below judges the TOKENS, which formatExtraArgs rebalances.
+  const sharedExtraArgsEdit = useSyncExternalStore(
+    subscribeModelConfigDraft,
+    () => readExtraArgsEditForDraft(draftKey),
+  );
+  const sharedExtraArgsCurrent =
+    sharedExtraArgsEdit != null &&
+    sharedExtraArgsEdit.source === formatExtraArgs(configState.llamaExtraArgs);
+  const sharedExtraArgsRefused =
+    sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === false;
+  // This editor's row keeps its refusal after unmounting, so a peer that fixed the text lifts it.
+  const sharedExtraArgsCleared =
+    sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === true;
   // The live config, for the async reads below: an effect that closed over it would hold
   // whatever it was when the request started.
   const configRef = useRef(configState);
   configRef.current = configState;
-  const [remember, setRemember] = useState(() => initial.remembered);
-  const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const rememberRef = useRef(remember);
   rememberRef.current = remember;
+  const setConfig = useCallback(
+    (action: SetStateAction<PerModelConfig>) => {
+      // A plain value REPLACES, as the useState setter this stands in for does. Merging left
+      // Reset's DEFAULT_PER_MODEL_CONFIG, which names no GPU field, unable to clear a pick.
+      patchModelConfigDraft(draftKey, (current) =>
+        typeof action === "function" ? action(current) : action,
+      );
+    },
+    [draftKey],
+  );
+  const setRemember = useCallback(
+    (value: boolean) => {
+      setModelConfigDraftRemember(draftKey, value);
+    },
+    [draftKey],
+  );
+  const setSavedRemember = useCallback(
+    (value: boolean) => {
+      setModelConfigDraftSavedRemember(draftKey, value);
+    },
+    [draftKey],
+  );
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   // Same substitution as speculativeFallback: only "manual" is persisted per model, so an absent
   // mode means "follow the standing preference" rather than Auto, and pricing the absence as
@@ -2035,7 +2128,6 @@ export function ModelConfigPage({
   // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
   // remembered GGUF config here; localStorage is only the immediate seed. This also runs while
   // Advanced is closed, since extra arguments affect every load.
-  const extraArgsHydrated = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
     if (!target.isGguf || resolvedIsDiffusion) {
@@ -2060,9 +2152,9 @@ export function ModelConfigPage({
       ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
       configId,
     ].filter((key, index, all) => all.indexOf(key) === index);
-    // Joined because an array literal is a new value on every render.
-    const identity = keys.join("\u0000");
-    if (extraArgsHydrated.current === identity) {
+    // The draft alone, never a string built from `keys`: the hosts derive different candidate
+    // lists. Retaining an unedited draft clears it, so a fresh editor still sees a newer row.
+    if (isExtraArgsHydratedForDraft(draftKey)) {
       setExtraArgsHydrating(false);
       return;
     }
@@ -2089,7 +2181,7 @@ export function ModelConfigPage({
         if (cancelled) {
           return;
         }
-        extraArgsHydrated.current = identity;
+        markExtraArgsHydratedForDraft(draftKey);
         const resolvedArgs = {
           tokens: resolvedOverride?.llama_extra_args ?? [],
           explicit: Array.isArray(resolvedOverride?.llama_extra_args),
@@ -2180,9 +2272,12 @@ export function ModelConfigPage({
         // show different remembered values; fromApiOverride keeps the rest of this browser's config,
         // since an absent field is as much a gap in the mirror as a chosen default. Never over an
         // edit made while the request was in flight.
+        // The edited check is load-bearing: an edit the OTHER editor made before this read
+        // started is already in configAtStart, so the comparison below reads as untouched.
         if (
           resolvedRow &&
           serverConfig &&
+          !isModelConfigDraftEdited(draftKey) &&
           configRef.current === configAtStart &&
           rememberRef.current === rememberAtStart
         ) {
@@ -2194,9 +2289,10 @@ export function ModelConfigPage({
             return;
           }
           setExtraArgsLoadable(hydratedIsLoadable);
-          setConfig(serverConfig);
-          setRemember(true);
-          setSavedRemember(true);
+          replaceModelConfigDraft(draftKey, serverConfig, {
+            remember: true,
+            savedRemember: true,
+          });
           if (hasNonDefaultAdvanced(serverConfig)) {
             setAutoOpenAdvanced(true);
           }
@@ -2286,6 +2382,7 @@ export function ModelConfigPage({
     target.ggufVariant,
     target.isGguf,
     resolvedIsDiffusion,
+    draftKey,
   ]);
   const config = reconcileConfigGpuSelection(
     configState,
@@ -2314,11 +2411,15 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
-  const update = (patch: Partial<PerModelConfig>) =>
+  const update = (patch: Partial<PerModelConfig>) => {
+    // Every control lands here and nothing else does: the hydration effect's own sanitising
+    // writes go through setConfig, and marking those would have the read refuse its result.
+    markModelConfigDraftEdited(draftKey);
     setConfig((current) => ({
       ...reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
       ...patch,
     }));
+  };
 
   // True for every mode that takes a draft depth, DSpark included, so this gates the Draft
   // Tokens row rather than naming a drafter.
@@ -2723,9 +2824,15 @@ export function ModelConfigPage({
       committedGpuLayers != null ||
       committedMoeLayers != null;
 
-    const committedConfig = hasPending
-      ? { ...config, ...pendingPatch }
+    // The peer's focused input commits on blur during this click, into the shared draft, and
+    // the refs above reach only this editor's. So read the draft, not the render closure.
+    const liveDraftConfig = readModelConfigDraft(draftKey)?.config;
+    const baseConfig = liveDraftConfig
+      ? reconcileConfigGpuSelection(liveDraftConfig, resolvedIsDiffusion, gpuDevices)
       : config;
+    const peerChanged = !perModelConfigsEqual(baseConfig, config);
+    const committedConfig =
+      hasPending || peerChanged ? { ...baseConfig, ...pendingPatch } : baseConfig;
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
       : committedConfig;
@@ -2739,14 +2846,14 @@ export function ModelConfigPage({
       effectiveConfig.gpuLayers >= 0 &&
       effectiveConfig.customContextLength == null &&
       activeLoadedContext != null;
-    const effectiveRuntimeConfig = hasPending
+    const effectiveRuntimeConfig = (hasPending || peerChanged)
       ? effectivePinFixedLayerContext
         ? { ...effectiveConfig, customContextLength: activeLoadedContext }
         : effectiveConfig
       : runtimeConfig;
     // Non-GGUF load substitutes the resolved max sequence length; recompute from the committed draft.
     const effectiveMaxSeqLengthValue =
-      committedMaxSeqLength == null
+      committedMaxSeqLength == null && !peerChanged
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
@@ -2785,6 +2892,11 @@ export function ModelConfigPage({
         target.ggufVariant,
         remember ? normalizedRuntimeConfig : null,
       );
+    }
+    // Only once the write landed: a blocked or full localStorage leaves the values on screen,
+    // and clearing anyway let the next read replace them with the older stored row.
+    if (!saveFailed) {
+      clearModelConfigDraftEdited(draftKey);
     }
     // Saving can push the local map over budget and drop other models, whose server entries would
     // keep applying with nothing able to forget them. Not a Forget: only mirrored fields go.
@@ -3002,6 +3114,7 @@ export function ModelConfigPage({
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
+                draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
               />
             )}
@@ -3055,7 +3168,12 @@ export function ModelConfigPage({
           <Checkbox
             id={rememberId}
             checked={remember}
-            onCheckedChange={(checked) => setRemember(checked === true)}
+            onCheckedChange={(checked) => {
+              // Not in setRemember, which the save path calls again to settle the box. An
+              // unticked Remember is a pending Forget the next read would otherwise re-tick.
+              markModelConfigDraftEdited(draftKey);
+              setRemember(checked === true);
+            }}
           />
           <label
             htmlFor={rememberId}
@@ -3077,14 +3195,19 @@ export function ModelConfigPage({
             size="sm"
             className="h-8"
             disabled={atDefault}
-            onClick={() =>
+            onClick={() => {
+              // Reset writes through setConfig, not update, so it marks the draft itself.
+              markModelConfigDraftEdited(draftKey);
+              // And drops the raw edit: token equality alone would make the discarded text
+              // current again the moment a later value formatted to the same tokens.
+              clearExtraArgsEditForDraft(draftKey);
               setConfig({
                 // null, not the default's absent: absent omits the field, and the load then INHERITS the
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
-              })
-            }
+              });
+            }}
           >
             Reset
           </Button>
@@ -3095,7 +3218,8 @@ export function ModelConfigPage({
             disabled={
               stagedMetadataPending ||
               budgetSettling ||
-              !extraArgsLoadable ||
+              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
+              sharedExtraArgsRefused ||
               extraArgsHydrating ||
               (isActiveModel &&
                 atBaseline &&

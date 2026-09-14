@@ -3378,6 +3378,16 @@ def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
     return _pick_mtp(candidates, allow_nested = False)
 
 
+def _mtp_drafter_loads_standalone(path: str) -> bool:
+    """Does *path* have the embeddings a ``--model-draft`` file needs?
+
+    The rule lives in ``gguf_metadata`` so the memory-estimate route, which asks on
+    every settings change, shares its ``(path, mtime, size)`` cache.
+    """
+    from utils.models.gguf_metadata import mtp_drafter_loads_standalone
+    return mtp_drafter_loads_standalone(path)
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     from hub.utils.gguf import drop_shadowed_appledouble_names
 
@@ -6445,11 +6455,13 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
-        # Drafter this load resolved then deliberately suppressed (virtualised Metal
-        # with no draft-layer flag). The dedup keys on the drafter the caller asked
-        # for, still on disk, so without this the detected path never matches the
-        # launched None and every repeat Apply tears down a healthy server.
+        # Drafter this load resolved then suppressed: unloadable sidecar, or virtualised
+        # Metal with no draft-layer flag. The caller keeps detecting it on disk, so
+        # without this record every repeat Apply tears down a healthy server.
         self._mtp_draft_suppressed_path: Optional[str] = None
+        # WHICH drop it was, "unloadable" or "paravirtual": only the unloadable one is a
+        # verdict on the CONTENTS, so only it reloads on repair and renames the reason.
+        self._mtp_draft_suppressed_reason: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -6558,6 +6570,13 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
+        # Same ratio, but for auto tensor-parallel mode. The planner may emit a
+        # weighted split or fall back to a user-supplied ratio; recording it lets
+        # _runtime_matches_intent detect a changed ratio and reload.
+        self._auto_tensor_split: Optional[tuple[float, ...]] = None
+        # The actual split that was emitted to llama-server in auto mode, used for
+        # /status reporting. Manual mode stores this in _tensor_split.
+        self._auto_tensor_split_emitted: Optional[tuple[float, ...]] = None
         # Tokens the tensor-spill plan added to this argv, so a retry that re-places
         # the model can strip them with _without_subsequence. Empty when it abstained.
         self._spill_plan_flags: List[str] = []
@@ -7363,9 +7382,16 @@ class LlamaCppBackend:
 
     @property
     def tensor_split(self) -> Optional[List[float]]:
-        """Manual-mode relative model share per GPU (--tensor-split); None =
-        default (split by free VRAM)."""
-        return self._tensor_split
+        """Relative model share per GPU (--tensor-split) for the active load.
+
+        Manual mode returns the requested ratio; auto tensor-parallel mode
+        returns the normalized ratio that was actually emitted, or None when
+        the planner left the split to llama.cpp's default."""
+        if self._tensor_split is not None:
+            return self._tensor_split
+        if self._auto_tensor_split_emitted is not None:
+            return list(self._auto_tensor_split_emitted)
+        return None
 
     @property
     def gpu_ids(self) -> Optional[List[int]]:
@@ -7538,6 +7564,16 @@ class LlamaCppBackend:
                 )
             ):
                 return False
+            # Auto tensor-parallel mode can still carry a user ratio, which the
+            # planner's own split does not describe. Two otherwise identical auto
+            # requests with different ratios must not reuse the same server --
+            # and two with the SAME ratio, or with none at all, must.
+            if (
+                intent.gpu_memory_mode != "manual"
+                and self._tensor_parallel
+                and self._auto_tensor_split != self._auto_split_fingerprint(intent.tensor_split)
+            ):
+                return False
 
         if not self.matches_gpu_ids(list(intent.gpu_ids) if intent.gpu_ids else None):
             return False
@@ -7561,6 +7597,8 @@ class LlamaCppBackend:
         if (
             intent.gguf_path is None
             and self._spec_fallback_reason == "drafter_not_found"
+            # The fetch did find it and the load dropped it; refetching finds it again.
+            and self._mtp_draft_suppressed_path is None
             and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
             and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
             # DFlash asks through _dflash_retry_needed below, which is set only for
@@ -7666,6 +7704,16 @@ class LlamaCppBackend:
                 return False
             if requested_draft != loaded_draft:
                 return False
+            # Repair a rejected sidecar in place and a path-only comparison would keep the
+            # drafter-free server. Only the unloadable drop is re-asked: the paravirtual
+            # one is a property of the build, so the same bytes drop again. Cached on
+            # (path, mtime, size), so only a repaired file is reparsed.
+            if (
+                self._mtp_draft_suppressed_reason == "unloadable"
+                and self._mtp_draft_suppressed_path
+                and _mtp_drafter_loads_standalone(self._mtp_draft_suppressed_path)
+            ):
+                return False
         return True
 
     @property
@@ -7743,6 +7791,56 @@ class LlamaCppBackend:
             ]
         except (TypeError, ValueError, OverflowError):
             return []
+
+    @staticmethod
+    def _format_tensor_split(values: List[float]) -> str:
+        """``--tensor-split`` text for a sanitized ratio, in plain decimal.
+
+        Fixed point rather than ``%g``, which renders a perfectly legal
+        ``1000000,1`` as ``1e+06,1``. ``std::stof`` reads that, but the argv a
+        user is asked to paste into a bug report should say what they asked
+        for, and a whole-number ratio should come back out as the ``3,1`` they
+        typed.
+
+        A ratio of very small numbers would round to ``0,0``, which llama.cpp
+        normalizes by dividing by a zero total. Only that case is rescaled, by
+        the largest weight -- free, because llama.cpp normalizes the list
+        anyway, so ``3,1`` and ``75,25`` are already the same instruction.
+        """
+
+        def _render(items):
+            return [f"{x:.6f}".rstrip("0").rstrip(".") or "0" for x in items]
+
+        rendered = _render(values)
+        if values and all(part == "0" for part in rendered):
+            peak = max(values)
+            if peak > 0:
+                rendered = _render(v / peak for v in values)
+        return ",".join(rendered)
+
+    @staticmethod
+    def _auto_split_fingerprint(tensor_split: Optional[List[float]]) -> Optional[tuple[float, ...]]:
+        """What an auto-mode load ASKED for, as a comparable ratio.
+
+        Requested against requested, the same rule the tuning group in
+        ``_runtime_matches_intent`` uses, and it has to be: what auto mode
+        EMITS is not in the caller's units. The planner's own split is a list
+        of per-device MiB budgets, and a user ratio the budget check declined
+        is emitted as nothing at all -- so comparing either against the
+        caller's ``tensor_split`` mismatches on every repeat of a request that
+        has not changed, and reloads a multi-gigabyte model forever.
+
+        Normalized because llama.cpp normalizes: ``-ts 3,1`` and ``-ts 75,25``
+        are the same instruction, so they are the same intent here. A ratio
+        that sanitizes to nothing is None, which is what an absent ratio is.
+        """
+        if not tensor_split:
+            return None
+        values = LlamaCppBackend._sanitize_tensor_split(tensor_split)
+        total = sum(values)
+        if not values or total <= 0:
+            return None
+        return tuple(round(v / total, 6) for v in values)
 
     @property
     def layer_preserves_tensor_intent(self) -> bool:
@@ -9594,6 +9692,32 @@ class LlamaCppBackend:
         except Exception:
             return False
 
+    # PHYSICAL integrated ids per visibility mask. Integratedness cannot change under
+    # a fixed mask, and the mask decides which devices the answer is about.
+    _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
+
+    @staticmethod
+    def _integrated_cuda_mask_key() -> tuple:
+        return tuple(
+            os.environ.get(name)
+            for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+        )
+
+    @staticmethod
+    def _integrated_cuda_probe_is_free() -> bool:
+        """True when ``_integrated_cuda_gpu_ids()`` costs no NEW CUDA context.
+
+        That probe pins a ~700 MiB primary context per visible card for the life of
+        this process, and the launch preflight runs AFTER the VRAM budget was taken, so
+        probing there can OOM a tightly fitted child against a stale budget. So the
+        preflight never probes: it reads an answer only if one is cached for this mask.
+        ``_get_gpu_memory`` fills that cache on its torch arm before reading any
+        free/total figure, which puts the cost inside the snapshot. That is the arm an
+        integrated SoC takes anyway (nvidia-smi answers ``[N/A]`` on a Spark, so the CLI
+        probe parses nothing); a host whose nvidia-smi answers never pays for it.
+        """
+        return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
+
     @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible CUDA GPUs whose "VRAM" is shared system RAM.
@@ -9604,6 +9728,12 @@ class LlamaCppBackend:
         ``torch.cuda.*`` and ``_rocm_unified_memory_gpu_ids`` already answers for it.
         Empty off CUDA and on error, so every caller keeps its discrete-GPU default.
         """
+        cached = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+            LlamaCppBackend._integrated_cuda_mask_key()
+        )
+        if cached is not None:
+            # Settled: a second pass over the devices could learn nothing.
+            return set(cached)
         try:
             import torch
 
@@ -9615,10 +9745,15 @@ class LlamaCppBackend:
             # (CUDA_VISIBLE_DEVICES=2) does not answer for the wrong card.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             integrated: set[int] = set()
+            # A device that did not answer leaves this incomplete: still returned, so
+            # an unqueryable card keeps its discrete default, but not remembered, since
+            # a caller reading it as settled would retry the query that failed.
+            complete = True
             for ordinal in range(torch.cuda.device_count()):
                 try:
                     props = torch.cuda.get_device_properties(ordinal)
                 except Exception:
+                    complete = False
                     continue
                 # Both spellings: the attribute was `integrated` before torch renamed
                 # it, and an old wheel exposing neither reads discrete.
@@ -9631,6 +9766,12 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
+            # Cached for the preflight, but only a pass that reached every device: a
+            # torch that raised says nothing about the hardware.
+            if complete:
+                LlamaCppBackend._INTEGRATED_CUDA_IDS[
+                    LlamaCppBackend._integrated_cuda_mask_key()
+                ] = integrated
             return integrated
         except Exception:
             return set()
@@ -9649,6 +9790,31 @@ class LlamaCppBackend:
             if gpu_indices is None:
                 return bool(integrated)
             return any(_i in integrated for _i in gpu_indices)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _integrated_cuda_selection_is_all_shared(gpu_indices = None) -> bool:
+        """True when EVERY credited CUDA device is an integrated SoC.
+
+        Stricter than ``_integrated_cuda_unified_memory``, which answers for ANY, and
+        that difference matters here: this guard charges the WHOLE model against system
+        RAM, and layers placed on a discrete card in a mixed selection never touch the
+        shared pool. Answering for any would call an otherwise fitting load oversized,
+        warn about it, and override an explicitly unmapped load to use mmap.
+        """
+        try:
+            integrated = LlamaCppBackend._integrated_cuda_gpu_ids()
+            if not integrated:
+                return False
+            if gpu_indices is not None:
+                return bool(gpu_indices) and all(_i in integrated for _i in gpu_indices)
+            # Nothing pinned, so the credited set is every visible device.
+            visible = LlamaCppBackend._resolve_visible_physical_ids()
+            if visible is None:
+                import torch
+                visible = list(range(torch.cuda.device_count()))
+            return bool(visible) and all(_i in integrated for _i in visible)
         except Exception:
             return False
 
@@ -11428,8 +11594,15 @@ class LlamaCppBackend:
             # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            # An integrated CUDA SoC shares one pool too, and its free reading is wrong
+            # in the OPPOSITE direction to ROCm's -- see below.
+            integrated_ids = LlamaCppBackend._integrated_cuda_gpu_ids()
             # Same #7624 arch gate the amd-smi branch applies, from the one helper.
             arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
+            # How many devices the shared pool is about to be divided between. Read
+            # once, from the same set the loop tests, so the count and the per-device
+            # decision cannot disagree and produce a division by zero.
+            shared_cuda_count = sum(1 for _i in integrated_ids if arch_keeps(_i))
             gpus = []
             # Windows ROCm's free reading is an over-report on discrete cards too,
             # not only on the shared pool handled below (#8403). It is capped
@@ -11447,7 +11620,10 @@ class LlamaCppBackend:
                 if not arch_keeps(idx):
                     continue
                 shared = idx in unified_ids
+                integrated = idx in integrated_ids
+                cgroup_bound = False
                 raw_mib = free_bytes // (1024 * 1024)
+                total_mib = total_bytes // (1024 * 1024)
                 if shared:
                     # ROCm's free is unreliable on a shared pool (Windows HIP
                     # reports free==total, #7072), and system RAM is the real
@@ -11455,14 +11631,56 @@ class LlamaCppBackend:
                     avail = LlamaCppBackend._available_system_memory_mib()
                     if avail is not None:
                         raw_mib = min(raw_mib, avail)
-                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
+                elif integrated:
+                    # cudaMemGetInfo's free half here is MemFree, which counts the
+                    # page cache as used, so a GGUF's own download or mmap collapses it
+                    # and the context is fitted against its own cached bytes (#9889).
+                    # MemAvailable prices that reclaimable cache back in.
+                    avail = LlamaCppBackend._available_system_memory_mib()
+                    # A zero total is a probe that could not size the pool, not a pool
+                    # of zero: capping against it would take the device to nothing.
+                    if avail is not None and total_mib > 0:
+                        raw_mib = min(total_mib, max(raw_mib, avail))
+                    # Again as a CEILING: `avail` is cgroup-capped already, but as a
+                    # lower bound that is thrown away whenever host-wide MemFree is
+                    # larger, the normal case in a container. Allocations here are
+                    # charged to the cgroup, so an oversized fit dies at memory.max.
+                    # `<=` below, not `<`: _available_system_memory_mib is itself
+                    # cgroup-capped, so it hands back exactly the remainder whenever
+                    # MemAvailable exceeds it, which makes equality the ordinary result
+                    # on a constrained Spark rather than a coincidence.
+                    cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
+                    if cgroup_mib is not None and cgroup_mib <= raw_mib:
+                        raw_mib = cgroup_mib
+                        # ...and then the pool is the container's, not the device's.
+                        # _vram_usable_mib takes its occupancy reserve as
+                        # (1 - frac) * total, so a host-wide total against a container's
+                        # free reading reserves memory this process cannot reach: a
+                        # 16 GiB cgroup on a 121 GiB Spark loses most of its budget to
+                        # a card it does not have. Publishing no total is the same
+                        # answer the ROCm shared pool gives, and prices the fit off the
+                        # free reading, which IS the container's ceiling.
+                        cgroup_bound = True
+                    # One pool, however many integrated devices draw on it. Every
+                    # figure above is a whole-pool figure, so handing it to each
+                    # device in turn lets a caller that sums across cards commit the
+                    # same bytes twice. Share it instead. Division by 1 on every
+                    # shipping part, since no product pairs two integrated SoCs.
+                    if shared_cuda_count > 1:
+                        raw_mib //= shared_cuda_count
+                        total_mib //= shared_cuda_count
+                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared or integrated)
                 if free_mib < raw_mib:
                     logger.info(
-                        f"ROCm device {idx} is a unified-memory APU sharing system "
+                        f"{'CUDA' if integrated else 'ROCm'} device {idx} is a "
+                        f"unified-memory {'SoC' if integrated else 'APU'} sharing system "
                         f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
                         f"({raw_mib}->{free_mib}MiB usable)"
                     )
-                gpus.append((idx, free_mib, 0 if shared else total_bytes // (1024 * 1024)))
+                # ROCm publishes 0 because that "total" is system RAM of unknown
+                # scope. An integrated part's total IS the pool, so it is a real
+                # ceiling; zeroing it would drop the fit to free*frac.
+                gpus.append((idx, free_mib, 0 if shared or cgroup_bound else total_mib))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
@@ -12081,27 +12299,32 @@ class LlamaCppBackend:
         model_size_bytes: int,
         avail_mib: Optional[int],
         headroom_mib: int = _HOST_RAM_HEADROOM_MIB,
+        *,
+        part: str = "APU",
     ) -> Optional[str]:
-        """On a unified-memory APU, return a user-facing WARNING when the weights
+        """On a unified-memory part, return a user-facing WARNING when the weights
         do not fit in available system RAM (else None). Weights only: KV/context
         auto-reduce, so counting them too would warn about loads that are fine.
         None avail (unknown RAM) never warns.
 
         Advisory, never a refusal: the load goes ahead and llama.cpp reports what
         actually happens rather than Studio pre-empting a failure it predicted.
+
+        ``part`` names the hardware. An integrated CUDA SoC has the same shortfall and
+        is not an APU, and the WSL hint cannot apply to a Jetson or a DGX Spark.
         """
         if avail_mib is None:
             return None
         need_mib = model_size_bytes / (1024 * 1024)
         if need_mib <= avail_mib - headroom_mib:
             return None
+        free_hint = " (on WSL, raise the memory limit in .wslconfig)" if part == "APU" else ""
         return (
             f"This model needs about {need_mib / 1024:.0f} GB but only about "
             f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
-            "APU the weights load into system RAM, so the OS may stop the load. "
+            f"{part} the weights load into system RAM, so the OS may stop the load. "
             "Loading anyway. If it does not complete, use a smaller or more "
-            "quantized GGUF, or free memory (on WSL, raise the memory limit in "
-            ".wslconfig)."
+            f"quantized GGUF, or free memory{free_hint}."
         )
 
     @staticmethod
@@ -12560,6 +12783,7 @@ class LlamaCppBackend:
         model_size: Optional[int],
         pinned_bytes: int,
         avail_mib: Optional[int],
+        part: str = "APU",
     ) -> None:
         """Re-price the APU RAM advisory once a text-only retry drops a CPU-pinned
         vision projector.
@@ -12602,7 +12826,7 @@ class LlamaCppBackend:
         # it would charge ``model_size`` against ``avail - model_size`` and report a
         # shortfall for a load that demonstrably just started. Same pool, one term
         # removed, is the only comparison that answers the question being asked.
-        repriced = self._apu_ram_shortfall_message(model_size, avail_mib)
+        repriced = self._apu_ram_shortfall_message(model_size, avail_mib, part = part)
         if repriced:
             self._last_load_warning = repriced + suffix
         elif host_msg:
@@ -16008,6 +16232,8 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
+        self._auto_tensor_split = None
+        self._auto_tensor_split_emitted = None
         self._spill_plan_flags = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
@@ -18802,6 +19028,113 @@ class LlamaCppBackend:
                 tensor_split = adj
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
 
+    def _tensor_split_fits_budget(
+        self,
+        split: list[float],
+        gpus: list[tuple[int, int]],
+        gpu_indices: list[int],
+        model_size: int,
+        effective_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        n_parallel: int = 1,
+        n_ubatch: Optional[int] = None,
+        kv_unified: bool = True,
+        flash_attn: bool = True,
+        swa_full: bool = False,
+        mtp_engaged: bool = False,
+        mtp_overhead_fn: Optional[Callable[[int], int]] = None,
+        mtp_flat_reserve_bytes: int = 0,
+        total_by_idx: Optional[dict[int, int]] = None,
+        vram_fraction: Optional[float] = None,
+        soft_overhead_bytes: int = 0,
+        scratch_cache_type_kv: Optional[str] = None,
+    ) -> bool:
+        """Check that a caller-supplied tensor split fits each selected GPU.
+
+        The auto planner returns ``None`` when an even share fits, but a user
+        ratio may still overshoot one card. Validate the ratio against the same
+        per-device budget the planner uses (usable VRAM minus the replicated
+        compute-graph reserve and context-linear buffer).
+
+        "The same budget" is the whole claim, so the operands are the planner's,
+        including the two that are easy to leave out. ``soft_overhead_bytes`` is
+        the CUDA context plus the vision and MTP reserves the planner subtracts
+        from its own KV budget; omitting it makes this check OPTIMISTIC, and a
+        tensor load has no ``--fit`` valve to spill into when the card it
+        over-filled runs out. ``scratch_cache_type_kv`` is the lighter of an
+        asymmetric K/V pair, which is what the context-linear dequant scratch is
+        actually sized from; pricing it from the heavier axis misreads a
+        ``-ctk q4_0 -ctv f16`` load by several gigabytes per device.
+        """
+        if not split or sum(split) <= 0 or len(split) != len(gpu_indices):
+            return False
+
+        _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
+
+        def _usable(idx: int, free_mib: int) -> float:
+            t = total_by_idx.get(idx, 0) if total_by_idx else 0
+            return max(0.0, _vram_usable_mib(free_mib, t, _tp_frac))
+
+        free_by_idx = {idx: free for idx, free in gpus}
+        # Fail closed on a device the survey does not cover. ``gpus`` is the set
+        # the tensor-parallel reserve filter admitted and ``gpu_indices`` is what
+        # the load ended up pinned to; they can disagree, and indexing straight
+        # into the first with the second raised KeyError out of load_model. A
+        # budget that cannot be priced is not a budget that passed.
+        if any(idx not in free_by_idx for idx in gpu_indices):
+            return False
+        usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
+
+        _reserve_bytes = self._estimate_compute_buffer_bytes(
+            n_ubatch = n_ubatch, n_parallel = n_parallel, per_device_tensor = True
+        )
+        reserve_mib = (
+            _reserve_bytes // (1024 * 1024)
+            if _reserve_bytes > 0
+            else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+        )
+
+        flat_mtp = max(0, mtp_flat_reserve_bytes)
+        if mtp_engaged and mtp_overhead_fn is None:
+            flat_mtp = max(flat_mtp, 2 * 1024**3)
+
+        kv_bytes = (
+            self._estimate_kv_cache_bytes(
+                effective_ctx,
+                cache_type_kv,
+                n_parallel = n_parallel,
+                swa_full = swa_full,
+                kv_unified = kv_unified,
+                n_ubatch = n_ubatch,
+                flash_attn = flash_attn,
+            )
+            if self._can_estimate_kv() and effective_ctx > 0
+            else 0
+        )
+        mtp_bytes = (
+            mtp_overhead_fn(effective_ctx) if mtp_overhead_fn is not None else 0
+        ) + flat_mtp
+        # REPLICATED, not split: every device allocates the whole
+        # context-linear buffer whatever its weight, which is why the planner
+        # subtracts one per-device slice from each card BEFORE weighting rather
+        # than distributing the aggregate. Weighting the aggregate is the same
+        # arithmetic only for an even ratio; away from even it charges a
+        # low-weight card less than the buffer it must allocate and a high-weight
+        # card more, so it both under-refuses and over-refuses. Mirror the
+        # planner: flat per device, alongside the compute-graph reserve.
+        cc_per_device_bytes = self._compute_buffer_ctx_bytes(
+            effective_ctx, n_ubatch, scratch_cache_type_kv or cache_type_kv
+        )
+        total_bytes = model_size + kv_bytes + mtp_bytes + max(0, soft_overhead_bytes)
+
+        total_weight = sum(split)
+        for i, idx in enumerate(gpu_indices):
+            alloc_bytes = total_bytes * split[i] / total_weight
+            capacity_bytes = (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
+            if alloc_bytes > capacity_bytes:
+                return False
+        return True
+
     @staticmethod
     def _with_mmproj_offload_disabled(
         cmd: Sequence[str], env: Optional[Mapping[str, str]] = None
@@ -20678,6 +21011,7 @@ class LlamaCppBackend:
             # The canonical mode drives which drafter is downloaded, sized and
             # launched, so resolve it once before either branch can use it.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
@@ -20863,6 +21197,31 @@ class LlamaCppBackend:
                 logger.info("Main GGUF contains an embedded MTP head; ignoring separate drafter.")
                 mtp_draft_path = None
 
+            # Before the fit prices it, or a drafter that never launches pushes layers
+            # off the GPU. DSpark/DFlash borrow token_embd from the target by design.
+            #
+            # Not when the extras name their own drafter: draft flags are last-wins, so
+            # that file is the one llama-server opens and the sibling is never touched.
+            # Dropping it anyway reads as drafterless, and the fallback emits ngram-mod
+            # or --spec-default BEFORE the extras are appended, so the override stops
+            # running as MTP. Same helper and child-env rule as the paravirtual drop
+            # below: inherited LLAMA_ARG_SPEC_DRAFT_* reaches the child only when the
+            # extras own --spec-type.
+            if (
+                mtp_draft_path
+                and _spec_canon not in ("dspark", "dflash")
+                and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+                and not _mtp_drafter_loads_standalone(mtp_draft_path)
+            ):
+                logger.warning(
+                    "Dropping MTP drafter %s: it carries neither token_embd.weight nor "
+                    "nextn_shared_target_tensors, so llama-server cannot load it as "
+                    "--model-draft; loading without it.",
+                    mtp_draft_path,
+                )
+                _unloadable_mtp_draft_path = mtp_draft_path
+                mtp_draft_path = None
+
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
@@ -20890,6 +21249,7 @@ class LlamaCppBackend:
                 # reloads a healthy diffusion server on every Apply.
                 self._mtp_draft_path = None
                 self._mtp_draft_suppressed_path = None
+                self._mtp_draft_suppressed_reason = None
                 # And the verdict on why the last load had no drafter, for the same
                 # reason once more: _build_speculative_flags clears it at the top of
                 # every load that reaches it, and this path never does. Both retry
@@ -21090,6 +21450,11 @@ class LlamaCppBackend:
                 # branch so an earlier launch's recorded drop cannot excuse this one.
                 self._arch_gate_dropped_tensor_split = None
                 self._arch_gate_dropped_tensor_parallel = False
+                # Same reason, same place: the auto ratio is recorded only on the
+                # auto tensor branch, so without this a manual load would carry a
+                # previous auto load's ratio forward into the next comparison.
+                self._auto_tensor_split = None
+                self._auto_tensor_split_emitted = None
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     self._gpu_layers = gpu_layers
                     self._n_cpu_moe = n_cpu_moe
@@ -21098,6 +21463,8 @@ class LlamaCppBackend:
                     self._gpu_layers = -1
                     self._n_cpu_moe = 0
                     self._tensor_split = None
+                    self._auto_tensor_split = None
+                    self._auto_tensor_split_emitted = None
                 self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -21258,6 +21625,16 @@ class LlamaCppBackend:
                 # kv_cache_bytes, so reading it from the spill arm would be an
                 # UnboundLocalError on the path that reaches it most often.
                 _spill_inputs: Optional[dict] = None
+                # Whether the tensor-parallel planner ran to completion. Bound before
+                # the try for the same reason as the two above, and read AFTER it: the
+                # auto ``--tensor-split`` fallback needs the planner's own working set
+                # (``tp_gpus``, ``gpu_indices``, the MTP terms), and every one of those
+                # is bound inside the try. The except arm restores ``tp_tensor_split =
+                # None``, which is precisely the state the fallback fires on, so
+                # without this it would read locals a throw left unbound -- or, worse,
+                # a ``gpu_indices`` the arm rebuilt from a WIDER device set than the
+                # planner's reserve filter admitted, and index a card that is not in it.
+                _tp_planned = False
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
@@ -21896,7 +22273,8 @@ class LlamaCppBackend:
                     tp_tensor_split: Optional[list[int]] = None
                     # Whether the tensor-parallel branch below really planned this load.
                     # Not readable from tp_tensor_split, which stays None on a tensor
-                    # split llama.cpp is left to size itself.
+                    # split llama.cpp is left to size itself. Re-set here, not only
+                    # above the try, so a retry through this scope starts clean.
                     _tp_planned = False
                     explicit_ctx = requested_ctx > 0
                     # Nothing speculative on the GPU: the drafter that launches is the
@@ -23670,6 +24048,8 @@ class LlamaCppBackend:
                 _host_ram_msg: Optional[str] = None
                 # The RAM figure those notices were priced against, kept with them.
                 _apu_avail_mib: Optional[int] = None
+                # ...and which part they describe, for the same reason.
+                _apu_ram_part = "APU"
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
@@ -23679,19 +24059,35 @@ class LlamaCppBackend:
                 if (
                     model_size is not None
                     and not is_vulkan_backend
-                    and self._amd_apu_wants_unified_memory(gpu_indices)
+                    # An integrated CUDA SoC loads into system RAM like an APU, and
+                    # _shared_gpu_ids is Vulkan-only, so without this its pool is
+                    # credited as dedicated VRAM and the spill prices out at zero.
+                    and (
+                        self._amd_apu_wants_unified_memory(gpu_indices)
+                        or (
+                            self._integrated_cuda_probe_is_free()
+                            and self._integrated_cuda_selection_is_all_shared(gpu_indices)
+                        )
+                    )
                 ):
                     # Read ONCE and kept, because the text-only fallback re-prices this
                     # same decision much later, with the weights already resident. A
                     # second live reading there would be the pool MINUS the model the
                     # reprice is asking about, which double-charges it.
                     _apu_avail_mib = self._available_system_memory_mib()
+                    # Kept beside the notice: the text-only fallback rebuilds it later
+                    # and would otherwise turn a Spark's into an APU's, .wslconfig hint
+                    # and all.
+                    _apu_ram_part = (
+                        "APU" if self._amd_apu_wants_unified_memory(gpu_indices) else "SoC"
+                    )
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
                         # this guard exists to stop an oversize load being OOM-killed
                         # mid-read, so it has to weigh the projector either way.
                         model_size + _mmproj_pinned_bytes,
                         _apu_avail_mib,
+                        part = _apu_ram_part,
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
@@ -24132,18 +24528,75 @@ class LlamaCppBackend:
                 # See llama.cpp --split-mode.
                 if tensor_parallel:
                     cmd.extend(["--split-mode", "tensor"])
+                    _emitted_tensor_split: Optional[str] = None
                     if tp_tensor_split and len(tp_tensor_split) > 1:
-                        cmd.extend(
-                            [
-                                "--tensor-split",
-                                ",".join(str(int(x)) for x in tp_tensor_split),
-                            ]
-                        )
+                        _emitted_tensor_split = ",".join(str(int(x)) for x in tp_tensor_split)
+                    elif (
+                        gpu_memory_mode != "manual" and tensor_split and _tp_planned and gpu_indices
+                    ):
+                        # Auto tensor planning may decide an even split is safe and
+                        # return None, but a user who set a per-GPU ratio still expects
+                        # it to reach llama-server. Fall back to the ratio only when
+                        # the planner emitted nothing and the ratio actually fits the
+                        # per-GPU budget the planner used.
+                        #
+                        # Gated on _tp_planned, not on tp_tensor_split alone: the fit
+                        # block's except arm ALSO leaves tp_tensor_split None, with
+                        # gpu_indices either None or rebuilt from every device rather
+                        # than the ones the reserve filter admitted. That arm is a
+                        # designed degradation -- it launches under `--fit on` -- and it
+                        # must not be turned into a KeyError by pricing a ratio against
+                        # a survey that was never taken.
+                        _split_gpus = self._effective_gpu_count(gpu_indices)
+                        _sanitized_split = self._sanitize_tensor_split(tensor_split)
+                        if (
+                            len(_sanitized_split) == _split_gpus
+                            and sum(_sanitized_split) > 0
+                            and self._tensor_split_fits_budget(
+                                _sanitized_split,
+                                tp_gpus,
+                                gpu_indices,
+                                model_size,
+                                effective_ctx,
+                                cache_type_kv = cache_type_kv,
+                                n_parallel = n_parallel,
+                                n_ubatch = _effective_ubatch,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                swa_full = swa_full,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                mtp_flat_reserve_bytes = (
+                                    2 * 1024**3 if (_mtp_reserves_gpu and _mtp_kv_unsized) else 0
+                                ),
+                                total_by_idx = total_by_idx,
+                                vram_fraction = _vram_frac,
+                                # The planner's own operands, so "the same budget"
+                                # in the docstring is true. Both are bound by the
+                                # time _tp_planned is set.
+                                soft_overhead_bytes = _soft_overhead,
+                                scratch_cache_type_kv = _scratch_cache_type_kv,
+                            )
+                        ):
+                            _emitted_tensor_split = self._format_tensor_split(_sanitized_split)
+                    _emitted_values: Optional[list[float]] = None
+                    if _emitted_tensor_split is not None:
+                        cmd.extend(["--tensor-split", _emitted_tensor_split])
+                        _emitted_values = [float(x) for x in _emitted_tensor_split.split(",")]
                     self._tensor_parallel = True
                     self._layer_preserves_tensor_intent = False
+                    # Record the ratio this auto load was ASKED for, so a later
+                    # request with a different ratio is not incorrectly reused.
+                    # Not the emitted list: see _auto_split_fingerprint for why
+                    # recording that instead reloads on every identical repeat.
+                    if gpu_memory_mode != "manual":
+                        self._auto_tensor_split = self._auto_split_fingerprint(tensor_split)
+                        self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                            _emitted_values
+                        )
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
-                        tp_tensor_split,
+                        _emitted_tensor_split,
                     )
                 else:
                     self._tensor_parallel = False
@@ -24160,7 +24613,10 @@ class LlamaCppBackend:
                     mtp_draft_path = mtp_draft_path,
                     drafter_label = _DRAFTER_DISPLAY_LABELS.get(_spec_canon, "MTP"),
                 )
-                _pv_suppressed_draft_path: Optional[str] = None
+                _suppressed_draft_path: Optional[str] = _unloadable_mtp_draft_path
+                _suppressed_draft_reason: Optional[str] = (
+                    "unloadable" if _unloadable_mtp_draft_path else None
+                )
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
                 # Same shape as the projector drop above: the CPU pin below needs a
                 # draft-layer flag from the probe, and without one the drafter keeps its
@@ -24209,7 +24665,12 @@ class LlamaCppBackend:
                     # Remember what was suppressed: the drafter stays on disk, so caller
                     # and route keep detecting it, and comparing that against the
                     # launched None would reload a healthy server on every repeat Apply.
-                    _pv_suppressed_draft_path = launch_mtp_draft_path
+                    # Only what this drop removed: extras trigger it with none of ours
+                    # launched, and None would clear a record an earlier drop made.
+                    if launch_mtp_draft_path:
+                        _suppressed_draft_path = launch_mtp_draft_path
+                        # A property of the build, not the file, so a repair must not reload.
+                        _suppressed_draft_reason = "paravirtual"
                     launch_mtp_draft_path = None
                     if extra_args:
                         # Same reason: record the extras as REQUESTED next to the
@@ -24261,6 +24722,9 @@ class LlamaCppBackend:
                     dspark_fit_sized = not use_fit,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
+                    # So the fallback says unopenable, not missing. DSpark/DFlash never
+                    # reach the drop.
+                    mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
                     drafter_no_vram = _spec_dropped_no_vram,
                     embedded_mtp_partial_offload = bool(
                         _spec_canon == "auto"
@@ -26391,6 +26855,16 @@ class LlamaCppBackend:
                         avail_mib = _preflight_avail_mib,
                         pageable_note = _cpu_pageable_note,
                     )
+                    # This return skips the commit block below, so write the drafter
+                    # records here too: left describing the PREVIOUS load, the comparator
+                    # judges this child against another model's drafter and a carried-over
+                    # suppressed path stands the refetch down for a load that dropped
+                    # nothing. Inert while only virtualised Metal could suppress, where
+                    # auto-Vulkan fallback cannot happen; an unloadable sidecar can be
+                    # suppressed anywhere.
+                    self._mtp_draft_path = launch_mtp_draft_path
+                    self._mtp_draft_suppressed_path = _suppressed_draft_path
+                    self._mtp_draft_suppressed_reason = _suppressed_draft_reason
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
                         "auto-selected Vulkan backend crashed. GPU acceleration "
@@ -26407,7 +26881,8 @@ class LlamaCppBackend:
                 self._gguf_load_identity = self._gguf_load_source_identity(model_path, mmproj_path)
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
-                self._mtp_draft_suppressed_path = _pv_suppressed_draft_path
+                self._mtp_draft_suppressed_path = _suppressed_draft_path
+                self._mtp_draft_suppressed_reason = _suppressed_draft_reason
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -26752,6 +27227,12 @@ class LlamaCppBackend:
                             # is non-None only in manual mode, which leaves gpu_indices
                             # None, and this arm needs it truthy.
                             self._tensor_split = None
+                            # The auto twin, which this arm CAN reach: an auto
+                            # tensor-parallel fallback emits its ratio with
+                            # gpu_indices pinned. Left set it feeds the
+                            # `tensor_split` property a ratio the respawned child
+                            # does not have.
+                            self._auto_tensor_split_emitted = None
                         # A tensor split needs two devices, so narrowing to one makes
                         # --split-mode tensor a no-op still REPORTED as active
                         # (tensor_parallel drives the UI and the MTP watchdog). Strip it.
@@ -27401,6 +27882,7 @@ class LlamaCppBackend:
                                     model_size = model_size,
                                     pinned_bytes = _mmproj_pinned_bytes,
                                     avail_mib = _apu_avail_mib,
+                                    part = _apu_ram_part,
                                 )
                             else:
                                 # Read the exit code before _kill_process() clears it, so
@@ -27743,6 +28225,7 @@ class LlamaCppBackend:
         drafter_no_vram: bool = False,
         embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
+        mtp_drafter_unloadable: bool = False,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -27812,6 +28295,11 @@ class LlamaCppBackend:
             bool(self._nextn_predict_layers)
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
+            # A dropped sidecar was this quant's ONLY MTP signal: the motivating
+            # RVN-Q6_K.gguf has no nextn_predict_layers and no -mtp in its name, so
+            # clearing mtp_draft_path read as a plain model, skipping every arm below and
+            # leaving the drop unexplained. Kept as a signal, it reaches the fallback.
+            or mtp_drafter_unloadable
         )
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
@@ -27819,12 +28307,14 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
-        # Drafterless Gemma (name-only MTP, no embedded head): emitting MTP
-        # would abort llama-server, so every mode below falls back instead.
+        # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
+        # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
+        # every mode below falls back. Without the second case a dropped sidecar on any
+        # non-Gemma repo disables MTP in silence.
         _mtp_drafter_missing = (
-            _is_gemma_mtp_name(model_identifier, model_path)
-            and not mtp_draft_path
+            not mtp_draft_path
             and not self._nextn_predict_layers
+            and (_is_gemma_mtp_name(model_identifier, model_path) or mtp_drafter_unloadable)
         )
         # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
         # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,
@@ -28093,17 +28583,28 @@ class LlamaCppBackend:
 
         def _fallback_drafter_not_found() -> None:
             """Drafterless Gemma: use ngram-mod (or spec-default) and record why."""
-            logger.warning(
-                "Model %s is MTP-capable but no drafter or head was found; "
-                "falling back. Check network or run `unsloth studio update`.",
-                model_identifier,
-            )
+            if mtp_drafter_unloadable:
+                logger.warning(
+                    "Model %s had an MTP drafter that llama-server cannot open as "
+                    "--model-draft; falling back without it.",
+                    model_identifier,
+                )
+            else:
+                logger.warning(
+                    "Model %s is MTP-capable but no drafter or head was found; "
+                    "falling back. Check network or run `unsloth studio update`.",
+                    model_identifier,
+                )
             if caps.get("supports_ngram_mod"):
                 _emit_ngram_mod()
             else:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
-            self._spec_fallback_reason = "drafter_not_found"
+            # Its own reason: the drafter_not_found copy tells a local load to place a file
+            # already on disk, and offers a refetch this load deliberately stands down.
+            self._spec_fallback_reason = (
+                "drafter_unloadable" if mtp_drafter_unloadable else "drafter_not_found"
+            )
 
         if effective_mode == "ngram":
             _emit_ngram_mod()
@@ -28494,6 +28995,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
+            self._mtp_draft_suppressed_reason = None
             self._spec_fallback_reason = None
 
             self._mmproj_fallback_reason = None
@@ -28567,6 +29069,8 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
+            self._auto_tensor_split = None
+            self._auto_tensor_split_emitted = None
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
@@ -31104,6 +31608,56 @@ class LlamaCppBackend:
                     continue
                 raise
 
+    @staticmethod
+    def decode_slot_from_chunk(chunk) -> Optional[int]:
+        """The llama-server slot a stream chunk was decoded on, None if it does not say.
+
+        Only the final result carries ``__verbose``, and only when asked for.
+        """
+        if not isinstance(chunk, dict):
+            return None
+        verbose = chunk.get("__verbose")
+        if not isinstance(verbose, dict):
+            return None
+        slot = verbose.get("id_slot")
+        if type(slot) is not int or slot < 0:
+            return None
+        return slot
+
+    def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
+        """Erase one completed round's cached context, True once the engine says so.
+
+        Declines unless the round decoded on this server, which a reload renumbers, and
+        unless --slot-save-path is in play, which the endpoint requires. An erase aimed at
+        a slot since handed to another request is deferred rather than dropped, so even a
+        timeout can cost that chat its prefix.
+        """
+        if (
+            not self._slot_save_dir
+            or base_url != self.base_url
+            or type(slot) is not int
+            or slot < 0
+        ):
+            return False
+        try:
+            response = httpx.post(
+                f"{base_url}/slots/{slot}",
+                params = {"action": "erase"},
+                headers = self._auth_headers,
+                timeout = 2.0,
+                trust_env = False,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return (
+                result.get("id_slot") == slot
+                and type(result.get("n_erased")) is int
+                and result["n_erased"] >= 0
+            )
+        except Exception:
+            logger.debug("Approval cache reclamation failed; retaining reservation", exc_info = True)
+            return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -31552,6 +32106,7 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        on_decode_slot: Optional[Callable[[str, int], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -32270,6 +32825,9 @@ class LlamaCppBackend:
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
+            if on_decode_slot is not None:
+                payload["verbose"] = True
+                payload["response_fields"] = ["id_slot"]
             if perf_callback is not None:
                 payload["timings_per_token"] = True
             if logit_bias:
@@ -32553,6 +33111,10 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+                                if on_decode_slot is not None:
+                                    slot = self.decode_slot_from_chunk(chunk_data)
+                                    if slot is not None:
+                                        on_decode_slot(self.base_url, slot)
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
