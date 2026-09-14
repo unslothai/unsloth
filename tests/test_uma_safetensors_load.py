@@ -221,3 +221,146 @@ def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_
     for key, expected in tensors.items():
         with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
             assert torch.equal(f.get_tensor(key).cpu(), expected)
+
+
+# ── the budget question is per device, because the budget is per device ──────
+def _fake_torch_cuda(uma, monkeypatch, flags, *, attr = "is_integrated"):
+    """A torch whose device ``i`` reports ``flags[i]`` for the integrated flag."""
+
+    def _props(index):
+        props = types.SimpleNamespace()
+        setattr(props, attr, flags[index])
+        return props
+
+    monkeypatch.setattr(
+        uma,
+        "torch",
+        types.SimpleNamespace(
+            cuda = types.SimpleNamespace(
+                is_available = lambda: True,
+                device_count = lambda: len(flags),
+                get_device_properties = _props,
+            )
+        ),
+    )
+    monkeypatch.delenv("UNSLOTH_FORCE_UMA", raising = False)
+    uma.device_is_integrated_unified_memory.cache_clear()
+    uma.is_integrated_unified_memory_gpu.cache_clear()
+
+
+def test_a_mixed_host_still_classifies_the_integrated_device(uma, monkeypatch):
+    """A GB10 beside a discrete card. The process-wide gate answers False, which
+    is right for the loader patch and wrong for a per-device memory budget: it
+    would skip the cap on exactly the device whose pool is the host's RAM."""
+    _fake_torch_cuda(uma, monkeypatch, {0: 0, 1: 1})
+    assert uma.is_integrated_unified_memory_gpu() is False
+    assert uma.device_is_integrated_unified_memory(0) is False
+    assert uma.device_is_integrated_unified_memory(1) is True
+
+
+def test_every_device_discrete_answers_false_throughout(uma, monkeypatch):
+    _fake_torch_cuda(uma, monkeypatch, {0: 0, 1: 0})
+    assert uma.device_is_integrated_unified_memory(0) is False
+    assert uma.device_is_integrated_unified_memory(1) is False
+
+
+def test_the_older_attribute_spelling_is_read_too(uma, monkeypatch):
+    """torch renamed the flag; a wheel exposing neither reads discrete."""
+    _fake_torch_cuda(uma, monkeypatch, {0: 1}, attr = "integrated")
+    assert uma.device_is_integrated_unified_memory(0) is True
+    _fake_torch_cuda(uma, monkeypatch, {0: 1}, attr = "neither_spelling")
+    assert uma.device_is_integrated_unified_memory(0) is False
+
+
+def test_an_out_of_range_device_is_not_classified(uma, monkeypatch):
+    _fake_torch_cuda(uma, monkeypatch, {0: 1})
+    assert uma.device_is_integrated_unified_memory(5) is False
+    assert uma.device_is_integrated_unified_memory(-1) is False
+
+
+def test_a_device_that_cannot_be_read_budgets_as_before(uma, monkeypatch):
+    def _raise(index):
+        raise RuntimeError("no driver")
+
+    monkeypatch.setattr(
+        uma,
+        "torch",
+        types.SimpleNamespace(
+            cuda = types.SimpleNamespace(
+                is_available = lambda: True,
+                device_count = lambda: 1,
+                get_device_properties = _raise,
+            )
+        ),
+    )
+    monkeypatch.delenv("UNSLOTH_FORCE_UMA", raising = False)
+    uma.device_is_integrated_unified_memory.cache_clear()
+    assert uma.device_is_integrated_unified_memory(0) is False
+
+
+def test_the_force_override_still_applies_per_device(uma, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
+    uma.device_is_integrated_unified_memory.cache_clear()
+    assert uma.device_is_integrated_unified_memory(0) is True
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "0")
+    uma.device_is_integrated_unified_memory.cache_clear()
+    assert uma.device_is_integrated_unified_memory(0) is False
+
+
+# ── an absolute ceiling and an incremental headroom are not the same number ──
+GIB = 1024**3
+
+
+def _budget(**kwargs):
+    from unsloth.save import _unified_memory_vram_budget
+
+    return _unified_memory_vram_budget(**kwargs)
+
+
+def test_the_host_headroom_is_anchored_to_what_is_already_resident():
+    """8 GiB resident, 10 GiB of host RAM spare, 0.9 of it spendable.
+
+    The caller tests ``memory_allocated + W.nbytes < budget``, so the budget must
+    leave room for 9 GiB MORE, i.e. land at 8 + 9 = 17 GiB. Returning the bare
+    9 GiB charges the resident bytes a second time and allows ~1 GiB more.
+    """
+    got = _budget(
+        vram_budget_bytes = 40 * GIB,
+        allocated_bytes = 8 * GIB,
+        available_host_bytes = 10 * GIB,
+        fraction = 0.9,
+    )
+    assert got == 8 * GIB + int(10 * GIB * 0.9)
+    assert got > 8 * GIB, "the ceiling must not sit below what is already resident"
+
+
+def test_a_tight_host_still_binds_the_budget_down():
+    """Capping is the whole point: a 45 GiB pool with 2 GiB of RAM spare."""
+    got = _budget(
+        vram_budget_bytes = 45 * GIB,
+        allocated_bytes = 0,
+        available_host_bytes = 2 * GIB,
+        fraction = 0.9,
+    )
+    assert got == int(2 * GIB * 0.9)
+
+
+def test_it_never_raises_the_discrete_budget():
+    """Plenty of host RAM does not license spending more than the pool allows."""
+    got = _budget(
+        vram_budget_bytes = 20 * GIB,
+        allocated_bytes = 0,
+        available_host_bytes = 500 * GIB,
+        fraction = 0.9,
+    )
+    assert got == 20 * GIB
+
+
+def test_a_negative_host_reading_is_not_spendable():
+    got = _budget(
+        vram_budget_bytes = 20 * GIB,
+        allocated_bytes = 4 * GIB,
+        available_host_bytes = -1,
+        fraction = 0.9,
+    )
+    assert got == 4 * GIB

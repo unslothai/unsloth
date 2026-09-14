@@ -9692,6 +9692,13 @@ class LlamaCppBackend:
         (diffusion_memory.py:292-294). ROCm is excluded because it reuses
         ``torch.cuda.*`` and ``_rocm_unified_memory_gpu_ids`` already answers for it.
         Empty off CUDA and on error, so every caller keeps its discrete-GPU default.
+
+        Answered from the out-of-process driver probe when that is available, so
+        asking the question costs no CUDA context in THIS process.
+        ``get_device_properties`` creates a primary context (~700 MiB) on every
+        device it touches, which on a plain discrete host would be pure loss for
+        an answer that is always the empty set. The torch reading below stays as
+        the fallback for hosts where the probe cannot run.
         """
         try:
             import torch
@@ -9703,6 +9710,28 @@ class LlamaCppBackend:
             # Same ordinal -> physical mapping the ROCm twin uses, so a masked host
             # (CUDA_VISIBLE_DEVICES=2) does not answer for the wrong card.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+
+            def _physical(ordinal: int) -> int:
+                return (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+
+            try:
+                from utils.hardware.hardware import _cuda_integrated_map
+                probed = _cuda_integrated_map()
+            except Exception:
+                probed = None
+            if probed:
+                # Driver ordinals under the same visibility mask torch sees, so they
+                # index the same devices torch's ordinals do.
+                return {
+                    _physical(int(ordinal))
+                    for ordinal, entry in probed.items()
+                    if entry and entry[0]
+                }
+
             integrated: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
@@ -9715,11 +9744,7 @@ class LlamaCppBackend:
                     getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
                 ):
                     continue
-                integrated.add(
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
+                integrated.add(_physical(ordinal))
             return integrated
         except Exception:
             return set()
@@ -13043,15 +13068,27 @@ class LlamaCppBackend:
         )
         # Unified memory is ONE pool: an APU's free VRAM IS the host RAM the spill
         # comes out of, so adding both fits a model twice into memory that holds it
-        # once. shared_gpu_ids already names Vulkan iGPUs; the ROCm APUs it cannot see
-        # are added here. Both end up priced against host RAM alone.
+        # once. shared_gpu_ids already names Vulkan iGPUs; the ROCm APUs and the
+        # integrated NVIDIA parts it cannot see are added here. All end up priced
+        # against host RAM alone.
         shared = set(shared_gpu_ids or ())
         pinned = list(gpu_indices) if gpu_indices is not None else [idx for idx, _free in rows]
-        if rows and not is_vulkan_backend and self._amd_apu_wants_unified_memory(pinned):
-            # Per device, not blanket: the gate above is the cheap "is ANY of them
+        if rows and not is_vulkan_backend:
+            # Per device, not blanket: each gate below is the cheap "is ANY of them
             # unified" question, and a discrete card next to an APU still has a pool of
             # its own, so re-ask per row rather than forfeit a fit that is really there.
-            shared |= {idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])}
+            if self._amd_apu_wants_unified_memory(pinned):
+                shared |= {
+                    idx for idx, _free in rows if self._amd_apu_wants_unified_memory([idx])
+                }
+            # A GB10 / Jetson class part is the same one pool as a ROCm APU: its
+            # "VRAM" IS host RAM. Without this its free figure and the host RAM it
+            # is carved from were both credited, so the planner sized a load to
+            # roughly twice the memory the machine has.
+            if self._integrated_cuda_unified_memory(pinned):
+                shared |= {
+                    idx for idx, _free in rows if self._integrated_cuda_unified_memory([idx])
+                }
         # --no-kv-offload puts the WHOLE cache in host RAM whatever the layer placement
         # says (llama-kv-cache.cpp upgrades a layer's buffer type only inside
         # `if (offload)`), so free VRAM may not pay for it. Resolved off the same

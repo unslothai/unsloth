@@ -53,15 +53,22 @@ class _Stub:
         self,
         avail_mib,
         is_apu = False,
+        is_integrated_cuda = False,
     ):
         self._avail_mib = avail_mib
         self._is_apu = is_apu
+        self._is_integrated_cuda = is_integrated_cuda
 
     def _available_system_memory_mib(self):
         return self._avail_mib
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self._is_apu
+
+    def _integrated_cuda_unified_memory(self, gpu_indices = None):
+        # The CUDA twin of the question above (GB10 / Jetson class). Defaults off,
+        # so every host in the matrix keeps the answer it had.
+        return self._is_integrated_cuda
 
     _fits_without_paging = LlamaCppBackend._fits_without_paging
     # Read off the backend, so flipping the constant moves the whole matrix.

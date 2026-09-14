@@ -2378,19 +2378,29 @@ def cuda_integrated_by_pci_bus_id() -> dict:
     return found
 
 
+def _current_cuda_ordinal() -> int:
+    """The ordinal ``mem_get_info`` would pick for an unindexed device."""
+    try:
+        import torch
+        return int(torch.cuda.current_device())
+    except Exception:
+        return 0
+
+
 def _cuda_ordinal_for(device: Any) -> int:
     """A ``mem_get_info`` device argument as a plain ordinal.
 
-    ``None`` means the current device, and every caller here is single-device or
-    passes an explicit index; anything unrecognisable falls back to 0 rather than
+    Anything that names a device WITHOUT an ordinal -- ``None``, an indexless
+    ``torch.device("cuda")``, the bare string ``"cuda"`` -- means the current
+    device, because that is what ``mem_get_info`` itself resolves it to. Reading
+    those as 0 would decide the unified-memory clamp from a different card than
+    the one being measured on any host whose current device is not 0, and
+    ``video.py`` reaches here that way (``torch.device(state.device)`` over a
+    plain ``"cuda"``). Anything unrecognisable still falls back to 0 rather than
     raising, since this only chooses which device to ask about.
     """
     if device is None:
-        try:
-            import torch
-            return int(torch.cuda.current_device())
-        except Exception:
-            return 0
+        return _current_cuda_ordinal()
     if isinstance(device, bool):
         return 0
     if isinstance(device, int):
@@ -2398,10 +2408,14 @@ def _cuda_ordinal_for(device: Any) -> int:
     index = getattr(device, "index", None)
     if isinstance(index, int):
         return index
+    if index is None and getattr(device, "type", None) is not None:
+        # A torch.device that carries a type but no index.
+        return _current_cuda_ordinal()
+    text = str(device).strip()
     try:
-        return int(str(device).rsplit(":", 1)[-1])
+        return int(text.rsplit(":", 1)[-1])
     except Exception:
-        return 0
+        return _current_cuda_ordinal() if text.lower() in ("cuda", "hip") else 0
 
 
 def cuda_device_is_unified_memory(index: int = 0) -> bool:
@@ -2416,20 +2430,42 @@ def available_system_memory_bytes() -> Optional[int]:
     On a unified-memory part this, not the driver's free figure, is the ceiling
     that decides whether a load fits: the weights land in the same RAM the OS is
     using, and the driver counts memory it would have to take from the host.
+
+    Capped by this process's cgroup remainder, the same way llama_cpp's
+    ``_available_system_memory_mib`` is. Both psutil and ``/proc/meminfo`` report
+    the HOST, so in a container with a memory limit well under the host's they
+    hand back RAM this process may not charge, and a unified-memory fit sized to
+    it is the shape that gets OOM-killed rather than refused. The cap is reused
+    from the llama.cpp backend rather than re-walked here so the two answers
+    cannot drift; if it is unreadable the host figure stands, which is what this
+    returned before.
     """
+    host: Optional[int] = None
     try:
         import psutil
-        return int(psutil.virtual_memory().available)
+        host = int(psutil.virtual_memory().available)
     except Exception:
         pass
+    if host is None:
+        try:
+            with open("/proc/meminfo", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        host = int(line.split()[1]) * 1024
+                        break
+        except Exception:
+            pass
+    if host is None:
+        return None
     try:
-        with open("/proc/meminfo", encoding = "utf-8") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except Exception:
-        pass
-    return None
+        from core.inference.llama_cpp import LlamaCppBackend
+        cgroup_mib = LlamaCppBackend._cgroup_available_memory_mib()
+    except Exception as e:
+        logger.debug("Could not read the cgroup memory remainder: %s", e)
+        cgroup_mib = None
+    if cgroup_mib is not None:
+        host = min(host, max(0, int(cgroup_mib)) * 1024 * 1024)
+    return host
 
 
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:
