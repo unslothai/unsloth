@@ -12,6 +12,8 @@ mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_tray;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;
@@ -1717,7 +1719,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     let tray_icon = app.default_window_icon().unwrap().clone();
 
-    TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
         .icon(tray_icon)
@@ -1741,6 +1743,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
+        // The template icon remains visible and adaptive if native observation is unavailable.
+        warn!("Could not install the macOS tray appearance observer: {error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    drop(tray);
 
     Ok(())
 }
@@ -2037,6 +2047,9 @@ fn main() {
                 // roughly 18s on Windows, where those first two graceful waits are
                 // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
                 // its liveness, shutdown and CTRL_BREAK budgets in series instead.
+                #[cfg(target_os = "macos")]
+                macos_tray::remove_appearance_observer();
+
                 cleanup_child_processes(app);
             }
             _ => {}
