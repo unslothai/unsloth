@@ -163,8 +163,8 @@ _ANTHROPIC_MODEL_VERSION = re.compile(
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
-_GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
-_GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
+_GEMINI3_FAMILY = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-")
+_GEMINI3_PRO = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-pro")
 
 
 def _anthropic_text_is_sendable(value: Any) -> bool:
@@ -664,6 +664,53 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "none"
         elif enable_thinking is True:
             body["reasoning_effort"] = "high"
+        return
+
+    # Every other model takes the documented two-value form: "none" or "high".
+    if reasoning_effort == "none" or enable_thinking is False:
+        body["reasoning_effort"] = "none"
+    elif reasoning_effort in _REASONING_EFFORT_LEVELS or enable_thinking is True:
+        body["reasoning_effort"] = "high"
+
+
+_REASONING_EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
+_DEEPSEEK_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "high"}
+_LOCAL_SERVER_EFFORT_ALIASES = {"minimal": "low", "xhigh": "high", "max": "high"}
+
+
+def _apply_deepseek_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    effort = (reasoning_effort or "").strip().lower()
+    if effort == "none" or (not effort and enable_thinking is False):
+        body["thinking"] = {"type": "disabled"}
+        return
+    if effort in _REASONING_EFFORT_LEVELS:
+        body["thinking"] = {"type": "enabled"}
+        body["reasoning_effort"] = _DEEPSEEK_EFFORT_ALIASES.get(effort, effort)
+        return
+    if enable_thinking is True:
+        body["thinking"] = {"type": "enabled"}
+
+
+def _apply_qwen_reasoning_controls(body: dict[str, Any], enable_thinking: Optional[bool]) -> None:
+    if enable_thinking is not None:
+        body["enable_thinking"] = bool(enable_thinking)
+
+
+def _apply_passthrough_reasoning_effort(
+    body: dict[str, Any],
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+    aliases: dict[str, str] | None = None,
+) -> None:
+    effort = (reasoning_effort or "").strip().lower()
+    if aliases:
+        effort = aliases.get(effort, effort)
+    if effort == "none" or (not effort and enable_thinking is False):
+        body["reasoning_effort"] = "none"
+    elif effort in _REASONING_EFFORT_LEVELS:
+        body["reasoning_effort"] = effort
 
 
 # ollama's openai-compatible /v1/chat/completions accepts these five values.
@@ -1283,14 +1330,28 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif provider_info.get("supports_chat_template_kwargs") and enable_thinking is not None:
+        elif self.provider_type == "deepseek":
+            _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
+        elif self.provider_type == "qwen":
+            _apply_qwen_reasoning_controls(body, enable_thinking)
+        elif self.provider_type == "huggingface":
+            _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
+        elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway
-            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family.
-            tpl_kw = body.get("chat_template_kwargs")
-            if not isinstance(tpl_kw, dict):
-                tpl_kw = {}
-            tpl_kw["enable_thinking"] = bool(enable_thinking)
-            body["chat_template_kwargs"] = tpl_kw
+            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family. Off rides on
+            # that kwarg alone: vLLM through 0.16 types the top-level reasoning_effort as low | medium | high and 400s
+            # on "none".
+            effort = (reasoning_effort or "").strip().lower()
+            effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+            thinking = False if effort == "none" else enable_thinking
+            if thinking is not None:
+                tpl_kw = body.get("chat_template_kwargs")
+                if not isinstance(tpl_kw, dict):
+                    tpl_kw = {}
+                tpl_kw["enable_thinking"] = bool(thinking)
+                body["chat_template_kwargs"] = tpl_kw
+            if effort in ("low", "medium", "high"):
+                body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
@@ -2252,7 +2313,9 @@ class ExternalProviderClient:
                 last_msg["content"] = head
         thinking_spec = _anthropic_thinking_spec(model)
         allowed_efforts = (
-            thinking_spec.efforts if thinking_spec else ("none", "low", "medium", "high")
+            thinking_spec.efforts
+            if thinking_spec
+            else ("none", "low", "medium", "high", "xhigh", "max")
         )
         effort = reasoning_effort if reasoning_effort in allowed_efforts else None
         # Claude 4.6 takes top-tier adaptive effort as "max" only ("xhigh" is 4.7-only), so map "xhigh" -> "max" for
@@ -2283,9 +2346,10 @@ class ExternalProviderClient:
             if not sampling_removed:
                 body["temperature"] = 1
             body.pop("top_p", None)
-            if thinking_spec and thinking_spec.kind == "adaptive":
+            if thinking_spec is None or thinking_spec.kind == "adaptive":
                 # Force display="summarized": it defaults to "omitted" on Opus 4.7, which emits an empty thinking
-                # block and leaves the panel blank. Harmless no-op on 4.6.
+                # block and leaves the panel blank. Harmless no-op on 4.6. A model outside the spec table is newer
+                # than 4.5, so it takes the adaptive shape.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
                 # Adaptive effort lives under `output_config.effort`, not top-level (top-level 400s "Extra inputs are
                 # not permitted"). Allowed: low|medium|high|xhigh|max.
@@ -3737,7 +3801,15 @@ class ExternalProviderClient:
             model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
         effort_lc = (reasoning_effort or "").strip().lower()
-        if not is_image_model_strict and is_gemini3_thinking:
+        is_gemma_thinking = bool(re.match(r"^gemma-(?:[4-9]|\d{2,})(?:\.\d+)?-", model_lc))
+        if not is_image_model_strict and is_gemma_thinking:
+            # Gemma 4 on the Gemini API is on/off only, as thinkingLevel "high" or "minimal"; it takes no budget.
+            # https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
+            if effort_lc in ("none", "off") or enable_thinking is False:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+            elif effort_lc or enable_thinking is True:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "high"}
+        elif not is_image_model_strict and is_gemini3_thinking:
             # Gemini 3.x thinkingLevel matrix: 3.1+ Pro low/medium/high; 3 Pro low/high (deprecated 2026-03-09); 3.x
             # Flash* minimal/low/medium/high. Coerce minimal->low on Pro, medium->high on legacy 3-Pro.
             _G3_LEVELS = {"minimal", "low", "medium", "high"}

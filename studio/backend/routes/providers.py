@@ -6,6 +6,7 @@ configurations and their API keys, the RSA public key used to encrypt those keys
 listing.
 """
 
+import json
 import time
 import uuid
 from typing import Optional
@@ -41,9 +42,12 @@ from core.inference.external_provider import ExternalProviderClient
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
     MODEL_CAPABILITY_PROVIDERS,
+    MODELS_DEV_URL,
     provider_model_capabilities,
+    trim_models_dev_catalog,
 )
 from models.providers import (
+    ModelCatalogResponse,
     ProviderCreate,
     ProviderCredentialMigration,
     ProviderModelsRequest,
@@ -57,6 +61,7 @@ from models.providers import (
 )
 from storage import credential_secrets, providers_db
 from hub.services.models import account_access
+from utils.paths.storage_roots import cache_root
 from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
@@ -739,6 +744,67 @@ async def test_provider(
 
 _MODEL_CAPABILITY_CACHE_TTL_SECONDS = 3600.0
 _model_capability_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+_MODEL_CATALOG_TTL_SECONDS = 24 * 3600.0
+_model_catalog_cache: dict | None = None
+
+
+def _model_catalog_cache_path():
+    return cache_root() / "model_catalog.json"
+
+
+def _read_model_catalog_file() -> dict | None:
+    try:
+        data = json.loads(_model_catalog_cache_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("providers"), dict)
+        and isinstance(data.get("fetched_at"), (int, float))
+    ):
+        return data
+    return None
+
+
+def _write_model_catalog_file(data: dict) -> None:
+    try:
+        path = _model_catalog_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(data), encoding = "utf-8")
+    except OSError as exc:
+        logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
+
+
+async def _fetch_models_dev_catalog() -> dict:
+    from core.inference.external_provider import _client
+
+    response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
+    response.raise_for_status()
+    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+
+
+@router.get("/model-catalog", response_model = ModelCatalogResponse)
+async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
+    global _model_catalog_cache
+    cached = _model_catalog_cache or _read_model_catalog_file()
+    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+        _model_catalog_cache = cached
+        return cached
+    try:
+        fresh = await _fetch_models_dev_catalog()
+    except Exception as exc:
+        logger.warning("providers.model_catalog_refresh_failed", error = str(exc))
+        if cached is not None:
+            _model_catalog_cache = cached
+            return cached
+        raise HTTPException(
+            status_code = 503, detail = "The model catalog is unavailable offline."
+        ) from None
+    _model_catalog_cache = fresh
+    _write_model_catalog_file(fresh)
+    return fresh
 
 
 @router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
