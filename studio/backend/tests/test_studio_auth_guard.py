@@ -846,6 +846,64 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_builtin_wrapped_cd_moves_the_directory(monkeypatch, tmp_path):
+    # `builtin cd ..` and `command cd ..` run the same shell builtin with the same argument, so
+    # everything after them is relative to the new directory. Matched on the bare name only, the
+    # move went unrecorded and the auth database that followed still looked like the sandbox's.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'builtin cd ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
+            "command cd ../.. && cat auth/.desktop_secret",
+            "builtin cd ../..; cat auth/.cli_api_key_cli_1",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            "echo builtin cd ../..",
+            "builtin cd ../..; cat models/m.gguf",
+            "command ls auth/",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_parent_walk_from_a_named_literal_base_is_that_base(monkeypatch, tmp_path):
+    # A name holding a literal path is not the working directory, so `root = Path('/tmp/project')`
+    # walked up twice is `/`, not the studio root, and a project's own auth/ must still be readable.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'from pathlib import Path\nroot = Path("/tmp/project")\nprint(root.parent.parent / "auth" / "auth.db")',
+            'from pathlib import Path\nroot = Path("/srv/app")\nprint(root.parent / "auth" / "auth.db")',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # A name bound to the working directory, or rebound so its value is unknown, still counts.
+        for code in (
+            'from pathlib import Path\nroot = Path.cwd()\nprint((root.parent.parent / "auth" / "auth.db").read_bytes())',
+            'from pathlib import Path\nprint((Path.cwd().parents[1] / "auth" / "auth.db").read_bytes())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_pwd_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
     # Bash rewrites PWD on every `cd`, so under bypass it names the tool workdir and `$PWD/../..`
     # is the auth directory's parent. Left as a literal segment it read as `<workdir>/$PWD/...`.

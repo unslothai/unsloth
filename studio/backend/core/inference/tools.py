@@ -2952,7 +2952,9 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 # `cd DIR`, `cd /d DIR` or `pushd DIR` at a command position; `pushd` moves the cwd as `cd` does.
 # Case-insensitive because the shell is `cmd /c` on a Windows host without a trusted bash.
 _CD_TARGET_RE = re.compile(
-    r"(?:^|[;&|(\n]\s*|\b(?:then|do|else)\s+)(?:cd|pushd)\s+"
+    # `builtin cd ..` and `command cd ..` run the same builtin with the same argument, so a walk
+    # that only knows the bare name resolves everything after them against the wrong directory.
+    r"(?:^|[;&|(\n]\s*|\b(?:then|do|else)\s+)(?:(?:builtin|command|exec)\s+)*(?:cd|pushd)\s+"
     r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
     re.IGNORECASE,
 )
@@ -3103,6 +3105,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
     # path that does not exist raises, and code that catches it carries on from where it was.
     chdir_names = _chdir_names(tree)
+    name_bases = _literal_name_bases(tree)
     cwds: "list[str | None]" = [workdir]
     for node in nodes:
         if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names):
@@ -3131,7 +3134,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
             # and the level count in the expression rather than from the folded text.
             if any(
                 _references_studio_credential(target)
-                for target in _parent_walk_targets(node, folded, cwds)
+                for target in _parent_walk_targets(node, folded, cwds, name_bases)
             ):
                 return True
             continue
@@ -3196,7 +3199,38 @@ def _is_cwd_call(node) -> bool:
     return name in ("cwd", "getcwd")
 
 
-def _parent_walk_targets(node, folded: str, cwds: "list") -> "list[str]":
+def _literal_name_bases(tree) -> "dict[str, str]":
+    """Names bound once to a literal path, so `root = Path('/tmp/p')` is not read as the cwd.
+
+    A name assigned more than once, or bound to something this fold cannot read, is left out: the
+    caller then falls back to the working directory, which is where an unqualified name usually is.
+    """
+    bases: "dict[str, str]" = {}
+    rebound: "set[str]" = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id in bases or target.id in rebound:
+            rebound.add(target.id)
+            bases.pop(target.id, None)
+            continue
+        value = _folded_path(node.value)
+        if value and "\x00" not in value and "\x02" not in value:
+            bases[target.id] = value
+        else:
+            rebound.add(target.id)
+    return bases
+
+
+def _parent_walk_targets(
+    node,
+    folded: str,
+    cwds: "list",
+    name_bases: "dict | None" = None,
+) -> "list[str]":
     """Where a `.parent` / `.parents[n]` expression can land, resolved rather than guessed.
 
     The fold writes one marker for the whole walk, so the level count and the base come from the
@@ -3211,7 +3245,14 @@ def _parent_walk_targets(node, folded: str, cwds: "list") -> "list[str]":
         return []
     base_node, levels = chain
     bases: "list[str]" = []
-    if _is_cwd_call(base_node) or isinstance(base_node, ast.Name):
+    named = (name_bases or {}).get(base_node.id) if isinstance(base_node, ast.Name) else None
+    if named:
+        bases = (
+            [named]
+            if os.path.isabs(named)
+            else [os.path.normpath(os.path.join(c, named)) for c in cwds if c]
+        )
+    elif _is_cwd_call(base_node) or isinstance(base_node, ast.Name):
         bases = [c for c in cwds if c]
     else:
         folded_base = _folded_path(base_node)
