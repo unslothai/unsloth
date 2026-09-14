@@ -1151,3 +1151,46 @@ def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, m
     assert (
         _steps(result.stdout)["whisper.cpp"] == "update unavailable, existing prebuilt kept"
     ), result.stdout
+
+
+# An untrustworthy release is an ANSWER, not an unavailability
+# The keep arm exists because a lookup that could not answer says nothing about the tree on disk.
+# A manifest digest disagreeing with the checksum index is the opposite: the release was fetched
+# and found untrustworthy. Reporting "update unavailable, existing prebuilt kept" over it turns a
+# tamper signal into a routine offline notice, and setup then paints it yellow rather than red.
+# Unit coverage of the exception TYPE is not enough here: with the re-raise removed the whole
+# install suite stayed green and only an end-to-end run noticed, which is why this drives the CLI.
+def test_a_tampered_release_is_not_reported_as_an_unavailable_update(tmp_path, monkeypatch, capsys):
+    host = _host("linux", "x64")
+    install_dir = _seed_install(tmp_path, host)
+    before = _tree_snapshot(install_dir)
+
+    def tampered(*_a, **_k):
+        raise M.core.ReleaseIntegrityError(
+            "manifest sha256 for whisper-x.tar.gz disagrees with whisper-prebuilt-sha256.json; "
+            "refusing a possibly tampered release"
+        )
+
+    monkeypatch.setattr(M, "_release_plan_for_host", tampered)
+    code, log = _run_cli(monkeypatch, capsys, host, install_dir)
+
+    assert code != M.EXIT_SUCCESS, f"a tampered release reported success\n{log}"
+    assert KEEP_TOKEN not in log, f"the keep arm swallowed an integrity failure\n{log}"
+    assert "tampered" in log, f"the reason never reached the user\n{log}"
+    # Refusing to bless it must not damage the install that is already there.
+    assert _tree_snapshot(install_dir) == before, "the intact tree moved"
+
+
+def test_an_unavailable_lookup_still_keeps_the_install(tmp_path, monkeypatch, capsys):
+    """The other half of the same fork, so the fix above cannot be 'refuse everything'."""
+    host = _host("linux", "x64")
+    install_dir = _seed_install(tmp_path, host)
+
+    def unavailable(*_a, **_k):
+        raise M.PrebuiltFallback("could not fetch release: network is unreachable")
+
+    monkeypatch.setattr(M, "_release_plan_for_host", unavailable)
+    code, log = _run_cli(monkeypatch, capsys, host, install_dir)
+
+    assert code == M.EXIT_SUCCESS, f"an unavailable lookup should keep the install\n{log}"
+    assert KEEP_TOKEN in log, log

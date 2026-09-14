@@ -111,6 +111,11 @@ _OPS = core.ModuleOps(globals())
 _LOG_TO_STDOUT = False
 
 
+# Raised by prebuilt_core when a fetched release cannot be trusted; re-exported so this
+# module's callers can name it without importing core.
+ReleaseIntegrityError = core.ReleaseIntegrityError
+
+
 class ReleaseCompatibilityError(PrebuiltFallback):
     """A valid slim release cannot pair with this host's installed runtime."""
 
@@ -1994,9 +1999,13 @@ def install_prebuilt(
             whisper_tag = whisper_tag,
             requested_backend = requested_backend,
         )
-    except ReleaseCompatibilityError:
-        # The lookup ANSWERED: no published bundle pairs with this host's llama.cpp runtime. Real
-        # release skew (setup names both tags from exit 2), never papered over by keeping.
+    except (ReleaseCompatibilityError, core.ReleaseIntegrityError):
+        # The lookup ANSWERED, so keeping would paper over a real answer. Two kinds:
+        # ReleaseCompatibilityError, no published bundle pairs with this host's llama.cpp runtime
+        # (real release skew, setup names both tags from exit 2); and ReleaseIntegrityError, the
+        # release was fetched and found untrustworthy -- an asset outside the checksum index, or a
+        # manifest digest disagreeing with it. Reporting "update unavailable, existing prebuilt
+        # kept" over a tamper signal would turn it into a routine offline notice.
         raise
     except PrebuiltFallback as exc:
         # llama.cpp's rule: a lookup that could not answer says nothing about the tree on disk. A

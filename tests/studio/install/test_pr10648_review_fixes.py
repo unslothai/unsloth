@@ -512,3 +512,105 @@ def test_the_runtime_record_refresh_still_never_raises(tmp_path, monkeypatch):
     NODE.write_metadata(tmp_path, version = "24.17.0", asset = "a", sha256 = "b" * 64)
     _refuse_mode_change(monkeypatch, NODE)
     NODE.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
+
+
+# A release found untrustworthy must not read as "update unavailable"
+# The keep paths exist because a lookup that could not ANSWER says nothing about the tree on disk.
+# An asset outside the checksum index, or a manifest digest disagreeing with it, is the opposite:
+# the release was fetched and found untrustworthy. Reporting "update unavailable, existing prebuilt
+# kept" over that turns a tamper signal into a routine offline notice.
+def _ops():
+    """The one name expected_sha256_for reads, over prebuilt_core's own defaults. A component
+    module supplies SHA256_ASSET_NAME; neither core nor llama defines it, and without it the
+    call fails for a reason that has nothing to do with integrity."""
+    return CORE.ModuleOps({**vars(CORE), "SHA256_ASSET_NAME": "whisper-prebuilt-sha256.json"})
+
+
+def test_an_unverifiable_asset_raises_the_integrity_type():
+    with pytest.raises(CORE.ReleaseIntegrityError):
+        CORE.expected_sha256_for(_ops(), {}, "whisper-x.tar.gz")
+
+
+def test_a_manifest_digest_disagreeing_with_the_index_raises_the_integrity_type():
+    with pytest.raises(CORE.ReleaseIntegrityError):
+        CORE.expected_sha256_for(
+            _ops(),
+            {"whisper-x.tar.gz": "a" * 64},
+            "whisper-x.tar.gz",
+            manifest_sha256 = "b" * 64,
+        )
+
+
+def test_the_integrity_type_is_still_a_prebuilt_fallback():
+    """A subclass, so every existing `except PrebuiltFallback` keeps catching it and only the
+    keep paths single it out. A sibling type would silently escape those handlers."""
+    assert issubclass(CORE.ReleaseIntegrityError, CORE.PrebuiltFallback)
+
+
+def test_a_plain_lookup_failure_is_not_an_integrity_error():
+    """The distinction has to cut both ways, or the keep path stops working at all."""
+    assert not isinstance(CORE.PrebuiltFallback("offline"), CORE.ReleaseIntegrityError)
+
+
+# llama's keep arm must refuse an untrustworthy release too
+# llama has kept an install on a failed lookup since before this branch, and that arm caught every
+# PrebuiltFallback including the integrity refusals. Closed here so the two installers cannot
+# disagree about what a keep is allowed to hide. The condition is inline, so this drives the real
+# install_prebuilt: with the guard removed the whole install suite stayed green.
+def _llama_keep_probe(monkeypatch, tmp_path, raised):
+    """Run llama's install_prebuilt with the planner raising *raised*, over a tree its own
+    _existing_install_runs accepts, and report whether it took the keep arm."""
+    install_dir = tmp_path / "llama.cpp"
+    (install_dir / "build" / "bin").mkdir(parents = True)
+    for name in ("llama-server", "llama-quantize"):
+        for target in (install_dir / name, install_dir / "build" / "bin" / name):
+            target.write_bytes(b"#!/bin/sh\nexit 0\n")
+            target.chmod(0o755)
+
+    monkeypatch.setattr(LLAMA, "_existing_install_runs", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        LLAMA,
+        "resolve_simple_install_release_plans",
+        lambda *_a, **_k: (_ for _ in ()).throw(raised),
+    )
+    monkeypatch.setattr(LLAMA, "collect_system_report", lambda *_a, **_k: "")
+
+    logs: list[str] = []
+    monkeypatch.setattr(LLAMA, "log", lambda msg, *a, **k: logs.append(str(msg)))
+    monkeypatch.setattr(LLAMA, "log_lines", lambda msg, *a, **k: logs.append(str(msg)))
+    outcome = "returned"
+    try:
+        LLAMA.install_prebuilt(
+            install_dir = install_dir,
+            llama_tag = "latest",
+            published_repo = LLAMA.DEFAULT_PUBLISHED_REPO,
+            published_release_tag = "",
+        )
+    except SystemExit as exc:
+        outcome = f"SystemExit({exc.code})"
+    except BaseException as exc:
+        outcome = f"{type(exc).__name__}"
+    text = "\n".join(logs)
+    return outcome, ("keeping the existing complete install" in text), text
+
+
+def test_llama_keeps_the_install_when_the_lookup_could_not_answer(tmp_path, monkeypatch):
+    outcome, kept, text = _llama_keep_probe(
+        monkeypatch,
+        tmp_path,
+        LLAMA.PrebuiltFallback("network is unreachable"),
+    )
+    assert kept, f"an unavailable lookup should keep the install; got {outcome}\n{text[:400]}"
+
+
+def test_llama_refuses_to_keep_over_an_untrustworthy_release(tmp_path, monkeypatch):
+    outcome, kept, text = _llama_keep_probe(
+        monkeypatch,
+        tmp_path,
+        LLAMA._core.ReleaseIntegrityError(
+            "manifest sha256 for app-x.tar.gz disagrees with llama-prebuilt-sha256.json; "
+            "refusing a possibly tampered release"
+        ),
+    )
+    assert not kept, f"the keep arm swallowed an integrity failure; got {outcome}\n{text[:400]}"
+    assert "tampered" in text, f"the reason never reached the user\n{text[:400]}"

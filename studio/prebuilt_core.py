@@ -81,6 +81,19 @@ class PrebuiltFallback(RuntimeError):
     pass
 
 
+class ReleaseIntegrityError(PrebuiltFallback):
+    """A release that ANSWERED, and the answer was that it cannot be trusted.
+
+    A PrebuiltFallback means "this lookup could not answer", which says nothing about the tree
+    already on disk, so the keep-existing paths treat it as a reason to hold the install and
+    report success. An asset missing from the checksum index, or a manifest digest that
+    disagrees with it, is not that: the release was fetched and found untrustworthy, and
+    reporting "update unavailable" over it turns a tamper signal into a routine offline notice.
+    A subclass rather than a sibling so every existing `except PrebuiltFallback` still catches
+    it; only the keep paths single it out and re-raise.
+    """
+
+
 class BusyInstallConflict(RuntimeError):
     pass
 
@@ -1843,13 +1856,13 @@ def expected_sha256_for(
     for the asset must agree with the index (a mismatch means a tampered manifest)."""
     digest = checksums.get(asset_name)
     if digest is None:
-        raise PrebuiltFallback(
+        raise ReleaseIntegrityError(
             f"{asset_name} is not covered by {ops.SHA256_ASSET_NAME}; "
             f"refusing an unverifiable download"
         )
     embedded = valid_sha256(manifest_sha256)
     if embedded is not None and embedded != digest:
-        raise PrebuiltFallback(
+        raise ReleaseIntegrityError(
             f"manifest sha256 for {asset_name} disagrees with {ops.SHA256_ASSET_NAME}; "
             f"refusing a possibly tampered release"
         )

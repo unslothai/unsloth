@@ -9913,6 +9913,11 @@ def install_prebuilt(
             and not explicit_version_request
             # Even "auto" is a live instruction: it asks for re-detection.
             and not backend_mandatory
+            # A release that was fetched and found untrustworthy ANSWERED, so "update
+            # unavailable" is the wrong sentence for it: it turns a tamper signal into a
+            # routine offline notice. Pre-dates this branch on the llama side and is closed
+            # here so the two installers cannot disagree about what a keep is allowed to hide.
+            and not isinstance(exc, _core.ReleaseIntegrityError)
             and host is not None
             and _existing_install_runs(install_dir, host)
         ):
