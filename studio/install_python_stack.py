@@ -3361,12 +3361,26 @@ def _nvidia_smi_candidates() -> "list[str]":
     return candidates
 
 
+def _nvidia_smi_usable_candidates() -> "list[str]":
+    """Candidates worth actually running: the PATH result plus every file that exists.
+
+    `shutil.which` already proved its result runnable, so it is kept without an
+    os.path.isfile check -- that would reject a bare "nvidia-smi" relative to a CWD it
+    does not live in, which is both what a stubbed test double looks like and what a
+    GPU-free runner would turn into a silent cu126 default.
+    """
+    path_exe = shutil.which("nvidia-smi")
+    return [
+        candidate
+        for candidate in _nvidia_smi_candidates()
+        if candidate == path_exe or os.path.isfile(candidate)
+    ]
+
+
 def _nvidia_smi_path() -> "str | None":
-    """The first nvidia-smi that exists, or None."""
-    for candidate in _nvidia_smi_candidates():
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+    """The first nvidia-smi worth running, or None."""
+    candidates = _nvidia_smi_usable_candidates()
+    return candidates[0] if candidates else None
 
 
 def _nvidia_compute_sms(exe: str) -> "list[int] | None":
@@ -3479,9 +3493,13 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    exe = _nvidia_smi_path()
     tag = "cu126"  # default when the driver CUDA version cannot be read
-    if exe:
+    # Every candidate until one ANSWERS, the way _has_usable_nvidia_gpu does. Taking the
+    # first that merely exists loses to a stale nvidia-smi on PATH: the presence probe
+    # walks past it to the working Program Files copy and confirms the GPU, while this one
+    # stopped at the stale binary, read no version, and defaulted to cu126. On Blackwell
+    # that wheel has no kernels, so a repair would install one the GPU cannot use.
+    for exe in _nvidia_smi_usable_candidates():
         try:
             result = subprocess.run(
                 [exe],
@@ -3492,25 +3510,27 @@ def _detect_cuda_torch_index_url() -> str:
                 errors = "replace",
                 timeout = 10,
             )
-            if result.returncode == 0:
-                m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
-                if m:
-                    major, minor = int(m.group(1)), int(m.group(2))
-                    if major >= 13:
-                        tag = "cu130"
-                    elif major == 12 and minor >= 8:
-                        tag = "cu128"
-                    elif major == 12 and minor >= 6:
-                        tag = "cu126"
-                    elif major >= 12:
-                        tag = "cu124"
-                    elif major >= 11:
-                        tag = "cu118"
-                    else:
-                        tag = "cpu"  # ancient driver: no usable CUDA wheels
         except Exception:
-            pass
-        tag = _cap_cuda_family_for_pre_turing(tag, exe)
+            continue
+        if result.returncode != 0:
+            continue
+        m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
+        if m is None:
+            continue
+        major, minor = int(m.group(1)), int(m.group(2))
+        if major >= 13:
+            tag = "cu130"
+        elif major == 12 and minor >= 8:
+            tag = "cu128"
+        elif major == 12 and minor >= 6:
+            tag = "cu126"
+        elif major >= 12:
+            tag = "cu124"
+        elif major >= 11:
+            tag = "cu118"
+        else:
+            tag = "cpu"  # ancient driver: no usable CUDA wheels
+        return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 

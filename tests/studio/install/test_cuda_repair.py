@@ -2307,10 +2307,53 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
 
     def test_the_candidate_list_is_shared_by_both_probes(self):
         # Two callers that disagree about where nvidia-smi lives disagree about the host.
-        source = inspect.getsource(stack_mod._has_usable_nvidia_gpu)
-        assert "_nvidia_smi_candidates()" in source
-        source = inspect.getsource(stack_mod._nvidia_smi_path)
-        assert "_nvidia_smi_candidates()" in source
+        assert "_nvidia_smi_candidates()" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "_nvidia_smi_candidates()" in inspect.getsource(
+            stack_mod._nvidia_smi_usable_candidates
+        )
+        assert "_nvidia_smi_usable_candidates()" in inspect.getsource(
+            stack_mod._detect_cuda_torch_index_url
+        )
+
+    def test_a_which_result_is_trusted_without_an_isfile_check(self, monkeypatch):
+        """shutil.which already proved its result runnable.
+
+        Gating it on os.path.isfile rejects a bare "nvidia-smi" relative to a CWD it does
+        not live in. That is both what a stubbed test double looks like and, on a GPU-free
+        runner with nothing at /usr/bin/nvidia-smi, a silent fall back to the cu126 default.
+        """
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda name, *a, **k: "nvidia-smi")
+        monkeypatch.setattr(stack_mod.os.path, "isfile", lambda p: "nvidia-smi" not in str(p))
+        assert stack_mod._nvidia_smi_path() == "nvidia-smi"
+
+    def test_the_family_probe_walks_past_a_stale_candidate(self, monkeypatch, tmp_path):
+        """A stale nvidia-smi on PATH must not decide the family.
+
+        _has_usable_nvidia_gpu already walks past it to the working copy and confirms the
+        GPU; stopping at the stale one here read no version and defaulted to cu126, which
+        on Blackwell has no kernels.
+        """
+        working = tmp_path / "nvidia-smi.exe"
+        working.write_text("")
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda name, *a, **k: "stale-smi")
+        monkeypatch.setattr(
+            stack_mod, "_nvidia_smi_candidates", lambda: ["stale-smi", str(working)]
+        )
+        monkeypatch.setattr(stack_mod, "_cap_cuda_family_for_pre_turing", lambda f, e: f)
+
+        def _run(command, *a, **k):
+            if command[0] == "stale-smi":
+                return SimpleNamespace(returncode = 9, stdout = "", stderr = "")
+            return SimpleNamespace(
+                returncode = 0, stdout = "| NVIDIA-SMI 591.86  CUDA Version: 12.8 |", stderr = ""
+            )
+
+        monkeypatch.setattr(stack_mod.subprocess, "run", _run)
+        assert stack_mod._detect_cuda_torch_index_url().endswith("/cu128")
 
     def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
         # The repair helpers install from the pinned URL, so expecting the driver's family
