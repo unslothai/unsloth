@@ -50,6 +50,29 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_explains_the_studio_volume():
+    """The volume keeps Studio's data and never pins its code; a volume from an image
+    before the code/data split is migrated with its old code kept aside. Both facts,
+    the way back to an older image, and what `docker rm` still discards have to be on
+    the page, since the quick start above them mounts the volume by default."""
+    text = HUB_README.read_text(encoding = "utf-8")
+    for needle in (
+        "-v unsloth-studio:/opt/unsloth-studio",
+        "/opt/unsloth-studio-app",
+        ".unsloth-studio-legacy/",
+        "UNSLOTH_STUDIO_KEEP_LEGACY=0",
+        "unsloth-studio-update",
+        "named volume, not a bind mount of a Windows or macOS host directory",
+    ):
+        assert needle in text, f"the Hub README no longer mentions {needle!r}"
+    # the helper is described as setting the flags of the quick start, which now
+    # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
+    assert "including the `unsloth-studio` volume" in text
+    repo = REPO_README.read_text(encoding = "utf-8")
+    assert "-v unsloth-studio:/opt/unsloth-studio" in repo
+    assert ".unsloth-studio-legacy/" in repo
+
+
 def test_the_repo_readme_run_command_matches_the_image():
     text = REPO_README.read_text(encoding = "utf-8")
     start = text.index("#### Docker")
