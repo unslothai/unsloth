@@ -4,38 +4,60 @@
 import { Badge } from "@/components/assistant-ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import { File02Icon } from "@hugeicons/core-free-icons";
+import { File02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import type { DocumentStatus } from "../types/rag";
+
+const STAGE_LABELS: Record<string, string> = {
+  parsing: "Reading document",
+  ocr: "Reading scanned pages",
+  captioning: "Reading charts and figures",
+  chunking: "Preparing text",
+  embedding: "Indexing text",
+  storing: "Saving document",
+};
 
 export function DocumentStatusChip({
   filename,
   status,
   progress,
+  stage,
   error,
   onRemove,
+  shared = false,
 }: {
   filename: string;
   status: DocumentStatus;
   progress?: number | null;
+  stage?: string | null;
   error?: string | null;
   onRemove?: () => void;
+  /** Indexed for the whole project rather than this one chat: swap the file
+   * glyph for a folder so the two scopes are told apart at a glance. */
+  shared?: boolean;
 }) {
   const processing = status === "pending" || status === "running";
   return (
     <Badge
       variant="outline"
       size="sm"
-      title={error ?? filename}
+      title={
+        error ??
+        (processing && stage && STAGE_LABELS[stage]
+          ? `${filename} — ${STAGE_LABELS[stage]}`
+          : shared
+            ? `${filename} — shared with every chat in this project`
+            : filename)
+      }
       className={cn(
         "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >
-      {/* file */}
+      {/* file, or folder when the doc is a project-wide source */}
       <HugeiconsIcon
-        icon={File02Icon}
+        icon={shared ? Folder02Icon : File02Icon}
         strokeWidth={2}
         className="size-3 shrink-0"
       />

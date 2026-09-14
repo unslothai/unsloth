@@ -721,3 +721,21 @@ def test_update_size_missing_inputs_fail_open(monkeypatch):
         is None
     )
     assert fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp") is None
+
+
+@pytest.mark.parametrize("fetch", ["_fetch_latest_release_tag", "_fetch_latest_release_assets"])
+def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
+    """urllib applies its timeout per address, so /api/inference/status inherits that
+    multiplication without a wall-clock deadline; one stalled connect stands in for the
+    walk. Both entry points, since they share the fetch."""
+    import urllib.request
+
+    def _stalls(req, timeout = 5.0):
+        time.sleep(30)  # never returns within the deadline
+        raise AssertionError("deadline did not cut the fetch short")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _stalls)
+    started = time.monotonic()
+    assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
+    # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
+    assert time.monotonic() - started < 2.0

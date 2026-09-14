@@ -82,10 +82,10 @@ def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-# Filesystem pointers a downloaded binary could follow to on-disk credential
-# stores (token caches under $HF_HOME, ~/.netrc, XDG config). Dropped, not
-# repointed; the offline inference server needs none. Mirrors the cred-location
-# list of the tools bypass env (core/inference/tools.py).
+# Filesystem pointers a downloaded binary could follow to on-disk credential stores. Dropped, not repointed: the offline
+# inference server needs none.
+# Those pointers are token caches under $HF_HOME, ~/.netrc and XDG config. Mirrors the cred-location list of the tools
+# bypass env (core/inference/tools.py).
 CRED_LOCATION_ENV_NAMES = frozenset(
     {
         "HF_HOME",
@@ -107,8 +107,7 @@ CRED_LOCATION_ENV_NAMES = frozenset(
         "HOMEPATH",
     }
 )
-# Home dirs are repointed (not dropped): loaders and SDKs expect them present,
-# but they must not resolve to the user's real profile with its token caches.
+# Home dirs are repointed (not dropped): loaders and SDKs expect them present
 HOME_ENV_NAMES = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
 
 

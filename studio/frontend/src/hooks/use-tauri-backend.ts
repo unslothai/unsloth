@@ -32,6 +32,11 @@ import {
   startupMessageFromLog,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
+import {
+  clearServerStopIntent,
+  hasServerStopIntent,
+  markServerStopIntent,
+} from "./server-stop-intent";
 
 export type BackendStatus =
   | "checking"
@@ -45,6 +50,13 @@ export type BackendStatus =
   | "running"
   | "stopped"
   | "error";
+
+function syncTrayStatus(status: BackendStatus) {
+  if (!isTauri) return;
+  import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("set_tray_server_status", { status }))
+    .catch(() => {});
+}
 
 type DesktopPreflightDisposition =
   | "not_installed"
@@ -126,6 +138,8 @@ export function useTauriBackend() {
   const [error, setError] = useState<string | null>(null);
   // Guard against double startServer calls
   const startingRef = useRef(false);
+  // Guard against double stopServer calls
+  const stoppingRef = useRef(false);
   // Guard against React Strict Mode double-mount
   const mountedRef = useRef(false);
   // Track the discovered port from server-port event
@@ -150,6 +164,9 @@ export function useTauriBackend() {
   const externalPollAbortedRef = useRef(false);
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
+  // Whether the repair in flight was asked to skip straight to the installer. Read back by
+  // approveElevation, which restarts the repair after the system packages land.
+  const forcedRepairRef = useRef(false);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
   // Read through rather than mirrored into state: the app-closing listener is registered
   // inside the long event effect below, which cannot reach a setState from this render.
@@ -159,6 +176,7 @@ export function useTauriBackend() {
     if (authFailureRef.current) return;
     statusRef.current = nextStatus;
     setStatus(nextStatus);
+    syncTrayStatus(nextStatus);
   }
 
   function setBackendError(
@@ -169,6 +187,7 @@ export function useTauriBackend() {
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     setError(nextError);
+    syncTrayStatus(nextStatus);
   }
 
   function clearBackendError() {
@@ -185,6 +204,7 @@ export function useTauriBackend() {
     statusRef.current = "error";
     setStatus("error");
     setError(detail);
+    syncTrayStatus("error");
   }
 
   function clearAuthFailure() {
@@ -233,6 +253,13 @@ export function useTauriBackend() {
   }, [status]);
 
   async function checkInstallAndStart() {
+    // Honor a persisted stop before preflight: the native command side-effects
+    // (it can adopt a still-reaping backend, reset the intentional-stop flag,
+    // and arm a watchdog that later fires server-crashed over this screen).
+    if (hasServerStopIntent()) {
+      setBackendStatus("stopped");
+      return;
+    }
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
@@ -296,6 +323,9 @@ export function useTauriBackend() {
   }
 
   async function startManagedServer() {
+    // Ahead of the re-entry guard: a start the user asked for retires the stop they
+    // asked for earlier, whether or not this particular call goes on to do the work.
+    clearServerStopIntent();
     // Prevent double-start race condition
     if (startingRef.current) {
       return;
@@ -342,7 +372,14 @@ export function useTauriBackend() {
     startingRef.current = false;
   }
 
-  async function startRepair() {
+  // `forceInstaller` runs the bundled installer without trying `studio update` first. The
+  // automatic callers leave it off, because an out-of-date venv is the common case. Settings'
+  // manual repair turns it on: an update reuses the environment it finds, so a venv whose
+  // PyTorch was replaced by a CPU-only wheel comes back from one still CPU-only.
+  async function startRepair(options?: { forceInstaller?: boolean }) {
+    const forceInstaller = options?.forceInstaller ?? false;
+    // Survives the elevation round trip: approveElevation resumes by calling this again.
+    forcedRepairRef.current = forceInstaller;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
@@ -357,7 +394,7 @@ export function useTauriBackend() {
 
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      await invoke("start_managed_repair");
+      await invoke("start_managed_repair", { forceInstaller });
 
       setBackendStatus("starting");
       elevationResumeRef.current = null;
@@ -374,17 +411,39 @@ export function useTauriBackend() {
     await startManagedServer();
   }
 
+  // One stop at a time. The tray toggle branches on statusRef, which stays "running" until
+  // the invoke resolves, so a second tray Stop otherwise runs a second shutdown against the
+  // backend the first is still taking down. Mirrors the startingRef guard on the start path.
   async function stopServer() {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    try {
+      await runStopServer();
+    } finally {
+      stoppingRef.current = false;
+    }
+  }
+
+  async function runStopServer() {
     if (isExternalServer) {
       // We attached to a server we didn't spawn: can't kill it, just disconnect the UI.
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
+      markServerStopIntent();
       setBackendStatus("stopped");
       return;
     }
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_server");
+    // Record intent before the await: reaping can block ~15s and a reload
+    // mid-await would lose the marker. Roll back if the stop fails.
+    markServerStopIntent();
+    try {
+      await invoke("stop_server");
+    } catch (e) {
+      clearServerStopIntent();
+      throw e;
+    }
     startingRef.current = false;
     setBackendStatus("stopped");
   }
@@ -400,25 +459,32 @@ export function useTauriBackend() {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       await invoke("start_install");
-      // Install done: start the managed backend we just installed. Don't run the
-      // general preflight here, it can attach to an unrelated running CLI/backend
-      // before launching ours. The install-complete listener does NOT call
-      // startServer() to avoid a double-start race.
+      // Install done: start the managed backend we just installed. Don't run the general preflight
+      // here, it can attach to an unrelated running CLI/backend before launching ours. The
+      // install-complete listener does NOT call startServer() to avoid a double-start race.
       setBackendStatus("starting");
       elevationResumeRef.current = null;
       await startServer();
     } catch (e) {
       const msg = String(e);
-      // NEEDS_ELEVATION is not a real error: the Rust side also emits
-      // install-needs-elevation (sets needs-elevation status). Don't race with it
-      // by setting install-error here.
+      // NEEDS_ELEVATION is not a real error: the Rust side also emits install-needs-elevation (sets
+      // needs-elevation status). Don't race with it by setting install-error here.
       if (msg.includes("NEEDS_ELEVATION")) return;
       setBackendError(msg, "install-error");
     }
   }
 
   const retry = useCallback(() => {
+    // Retry on a FORCED repair has to re-run that repair, not the preflight. The installer
+    // is transactional, so a failed attempt over an existing install restores the desktop-ready
+    // environment it found: checkInstallAndStart() then sees a ready install and restarts the
+    // same CPU-only backend the user pressed Repair about, and the button does nothing.
+    // Elevation resumes already preserve this; the error path did not.
+    const resumeForcedRepair =
+      statusRef.current === "repair-error" && forcedRepairRef.current;
+    forcedRepairRef.current = false;
     clearAuthFailure();
+    clearServerStopIntent();
     setError(null);
     setLogs([]);
     startingRef.current = false;
@@ -431,6 +497,10 @@ export function useTauriBackend() {
     setIsExternalServer(false);
     stopExternalServerPoll();
     seenStepsRef.current.clear();
+    if (resumeForcedRepair) {
+      void startRepair({ forceInstaller: true });
+      return;
+    }
     checkInstallAndStart();
   }, []);
 
@@ -465,7 +535,7 @@ export function useTauriBackend() {
       setProgressDetail(null);
       elevationResumeRef.current = null;
       if (resume === "repair") {
-        await startRepair();
+        await startRepair({ forceInstaller: forcedRepairRef.current });
       } else {
         await startInstall();
       }
@@ -674,5 +744,8 @@ export function useTauriBackend() {
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
+    // The same function startup uses, so a manual repair renders the same repairing screen
+    // and restarts the backend afterwards rather than leaving it stopped.
+    startRepair,
   };
 }

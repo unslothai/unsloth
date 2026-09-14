@@ -78,7 +78,19 @@ export function isSttModelLanguageCompatible(
   return normalized === "auto" || normalized.split("-", 1)[0] === "en";
 }
 
-export type DictationEngine = "browser" | "model";
+export type DictationEngine = "browser" | "model" | "custom";
+
+/** Mirrors the backend's `SttLoadRequest.device`. "gpu" is not offered in the
+ * UI: it differs from "auto" only where it cannot be honoured anyway. */
+export type SttDevice = "auto" | "cpu";
+
+export const DEFAULT_STT_DEVICE: SttDevice = "auto";
+
+function normalizeSttDevice(value: unknown): SttDevice {
+  return value === "cpu" ? "cpu" : DEFAULT_STT_DEVICE;
+}
+
+export type TtsEngine = "system" | "studio" | "custom";
 
 /**
  * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
@@ -105,7 +117,17 @@ export interface VoiceSettingsState {
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
-  /** BCP 47 tag for speech recognition, or "auto" for the browser locale. */
+  /** "cpu" holds the dictation model in system RAM instead of the GPU. Sent
+   *  with every load and transcribe, so a change applies on the next load. */
+  sttDevice: SttDevice;
+  setSttDevice: (value: SttDevice) => void;
+
+  sttProviderId: string;
+  setSttProviderId: (value: string) => void;
+  sttProviderModel: string;
+  setSttProviderModel: (value: string) => void;
+
+  /** bcp 47 tag for speech recognition, or "auto" for engine-specific detection. */
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
@@ -127,9 +149,20 @@ export interface VoiceSettingsState {
   ttsEnabled: boolean;
   setTtsEnabled: (value: boolean) => void;
 
-  /** "system": speechSynthesis voices. "studio": the loaded TTS audio model. */
-  ttsEngine: "system" | "studio";
-  setTtsEngine: (value: "system" | "studio") => void;
+  /** "system": speechSynthesis voices. "studio": the loaded TTS audio model.
+   * "custom": a saved connection's /audio/speech endpoint. */
+  ttsEngine: TtsEngine;
+  setTtsEngine: (value: TtsEngine) => void;
+
+  /** Saved connection id used by the "custom" engine. */
+  ttsProviderId: string;
+  setTtsProviderId: (value: string) => void;
+  /** Model id sent to the custom endpoint (e.g. "kokoro"). */
+  ttsProviderModel: string;
+  setTtsProviderModel: (value: string) => void;
+  /** Voice name sent to the custom endpoint; blank input defaults to alloy. */
+  ttsProviderVoice: string;
+  setTtsProviderVoice: (value: string) => void;
 
   /** speechSynthesis voiceURI, or "default" for the system voice. */
   ttsVoiceURI: string;
@@ -206,6 +239,14 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               : DEFAULT_STT_MODEL,
           };
         }),
+
+      sttDevice: DEFAULT_STT_DEVICE,
+      setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
+
+      sttProviderId: "",
+      setSttProviderId: (sttProviderId) => set({ sttProviderId }),
+      sttProviderModel: "",
+      setSttProviderModel: (sttProviderModel) => set({ sttProviderModel }),
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
@@ -293,6 +334,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsEngine: "system",
       setTtsEngine: (ttsEngine) => set({ ttsEngine }),
 
+      ttsProviderId: "",
+      setTtsProviderId: (ttsProviderId) => set({ ttsProviderId }),
+      ttsProviderModel: "",
+      setTtsProviderModel: (ttsProviderModel) => set({ ttsProviderModel }),
+      ttsProviderVoice: "",
+      setTtsProviderVoice: (ttsProviderVoice) => set({ ttsProviderVoice }),
+
       ttsVoiceURI: "default",
       setTtsVoiceURI: (ttsVoiceURI) => set({ ttsVoiceURI }),
 
@@ -314,11 +362,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // "gguf" was a short-lived separate engine choice; both local
         // backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
-        // Desktop has no browser speech engine, so always resolve to "model".
         const dictationEngine: DictationEngine =
-          isTauri || savedEngine === "model" || savedEngine === "gguf"
-            ? "model"
-            : "browser";
+          savedEngine === "custom"
+            ? "custom"
+            : isTauri || savedEngine === "model" || savedEngine === "gguf"
+              ? "model"
+              : "browser";
         const savedSttModel = normalizeSttModel(saved?.sttModel);
         const sttModel = isSttModelLanguageCompatible(
           savedSttModel,
@@ -331,6 +380,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttDevice: normalizeSttDevice(saved?.sttDevice),
+          sttProviderId: asString(saved?.sttProviderId, ""),
+          sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,
           dictionary: Array.isArray(saved?.dictionary)
             ? saved.dictionary
@@ -341,7 +393,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           recentDictations: normalizeRecentDictations(saved?.recentDictations),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
-          ttsEngine: saved?.ttsEngine === "studio" ? "studio" : "system",
+          ttsEngine:
+            saved?.ttsEngine === "studio" || saved?.ttsEngine === "custom"
+              ? saved.ttsEngine
+              : "system",
+          ttsProviderId: asString(saved?.ttsProviderId, ""),
+          ttsProviderModel: asString(saved?.ttsProviderModel, ""),
+          ttsProviderVoice: asString(saved?.ttsProviderVoice, ""),
           ttsVoiceURI: asString(saved?.ttsVoiceURI, "default"),
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),

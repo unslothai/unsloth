@@ -6,14 +6,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useRepoDownload } from "../download-manager";
+import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { deleteCachedDataset } from "../inventory";
-import { cn } from "@/lib/utils";
-import { TrainIcon } from "../components/train-icon";
-import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
 import { DotTag } from "./dot-tag";
 import { PathInfoButton } from "./path-info-button";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { formatBytes } from "../lib/format";
@@ -33,18 +29,18 @@ export function DatasetDownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   cachePath,
   knownBytes,
-  onTrain,
   onChange,
 }: {
   repoId: string;
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   cachePath?: string | null;
   knownBytes?: number | null;
-  onTrain?: () => void;
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
@@ -86,6 +82,7 @@ export function DatasetDownloadSection({
   const downloading = progress !== null;
   const canDelete =
     (isDownloaded || isPartial) && !downloading && !cancelling && !deleting;
+  const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
@@ -96,6 +93,8 @@ export function DatasetDownloadSection({
     disabled: cancelling || deleting,
     isPartial,
     partialTransport,
+    partialResumable,
+    partialsResumable,
   });
 
   return (
@@ -136,7 +135,8 @@ export function DatasetDownloadSection({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={4}>
-                Partial download. Click to continue.
+                {/* The badge is a status dot, not a control. */}
+                {downloadAction.partialHint}
               </TooltipContent>
             </Tooltip>
           )}
@@ -156,29 +156,14 @@ export function DatasetDownloadSection({
           )}
         </div>
       </div>
-      {/* Train CTA hidden until Hub→train picker ships; divider pairs with it. */}
-      {(!isDownloaded || downloading || HUB_POST_DOWNLOAD_ACTIONS_VISIBLE) && (
-        <CardDivider />
-      )}
-      {isDownloaded && !downloading ? (
-        <button
-          type="button"
-          onClick={() => onTrain?.()}
-          className={cn(
-            "hub-action-btn w-28",
-            !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && "hidden",
-          )}
-        >
-          <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
-          Train
-        </button>
-      ) : (
+      {(!isDownloaded || downloading) && <CardDivider />}
+      {(!isDownloaded || downloading) && (
         <DownloadActionButton
           downloading={downloadAction.downloading}
           cancelling={downloadAction.cancelling}
           loading={downloadAction.starting}
           isPartial={downloadAction.isPartial}
-          partialTransport={downloadAction.partialTransport}
+          partialResumable={downloadAction.partialResumable}
           stopMode={downloadAction.stopMode}
           progressPercent={downloadAction.progressPercent}
           disabled={downloadAction.disabled}

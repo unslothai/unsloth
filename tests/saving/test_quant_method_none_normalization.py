@@ -39,7 +39,6 @@ def _func(tree, name):
 
 
 def _quant_loop(func_name):
-    # The quant-normalization `for` loop iterates `quantization_method`; grab its source.
     func = _func(SAVE_TREE, func_name)
     for node in ast.walk(func):
         if (
@@ -55,7 +54,6 @@ def _quant_loop(func_name):
 
 
 def _run_loop(func_name, out_var, quantization_method):
-    # exec just the extracted loop against a given input, returning the appended methods.
     loop_src = ast.get_source_segment(SAVE_SRC, _quant_loop(func_name))
     namespace = {out_var: [], "quantization_method": quantization_method}
     exec(loop_src, {"__builtins__": __builtins__}, namespace)

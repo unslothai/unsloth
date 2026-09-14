@@ -238,7 +238,7 @@ pub(super) async fn backend_desktop_auth_status(
     match root_status {
         BackendRootStatus::AmbiguousRoot | BackendRootStatus::ExpectedUnavailable => {
             // Not adoptable, and not proof that our own install is serving: an
-            // id-less backend is just as likely a remote Studio reached through
+            // id-less backend is just as likely a remote Unsloth reached through
             // a port forward. Starting is fine, the port simply is not free.
             return BackendProbe::Unrelated {
                 port,
@@ -425,7 +425,7 @@ mod tests {
         }
     }
 
-    /// A tunnelled or id-less Studio anywhere in 8888..=8908 used to poison the
+    /// A tunnelled or id-less Unsloth anywhere in 8888..=8908 used to poison the
     /// whole launch, even with every other port free.
     #[test]
     fn unrelated_backends_never_decide_a_launch() {

@@ -4,13 +4,12 @@
 """Who paints over whom in the bottom-right corner.
 
 The Live resource monitor, the API monitor panel and the notification stack all
-live there. The first two keep out of each other's way geometrically and the
-stack steps over both (stackGeometry, panel-placement, monitor-stack-inset.test.ts
-and panel-placement.test.ts), but the dodge has a floor: a monitor dragged to the
-corner and resized to fill the viewport leaves nowhere to dodge to, and the stack
-is parked at the top of the screen, on top of the monitor's own title bar. At that
-point z-order is the only thing deciding whether the monitor's Close button can be
-clicked.
+live there. The first two keep out of each other's way geometrically
+(panel-placement and panel-placement.test.ts); the stack does not move for
+anyone -- it is anchored to the corner in CSS, because placing it from the
+boxes the others publish is what moved it to the middle and the top of the
+window. So the corner is shared, and z-order is the only thing deciding whether
+a monitor sitting under the stack still has a clickable Close button.
 
 The Windows UI smoke does exactly that drag-and-resize and then clicks Close, so
 it catches a regression here for real. It takes about twenty minutes and needs a
@@ -63,8 +62,8 @@ def _container(path: Path, ref: str) -> str:
 
 
 def test_the_floating_panels_paint_over_the_notification_stack():
-    """A full-viewport monitor parks the stack over its own title bar. The stack is
-    passive status; the panels are windows being dragged, resized and closed."""
+    """The stack holds its corner, so a monitor parked there is under it. The stack
+    is passive status; the panels are windows being dragged, resized and closed."""
     layers = _layers()
     assert layers["FLOATING_PANEL"] > layers["OVERLAY_STACK"], (
         "the notification stack paints over the floating panels, so their Close "
@@ -103,9 +102,7 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
 def test_the_notification_stack_uses_the_named_layer():
     """Both copies, browser and desktop. They drifted apart once already."""
     src = PROVIDER.read_text(encoding = "utf-8")
-    # The click-through class is applied conditionally now, so it is not part
-    # of the literal the rail's own classes are authored in.
-    stacks = re.findall(r'"fixed right-4 ([^"]*)"', src)
+    stacks = re.findall(r'"pointer-events-none fixed bottom-0 right-4 ([^"]*)"', src)
     assert len(stacks) == 2, f"expected the two bottom-right stacks, found {len(stacks)}"
     for stack in stacks:
         assert not _Z.search(stack), f"the stack still carries a hard-coded z-index: {stack!r}"

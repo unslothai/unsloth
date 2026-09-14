@@ -24,24 +24,15 @@
 
 name: Lockfile supply-chain audit
 
+# Per-commit runs are gone: this audit now runs as a background lane inside Lint CI,
+# which already occupies a runner on every commit, so it costs a slot there instead of
+# holding one of its own for ~6s of work. Both call
+# .github/scripts/lane-lockfile-audit.sh, so there is one definition.
+#
+# The nightly schedule is deliberately KEPT. It is not the same check: it re-audits the
+# lockfiles as they stand against advisories published since the last commit, which no
+# commit-triggered run can do.
 on:
-  pull_request:
-    paths:
-      - 'studio/frontend/package-lock.json'
-      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
-      - 'studio/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'scripts/lockfile_supply_chain_audit.py'
-      - '.github/workflows/lockfile-audit.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'studio/frontend/package-lock.json'
-      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
-      - 'studio/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'scripts/lockfile_supply_chain_audit.py'
-      - '.github/workflows/lockfile-audit.yml'
   schedule:
     - cron: '37 5 * * *'
   workflow_dispatch:
@@ -51,11 +42,11 @@ concurrency:
   # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -75,11 +66,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify audit script parses
-        run: python3 -c "import ast; ast.parse(open('scripts/lockfile_supply_chain_audit.py').read())"
-
+      # One definition, shared with the Lint CI lane that runs this on every commit.
       - name: Run lockfile supply-chain audit
-        # Blocks known-malicious versions, IOC strings, broken lockfiles,
-        # and provenance/integrity failures. Lesser anomalies stay
-        # ::warning:: unless --strict is passed.
-        run: python3 scripts/lockfile_supply_chain_audit.py
+        run: bash .github/scripts/lane-lockfile-audit.sh

@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Save half of the pip cache. See pip-cache-restore for why this is split out.
+#
+# Runs on the default branch ONLY. That is the whole point: an entry written on a
+# pull_request ref is restorable only by re-runs of that same PR, so it buys no
+# hit rate and evicts the copy on main that every PR can read.
+
+name: Save the pip cache
+description: Save pip's cache under the restore step's key, on the default branch only.
+
+inputs:
+  dir:
+    description: pip's cache directory, from pip-cache-restore's `dir` output.
+    required: true
+  key:
+    description: The cache key, from pip-cache-restore's `key` output.
+    required: true
+  cache-hit:
+    description: >-
+      pip-cache-restore's `cache-hit`. Skipped when it is 'true', because the key
+      is already present and re-uploading it would be pure cost.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Save the pip cache
+      # always(), so a cache earned by a successful install is not thrown away
+      # because a LATER step in the job failed. The install itself is what fills
+      # this directory, and a failed test does not make its downloads wrong.
+      if: >-
+        always() && github.ref == 'refs/heads/main'
+        && inputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ inputs.dir }}
+        key: ${{ inputs.key }}
