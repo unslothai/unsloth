@@ -26,6 +26,13 @@ bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional
 it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
 checks gate regional compile.
 
+  ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1``  whether a compiled load also compiles the VAE decode.
+                                        ``auto`` (default) covers DiTs as well as U-Nets, minus
+                                        ``_VAE_COMPILE_DENY``: the decode was the largest non-GEMM
+                                        bucket of a DiT render (z-image 1024 119.4 -> 27.0 ms,
+                                        flux.1 1024 117.6 -> 27.1 ms). ``0`` restores the earlier
+                                        U-Net-only behaviour, ``1`` forces it past the deny set.
+
 Kernel-level switches for the NVFP4 flashinfer backend live with their own modules and are listed
 here because this is where an operator looks for a speed knob. All are safe to leave unset.
 
@@ -328,10 +335,13 @@ def apply_speed_optims(
             offload_active = offload_active,
         )
 
-    # A compiled U-Net family also compiles the VAE decode (4.98 to 4.25 s over 4 images, LPIPS unchanged). DiTs skip
-    # it. dynamic=True keeps it resolution-robust.
-    if applied["compiled"] and _denoiser_unet(pipe) is not None:
-        applied["compiled_vae_decode"] = _compile_vae_decode(pipe, logger)
+    # A compiled family also compiles the VAE decode (U-Net: 4.98 to 4.25 s over 4 images, LPIPS unchanged). DiTs join
+    # under ``UNSLOTH_DIFFUSION_COMPILE_VAE`` (see ``_vae_decode_compile_allowed``): the decode is the largest
+    # non-GEMM bucket on the DiT image path. dynamic=True keeps it resolution-robust.
+    if applied["compiled"] and _vae_decode_compile_allowed(pipe):
+        applied["compiled_vae_decode"] = _compile_vae_decode(
+            pipe, logger, max_autotune = mode == SPEED_MAX
+        )
 
     if mode == SPEED_MAX:
         if on_cuda:
@@ -568,16 +578,56 @@ def _compile_repeated_blocks(
     return engaged
 
 
-def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
-    """torch.compile the VAE ``decode`` bound method in place (U-Net families; caller gates).
-    Instance-level assignment: the pipe owns it and the module object is untouched."""
+COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
+
+_VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
+_VAE_FALSE_TOKENS = ("0", "false", "no", "off")
+
+# VAE classes the decode compile must not touch. Not a correctness list: all three image VAEs decode cleanly compiled
+# (no NaN, LPIPS <= 0.005 against their own eager decode). AutoencoderKLQwenImage is here because it is SLOWER
+# compiled: same 1024px latent, B200, decode 46.5 -> 89.2 ms, and the render pays it (1.090 -> 1.141 s p50). Its 3-D
+# convs lose the cuDNN kernels the eager path picks. AutoencoderKL (z-image, flux.1) goes the other way, 113.7 ->
+# 25.7 ms.
+_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage"})
+
+
+def _vae_decode_compile_allowed(pipe: Any) -> bool:
+    """Whether the VAE decode compile covers this pipe. ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1``.
+
+    A U-Net family always compiles it (measured with the whole-module compile it ships with). For a DiT, ``auto``
+    (the default) compiles it too unless its VAE class is on ``_VAE_COMPILE_DENY``, ``0`` restores the earlier
+    U-Net-only behaviour, and ``1`` forces it even for a denied class."""
+    if _denoiser_unet(pipe) is not None:
+        return True
+    raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
+    if raw in _VAE_FALSE_TOKENS:
+        return False
+    if raw in _VAE_TRUE_TOKENS:
+        return True
+    return type(getattr(pipe, "vae", None)).__name__ not in _VAE_COMPILE_DENY
+
+
+def _compile_vae_decode(
+    pipe: Any,
+    logger: Any,
+    max_autotune: bool = False,
+) -> bool:
+    """torch.compile the VAE ``decode`` bound method in place (caller gates the family).
+    Instance-level assignment: the pipe owns it and the module object is untouched.
+
+    ``max_autotune`` (the ``max`` tier) tunes the decode's convs; no cudagraphs, because the decode runs once per
+    image and the graph capture would pin its activations for the whole session."""
     vae = getattr(pipe, "vae", None)
     decode = getattr(vae, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
     try:
         import torch
-        vae.decode = torch.compile(decode, fullgraph = False, dynamic = True)
+
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
+        if max_autotune:
+            kwargs["mode"] = "max-autotune-no-cudagraphs"
+        vae.decode = torch.compile(decode, **kwargs)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)
