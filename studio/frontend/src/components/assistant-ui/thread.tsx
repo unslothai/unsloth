@@ -3402,11 +3402,8 @@ const Composer: FC<{
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
-    // Every path that empties the composer arrives here, including the three
-    // that queue instead of sending (handleSubmit returns before the send when
-    // a run is in flight, when a queue is already active, or on the
-    // Cmd/Ctrl+Enter chord). Collapsing here rather than beside send() is what
-    // keeps a queued prompt from leaving a tall empty box behind.
+    // Here, not beside send(): handleSubmit returns early on the three queueing
+    // paths, which empty the composer too.
     setIsWritingExpanded(false);
   }, []);
   const clearStoredDraft = useCallback(() => {
@@ -4912,15 +4909,9 @@ const Composer: FC<{
                   "--composer-editor-height": `${composerText.length === 0 ? 40 : Math.max(40, editorHeight)}px`,
                 } as CSSProperties
               }
-              // Escape collapses, and it sits on the wrapper rather than on the
-              // input so the input's own capture slot stays the plain-paste
-              // chord's. React dispatches an ancestor's capture handler first,
-              // so this still runs before anything the input does.
-              //
-              // It cannot stop assistant-ui's cancelOnEscape: that listener is
-              // registered on the document with capture:true, so it has already
-              // run by the time any React handler sees the key. Escape during a
-              // run therefore cancels the run as it always did, and collapses.
+              // On the wrapper, not the input: the input's capture slot is the
+              // plain-paste chord's. Cannot suppress assistant-ui's
+              // cancelOnEscape, which listens on the document with capture:true.
               onKeyDownCapture={(event) => {
                 if (
                   event.key === "Escape" &&

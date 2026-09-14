@@ -1917,8 +1917,7 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* The 28px corner follows the send circle with an even 10px inset,
-	   keeping the toolbar comfortably spaced inside a slimmer surface. */
+	/* 28px corner: the send circle sits at an even 10px inset inside it. */
 	.unsloth-composer-surface {
 		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card p-2.5 outline-none transition-shadow;
 		container-type: inline-size;
@@ -2009,8 +2008,7 @@ html[data-chat-font] .aui-root {
 		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
-	/* Animate the editor's frame, keeping the textarea mounted and its native
-	   selection/undo intact. Autosize still supplies the compact height. */
+	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
 	.unsloth-composer-editor {
 		position: relative;
 		order: 1;
@@ -2024,21 +2022,12 @@ html[data-chat-font] .aui-root {
 		display: block;
 		min-height: 100%;
 		max-height: 100% !important;
-		/* Reserve the toggle's space even before typing, so its appearance
-		   never changes the wrap width. Keep it clear of RTL text as well. */
+		/* Reserved before typing, or the toggle appearing would reflow the text. */
 		padding-right: 2.25rem;
 	}
 
-	/* Never below the height the draft already had: on a short window
-	   80svh - 12rem resolves under the twelve-row compact height (192px against
-	   304px at 480px tall), so expanding a long draft would shrink the writing
-	   area and start clipping text that was fully visible. max() keeps expand
-	   from ever taking room away; with no room to give it is simply a no-op.
-
-	   svh, not dvh, because this height is transitioned. The dynamic viewport
-	   tracks mobile Safari's address bar as it collapses, and the spec leaves
-	   it to the UA whether that update is animated, so a dvh-derived height
-	   re-animates mid-scroll. The small viewport is the stable one. */
+	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
+	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
 	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
 		height: max(
 			var(--composer-editor-height, 40px),
@@ -2046,8 +2035,7 @@ html[data-chat-font] .aui-root {
 		);
 	}
 
-	/* The welcome composer starts mid-page. Move it up with the same easing
-	   as the editor grows, leaving the toolbar inside the viewport. */
+	/* The welcome composer starts mid-page; move it up so the toolbar stays in view. */
 	.aui-thread-welcome-center {
 		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
@@ -2155,7 +2143,6 @@ html[data-chat-font] .aui-root {
 		}
 
 
-		/* Tighten the curve along with the smaller controls. */
 		.unsloth-composer-surface {
 			border-radius: 1.5rem;
 		}
@@ -3574,8 +3561,7 @@ html[data-chat-font] .aui-root {
 	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	/* Keep the mic and send arrow prominent beside the smaller tool glyphs.
-	   These follow the size-[NN] rules they override. */
+	/* Mic and send sit above the shared glyph size. Must follow size-[NN]. */
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
