@@ -249,6 +249,39 @@ class TestEveryTestFileLandsInExactlyOneShard:
             f"{_CATCH_ALL!r} shard and only there; got {claiming}"
         )
 
+    def test_a_subdirectory_named_like_a_test_file_falls_out_of_every_shard(self):
+        """The one shape the catch-all cannot absorb. Recorded, not hidden.
+
+        fnmatch's `*` crosses `/`, and fnmatch_ex matches --ignore-glob against the whole
+        path, so the catch-all's `tests/test_[a-r]*.py` also excludes
+        `tests/test_api/test_auth.py`, which the ranged shards have already excluded via
+        `tests/*/*`. Measured against real pytest, not inferred: all three shards collect
+        that file zero times.
+
+        There is no fix inside the pattern language, and both repairs that suggest
+        themselves were measured and do not work. `[!/]` cannot stop `*` crossing a
+        separator (`tests/test_[a-r][!/]*.py` still matches the nested path), and passing
+        the nested directory as an extra root does not bypass --ignore-glob. So the
+        invariant is enforced by name instead, in the test below.
+        """
+        assert _claiming_shards("tests/test_api/test_auth.py", _shards()) == [], (
+            "this is a known limitation of the split; if it now lands in a shard the "
+            "patterns have changed and the naming rule below can be dropped"
+        )
+
+    def test_no_test_subdirectory_is_named_like_a_test_file(self):
+        """Enforces the invariant the split depends on, so the hole above stays unreachable."""
+        offenders = sorted(
+            path.name
+            for path in _BACKEND_TESTS.iterdir()
+            if path.is_dir() and path.name.startswith("test_")
+        )
+        assert not offenders, (
+            f"{offenders} would be collected by no shard, because the catch-all's "
+            "tests/test_[a-r]*.py excludes nested paths too (fnmatch * crosses /). Rename "
+            "the directory, or give the catch-all an explicit root for it."
+        )
+
 
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_every_shard_keeps_the_marker_filter(self):
