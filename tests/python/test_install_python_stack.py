@@ -653,13 +653,14 @@ class TestHardenedPipConfigRelaxation:
         ):
             assert ips._parse_pinned_pip_config(listing) == {}
 
-    def test_a_command_section_beats_global_for_the_same_option(self):
-        """pip's own precedence, resolved by position, not by print order."""
+    def test_a_command_section_beats_global_for_a_scalar(self):
+        """pip's own precedence for a single-valued option, resolved by position, not by
+        the order the listing prints the two lines in."""
         for listing in (
-            b"global.only-binary=':all:'\ninstall.only-binary='numpy'\n",
-            b"install.only-binary='numpy'\nglobal.only-binary=':all:'\n",
+            b"global.timeout='30'\ninstall.timeout='9'\n",
+            b"install.timeout='9'\nglobal.timeout='30'\n",
         ):
-            assert ips._parse_pinned_pip_config(listing)["PIP_ONLY_BINARY"] == "numpy"
+            assert ips._parse_pinned_pip_config(listing)["PIP_TIMEOUT"] == "9"
 
     def test_the_section_read_is_the_one_pip_would_apply(self):
         """pip config is per subcommand: measured on pip 26.2, `[download] no-index` stops
@@ -694,13 +695,58 @@ class TestHardenedPipConfigRelaxation:
     @pytest.mark.reads_real_pip_config
     def test_the_xpu_download_gets_the_download_section(self):
         """_ensure_xpu_triton's pinned fetch is a `pip download`, so a corporate
-        `[download] cert` must reach it rather than an `[install]` one."""
+        `[download] cert` must reach it rather than an `[install]` one.
+
+        PIP_CERT is cleared first: the caller's environment legitimately wins over the
+        re-assertion, so a host that exports one would otherwise make this assert on the
+        ambient value and pass or fail for reasons that have nothing to do with sections.
+        """
         listing = b"download.cert='/etc/dl.pem'\ninstall.cert='/etc/inst.pem'\n"
-        with mock.patch.object(ips, "_PINNED_PIP_CONFIG_LISTING", listing):
+        env_without_cert = {k: v for k, v in os.environ.items() if k != "PIP_CERT"}
+        with (
+            mock.patch.object(ips, "_PINNED_PIP_CONFIG_LISTING", listing),
+            mock.patch.dict(os.environ, env_without_cert, clear = True),
+        ):
             env = ips._install_env_for_cmd(
                 ["python", "-m", "pip", "download", "triton", "--index-url", "https://x/xpu"]
             )
         assert env["PIP_CERT"] == "/etc/dl.pem"
+
+    def test_an_empty_inherited_value_is_not_an_override(self):
+        ambient = ""
+        """pip ignores an EMPTY environment value and falls through to the config file
+        (verified with `pip config debug`), which the pinned branch has just switched off
+        with devnull. Treating it as set would lose the operator's cert entirely. Only a
+        truly empty value: a whitespace one is a value pip would use, not ours to
+        second-guess."""
+        with (
+            mock.patch.object(
+                ips, "_pinned_pip_config_overrides", lambda *a, **k: {"PIP_CERT": "/etc/corp.pem"}
+            ),
+            mock.patch.dict(os.environ, {"PIP_CERT": ambient}),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_CERT"] == "/etc/corp.pem"
+
+    def test_a_repeatable_option_accumulates_across_sections(self):
+        """Measured on pip 26.2: `[global] only-binary = :all:` plus
+        `[install] only-binary = numpy` still refuses an unrelated sdist, so pip
+        accumulates the two rather than letting the command section replace the global
+        one. Keeping only `numpy` would drop the operator's :all: policy on every pinned
+        install, which is the control this change exists to preserve."""
+        listing = b"global.only-binary=':all:'\ninstall.only-binary='numpy'\n"
+        assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == ":all:,numpy"
+        # trusted-host is repeatable too, and space separated in the environment.
+        hosts = b"global.trusted-host='a.corp'\ninstall.trusted-host='b.corp'\n"
+        assert ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+        # A scalar still takes the command section alone: two certs cannot be concatenated.
+        certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
+        assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
+        # ...and a duplicate is not doubled.
+        dup = b"global.only-binary=':all:'\ninstall.only-binary=':all:'\n"
+        assert ips._parse_pinned_pip_config(dup, "install")["PIP_ONLY_BINARY"] == ":all:"
 
     @pytest.mark.parametrize(
         "listing, expected",

@@ -7392,7 +7392,10 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     # Both config files go for the pin, so re-assert what they carried that it does not
     # conflict with, from the section belonging to THIS command.
     for name, value in _pinned_pip_config_overrides(_pip_subcommand_of(cmd)).items():
-        env.setdefault(name, value)
+        # Not setdefault: pip ignores an EMPTY environment value and falls through to the
+        # config file (verified with `pip config debug`), which devnull has just removed.
+        if not env.get(name):
+            env[name] = value
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
     return env
@@ -7495,9 +7498,22 @@ def _parse_pinned_pip_config(
             found.setdefault(option, {})[section] = text
     overrides: dict[str, str] = {}
     for option, by_section in found.items():
-        for section in sections:   # global first, so the command's own section overwrites
-            if section in by_section:
-                overrides[f"PIP_{option.upper().replace('-', '_')}"] = by_section[section]
+        separator_for_key = _PINNED_PIP_CONFIG_LIST_KEYS.get(option)
+        present = [by_section[name] for name in sections if name in by_section]
+        if separator_for_key is None:
+            value = present[-1]        # scalar: the command's section overrides global
+        else:
+            # A repeatable option ACCUMULATES across sections rather than overriding.
+            # Measured on pip 26.2: `[global] only-binary = :all:` plus
+            # `[install] only-binary = numpy` still refuses an unrelated sdist, so keeping
+            # only the command section would drop the operator's global policy.
+            seen = []
+            for chunk in present:
+                for part in chunk.split(separator_for_key):
+                    if part and part not in seen:
+                        seen.append(part)
+            value = separator_for_key.join(seen)
+        overrides[f"PIP_{option.upper().replace('-', '_')}"] = value
     return overrides
 
 
