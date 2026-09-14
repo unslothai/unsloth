@@ -23554,8 +23554,9 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    # Only the streaming path parks and reclaims, so only it can use a slot.
                     on_decode_slot = _gguf_record_decode_slot
-                    if _effective_confirm and not payload.bypass_permissions
+                    if payload.stream and _effective_confirm and not payload.bypass_permissions
                     else None,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
