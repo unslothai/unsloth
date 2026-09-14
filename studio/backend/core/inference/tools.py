@@ -1595,6 +1595,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             site
             for site in list(_SUBST_AT_CMD_SITE_RE.finditer(command))
             + list(_SUBST_EXEC_DIRECTIVE_RE.finditer(command))
+            + _case_arm_sites(command, quote_states)
             if _site_expands(site)
         ]
         if len(sites) > _MAX_SUBST_SITES:
@@ -5048,25 +5049,49 @@ _ALL_WRAPPER_VALUE_FLAGS = frozenset(
 _WRAPPER_VALUE_FLAG_ALT = "|".join(
     re.escape(flag) for flag in sorted(_ALL_WRAPPER_VALUE_FLAGS, key = len, reverse = True)
 )
+# A bare number covers `nice 5`; timeout's DURATION is "a floating point number with an optional
+# suffix: 's', 'm', 'h' or 'd'" (timeout --help), so `timeout 1s $(...)` needs the suffixed and
+# fractional spellings too or the site behind them goes unscreened.
 _SUBST_WRAPPER_ARG = (
     r"(?:(?:" + _WRAPPER_VALUE_FLAG_ALT + r")\s+[^\s;&|()]+"
-    r"|-[^\s;&|()]*|[A-Za-z_]\w*=[^\s;&|()]*|\d+)"
+    r"|-[^\s;&|()]*|[A-Za-z_]\w*=[^\s;&|()]*|(?:\d+(?:\.\d*)?|\.\d+)[smhd]?)"
 )
+# Both repetitions are UNBOUNDED. `env --help` documents `[OPTION]...` before COMMAND, so any cap
+# is a number of options an attacker just exceeds to make the whole site regex fail - opening, not
+# closing. Unbounded is safe here because the parts cannot overlap: a wrapper word never matches
+# _SUBST_WRAPPER_ARG (which needs `-`, `VAR=` or a digit) and every repetition must consume a
+# mandatory `\s+`, so no token can be split across two of them and there is nothing to backtrack.
 _SUBST_WRAPPER_RUN = (
     r"(?:(?:env|command|builtin|exec|time|nohup|nice|setsid|stdbuf|timeout|ionice|chroot"
-    r"|setpriv|sudo|doas|su|xargs)\s+(?:" + _SUBST_WRAPPER_ARG + r"\s+){0,4}){0,3}"
+    r"|setpriv|sudo|doas|su|xargs)\s+(?:" + _SUBST_WRAPPER_ARG + r"\s+)*)*"
 )
+# Redirections may precede the command word (`>out.log $(...)` runs the substitution's output),
+# and the token walker already treats them as leaving command position intact.
+_SUBST_REDIR_PREFIX = r"(?:\d*(?:>>|<<<|<<|>&|<&|>|<)[^\s;&|()]*\s*)*"
 # VAR=x prefixes are stepped over; `(?!\()` drops arithmetic, which is a number, not a command.
+_SUBST_OPENER = r"(?:\"\$\((?!\()|\$\((?!\()|`)"
+_SUBST_CMD_WORD_PREFIX = (
+    _SUBST_REDIR_PREFIX
+    + r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    + _SUBST_REDIR_PREFIX
+    + _SUBST_WRAPPER_RUN
+)
 _SUBST_AT_CMD_SITE_RE = re.compile(
-    _SUBST_CMD_SEP + r"\s*"
-    r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*" + _SUBST_WRAPPER_RUN + r"(?:\"\$\((?!\()|\$\((?!\()|`)",
+    _SUBST_CMD_SEP + r"\s*" + _SUBST_CMD_WORD_PREFIX + _SUBST_OPENER,
     re.IGNORECASE,
 )
+# A `case` arm's `)` is followed directly by the commands to run, so it is a command position -
+# but only inside `case ... in ... esac`, and only for a `)` that is not closing a substitution.
+# Treating every `)` as a separator would refuse an ordinary `echo $(date) $(ls /tmp)`.
+_SUBST_CASE_ARM_RE = re.compile(
+    r"\)\s*" + _SUBST_CMD_WORD_PREFIX + _SUBST_OPENER,
+    re.IGNORECASE,
+)
+_CASE_REGION_RE = re.compile(r"\bcase\b.*?\bin\b(.*?)(?:\besac\b|$)", re.IGNORECASE | re.DOTALL)
 # The words after a find/fd -exec directive are the executed argv, so `find . -exec $(...) \;`
 # runs whatever the body prints.
 _SUBST_EXEC_DIRECTIVE_RE = re.compile(
-    r"(?:-exec(?:dir)?|--exec(?:-batch)?|-ok(?:dir)?)\s+"
-    r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*" + _SUBST_WRAPPER_RUN + r"(?:\"\$\((?!\()|\$\((?!\()|`)",
+    r"(?:-exec(?:dir)?|--exec(?:-batch)?|-ok(?:dir)?)\s+" + _SUBST_CMD_WORD_PREFIX + _SUBST_OPENER,
     re.IGNORECASE,
 )
 # An assignment binds wherever it appears, so these three lead on any separator OR whitespace:
@@ -5132,6 +5157,32 @@ def _blocked_body_word_pattern_for(words: "frozenset[str]") -> "re.Pattern":
         alt = "|".join(re.escape(w) for w in punctuation)
         parts.append(rf"(?:^|[;&|`\n(])\s*({alt})(?=\s)")
     return re.compile("|".join(parts) if parts else r"(?!)")
+
+
+def _case_arm_sites(command: str, quote_states: "list[str]") -> "list[re.Match]":
+    """Substitution sites opened by a `case` arm's `)`, which is a command position.
+
+    Only inside `case ... in ... esac`, and only for a `)` that does not close a substitution -
+    otherwise the `)` of an ordinary `echo $(date) $(ls /tmp)` would read as an arm and refuse it.
+    """
+    if not _CASE_REGION_RE.search(command):
+        return []
+    # Every `)` that closes an unquoted `$(`: those belong to the substitution, not to an arm.
+    closers: "set[int]" = set()
+    for opener in re.finditer(r"\$\((?!\()", command):
+        at = opener.start()
+        if at < len(quote_states) and quote_states[at] in ("'", "$'", _ESCAPED_CHAR_STATE):
+            continue
+        end = _substitution_span(command, at)
+        if end <= len(command):
+            closers.add(end - 1)
+    sites = []
+    for region in _CASE_REGION_RE.finditer(command):
+        start, stop = region.start(1), region.end(1)
+        for site in _SUBST_CASE_ARM_RE.finditer(command, start, stop):
+            if site.start() not in closers:
+                sites.append(site)
+    return sites
 
 
 def _is_wrapper_flag_operand(command: str, start: int) -> bool:

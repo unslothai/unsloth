@@ -879,6 +879,16 @@ class TestBashBlocklistPosition:
                 id = "subst_inside_double_quoted_argument_allowed",
             ),
             pytest.param("sed 's|x|$(ls)|' f", id = "subst_inside_single_quotes_allowed"),
+            # A `)` is a command position only in a case arm. Treating every one as a separator
+            # would refuse these.
+            pytest.param("echo $(date) $(ls /tmp)", id = "two_arg_position_substs_allowed"),
+            pytest.param("(cd /tmp) $(date)", id = "subshell_close_then_subst_allowed"),
+            pytest.param("case x in x) echo hi;; esac", id = "case_arm_benign_allowed"),
+            pytest.param(">out.log echo hi", id = "leading_redirection_benign_allowed"),
+            pytest.param(
+                "timeout 1s python train.py --data $(ls -d data/*)",
+                id = "suffixed_duration_wrapper_spent_allowed",
+            ),
         ],
     )
     def test_bash_blocklist_finds_nothing_in_safe_commands(self, command):
@@ -1043,6 +1053,40 @@ class TestBashBlocklistPosition:
                 "command substitution",
                 ";$(" * 200,
                 id = "substitution_flood_refused_not_scanned",
+            ),
+            # Four spellings that reach the command word by a route the site scan did not walk.
+            # Each really deletes: verified against a stand-in `rm` on PATH.
+            #
+            # timeout's DURATION is a float with an optional s/m/h/d suffix (timeout --help), not
+            # the bare integer the scan accepted.
+            pytest.param(
+                "command substitution",
+                "timeout 1s $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "suffixed_duration_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "timeout 0.5 $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "fractional_duration_subst_blocked",
+            ),
+            # `env [OPTION]...` is unbounded, so any cap on the option run is a count an attacker
+            # exceeds to make the whole site regex fail open.
+            pytest.param(
+                "command substitution",
+                "env -u A -u B -u C -u D -u E $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "many_wrapper_options_subst_blocked",
+            ),
+            # Redirections may precede the command word.
+            pytest.param(
+                "command substitution",
+                ">out.log $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "leading_redirection_subst_blocked",
+            ),
+            # A case arm's `)` is followed directly by the commands to run.
+            pytest.param(
+                "command substitution",
+                "case x in x) $(ls /usr/bin | grep '^rm$') -rf victim;; esac",
+                id = "case_arm_subst_blocked",
             ),
         ],
     )
