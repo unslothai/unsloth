@@ -373,13 +373,12 @@ test("no Block renders outside the renderer boundary", () => {
    *
    * `Block` is the only thing that loads a chunk at render time, so EVERY place
    * it is rendered has to be inside the narrower boundary. Checking only the
-   * places that have controls beside them is not enough: `getCodeFence` needs
-   * the CLOSING fence, so a fence that is still streaming falls past the fence
-   * branch to the bare `Block` at the end of `StreamdownBlockContent`, and that
-   * is precisely when the highlighter is first requested and fails. Leaving that
-   * one unguarded let the whole-block boundary catch and LATCH, so the block
-   * never re-entered `FenceBlock` when its closing fence arrived and the copy
-   * and download bar never mounted.
+   * places that have controls beside them is not enough: before open fences
+   * rendered as a plain shell, a streaming fence fell past the fence branch to
+   * the bare `Block` at the end of `StreamdownBlockContent`, which first
+   * requested the highlighter. Leaving that one unguarded let the whole-block
+   * boundary catch and LATCH, so the block never re-entered `FenceBlock` when
+   * its closing fence arrived and the copy and download bar never mounted.
    *
    * Measured before this assertion existed: a streamed abort produced a document
    * identical to the commit before the inner boundary was added, 1350 elements

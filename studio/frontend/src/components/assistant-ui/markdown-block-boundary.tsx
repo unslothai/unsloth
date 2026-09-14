@@ -118,8 +118,7 @@ export class MarkdownBlockBoundary extends Component<Props, State> {
  *
  * Extracted so that the whole-block boundary and the narrower renderer boundary
  * degrade a block to exactly the same thing. They are reached by different
- * routes: a fence that is still STREAMING has no closing fence yet, so
- * `getCodeFence` does not match it and it renders through the plain `Block`
+ * routes: a block that is not a closed fence renders through the plain `Block`
  * rather than through `FenceBlock`, which is the route that carries the
  * controls. Both routes have to land the reader in the same place.
  */

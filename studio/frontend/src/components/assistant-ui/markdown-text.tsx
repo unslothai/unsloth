@@ -602,18 +602,10 @@ function StreamdownBlockContent(props: BlockProps) {
   }
 
   /*
-     * THE STREAMING ROUTE, and the one that actually fires. `getCodeFence` needs the CLOSING fence, so a fence that
-     * is still arriving has no `codeFence` and falls all the way through to here rather than to `FenceBlock`. This
-     * bare `Block` is therefore what first asks for the highlighter chunk on a streamed reply, which is exactly when
-     * it fails. Left unguarded, the whole-block boundary catches that and latches with no reset, so the block never
-     * re-enters `FenceBlock` when its closing fence finally lands and the copy and download bar never mounts at all.
-     * Measured: with this unguarded, a streamed abort produced an identical document to the commit before the inner
-     * boundary existed, 0 copy and 0 download buttons on both. Guarding it keeps the failure inside the renderer
-     * boundary, so the completed block mounts `FenceBlock` normally and keeps its controls.
-     *
-     * A streaming OPEN fence is also the path that re-tokenizes a growing body on every frame. Plain prose on this
-     * route still needs `Block`; only a fence whose closing delimiter has not arrived yet is routed to the same
-     * unhighlighted shell deferral uses, and highlighted once in `FenceBlock` when the fence completes.
+     * `isIncomplete` is Streamdown's unclosed-fence flag and `getCodeFence` needs the close, so a block that is only an
+     * open fence renders as the plain shell until `FenceBlock` highlights it once on close; re-rendering highlighted
+     * spans on every streamed chunk is what lagged (#10769). Everything else renders `Block` inside the renderer
+     * boundary, so a highlighter chunk that fails to load cannot latch the whole-block boundary.
      */
   if (props.isIncomplete) {
     const openFence = markdownBlockFallback(props.content);
