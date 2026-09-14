@@ -148,8 +148,29 @@ lmstudio_dir() {
     local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
     if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
         custom="${BASH_REMATCH[1]}"
+        case "$custom" in
+            "~" | "~/"*) custom="$HOME${custom:1}" ;;
+            # a Windows path, seen from WSL; JSON doubles its backslashes
+            [A-Za-z]:\\* | [A-Za-z]:/*)
+                custom="$(printf '%s' "$custom" | sed 's/\\\\/\\/g')"
+                custom="$(wslpath -u "$custom" 2>/dev/null)" || custom=""
+                ;;
+        esac
     fi
     first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
+}
+
+# Mirrors Studio's _hermes_root: a HERMES_HOME outside ~/.hermes is the root, or
+# <root>/profiles/<name> for a profile; downloads land in <root>/models.
+hermes_dir() {
+    local native="$HOME/.hermes" root="${HERMES_HOME:-}"
+    root="${root%/}"
+    if [[ -z "$root" || "$root" == "$native" || "$root" == "$native"/* ]]; then
+        root="$native"
+    elif [[ "${root%/*}" == */profiles ]]; then
+        root="${root%/profiles/*}"
+    fi
+    first_dir "$root/models" "$native/models"
 }
 
 ollama_dir() {
@@ -172,7 +193,7 @@ mount_models() {
 
 mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
 mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
-mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(first_dir "$HOME/.hermes/models")}" /root/.hermes/models
+mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
 mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 
 # Docker resolves --gpus in the DAEMON, before the container exists: on a host with

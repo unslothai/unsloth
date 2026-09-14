@@ -23,6 +23,7 @@ pytestmark = pytest.mark.skipif(
 _LEAKS = (
     "HF_HOME",
     "HF_TOKEN",
+    "HERMES_HOME",
     "OLLAMA_MODELS",
     "TRITON_CACHE_DIR",
     "UNSLOTH_ALLOW_CPU",
@@ -119,6 +120,65 @@ def test_lmstudio_downloads_folder_setting_wins(tmp_path):
     mounts, _ = _run(tmp_path)
 
     assert mounts["/root/.lmstudio/models"] == (custom, True)
+
+
+def test_lmstudio_downloads_folder_tilde_is_expanded(tmp_path):
+    home = tmp_path / "home"
+    custom = _dir(home / "tilde-models")
+    (home / ".lmstudio").mkdir()
+    (home / ".lmstudio" / "settings.json").write_text(json.dumps({"downloadsFolder": "~/tilde-models"}))
+
+    mounts, _ = _run(tmp_path)
+
+    assert mounts["/root/.lmstudio/models"] == (custom, True)
+
+
+def test_lmstudio_windows_downloads_folder_is_mapped_under_wsl(tmp_path):
+    home = tmp_path / "home"
+    _dir(home / ".lmstudio" / "models")
+    windows = _dir(tmp_path / "mnt" / "c" / "Users" / "u" / "models")
+    (home / ".lmstudio" / "settings.json").write_text(
+        json.dumps({"downloadsFolder": "C:\\Users\\u\\models"})
+    )
+    (tmp_path / "bin").mkdir()
+    wslpath = tmp_path / "bin" / "wslpath"
+    wslpath.write_text(
+        '#!/usr/bin/env bash\n[[ "$1" == -u && "$2" == "C:\\\\Users\\\\u\\\\models" ]] || exit 1\n'
+        f"printf '%s\\n' {windows}\n"
+    )
+    wslpath.chmod(wslpath.stat().st_mode | stat.S_IEXEC)
+
+    mounts, _ = _run(tmp_path)
+
+    assert mounts["/root/.lmstudio/models"] == (windows, True)
+
+
+def test_custom_hermes_home_is_the_models_root(tmp_path):
+    root = tmp_path / "srv" / "hermes"
+    models = _dir(root / "models")
+
+    mounts, _ = _run(tmp_path, HERMES_HOME = str(root))
+
+    assert mounts["/root/.hermes/models"] == (models, True)
+
+
+def test_hermes_profile_outside_the_home_uses_its_root(tmp_path):
+    root = tmp_path / "data"
+    models = _dir(root / "models")
+    _dir(root / "profiles" / "coder")
+
+    mounts, _ = _run(tmp_path, HERMES_HOME = str(root / "profiles" / "coder"))
+
+    assert mounts["/root/.hermes/models"] == (models, True)
+
+
+def test_hermes_session_home_without_models_keeps_native_models(tmp_path):
+    native = _dir(tmp_path / "home" / ".hermes" / "models")
+    _dir(tmp_path / "session")
+
+    mounts, _ = _run(tmp_path, HERMES_HOME = str(tmp_path / "session"))
+
+    assert mounts["/root/.hermes/models"] == (native, True)
 
 
 def test_legacy_lmstudio_cache_is_found(tmp_path):
