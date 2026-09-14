@@ -10,6 +10,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -98,10 +99,13 @@ class TestUnslothZooGitSpec:
         stdout,
         returncode = 0,
     ):
+        """Stand in for git. Returns the argv of each probe; kwargs land in self.kwargs."""
         calls = []
+        self.kwargs = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
+            self.kwargs.append(kwargs)
             return types.SimpleNamespace(returncode = returncode, stdout = stdout)
 
         monkeypatch.setattr(ips.shutil, "which", lambda _name: "/usr/bin/git")
@@ -114,7 +118,38 @@ class TestUnslothZooGitSpec:
         monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
 
         assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
-        assert calls[0][1:] == ["ls-remote", ips._UNSLOTH_ZOO_GIT_REPO, "main"]
+        assert calls[0][-3:] == ["ls-remote", ips._UNSLOTH_ZOO_GIT_REPO, "main"]
+
+    def test_the_probe_can_never_stop_and_ask_a_human(self, monkeypatch):
+        """A 401 from a proxy must not send git to a credential helper and wait.
+
+        Nothing on this path needed credentials before the pin existed, and an
+        install that stops behind a hidden prompt is worse than one that skips the
+        pin, so the probe disables both ways of asking and bounds its own wait.
+        """
+        sha = "a" * 40
+        calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/main\n".encode())
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+        monkeypatch.setenv("SOME_UNRELATED_VAR", "kept")
+
+        ips._unsloth_zoo_git_spec()
+
+        assert calls[0][1:3] == ["-c", "credential.helper="]
+        kwargs = self.kwargs[0]
+        assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+        assert kwargs["env"]["SOME_UNRELATED_VAR"] == "kept"   # extended, not replaced
+        assert kwargs["timeout"] == 20
+        assert kwargs["stderr"] is ips.subprocess.DEVNULL
+
+    def test_a_timed_out_probe_is_not_fatal(self, monkeypatch):
+        def timed_out(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 20)
+
+        monkeypatch.setattr(ips.shutil, "which", lambda _name: "/usr/bin/git")
+        monkeypatch.setattr(ips.subprocess, "run", timed_out)
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        assert ips._unsloth_zoo_git_spec() == ips._UNSLOTH_ZOO_GIT_URL
 
     def test_the_commit_is_resolved_once_per_run(self, monkeypatch):
         sha = "b" * 40

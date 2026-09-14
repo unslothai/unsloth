@@ -3036,8 +3036,19 @@ _resolve_zoo_git_spec() {
     esac
     _ZOO_PIN=""
     if [ "$STUDIO_LOCAL_INSTALL" = true ] && command -v git >/dev/null 2>&1; then
+        # A silent probe must never become a prompt or an unbounded wait. The repo is
+        # public so no credentials are needed, but a proxy answering 401 can still send
+        # git to a credential helper and leave the installer waiting on a human. No
+        # helper, no terminal prompt, and a bounded run where `timeout` exists.
         # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
-        _ZOO_LS="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$_ZOO_REF" 2>/dev/null | head -n1 | cut -f1 || true)"
+        # The two branches are spelled out rather than built from a "timeout 20" prefix
+        # variable: an unquoted expansion is one word in zsh, so a prefix would run as a
+        # command literally named "timeout 20" for anyone who invokes this with zsh.
+        if command -v timeout >/dev/null 2>&1; then
+            _ZOO_LS="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "$_ZOO_REF" 2>/dev/null | head -n1 | cut -f1 || true)"
+        else
+            _ZOO_LS="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "$_ZOO_REF" 2>/dev/null | head -n1 | cut -f1 || true)"
+        fi
         case "$_ZOO_LS" in
             *[!0-9a-f]*) ;;
             ????????????????????????????????????????) _ZOO_PIN="$_ZOO_LS" ;;

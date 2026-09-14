@@ -2423,11 +2423,33 @@ exit 1
         $zooUrl = 'unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo'
         $script:ZooGitSpec = $zooUrl
         $script:ZooGitLabel = 'main'
+        $prevPrompt = [Environment]::GetEnvironmentVariable('GIT_TERMINAL_PROMPT', 'Process')
         try {
             $git = Get-Command git -ErrorAction SilentlyContinue
             if (-not $git) { return }
+            # A silent probe must never become a prompt or an unbounded wait. The repo is
+            # public so no credentials are needed, but Git Credential Manager will happily
+            # raise a window if a proxy answers 401, and the installer would sit behind it.
+            # No helper, no terminal prompt, and the same bounded-process idiom the smi
+            # probes use, so a wedged network cannot hang the install.
+            $env:GIT_TERMINAL_PROMPT = '0'
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $git.Source
+            $psi.Arguments = '-c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo main'
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $null = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit(20000)) {
+                try { $proc.Kill() } catch {}
+                return
+            }
+            if ($proc.ExitCode -ne 0) { return }
             # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
-            $lines = @(& $git.Source ls-remote https://github.com/unslothai/unsloth-zoo main 2>$null)
+            $lines = @("$($outTask.Result)" -split "`r?`n" | Where-Object { $_ -ne '' })
             if ($lines.Count -eq 0) { return }
             $sha = ("$($lines[0])".Trim() -split '\s+')[0]
             if ($sha -match '^[0-9a-f]{40}$') {
@@ -2436,6 +2458,14 @@ exit 1
             }
         } catch {
             # unreachable remote, killed git, anything else: keep the bare URL
+        } finally {
+            # The caller's own GIT_TERMINAL_PROMPT goes back exactly as it was, including
+            # having been unset: the rest of the install must not inherit this probe's.
+            if ($null -eq $prevPrompt) {
+                Remove-Item Env:GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue
+            } else {
+                $env:GIT_TERMINAL_PROMPT = $prevPrompt
+            }
         }
     }
 

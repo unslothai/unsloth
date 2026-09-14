@@ -6261,13 +6261,25 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
     git = shutil.which("git")
     if git:
         try:
+            # A silent probe must never become a prompt. The repository is public, so
+            # nothing here needs credentials, but a box with a credential helper or an
+            # askpass GUI can be asked for them by a proxy that answers 401, and would
+            # then sit waiting for a human on a step that used to ask nothing at all.
+            # No helper plus no terminal prompt makes git fail instead, which falls
+            # back to the unresolved URL.
+            env = dict(os.environ)
+            env["GIT_TERMINAL_PROMPT"] = "0"
             # ls-remote exits 0 whether or not a ref matched, so an empty stdout is
             # "no such ref" and has to be treated like a failure to resolve.
             result = subprocess.run(
-                [git, "ls-remote", _UNSLOTH_ZOO_GIT_REPO, ref],
+                [git, "-c", "credential.helper=", "ls-remote", _UNSLOTH_ZOO_GIT_REPO, ref],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
-                timeout = 60,
+                # 20s, the same bound install.sh and install.ps1 use: a ref
+                # advertisement for one small repository takes a second or two, and a
+                # network that has not answered in twenty is not going to.
+                timeout = 20,
+                env = env,
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0 and result.stdout:

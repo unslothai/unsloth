@@ -20,14 +20,30 @@ URL="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
 SHA="cb4a3100c1f34766e30f79229168fb2d91ea4123"
 
 # A git stub on PATH, so the resolution is exercised without a network call.
-# $STUB_OUT is what `git ls-remote` prints; $STUB_RC is its exit code.
+# $STUB_OUT is what `git ls-remote` prints; $STUB_RC is its exit code. Its argv and
+# the environment it was handed land in $STUB_LOG, which the guards are asserted on.
 _STUB_DIR=$(mktemp -d)
 cat > "$_STUB_DIR/git" <<'STUB'
 #!/bin/sh
+if [ -n "${STUB_LOG:-}" ]; then
+    { echo "argv: $*"; echo "prompt=${GIT_TERMINAL_PROMPT-unset}"; } >> "$STUB_LOG"
+fi
 printf '%s' "$STUB_OUT"
 exit "${STUB_RC:-0}"
 STUB
 chmod +x "$_STUB_DIR/git"
+# A timeout stub that records it was used, then runs the real command: the probe has
+# to be bounded, or a network that accepts and never answers hangs the installer.
+cat > "$_STUB_DIR/timeout" <<'STUB'
+#!/bin/sh
+[ -n "${STUB_LOG:-}" ] && echo "bounded by timeout $1" >> "$STUB_LOG"
+shift
+exec "$@"
+STUB
+chmod +x "$_STUB_DIR/timeout"
+STUB_LOG="$_STUB_DIR/calls.log"
+export STUB_LOG
+_PROMPT_BEFORE="${GIT_TERMINAL_PROMPT-unset}"
 PATH="$_STUB_DIR:$PATH"
 export PATH
 STUDIO_LOCAL_INSTALL=true
@@ -38,9 +54,22 @@ echo "=== branch resolves to a commit ==="
 STUB_OUT="$SHA	refs/heads/main
 $SHA	refs/remotes/origin/main"
 unset UNSLOTH_ZOO_REF
+: > "$STUB_LOG"
 _resolve_zoo_git_spec
 assert_eq "main pinned to its commit" "$URL@$SHA" "$_ZOO_GIT_SPEC"
 assert_eq "label names the commit"    "main (cb4a3100c1f3)" "$_ZOO_REF_LABEL"
+
+echo "=== the probe cannot stop and ask a human, and cannot wait forever ==="
+# Nothing on this path needed credentials before the pin existed. A proxy answering
+# 401 must not send git to a credential helper and leave the installer behind a
+# prompt, and a network that accepts but never answers must not hang it either.
+assert_contains "credential helpers disabled" "$(cat "$STUB_LOG")" "-c credential.helper= ls-remote"
+assert_contains "GIT_TERMINAL_PROMPT=0"       "$(cat "$STUB_LOG")" "prompt=0"
+assert_contains "the probe is bounded"        "$(cat "$STUB_LOG")" "bounded by timeout 20"
+# Compared against what the caller had, not against "unset": a CI runner is allowed
+# to export its own GIT_TERMINAL_PROMPT, and the point is that the probe changed nothing.
+assert_eq "and the variable is left exactly as the caller had it" \
+    "$_PROMPT_BEFORE" "${GIT_TERMINAL_PROMPT-unset}"
 
 echo "=== an explicit ref is honored and pinned ==="
 UNSLOTH_ZOO_REF="v2026.5.4"
