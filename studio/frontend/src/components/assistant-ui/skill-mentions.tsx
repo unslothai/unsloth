@@ -46,8 +46,7 @@ const skillMentionFormatter: Unstable_DirectiveFormatter = {
     const segments: Unstable_DirectiveSegment[] = [];
     let lastIndex = 0;
 
-    // The same pattern the send path uses to decide a re-read, so a chip and a catalog
-    // lookup never disagree about what counts as a mention.
+    // Same pattern as the send path, so a chip and a catalog lookup agree on what a mention is.
     for (const match of text.matchAll(SKILL_MENTION_PATTERN)) {
       const whitespace = match[1] ?? "";
       const mentionStart = match.index + whitespace.length;
@@ -93,8 +92,7 @@ function useHighlightedItemScroll(root: HTMLElement | null) {
   }, [root]);
 }
 
-// Mounted inside the results list, so it exists exactly while the popover is
-// open; reports whether Enter would pick a row rather than send the message.
+// Mounted inside the results list; reports whether Enter would pick a row rather than send.
 function MentionEnterSignal({
   onChange,
   active,

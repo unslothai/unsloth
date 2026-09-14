@@ -1856,8 +1856,7 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
-      // Same gate as the completion: with no enabled skill the request carries neither tool,
-      // so counting them here would price schemas and a catalog nudge the prompt never gets.
+      // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
       ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,

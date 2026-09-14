@@ -9882,8 +9882,7 @@ def execute_tool(
             )
         except SkillError as exc:
             return f"Error: {exc}"
-        # A following turn must discover the skill immediately rather than serving
-        # the inference route's one-second catalog snapshot.
+        # The next turn must see the new skill, not the 1 s catalog snapshot.
         from routes.inference import _invalidate_agent_skills_cache
 
         _invalidate_agent_skills_cache()

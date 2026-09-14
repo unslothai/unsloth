@@ -140,27 +140,20 @@ export async function setSkillEnabled(
   return updated;
 }
 
-// A skill name per the Agent Skills spec (lowercase, digits, single hyphens, 1-64 chars), and
-// only when the name ends where a word would: trailing punctuation is fine (`@probe-alpha.`),
-// but `@example.com`, `@3pm`, `@probe_alpha` and `@Probe` are not mentions, so they never
-// trigger a catalog re-read on send.
+// Spec skill names only, ending at a word boundary: `@example.com`, `@3pm`, `@Probe` are not mentions.
 export const SKILL_MENTION_PATTERN =
   /(^|\s)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;:!?)\]'"]+(?:$|\s))/g;
 
-// How long a pre-send catalog re-read may hold the request. authFetch has no deadline of its
-// own, so without this a hung /api/skills would stall every send that names an unknown skill.
+// authFetch has no deadline, so a hung /api/skills must not stall the send.
 const SETTLE_TIMEOUT_MS = 3000;
 
-// Settle the catalog before a request decides tool enablement from it: finish any fetch
-// already in flight, and re-read the folders when the text names a skill the snapshot has
-// never seen (a pasted @mention gets no bare-@ keystroke to refresh on).
+// Finish any in-flight fetch and re-read when the text names an unknown skill (pasted @mentions never refreshed).
 export async function settleSkillsForText(text: string): Promise<void> {
   const deadline = new Promise<void>((resolve) =>
     setTimeout(resolve, SETTLE_TIMEOUT_MS),
   );
   if (pending) await Promise.race([pending.catch(() => undefined), deadline]);
-  // Usable entries only: a mention of a skill the snapshot holds as invalid, shadowed or
-  // disabled re-reads too, since the file may have been repaired or re-enabled since.
+  // Usable entries only: an invalid, shadowed or disabled one may have been fixed since.
   const known = new Set(
     snapshot.skills
       .filter((skill) => skill.valid && !skill.shadowed && skill.enabled)
@@ -179,9 +172,7 @@ export async function settleSkillsForText(text: string): Promise<void> {
   }
 }
 
-// Skills are files the user edits while Studio is open, so the places that surface the
-// catalog (the dialog, an @ mention) re-read it instead of trusting the page-load snapshot.
-// Throttled: a burst of @ keystrokes costs one request.
+// Skills are edited while Studio is open, so the dialog and @ re-read; throttled to one request per burst.
 export function refreshSkillsCatalog(maxAgeMs = 1500): void {
   if (pending || Date.now() - lastFetchedAt < maxAgeMs) return;
   void listSkills(true).catch(() => undefined);
