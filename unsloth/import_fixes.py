@@ -1427,7 +1427,8 @@ def fix_unsloth_zoo_fused_ce_nan():
         model_accepts_loss_kwargs true, _unsloth_get_batch_samples keeps a count
         that is 0 for a fully masked accumulation window.
         """
-        if n_items is None: return True
+        if n_items is None:
+            return True
         try:
             if torch.is_tensor(n_items):
                 # Mirror forward()'s own DataParallel handling of a gathered count.
