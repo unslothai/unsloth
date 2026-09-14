@@ -2060,7 +2060,11 @@ $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
 if ($HasNvidiaSmi -and $NvidiaSmiExe) {
     try {
-        $nvOut = & $NvidiaSmiExe --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>$null | Out-String
+        # Through the bounded runner, like every other nvidia-smi call here: a wedged
+        # driver blocks nvidia-smi indefinitely, and a bare `&` call has nothing to
+        # time it out. -StdoutOnly because driver warnings on stderr would corrupt
+        # this machine-readable CSV.
+        $nvOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=name,compute_cap,driver_version', '--format=csv,noheader') -StdoutOnly
         $nvRows = @($nvOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         if ($nvRows.Count -gt 0) {
             $nvIdx = if ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
@@ -2076,8 +2080,15 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe) {
                     $NvidiaSmArch = "sm_" + (([int]$Matches[1] * 10) + [int]$Matches[2])
                 }
             } else {
-                $NvidiaGpuName = $nvRow
+                # Short row: field 1 only. Taking the whole row would print the
+                # compute capability as part of the name ("RTX 4090, 8.9").
+                $NvidiaGpuName = $nvParts[0].Trim()
             }
+            # An nvidia-smi too old for a field answers with a placeholder rather
+            # than failing (the 470 branch has no compute_cap at all).
+            $nvPlaceholders = @('[N/A]', '[Not Supported]', '[Unknown Error]')
+            if ($nvPlaceholders -contains $NvidiaGpuName)       { $NvidiaGpuName = $null }
+            if ($nvPlaceholders -contains $NvidiaDriverVersion) { $NvidiaDriverVersion = $null }
         }
     } catch {}
 }
@@ -2409,14 +2420,22 @@ if (-not $HasNvidiaSmi) {
                         # amd-smi lists every GPU regardless of the masks, so resolve the
                         # index here, via the shared helper so a comma list or a padded
                         # value cannot select a different GPU than elsewhere.
-                        $script:ROCmGfxArch = $allGfxArches[(Resolve-VisibleGpuIndex $allGfxArches.Count)]
-                        $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
+                        $_smiPickIdx = Resolve-VisibleGpuIndex $allGfxArches.Count
+                        $script:ROCmGfxArch = $allGfxArches[$_smiPickIdx]
+                        $_smiShadowPick = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
+                        if ($_smiShadowPick -ne $script:ROCmGfxArch) {
+                            $script:ROCmGfxArch = $_smiShadowPick
+                            $_smiPickIdx = [array]::IndexOf($allGfxArches, $_smiShadowPick)
+                        }
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                        # Banner only, read at the index the arch pick landed on.
+                        # Banner only, read at the index the arch pick landed on. The index
+                        # is carried forward rather than recovered from the arch VALUE:
+                        # the list is deliberately not deduplicated, so IndexOf on two
+                        # same-arch cards always returns 0 and names the first one even
+                        # when the mask selected the second (RX 7900 XTX vs PRO W7900).
                         $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                        if ($_smiNames.Count -eq $allGfxArches.Count) {
-                            $_smiPickIdx = [array]::IndexOf($allGfxArches, $script:ROCmGfxArch)
-                            if ($_smiPickIdx -ge 0) { $ROCmGpuName = $_smiNames[$_smiPickIdx] }
+                        if ($_smiNames.Count -eq $allGfxArches.Count -and $_smiPickIdx -ge 0) {
+                            $ROCmGpuName = $_smiNames[$_smiPickIdx]
                         }
                     } else {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
@@ -2429,13 +2448,19 @@ if (-not $HasNvidiaSmi) {
                         $asicGfxArches = @([regex]::Matches($smiAsicOut, '(?i)\b(gfx\d+[a-z]?)\b') |
                             ForEach-Object { $_.Groups[1].Value.ToLower() })
                         if ($asicGfxArches.Count -gt 0) {
-                            $script:ROCmGfxArch = $asicGfxArches[(Resolve-VisibleGpuIndex $asicGfxArches.Count)]
-                            $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
+                            $_asicPickIdx = Resolve-VisibleGpuIndex $asicGfxArches.Count
+                            $script:ROCmGfxArch = $asicGfxArches[$_asicPickIdx]
+                            $_asicShadowPick = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
+                            if ($_asicShadowPick -ne $script:ROCmGfxArch) {
+                                $script:ROCmGfxArch = $_asicShadowPick
+                                $_asicPickIdx = [array]::IndexOf($asicGfxArches, $_asicShadowPick)
+                            }
                             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                            # Index carried forward, not recovered from the arch value --
+                            # see the sibling branch above.
                             $_asicNames = @([regex]::Matches($smiAsicOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                            if ($_asicNames.Count -eq $asicGfxArches.Count) {
-                                $_asicPickIdx = [array]::IndexOf($asicGfxArches, $script:ROCmGfxArch)
-                                if ($_asicPickIdx -ge 0) { $ROCmGpuName = $_asicNames[$_asicPickIdx] }
+                            if ($_asicNames.Count -eq $asicGfxArches.Count -and $_asicPickIdx -ge 0) {
+                                $ROCmGpuName = $_asicNames[$_asicPickIdx]
                             }
                         } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
                             $ROCmGpuName  = $Matches[1].Trim()
@@ -2581,6 +2606,16 @@ if (-not $HasNvidiaSmi) {
                     Resolve-ShadowingGfxPick -Picked $pickedName -AllArches $nameArches
                 } else { $pickedName }
                 $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                # Move the banner name onto the adapter this arch actually came from.
+                # $ROCmGpuName was set to adapter 0 by the WMI scan above, but all three
+                # mechanisms here -- the visible-device mask, the $nameArches[0] borrow
+                # and the shadowing repick -- can land the arch on a different adapter.
+                # Left alone, an iGPU+dGPU host reads "AMD Radeon 890M (gfx1201)":
+                # the integrated name against the discrete arch.
+                if ($nameArches.Count -eq $gpuNames.Count) {
+                    $_nameArchIdx = [array]::IndexOf($nameArches, $script:ROCmGfxArch)
+                    if ($_nameArchIdx -ge 0) { $ROCmGpuName = $gpuNames[$_nameArchIdx] }
+                }
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
             } else {

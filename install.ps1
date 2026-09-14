@@ -3698,7 +3698,11 @@ exit 0
     # the AMD probes do.
     if ($HasNvidiaSmi -and $NvidiaSmiExe) {
         try {
-            $nvOut = & $NvidiaSmiExe --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>$null | Out-String
+            # Through the bounded runner, like every other nvidia-smi call here: a
+            # wedged driver blocks nvidia-smi indefinitely, and a bare `&` call has
+            # nothing to time it out. -StdoutOnly because driver warnings on stderr
+            # would corrupt this machine-readable CSV.
+            $nvOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=name,compute_cap,driver_version', '--format=csv,noheader') -StdoutOnly
             $nvRows = @($nvOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             if ($nvRows.Count -gt 0) {
                 $nvIdx = if ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
@@ -3714,8 +3718,15 @@ exit 0
                         $NvidiaSmArch = "sm_" + (([int]$Matches[1] * 10) + [int]$Matches[2])
                     }
                 } else {
-                    $NvidiaGpuName = $nvRow
+                    # Short row: field 1 only. Taking the whole row would print the
+                    # compute capability as part of the name ("RTX 4090, 8.9").
+                    $NvidiaGpuName = $nvParts[0].Trim()
                 }
+                # An nvidia-smi too old for a field answers with a placeholder rather
+                # than failing (the 470 branch has no compute_cap at all).
+                $nvPlaceholders = @('[N/A]', '[Not Supported]', '[Unknown Error]')
+                if ($nvPlaceholders -contains $NvidiaGpuName)       { $NvidiaGpuName = $null }
+                if ($nvPlaceholders -contains $NvidiaDriverVersion) { $NvidiaDriverVersion = $null }
             }
         } catch {}
     }

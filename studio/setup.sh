@@ -661,6 +661,47 @@ _setup_has_usable_nvidia_gpu() {
     return 1
 }
 
+# Resolves the banner's NVIDIA fields into _setup_nv_name / _setup_nv_sm /
+# _setup_nv_driver, each empty when it could not be read. Mirrors install.sh's
+# _nv_banner_fields. compute_cap is the counterpart of the gfx arch shown for AMD
+# and the driver version the counterpart of the HIP SDK line, so one query gets
+# all three.
+#
+# Bounded, and fed the executable _setup_has_usable_nvidia_gpu already resolved
+# into $_setup_nvsmi. Both matter: a wedged driver blocks nvidia-smi indefinitely
+# (the reason _setup_run_smi exists), and detection also succeeds via
+# /usr/bin/nvidia-smi off PATH or via /proc/driver/nvidia/gpus with no nvidia-smi
+# at all -- re-resolving with `command -v` would skip the name on those hosts.
+_setup_nv_banner_fields() {
+    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
+    _setup_nv_row=""; _setup_nv_cc=""
+    [ -n "${_setup_nvsmi:-}" ] || return 0
+    # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices
+    # and a numeric mask indexes them. A UUID or MIG mask names no index here, so
+    # the banner keeps the first row rather than guessing which card that is.
+    _setup_nv_idx=0
+    case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _setup_nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
+    _setup_nv_row=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null \
+        | awk -v idx="$_setup_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
+    [ -n "$_setup_nv_row" ] || return 0
+    # Split from the right: nvidia-smi does not quote, so a comma in a device name
+    # would otherwise shift every field.
+    _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+    _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+    _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+    # Short row: keep field 1 only. Taking the whole row would print the compute
+    # capability as part of the device name ("RTX 4090, 8.9").
+    [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, '{ gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); print $1 }')
+    # An nvidia-smi too old for a field answers with a placeholder rather than
+    # failing (the 470 branch has no compute_cap at all). "[N/A]" is not a name.
+    case "$_setup_nv_name"   in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_name="" ;; esac
+    case "$_setup_nv_driver" in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _setup_nv_driver="" ;; esac
+    case "$_setup_nv_cc" in
+        [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+    esac
+    return 0
+}
+
 _cuda_driver_max_version() {
     command -v nvidia-smi >/dev/null 2>&1 || return 0
     _setup_run_smi nvidia-smi 2>/dev/null \
@@ -2092,16 +2133,31 @@ if [ "$_setup_nvidia_usable" != true ]; then
        _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
         _setup_amd_detected=true
         _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        # Per AGENT, not the first match in the stream: rocminfo enumerates the CPU
+        # as Agent 1 and it carries its own "Marketing Name:", so the first match is
+        # the processor, not the card. On Strix Halo that string is "AMD RYZEN AI
+        # MAX+ 395 w/ Radeon 8060S", which reads like a GPU name and is not one --
+        # and $_setup_mkt also feeds _setup_supported_gfx_from_name, so a CPU string
+        # reaching here can mis-infer an arch, not merely mislabel the banner.
+        # Emitted as "gfx<TAB>name" per GPU agent so the banner can name the card the
+        # arch pick landed on rather than whichever GPU rocminfo listed first.
+        _setup_agents=$(_setup_run_smi rocminfo 2>/dev/null | awk '
+            /^Agent /                          { gfx = ""; mkt = "" }
+            /^[[:space:]]*Name:[[:space:]]*gfx/ { gfx = $2 }
+            /Marketing Name:/                  { sub(/^[[:space:]]*Marketing Name:[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); mkt = $0 }
+            /Device Type:[[:space:]]*GPU/      { if (gfx != "" && mkt != "") print gfx "\t" mkt }' || true)
+        _setup_mkt=$(printf '%s\n' "$_setup_agents" | awk -F'\t' 'NF>1 { print $2; exit }')
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
             _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        # tolower(), because amd-smi spells the field MARKET_NAME in caps: the old
+        # [Mm]arket.?[Nn]ame class matched neither that nor any other real casing,
+        # so this probe never yielded a name.
         _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+            'tolower($0) ~ /market.?name/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
@@ -2116,25 +2172,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
-    # Mirrors install.sh: nvidia-smi is already known good here and was never asked which
-    # card it found, nor its compute target or driver.
-    _setup_nv_row=""
-    _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        _setup_nv_idx=0
-        case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _setup_nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
-        _setup_nv_row=$(nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null | awk -v idx="$_setup_nv_idx" \
-            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
-    fi
-    if [ -n "$_setup_nv_row" ]; then
-        _setup_nv_driver=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
-        _setup_nv_cc=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
-        _setup_nv_name=$(printf '%s' "$_setup_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
-        [ -n "$_setup_nv_name" ] || _setup_nv_name=$(printf '%s' "$_setup_nv_row" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-        case "$_setup_nv_cc" in
-            [0-9]*.[0-9]*) _setup_nv_sm="sm_$(printf '%s' "$_setup_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
-        esac
-    fi
+    _setup_nv_banner_fields
     if [ -n "$_setup_nv_name" ] && [ -n "$_setup_nv_sm" ]; then
         step "gpu" "$_setup_nv_name ($_setup_nv_sm)"
     elif [ -n "$_setup_nv_name" ]; then
@@ -2142,7 +2180,9 @@ if [ "$_setup_nvidia_usable" = true ]; then
     else
         step "gpu" "NVIDIA GPU detected"
     fi
-    [ -n "$_setup_nv_driver" ] && substep "Driver: $_setup_nv_driver"
+    # An `if`, not `[ ... ] && substep ...`: the AND-list form leaves a non-zero
+    # status behind on the common path where there is no driver string to print.
+    if [ -n "$_setup_nv_driver" ]; then substep "Driver: $_setup_nv_driver"; fi
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _setup_vis_idx=0
@@ -2152,6 +2192,15 @@ elif [ "$_setup_amd_detected" = true ]; then
     fi
     _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | awk -v idx="$_setup_vis_idx" \
         'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    # Name the card the arch pick landed on. Matched on the arch VALUE rather than by
+    # index because the arch list above is deduplicated and the agent list is not, so
+    # the two do not share an index. Without this an iGPU+dGPU host reads
+    # "AMD Radeon Graphics (gfx1100)": the integrated name against the discrete arch.
+    if [ -n "${_setup_agents:-}" ] && [ -n "$_setup_gfx" ]; then
+        _setup_mkt_at_arch=$(printf '%s\n' "$_setup_agents" | awk -F'\t' -v gfx="$_setup_gfx" \
+            '$1 == gfx { print $2; exit }')
+        if [ -n "$_setup_mkt_at_arch" ]; then _setup_mkt="$_setup_mkt_at_arch"; fi
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
