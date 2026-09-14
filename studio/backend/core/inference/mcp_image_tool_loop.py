@@ -181,9 +181,12 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
             return [dump_models(child) for child in value]
         return value
 
-    messages = dump_models(payload.messages)
+    model_inputs = {
+        "messages": dump_models(payload.messages),
+        "image_base64": getattr(payload, "image_base64", None),
+    }
     try:
-        contains_private = contains_mcp_image_echo(messages, image.data)
+        contains_private = contains_mcp_image_echo(model_inputs, image.data)
     except Exception:
         raise McpImageDisclosureError("Private image message validation failed") from None
     if contains_private:

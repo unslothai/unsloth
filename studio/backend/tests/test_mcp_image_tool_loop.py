@@ -200,13 +200,17 @@ def test_sibling_branch_and_large_unrelated_image_remain_valid(image_request):
     run.close()
 
 
-@pytest.mark.parametrize("change", ["conversation", "private_payload", "no_channel"])
+@pytest.mark.parametrize(
+    "change", ["conversation", "private_payload", "legacy_private_payload", "no_channel"]
+)
 def test_request_validation_rejects_invalid_private_selection(image_request, change):
     f = image_request
     if change == "conversation":
         f.payload.thread_id = "other"
     elif change == "private_payload":
         f.payload.messages[0]["content"] = [{"type": "image_url", "image_url": {"url": f.data_url}}]
+    elif change == "legacy_private_payload":
+        f.payload.image_base64 = f.encoded
     else:
         f.payload.stream = False
     with pytest.raises(McpImageDisclosureError):
