@@ -1748,7 +1748,6 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
-# How often a parked chat re-asks whether anyone is waiting on the cache it still holds.
 _APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
@@ -23459,7 +23458,6 @@ async def produce_openai_chat_completions(
             # reservation exists but not ITERATED until after, so the callback always sees
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
-            # Written from the generator thread, read by the approval watcher on the loop.
             _gguf_decode_lock = threading.Lock()
             _gguf_decode: dict = {"slot": None, "erased": False}
 
@@ -23471,7 +23469,6 @@ async def produce_openai_chat_completions(
             def _gguf_recost(conversation) -> None:
                 with _gguf_decode_lock:
                     erased = _gguf_decode["erased"]
-                    # A new round re-fills the cache; the last erasure says nothing now.
                     _gguf_decode["slot"] = None
                     _gguf_decode["erased"] = False
                 _openai_llama_admission_recost(
@@ -23490,8 +23487,7 @@ async def produce_openai_chat_completions(
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
-                    # Reclamation erased this chat's cells, so the grown round may wait for
-                    # room instead of decoding over a budget it was refused.
+                    # Erased cells make yielding honest, so a grown round may wait.
                     cache_is_empty = erased,
                 )
 
@@ -23626,14 +23622,9 @@ async def produce_openai_chat_completions(
                 async def _reclaim_approval_cache(lease):
                     """Erase this round's cached context once a queued chat needs its room.
 
-                    On demand only: the engine drops the cells rather than spilling them to
-                    its prompt cache, so this costs the approved chat a full reprocess.
-
-                    Stops on request only before the erase is sent. Past that the request is
-                    already with llama-server, so the cells are going whatever this chat does
-                    now, and the resume has to be told rather than spared. The poll waits on
-                    that request rather than sleeping through it, so the usual resume -- the
-                    one where nothing was ever erased -- is not held up by a poll interval.
+                    On demand only: the engine drops the cells rather than spilling them,
+                    so this costs the approved chat a full reprocess. Stopping is honoured
+                    only before the erase is sent; past that the cells are going regardless.
                     """
                     try:
                         while not lease.reclaim_would_admit():
@@ -23669,11 +23660,8 @@ async def produce_openai_chat_completions(
                 async def _settle_reclaim_watch() -> None:
                     """Wait out a reclamation that is already sending, before resuming.
 
-                    Cancelling would not stop it -- the worker thread runs on, and the erase
-                    lands whether or not anyone is still listening. The resumed round would
-                    then price itself against cells llama-server was in the middle of
-                    dropping. A watcher still polling gives up at once; one that is sending
-                    is waited out, bounded by the erase request's own timeout.
+                    Cancelling would not stop it: the worker runs on and the erase lands
+                    anyway, leaving the resumed round priced against cells mid-drop.
                     """
                     nonlocal _reclaim_task
                     task, _reclaim_task = _reclaim_task, None
@@ -23702,13 +23690,10 @@ async def produce_openai_chat_completions(
                     if lease is None:
                         return
                     if on:
-                        # A refused park keeps the slot, so there is nothing to offer yet.
                         if not lease.park():
                             return
                         _watch_for_reclaim(lease)
                     elif wait:
-                        # Parking gave the slot away and reclamation may have given the
-                        # room away, so win both back rather than decode without them.
                         await _settle_reclaim_watch()
                         await lease.unpark_async(cancel_event = cancel_event)
                     else:

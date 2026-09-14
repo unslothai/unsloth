@@ -6304,52 +6304,25 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     )
 
 
-def _verbose_slot_stream(slot: int):
-    """A plain answer whose final result names the llama-server slot it decoded on.
-
-    Only the final chat-stream result carries ``__verbose``, and ``response_fields``
-    narrows it to ``id_slot`` alone; the partial deltas above it never carry either.
-    """
-    return [
-        _sse({"role": "assistant", "content": None}),
-        _sse({"content": "done"}),
-        "data: "
-        + json.dumps(
-            {
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                "__verbose": {"id_slot": slot},
-            }
-        )
-        + "\n",
-        _done(),
-    ]
-
-
-def test_the_decode_slot_callback_is_fed_from_the_stream(monkeypatch):
-    """The approval park needs the slot this round decoded on; nothing else supplies it."""
-    backend, payloads = _backend_and_payloads(monkeypatch, [_verbose_slot_stream(3)])
+@pytest.mark.parametrize("wanted", [True, False])
+def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monkeypatch, wanted):
+    """Without a caller the request must stay plain: verbose attaches the whole prompt."""
+    final = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    final["__verbose"] = {"id_slot": 3}
+    stream = [_sse({"content": "done"}), "data: " + json.dumps(final) + "\n", _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     seen = []
 
     _run_tool_loop(
         backend,
         [{"role": "user", "content": "hi"}],
         _render_html_tools(),
-        on_decode_slot = lambda base_url, slot: seen.append((base_url, slot)),
+        on_decode_slot = (lambda url, slot: seen.append((url, slot))) if wanted else None,
     )
 
-    assert seen == [(backend.base_url, 3)]
-    assert payloads[0]["verbose"] is True
-    assert payloads[0]["response_fields"] == ["id_slot"]
-
-
-def test_the_verbose_slot_request_is_not_made_without_a_callback(monkeypatch):
-    """llama-server would otherwise attach the whole prompt to every round's last chunk."""
-    backend, payloads = _backend_and_payloads(monkeypatch, [_verbose_slot_stream(3)])
-
-    _run_tool_loop(backend, [{"role": "user", "content": "hi"}], _render_html_tools())
-
-    assert "verbose" not in payloads[0]
-    assert "response_fields" not in payloads[0]
+    assert seen == ([(backend.base_url, 3)] if wanted else [])
+    assert payloads[0].get("verbose") is (True if wanted else None)
+    assert payloads[0].get("response_fields") == (["id_slot"] if wanted else None)
 
 
 @pytest.mark.parametrize(

@@ -388,7 +388,6 @@ class LlamaAdmissionLease:
                 return 0
             returned, self._tokens = self._tokens, 0
             self._parked_tokens += returned
-            # Under the lease lock like park(), or a release racing here double-counts.
             queue.reclaim_parked_tokens(returned, park_id = self._park_id)
         return returned
 
@@ -451,7 +450,6 @@ class LlamaAdmissionLease:
             poll_s = poll_s,
             tokens = tokens,
             timeout_s = timeout_s,
-            # A lease released mid-wait is not coming back; stop reserving room for it.
             abandoned = lambda: self._released,
         )
         stranded = None
@@ -731,12 +729,9 @@ class LlamaAdmissionQueue:
         # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
         # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
-        # What each ticket is owed, held back from arrivals that would otherwise take it.
         self._unpark_tokens: dict[int, int] = {}
-        # Past their deadline: still owed the tokens above, no longer holding them back.
         self._unpark_lapsed: set = set()
         self._unpark_seq = 0
-        # What each parked holder would hand back if its cached context were erased.
         self._parked_reclaimable: dict[int, int] = {}
         self._park_seq = 0
         # KV tokens held by live leases, against the cache size the caller reports. 0 budget disables the check, which
@@ -779,9 +774,7 @@ class LlamaAdmissionQueue:
         tokens: int,
         reserved_tokens: int = 0,
     ) -> bool:
-        """Whether ``tokens`` more KV may be committed over ``reserved_tokens``, which is
-        owed to resuming holders and closes the nothing-is-committed escape to arrivals.
-        """
+        """Whether ``tokens`` more KV fit over the ``reserved_tokens`` owed to resumes."""
         return self._fits_against_locked(self._committed + max(0, reserved_tokens), tokens)
 
     def _reserved_tokens_locked(self) -> int:
@@ -1027,9 +1020,8 @@ class LlamaAdmissionQueue:
     def _ticket_position_locked(self, ticket: int) -> tuple:
         """(slots, room) that resuming holders ahead of ``ticket`` hold back from it.
 
-        A holder ahead reserves room only until its deadline lapses, but holds a slot back
-        only while it can afford the room it needs: pinning one it cannot pay for deadlocks
-        the pool against a later approval that can.
+        One ahead reserves room only until its deadline lapses, but holds a slot back only
+        while it can afford that room: pinning one it cannot pay for deadlocks the pool.
         """
         ahead = 0
         ahead_tokens = 0
@@ -1044,7 +1036,6 @@ class LlamaAdmissionQueue:
         return (ahead, ahead_tokens)
 
     def _claimants_locked(self):
-        """What admission owes, in serving order: (tokens, slots ahead, room ahead)."""
         for ticket in self._unpark_tickets:
             yield (self._unpark_tokens.get(ticket, 0), *self._ticket_position_locked(ticket))
         self._prune_waiters_locked()
@@ -1058,9 +1049,8 @@ class LlamaAdmissionQueue:
     def reclaim_would_admit(self, tokens: int) -> bool:
         """Whether erasing parked caches would let anyone admission owes into the cache.
 
-        Every claimant is weighed, against every parked holder's reclaimable KV: one that
-        erasing cannot fit must not hide a smaller one, and two holders each too small
-        alone must not both decline and leave the queue stalled.
+        Weighed in aggregate: one claimant erasing cannot fit must not hide a smaller one,
+        nor two too-small holders both decline and leave the queue stalled.
         """
         if max(0, int(tokens or 0)) <= 0:
             return False
@@ -1071,7 +1061,6 @@ class LlamaAdmissionQueue:
             for wanted, held_back, reserved in self._claimants_locked():
                 if self._can_admit_locked(held_back, wanted, reserved):
                     continue
-                # Slot-blocked, not room-blocked: erasing buys this one nothing.
                 if not (bool(self._free) and (self._held + held_back) < self._capacity):
                     continue
                 if self._fits_against_locked(
@@ -1101,11 +1090,10 @@ class LlamaAdmissionQueue:
         they came back: counting them made every approved holder block every
         other one, and with nothing decoding that never resolved.
 
-        ``tokens`` is what a holder whose cache was erased must win back before it decodes
-        again, held back from arrivals until ``timeout_s`` lapses the claim so a holder that
-        never returns cannot keep room from everyone else. A lapsed ticket keeps its place
-        in the slot order and is still never admitted over budget: llama.cpp answers an
-        exhausted cache by clearing every slot it is decoding.
+        ``tokens`` is what a holder whose cache was erased must win back, held from arrivals
+        until ``timeout_s`` lapses the claim. Lapsing keeps the ticket's place in the slot
+        order and still never admits it over budget: llama.cpp answers an exhausted cache by
+        clearing every slot it is decoding.
         """
         tokens = max(0, int(tokens or 0))
         with self._lock:

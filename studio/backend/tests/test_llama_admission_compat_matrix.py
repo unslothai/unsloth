@@ -184,8 +184,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
         assert queue._reparking == 0
 
 
-# Appended in the order they were added, so an older caller's positional arguments
-# keep their meaning.
+# In the order they were added, so older positional callers keep their meaning.
 _TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot")
 
 
@@ -226,9 +225,7 @@ class TestOldCallers:
 
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
         for name in _TOOL_LOOP_HOOKS:
-            assert (
-                signature.parameters[name].default is None
-            ), f"{name} must be optional for existing callers"
+            assert signature.parameters[name].default is None, f"{name} must be optional"
 
     def test_the_hook_was_appended_rather_than_inserted(self):
         """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
@@ -241,9 +238,8 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert names[-len(_TOOL_LOOP_HOOKS) :] == list(
-            _TOOL_LOOP_HOOKS
-        ), f"the hooks must stay at the tail, in order; signature ends {names[-3:]}"
+        tail = names[-len(_TOOL_LOOP_HOOKS) :]
+        assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

@@ -505,7 +505,7 @@ class _CombinedCancelEvent:
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         if self.is_set():
-            return True
+            return bool(body.get("n_erased") is not None and body.get("id_slot") == slot)
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         while True:
             remaining = None if deadline is None else deadline - time.monotonic()
@@ -31108,8 +31108,7 @@ class LlamaCppBackend:
     def decode_slot_from_chunk(chunk) -> Optional[int]:
         """The llama-server slot a stream chunk was decoded on, None if it does not say.
 
-        Only the final chat-stream result carries ``__verbose``, and only when the request
-        asked for it; ``response_fields`` narrows it to ``id_slot`` alone.
+        Only the final result carries ``__verbose``, and only when asked for.
         """
         if not isinstance(chunk, dict):
             return None
@@ -31124,13 +31123,10 @@ class LlamaCppBackend:
     def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
         """Erase one completed round's cached context, True once the engine says so.
 
-        Declines unless ``base_url`` is still the server that decoded the round, since a
-        reload renumbers the slots, and unless --slot-save-path is in play, which the
-        endpoint requires. Anything unacknowledged keeps the reservation.
-
-        The engine defers rather than drops an erase aimed at a slot already handed to
-        another request, and keeps that task when this call times out, so a timeout can
-        still cost the new chat its prefix.
+        Declines unless the round decoded on this server, which a reload renumbers, and
+        unless --slot-save-path is in play, which the endpoint requires. An erase aimed at
+        a slot since handed to another request is deferred rather than dropped, so even a
+        timeout can cost that chat its prefix.
         """
         if (
             not self._slot_save_dir
