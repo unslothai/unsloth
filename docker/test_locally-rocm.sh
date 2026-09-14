@@ -15,9 +15,8 @@
 #   TAG=my-image:latest bash docker/test_locally-rocm.sh
 #   HF_TOKEN=hf_xxx bash docker/test_locally-rocm.sh
 #
-# For RDNA4 / Strix Halo (gfx1150/1151/1200/1201), build with:
-#   ROCM_VERSION=7.x.x TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2 \
-#     TAG=unsloth-rocm-rdna4:test bash docker/test_locally-rocm.sh
+# Strix APUs / RDNA4 cards (AMD per-arch wheels, see Dockerfile.rocm):
+#   ROCM_GFX=gfx1151 TAG=unsloth-rocm-strix:test bash docker/test_locally-rocm.sh
 #
 # All output is teed to $LOG_DIR (default /tmp/unsloth-rocm-test/).
 set -uo pipefail
@@ -26,8 +25,9 @@ TAG="${TAG:-unsloth-rocm:test}"
 LOG_DIR="${LOG_DIR:-/tmp/unsloth-rocm-test}"
 SKIP_BUILD=0
 SKIP_NOTEBOOK=0
-ROCM_VERSION="${ROCM_VERSION:-6.2.4}"
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm6.2}"
+ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm7.2}"
+ROCM_GFX="${ROCM_GFX:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,8 +49,14 @@ warn()   { printf "${YELLOW}WARN${NC}  %s\n" "$*"; }
 err()    { printf "${RED}ERROR${NC} %s\n" "$*" >&2; }
 fail()   { err "$*"; exit 1; }
 
-# AMD GPU device flags used for all `docker run` invocations.
-AMD_DEVICE_FLAGS=(--device /dev/kfd --device /dev/dri --group-add video)
+# AMD GPU device flags used for all `docker run` invocations. --group-add needs
+# NUMERIC gids: a name is resolved inside the container, where the host's
+# video/render groups do not exist.
+AMD_DEVICE_FLAGS=(--device /dev/kfd --device /dev/dri)
+for _grp in video render; do
+    _gid="$(getent group "$_grp" 2>/dev/null | cut -d: -f3)" || _gid=""
+    [[ -n "$_gid" ]] && AMD_DEVICE_FLAGS+=(--group-add "$_gid")
+done
 
 # ============================================================================
 # Block 1: pre-flight
@@ -118,7 +124,7 @@ else
     fi
     echo "  build context: $BUILD_CTX"
     echo "  ROCm version:  $ROCM_VERSION"
-    echo "  torch index:   $TORCH_INDEX_URL"
+    echo "  torch index:   ${ROCM_GFX:+AMD per-arch wheels for $ROCM_GFX}${ROCM_GFX:-$TORCH_INDEX_URL}"
 
     BUILD_LOG="$LOG_DIR/build.log"
     echo "  log:           $BUILD_LOG"
@@ -133,6 +139,7 @@ else
         --load \
         --build-arg ROCM_VERSION="${ROCM_VERSION}" \
         --build-arg TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+        --build-arg ROCM_GFX="${ROCM_GFX}" \
         -f "${BUILD_CTX}/Dockerfile.rocm" \
         -t "$TAG" \
         "$BUILD_CTX" 2>&1 | tee "$BUILD_LOG"

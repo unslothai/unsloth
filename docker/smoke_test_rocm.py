@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 """
 Smoke test for the Unsloth ROCm image (AMD GPU build).
 
@@ -9,8 +12,7 @@ What this checks (in order, fail-fast):
   5. A 5-step LoRA train on a tiny model actually runs forward + backward.
 
 Run inside the container:
-    docker run --rm --device /dev/kfd --device /dev/dri --group-add video \\
-        unsloth/unsloth-rocm:latest python /workspace/smoke_test_rocm.py
+    bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
 
 Skip step 5 (faster, no model download):
     ... python /workspace/smoke_test_rocm.py --skip-train
@@ -41,8 +43,9 @@ def check_torch() -> None:
     print(f"HIP         {torch.version.hip}")
 
     assert torch.cuda.is_available(), (
-        "torch.cuda.is_available() is False — did you pass "
-        "--device /dev/kfd --device /dev/dri --group-add video?"
+        "torch.cuda.is_available() is False: was the container started with "
+        "bash docker/run.sh --rocm (or --device /dev/kfd --device /dev/dri and the "
+        "video/render group ids)?"
     )
     n = torch.cuda.device_count()
     print(f"GPU count   {n}")
@@ -57,10 +60,15 @@ def check_torch() -> None:
     print()
     # ROCm does not expose a reliable sm_X.Y compute capability the way NVIDIA
     # does -- the values from get_device_properties() vary by ROCm version and
-    # don't map cleanly to gfx codes. GPU support is determined by the ROCm
-    # version and TORCH_INDEX_URL the image was built with:
-    #   rocm6.2 image: RDNA2 (gfx1030), RDNA3 (gfx1100-1103)
-    #   rocm7.2 image: adds RDNA3.5 (gfx1150/1151) + RDNA4 (gfx1200/1201)
+    # don't map cleanly to gfx codes. Which arches the wheels carry is decided
+    # by the ROCm version and index the image was built with (Dockerfile.rocm);
+    # the entrypoint already printed the arch note for this card.
+    # A device the runtime lists but cannot run a kernel on shows up here, not
+    # in device_count().
+    x = torch.ones(64, 64, device = "cuda", dtype = torch.float16)
+    y = (x @ x).float().sum().item()
+    assert y == 64 * 64 * 64, f"FAIL: fp16 matmul on the GPU returned {y}, expected {64 * 64 * 64}"
+    print("fp16 matmul OK")
 
 
 def check_imports() -> None:
@@ -75,11 +83,13 @@ def check_imports() -> None:
 
     print(f"unsloth_zoo {unsloth_zoo.__version__}")
 
-    try:
-        import triton
-        print(f"triton      {triton.__version__}")
-    except ImportError:
-        print("triton      (not installed — ROCm path uses HIP kernels directly)")
+    # not optional: unsloth's fused kernels are triton, and the image's build
+    # check pinned it to the ROCm build torch links against
+    import triton
+    import triton.backends
+
+    print(f"triton      {triton.__version__}  backends={sorted(triton.backends.backends)}")
+    assert "amd" in triton.backends.backends, "FAIL: triton has no amd backend"
 
     import bitsandbytes as bnb
 
@@ -148,17 +158,36 @@ def check_tiny_train() -> None:
     enc = tokenizer(prompts, return_tensors = "pt", padding = True, truncation = True, max_length = 64)
     enc = {k: v.cuda() for k, v in enc.items()}
     labels = enc["input_ids"].clone()
+    # the padding tokens are not a training target
+    labels[enc["attention_mask"] == 0] = -100
+
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    assert trainable, "FAIL: get_peft_model left no trainable parameters"
+    before = [p.detach().clone() for p in trainable]
 
     model.train()
-    optim = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-4)
+    optim = torch.optim.AdamW(trainable, lr = 1e-3)
+    losses = []
     for step in range(5):
         out = model(**enc, labels = labels)
-        out.loss.backward()
+        loss = out.loss
+        # a NaN here is what the bitsandbytes 4-bit ROCm bug looked like (bnb <= 0.49)
+        assert torch.isfinite(loss), f"FAIL: non-finite loss at step {step}: {loss.item()}"
+        loss.backward()
+        grads = [p.grad for p in trainable if p.grad is not None]
+        assert grads, f"FAIL: no gradient reached the LoRA weights at step {step}"
+        assert all(torch.isfinite(g).all() for g in grads), f"FAIL: non-finite gradient at step {step}"
         optim.step()
         optim.zero_grad(set_to_none = True)
-        print(f"step {step}  loss={out.loss.item():.4f}", flush = True)
+        losses.append(loss.item())
+        print(f"step {step}  loss={losses[-1]:.4f}", flush = True)
 
-    print("OK: 5 LoRA steps completed")
+    changed = sum(int(not torch.equal(a, b.detach())) for a, b in zip(before, trainable))
+    assert changed, "FAIL: the optimizer steps left every LoRA weight unchanged"
+    # the same batch five times over at lr 1e-3: the loss has to come down, or the
+    # forward/backward is not computing what it claims
+    assert losses[-1] < losses[0], f"FAIL: loss did not decrease over 5 steps on one batch: {losses}"
+    print(f"OK: 5 LoRA steps completed, loss {losses[0]:.4f} -> {losses[-1]:.4f}, {changed}/{len(trainable)} LoRA tensors updated")
 
 
 def main() -> int:

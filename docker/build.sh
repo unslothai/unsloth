@@ -8,18 +8,33 @@
 #   TAG=2026.05.1 ./build.sh   # custom tag
 #   UNSLOTH_REF=v2026.5.6 UNSLOTH_ZOO_REF=v2026.5.4 ./build.sh   # pin git refs
 #
-# ROCm: RDNA4 / Strix (gfx1150/1151/1200/1201) need a 7.x base and the matching
-# wheel index; the 6.x default only covers RDNA2/RDNA3 and CDNA:
-#   ROCM_VERSION=7.2.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2 \
-#       ./build.sh --rocm
+# ROCm: the default is the ROCm 7.2.4 base with the pytorch.org rocm7.2 wheels
+# (RDNA2, RDNA3, RDNA4, CDNA). Strix APUs and RDNA4 cards get AMD's per-arch
+# wheels with --gfx (or ROCM_GFX=...), which switches the index to
+# repo.amd.com/rocm/whl/<family>/ and the torch 2.11 line, as install.sh does:
+#   ./build.sh --rocm --gfx gfx1151        # Strix Halo
+#   ROCM_GFX=gfx1201 ./build.sh --rocm     # RX 9070 XT
+# Other bases: ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 ROCM=0
-for arg in "$@"; do
-    [[ "$arg" == "--rocm" ]] && ROCM=1
+ROCM_GFX="${ROCM_GFX:-}"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rocm) ROCM=1 ;;
+        --gfx)  [[ $# -ge 2 ]] || { echo "--gfx needs an arch (e.g. gfx1151)" >&2; exit 2; }
+                ROCM_GFX="$2"; shift ;;
+        --gfx=*) ROCM_GFX="${1#--gfx=}" ;;
+        *) echo "unknown option: $1 (build.sh takes --rocm [--gfx <arch>])" >&2; exit 2 ;;
+    esac
+    shift
 done
+if [[ -n "$ROCM_GFX" && $ROCM -eq 0 ]]; then
+    echo "--gfx / ROCM_GFX only applies to --rocm builds" >&2
+    exit 2
+fi
 
 TAG="${TAG:-latest}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
@@ -91,8 +106,12 @@ fi
 
 if [[ $ROCM -eq 1 ]]; then
     echo "Building ${IMAGE_NAME}:${TAG}  [AMD ROCm]"
-    echo "  ROCm           ${ROCM_VERSION}"
-    echo "  torch index    ${TORCH_INDEX_URL}"
+    echo "  ROCm           ${ROCM_VERSION}  Python ${PYTHON_VERSION}"
+    if [[ -n "$ROCM_GFX" ]]; then
+        echo "  torch index    AMD per-arch wheels for ${ROCM_GFX} (repo.amd.com/rocm/whl)"
+    else
+        echo "  torch index    ${TORCH_INDEX_URL}"
+    fi
     echo "  unsloth        @${UNSLOTH_REF}"
     echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
     echo
@@ -101,7 +120,9 @@ if [[ $ROCM -eq 1 ]]; then
         --progress=plain \
         -f Dockerfile.rocm \
         --build-arg ROCM_VERSION="${ROCM_VERSION}" \
+        --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
         --build-arg TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+        --build-arg ROCM_GFX="${ROCM_GFX}" \
         --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
         --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
         -t "${IMAGE_NAME}:${TAG}" \

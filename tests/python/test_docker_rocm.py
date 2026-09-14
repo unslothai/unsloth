@@ -1,0 +1,371 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+"""The AMD ROCm image's host-side plumbing: `docker/run.sh --rocm`,
+`docker/build.sh --rocm`, and the container entrypoint's refusal paths.
+
+None of these need an AMD GPU. run.sh and build.sh are driven with a recording
+`docker` stub and a staged /dev tree (the UNSLOTH_DEV_ROOT idiom); the
+entrypoint is driven the same way with stub `rocm-smi` and `python` binaries,
+so every message a user can hit before torch loads is checked here.
+"""
+
+import os
+import shutil
+import stat
+import subprocess
+
+import pytest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(os.path.dirname(_HERE))
+_DOCKER = os.path.join(_REPO, "docker")
+_RUN_SH = os.path.join(_DOCKER, "run.sh")
+_BUILD_SH = os.path.join(_DOCKER, "build.sh")
+_ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
+_DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
+_WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
+
+_posix_shell = pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None,
+    reason = "POSIX shell required",
+)
+
+
+def _stub(path, body):
+    with open(path, "w", encoding = "utf-8") as f:
+        f.write("#!/usr/bin/env bash\n" + body)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+# ── run.sh --rocm ────────────────────────────────────────────────────────────
+
+
+def _run_sh(tmp_path, args, *, kfd = True, nvidia = False, groups = "both", extra_env = None):
+    # a fresh sandbox per call: a test may drive run.sh twice
+    tmp_path = tmp_path / f"run{len(os.listdir(tmp_path))}"
+    tmp_path.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_log = tmp_path / "argv"
+    _stub(
+        str(bindir / "docker"),
+        'if [ "$1" = "info" ]; then echo " Runtimes: io.containerd.runc.v2 runc"; exit 0; fi\n'
+        'printf "%s\\n" "$@" > ' + str(argv_log) + "\nexit 0\n",
+    )
+    if nvidia:
+        _stub(str(bindir / "nvidia-smi"), 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n')
+    else:
+        _stub(str(bindir / "nvidia-smi"), "exit 1\n")
+    known = {"both": ("44", "992"), "none": (None, None)}
+    vid, ren = known[groups]
+    _stub(
+        str(bindir / "getent"),
+        'case "$2" in\n'
+        + (f'  video)  echo "video:x:{vid}:"; exit 0 ;;\n' if vid else "  video)  exit 2 ;;\n")
+        + (f'  render) echo "render:x:{ren}:"; exit 0 ;;\n' if ren else "  render) exit 2 ;;\n")
+        + "esac\nexit 2\n",
+    )
+    dev_root = tmp_path / "root"
+    (dev_root / "dev").mkdir(parents = True)
+    if nvidia:
+        (dev_root / "dev" / "nvidiactl").write_text("")
+    if kfd:
+        (dev_root / "dev" / "kfd").write_text("")
+        (dev_root / "dev" / "dri").mkdir()
+    env = dict(os.environ)
+    env["PATH"] = str(bindir) + ":/usr/bin:/bin"
+    env["UNSLOTH_DEV_ROOT"] = str(dev_root)
+    env["HOME"] = str(tmp_path / "home")
+    env["UNSLOTH_WORKDIR"] = str(tmp_path)
+    for leak in ("HF_TOKEN", "WANDB_API_KEY", "UNSLOTH_GPUS", "UNSLOTH_ALLOW_CPU",
+                 "UNSLOTH_STUDIO_VOLUME", "UNSLOTH_IMAGE", "UNSLOTH_ROCM",
+                 "HSA_OVERRIDE_GFX_VERSION", "UNSLOTH_ROCM_GFX_ARCH"):
+        env.pop(leak, None)
+    env.update(extra_env or {})
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", _RUN_SH, *args],
+        env = env, capture_output = True, text = True, timeout = 120,
+    )
+    assert proc.returncode == 0, f"run.sh failed: {proc.stderr}"
+    argv = argv_log.read_text().splitlines()
+    return argv, proc.stderr
+
+
+def _image_and_cmd(argv):
+    """The positional tail of `docker run`: image, then the container command."""
+    # every option run.sh emits takes a value or is a known flag
+    flags_with_value = {"--device", "--group-add", "--ulimit", "-v", "-e", "-p", "--gpus"}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("run", "--rm", "-it", "--ipc=host"):
+            i += 1
+        elif a in flags_with_value:
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            return argv[i], argv[i + 1:]
+    raise AssertionError(f"no image in {argv}")
+
+
+@_posix_shell
+class TestRunShRocm:
+    def test_rocm_passes_the_device_nodes_and_numeric_gids_not_gpus(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["--rocm", "true"])
+        assert "--gpus" not in argv
+        assert "/dev/kfd" in argv and "/dev/dri" in argv
+        gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
+        assert gids == ["44", "992"], argv
+        image, cmd = _image_and_cmd(argv)
+        assert image == "unsloth/unsloth-rocm:latest"
+        assert cmd == ["true"]
+
+    def test_the_wrapper_option_is_only_taken_from_the_front(self, tmp_path):
+        """A container command's own --rocm belongs to that command."""
+        argv, _ = _run_sh(tmp_path, ["--rocm", "python", "train.py", "--rocm"])
+        _, cmd = _image_and_cmd(argv)
+        assert cmd == ["python", "train.py", "--rocm"], argv
+
+    def test_a_later_rocm_is_not_the_wrapper_option(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["python", "train.py", "--rocm"], nvidia = True)
+        assert "--gpus" in argv, argv
+        image, cmd = _image_and_cmd(argv)
+        assert image == "unsloth/unsloth:latest"
+        assert cmd == ["python", "train.py", "--rocm"]
+
+    def test_the_env_form_selects_rocm_too(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["true"], extra_env = {"UNSLOTH_ROCM": "1"})
+        image, _ = _image_and_cmd(argv)
+        assert image == "unsloth/unsloth-rocm:latest"
+        assert "/dev/kfd" in argv
+
+    def test_no_kfd_warns_and_starts_without_devices(self, tmp_path):
+        """Docker Desktop has no /dev/kfd; the entrypoint then explains, so the
+        container must still start rather than docker failing on a missing node."""
+        argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], kfd = False)
+        assert "--device" not in argv and "--gpus" not in argv, argv
+        assert "/dev/kfd is not present" in stderr and "Docker Desktop" in stderr, stderr
+
+    def test_a_mixed_host_is_not_offered_the_nvidia_toolkit(self, tmp_path):
+        """An NVIDIA + AMD box under --rocm runs the ROCm image through the AMD nodes;
+        the toolkit prompt is for the --gpus path only."""
+        argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], nvidia = True,
+                               extra_env = {"UNSLOTH_INSTALL_TOOLKIT": "0"})
+        assert "--gpus" not in argv
+        assert "/dev/kfd" in argv
+        assert "Container Toolkit" not in stderr and "no NVIDIA GPU" not in stderr, stderr
+
+    def test_missing_groups_degrade_to_the_devices_alone(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["--rocm", "true"], groups = "none")
+        assert "/dev/kfd" in argv and "--group-add" not in argv, argv
+
+    def test_the_gfx_overrides_are_forwarded_only_when_set(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["--rocm", "true"])
+        assert "HSA_OVERRIDE_GFX_VERSION" not in argv and "UNSLOTH_ROCM_GFX_ARCH" not in argv
+        argv, _ = _run_sh(tmp_path, ["--rocm", "true"], extra_env = {
+            "HSA_OVERRIDE_GFX_VERSION": "11.0.0", "UNSLOTH_ROCM_GFX_ARCH": "gfx1151"})
+        env_flags = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        # the dash-only form: docker reads the value from the environment, so it
+        # never lands in argv
+        assert "HSA_OVERRIDE_GFX_VERSION" in env_flags and "UNSLOTH_ROCM_GFX_ARCH" in env_flags
+
+    def test_the_studio_volume_and_caches_are_mounted_like_the_cuda_path(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["--rocm", "true"])
+        mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+        assert "unsloth-studio:/opt/unsloth-studio" in mounts, mounts
+        assert any(m.endswith(":/workspace/.cache/huggingface") for m in mounts), mounts
+
+    def test_a_custom_image_is_kept(self, tmp_path):
+        argv, _ = _run_sh(tmp_path, ["--rocm", "true"], extra_env = {"UNSLOTH_IMAGE": "me/rocm:dev"})
+        image, _ = _image_and_cmd(argv)
+        assert image == "me/rocm:dev"
+
+    def test_no_mapfile(self):
+        """run.sh runs on the host, and macOS ships bash 3.2, which has no mapfile."""
+        code = "\n".join(
+            ln for ln in open(_RUN_SH, encoding = "utf-8").read().splitlines()
+            if not ln.lstrip().startswith("#")
+        )
+        assert "mapfile" not in code and "readarray" not in code
+
+    def test_the_plain_nvidia_path_is_unchanged(self, tmp_path):
+        argv, stderr = _run_sh(tmp_path, ["true"], nvidia = True)
+        assert argv[argv.index("--gpus") + 1] == "all"
+        assert "/dev/kfd" not in argv and "--group-add" not in argv
+        assert "rocm" not in stderr.lower(), stderr
+
+
+# ── build.sh --rocm ──────────────────────────────────────────────────────────
+
+_SHA_U = "a" * 40
+_SHA_Z = "b" * 40
+
+
+def _build_sh(tmp_path, args, extra_env = None, expect_rc = 0):
+    tmp_path = tmp_path / f"build{len(os.listdir(tmp_path))}"
+    tmp_path.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    args_file = tmp_path / "docker-args.txt"
+    _stub(str(bindir / "docker"), f'printf "%s\\n" "$@" > {args_file}\n')
+    _stub(str(bindir / "git"),
+          'if [ "$1" = "ls-remote" ]; then\n'
+          '  case "$2" in\n'
+          f'    *unsloth-zoo*) echo -e "{_SHA_Z}\\tHEAD" ;;\n'
+          '    *notebooks*) echo "ls-remote notebooks should not run for --rocm" >&2; exit 3 ;;\n'
+          f'    *) echo -e "{_SHA_U}\\tHEAD" ;;\n'
+          '  esac\n  exit 0\nfi\nexit 0\n')
+    _stub(str(bindir / "curl"), 'echo "curl should not run for --rocm" >&2; exit 1\n')
+    env = dict(os.environ)
+    env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
+    for leak in ("ROCM_GFX", "ROCM_VERSION", "TORCH_INDEX_URL", "TAG", "IMAGE_NAME"):
+        env.pop(leak, None)
+    env.update(extra_env or {})
+    proc = subprocess.run(["bash", _BUILD_SH, *args], env = env, capture_output = True,
+                          text = True, cwd = str(tmp_path))
+    assert proc.returncode == expect_rc, proc.stdout + proc.stderr
+    argv = args_file.read_text(encoding = "utf-8").splitlines() if args_file.exists() else []
+    return proc, argv
+
+
+def _build_arg(argv, name):
+    for i, item in enumerate(argv):
+        if item == "--build-arg" and argv[i + 1].startswith(f"{name}="):
+            return argv[i + 1].split("=", 1)[1]
+    raise AssertionError(f"--build-arg {name} was never passed: {argv}")
+
+
+@_posix_shell
+class TestBuildShRocm:
+    def test_defaults_are_rocm72_frozen_refs_and_no_cuda_lookups(self, tmp_path):
+        proc, argv = _build_sh(tmp_path, ["--rocm"])
+        assert "Dockerfile.rocm" in argv
+        assert _build_arg(argv, "ROCM_VERSION") == "7.2.4"
+        assert _build_arg(argv, "TORCH_INDEX_URL") == "https://download.pytorch.org/whl/rocm7.2"
+        assert _build_arg(argv, "ROCM_GFX") == ""
+        assert _build_arg(argv, "PYTHON_VERSION") == "3.12"
+        assert _build_arg(argv, "UNSLOTH_REF") == _SHA_U
+        assert _build_arg(argv, "UNSLOTH_ZOO_REF") == _SHA_Z
+        assert argv[argv.index("-t") + 1] == "unsloth-rocm:latest"
+        assert "should not run" not in proc.stderr
+        assert "run.sh --rocm" in proc.stdout
+
+    def test_gfx_selects_the_per_arch_wheels(self, tmp_path):
+        _, argv = _build_sh(tmp_path, ["--rocm", "--gfx", "gfx1151"])
+        assert _build_arg(argv, "ROCM_GFX") == "gfx1151"
+        _, argv = _build_sh(tmp_path, ["--rocm", "--gfx=gfx1201"])
+        assert _build_arg(argv, "ROCM_GFX") == "gfx1201"
+        _, argv = _build_sh(tmp_path, ["--rocm"], extra_env = {"ROCM_GFX": "gfx1150"})
+        assert _build_arg(argv, "ROCM_GFX") == "gfx1150"
+
+    def test_gfx_without_rocm_is_refused(self, tmp_path):
+        proc, argv = _build_sh(tmp_path, ["--gfx", "gfx1151"], expect_rc = 2)
+        assert argv == [], "docker build ran anyway"
+        assert "--rocm" in proc.stderr
+
+    def test_an_unknown_option_is_refused(self, tmp_path):
+        proc, argv = _build_sh(tmp_path, ["--rocm", "--bogus"], expect_rc = 2)
+        assert argv == []
+        assert "unknown option" in proc.stderr
+
+    def test_the_dockerfile_defaults_match(self):
+        body = open(_DOCKERFILE, encoding = "utf-8").read()
+        assert "ARG ROCM_VERSION=7.2.4" in body
+        assert "ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2" in body
+        assert "FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}" in body
+        # a knowingly broken fallback range is worse than a failed build
+        assert "bitsandbytes>=0.49" not in body
+        assert "bitsandbytes>=0.50.0" in body
+
+    def test_the_workflow_defaults_match_and_its_main_group_is_per_commit(self):
+        body = open(_WORKFLOW, encoding = "utf-8").read()
+        assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
+        assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
+        assert "6.2" not in body.replace("ubuntu-22.04", "")
+        assert "github.ref == 'refs/heads/main' && github.sha" in body
+        assert "git ls-remote https://github.com/unslothai/unsloth-zoo" in body
+        assert "needs.prepare.outputs.stable == 'true'" in body
+
+
+# ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
+
+
+def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
+                python_body = None, env_extra = None):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    dev_root = tmp_path / "root"
+    (dev_root / "dev").mkdir(parents = True)
+    if kfd:
+        (dev_root / "dev" / "kfd").write_text("")
+        if not readable:
+            os.chmod(dev_root / "dev" / "kfd", 0)
+    _stub(str(bindir / "rocm-smi"),
+          'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n")
+    # the two torch heredocs; stand in for torch on this host
+    _stub(str(bindir / "python"), python_body or "cat > /dev/null\nexit 0\n")
+    build_info = tmp_path / "build-info"
+    build_info.write_text("TORCH_INDEX_URL=x\nROCM_GFX=\nROCM_VERSION=7.2.4\n")
+    dump = tmp_path / "ran"
+    env = {
+        "PATH": str(bindir) + ":/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "UNSLOTH_DEV_ROOT": str(dev_root),
+        "UNSLOTH_ROCM_BUILD_INFO": str(build_info),
+    }
+    env.update(env_extra or {})
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", _ENTRYPOINT, "bash", "-c", f"echo ran > {dump}"],
+        env = env, capture_output = True, text = True, timeout = 60,
+    )
+    return proc.returncode, dump.exists(), proc.stderr
+
+
+@_posix_shell
+class TestRocmEntrypoint:
+    def test_no_kfd_refuses_and_names_docker_desktop(self, tmp_path):
+        rc, ran, err = _entrypoint(tmp_path, kfd = False)
+        assert rc == 1 and not ran
+        assert "/dev/kfd not found" in err and "Docker Desktop" in err, err
+        # the old advice: a WSL or Docker Desktop host cannot modprobe anything
+        assert "modprobe" not in err, err
+        assert "run.sh --rocm" in err
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason = "root reads a mode-0 file")
+    def test_an_unreadable_kfd_names_the_group_ids(self, tmp_path):
+        rc, ran, err = _entrypoint(tmp_path, readable = False)
+        assert rc == 1 and not ran
+        assert "not readable" in err and "--group-add" in err and "NUMERIC" in err, err
+
+    def test_no_gpu_for_rocm_smi_refuses(self, tmp_path):
+        rc, ran, err = _entrypoint(tmp_path, smi_sees_gpu = False)
+        assert rc == 1 and not ran
+        assert "No GPU visible to rocm-smi" in err and "/dev/dri" in err, err
+
+    def test_the_skip_flag_runs_the_command_without_probing(self, tmp_path):
+        rc, ran, err = _entrypoint(tmp_path, kfd = False, env_extra = {"UNSLOTH_SKIP_GPU_CHECK": "1"})
+        assert rc == 0 and ran, err
+
+    def test_a_happy_host_runs_the_command(self, tmp_path):
+        rc, ran, err = _entrypoint(tmp_path)
+        assert rc == 0 and ran, err
+
+    def test_a_failing_torch_check_stops_before_the_command(self, tmp_path):
+        rc, ran, _ = _entrypoint(tmp_path, python_body = "cat > /dev/null\nexit 1\n")
+        assert rc == 1 and not ran
+
+    def test_the_torch_check_asserts_a_hip_build_first(self):
+        """A CUDA or CPU torch must be named as the image's fault, not the host's."""
+        body = open(_ENTRYPOINT, encoding = "utf-8").read()
+        check3 = body[body.index("Check 3"):body.index("Check 4")]
+        assert "hip_ver is None" in check3 and "not a ROCm build" in check3
+        assert "6.2" not in check3, "the ROCm version is read from the build, not hardcoded"
+
+    def test_the_arch_table_carries_no_marketing_names(self):
+        """Card-name tables live in install.sh and studio/ under a parity test; a
+        seventh copy here would drift. Families only."""
+        body = open(_ENTRYPOINT, encoding = "utf-8").read()
+        import re
+        assert not re.search(r"RX\s*\d{4}", body), "marketing names in the entrypoint's arch table"
+        assert "gfx906" in body and "6.3" in body, "gfx906 needs the version-aware note"
