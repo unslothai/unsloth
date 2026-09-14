@@ -644,12 +644,16 @@ def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_pa
     info = site / "unsloth-2026.9.4.dist-info"
     info.mkdir()
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.4\n")
-    (info / "direct_url.json").write_text('{"url": "file:///opt/venv-src", "dir_info": {"editable": true}}')
+    (info / "direct_url.json").write_text(
+        '{"url": "file:///opt/venv-src", "dir_info": {"editable": true}}'
+    )
     checkout = tmp_path / "checkout"
     decoy = checkout / "unsloth-0.0.1.dist-info"
     decoy.mkdir(parents = True)
     (decoy / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 0.0.1\n")
-    (decoy / "direct_url.json").write_text('{"url": "file:///checkout", "dir_info": {"editable": true}}')
+    (decoy / "direct_url.json").write_text(
+        '{"url": "file:///checkout", "dir_info": {"editable": true}}'
+    )
     res = _run(STUDIO_UPDATE, ["--no-restart"], env, cwd = checkout)
     assert res.returncode != 0
     assert "STUB-PIP-REQ -e file:///opt/venv-src" in _calls(env), _calls(env)
@@ -666,7 +670,9 @@ def test_studio_update_records_every_packages_target_for_the_rollback(tmp_path: 
     info = site / "bar-1.0.dist-info"
     info.mkdir()
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: bar\nVersion: 1.0\n")
-    res = _run(STUDIO_UPDATE, ["--no-restart", "--packages", "unsloth unsloth_zoo bar>=2 foo==2"], env)
+    res = _run(
+        STUDIO_UPDATE, ["--no-restart", "--packages", "unsloth unsloth_zoo bar>=2 foo==2"], env
+    )
     calls = _calls(env)
     assert res.returncode != 0
     req = [l for l in calls.splitlines() if l.startswith("STUB-PIP-REQ")][0]
@@ -715,7 +721,9 @@ def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
     assert res.returncode != 0
     assert "back in place" not in res.stderr, res.stderr
     assert "could not put every previous package back" in res.stderr, res.stderr
-    assert (home / ".src-update.rollback").is_file(), "the record was dropped after a failed restore"
+    assert (
+        home / ".src-update.rollback"
+    ).is_file(), "the record was dropped after a failed restore"
     del env["STUB_PIP_EXIT"]
     res = _run(STUDIO_UPDATE, ["--no-restart"], env)
     assert "putting the previous packages back first" in res.stdout, res.stdout
