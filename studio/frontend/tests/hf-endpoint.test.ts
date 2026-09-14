@@ -67,6 +67,22 @@ test("endpoints are normalised the way the backend normalises them", () => {
   }
 });
 
+test("the empty-port rule reads the authority, not the whole URL", () => {
+  // The backend tests parts.netloc, so a whole-string check here would reject a
+  // mirror it accepts and leave the frontend on huggingface.co while the backend
+  // routed through the mirror: the split-endpoint state this feature removes.
+  for (const [raw, expected] of [
+    ["https://hub.internal/hf:", "https://hub.internal/hf:"],
+    ["https://host:", DEFAULT_HF_ENDPOINT],
+    ["https://:8080", DEFAULT_HF_ENDPOINT],
+    ["https://[::1]:", DEFAULT_HF_ENDPOINT],
+  ] as const) {
+    resetHfEndpoints();
+    setHfEndpoints(raw, null);
+    assert.equal(getHfEndpoint(), expected, `for ${raw}`);
+  }
+});
+
 test("an older backend that reports neither field keeps the configured mirror", () => {
   // /api/health on an older Studio carries no hf_endpoint at all. Treating that
   // as "reset to default" would send a mirror-only deployment back to a host it

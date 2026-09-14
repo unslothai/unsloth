@@ -66,8 +66,12 @@ function normalizeEndpoint(raw: string | null | undefined): string | null {
   // "*" would reach the backend's CSP connect-src as "https://*", a source that
   // allows every https origin, and is never a host to send a request to.
   if (parsed.hostname.includes("*")) return null;
-  if (withScheme.replace(/^https?:\/\//, "").startsWith(":")) return null;
-  if (/:$/.test(withScheme)) return null;
+  // "host:" parses with no port and is not a usable origin, but the check has to
+  // look at the authority alone: a path may legally end in a colon, and the
+  // backend sanitizer tests parts.netloc, so a whole-string test here would
+  // reject a mirror the backend accepts and split the two apart again.
+  const authority = withScheme.slice(withScheme.indexOf("://") + 3).split(/[/?#]/)[0];
+  if (authority.startsWith(":") || authority.endsWith(":")) return null;
   // Credentials, query and fragment are meaningless on a base URL and would be
   // carried into every request built from it.
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
