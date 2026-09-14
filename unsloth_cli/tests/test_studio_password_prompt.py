@@ -1931,6 +1931,12 @@ def test_cli_and_backend_agree_on_which_hosts_are_exposed(monkeypatch, host):
 # ── a backgrounded shell job is not a usable terminal ─────────────────
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     """`unsloth studio -H 0.0.0.0 &` must still launch.
 
