@@ -1410,9 +1410,7 @@ class TestProbeTier:
 
     def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
         # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
-        monkeypatch.setattr(
-            "utils.transformers_version.TRANSFORMERS_DEFAULT_VERSION", "5.5.0"
-        )
+        monkeypatch.setattr("utils.transformers_version.TRANSFORMERS_DEFAULT_VERSION", "5.5.0")
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
         )
@@ -1656,9 +1654,7 @@ class TestProbeGating:
         assert get_transformers_tier("org/k2-horizon-like", probe = True) == "default"
         assert seen == [""]
 
-    def test_remote_tokenizer_probe_selects_higher_sidecar_after_ambient_failure(
-        self, monkeypatch
-    ):
+    def test_remote_tokenizer_probe_selects_higher_sidecar_after_ambient_failure(self, monkeypatch):
         tv = self._prepare_remote_tokenizer_probe(monkeypatch, "5.5.0")
         results = iter(
             [
@@ -1679,7 +1675,6 @@ class TestProbeGating:
 
     def test_tier_probe_keeps_remote_code_disabled(self):
         import utils.transformers_version as tv
-
         assert "AutoConfig.from_pretrained(model_name, trust_remote_code=False)" in (
             tv._PROBE_CONFIG_SCRIPT
         )

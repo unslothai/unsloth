@@ -1681,12 +1681,7 @@ def _probe_tier(
     return _cache(floor, skipped = False)
 
 
-
-def _probe_tokenizer_tier(
-    model_name: str,
-    hf_token: str | None,
-    reason: str,
-) -> str:
+def _probe_tokenizer_tier(model_name: str, hf_token: str | None, reason: str) -> str:
     """Resolve a tokenizer-only 5.x signal without demoting a sufficient ambient default.
 
     Tokenizer-only models can require remote code, which the secure AutoConfig probe is
