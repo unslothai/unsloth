@@ -44,7 +44,7 @@ if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
 
 # torch.amp.custom_fwd(device_type=) is 2.4+; say so here, not as an AttributeError mid-import.
 if DEVICE_TYPE == "npu" and Version(torch.__version__) < Version("2.4.0"):
-    raise RuntimeError("Ascend NPU currently supports unsloth with torch.version >= 2.4.0")
+    raise RuntimeError("NPUs currently support unsloth with torch.version >= 2.4.0")
 
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
