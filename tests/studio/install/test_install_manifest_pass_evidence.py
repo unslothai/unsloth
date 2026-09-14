@@ -1031,9 +1031,7 @@ def test_the_pass_lock_never_waits_for_the_peer(tmp_path: pathlib.Path) -> None:
     assert time.monotonic() - started < 5.0
 
 
-def test_a_root_that_cannot_hold_a_pass_lock_reads_as_uncontended(
-    tmp_path: pathlib.Path,
-) -> None:
+def test_a_root_that_cannot_hold_a_pass_lock_reads_as_uncontended(tmp_path: pathlib.Path) -> None:
     """Best effort, as the manifest lock: an unlockable filesystem keeps the fast path."""
     with im.pass_lock(tmp_path / "does" / "not" / "exist") as uncontended:
         assert uncontended is True

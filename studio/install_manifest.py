@@ -486,7 +486,6 @@ def pass_lock(root: Optional[Path] = None):
     if handle is not None:
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
-
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 locked = True
