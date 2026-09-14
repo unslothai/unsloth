@@ -471,7 +471,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -906,6 +906,16 @@ def test_compact_media_link_keeps_accessible_name_and_truncation():
     assert "aria-label={label}" in button
     assert 'cn("min-w-0 truncate", labelClassName)' in button
     assert "arrowClassName" in button
+
+
+def test_media_page_link_tooltip_drops_below_titlebar_controls():
+    """unslothai/unsloth#10226: Images/Video park this link in the top-right header beside
+    Windows controls; a top tooltip blocks minimize/maximize/close."""
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    tooltip = source.split("<TooltipContent", 1)[1].split("</TooltipContent>", 1)[0]
+
+    assert 'side="bottom"' in tooltip
+    assert "sideOffset={6}" in tooltip
 
 
 def test_media_page_headers_out_stack_the_mac_drag_region():
