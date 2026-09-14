@@ -311,6 +311,10 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 6950 XT", "gfx103X-all"),
     ("AMD Radeon RX 6850M XT", "gfx103X-all"),
     ("AMD Radeon RX 6550M", "gfx103X-all"),
+    # The rest of the Navi 24 line, found the same way: enumerating the shipped RDNA 2
+    # SKUs against the table shows these two were the only remaining names it missed.
+    ("AMD Radeon RX 6450M", "gfx103X-all"),
+    ("AMD Radeon PRO W6300", "gfx103X-all"),
 ]
 
 # Exact gfx ids, transcribed from AMD's ROCm compatibility matrix (the "Radeon GPU" list at
