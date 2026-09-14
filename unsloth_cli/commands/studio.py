@@ -3341,6 +3341,23 @@ def _uv_is_store_name(name: str) -> bool:
     return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_STORES
 
 
+def _uv_cache_folds_case(cache_dir: Path) -> bool:
+    """Measured on the cache filesystem, not assumed from the platform, exactly as install.sh
+    does it: default APFS folds, ext4 does not, and a Mac can have either mounted."""
+    probe = cache_dir / f".unsloth-case-probe.{os.getpid()}-A"
+    try:
+        probe.mkdir()
+    except OSError:
+        return False
+    try:
+        return (cache_dir / f".unsloth-case-probe.{os.getpid()}-a").is_dir()
+    finally:
+        try:
+            probe.rmdir()
+        except OSError:
+            pass
+
+
 def _uv_cache_is_writable(cache_dir: Path) -> bool:
     """A real create, as install.sh's write probe does: mode bits do not answer for a network mount, and uv aborts on a cache it
     cannot write rather than falling back.
@@ -3348,12 +3365,16 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     The stores too, not just the root: uv writes into them, so a root-only probe passes on a
     cache uv then aborts on. Mirrors install.sh's _uv_cache_is_writable."""
     probes = [cache_dir]
+    folds = _uv_cache_folds_case(cache_dir)
     try:
         # Only the directories uv OWNS: an unrelated read-only one must not disqualify a
         # usable cache, and that is what the kind list above is for.
         for entry in cache_dir.iterdir():
             if not _uv_is_store_name(entry.name):
-                continue
+                # On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`, so
+                # skipping it would report a cache writable that uv then aborts on.
+                if not (folds and _uv_is_store_name(entry.name.lower())):
+                    continue
             if not entry.is_dir():
                 # A file, or a symlink dangling or not, is an existing path to mkdir, so uv
                 # cannot make the store and aborts. Skipping it would report the cache writable.
@@ -3367,10 +3388,21 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
                 pass
         except OSError:
             return False
-    # uv opens its control files FOR WRITING on every command, so a merely readable one aborts
-    # cache init. Only these, not package files, which uv tolerates.
+    # Only the names uv is measured to need writable: rejecting more throws away the warm cache
+    # this path exists to find. Every control file at 0444 against uv 0.10.7: the root .lock
+    # aborts (exit 2) and sdists-v9/.git aborts (exit 2); root CACHEDIR.TAG and .gitignore, and
+    # .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and wheels-v6, all
+    # install fine. uv creates only the three root files, so a per-store .git is someone else's.
     for target in probes:
-        for name in ("CACHEDIR.TAG", ".gitignore", ".git", ".lock"):
+        if target == cache_dir:
+            names = (".lock",)
+        elif target.name.lower().startswith("sdists-"):
+            # The one store measured to abort on a read-only .git. Rejecting a cache uv accepts
+            # costs the warm cache this path exists to find, so the rest are left alone.
+            names = (".git",)
+        else:
+            continue
+        for name in names:
             control = target / name
             if control.is_file() and not os.access(control, os.R_OK | os.W_OK):
                 return False

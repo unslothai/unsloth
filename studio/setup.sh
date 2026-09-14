@@ -1023,8 +1023,24 @@ _uv_cache_usable() {
     # or an unrelated read-only one disqualifies a usable cache. install.sh's
     # _uv_cache_is_writable is the same check.
     _uv_cache_probe_writable "$1" || return 1
+    # Measured, not assumed, as install.sh does it: default APFS folds case and ext4 does not,
+    # so `Python-V0` is the same path uv opens as `python-v0` on one and not the other. Root
+    # already proven writable above.
+    _uvu_fold=0
+    _uvu_probe="$1/.unsloth-case-probe.$$-A"
+    if mkdir "$_uvu_probe" 2>/dev/null; then
+        [ -d "$1/.unsloth-case-probe.$$-a" ] && _uvu_fold=1
+        rmdir "$_uvu_probe" 2>/dev/null || true
+    fi
+    unset _uvu_probe
     for _uvu_bucket in "$1"/*; do
-        _uv_is_bucket_name "${_uvu_bucket##*/}" || continue
+        _uvu_name="${_uvu_bucket##*/}"
+        if ! _uv_is_bucket_name "$_uvu_name"; then
+            # Only the NAME folds here; what the entry IS is decided below either way.
+            [ "$_uvu_fold" = 1 ] || continue
+            case "$_uvu_name" in *[[:upper:]]*) ;; *) continue ;; esac
+            _uv_is_bucket_name "$(printf '%s' "$_uvu_name" | tr '[:upper:]' '[:lower:]')" || continue
+        fi
         if [ ! -d "$_uvu_bucket" ]; then
             # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
             # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of
@@ -1036,22 +1052,41 @@ _uv_cache_usable() {
             continue
         fi
         if ! _uv_cache_probe_writable "$_uvu_bucket"; then
-            unset _uvu_bucket
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+        # Inside the store, and only inside one uv owns: a `*-v[0-9]*` glob also reaches
+        # `unused-v999/.git`, and a read-only file there condemned a cache real uv uses fine.
+        # sdists-* only: that is the one store measured to abort on a read-only .git, and
+        # rejecting a cache uv accepts costs the warm cache this path exists to find.
+        case "$_uvu_name" in sdists-*) _uvu_ctl=.git ;; *) _uvu_ctl="" ;; esac
+        if [ -n "$_uvu_ctl" ] && ! _uv_control_files_writable "$_uvu_bucket" "$_uvu_ctl"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
             return 1
         fi
     done
-    unset _uvu_bucket
-    # uv opens its control files FOR WRITING on every command, so a merely readable one aborts
-    # cache init. Only these, not package files, which uv tolerates.
-    for _uvu_file in "$1"/CACHEDIR.TAG "$1"/.gitignore "$1"/.lock \
-        "$1"/*-v[0-9]*/.git "$1"/*-v[0-9]*/.gitignore "$1"/*-v[0-9]*/.lock; do
-        [ -f "$_uvu_file" ] || continue
-        if [ ! -r "$_uvu_file" ] || [ ! -w "$_uvu_file" ]; then
-            unset _uvu_file
+    unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+    _uv_control_files_writable "$1" .lock || return 1
+    return 0
+}
+
+_uv_control_files_writable() {  # <dir> <name>...
+    # Only the names uv is measured to need writable, because rejecting more throws away the
+    # warm cache this whole path exists to find. Every control file at 0444 against uv 0.10.7:
+    # root .lock ABORTS (exit 2) and sdists-v9/.git ABORTS (exit 2); root CACHEDIR.TAG and
+    # .gitignore, and .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and
+    # wheels-v6, all install fine. uv itself creates only the three root files, so a per-store
+    # .git is someone else's, and one of them is proven to break uv. Re-measure on a pin bump.
+    _uvc_dir=$1
+    shift
+    for _uvc_name in "$@"; do
+        [ -f "$_uvc_dir/$_uvc_name" ] || continue
+        if [ ! -r "$_uvc_dir/$_uvc_name" ] || [ ! -w "$_uvc_dir/$_uvc_name" ]; then
+            unset _uvc_dir _uvc_name
             return 1
         fi
     done
-    unset _uvu_file
+    unset _uvc_dir _uvc_name
     return 0
 }
 

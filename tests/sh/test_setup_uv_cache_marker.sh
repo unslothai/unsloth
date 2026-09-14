@@ -23,6 +23,7 @@ HELPERS=$(awk '
     /^_uv_no_cache_requested\(\) \{/ { grab = 1 }
     /^_uv_cache_probe_writable\(\) \{/ { grab = 1 }
     /^_uv_cache_usable\(\) \{/ { grab = 1 }
+    /^_uv_control_files_writable\(\) \{/ { grab = 1 }
     /^_uv_cache_warm\(\) \{/ { grab = 1 }
     /^_recorded_uv_cache\(\) \{/ { grab = 1 }
     /^_UV_MARKER_BOM=/ { print; next }
@@ -37,7 +38,7 @@ SELECTOR=$(awk '
     grab && /^fi$/ { exit }
 ' "$SETUP_SH")
 
-for _need in _uv_is_bucket_name _uv_no_cache_requested _uv_cache_probe_writable _uv_cache_usable _uv_cache_warm _recorded_uv_cache; do
+for _need in _uv_is_bucket_name _uv_no_cache_requested _uv_cache_probe_writable _uv_cache_usable _uv_control_files_writable _uv_cache_warm _recorded_uv_cache; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_need}() {"; then
         echo "FATAL: could not extract $_need from setup.sh" >&2
         exit 1
@@ -195,6 +196,44 @@ for shell in sh bash; do
     rm -f "$BLOCKFILE/interpreter-v4"
     assert_eq "$shell: and the same cache is adopted once it is gone" \
         "$BLOCKFILE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+
+    # `*-v[0-9]*/.lock` also reaches `unused-v999`, a kind `_uv_is_bucket_name` rejects on
+    # purpose. A read-only control-looking file there condemned a cache real uv uses fine
+    # (measured: probe REJECT, uv exit 0), so the standalone update lost its warm cache.
+    STRAY_CTL="$CASE/stray control file/uv"
+    warm "$STRAY_CTL"
+    mkdir -p "$STRAY_CTL/unused-v999"
+    : > "$STRAY_CTL/unused-v999/.lock"
+    record "$HOME_DIR" "$STRAY_CTL\\n"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$STRAY_CTL/unused-v999/.lock" 2>/dev/null; then
+        assert_eq "$shell: a control file outside uv's stores does not condemn the cache" \
+            "$STRAY_CTL" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0644 "$STRAY_CTL/unused-v999/.lock" 2>/dev/null || true
+    fi
+    # ...while a .git inside a store still does. Measured on uv 0.10.7: sdists-v9/.git at 0444
+    # aborts with "Permission denied", exit 2. uv creates no per-store control files itself, so
+    # this one is someone else's, and it is the one proven to break uv.
+    mkdir -p "$STRAY_CTL/sdists-v9"
+    : > "$STRAY_CTL/sdists-v9/.git"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$STRAY_CTL/sdists-v9/.git" 2>/dev/null; then
+        assert_eq "$shell: a read-only .git inside a store still does" \
+            "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0644 "$STRAY_CTL/sdists-v9/.git" 2>/dev/null || true
+    fi
+    # And the root .lock, the other one measured to abort (exit 2).
+    : > "$STRAY_CTL/.lock"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$STRAY_CTL/.lock" 2>/dev/null; then
+        assert_eq "$shell: a read-only root .lock is not usable either" \
+            "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0644 "$STRAY_CTL/.lock" 2>/dev/null || true
+    fi
+    # A CACHEDIR.TAG at 0444 installs fine (measured), so it must not cost the warm cache.
+    : > "$STRAY_CTL/CACHEDIR.TAG"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0444 "$STRAY_CTL/CACHEDIR.TAG" 2>/dev/null; then
+        assert_eq "$shell: a read-only CACHEDIR.TAG does not, since uv tolerates it" \
+            "$STRAY_CTL" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0644 "$STRAY_CTL/CACHEDIR.TAG" 2>/dev/null || true
+    fi
 
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
