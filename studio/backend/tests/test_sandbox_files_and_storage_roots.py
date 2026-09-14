@@ -781,6 +781,69 @@ def test_a_first_tool_call_waits_out_a_move_already_in_staging(tmp_path, monkeyp
     assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
 
 
+def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, monkeypatch):
+    """The same window, reached through the done flag instead of the missing directory.
+
+    While one session sits in staging, neither root holds it, so a whole-tree pass that lists
+    the legacy root right then finds it empty, moves nothing, and reports the migration
+    finished. A first tool call for that same chat would then return at the flag without ever
+    reaching the wait, with the same empty sandbox at the end of it."""
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    session = fake_home / "studio_sandbox" / "__LOCALID_flag"
+    session.mkdir(parents = True)
+    (session / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_flag" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    root = tools.sandbox_root()
+    mover = threading.Thread(
+        target = lambda: tools._migrate_one_legacy_session(root, "__LOCALID_flag"),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the per-session move never reached the staging window"
+
+    tools._migrate_legacy_sandbox(root)  # sees an empty legacy root and sets the flag
+    assert tools._legacy_sandbox_migrated, "this test is only meaningful with the flag set"
+
+    result = {}
+    caller = threading.Thread(
+        target = lambda: result.update(
+            workdir = Path(tools.get_sandbox_workdir("__LOCALID_flag")),
+        ),
+        daemon = True,
+    )
+    caller.start()
+    caller.join(1.0)
+    returned_early = not caller.is_alive()
+    release.set()
+    caller.join(10)
+    mover.join(10)
+
+    assert not returned_early, "the flag let the first tool call answer from inside the window"
+    assert "workdir" in result, "the first tool call never returned"
+    assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
     file that always 404s."""

@@ -7994,27 +7994,36 @@ def _staged_move(source: str, target: str, name: str) -> None:
     already has and strand the files. Filled under a name nothing resolves to, then renamed,
     which on one filesystem is atomic."""
     staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
+    # Announced for exactly as long as neither end of the move is where a reader looks. Anything
+    # deciding there is nothing to migrate has to consult this first, or it decides it during the
+    # one moment the evidence is missing.
+    with _legacy_locks_guard:
+        _legacy_moves_in_flight.add(name)
     try:
-        shutil.move(source, staging)
-    except OSError:
-        # Half filled and ours, and the source is still where it was.
-        shutil.rmtree(staging, ignore_errors = True)
-        raise
-    # Marked here, not after the rename: across filesystems the move has already removed the legacy copy, so from this
-    # instant the staging tree is the only one there is and a kill before the marker would leave it unfindable.
-    _preserve_foreign_marker(staging, name)
-    _mark_sandbox(staging, name)
-    try:
-        os.rename(staging, target)
-    except OSError:
-        # The move already took the legacy copy, so this tree is the only one and deleting it would lose the files. It
-        # is marked, so _marked_sandbox_in finds it; put it back and let the next pass retry.
         try:
-            os.rename(staging, source)
+            shutil.move(source, staging)
         except OSError:
-            logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
-        raise
-    _mark_sandbox(target, name)
+            # Half filled and ours, and the source is still where it was.
+            shutil.rmtree(staging, ignore_errors = True)
+            raise
+        # Marked here, not after the rename: across filesystems the move has already removed the legacy copy, so from
+        # this instant the staging tree is the only one there is and a kill before the marker would leave it unfindable.
+        _preserve_foreign_marker(staging, name)
+        _mark_sandbox(staging, name)
+        try:
+            os.rename(staging, target)
+        except OSError:
+            # The move already took the legacy copy, so this tree is the only one and deleting it would lose the files.
+            # It is marked, so _marked_sandbox_in finds it; put it back and let the next pass retry.
+            try:
+                os.rename(staging, source)
+            except OSError:
+                logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
+            raise
+        _mark_sandbox(target, name)
+    finally:
+        with _legacy_locks_guard:
+            _legacy_moves_in_flight.discard(name)
 
 
 # Bookkeeping only, never held across a move: starting the background pass and the sweep. Anything that copies a tree
@@ -8033,12 +8042,16 @@ def _legacy_lock_for(name: str) -> threading.Lock:
         return _legacy_session_locks.setdefault(name, threading.Lock())
 
 
-def _legacy_move_began(name: str) -> bool:
-    """Whether a move of this session has already started. Only a mover creates the entry, and
-    it does so before it touches the tree, so this is true for exactly the window in which the
-    legacy copy can be missing while the destination is not in place yet."""
+# Sessions whose move is running right this instant, held by _staged_move across the whole of
+# it. Neither root shows the tree while that runs, so this is the only thing that separates
+# "the legacy copy is gone because it arrived" from "it is gone because it is in staging".
+_legacy_moves_in_flight: "set[str]" = set()
+
+
+def _legacy_move_in_flight(name: str) -> bool:
+    """Whether this session is between the two halves of a move."""
     with _legacy_locks_guard:
-        return name in _legacy_session_locks
+        return name in _legacy_moves_in_flight
 
 
 # Where every id the old code could not use as a directory name went. One bucket for all of them, which is what this
@@ -8078,20 +8091,22 @@ def _legacy_session_dir(session_id: str) -> "str | None":
 
 def _migrate_one_legacy_session(root: str, name: str) -> None:
     """Bring one session up from the legacy root, without waiting for the rest."""
-    if not is_owner_context() or _legacy_sandbox_migrated:
+    if not is_owner_context():
+        return
+    # _staged_move renames the tree aside into staging before renaming it into place, and through
+    # that window neither root holds it. Both tests below would otherwise read that absence as
+    # nothing to do and return, and the caller then creates an empty sandbox under the very name
+    # the pending rename needs; that rename fails with ENOTEMPTY and puts the tree back at the
+    # legacy root, so the chat that asked is handed an empty directory and its files show up
+    # nowhere. The flag is no safer than the directory: the whole-tree pass can look at the legacy
+    # root during this same window, find it empty, and declare the migration finished on the
+    # strength of a move it never saw. So wait for the move rather than trust either one.
+    if _legacy_sandbox_migrated and not _legacy_move_in_flight(name):
         return
     source = os.path.join(_legacy_sandbox_root(), name)
     if os.path.islink(source):
         return
-    # A missing source is not proof there is nothing to wait for. _staged_move renames the tree
-    # aside into staging before renaming it into place, so through that window the legacy copy is
-    # already gone and the destination does not exist yet. Returning there let this caller create
-    # an empty sandbox under the very name the pending rename needs; that rename then fails with
-    # ENOTEMPTY and puts the tree back at the legacy root, so the chat that asked is handed an
-    # empty directory and its files show up nowhere. A lock entry exists only once a move of this
-    # name has begun, which is what separates that window from a name that was never there, and
-    # reading it creates nothing, so the lock table stays bounded by the chats that had a folder.
-    if not os.path.isdir(source) and not _legacy_move_began(name):
+    if not os.path.isdir(source) and not _legacy_move_in_flight(name):
         return
     with _legacy_lock_for(name):
         if not os.path.isdir(source):
