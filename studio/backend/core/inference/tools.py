@@ -3003,8 +3003,13 @@ def _looks_absolute(text: str) -> bool:
     platform, since misjudging one only costs a prompt."""
     if not text:
         return False
-    if text[0] in "/~":
+    if text[0] == "/":
         return True
+    if text[0] == "~":
+        # A PLAIN `~` is the sandbox: `_build_safe_env` and `_build_bypass_env` both set the child's
+        # HOME to the tool workdir, so the shell and `expanduser` alike resolve `~/notes.txt` to a
+        # file inside the session. `~alice` still names a host account, so it stays absolute.
+        return not (len(text) == 1 or text[1] in "/\\")
     # A single leading backslash is root-relative on Windows (it resolves from the current drive's root), not a
     # sandbox-relative name, so it counts alongside the UNC `\\server\share` form.
     if text[0] == "\\":
@@ -3267,7 +3272,9 @@ _PATTERN_SUPPLYING_FLAGS = {
     "grep": {"-f", "--file", "-e", "--regexp"},
     "egrep": {"-f", "--file", "-e", "--regexp"},
     "fgrep": {"-f", "--file", "-e", "--regexp"},
-    "rg": {"-f", "--file", "-e", "--regexp"},
+    # `rg --files [PATH ...]` takes no pattern at all (`rg --help`: "rg [OPTIONS] --files [PATH ...]"),
+    # so the skip would spend the first positional and leave the enumerated tree unclassified.
+    "rg": {"-f", "--file", "-e", "--regexp", "--files"},
     "ag": {"-f", "--file", "-e"},
     "ack": {"-f", "--file"},
     "sed": {"-f", "--file", "-e", "--expression"},
@@ -4671,11 +4678,14 @@ def _folded_path(
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr == "joinpath":
-                # Path('/etc').joinpath('passwd') -> receiver and args are pieces.
+                # Path('/etc').joinpath('passwd') -> receiver and args are pieces. Joined with the
+                # same POSIX rule the `/` operator and os.path.join use: an absolute piece DISCARDS
+                # everything to its left, so `Path('/usr').joinpath('/media/x')` is `/media/x` and
+                # not a path under the read-silent `/usr`.
                 base = fold(func.value)
                 parts = [base if base is not None else "\x00"]
                 parts += [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             if isinstance(func, ast.Attribute) and func.attr in ("glob", "rglob", "iglob"):
                 # Path('/etc').glob('passw?') -> the receiver dir joined with the glob pattern; _glob_token_sensitive
                 # then tests /etc/passw?.

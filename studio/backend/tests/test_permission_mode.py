@@ -141,8 +141,8 @@ def _clear_pending():
         ("cat ~/.aws/credentials", True),  # credential path
         ("cat /home/a/.azure/msal_token_cache.json", True),  # azure token store
         ("cat ~/.config/gh/hosts.yml", True),  # gh cli credentials
-        # Not a credential, but still the user's home rather than the sandbox: the out-of-sandbox read gate asks.
-        ("cat ~/.config/app/settings.json", True),
+        # A plain `~` IS the sandbox: both env builders set the child's HOME to the tool workdir.
+        ("cat ~/.config/app/settings.json", False),
         ("cat /home/alice/.cache/huggingface/token", True),  # HF login token
         ("cat ~/.cache/huggingface/stored_tokens", True),  # HF multi-token store
         ("cat /home/alice/.huggingface/token", True),  # legacy HF token location
@@ -438,10 +438,8 @@ def test_terminal_classifier(command, unsafe):
         ("echo x >> ~/.profile", True),
         ("cp payload.desktop ~/.config/autostart/x.desktop", True),
         ("cp x.service ~/.config/systemd/user/x.service", True),
-        (
-            "mkdir ~/.config/myapp",
-            True,
-        ),  # no persistence hook, but it creates a directory outside the sandbox
+        # No persistence hook, and a plain `~` resolves inside the sandbox.
+        ("mkdir ~/.config/myapp", False),
         # non-persistence /etc reads/writes stay ordinary (no over-prompt)
         ("cat /etc/hostname", False),
         ("grep nameserver /etc/resolv.conf", False),
@@ -3270,7 +3268,7 @@ _OUTSIDE_SANDBOX_TERMINAL = (
     f"touch {_OUTSIDE_DIR}/new_file",
     f"mkdir {_OUTSIDE_DIR}/new_dir",
     "cat /home/kuser/Documents/taxes.pdf",  # another user's documents
-    "wc -l ~/notes.txt",  # the real home, which the sandbox only shadows via HOME
+    "wc -l ~alice/notes.txt",  # a named account is the real home, not the sandbox
     "ls -la /home",
 )
 
@@ -3429,6 +3427,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "python /home/alice/private.py",
     "bash /home/alice/job.sh",
     "sqlite3 /home/alice/private.db 'select 1'",
+    # `rg --files [PATH ...]` takes no pattern, so the skip was eating the enumerated tree.
+    "rg --files /media/kuser/MEDIA_SSD/private",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3502,6 +3502,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     "import PIL.Image\nPIL.Image.open('/media/kuser/MEDIA_SSD/photo.png')",
     # An alias of an alias binds the same function.
     "reader = open\nreader2 = reader\nreader2('/media/kuser/MEDIA_SSD/x').read()",
+    # joinpath drops everything left of an absolute piece, exactly as `/` and os.path.join do.
+    "from pathlib import Path\nPath('/usr').joinpath('/media/kuser/MEDIA_SSD/x.txt').read_text()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3520,6 +3522,10 @@ _INDIRECT_BENIGN_TERMINAL = (
     "bash scripts/build.sh",
     "python /usr/lib/python3/dist-packages/x.py",
     "sqlite3 data.db 'select 1'",
+    "rg --files src",
+    "rg pattern src",
+    "cat ~/notes.txt",
+    "mkdir ~/.config/myapp",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
@@ -3534,6 +3540,8 @@ _INDIRECT_BENIGN_PYTHON = (
     'import builtins\nbuiltins.open("notes.txt").read()',
     "from PIL import Image\nImage.open('local.png')",
     "reader = open\nreader2 = reader\nreader2('notes.txt').read()",
+    "from pathlib import Path\nPath('/usr').joinpath('share', 'x.txt').read_text()",
+    "open('~/notes.txt').read()",
 )
 
 
