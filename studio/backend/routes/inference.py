@@ -26751,9 +26751,10 @@ def _openai_model_objects() -> list[dict]:
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
-    # Check Unsloth backend
-    backend = get_inference_backend()
-    if backend.active_model_name:
+    # Describing residency must not construct an unused orchestrator: its cold
+    # initialization runs device detection even when only llama.cpp is loaded.
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
             # The alias, or an LM Studio model switched to by repo id loses its publisher.
@@ -27349,8 +27350,8 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
-    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
+    # Off-loop: _openai_model_objects() is sync and its per-entry quant probe reads the
+    # resolver index. Inline, an early GET /v1/models held the loop for that work.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
     orchestrator = _peek_inference_backend()
@@ -27405,6 +27406,18 @@ async def _openai_catalog_objects() -> list[dict]:
     return list(by_id.values())
 
 
+@studio_router.get("/loaded-models")
+async def loaded_inference_models(current_subject: str = Depends(get_current_subject)):
+    """Loaded llama.cpp/orchestrator models for agent startup, without a disk catalog scan.
+
+    Keep the public ids and context fields shared with /v1/models. The full catalog
+    also discovers unloaded and media models, which an attaching coding agent does
+    not need and which can take longer than its HTTP deadline on slow scan folders.
+    """
+    models = await asyncio.to_thread(_openai_model_objects)
+    return {"object": "list", "data": [{**entry, "loaded": True} for entry in models]}
+
+
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
 # literally and do not follow FastAPI's automatic slash redirect. Register the
 # slash form directly so model discovery reaches authentication and returns the
@@ -27438,7 +27451,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
+    # Off-loop like the catalog helper, and for the same sync resolver-index work.
     _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
