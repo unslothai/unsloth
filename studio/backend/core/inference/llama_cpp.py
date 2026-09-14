@@ -27905,6 +27905,8 @@ class LlamaCppBackend:
                     ):
                         _vision_gpu_cmd = list(_last_spawn_cmd)
                         _cpu_projector_cmd = None
+                        # A raised floor is GPU memory only the text-only retry releases.
+                        _projector_floor_raised = _floored_batch_pair != _requested_batch_pair
                         if not _projector_msg and _paravirtual_mmproj_pinnable(server_caps):
                             _cpu_projector_cmd = self._with_mmproj_offload_disabled(
                                 _vision_gpu_cmd, env
@@ -27973,9 +27975,14 @@ class LlamaCppBackend:
                                     return False
                                 if self._is_projector_incompatibility(_cpu_projector_out):
                                     _projector_msg = True
-                                elif self._is_gpu_memory_start_failure(_cpu_projector_out):
+                                elif (
+                                    self._is_gpu_memory_start_failure(_cpu_projector_out)
+                                    and not _projector_floor_raised
+                                ):
                                     # The projector was already off the GPU, so removing it
                                     # cannot repair this allocation failure; keep the real error.
+                                    # Unless the floor raised the batch: the text-only retry
+                                    # gives that compute buffer back.
                                     _raise_terminal_load_failure(
                                         self._classify_llama_start_failure(
                                             _cpu_projector_out,
@@ -27988,7 +27995,11 @@ class LlamaCppBackend:
                                             self._extra_args,
                                         )
                                     )
-                        elif _projector_memory and _paravirtual_mmproj_pinnable(server_caps):
+                        elif (
+                            _projector_memory
+                            and _paravirtual_mmproj_pinnable(server_caps)
+                            and not _projector_floor_raised
+                        ):
                             # An env/argv pin already put mmproj on CPU. Text-only
                             # cannot free additional GPU memory, so surface the OOM.
                             _raise_terminal_load_failure(

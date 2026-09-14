@@ -3183,7 +3183,12 @@ def _apu_pinned_projector_backend(tmp_path, monkeypatch, *, gguf_gb, mmproj_gb, 
     return backend, gguf
 
 
-def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
+def _launch_with_text_only_fallback(
+    backend,
+    gguf,
+    abort_out = _PROJECTOR_ABORT_OUT,
+    **load_kwargs,
+):
     """Every spawn that still carries --mmproj aborts on the projector; the text-only
     retry comes up healthy. Mirrors the real recovery: the session ends up serving a
     child that loaded the weights and nothing else."""
@@ -3211,7 +3216,7 @@ def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
     def fake_health(timeout = None, **_kw):
         launched = captured["cmds"][-1] if captured["cmds"] else []
         if any(str(tok).split("=", 1)[0] in ("--mmproj", "-mm") for tok in launched):
-            backend._stdout_lines = _PROJECTOR_ABORT_OUT.splitlines()
+            backend._stdout_lines = abort_out.splitlines()
             return False
         backend._stdout_lines = []
         return True
@@ -3814,6 +3819,63 @@ def test_an_aliased_extras_projector_keeps_the_text_only_fallback(tmp_path, extr
     assert "--batch-size" not in last
     assert "--ubatch-size" not in last
     assert backend.mmproj_fallback_reason == "projector_incompatible"
+
+
+_PROJECTOR_OOM_OUT = (
+    "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 12000.00 MiB on device 0: "
+    "cudaMalloc failed: out of memory\n"
+)
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids = ["cpu-projector-retry", "already-pinned"])
+def test_an_oom_under_the_raised_floor_still_reaches_the_text_only_retry(tmp_path, pinned):
+    """Moving the projector to CPU keeps the floored compute buffers, so a GPU OOM there
+    is not proof that text-only cannot fit: the text-only retry drops the floor too."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+
+    captured = _launch_with_text_only_fallback(
+        backend,
+        gguf,
+        abort_out = _PROJECTOR_OOM_OUT,
+        mmproj_path = str(mmproj),
+        extra_args = ["--no-mmproj-offload"] if pinned else [],
+    )
+
+    first, last = captured["cmds"][0], captured["cmds"][-1]
+    assert first[first.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
+    assert "--mmproj" not in last, last
+    assert "--batch-size" not in last
+    assert "--ubatch-size" not in last
+    assert backend.mmproj_fallback_reason == "projector_startup_failure"
+
+
+def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path):
+    """A batch already at or above the floor is unchanged by the text-only retry, so the
+    projector-on-CPU OOM is still the real error."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 24_000, 24_000)],
+    )
+    mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+
+    with pytest.raises(Exception, match = "out of memory"):
+        _launch_with_text_only_fallback(
+            backend,
+            gguf,
+            abort_out = _PROJECTOR_OOM_OUT,
+            mmproj_path = str(mmproj),
+            n_batch = 4096,
+            n_ubatch = 4096,
+            extra_args = ["--no-mmproj-offload"],
+        )
 
 
 def test_an_inherited_projector_the_vision_switch_scrubs_is_not_floored(tmp_path, monkeypatch):
