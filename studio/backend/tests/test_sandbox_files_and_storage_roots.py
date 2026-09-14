@@ -823,9 +823,9 @@ def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, 
     assert staged.wait(10), "the per-session move never reached the staging window"
 
     tools._migrate_legacy_sandbox(root)  # sees an empty legacy root while this one is in staging
-    assert not tools._legacy_sandbox_migrated, (
-        "a pass that ran through another session's staging window called the migration finished"
-    )
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "a pass that ran through another session's staging window called the migration finished"
     # Set by hand for the rest of the test: it stands for the one gap that check cannot close,
     # between a pass reading an empty in-flight set and assigning the flag, during which a
     # request-path move can start. The caller has to keep waiting even then.
@@ -911,9 +911,9 @@ def test_a_rolled_back_move_puts_the_migration_back_on_the_table(tmp_path, monke
 
     assert rename_failed, "the rename was never made to fail"
     assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
-    assert not tools._legacy_sandbox_migrated, (
-        "a restored legacy copy left the migration marked finished, so nothing retries it"
-    )
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "a restored legacy copy left the migration marked finished, so nothing retries it"
 
     # And the retry the rollback asked for actually happens on the next call.
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_rollback"))
