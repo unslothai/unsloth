@@ -106,7 +106,13 @@ def test_parallel_search_overfetches_under_a_restricting_policy(monkeypatch):
     fanning the one call out over the allowed domains instead."""
     sent: dict = {}
 
-    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+    def fake_call(
+        tool,
+        arguments,
+        api_key,
+        timeout,
+        deadline = None,
+    ):
         sent.update(arguments)
         return {"content": [{"text": '{"results": []}'}]}
 
@@ -129,7 +135,13 @@ def test_parallel_search_overfetches_under_a_restricting_policy(monkeypatch):
 
 
 def test_parallel_search_drops_duplicates_from_the_fan_out(monkeypatch):
-    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+    def fake_call(
+        tool,
+        arguments,
+        api_key,
+        timeout,
+        deadline = None,
+    ):
         return {
             "content": [
                 {
@@ -158,7 +170,13 @@ def test_parallel_fetch_refuses_a_blocked_redirect_target(monkeypatch):
     """The policy gate runs on the URL we ask for; web_fetch follows redirects, so the URL that
     actually answered has to clear it too."""
 
-    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+    def fake_call(
+        tool,
+        arguments,
+        api_key,
+        timeout,
+        deadline = None,
+    ):
         return {
             "content": [
                 {
@@ -174,11 +192,19 @@ def test_parallel_fetch_refuses_a_blocked_redirect_target(monkeypatch):
     policy = {"allowedDomains": ["allowed.example"], "blockedDomains": ["blocked.example"]}
     out = ps.parallel_web_fetch("https://allowed.example/start", timeout = 5, website_policy = policy)
     assert "leaked body" not in out
-    assert out == ps.parallel_web_fetch("https://blocked.example/x", timeout = 5, website_policy = policy)
+    assert out == ps.parallel_web_fetch(
+        "https://blocked.example/x", timeout = 5, website_policy = policy
+    )
 
 
 def test_parallel_fetch_keeps_an_allowed_redirect_target(monkeypatch):
-    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+    def fake_call(
+        tool,
+        arguments,
+        api_key,
+        timeout,
+        deadline = None,
+    ):
         return {
             "content": [
                 {
