@@ -96,6 +96,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
@@ -33299,7 +33300,7 @@ def _build_passthrough_payload(
     # "tools": [] would still advertise tool use.
     safe_tools = neutralize_tool_descriptions(openai_tools, None, _pt_markup)
     if safe_tools:
-        body["tools"] = _llama_compatible_tools(safe_tools)
+        body["tools"] = llama_grammar_tools(_llama_compatible_tools(safe_tools))
         # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
         # forced; forwarding that choice would name an unadvertised function and hand
         # llama-server back the raw markup. Fall back to "auto" to stay consistent (#7066).

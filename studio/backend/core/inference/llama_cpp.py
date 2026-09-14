@@ -71,6 +71,7 @@ from core.inference.context_window import (
     tool_result_budget,
     turn_is_servable,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
@@ -32781,7 +32782,7 @@ class LlamaCppBackend:
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
-                payload["tools"] = safe_tools
+                payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
@@ -36122,7 +36123,7 @@ class LlamaCppBackend:
                     # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
-                        template_body["tools"] = tools
+                        template_body["tools"] = llama_grammar_tools(tools)
                     # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs
