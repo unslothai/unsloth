@@ -31,7 +31,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -238,9 +238,12 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
           title="Download image"
           className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
-            // By now the src is always blob:/data:, so a plain fetch carries it.
+            // Reuse fetched bytes under the desktop CSP.
             try {
-              const blob = await (await fetch(resolved)).blob();
+              const blob =
+                file !== null && sandbox.state.status === "loaded"
+                  ? sandbox.state.blob
+                  : await urlToBlob(resolved);
               await downloadFile(blob, downloadName(blob.type), blob.type);
             } catch (error) {
               if (!isDownloadCancelled(error)) toast.error("Could not save file.");

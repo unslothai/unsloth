@@ -2,7 +2,7 @@
 
 The fixture mounts the production Markdown renderer with the desktop content security policy. A loopback server supplies generated raster files, checks bearer authentication, and records the requested sandbox scope. It does not start an inference backend.
 
-Before testing, consider path normalization, encoded separators, stale thread or project scope, streaming partial links, failed requests, delayed responses, and browser image decoding. The frontend pipeline test covers 2,100 path and markup combinations. The browser fixture covers 59 cases; the automated runner also verifies the downloaded filename and PNG dimensions.
+Before testing, consider path normalization, encoded separators, stale thread or project scope, streaming partial links, failed requests, delayed responses, and browser image decoding. The frontend pipeline test covers 2,100 path and markup combinations. The browser fixture covers 59 cases. The automated runner also downloads a sandbox image, an embedded PNG, and an encoded filename, verifying filenames, dimensions, and that saving does not fetch the sandbox file again.
 
 From the repository root on macOS or Linux:
 

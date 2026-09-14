@@ -11,6 +11,13 @@ import { ChatProjectScopeContext } from "/src/features/chat/chat-project-scope.t
 import { storeAuthTokens } from "/src/features/auth/session.ts";
 import "/src/index.css";
 
+document.addEventListener("securitypolicyviolation", (event) => {
+	const message = `${event.effectiveDirective}: ${event.blockedURI}`;
+	document
+		.getElementById("errors")
+		?.append(document.createTextNode(message + "\n"));
+});
+
 const config = await (await fetch("/inline-fixture/config")).json();
 storeAuthTokens("inline-image-fixture", "inline-image-fixture");
 const adapter = { async *run() {} };
@@ -352,6 +359,21 @@ function App() {
 				{ onClick: run, disabled: status.startsWith("Running") },
 				"Run simulations",
 			),
+			...[
+				["Show embedded download", `![Embedded](${config.dataImage})`],
+				["Show encoded download", "![Plot](outputs/loss%20curve%20%231.png)"],
+			].map(([label, text]) =>
+				React.createElement(
+					"button",
+					{
+						key: label,
+						onClick: () =>
+							setView({ text, id: label, thread: "thread-a", project: null }),
+					},
+					label,
+				),
+			),
+
 			React.createElement("p", { id: "status", role: "status" }, status),
 			React.createElement(
 				"ul",
@@ -363,6 +385,7 @@ function App() {
 					),
 			),
 			React.createElement("pre", { id: "report", hidden: true }),
+			React.createElement("pre", { id: "errors" }),
 			React.createElement(
 				"div",
 				{

@@ -12,11 +12,14 @@ on:
       - 'studio/frontend/src/components/assistant-ui/use-sandbox-image.ts'
       - 'studio/frontend/src/lib/markdown-data-images.ts'
       - 'studio/frontend/src/lib/safe-markdown-url.ts'
+      - 'studio/frontend/src/lib/native-files.ts'
+      - 'studio/frontend/src/lib/data-uri.ts'
       - 'studio/frontend/src/features/auth/**'
       - 'studio/frontend/src/index.css'
       - 'studio/frontend/package*.json'
       - 'studio/frontend/vite.config.ts'
       - 'studio/frontend/tests/markdown-image-pipeline.test.ts'
+      - 'studio/frontend/tests/sandbox-image-lifecycle.test.ts'
       - 'studio/src-tauri/tauri.conf.json'
       - 'tests/studio/fixtures/inline-image-*'
       - 'tests/studio/playwright_inline_images.py'
@@ -90,7 +93,7 @@ jobs:
           fi
       - name: Markdown path matrix
         working-directory: studio/frontend
-        run: node --experimental-strip-types --test tests/markdown-image-pipeline.test.ts
+        run: node --experimental-strip-types --test tests/markdown-image-pipeline.test.ts tests/sandbox-image-lifecycle.test.ts
       - name: Browser simulations
         timeout-minutes: 5
         run: python tests/studio/playwright_inline_images.py --browsers chromium firefox webkit chrome msedge --output temp/inline-image-validation/after

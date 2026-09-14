@@ -65,6 +65,13 @@ def main() -> None:
     parser.add_argument("--baseline")
     parser.add_argument("--manual", action = "store_true")
     args = parser.parse_args()
+    output = args.output.resolve()
+    if not output.is_relative_to(REPO):
+        parser.error("Output must stay inside the repository")
+    output.mkdir(parents = True, exist_ok = True)
+    runtime = output / "runtime"
+    runtime.mkdir(exist_ok = True)
+    os.environ.update({key: str(runtime) for key in ("TMPDIR", "TMP", "TEMP")})
     if args.probe:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as playwright:
@@ -72,10 +79,6 @@ def main() -> None:
                 browser = launch_browser(playwright, name)
                 browser.close()
         return
-    output = args.output.resolve()
-    if not output.is_relative_to(REPO):
-        parser.error("Output must stay inside the repository")
-    output.mkdir(parents = True, exist_ok = True)
     fixtures(output)
     ready = output / "ready.json"
     ready.unlink(missing_ok = True)
@@ -106,12 +109,15 @@ def main() -> None:
             reports = []
             with sync_playwright() as playwright:
                 for name in args.browsers:
-                    browser = launch_browser(playwright, name)
+                    browser = None
+                    page = None
+                    report = {"browser": name, "platform": sys.platform, "failed": 1, "checks": []}
+                    errors = []
                     try:
+                        browser = launch_browser(playwright, name)
                         page = browser.new_page(
                             viewport = {"width": 1280, "height": 800}, device_scale_factor = 1
                         )
-                        errors = []
                         page.on("pageerror", lambda error: errors.append(str(error)))
                         page.set_default_timeout(30000)
                         page.goto(url, wait_until = "networkidle")
@@ -119,35 +125,62 @@ def main() -> None:
                         page.locator('#report[data-complete="true"]').wait_for(
                             state = "attached", timeout = 180000
                         )
-                        report = json.loads(page.locator("#report").text_content())
-                        report.update(
-                            browser = name, browser_version = browser.version, platform = sys.platform
-                        )
-                        report["page_errors"] = errors
+                        report.update(json.loads(page.locator("#report").text_content()))
+                        report["browser_version"] = browser.version
                         if not args.baseline and report["failed"] == 0:
-                            with page.expect_download() as downloaded:
-                                page.get_by_role("button", name = "Download image").click()
-                            download = downloaded.value
-                            assert download.suggested_filename == "plot.png"
-                            destination = output / f"{name}-download.png"
-                            download.save_as(destination)
-                            with Image.open(destination) as saved:
-                                assert saved.size == (32, 24)
-                            report["download_passed"] = True
+                            downloads = []
+                            for index, (button, filename) in enumerate(
+                                [
+                                    (None, "plot.png"),
+                                    ("Show embedded download", "Embedded.png"),
+                                    ("Show encoded download", "loss curve #1.png"),
+                                ]
+                            ):
+                                if button:
+                                    page.get_by_role("button", name = button).click()
+                                ready_image = page.locator('#subject img[data-streamdown="image"]')
+                                ready_image.wait_for(state = "visible")
+                                page.wait_for_function(
+                                    "document.querySelector('#subject img')?.naturalWidth === 32"
+                                )
+                                previous = page.request.get(
+                                    url.replace("/inline-images", "/inline-fixture/requests")
+                                ).json()
+                                with page.expect_download(timeout = 10000) as downloaded:
+                                    page.get_by_role("button", name = "Download image").click()
+                                download = downloaded.value
+                                assert download.suggested_filename == filename
+                                destination = output / f"{name}-download-{index}.png"
+                                download.save_as(destination)
+                                with Image.open(destination) as saved:
+                                    assert saved.size == (32, 24)
+                                current = page.request.get(
+                                    url.replace("/inline-images", "/inline-fixture/requests")
+                                ).json()
+                                assert (
+                                    current == previous
+                                ), "Download fetched the sandbox image again"
+                                downloads.append(filename)
+                            report["downloads"] = downloads
+                        report["csp_violations"] = page.locator("#errors").text_content()
+                        assert not report["csp_violations"], report["csp_violations"]
+                        assert not errors, errors
+                    except Exception as error:
+                        report["failed"] = max(1, report["failed"])
+                        report["error"] = str(error)
+                    finally:
+                        report["page_errors"] = errors
+                        reports.append(report)
                         (output / f"{name}.json").write_text(
                             json.dumps(report, indent = 2), encoding = "utf-8"
                         )
-                        reports.append(report)
-                        print(
-                            f"{name}: {report['passed']} passed, {report['failed']} failed",
-                            flush = True,
-                        )
-                        if report["failed"]:
+                        print(json.dumps(report), flush = True)
+                        if report["failed"] and page:
                             page.screenshot(
                                 path = str(output / f"{name}-failure.png"), full_page = True
                             )
-                    finally:
-                        browser.close()
+                        if browser:
+                            browser.close()
             if args.baseline:
                 assert all(
                     any(not c["passed"] and c["name"] == "path: plot.png" for c in r["checks"])
