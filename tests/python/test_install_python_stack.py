@@ -836,7 +836,7 @@ class TestHardenedPipConfigRelaxation:
             assert ips._pinned_pip_config_overrides() == {}
         assert len(attempts) == 2, attempts
         assert set(attempts) == {ips._PINNED_PIP_CONFIG_TIMEOUT}
-        # ...and the budget is small enough that the worst case is a wait, not a hang.
+        # ...and small enough that the worst case is a wait, not a hang.
         assert ips._PINNED_PIP_CONFIG_TIMEOUT * 2 <= 60
 
     @pytest.mark.reads_real_pip_config

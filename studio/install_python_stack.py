@@ -7312,9 +7312,8 @@ def _uv_only_binary_args(cmd: "list[str]") -> "list[str]":
     """
     if not _is_pinned_index_cmd(cmd):
         return []
-    # Read it off the env this very command will run with, not by asking again: two reads
-    # can disagree if the first fails and the second succeeds, which would put the policy
-    # in the environment while leaving it off the argv that decides.
+    # Off the env this command will run with, not a second read: two reads can disagree,
+    # putting the policy in the environment but not on the argv that decides.
     value = (_install_env_for_cmd(cmd) or {}).get("PIP_ONLY_BINARY", "")
     args: list[str] = []
     # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
@@ -7802,10 +7801,9 @@ _PINNED_PIP_CONFIG_ACCUMULATING = frozenset({"only-binary"})
 
 _PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
 
-# Failures are NOT memoised, so a transient miss cannot cost the operator their cert and
-# proxy for the whole run, and a venv that has no pip YET can answer once it does. Only the
-# expensive failure is budgeted: a hang would otherwise pay the timeout once per pinned
-# command. A fast failure costs milliseconds and stays freely retryable.
+# Failures are NOT memoised: a transient miss must not cost the operator their cert for the
+# whole run, and a venv with no pip YET must be able to answer once it has one. Only a HANG
+# is budgeted, which would otherwise pay the timeout once per pinned command.
 _PINNED_PIP_CONFIG_TIMEOUT = 30
 _PINNED_PIP_CONFIG_ATTEMPTS = 2
 
