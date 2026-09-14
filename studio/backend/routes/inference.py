@@ -31524,7 +31524,6 @@ async def anthropic_count_tokens(
     )
     if _count_client_tools:
         from core.inference.chat_template_helpers import forced_tool_catalog
-
         openai_tools = (
             forced_tool_catalog(anthropic_tool_choice_to_openai(payload.tool_choice), openai_tools)
             or openai_tools
