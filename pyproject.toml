@@ -76,6 +76,7 @@ studio = [
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
+    "backend/core/inference/bundled_skills/**/*.md",
 ]
 
 [tool.setuptools.packages.find]
@@ -172,6 +173,7 @@ studio = [
     "pymupdf==1.27.2.3",
     "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
+    "markdown-it-py>=3.0",
 ]
 
 triton = [
