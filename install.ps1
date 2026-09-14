@@ -3713,8 +3713,19 @@ exit 0
                 $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
                 if ($nvTok -match '^\d+$') {
                     $nvIdx = [int]$nvTok
+                } elseif ($nvTok -like 'MIG-*' -and $nvTok -notlike 'MIG-GPU-*') {
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    $nvListOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('-L') -StdoutOnly
+                    $cur = 0
+                    foreach ($ln in ($nvListOut -split '\r?\n')) {
+                        if ($ln -match '^GPU\s+(\d+):') { $cur = [int]$Matches[1] }
+                        if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; break }
+                    }
                 } elseif ($nvTok) {
-                    if ($nvTok -like 'MIG-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
+                    # Pre-R470 MIG names embed the parent UUID: MIG-<GPU-UUID>/<gi>/<ci>.
+                    if ($nvTok -like 'MIG-GPU-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
                     $nvUuidOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=uuid', '--format=csv,noheader') -StdoutOnly
                     $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
                     for ($i = 0; $i -lt $nvUuids.Count; $i++) {

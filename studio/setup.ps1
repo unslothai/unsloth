@@ -2075,8 +2075,19 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe) {
             $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
             if ($nvTok -match '^\d+$') {
                 $nvIdx = [int]$nvTok
+            } elseif ($nvTok -like 'MIG-*' -and $nvTok -notlike 'MIG-GPU-*') {
+                # R470 and later give each MIG instance its OWN opaque UUID, which
+                # carries nothing of the parent, so --query-gpu=uuid can never match it.
+                # `nvidia-smi -L` nests the instances under their GPU.
+                $nvListOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('-L') -StdoutOnly
+                $cur = 0
+                foreach ($ln in ($nvListOut -split '\r?\n')) {
+                    if ($ln -match '^GPU\s+(\d+):') { $cur = [int]$Matches[1] }
+                    if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; break }
+                }
             } elseif ($nvTok) {
-                if ($nvTok -like 'MIG-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
+                # Pre-R470 MIG names embed the parent UUID: MIG-<GPU-UUID>/<gi>/<ci>.
+                if ($nvTok -like 'MIG-GPU-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
                 $nvUuidOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=uuid', '--format=csv,noheader') -StdoutOnly
                 $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
                 for ($i = 0; $i -lt $nvUuids.Count; $i++) {
@@ -2628,7 +2639,16 @@ if (-not $HasNvidiaSmi) {
                 # Left alone, an iGPU+dGPU host reads "AMD Radeon 890M (gfx1201)":
                 # the integrated name against the discrete arch.
                 if ($nameArches.Count -eq $gpuNames.Count) {
-                    $_nameArchIdx = [array]::IndexOf($nameArches, $script:ROCmGfxArch)
+                    # Keep $nameIdx when the arch at that index is the one that was
+                    # picked: two adapters can map to the same arch (RX 7900 XTX and
+                    # PRO W7900 are both gfx1100), and IndexOf on a non-unique value
+                    # returns 0, naming the first card even under a mask selecting the
+                    # second. IndexOf is only the fallback for a shadowing repick.
+                    $_nameArchIdx = if ($nameIdx -lt $nameArches.Count -and $nameArches[$nameIdx] -eq $script:ROCmGfxArch) {
+                        $nameIdx
+                    } else {
+                        [array]::IndexOf($nameArches, $script:ROCmGfxArch)
+                    }
                     if ($_nameArchIdx -ge 0) { $ROCmGpuName = $gpuNames[$_nameArchIdx] }
                 }
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"

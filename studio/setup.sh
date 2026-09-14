@@ -672,6 +672,13 @@ _setup_has_usable_nvidia_gpu() {
 # (the reason _setup_run_smi exists), and detection also succeeds via
 # /usr/bin/nvidia-smi off PATH or via /proc/driver/nvidia/gpus with no nvidia-smi
 # at all -- re-resolving with `command -v` would skip the name on those hosts.
+# Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
+# be abbreviated to any unique leading portion, hence the prefix match.
+_setup_nv_idx_from_uuid() {
+    _setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+        | awk -v want="$1" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true
+}
+
 _setup_nv_banner_fields() {
     _setup_nv_name=""; _setup_nv_sm=""; _setup_nv_driver=""
     _setup_nv_row=""; _setup_nv_cc=""
@@ -684,12 +691,23 @@ _setup_nv_banner_fields() {
     case "$_setup_nv_vis" in
         '') ;;
         *[!0-9,]*)
-            # A non-numeric mask is a GPU UUID, or a MIG id of the form
-            # MIG-<GPU-UUID>/<gi>/<ci> that embeds one. NVIDIA allows the UUID to be
-            # abbreviated to any unique leading portion, so this matches on prefix.
-            case "$_setup_nv_tok" in MIG-*) _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}" ;; esac
-            _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
-                | awk -v want="$_setup_nv_tok" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true)
+            # A non-numeric mask names a device rather than indexing one.
+            case "$_setup_nv_tok" in
+                MIG-GPU-*)
+                    # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
+                    # embedded, so it still matches a --query-gpu=uuid row.
+                    _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}"
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+                MIG-*)
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU.
+                    _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" -L 2>/dev/null | awk -v want="$_setup_nv_tok" '
+                        /^GPU[[:space:]]+[0-9]+:/ { cur = $2 + 0 }
+                        index($0, want) > 0 { print cur; exit }' || true) ;;
+                *)
+                    _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
+            esac
             case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0 ;; esac
             ;;
         *) _setup_nv_idx="$_setup_nv_tok" ;;
@@ -2215,8 +2233,17 @@ elif [ "$_setup_amd_detected" = true ]; then
     # the two do not share an index. Without this an iGPU+dGPU host reads
     # "AMD Radeon Graphics (gfx1100)": the integrated name against the discrete arch.
     if [ -n "${_setup_agents:-}" ] && [ -n "$_setup_gfx" ]; then
-        _setup_mkt_at_arch=$(printf '%s\n' "$_setup_agents" | awk -F'\t' -v gfx="$_setup_gfx" \
-            '$1 == gfx { print $2; exit }')
+        # The agent at the selected index when its arch is the one that was picked,
+        # else the first agent carrying that arch. Matching on the arch VALUE alone
+        # names GPU 0 whenever two cards share an arch, because the arch list is
+        # deduplicated before the mask indexes it and the values are then not unique.
+        _setup_mkt_at_arch=$(printf '%s\n' "$_setup_agents" | awk -F'\t' -v gfx="$_setup_gfx" -v idx="$_setup_vis_idx" '
+            BEGIN { n = 0 }   # an unset n subscripts as "", not 0, so a[0] would never be set
+            NF > 1 { a[n] = $1; b[n] = $2; n++ }
+            END {
+                if (idx < n && a[idx] == gfx) { print b[idx]; exit }
+                for (i = 0; i < n; i++) if (a[i] == gfx) { print b[i]; exit }
+            }')
         if [ -n "$_setup_mkt_at_arch" ]; then _setup_mkt="$_setup_mkt_at_arch"; fi
     elif [ -n "$_setup_mkt_all" ]; then
         # amd-smi path: no agent pairing to key on, so take the name at the index the

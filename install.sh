@@ -4636,6 +4636,13 @@ tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 # _run_bounded exists), and detection also succeeds via /usr/bin/nvidia-smi off
 # PATH or via /proc/driver/nvidia/gpus with no nvidia-smi at all -- re-resolving
 # with `command -v` would silently skip the name on exactly those hosts.
+# Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
+# be abbreviated to any unique leading portion, hence the prefix match.
+_nv_idx_from_uuid() {
+    _run_bounded "$_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+        | awk -v want="$1" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true
+}
+
 _nv_banner_fields() {
     _nv_name=""; _nv_sm=""; _nv_driver=""; _nv_row=""; _nv_cc=""
     [ -n "${_nvsmi:-}" ] || return 0
@@ -4647,14 +4654,25 @@ _nv_banner_fields() {
     case "$_nv_vis" in
         '') ;;
         *[!0-9,]*)
-            # A non-numeric mask is a GPU UUID, or a MIG id of the form
-            # MIG-<GPU-UUID>/<gi>/<ci> that embeds one. NVIDIA allows the UUID to be
-            # abbreviated to any unique leading portion, so this matches on prefix.
-            # Resolved to an index here so the CSV parse below keeps its three
-            # documented columns.
-            case "$_nv_tok" in MIG-*) _nv_tok="${_nv_tok#MIG-}"; _nv_tok="${_nv_tok%%/*}" ;; esac
-            _nv_idx=$(_run_bounded "$_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
-                | awk -v want="$_nv_tok" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true)
+            # A non-numeric mask names a device rather than indexing one. Resolved to
+            # an index here so the CSV parse below keeps its three documented columns.
+            case "$_nv_tok" in
+                MIG-GPU-*)
+                    # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
+                    # embedded, so it still matches a --query-gpu=uuid row.
+                    _nv_tok="${_nv_tok#MIG-}"; _nv_tok="${_nv_tok%%/*}"
+                    _nv_idx=$(_nv_idx_from_uuid "$_nv_tok") ;;
+                MIG-*)
+                    # R470 and later give each MIG instance its OWN opaque UUID, which
+                    # carries nothing of the parent, so --query-gpu=uuid can never match
+                    # it. `nvidia-smi -L` nests the instances under their GPU, which is
+                    # the documented way to map one back to the card it lives on.
+                    _nv_idx=$(_run_bounded "$_nvsmi" -L 2>/dev/null | awk -v want="$_nv_tok" '
+                        /^GPU[[:space:]]+[0-9]+:/ { cur = $2 + 0 }
+                        index($0, want) > 0 { print cur; exit }' || true) ;;
+                *)
+                    _nv_idx=$(_nv_idx_from_uuid "$_nv_tok") ;;
+            esac
             case "$_nv_idx" in ''|*[!0-9]*) _nv_idx=0 ;; esac
             ;;
         *) _nv_idx="$_nv_tok" ;;
@@ -4744,8 +4762,18 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # not, so the two do not share an index. Without this an iGPU+dGPU host reads
     # "AMD Radeon Graphics (gfx1100)": the integrated name against the discrete arch.
     if [ -n "${_gpu_disp_agents:-}" ] && [ -n "$_gpu_disp_gfx" ]; then
-        _gpu_disp_mkt_at_arch=$(printf '%s\n' "$_gpu_disp_agents" | awk -F'\t' -v gfx="$_gpu_disp_gfx" \
-            '$1 == gfx { print $2; exit }')
+        # The agent at the selected index when its arch is the one that was picked,
+        # else the first agent carrying that arch. Matching on the arch VALUE alone
+        # names GPU 0 whenever two cards share an arch, because the arch list is
+        # deduplicated before the mask indexes it and the values are then not unique.
+        # The fallback keeps the name and the arch describing the same device.
+        _gpu_disp_mkt_at_arch=$(printf '%s\n' "$_gpu_disp_agents" | awk -F'\t' -v gfx="$_gpu_disp_gfx" -v idx="$_gpu_vis_idx" '
+            BEGIN { n = 0 }   # an unset n subscripts as "", not 0, so a[0] would never be set
+            NF > 1 { a[n] = $1; b[n] = $2; n++ }
+            END {
+                if (idx < n && a[idx] == gfx) { print b[idx]; exit }
+                for (i = 0; i < n; i++) if (a[i] == gfx) { print b[i]; exit }
+            }')
         if [ -n "$_gpu_disp_mkt_at_arch" ]; then _gpu_disp_mkt="$_gpu_disp_mkt_at_arch"; fi
     elif [ -n "${_gpu_disp_mkt_all:-}" ]; then
         # amd-smi path: no agent pairing to key on, so take the name at the index the
