@@ -618,6 +618,8 @@ def _byte_fallback_prompt_tokens(prompt: str) -> int:
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
+_OPENAI_COMPAT_STREAM_KEEPALIVE_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_KEEPALIVE_INTERVAL"
+_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT"
 
 
 def _positive_float_env(env_name: str, default):
@@ -1709,11 +1711,11 @@ except ImportError:
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    return httpx.Timeout(_first_token_timeout_s())
 
 
 def _llama_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    return httpx.Timeout(_first_token_timeout_s())
 
 
 def _set_stream_response_read_timeout(
@@ -1734,6 +1736,27 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+
+
+class _LlamaStreamKeepalive:
+    """Pump-level wake-up yielded by ``_aiter_llama_stream_items`` while the
+    upstream socket is silent.
+
+    Not an upstream item: call sites translate it into their own framing's
+    comment and must not let it advance any stream state (``saw_stream_item``,
+    the tool-call healer, the API monitor, the last-chunk id/model/created).
+    A sentinel object rather than the comment string itself, because every call
+    site filters relayed lines with ``startswith("data:")``, which would drop a
+    bare string on the floor.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<llama-stream-keepalive>"
+
+
+_LLAMA_STREAM_KEEPALIVE = _LlamaStreamKeepalive()
 # Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 # Paired with the above: the slot is ours, so a suspended client clock starts now.
@@ -2568,6 +2591,41 @@ def _openai_compat_stream_stall_timeout():
     )
 
 
+def _first_token_timeout_s() -> float:
+    """How long a passthrough waits for llama-server's first token.
+
+    Once keepalives stop the client from giving up, this is the binding limit
+    on a very slow prefill, so it needs a way out on a CPU host that legitimately
+    takes longer. Unlike the stall guard, 0 does not disable it: the deadline is
+    unconditional downstream, so an unparseable or non-positive value keeps the
+    default rather than removing the bound.
+    """
+    value = _positive_float_env(
+        _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    )
+    return _DEFAULT_FIRST_TOKEN_TIMEOUT_S if value is None else value
+
+
+def _openai_passthrough_stream_keepalive_interval():
+    """Idle gap before a passthrough relay emits an SSE keepalive comment.
+
+    llama-server flushes response headers as soon as the request is queued and
+    then says nothing at all for the whole prefill, which on a CPU host is
+    minutes. Node's undici -- the transport under every JS agent we support --
+    aborts a response after 300s with no bytes, surfacing to the user as a bare
+    ``terminated``, and each retry lands on a different llama-server slot whose
+    KV cache shares no prefix, so the retries restart prefill from zero and
+    never converge. Comments cost nothing and every conformant SSE reader drops
+    them, so pace them at the same interval the header wait already uses. Set
+    the env var to 0 to relay in silence like before.
+    """
+    return _positive_float_env(
+        _OPENAI_COMPAT_STREAM_KEEPALIVE_ENV,
+        _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
+    )
+
+
 def _openai_passthrough_upstream_headers(*, llama_backend = None) -> dict:
     headers = {}
     auth_headers = getattr(llama_backend, "_auth_headers", None)
@@ -2983,72 +3041,110 @@ async def _aiter_llama_stream_items(
     post_first_item_read_timeout_s: Optional[
         Union[float, Callable[[], Optional[float]]]
     ] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+    keepalive_interval_s: Optional[float] = None,
 ):
+    """Relay upstream stream items, waking every ``keepalive_interval_s`` to
+    yield ``_LLAMA_STREAM_KEEPALIVE`` while the socket is silent.
+
+    One ``__anext__`` is created per upstream item and awaited across as many
+    keepalive ticks as it takes; ``asyncio.wait`` never cancels it, so every
+    httpx/httpcore AnyIO scope opens and closes inside a single activation of
+    one task. That is what the old in-task block bought, and what
+    ``asyncio.wait_for`` would have broken. The read must not be restarted to
+    tick either: httpcore closes the body stream on any streaming exception, so
+    a ReadTimeout here is terminal, not something to retry.
+    """
     if first_token_deadline is None:
-        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+        first_token_deadline = time.monotonic() + _first_token_timeout_s()
     last_item_at: Optional[float] = None
+    item_task: Optional[asyncio.Future] = None
 
     def _post_first_timeout_s() -> Optional[float]:
         if callable(post_first_item_read_timeout_s):
             return post_first_item_read_timeout_s()
         return post_first_item_read_timeout_s
 
-    while True:
-        if cancel_event is not None and cancel_event.is_set():
-            return
-        if request is not None and await request.is_disconnected():
-            if cancel_event is not None:
-                cancel_event.set()
-            return
-        waiting_first_item = last_item_at is None
-        try:
-            if waiting_first_item:
-                remaining_s = first_token_deadline - time.monotonic()
-                if remaining_s <= 0:
-                    raise httpx.ReadTimeout("The model did not produce a first token in time.")
+    try:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            if request is not None and await request.is_disconnected():
+                if cancel_event is not None:
+                    cancel_event.set()
+                return
+            waiting_first_item = last_item_at is None
+            if item_task is None:
                 if response is not None:
-                    _set_stream_response_read_timeout(response, remaining_s)
-                # Keep httpx/httpcore's AnyIO cancel scope in this task.
-                # asyncio.wait_for would drive __anext__ in a child task.
-                async with _same_task_timeout(remaining_s):
-                    item = await async_iter.__anext__()
-            else:
-                timeout_s = _post_first_timeout_s()
-                if (
-                    request is not None
-                    and response is not None
-                    and timeout_s is not None
-                    and last_item_at is not None
-                ):
-                    stall_remaining_s = timeout_s - (time.monotonic() - last_item_at)
-                    if stall_remaining_s <= 0:
-                        raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-                    _set_stream_response_read_timeout(response, stall_remaining_s)
-                item = await async_iter.__anext__()
-        except asyncio.TimeoutError as exc:
+                    # The socket-level ceiling for this item. httpcore reads the
+                    # timeout once per response body, so only the call made
+                    # before the first __anext__ enters that body can take
+                    # effect; the deadlines below are what actually bound a
+                    # stall, on the wall clock, while we are blocked.
+                    _set_stream_response_read_timeout(
+                        response,
+                        max(first_token_deadline - time.monotonic(), 0.0)
+                        if waiting_first_item
+                        else _post_first_timeout_s(),
+                    )
+                item_task = asyncio.ensure_future(async_iter.__anext__())
+
             if waiting_first_item:
-                raise httpx.ReadTimeout("The model did not produce a first token in time.") from exc
-            raise
-        except StopAsyncIteration:
-            return
-        except httpx.ReadTimeout:
-            now = time.monotonic()
-            if last_item_at is None:
-                if now >= first_token_deadline:
-                    raise
+                hard_deadline = first_token_deadline
+            else:
+                stall_timeout_s = _post_first_timeout_s()
+                hard_deadline = (
+                    None if stall_timeout_s is None else last_item_at + stall_timeout_s
+                )
+            timed_out_message = (
+                "The model did not produce a first token in time."
+                if waiting_first_item
+                else "The model stopped producing tokens mid-response."
+            )
+
+            remaining_s = (
+                None if hard_deadline is None else hard_deadline - time.monotonic()
+            )
+            if remaining_s is not None and remaining_s <= 0:
+                raise httpx.ReadTimeout(timed_out_message)
+            if keepalive_interval_s:
+                wait_s = (
+                    keepalive_interval_s
+                    if remaining_s is None
+                    else min(keepalive_interval_s, remaining_s)
+                )
+            else:
+                wait_s = remaining_s
+
+            done, _pending = await asyncio.wait({item_task}, timeout = wait_s)
+            if not done:
+                # A keepalive is a client-liveness signal only: it must not
+                # advance last_item_at, or the stall guard could never fire.
+                if keepalive_interval_s:
+                    yield _LLAMA_STREAM_KEEPALIVE
                 continue
-            timeout_s = _post_first_timeout_s()
-            if request is not None and timeout_s is not None and now - last_item_at < timeout_s:
-                continue
-            raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-        if last_item_at is None and response is not None:
-            # The first-token read deadline no longer applies once a chunk has
-            # arrived: switch to the stall timeout, or clear the read timeout
-            # entirely when the stall guard is disabled (callable returns None)
-            # so a long gap can't trip the stale first-token deadline.
-            _set_stream_response_read_timeout(response, _post_first_timeout_s())
-        last_item_at = time.monotonic()
-        yield item
+            try:
+                item = item_task.result()
+            except StopAsyncIteration:
+                return
+            except (httpx.ReadTimeout, asyncio.TimeoutError) as exc:
+                raise httpx.ReadTimeout(timed_out_message) from exc
+            finally:
+                item_task = None
+            last_item_at = time.monotonic()
+            yield item
+    finally:
+        if item_task is not None:
+            # Bounded, and abandoned rather than held: the done callback drains
+            # whatever the read produces after we stop waiting. Mirrors
+            # _aclose_send_task, and must happen before anything closes the
+            # response, or the next __anext__ raises "already running". #7617
+            if not item_task.done():
+                item_task.cancel()
+            item_task.add_done_callback(_discard_task_outcome)
+            try:
+                await asyncio.wait({item_task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
+            except asyncio.CancelledError:
+                pass
 
 
 from models.inference import (
@@ -27479,7 +27575,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 req = client.build_request(
                     "POST", target_url, json = upstream_body, headers = {"Connection": "close"}
                 )
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
                 # instead of only once headers arrive.
                 resp = await _send_stream_with_preheader_cancel(
@@ -27504,7 +27600,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     request = request,
                     first_token_deadline = first_token_deadline,
                     response = resp,
+                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
                 ):
+                    # Keep it out of `buffer`: it is not upstream SSE, and the
+                    # split below would hand the comment to the API monitor.
+                    if chunk is _LLAMA_STREAM_KEEPALIVE:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                        continue
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
@@ -29781,7 +29883,7 @@ async def _responses_stream(
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
             )
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = time.monotonic() + _first_token_timeout_s()
             try:
                 # Same event the loop below polls: prefill can run for the whole first-token window,
                 # and only the send watcher can end it early.
@@ -29856,7 +29958,11 @@ async def _responses_stream(
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
+                keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
             ):
+                if raw_line is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if not raw_line:
                     continue
                 if not raw_line.startswith("data: "):
@@ -33360,7 +33466,7 @@ async def _anthropic_passthrough_stream(
             url = target_url
             try:
                 req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
                 )
@@ -33371,7 +33477,7 @@ async def _anthropic_passthrough_stream(
                 if url is None:
                     raise
                 req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
                 )
@@ -33419,7 +33525,13 @@ async def _anthropic_passthrough_stream(
                 request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
+                keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
             ):
+                # Must not reach the emitter: this is transport liveness, not an
+                # Anthropic event. Their SSE reader drops ":" comments.
+                if raw_line is _LLAMA_STREAM_KEEPALIVE:
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
                 data_str = raw_line[6:]
@@ -34576,7 +34688,7 @@ async def _openai_passthrough_stream_admitted(
         while True:
             try:
                 req = client.build_request("POST", target_url, json = body, headers = upstream_headers)
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 send_task = asyncio.create_task(
                     _send_stream_with_preheader_cancel(
                         client,
@@ -34954,7 +35066,7 @@ async def _openai_passthrough_stream_admitted(
                                             )
                                         )
                                         first_token_deadline = (
-                                            time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                                            time.monotonic() + _first_token_timeout_s()
                                         )
                                         continue
                                 logger.error(
@@ -34993,7 +35105,7 @@ async def _openai_passthrough_stream_admitted(
                         req = client.build_request(
                             "POST", target_url, json = body, headers = upstream_headers
                         )
-                        first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                        first_token_deadline = time.monotonic() + _first_token_timeout_s()
                         send_task = asyncio.create_task(
                             _send_stream_with_preheader_cancel(
                                 client,
@@ -35039,7 +35151,14 @@ async def _openai_passthrough_stream_admitted(
                     first_token_deadline = first_token_deadline,
                     response = resp,
                     post_first_item_read_timeout_s = _terminal_read_timeout_s,
+                    keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
                 ):
+                    # Before every other branch: a keepalive is not an upstream
+                    # item, so it must not set saw_stream_item, reach the healer
+                    # or the monitor, or touch the last-chunk id/model/created.
+                    if raw_line is _LLAMA_STREAM_KEEPALIVE:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                     if not raw_line:
                         continue
                     if not raw_line.startswith("data:"):
