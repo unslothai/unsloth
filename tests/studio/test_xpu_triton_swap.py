@@ -43,6 +43,7 @@ def _load_real_index_env_scrub():
     import ast as _ast
     import atexit as _atexit
     import functools as _functools
+    import locale as _locale
     import os as _os
     import shutil as _shutil
     import subprocess as _subprocess
@@ -57,6 +58,7 @@ def _load_real_index_env_scrub():
         "functools": _functools,
         "shutil": _shutil,
         "subprocess": _subprocess,
+        "locale": _locale,
         "sys": _sys,
         "tempfile": _tempfile,
         # The one dependency of the extracted code that is not a module.
@@ -75,6 +77,7 @@ def _load_real_index_env_scrub():
         ("_PINNED_PIP_CONFIG_ACCUMULATING = ", "\n", 1),
         ("_PINNED_PIP_CONFIG_LISTING: ", "\n", 1),
         ("def _pip_subcommand_of(", "\n\ndef ", 0),
+        ("def _decode_pip_output(", "\n\ndef ", 0),
         ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),
         # Omitting it left the exec'd copy raising NameError into a broad except, so the
         # scrub this file executes returned {} and agreed with anything.

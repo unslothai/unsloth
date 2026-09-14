@@ -750,6 +750,24 @@ class TestHardenedPipConfigRelaxation:
         certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
         assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
 
+    def test_a_non_utf8_listing_is_decoded_the_way_the_child_wrote_it(self, monkeypatch):
+        """A piped child encodes stdout with ITS locale encoding, which on Windows is the
+        ANSI code page, not UTF-8. Decoding cp1252 bytes as UTF-8 does not merely lose the
+        setting: it yields a cert path that exists nowhere, so pip fails the pinned install
+        outright on exactly the corporate host the allowlist exists to serve."""
+        listing = "global.cert='C:\\Soci\u00e9t\u00e9\\ca.pem'\n".encode("cp1252")
+        monkeypatch.setattr(ips.locale, "getpreferredencoding", lambda *a: "cp1252")
+        assert ips._parse_pinned_pip_config(listing) == {
+            "PIP_CERT": "C:\\Soci\u00e9t\u00e9\\ca.pem"
+        }
+        # UTF-8 is still tried first and strictly, so the POSIX case is untouched.
+        assert (
+            ips._decode_pip_output("cert='/etc/caf\u00e9/ca.pem'".encode())
+            == "cert='/etc/caf\u00e9/ca.pem'"
+        )
+        # Undecodable under either codec is skipped, never fatal.
+        assert ips._parse_pinned_pip_config(b"global.cert=\xff\xfe\x00") == {}
+
     def test_trusted_host_takes_section_precedence_instead(self):
         """Not every list key accumulates. Asked of pip 26.2's own parser with [global]
         and [install] both set, `trusted_hosts` comes back as the install value alone (an

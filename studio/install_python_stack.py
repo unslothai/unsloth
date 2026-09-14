@@ -17,6 +17,7 @@ import glob
 import importlib
 import importlib.util
 import json
+import locale
 import os
 import platform
 import re
@@ -7474,6 +7475,22 @@ def _pinned_pip_config_overrides(
     return _parse_pinned_pip_config(_PINNED_PIP_CONFIG_LISTING, subcommand)
 
 
+def _decode_pip_output(raw: bytes) -> str:
+    r"""`pip config list` bytes as text, decoded the way the child actually wrote them.
+
+    A piped child encodes its stdout with ITS locale encoding, which on Windows is the ANSI
+    code page rather than UTF-8, so a decode pinned to UTF-8 corrupts a setting such as
+    `cert = C:\Societe\ca.pem` spelled with non-ASCII characters. That is worse than
+    losing the setting: the corrupted path exists nowhere, so pip fails the pinned install
+    outright. UTF-8 is still tried first, strictly, because it is right everywhere except
+    that case and right there too under UTF-8 mode; the locale codec is the fallback.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getpreferredencoding(False), "replace")
+
+
 def _parse_pinned_pip_config(
     stdout: bytes, subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION
 ) -> "dict[str, str]":
@@ -7485,7 +7502,7 @@ def _parse_pinned_pip_config(
     """
     sections = (_PINNED_PIP_CONFIG_GLOBAL_SECTION, subcommand)
     found: dict[str, dict[str, str]] = {}
-    for line in stdout.decode("utf-8", "replace").splitlines():
+    for line in _decode_pip_output(stdout).splitlines():
         name, separator, raw = line.partition("=")
         if not separator or name.startswith(":env:"):
             continue
