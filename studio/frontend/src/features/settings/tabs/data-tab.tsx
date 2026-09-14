@@ -40,6 +40,7 @@ import {
   nativeImportSource,
   fileImportSource,
   type ImportSource,
+  notifyChatProjectsUpdated,
   offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -72,6 +73,17 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import {
+  type ClaudeImportStatus,
+  importClaudeChats,
+  loadClaudeImportStatus,
+} from "../api/claude-import";
+import {
+  type CursorImportStatus,
+  importCursorChats,
+  loadCursorImportStatus,
+} from "../api/cursor-import";
+import { describeExternalImportToast } from "../lib/external-import-toast";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
   type ArchivedMediaKind,
@@ -129,6 +141,18 @@ export function DataTab() {
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // Null until the probe answers, and while it says Cursor has nothing here:
+  // the row only appears for a machine that has conversations to bring over.
+  const [cursorStatus, setCursorStatus] = useState<CursorImportStatus | null>(
+    null,
+  );
+  const [cursorImporting, setCursorImporting] = useState(false);
+  // Same gate as Cursor: the Claude row only appears for a machine that has
+  // Claude Code conversations to bring over.
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeImportStatus | null>(
+    null,
+  );
+  const [claudeImporting, setClaudeImporting] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
@@ -219,6 +243,17 @@ export function DataTab() {
 
   useEffect(() => {
     void countAllChats().then(setCount);
+  }, []);
+
+  useEffect(() => {
+    // No Cursor, no route, no permission: all the same answer, which is that
+    // there is nothing to offer.
+    void loadCursorImportStatus()
+      .then((status) => setCursorStatus(status.available ? status : null))
+      .catch(() => setCursorStatus(null));
+    void loadClaudeImportStatus()
+      .then((status) => setClaudeStatus(status.available ? status : null))
+      .catch(() => setClaudeStatus(null));
   }, []);
 
   const handleExport = async () => {
@@ -330,6 +365,68 @@ export function DataTab() {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
       });
+    }
+  };
+
+  const handleImportFromCursor = async () => {
+    setCursorImporting(true);
+    try {
+      const result = await importCursorChats();
+      // The sidebar and the project list read their own caches, so both are
+      // told rather than left showing a pre-import Studio.
+      notifyChatProjectsUpdated();
+      setCount(await countAllChats().catch(() => count));
+      setCursorStatus(await loadCursorImportStatus().catch(() => cursorStatus));
+      const shown = describeExternalImportToast(result, {
+        none: t("settings.chat.importCursorNoChats"),
+        upToDate: t("settings.chat.cursorUpToDate"),
+        one: t("settings.chat.importedCursorOneChat"),
+        many: t("settings.chat.importedCursorChatCount", {
+          count: result.newChats,
+        }),
+        partial: t("settings.chat.importedCursorPartial"),
+      });
+      if (shown.kind === "warning") {
+        toast.warning(shown.title, { description: shown.description });
+      } else {
+        toast.success(shown.title);
+      }
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCursorImporting(false);
+    }
+  };
+
+  const handleImportFromClaude = async () => {
+    setClaudeImporting(true);
+    try {
+      const result = await importClaudeChats();
+      notifyChatProjectsUpdated();
+      setCount(await countAllChats().catch(() => count));
+      setClaudeStatus(await loadClaudeImportStatus().catch(() => claudeStatus));
+      const shown = describeExternalImportToast(result, {
+        none: t("settings.chat.importClaudeNoChats"),
+        upToDate: t("settings.chat.claudeUpToDate"),
+        one: t("settings.chat.importedClaudeOneChat"),
+        many: t("settings.chat.importedClaudeChatCount", {
+          count: result.newChats,
+        }),
+        partial: t("settings.chat.importedClaudePartial"),
+      });
+      if (shown.kind === "warning") {
+        toast.warning(shown.title, { description: shown.description });
+      } else {
+        toast.success(shown.title);
+      }
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setClaudeImporting(false);
     }
   };
 
@@ -957,6 +1054,58 @@ export function DataTab() {
             }}
           />
         </SettingsRow>
+
+        {cursorStatus ? (
+          <SettingsRow
+            label={t("settings.chat.importFromCursor")}
+            description={t("settings.chat.importFromCursorDescription")}
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleImportFromCursor()}
+              disabled={cursorImporting}
+            >
+              {cursorImporting ? (
+                <Spinner className="size-3.5 mr-1.5" />
+              ) : (
+                <HugeiconsIcon
+                  icon={Upload01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+              )}
+              {cursorImporting
+                ? t("settings.chat.importingAction")
+                : t("settings.chat.importChatsAction")}
+            </Button>
+          </SettingsRow>
+        ) : null}
+
+        {claudeStatus ? (
+          <SettingsRow
+            label={t("settings.chat.importFromClaude")}
+            description={t("settings.chat.importFromClaudeDescription")}
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleImportFromClaude()}
+              disabled={claudeImporting}
+            >
+              {claudeImporting ? (
+                <Spinner className="size-3.5 mr-1.5" />
+              ) : (
+                <HugeiconsIcon
+                  icon={Upload01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+              )}
+              {claudeImporting
+                ? t("settings.chat.importingAction")
+                : t("settings.chat.importChatsAction")}
+            </Button>
+          </SettingsRow>
+        ) : null}
       </div>
 
       <SettingsSection title={t("settings.data.filesSection")}>
