@@ -2659,15 +2659,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
 
     def test_a_masked_nvidia_host_takes_cuda_not_the_cpu_bundle(self, monkeypatch):
-        """CUDA_VISIBLE_DEVICES="" hides the GPU from CUDA apps without removing it.
-
-        has_usable_nvidia is `visible_device_tokens != []` on both probe paths, so
-        physical-without-usable means exactly an emptied mask. The mask is scoped to this
-        process; the install is not, and activate_install_tree replaces the tree in place,
-        so one masked run would leave a CUDA machine on the CPU bundle. nvidia-smi is an
-        NVML tool rather than a CUDA app and keeps answering under the mask, so compute_caps
-        and driver_cuda_version are populated and the normal coverage match still works.
-        """
+        """compute_caps is populated under an emptied mask: nvidia-smi is NVML, not CUDA."""
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
@@ -2693,8 +2685,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         assert all("cpu" not in a.name for a in attempts)
 
     def test_a_masked_nvidia_host_with_no_cuda_match_source_builds(self, monkeypatch):
-        # No CUDA bundle covers it: fall through to an empty list so the caller source-builds
-        # with CUDA, exactly as a visible NVIDIA host does. Never the CPU bundle.
+        # Empty, not the CPU bundle: the caller source-builds with CUDA, as for a visible one.
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
@@ -2716,9 +2707,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         assert attempts == []
 
     def test_a_masked_nvidia_host_is_not_rescued_onto_vulkan_either(self):
-        # An iGPU alongside the masked NVIDIA card must not become a route to a Vulkan or
-        # CPU install: the Vulkan branch is gated on not has_physical_nvidia, and the CUDA
-        # branch owns this host instead.
+        # An iGPU must not become a second non-CUDA route out of a masked NVIDIA host.
         host = make_host(
             has_physical_nvidia = True,
             has_usable_nvidia = False,
