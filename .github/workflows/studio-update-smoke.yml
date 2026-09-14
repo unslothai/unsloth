@@ -96,6 +96,8 @@ on:
       # that depend on it.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:
@@ -452,6 +454,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Without this the lane re-downloads every wheel on every run; the key lives in
+      # .github/actions/uv-cache-restore.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
@@ -491,6 +499,13 @@ jobs:
           python -m pytest tests/studio/install/test_update_idempotency.py -v -s 2>&1 |
             Tee-Object -FilePath logs/idempotency.log
           if ($LASTEXITCODE -ne 0) { throw "the idempotency harness failed ($LASTEXITCODE)" }
+
+      # Paired with the uv restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: Upload Windows idempotency logs
         if: always()
