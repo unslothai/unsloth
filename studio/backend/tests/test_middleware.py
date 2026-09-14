@@ -1341,3 +1341,20 @@ class TestCspHfEndpoints:
         assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
         remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees
+
+    def test_a_tunneled_client_is_not_mistaken_for_a_local_one(self, main_module, monkeypatch):
+        """Through the managed Cloudflare tunnel the socket peer IS loopback.
+
+        It is the local cloudflared process, not the visitor, so a peer-only check
+        would hand a remote browser the backend's own localhost mirror.
+        """
+        monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+        c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "203.0.113.7"})
+        assert tunneled.json()["hf_endpoint"] == "https://huggingface.co"
+        # The same socket peer without the tunnel header really is local.
+        assert c.get("/api/health").json()["hf_endpoint"] == "http://127.0.0.1:9700"
+        # A forged header from a NON-loopback peer is ignored (client_ip's rule).
+        remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        forged = remote.get("/api/health", headers = {"CF-Connecting-IP": "127.0.0.1"})
+        assert forged.json()["hf_endpoint"] == "https://huggingface.co"

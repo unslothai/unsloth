@@ -351,6 +351,7 @@ from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from urllib.parse import urlsplit
 
+from utils.client_ip import client_ip
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
     csp_asset_sources,
@@ -931,9 +932,15 @@ _IS_COLAB = os.path.isdir("/content") and (
 
 
 def _request_is_loopback(request) -> bool:
-    """Is the CLIENT on this machine? Not the same question as the backend being."""
-    host = getattr(getattr(request, "client", None), "host", None)
-    return _is_loopback_host(host)
+    """Is the CLIENT on this machine? Not the same question as the backend being.
+
+    Through the managed Cloudflare tunnel the socket peer IS loopback: it is the
+    local cloudflared process, not the visitor. client_ip() is the existing
+    resolution for exactly that topology (CF-Connecting-IP, honoured only when
+    the peer is loopback so a direct caller cannot forge it), and it answers
+    "_unknown" rather than guessing, which reads here as "not local".
+    """
+    return _is_loopback_host(client_ip(request))
 
 
 def _reportable_hf_endpoints(request) -> dict:

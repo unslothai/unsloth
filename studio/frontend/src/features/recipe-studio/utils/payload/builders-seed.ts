@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getHfEndpoint } from "@/lib/hf-endpoint";
 import type { NodeConfig, SeedConfig } from "../../types";
 
 const DEFAULT_CHUNK_SIZE = 1200;
@@ -35,7 +34,12 @@ export function buildSeedConfig(
   const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
 
-  const endpoint = config.hf_endpoint?.trim() || getHfEndpoint();
+  // Only an endpoint the user actually set. The seed is fetched BY THE BACKEND,
+  // which resolves its own HF_ENDPOINT when this is absent; sending the browser's
+  // value would ship a remote client's browser-safe substitute for a loopback
+  // mirror (/api/health reports huggingface.co there) into a backend-side fetch
+  // and bypass the mirror on exactly the deployments that need it.
+  const endpoint = config.hf_endpoint?.trim() || null;
   const token = config.hf_token?.trim() || null;
 
   let selectionStrategy: Record<string, unknown> | null = null;
