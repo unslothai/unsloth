@@ -295,7 +295,7 @@ def get_device_stats() -> tuple[str, str, float]:
             import torch_npu
             snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."
         except Exception:
-            snippet = "Ascend NPU."
+            snippet = "NPU."
     else:
         name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
         snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."
