@@ -137,10 +137,7 @@ def test_private_image_endpoint_rejects_redirect(monkeypatch):
     import asyncio
     import routes.mcp_servers as routes_mcp
 
-    def redirect(*_args, **_kwargs):
-        raise RuntimeError("redirect")
-
-    monkeypatch.setattr(routes_mcp, "prepare_mcp_image_recipient", redirect)
+    monkeypatch.setattr(routes_mcp, "prepare_mcp_image_recipient", lambda *_: int("redirect"))
     with pytest.raises(HTTPException, match = "non-redirecting"):
         asyncio.run(routes_mcp._validate_private_image_endpoint("https://example.test/mcp", None))
 
