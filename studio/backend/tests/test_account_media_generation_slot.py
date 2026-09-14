@@ -118,10 +118,11 @@ def test_a_queued_request_does_not_take_progress_and_cancel_from_the_active_gene
     bob = _post_generate(BOB, engine, results, "bob")
     try:
         with client_for(BOB) as client:
-            assert client.get("/api/inference/images/generate-progress").json() == {
-                "loaded": True,
-                "yours": False,
-            }
+            hidden = client.get("/api/inference/images/generate-progress").json()
+            # The declared progress shape, idle: a foreign poller reads "nothing is
+            # running" and learns nothing about the generation that IS running.
+            assert hidden["yours"] is False, hidden
+            assert hidden["active"] is False and hidden["step"] == 0, hidden
             assert client.post("/api/inference/images/generate/cancel").json() == {
                 "cancelled": False
             }

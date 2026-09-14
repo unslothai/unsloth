@@ -52,6 +52,24 @@ _SPOOFED_CALLS = {
     ("torch", "accelerator", "is_available"),
 }
 
+# The other half of the same hazard. A skip guard is where the spoof decides whether a
+# test RUNS; these are where it decides where a test's tensors LAND, because the library
+# resolves the device itself from the same probe. peft's `infer_device()` returns "cuda"
+# for anything `torch.cuda.is_available()` says yes to, so an unqualified adapter load on
+# a CPU-only runner dies in safetensors with
+#
+#     NotImplementedError: Could not run 'aten::empty_strided' with arguments from the
+#     'CUDA' backend
+#
+# naming neither peft nor the spoof. Suffix-matched on the call, mapped to the keyword
+# that settles it. Deliberately a short allow-list rather than a general lint: the point
+# is to catch another instance of exactly this, not to police every loader call.
+_DEVICE_INFERRING_CALLS = {
+    ("PeftModel", "from_pretrained"): "torch_device",
+    ("PeftMixedModel", "from_pretrained"): "torch_device",
+    ("load_peft_weights",): "device",
+}
+
 
 def _dotted(node: ast.AST) -> tuple[str, ...]:
     parts: list[str] = []
@@ -107,6 +125,55 @@ def test_no_skip_guard_reads_a_spoofable_accelerator_probe():
         "pytest session with tests/version_compat or tests/vllm_compat. Use "
         "`from real_accelerator import has_real_accelerator` instead:\n  " + "\n  ".join(offenders)
     )
+
+
+def _device_inferring_calls(tree: ast.AST):
+    """Every call in the module that lets a library resolve the device from the spoof."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted(node.func)
+        for suffix, keyword in _DEVICE_INFERRING_CALLS.items():
+            if name[-len(suffix) :] == suffix:
+                given = {kw.arg for kw in node.keywords if kw.arg}
+                if keyword not in given:
+                    yield node, ".".join(name), keyword
+
+
+def test_no_test_lets_a_loader_infer_the_device_from_a_spoofed_probe():
+    offenders = []
+    for path in _python_test_files():
+        try:
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
+        except SyntaxError:
+            continue
+        for node, name, keyword in _device_inferring_calls(tree):
+            offenders.append(
+                f"{path.relative_to(_TESTS_ROOT)}:{node.lineno}: {name}() with no {keyword}="
+            )
+    assert not offenders, (
+        "these calls let the library pick the device, and it picks it off a probe "
+        "tests/_zoo_aggressive_cuda_spoof.py patches to True process-wide. On a CPU-only "
+        "runner the load then dispatches to a CUDA backend that is not there. Pass the "
+        "device: `torch_device = 'cuda' if has_real_accelerator() else 'cpu'`, or plain "
+        "'cpu' when the test does not care:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_device_scanner_would_catch_a_regression(tmp_path):
+    """Not vacuous: the forbidden shape must trip it and the fixed shape must not."""
+    bad = ast.parse(
+        "from peft import PeftModel\n\n\n"
+        "def test_x(base, path):\n    PeftModel.from_pretrained(base, path)\n"
+    )
+    assert len(list(_device_inferring_calls(bad))) == 1
+
+    good = ast.parse(
+        "from peft import PeftModel\n\n\n"
+        "def test_x(base, path):\n"
+        "    PeftModel.from_pretrained(base, path, torch_device = 'cpu')\n"
+    )
+    assert list(_device_inferring_calls(good)) == []
 
 
 _SURVIVES_THE_SPOOF_PROBE = textwrap.dedent(

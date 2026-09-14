@@ -29,6 +29,9 @@ import ast
 import pathlib
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
@@ -209,7 +212,18 @@ def test_the_saved_adapter_still_loads_back(tmp_path):
     base = transformers.AutoModelForCausalLM.from_pretrained(
         "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
     )
-    reloaded = peft.PeftModel.from_pretrained(base, str(directory))
+    # Say the device, do not let PEFT infer it. `load_adapter` falls back to
+    # `peft.utils.other.infer_device()`, which answers "cuda" off
+    # `torch.cuda.is_available()` -- and on a CPU-only runner that is True, because
+    # `tests/_zoo_aggressive_cuda_spoof.py` sets it so on purpose. The safetensors
+    # read then dispatches to a CUDA backend that is not there, and the test dies on
+    # `aten::empty_strided` with nothing in the message about a spoof. The adapter
+    # this test wrote is a handful of CPU tensors; where it loads is not the subject.
+    reloaded = peft.PeftModel.from_pretrained(
+        base,
+        str(directory),
+        torch_device = "cuda" if has_real_accelerator() and torch.cuda.is_available() else "cpu",
+    )
     assert reloaded is not None
 
 
