@@ -170,10 +170,12 @@ def _download(
 
     Attempts share one budget instead of each getting `timeout`, so a failing download
     still costs about what the single attempt before them did. A timeout, a 4xx other than
-    408/429, and a name the resolver answers for are terminal: the next attempt answers the
-    same, and run.py starts the launch tunnel inline, where a pause delays the banner.
+    408/429, a name the resolver answers for, and a chain that will not verify are terminal:
+    they are answers about the request, not transfers that failed, and run.py starts the
+    launch tunnel inline, where a pause delays the banner.
     """
     import socket
+    import ssl
     import tempfile
     import urllib.error
     import urllib.request
@@ -231,6 +233,10 @@ def _download(
                 exc is not transfer_exc
                 or isinstance(exc, TimeoutError)
                 or isinstance(reason, TimeoutError)
+                # Only this SSLError is a verdict on the peer rather than a transfer that
+                # failed; the siblings can go the other way on a second attempt.
+                or isinstance(exc, ssl.SSLCertVerificationError)
+                or isinstance(reason, ssl.SSLCertVerificationError)
                 # EAI_AGAIN is the resolver asking to be tried again; the rest are answers.
                 or (isinstance(resolver, socket.gaierror) and resolver.errno != socket.EAI_AGAIN)
                 # 408 and 429 are the two 4xx a retry can change.

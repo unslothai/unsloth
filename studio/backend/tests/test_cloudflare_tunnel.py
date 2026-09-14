@@ -13,6 +13,7 @@ import errno
 import importlib.util
 import io
 import os
+import ssl
 import sys
 import tarfile
 import tempfile
@@ -1731,6 +1732,57 @@ def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
     assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
     assert dest.read_bytes() == b"cloudflared-bytes"
     assert len(calls) == 2
+
+
+def test_download_does_not_retry_a_chain_it_cannot_verify(monkeypatch, tmp_path):
+    """A stale CA bundle, a wrong clock and a TLS-intercepting proxy all fail verification
+    the same way on every attempt, so the pauses would only delay the banner."""
+    import urllib.error
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def unverifiable(req, timeout = None):
+        calls.append(timeout)
+        raise urllib.error.URLError(
+            ssl.SSLCertVerificationError(
+                1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate"
+            )
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", unverifiable)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_a_tls_stream_that_broke_mid_body(monkeypatch, tmp_path):
+    """Only verification is terminal. A bad record after some bytes is a transfer that died
+    partway: the half it already wrote must not be published, and the retry must replace it."""
+    import io
+    import urllib.request
+
+    calls = []
+
+    class Truncated(io.BytesIO):
+        def read(self, size = -1):
+            if not self.tell():
+                return super().read(size)
+            raise ssl.SSLError(1, "[SSL: DECRYPTION_FAILED_OR_BAD_RECORD_MAC] bad record mac")
+
+    def flaky(req, timeout = None):
+        calls.append(timeout)
+        return Truncated(b"half-a-") if len(calls) == 1 else io.BytesIO(b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+    assert list(tmp_path.glob("cf.tmp-*")) == []
 
 
 def test_download_does_not_retry_an_unwritable_cache(monkeypatch, tmp_path):
