@@ -3251,6 +3251,16 @@ def _detect_cuda_torch_index_url() -> str:
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
+def _driver_cuda_torch_flavor_tag() -> str:
+    """The CUDA wheel family this driver can actually run, or "" if it can run none.
+
+    _detect_cuda_torch_index_url mirrors setup.ps1::Get-PytorchCudaTag, ancient-driver "cpu"
+    and pre-Turing cap included, so reading its leaf asks the same question the handover did.
+    """
+    leaf = _detect_cuda_torch_index_url().rstrip("/").rsplit("/", 1)[-1].strip().lower()
+    return leaf if _is_cuda_family_leaf(leaf) else ""
+
+
 def _explicit_torch_index_url() -> "str | None":
     """The wheel index URL pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY, else None.
 
@@ -4089,12 +4099,24 @@ def _expected_torch_flavor_tag() -> str:
         if env == "cpu" and not _explicit_cpu_torch_index_pin():
             recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
             if _is_cuda_family_leaf(recorded) and _has_usable_nvidia_gpu():
+                # The driver's OWN family, not the recorded one. setup.ps1 also answers "cpu"
+                # legitimately, from Get-PytorchCudaTag, when the driver tops out below CUDA 11
+                # or Get-CudaFamilyCappedForPreTuring lowers the family; reinstating the record
+                # there would install a wheel this driver cannot load. Same probe as setup.ps1,
+                # mirrored in _detect_cuda_torch_index_url, so the two cannot disagree.
+                # An explicit CUDA pin outranks the probe: the repair helpers install from
+                # the pinned URL, so expecting anything else would flag the venv they just
+                # built correctly. _explicit_cpu_torch_index_pin already took the CPU pin.
+                pinned = _torch_index_leaf(_explicit_torch_index_url() or "")
+                driver = pinned if _is_cuda_family_leaf(pinned) else _driver_cuda_torch_flavor_tag()
+                if not driver:
+                    return env
                 _safe_print(
                     f"   [WARN] the installer handed over a CPU torch expectation, but this venv "
                     f"was recorded as {recorded} and an NVIDIA GPU is still present; "
-                    f"enforcing {recorded}."
+                    f"enforcing {driver}."
                 )
-                return recorded
+                return driver
         return env
     pin = _explicit_torch_index_url()
     if pin is not None:

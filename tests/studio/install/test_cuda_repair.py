@@ -2202,15 +2202,30 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
     is still honoured on a host whose GPU has genuinely gone."""
 
     def test_a_cpu_handover_is_overruled_by_a_recorded_cuda_flavor(self):
+        # cuda_version has to agree with the record: the enforced family comes from the
+        # DRIVER, and a 12.4 driver under a cu128 record is the downgrade case below.
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "cpu",
             recorded = "cu128",
             nvidia = True,
+            cuda_version = "12.8",
             repaired = "2.11.0+cu128",
         )
         assert ok is True
         assert mock_pip.call_count == 1
         assert _index_url(mock_pip).endswith("/cu128")
+
+    def test_a_downgraded_driver_is_repaired_onto_its_own_family_end_to_end(self):
+        # Record says cu128, driver reports CUDA 12.4: install cu124, not the record.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = True,
+            cuda_version = "12.4",
+            repaired = "2.11.0+cu124",
+        )
+        assert ok is True
+        assert _index_url(mock_pip).endswith("/cu124")
 
     def test_the_unrepaired_case_fails_the_install_rather_than_reporting_success(self):
         # repaired = None: the reinstall left the venv on +cpu, the state this invariant exists
@@ -2264,10 +2279,66 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
         monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
         monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "cu128")
 
         resolved = stack_mod._expected_torch_flavor_tag()
         assert resolved == "cu128"
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu128"
+
+    def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
+        # The repair helpers install from the pinned URL, so expecting the driver's family
+        # instead would flag the venv they just built correctly.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu128")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu124")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "cu126")
+
+        assert stack_mod._expected_torch_flavor_tag() == "cu128"
+
+    def test_a_driver_too_old_for_any_cuda_wheel_keeps_the_cpu_handover(self, monkeypatch):
+        # Get-PytorchCudaTag returns "cpu" for a driver below CUDA 11, so the handover is a
+        # STATEMENT here, not an empty probe. Reinstating cu128 would install a wheel this
+        # driver cannot load. _detect_cuda_torch_index_url mirrors that and yields "" .
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "")
+
+        resolved = stack_mod._expected_torch_flavor_tag()
+        assert resolved == "cpu"
+        assert stack_mod._recordable_torch_flavor_tag(resolved) == "cpu"
+
+    def test_a_downgraded_driver_gets_its_own_family_not_the_recorded_one(self, monkeypatch):
+        # A driver downgrade, or Get-CudaFamilyCappedForPreTuring lowering the family, leaves
+        # the manifest naming a family the host outgrew. The record proves this venv is meant
+        # to be CUDA; it does not get to pick which CUDA.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "cu118")
+
+        resolved = stack_mod._expected_torch_flavor_tag()
+        assert resolved == "cu118"
+        assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu118"
+
+    def test_the_driver_family_probe_mirrors_the_index_url(self, monkeypatch):
+        # The helper reads _detect_cuda_torch_index_url's leaf, so an ancient-driver "cpu"
+        # URL has to come back as "" rather than as a family named "cpu".
+        monkeypatch.setattr(
+            stack_mod,
+            "_detect_cuda_torch_index_url",
+            lambda: "https://download.pytorch.org/whl/cpu",
+        )
+        assert stack_mod._driver_cuda_torch_flavor_tag() == ""
+        monkeypatch.setattr(
+            stack_mod,
+            "_detect_cuda_torch_index_url",
+            lambda: "https://download.pytorch.org/whl/cu126/",
+        )
+        assert stack_mod._driver_cuda_torch_flavor_tag() == "cu126"
 
     def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):
         # Without the GPU the handover stands and the manifest records cpu.
