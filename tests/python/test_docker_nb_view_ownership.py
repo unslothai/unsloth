@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
+"""The categorized notebook VIEW may only delete the links it created.
+
+The VIEW is also JupyterLab's landing dir. Every link the tool creates points at
+DEST/nb/<file>, but the ownership predicate accepted ANY target under DEST, so a
+user's own shortcut to a notebook beside the checkout was deleted on the next boot.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+VIEW_PATH = REPO_ROOT / "docker" / "unsloth_nb_view.py"
+
+README = (
+    "### Main Notebooks\n"
+    "[Llama](nb/Llama3_2_%281B_and_3B%29_Conversational.ipynb)\n"
+    "### Gemma\n"
+    "[Gemma](nb/Gemma3_%284B%29.ipynb)\n"
+)
+
+
+@pytest.fixture(scope = "module")
+def view_mod():
+    assert VIEW_PATH.is_file(), f"missing {VIEW_PATH}"
+    spec = importlib.util.spec_from_file_location("unsloth_nb_view_under_test", VIEW_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def tree(tmp_path: Path):
+    dest = tmp_path / "unsloth-notebooks"
+    view = tmp_path / "Unsloth Notebooks"
+    (dest / "nb").mkdir(parents = True)
+    view.mkdir()
+    for name in ("Llama3_2_(1B_and_3B)_Conversational.ipynb", "Gemma3_(4B).ipynb"):
+        (dest / "nb" / name).write_text("{}", encoding = "utf-8")
+    (dest / "README.md").write_text(README, encoding = "utf-8")
+    # the user's own notebook inside the checkout, plus their own shortcut folder
+    (dest / "my_work").mkdir()
+    (dest / "my_work" / "experiment.ipynb").write_text("{}", encoding = "utf-8")
+    return dest, view
+
+
+def link(target: Path, at: Path) -> None:
+    at.parent.mkdir(parents = True, exist_ok = True)
+    os.symlink(os.path.relpath(target, at.parent), at)
+
+
+def test_a_user_link_to_their_own_file_in_the_checkout_survives(view_mod, tree):
+    dest, view = tree
+    own = view / "00 My favourites" / "experiment.ipynb"
+    link(dest / "my_work" / "experiment.ipynb", own)
+
+    view_mod.build_view(str(dest), str(view))
+
+    assert os.path.islink(own), (
+        "a symlink the user created in the landing dir, pointing at their own "
+        "file inside the notebooks checkout, was deleted by _clear_view"
+    )
+    assert os.path.realpath(own) == os.path.realpath(dest / "my_work" / "experiment.ipynb")
+
+
+def test_a_user_link_outside_the_checkout_survives(view_mod, tree, tmp_path: Path):
+    dest, view = tree
+    outside = tmp_path / "datasets"
+    outside.mkdir()
+    own = view / "datasets"
+    link(outside, own)
+
+    view_mod.build_view(str(dest), str(view))
+
+    assert os.path.islink(own)
+
+
+def test_the_tools_own_stale_links_are_still_cleaned_up(view_mod, tree):
+    dest, view = tree
+    view_mod.build_view(str(dest), str(view))
+    generated = view / "02 Gemma" / "Gemma3_(4B).ipynb"
+    assert os.path.islink(generated)
+
+    # upstream drops the notebook: the stale link and its emptied folder must go
+    (dest / "nb" / "Gemma3_(4B).ipynb").unlink()
+    (dest / "README.md").write_text(
+        "### Main Notebooks\n[Llama](nb/Llama3_2_%281B_and_3B%29_Conversational.ipynb)\n",
+        encoding = "utf-8",
+    )
+    view_mod.build_view(str(dest), str(view))
+
+    assert not os.path.islink(generated) and not os.path.exists(generated)
+    assert not (view / "02 Gemma").exists()
+
+
+def test_a_rebuild_is_stable_for_the_links_it_owns(view_mod, tree):
+    dest, view = tree
+    view_mod.build_view(str(dest), str(view))
+    first = sorted(str(p.relative_to(view)) for p in view.rglob("*"))
+    view_mod.build_view(str(dest), str(view))
+    assert sorted(str(p.relative_to(view)) for p in view.rglob("*")) == first
+
+
+# The view is built as root while /workspace is a host bind mount, so every directory
+# the tool creates has to be handed back to whoever owns the mount. The tests run
+# unprivileged, where a chown to the anchor's own uid is a no-op and therefore
+# invisible in the result, so record the calls instead of inspecting st_uid.
+
+
+@pytest.fixture
+def chowns(monkeypatch):
+    calls = []
+    real = os.chown
+
+    def _record(path, uid, gid, *a, **kw):
+        calls.append((str(path), uid, gid))
+        return real(path, uid, gid, *a, **kw)
+
+    monkeypatch.setattr(os, "chown", _record)
+    return calls
+
+
+def test_the_view_root_and_every_category_folder_are_handed_to_the_host_user(
+    view_mod, tree, chowns
+):
+    dest, view = tree
+    view.rmdir()  # first boot: the tool creates the view root itself
+    anchor = os.stat(view.parent)
+
+    view_mod.build_view(str(dest), str(view))
+
+    created = [str(view)] + [str(p) for p in sorted(view.iterdir()) if p.is_dir()]
+    assert len(created) >= 3, created
+    for path in created:
+        assert (path, anchor.st_uid, anchor.st_gid) in chowns, (path, chowns)
+
+
+def test_an_existing_directory_is_left_alone(view_mod, tree, chowns):
+    """Only directories this run created are re-owned. Chowning one the user already
+    had would take their view away rather than give it to them."""
+    dest, view = tree  # the fixture already created the view root
+    view_mod.build_view(str(dest), str(view))
+    assert str(view) not in [c[0] for c in chowns], chowns
+
+
+def test_the_view_uses_the_same_directory_maker_as_unsloth_run(view_mod):
+    """A third copy of the walk would drift, and a silent import failure would put the
+    view straight back to creating root-owned folders."""
+    helper = view_mod._MAKEDIRS_AS_HOST
+    assert helper is not None, "the shared helper stopped resolving"
+    assert helper.__name__ == "_makedirs_as_host"
+    source = Path(helper.__code__.co_filename).resolve()
+    assert source == (REPO_ROOT / "docker" / "unsloth_run.py").resolve(), source

@@ -9,6 +9,10 @@ interface LlamaJob {
   operation: LlamaJobOperation;
 }
 
+interface TimestampedLlamaJob extends LlamaJob {
+  started_at: string | null;
+}
+
 interface IdentifiedLlamaJob extends LlamaJob {
   startedAt: string | null;
 }
@@ -68,35 +72,69 @@ export function llamaUpdatePresentation(
   };
 }
 
-export const LLAMA_JOB_STATUS_TIMEOUT_MS = 15_000;
-
-export function llamaStatusRequestIsStale(
-  latestAppliedRequest: number,
-  incomingRequest: number,
+/**
+ * Whether the banner's version line has anything to say.
+ *
+ * `updateAvailable` is the only field reporting that the release moved. The tags cannot:
+ * `installed_tag` is normalized (`b9596`) while `latest_tag` is the full identity
+ * (`b9596-mix-<sha>`), so a fork install shows them differing at the release it is
+ * running -- which is exactly where a migration is offered.
+ */
+/**
+ * A poll that left while the job was still running can return after a later
+ * poll already observed success or error. Adopting that running snapshot
+ * re-pins the "Updating..." toast after the completion poller has stopped.
+ */
+export function llamaUpdateSnapshotIsStale(
+  adopted: TimestampedLlamaJob,
+  incoming: TimestampedLlamaJob,
 ): boolean {
-  return incomingRequest < latestAppliedRequest;
+  if (adopted.state !== "success" && adopted.state !== "error") {
+    return false;
+  }
+  return (
+    incoming.state === "running" &&
+    adopted.started_at != null &&
+    adopted.started_at === incoming.started_at
+  );
 }
 
-export async function boundedLlamaStatusRequest<T>(
-  request: (signal: AbortSignal) => Promise<T>,
-  timeoutMs = LLAMA_JOB_STATUS_TIMEOUT_MS,
-): Promise<T | null> {
-  const controller = new AbortController();
-  let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
-  const deadline = new Promise<null>((resolve) => {
-    timeout = globalThis.setTimeout(() => {
-      controller.abort();
-      resolve(null);
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([
-      request(controller.signal).catch(() => null),
-      deadline,
-    ]);
-  } finally {
-    if (timeout !== undefined) {
-      globalThis.clearTimeout(timeout);
-    }
+export function llamaReleaseChanged(
+  updateAvailable: boolean,
+  installedTag: string | null,
+  latestTag: string | null,
+): boolean {
+  return Boolean(
+    updateAvailable && installedTag && latestTag && installedTag !== latestTag,
+  );
+}
+
+/** What to tell the user a finished Update actually did.
+ *
+ * A migration runs at the release already installed and can end on the backend already
+ * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
+ * a pending whisper update named the toast. The job's own message is accurate.
+ */
+export function llamaUpdateToastMessage({
+  component,
+  migrating,
+  jobMessage,
+  updatedTag,
+  reloadRequired,
+}: {
+  component: string;
+  migrating: boolean;
+  jobMessage: string | null | undefined;
+  updatedTag: string;
+  reloadRequired: boolean | null | undefined;
+}): string {
+  const reloadHint = reloadRequired ? " Reload your model to use it." : "";
+  const migrationMessage = migrating ? (jobMessage ?? "").trim() : "";
+  if (!migrationMessage) {
+    return `${component} updated to ${updatedTag}.${reloadHint}`;
   }
+  // The phase appends its own reload hint when it has one to give.
+  return migrationMessage.includes("Reload")
+    ? migrationMessage
+    : `${migrationMessage}${reloadHint}`;
 }

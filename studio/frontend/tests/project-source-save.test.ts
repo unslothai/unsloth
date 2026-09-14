@@ -2,10 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   installLocalStorageFake,
+  readSrcAsync,
   registerStoreStubResolver,
 } from "./helpers/kit.ts";
 import { setAuthFetchHandler } from "./helpers/store-stubs/auth.ts";
@@ -50,7 +50,10 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Reject polls from watchers left by earlier tests. */
+/** Answer a job poll only when it is *this* test's job. A save leaves its
+ * ingest watcher polling for as long as 300s, and node runs the next test
+ * immediately, so without this the watcher of a finished test is answered by
+ * the handler of the running one, and toasts and announces off the back of it. */
 function jobFor(jobId: string, input: string, body: unknown): Response {
   return input.includes(`/jobs/${jobId}`)
     ? json(body)
@@ -138,6 +141,8 @@ test("a quiet save still reports its own failure", async () => {
 
 test("an ingest that fails after the upload is not left silent", async () => {
   const seen = collectUpdates();
+  // A filename of its own, so a toast can be attributed to this save and not to
+  // some other test's watcher that happens to have uploaded a "Chat.md" too.
   setAuthFetchHandler((input) => {
     if (input.includes("/jobs/")) {
       return jobFor("j4", input, {
@@ -150,7 +155,11 @@ test("an ingest that fails after the upload is not left silent", async () => {
     return json({ documentId: "d4", jobId: "j4", filename: "Unparsable.md" });
   });
   await saveMarkdownAsProjectSource("p4", "# Chat\n", "Unparsable");
-  // Waiting for the post-toast announce avoids a race.
+  // Wait on the announce, not on the toast: the watcher toasts and *then*
+  // announces, with no await between the two, so the announce is the last
+  // thing the failed ingest does. Polling for the toast and then asserting the
+  // count reads the count in the window between them, and fails on a runner
+  // slow enough to land a poll there.
   const announcedTwice = await waitFor(() =>
     seen.filter((id) => id === "p4").length >= 2 || undefined,
   );
@@ -165,9 +174,13 @@ test("an ingest that fails after the upload is not left silent", async () => {
   );
   assert.equal(failure?.kind, "error");
   assert.equal(failure?.description, "Could not parse the document");
+  // Told exactly twice: once for the upload, once for the ingest that failed.
   assert.equal(seen.filter((id) => id === "p4").length, 2);
 });
 
+/** Poll `read` until it answers, for well past the 2s ingest poll. Anything
+ * asserted on the strength of it must be something the code under test does
+ * *before* what is polled for, or the wait races it. */
 async function waitFor<T>(read: () => T | undefined): Promise<T | undefined> {
   for (let attempt = 0; attempt < 300; attempt++) {
     const value = read();
@@ -235,13 +248,7 @@ test("unsubscribing stops the refetch, so an unmounted panel cannot set state", 
 });
 
 test("the panel subscribes, and does not resurrect a row it just deleted", async () => {
-  const src = await readFile(
-    new URL(
-      "../src/features/rag/components/project-sources-panel.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/rag/components/project-sources-panel.tsx");
   assert.match(
     src,
     /subscribeProjectSourcesUpdated\(projectId, \(\) => \{\n\s*void refresh\(\{ quiet: true \}\);\n\s*\}\),/,

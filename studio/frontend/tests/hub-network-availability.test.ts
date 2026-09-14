@@ -3,7 +3,6 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
 
 import {
   classifyFetchFailure,
@@ -19,6 +18,8 @@ import {
   markRemoteNetworkOnline,
   sanitizeHubErrorMessage,
 } from "../src/features/hub/lib/network.ts";
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const HF = "https://huggingface.co";
 
@@ -349,10 +350,7 @@ test("a generator that threw is not pulled again", async () => {
   assert.equal((await iter.next()).done, true, "it is finished once it throws");
   assert.equal(requests, 2, "reusing it issues no request, so done is a lie");
 
-  const src = await readFile(
-    new URL("../src/features/hub/hooks/use-hub-paginated-search.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/hub/hooks/use-hub-paginated-search.ts");
   // Set on the failure path, cleared only where a new generator is built.
   assert.match(src, /iterDeadRef\.current = true;/);
   assert.match(src, /iterRef\.current = iter;\s*\n\s*iterDeadRef\.current = false;/);

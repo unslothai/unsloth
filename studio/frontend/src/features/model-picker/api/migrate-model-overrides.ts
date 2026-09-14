@@ -42,11 +42,10 @@ function markRan(): void {
   }
 }
 
-/**
-* A server key under the same identity this browser stores. `app_settings` has no schema
-* version, so an old install holds keys the backend resolves to this model while an exact
-* lookup calls them missing and overwrites them. The split folds repo ids while preserving
-* POSIX path identity. */
+/** A server key under the same identity this browser stores. `app_settings` has no schema
+ *  version, so an old install holds keys the backend resolves to this model while an exact
+ *  lookup calls them missing and overwrites them. The split folds repo ids while preserving
+ *  POSIX path identity. */
 function normalizedOverrideKey(key: string): string {
   const split = splitQuantSuffix(key);
   if (!split) {
@@ -58,9 +57,8 @@ function normalizedOverrideKey(key: string): string {
   );
 }
 
-/**
-* The fields *config* would contribute that the stored entry does not hold. A malformed entry
-* (nothing constrains what an older install wrote) counts as holding nothing. */
+/** The fields *config* would contribute that the stored entry does not hold. A malformed entry
+ *  (nothing constrains what an older install wrote) counts as holding nothing. */
 function absentFields(
   stored: ApiModelOverride,
   config: Parameters<typeof toApiOverride>[0],
@@ -72,10 +70,9 @@ function absentFields(
   return fields.filter((field) => !(field in stored));
 }
 
-/**
-* Push local settings the server does not hold. Never deletes and never overwrites: a value
-* already there is the newer authority. Field by field, not entry by entry, since a legacy
-* entry holds only llama_extra_args and max_seq_length. */
+/** Push local settings the server does not hold. Never deletes and never overwrites: a value
+ *  already there is the newer authority. Field by field, not entry by entry, since a legacy
+ *  entry holds only llama_extra_args and max_seq_length. */
 export async function backfillModelOverrides(): Promise<void> {
   if (alreadyRan()) {
     return;

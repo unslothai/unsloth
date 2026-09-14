@@ -1,3 +1,16 @@
+# pre-commit.ci reads its settings from here and only from here. These lived in a
+# root .pre-commit-ci.yaml for ten months, which is not a file pre-commit.ci looks
+# at, so none of them applied: every autoupdate commit on main used the default
+# message and arrived weekly, not monthly.
+#
+# autofix_prs is the default, but it is stated because the sync-allow-scripts-pins
+# hook below depends on it by name. skip and submodules are left out: they are
+# defaults that guard nothing, and unused settings are what produced this bug.
+ci:
+  autofix_prs: true
+  autoupdate_schedule: monthly
+  autoupdate_commit_msg: "chore: pre-commit autoupdate"
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.18
@@ -11,7 +24,11 @@ repos:
     hooks:
       - id: ruff-format-with-kwargs
         name: Ruff format with kwarg spacing
-        entry: scripts/run_ruff_format.py
+        # `python <script>` not a direct exec, for the reason spelled out on the
+        # hook below: an autofix commit can drop the executable bit, and a
+        # shebang-style entry then dies with "Executable not found". That is
+        # twice now (#10519, #10523); this makes the mode bit irrelevant.
+        entry: python scripts/run_ruff_format.py
         language: python
         types: [python]
         # Mirror ruff's [tool.ruff] extend-exclude so this hook does not

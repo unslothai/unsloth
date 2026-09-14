@@ -10,9 +10,8 @@ export interface PillTab {
   icon?: ReactNode;
 }
 
-/** Segmented pill toggle reusing the Hub's .hub-tab-toggle styling (extended in
- * hub.css to also match .unsloth-model-selector-menu). Keeps tab roles for
- * keyboard nav. */
+/** Segmented pill toggle reusing the Hub's .hub-tab-toggle styling (extended in hub.css to also
+ *  match .unsloth-model-selector-menu). Keeps tab roles for keyboard nav. */
 export function PillTabs({
   tabs,
   value,
@@ -21,6 +20,7 @@ export function PillTabs({
   className,
   compact = false,
   fit = false,
+  disabled = false,
 }: {
   tabs: PillTab[];
   value: string;
@@ -28,6 +28,8 @@ export function PillTabs({
   ariaLabel: string;
   className?: string;
   compact?: boolean;
+  /** Block every tab, for a choice that cannot be applied right now. */
+  disabled?: boolean;
   /** Size each tab to its label instead of equal widths. The active tab carries
    * the pill background directly (the toggle never animates). Tabs only shrink
    * when their combined intrinsic width exceeds the available space. */
@@ -44,8 +46,8 @@ export function PillTabs({
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
         compact ? "h-7" : "h-(--picker-control-h)",
-        // Don't stretch to fill a flex-column parent (the popover) in fit mode,
-        // and never compress so the last tab keeps its padding.
+        // Do not stretch to fill a flex-column parent (the popover) in fit mode, and never compress so
+        // the last tab keeps its padding.
         fit && "w-fit max-w-full shrink-0 self-start",
         className,
       )}
@@ -66,10 +68,10 @@ export function PillTabs({
           type="button"
           role="tab"
           aria-selected={value === tab.value}
-          // Roving tabindex: only the active tab is in the tab order; Arrow
-          // Left/Right move between tabs (WAI-ARIA tablist pattern). ArrowDown
-          // is left to bubble so the picker's "enter the list" handler still runs.
+          // Roving tabindex: only the active tab is in the tab order; Arrow Left/Right move between tabs
+          // (WAI-ARIA tablist pattern). ArrowDown bubbles so the picker's "enter the list" handler runs.
           tabIndex={value === tab.value ? 0 : -1}
+          disabled={disabled}
           onKeyDown={(e) => {
             if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
             e.preventDefault();
@@ -85,6 +87,7 @@ export function PillTabs({
           onClick={() => onValueChange(tab.value)}
           className={cn(
             "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
+            disabled && "cursor-not-allowed opacity-50",
             fit ? "min-w-0 shrink" : "min-w-0 flex-1",
             compact
               ? "h-7 px-2.5 text-ui-11"
@@ -92,8 +95,7 @@ export function PillTabs({
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
-            // The active tab carries the pill; pin its hover bg so an
-            // already-selected tab shows no hover change.
+            // The active tab carries the pill; pin its hover bg so an already-selected tab shows no hover change.
             fit &&
               value === tab.value &&
               "hub-tab-toggle-pill hover:!bg-[var(--background)] dark:hover:!bg-[color-mix(in_srgb,var(--foreground)_10%,transparent)]",

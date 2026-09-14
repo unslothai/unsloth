@@ -20,10 +20,8 @@ def utf8_child_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     child = dict(os.environ if env is None else env)
     child["PYTHONIOENCODING"] = "utf-8"
     if env is None and child.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") == "1":
-        # The Xet shim sets this process-wide for one optional import; a child spawned in that
-        # window inherits it for life, and unsloth_zoo injects triton and bitsandbytes STUBS when it
-        # is set, so a training child would run against no-ops. Only the loader's own transient
-        # value is dropped, so an operator who set it deliberately is unaffected.
+        # The Xet shim sets this process-wide for one optional import, and a child spawned in that window inherits it
+        # for life, running against unsloth_zoo's triton/bitsandbytes STUBS.
         try:
             from utils.hf_xet_fallback import gpu_init_override_active
             if gpu_init_override_active():

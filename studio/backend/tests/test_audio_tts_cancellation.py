@@ -132,6 +132,44 @@ def test_route_passes_request_cancel_event_to_transformers_backend(monkeypatch):
     assert captured["cancel_event"].is_set() is False
 
 
+def test_minimax_prompt_encoder_overflow_is_a_client_error(monkeypatch):
+    class _Llama:
+        is_loaded = False
+        _is_audio = False
+
+    class _Backend:
+        active_model_name = "MiniMaxAI/MiniMax-Music3"
+        models = {
+            "MiniMaxAI/MiniMax-Music3": {
+                "is_audio": True,
+                "audio_type": "minimax_music3",
+            }
+        }
+
+        def generate_audio_response(self, **_kwargs):
+            raise RuntimeError("The assembled prompt has 5001 tokens; the maximum is 5000")
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "MiniMaxAI/MiniMax-Music3",
+        messages = [{"role": "user", "content": "lyrics"}],
+        audio_instructions = "long music description",
+    )
+
+    with pytest.raises(inference_route.HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._generate_tts_wav("lyrics", payload, request = None, current_subject = "t")
+        )
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "The assembled prompt has 5001 tokens; the maximum is 5000"
+
+
 def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
@@ -312,8 +350,24 @@ def test_tts_route_bounds_public_token_budget():
     assert inference_route._tts_max_new_tokens(payload) == 8192
 
 
-def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
+def test_minimax_music_route_allows_its_official_frame_budget():
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        max_tokens = 10**310,
+    )
+
+    assert inference_route._tts_max_new_tokens(payload, audio_type = "minimax_music3") == 9000
+
+
+@pytest.mark.parametrize(
+    ("audio_type", "expected_max_tokens"),
+    ((None, 8192), ("minimax_music3", 9000)),
+)
+def test_audio_worker_command_uses_the_model_token_budget(
+    monkeypatch, audio_type, expected_max_tokens
+):
     orchestrator = _bare_orchestrator()
+    orchestrator.models["model"]["audio_type"] = audio_type
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []
     monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
@@ -340,7 +394,7 @@ def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
         b"RIFFfake",
         24000,
     )
-    assert sent[0]["max_new_tokens"] == 8192
+    assert sent[0]["max_new_tokens"] == expected_max_tokens
 
 
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):

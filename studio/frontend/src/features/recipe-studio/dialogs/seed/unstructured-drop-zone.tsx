@@ -181,8 +181,7 @@ export function UnstructuredDropZone({
         // Skip if the drop zone unmounted or its block changed: the id no
         // longer belongs here and restoring would leak it into another block.
         if (!mountedRef.current || blockIdRef.current !== blockId) return;
-        // Still exists server-side (counts toward quota); restore it at its
-        // original position.
+        // Still exists server-side (counts toward quota); restore it at its original position.
         deletedIdsRef.current.delete(entry.id);
         onFilesChange((prev) => {
           const next = [...prev];
@@ -293,7 +292,10 @@ export function UnstructuredDropZone({
                   className="size-4 text-red-500"
                 />
               )}
-              <span className="flex-1 truncate">{entry.name}</span>
+              {/* Queued local upload, so keep the name out of the snapshot. */}
+              <span data-reload-snapshot-sensitive className="flex-1 truncate">
+                {entry.name}
+              </span>
               <span className="text-muted-foreground text-xs">
                 {formatSize(entry.size)}
               </span>
