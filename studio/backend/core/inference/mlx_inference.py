@@ -542,7 +542,7 @@ _MLX_FUSION_UNAVAILABLE = set()
 
 
 def _mlx_fusion_unavailable(name, error):
-    """Log once per distinct cause. These fire per request, so repeating would flood."""
+    """Log once per cause: this is a per-request path, so repeating would flood."""
     key = (name, type(error).__name__, str(error))
     if key not in _MLX_FUSION_UNAVAILABLE:
         _MLX_FUSION_UNAVAILABLE.add(key)
@@ -555,20 +555,13 @@ def _mlx_fusion_unavailable(name, error):
 
 
 def _mlx_inference_patch(name):
-    """Look up an optional Zoo fusion helper, or None when it cannot be used.
-
-    Never raises. The fusions are a throughput optimization, so every way Zoo can fail to
-    provide one -- not installed, installed without the module, installed without the mlx
-    extras its module imports, or a version whose module raises on import -- has to leave
-    native inference working rather than failing a load or a request.
-    """
+    """An optional Zoo fusion helper, or None. Never raises: these are a throughput
+    optimization, so no Zoo state may fail a load or a request that worked without it."""
     try:
         patches = importlib.import_module("unsloth_zoo.mlx.inference")
     except ModuleNotFoundError as error:
         if error.name != "unsloth_zoo.mlx.inference":
-            # A transitive import inside Zoo's module failed. That is still just the
-            # optional feature being unavailable, so say so instead of raising.
-            _mlx_fusion_unavailable(name, error)
+            _mlx_fusion_unavailable(name, error)  # a transitive import inside Zoo failed
         return None
     except Exception as error:
         # A partial or skewed install raises ImportError rather than ModuleNotFoundError.
@@ -579,12 +572,9 @@ def _mlx_inference_patch(name):
 
 @contextmanager
 def _mlx_optional_fusion(name, model):
-    """Hold an optional Zoo fusion scope, or yield the model unfused.
-
-    Only entry is guarded: once a scope is open its unwind runs through the ExitStack
-    exactly as an unguarded `with` would, so an interrupted or failed generation still
-    restores the module tree.
-    """
+    """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
+    an open scope must unwind through the ExitStack as an unguarded `with` would, or an
+    interrupted generation stops restoring the module tree."""
     patch = _mlx_inference_patch(name)
     with ExitStack() as scope:
         active = model

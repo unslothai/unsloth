@@ -50,13 +50,8 @@ def mlx_decode(mlx_inference_patches):
     ids = ["feature", "mlx", "unsloth_zoo", "import-error", "raising-module"],
 )
 def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
-    """No way for Zoo to be unusable may fail a load or a generation.
-
-    The fusions are a throughput optimization, so an absent, older, partially installed
-    or broken Zoo has to leave native inference working. A transitive failure is logged
-    rather than raised, since raising would take down a path that worked before the
-    optimization existed.
-    """
+    """No Zoo state may fail a load or a generation: raising would take down a path that
+    worked before the optimization existed, so a transitive failure is logged instead."""
     from core.inference import mlx_inference
 
     module_name = "unsloth_zoo.mlx.inference"
