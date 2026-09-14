@@ -3109,6 +3109,21 @@ class ExternalProviderClient:
                             yield "data: [DONE]"
                             await response.aclose()  # set PoolByteStream._closed=True FIRST
                             break
+
+                        elif event_type == "error":
+                            if thinking_open:
+                                yield _content_chunk("</think>")
+                            error = event.get("error")
+                            error_type = error.get("type") if isinstance(error, dict) else None
+                            # An unhashable `type` from a stand-in gateway raised out of here.
+                            if not isinstance(error_type, str):
+                                error_type = None
+                            yield _error_sse_line(
+                                _ANTHROPIC_ERROR_STATUS.get(error_type, 502),
+                                _json.dumps(event),
+                                self.provider_type,
+                            )
+                            break
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op
@@ -6559,6 +6574,22 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
 
     text = text.strip()
     return f"{text} ({code})" if code and code not in text else text
+
+
+# A mid-stream error keeps the status its type maps to, so a rate limit still reads as 429.
+_ANTHROPIC_ERROR_STATUS = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "billing_error": 402,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "conflict_error": 409,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 500,
+    "timeout_error": 504,
+    "overloaded_error": 529,
+}
 
 
 def _error_sse_line(
