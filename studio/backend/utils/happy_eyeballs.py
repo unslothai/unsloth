@@ -146,6 +146,7 @@ def happy_eyeballs_connection(
     # Appended in COMPLETION order, which is what lets the raise below pick the last
     # failure the way the stdlib does.
     exceptions: list = []
+    failed: dict = {}  # sockaddr -> its failure, for the raise below
     pending: dict = {}  # socket -> sockaddr
     winner = None
     timed_out = False
@@ -181,6 +182,7 @@ def happy_eyeballs_connection(
                     started_one = True
                 except OSError as exc:
                     exceptions.append(exc)
+                    failed[sa] = exc
                     if sock is not None:
                         sock.close()
 
@@ -208,11 +210,13 @@ def happy_eyeballs_connection(
                 sock = key.fileobj
                 err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 sel.unregister(sock)
-                pending.pop(sock, None)
+                sa = pending.pop(sock, None)
                 if err == 0:
                     winner = sock
                     break
-                exceptions.append(OSError(err, os.strerror(err)))
+                exc = OSError(err, os.strerror(err))
+                exceptions.append(exc)
+                failed[sa] = exc
                 sock.close()
             if winner is not None:
                 break
@@ -234,18 +238,17 @@ def happy_eyeballs_connection(
     if winner is not None:
         return _settle(winner)
 
-    # The deadline ran out with attempts still unresolved, so a timeout is what happened,
-    # whatever an address that failed earlier happened to report.
     if timed_out or not exceptions:
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
         # novermin -- ExceptionGroup is 3.11, and the condition above IS the guard.
         raise ExceptionGroup("create_connection failed", exceptions)
-    # The LAST failure, as the stdlib raises when all_errors is false, and callers read
-    # which one it is: utils.utils.hf_tcp_reachable treats ECONNREFUSED as proof the
-    # endpoint answered, so surfacing an earlier family's ENETUNREACH in its place would
-    # declare the Hub unreachable and switch the offline guard on.
-    raise exceptions[-1]
+    # What the stdlib raises: it walks every address and reports whatever the last one in
+    # resolver order did. Callers read which error they got; utils.utils.hf_tcp_reachable
+    # treats ECONNREFUSED as proof the endpoint answered. So the last address decides: its
+    # own failure if it had one, else a timeout, since at the deadline it was still in
+    # flight and the stdlib's attempt on it would have timed out as well.
+    raise failed.get(infos[-1][4]) or socket.timeout("timed out")
 
 
 def activate_happy_eyeballs() -> bool:

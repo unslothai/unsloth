@@ -347,6 +347,74 @@ def test_a_deadline_reached_with_attempts_in_flight_raises_a_timeout(monkeypatch
         he.happy_eyeballs_connection(("hub.invalid", 443), 0.3)
 
 
+def _mixed_list_connector(monkeypatch, order):
+    """Script a list where "hole" never answers and "refused" fails at once, in *order*,
+    and return what the connector raises for it. Delay is shortened so the deadline
+    arrives inside the test."""
+    monkeypatch.setenv(he._DELAY_ENV, "0.05")
+    addr = {"hole": ("192.0.2.1", 443), "refused": ("127.0.0.1", 1)}
+
+    class _Stub:
+        def __init__(self, family, *_args, **_kwargs):
+            self.family = family
+
+        def setblocking(self, _flag):
+            pass
+
+        def connect_ex(self, sa):
+            return errno.ECONNREFUSED if sa == addr["refused"] else errno.EINPROGRESS
+
+        def close(self):
+            pass
+
+    class _NeverReady:
+        def register(self, *_args, **_kwargs):
+            pass
+
+        def unregister(self, *_args, **_kwargs):
+            pass
+
+        def select(self, timeout):
+            if timeout:
+                time.sleep(timeout)
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", addr[k]) for k in order],
+    )
+    monkeypatch.setattr(socket, "socket", _Stub)
+    monkeypatch.setattr(selectors, "DefaultSelector", _NeverReady)
+
+    with pytest.raises(OSError) as excinfo:
+        he.happy_eyeballs_connection(("hub.invalid", 443), 0.2)
+    return excinfo.value
+
+
+def test_a_black_hole_then_a_refused_address_raises_refused_as_the_stdlib_does(monkeypatch):
+    """The stdlib walks every address and raises whatever the LAST one did. With the
+    refused address last, that is ConnectionRefusedError, and hf_tcp_reachable reads it as
+    "the endpoint answered". A deadline rule that turned every in-flight attempt into a
+    timeout raised TimeoutError here instead, and flipped that verdict to unreachable."""
+    exc = _mixed_list_connector(monkeypatch, ("hole", "refused"))
+    assert isinstance(
+        exc, ConnectionRefusedError
+    ), f"raised {type(exc).__name__}; the stdlib raises the last address's refusal"
+
+
+def test_a_refused_address_then_a_black_hole_raises_a_timeout_as_the_stdlib_does(monkeypatch):
+    """The mirror: with the black hole last, the stdlib's attempt on it times out, and
+    that is what it raises. Parity means the same answer, not the more informative one."""
+    exc = _mixed_list_connector(monkeypatch, ("refused", "hole"))
+    assert isinstance(
+        exc, socket.timeout
+    ), f"raised {type(exc).__name__}; the stdlib raises the last address's timeout"
+
+
 def test_the_winning_socket_is_blocking_with_the_callers_timeout(listener, monkeypatch):
     """Attempts run non-blocking; what the caller gets back must not."""
     monkeypatch.setattr(socket, "getaddrinfo", _resolver(listener, aaaa = 2))
