@@ -582,6 +582,14 @@ except:
 
 
 _MEDIA_GENERATE_KWARGS = ("pixel_values", "pixel_values_videos", "input_features")
+# Either name means the module overlays a bidirectional block on the causal mask.
+# `get_block_sequence_ids_for_mask` covers transformers 5.10 onwards,
+# `create_masks_for_vision_model` was added in 5.17; keep both so the guard does
+# not go inert on either side of that change.
+_BIDIRECTIONAL_MASK_BUILDERS = (
+    "get_block_sequence_ids_for_mask",
+    "create_masks_for_vision_model",
+)
 
 
 def _needs_bidirectional_multimodal_mask(model, kwargs):
@@ -591,13 +599,15 @@ def _needs_bidirectional_multimodal_mask(model, kwargs):
     A static cache makes transformers skip mask materialisation at prefill and
     rely on `is_causal`, which silently drops that block overlay, so the media
     tokens end up causal. Gemma 3 / Gemma 4 / Gemma 4 unified all build the
-    overlay via `create_masks_for_vision_model`; models without it (Qwen2-VL,
-    Llava, PaliGemma) are causal anyway and stay on the static path.
+    overlay; models without it (Qwen2-VL, Llava, PaliGemma) are causal anyway
+    and stay on the static path.
     """
     if not any(kwargs.get(name) is not None for name in _MEDIA_GENERATE_KWARGS):
         return False
     module = sys.modules.get(type(model).__module__, None)
-    return module is not None and hasattr(module, "create_masks_for_vision_model")
+    if module is None:
+        return False
+    return any(hasattr(module, name) for name in _BIDIRECTIONAL_MASK_BUILDERS)
 
 
 def _uses_flash_attention_for_generation(config):

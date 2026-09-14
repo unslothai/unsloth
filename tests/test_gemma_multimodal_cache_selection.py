@@ -11,13 +11,17 @@ import types
 
 import pytest
 
-from unsloth.models.vision import _needs_bidirectional_multimodal_mask
+from unsloth.models.vision import (
+    _BIDIRECTIONAL_MASK_BUILDERS,
+    _needs_bidirectional_multimodal_mask,
+)
 
 
-def _make_model(module_name, has_helper):
+def _make_model(module_name, has_helper, helper=None):
     module = types.ModuleType(module_name)
     if has_helper:
-        module.create_masks_for_vision_model = lambda *args, **kwargs: None
+        setattr(module, helper or _BIDIRECTIONAL_MASK_BUILDERS[0],
+                lambda *args, **kwargs: None)
     sys.modules[module_name] = module
 
     model_cls = type("Model", (), {})
@@ -66,8 +70,20 @@ def test_unknown_module_does_not_raise():
     assert not _needs_bidirectional_multimodal_mask(orphan_cls(), {"pixel_values": object()})
 
 
+@pytest.mark.parametrize("helper", _BIDIRECTIONAL_MASK_BUILDERS)
+def test_either_mask_builder_gates_the_guard(request, helper):
+    """The two names span transformers 5.10 to current, so either one alone has
+    to be enough."""
+    name = f"_fake_helper_{request.node.name}"
+    model = _make_model(name, True, helper=helper)
+    try:
+        assert _needs_bidirectional_multimodal_mask(model, {"pixel_values": object()})
+    finally:
+        sys.modules.pop(name, None)
+
+
 def test_real_gemma_modules_expose_the_helper():
-    """Pin the upstream symbol the guard keys on, so a rename is caught here."""
+    """Pin the upstream symbols the guard keys on, so a rename is caught here."""
     pytest.importorskip("transformers")
     seen = False
     for name in ("gemma3", "gemma4", "gemma4_unified"):
@@ -78,6 +94,6 @@ def test_real_gemma_modules_expose_the_helper():
         except Exception:
             continue
         seen = True
-        assert hasattr(module, "create_masks_for_vision_model"), name
+        assert any(hasattr(module, h) for h in _BIDIRECTIONAL_MASK_BUILDERS), name
     if not seen:
         pytest.skip("no Gemma multimodal module in this transformers version")
