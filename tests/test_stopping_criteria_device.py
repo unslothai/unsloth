@@ -2,10 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """create_stopping_criteria must not assume CUDA.
 
-Before the device fix these all failed on any non-CUDA build with
-`RuntimeError: Torch not compiled with CUDA enabled` at construction, or with a
-cuda/cpu device mismatch on the first call. They need no accelerator, so they
-also cover CPU-only CI.
+Before the fix these failed with a cuda/cpu device mismatch, and on a non-CUDA build
+at construction. The first two need no accelerator, so they also run on CPU-only CI.
 """
 
 import types
@@ -46,7 +44,6 @@ def test_multi_token_criteria_builds_and_runs_on_cpu():
     assert criteria[0].length == 2
     assert criteria[0].single_match is False
     assert criteria[0].stop_token.device.type == "cpu"
-    # exact suffix matches, the same ids in the middle do not
     assert criteria[0](torch.tensor([7, 100, 101]), None) is True
     assert criteria[0](torch.tensor([100, 101, 7]), None) is False
 
@@ -63,6 +60,5 @@ def test_stop_token_follows_the_input_device():
     assert criteria[0](torch.tensor([9, 9, 2], device = "cuda"), None) is True
     assert criteria[0].stop_token.data_ptr() == pointer
 
-    # and it follows the input back
     assert criteria[0](torch.tensor([9, 9, 2]), None) is True
     assert criteria[0].stop_token.device.type == "cpu"
