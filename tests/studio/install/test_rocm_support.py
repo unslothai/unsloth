@@ -2281,7 +2281,10 @@ class TestGfx1102Rocm64Floor:
 
     @staticmethod
     def _run_migrated_rocm_repair(
-        torch_version: str, hip: str, gfx_target: str, floor: "tuple[int, int]" = (6, 4)
+        torch_version: str,
+        hip: str,
+        gfx_target: str,
+        floor: "tuple[int, int]" = (6, 4),
     ) -> str:
         """Execute install.sh's migrated-environment ROCm repair with a stubbed venv torch."""
         shell = shutil.which("bash")
