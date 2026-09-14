@@ -822,8 +822,14 @@ def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, 
     mover.start()
     assert staged.wait(10), "the per-session move never reached the staging window"
 
-    tools._migrate_legacy_sandbox(root)  # sees an empty legacy root and sets the flag
-    assert tools._legacy_sandbox_migrated, "this test is only meaningful with the flag set"
+    tools._migrate_legacy_sandbox(root)  # sees an empty legacy root while this one is in staging
+    assert not tools._legacy_sandbox_migrated, (
+        "a pass that ran through another session's staging window called the migration finished"
+    )
+    # Set by hand for the rest of the test: it stands for the one gap that check cannot close,
+    # between a pass reading an empty in-flight set and assigning the flag, during which a
+    # request-path move can start. The caller has to keep waiting even then.
+    tools._legacy_sandbox_migrated = True
 
     result = {}
     caller = threading.Thread(
@@ -842,6 +848,76 @@ def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, 
     assert not returned_early, "the flag let the first tool call answer from inside the window"
     assert "workdir" in result, "the first tool call never returned"
     assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
+
+
+def test_a_rolled_back_move_puts_the_migration_back_on_the_table(tmp_path, monkeypatch):
+    """_staged_move restores the legacy copy when the final rename fails, and says so in its
+    own comment: put it back and let the next pass retry. With the done flag already set by a
+    pass that ran while this sat in staging there is no next pass, and every later call short
+    circuits on the flag, so the chat keeps an empty sandbox until the process restarts."""
+    import os
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_rollback"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+
+    staged = threading.Event()
+    release = threading.Event()
+    real_move = shutil.move
+    real_rename = os.rename
+    rename_failed = []
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_rollback" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    def failing_rename(source, destination, *args, **kwargs):
+        # Only the staging -> target step, which is the one that fails on a live handle.
+        if str(destination).endswith("__LOCALID_rollback") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+
+    root = tools.sandbox_root()
+    mover = threading.Thread(
+        target = lambda: tools._migrate_one_legacy_session(root, "__LOCALID_rollback"),
+        daemon = True,
+    )
+    mover.start()
+    assert staged.wait(10), "the per-session move never reached the staging window"
+
+    # The pass itself now declines to finish over a move in staging, so the flag is set by hand
+    # here: it stands for the one gap that check cannot close, between a pass reading an empty
+    # in-flight set and assigning the flag, during which a request-path move can start.
+    tools._migrate_legacy_sandbox(root)
+    tools._legacy_sandbox_migrated = True
+
+    release.set()
+    mover.join(10)
+
+    assert rename_failed, "the rename was never made to fail"
+    assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
+    assert not tools._legacy_sandbox_migrated, (
+        "a restored legacy copy left the migration marked finished, so nothing retries it"
+    )
+
+    # And the retry the rollback asked for actually happens on the next call.
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_rollback"))
+    assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
 
 
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):

@@ -7993,6 +7993,7 @@ def _staged_move(source: str, target: str, name: str) -> None:
     the original still in place; the next launch would read that as a session the new root
     already has and strand the files. Filled under a name nothing resolves to, then renamed,
     which on one filesystem is atomic."""
+    global _legacy_sandbox_migrated
     staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
     # Announced for exactly as long as neither end of the move is where a reader looks. Anything
     # deciding there is nothing to migrate has to consult this first, or it decides it during the
@@ -8019,6 +8020,12 @@ def _staged_move(source: str, target: str, name: str) -> None:
                 os.rename(staging, source)
             except OSError:
                 logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
+            else:
+                # There is something to migrate again, so say so. A whole-tree pass that ran while this sat in staging
+                # saw an empty legacy root and can already have called the migration finished; left standing, that
+                # retires the very retry this rollback exists to allow and the chat keeps an empty sandbox until the
+                # process restarts.
+                _legacy_sandbox_migrated = False
             raise
         _mark_sandbox(target, name)
     finally:
@@ -8193,6 +8200,13 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 logger.warning("Could not move sandbox %s: %s", name, error)
         if moved:
             logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
+        # Somebody else's move, still in staging: its own are all finished by here. That session was in neither root
+        # for part of this pass, so an empty listing is not evidence about it, and the legacy root has to stay for the
+        # rollback that move may yet need to rename back into. Reporting unfinished is what brings the next pass.
+        with _legacy_locks_guard:
+            undisturbed = not _legacy_moves_in_flight
+        if not undisturbed:
+            return False
         # Empty only: a leftover is a collision the user should still find.
         try:
             os.rmdir(legacy)
