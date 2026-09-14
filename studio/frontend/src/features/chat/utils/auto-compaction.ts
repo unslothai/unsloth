@@ -118,3 +118,24 @@ export function ggufCompactionRequestFields(options: {
     context_policy: "checkpoint",
   };
 }
+
+/** The model's self-note across a compaction. Off by default, like the server. */
+export const DEFAULT_SELF_NOTE_ENABLED = false;
+export const DEFAULT_SELF_NOTE_RESERVE_TOKENS = 256;
+/** Mirrors the backend's ge/le, which 400s the whole save on one bad field. */
+export const SELF_NOTE_RESERVE_MIN = 64;
+export const SELF_NOTE_RESERVE_MAX = 4096;
+
+export function sanitizeSelfNoteEnabled(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+export function sanitizeSelfNoteReserveTokens(
+  value: unknown,
+): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(
+    SELF_NOTE_RESERVE_MIN,
+    Math.min(SELF_NOTE_RESERVE_MAX, Math.round(value)),
+  );
+}
