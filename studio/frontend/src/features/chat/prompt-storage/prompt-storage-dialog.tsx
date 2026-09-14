@@ -94,6 +94,7 @@ import {
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
+import { liveThreadHeadId } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -245,7 +246,10 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
+  return orderByParentChain(raw, {
+    includeSiblings,
+    headId: liveThreadHeadId(threadId),
+  }) as typeof raw;
 }
 
 function exportTs(): string {

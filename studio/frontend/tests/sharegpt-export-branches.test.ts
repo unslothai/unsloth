@@ -53,7 +53,11 @@ function storedMessages(
   }));
 }
 
-function loadExporters(stored: StoredMessage[], downloads: string[] = []) {
+function loadExporters(
+  stored: StoredMessage[],
+  downloads: string[] = [],
+  headId: string | null = null,
+) {
   const javascript = ts.transpileModule(
     [
       sliceSource(
@@ -75,6 +79,7 @@ function loadExporters(stored: StoredMessage[], downloads: string[] = []) {
     exports: {},
     toast: { info: () => {} },
     listStoredChatMessages: async () => stored,
+    liveThreadHeadId: () => headId,
     orderByParentChain,
     exportFormatIncludesSiblings,
     ndjsonBody,
@@ -89,9 +94,12 @@ function loadExporters(stored: StoredMessage[], downloads: string[] = []) {
   return context.__exporters as Exporters;
 }
 
-async function shareGptConversations(stored: StoredMessage[]) {
+async function shareGptConversations(
+  stored: StoredMessage[],
+  headId: string | null = null,
+) {
   const downloads: string[] = [];
-  const exporters = loadExporters(stored, downloads);
+  const exporters = loadExporters(stored, downloads, headId);
   await exporters.exportConversationShareGPT("thread");
   const bulk = await exporters.buildThreadContent("thread", "sharegpt");
   assert.ok(bulk);
@@ -122,6 +130,30 @@ test("ShareGPT exports only the edited prompt and its reply", async () => {
   assert.deepEqual(await shareGptConversations(edited), [
     { from: "human", value: "Name one animal." },
     { from: "gpt", value: "Cat." },
+  ]);
+});
+
+test("ShareGPT exports the branch picked in the branch picker", async () => {
+  assert.deepEqual(await shareGptConversations(regenerated, "a1"), [
+    { from: "human", value: "Name one fruit." },
+    { from: "gpt", value: "Apples." },
+  ]);
+  const edited = storedMessages([
+    ["u1", null, "user", "Name one color."],
+    ["a1", "u1", "assistant", "Blue."],
+    ["u1-edit", null, "user", "Name one animal."],
+    ["a1-edit", "u1-edit", "assistant", "Cat."],
+  ]);
+  assert.deepEqual(await shareGptConversations(edited, "a1"), [
+    { from: "human", value: "Name one color." },
+    { from: "gpt", value: "Blue." },
+  ]);
+});
+
+test("ShareGPT falls back to the newest branch when the head is not stored", async () => {
+  assert.deepEqual(await shareGptConversations(regenerated, "unsaved"), [
+    { from: "human", value: "Name one fruit." },
+    { from: "gpt", value: "Apples!" },
   ]);
 });
 
