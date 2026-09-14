@@ -7503,16 +7503,19 @@ def _parse_pinned_pip_config(
         if separator_for_key is None:
             value = present[-1]        # scalar: the command's section overrides global
         else:
-            # A repeatable option ACCUMULATES across sections rather than overriding.
-            # Measured on pip 26.2: `[global] only-binary = :all:` plus
-            # `[install] only-binary = numpy` still refuses an unrelated sdist, so keeping
-            # only the command section would drop the operator's global policy.
-            seen = []
-            for chunk in present:
-                for part in chunk.split(separator_for_key):
-                    if part and part not in seen:
-                        seen.append(part)
-            value = separator_for_key.join(seen)
+            # A repeatable option ACCUMULATES across sections rather than overriding, and
+            # pip applies the entries IN ORDER: `:none:` empties the set, so a later
+            # re-add outranks it. Measured on pip 26.2 with [global] a,b and
+            # [install] :none:,a -- pip keeps a, and so does this concatenation, while
+            # deduplicating dropped the re-add and left `:none:` last, which empties the
+            # set and lets a pinned install build the sdist the operator forbade.
+            parts = [
+                part
+                for chunk in present
+                for part in chunk.split(separator_for_key)
+                if part
+            ]
+            value = separator_for_key.join(parts)
         overrides[f"PIP_{option.upper().replace('-', '_')}"] = value
     return overrides
 

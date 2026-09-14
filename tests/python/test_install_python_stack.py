@@ -744,9 +744,17 @@ class TestHardenedPipConfigRelaxation:
         # A scalar still takes the command section alone: two certs cannot be concatenated.
         certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
         assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
-        # ...and a duplicate is not doubled.
-        dup = b"global.only-binary=':all:'\ninstall.only-binary=':all:'\n"
-        assert ips._parse_pinned_pip_config(dup, "install")["PIP_ONLY_BINARY"] == ":all:"
+    def test_a_reset_entry_keeps_its_order(self):
+        """pip applies a repeatable option IN ORDER and `:none:` empties the set, so a
+        re-add after a reset has to survive. Measured on pip 26.2: [global] a,b with
+        [install] :none:,a still refuses a's sdist, and so does this concatenation, while
+        deduplicating dropped the re-add and left `:none:` last, which empties the set and
+        allowed the very build the operator forbade."""
+        listing = (b"global.only-binary='probe-sdist,probe-wheel'\n"
+                   b"install.only-binary=':none:,probe-sdist'\n")
+        assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == (
+            "probe-sdist,probe-wheel,:none:,probe-sdist"
+        )
 
     @pytest.mark.parametrize(
         "listing, expected",
