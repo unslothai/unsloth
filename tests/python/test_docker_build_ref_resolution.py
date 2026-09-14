@@ -112,6 +112,19 @@ def test_the_smoke_test_message_claims_no_gpu_when_there_is_none(tmp_path):
     assert "Smoke test on this host:" in proc.stdout, proc.stdout
 
 
+def test_a_failing_gpu_query_is_not_shown_as_a_gpu_name(tmp_path):
+    """nvidia-smi prints its failure text on stdout; only a successful query names a GPU."""
+    proc, _argv = _run(
+        tmp_path,
+        LS_REMOTE_STUB,
+        stubs = {
+            "nvidia-smi": 'echo "NVIDIA-SMI has failed because it could not communicate"; exit 9\n'
+        },
+    )
+    assert "Smoke test on this host:" in proc.stdout, proc.stdout
+    assert "has failed" not in proc.stdout
+
+
 def test_an_explicit_tag_is_frozen_too(tmp_path):
     _proc, argv = _run(
         tmp_path, LS_REMOTE_STUB, {"UNSLOTH_REF": "v2026.5.6", "UNSLOTH_ZOO_REF": "v2026.5.4"}

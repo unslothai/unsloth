@@ -94,7 +94,11 @@ echo
 echo "Built ${IMAGE_NAME}:${TAG}"
 echo
 # the build host is whatever the user has; the message named the one it was written on
-HOST_GPU="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+# only a successful query names a GPU: a failing nvidia-smi prints its error on stdout
+HOST_GPU=""
+if HOST_GPU_QUERY="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)"; then
+    HOST_GPU="$(printf '%s\n' "$HOST_GPU_QUERY" | head -1)"
+fi
 echo "Smoke test on this host${HOST_GPU:+ (${HOST_GPU})}:"
 echo "  docker run --rm --gpus all ${IMAGE_NAME}:${TAG} python /workspace/smoke_test.py"
 echo

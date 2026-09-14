@@ -57,7 +57,10 @@ def test_other_ports_and_values_jupyter_rejects_itself_pass_the_guard(port: str)
     assert "JUPYTER_PORT=8000" not in res.stderr, res.stderr
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "as root the launcher would write to /etc and /root")
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason = "as root the launcher would write to /etc and /root",
+)
 def test_check_only_set_to_zero_does_not_stop_the_launcher():
     """`=0` must mean off: the launcher goes on past the guard. On a non-root test host
     the next step, writing /etc/profile.d, fails, which is the proof that it went on."""
