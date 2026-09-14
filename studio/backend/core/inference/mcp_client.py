@@ -2502,18 +2502,19 @@ def call_tool_sync(
         if disclosure_context is not None:
             if use_oauth:
                 raise _PrivateTransportUnavailable
-            return _flatten_result(
-                _call_private_tool(
-                    url,
-                    headers,
-                    name,
-                    args,
-                    disclosure_context,
-                    config_check,
-                    cancel_event,
-                    timeout,
-                )
+            _call_private_tool(
+                url,
+                headers,
+                name,
+                args,
+                disclosure_context,
+                config_check,
+                cancel_event,
+                timeout,
             )
+            from .mcp_image_redaction import PRIVATE_CALL_COMPLETE
+
+            return PRIVATE_CALL_COMPLETE
         if is_stdio(url) or (scope and not use_oauth):
             result = _call_session_tool(
                 url,
@@ -2556,12 +2557,6 @@ def call_tool_sync(
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
-    if disclosure_context is not None:
-        try:
-            result = disclosure_context.redact_result(result)
-            return _flatten_result(result)
-        except Exception:
-            return _private_call_error()
     return _flatten_result(result)
 
 

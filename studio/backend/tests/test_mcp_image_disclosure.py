@@ -25,6 +25,8 @@ def _tool(
         "type": "object",
         "properties": {
             field: {"type": "string", "description": "raw payload", "examples": ["secret"]},
+            "pattern": {"type": "string"},
+            "patternProperties": {"type": "string"},
             "threshold": {"type": "number"},
         },
         "required": [field] if required else [],

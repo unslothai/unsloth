@@ -31,6 +31,7 @@ _UNSUPPORTED_OBJECT_KEYS = frozenset(
     {"$ref", "anyOf", "oneOf", "allOf", "not", "dependentRequired", "dependentSchemas"}
 )
 _REGEX_SCHEMA_KEYS = frozenset({"pattern", "patternProperties"})
+_SCHEMA_MAP_KEYS = frozenset({"$defs", "definitions", "dependentSchemas", "properties"})
 
 
 class McpImageDisclosureError(ValueError):
@@ -114,7 +115,11 @@ def _reject_regex_schema(schema: dict[str, Any]) -> None:
         if isinstance(node, dict):
             if _REGEX_SCHEMA_KEYS.intersection(node):
                 raise McpImageDisclosureError("Mapped tool schemas cannot use regular expressions")
-            pending.extend(node.values())
+            for key, value in node.items():
+                if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+                    pending.extend(value.values())
+                else:
+                    pending.append(value)
         elif isinstance(node, list):
             pending.extend(node)
 

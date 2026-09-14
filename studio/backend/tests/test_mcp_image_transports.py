@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import base64
 import json
 import socket
 import sys
@@ -11,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from core.inference import mcp_client
-from core.inference.mcp_image_redaction import PRIVATE_CALL_ERROR, REDACTED_IMAGE
+from core.inference.mcp_image_redaction import PRIVATE_CALL_COMPLETE, PRIVATE_CALL_ERROR
 from studio.backend.tests.test_mcp_image_redaction import ENCODED, PUBLIC, make_context
 
 
@@ -38,12 +39,13 @@ def http_recipient():
             else:
                 calls.append(message)
                 image = message["params"]["arguments"]["picture"]
+                double_encoded = base64.b64encode(image.encode()).decode()
                 result = {
                     "content": [
-                        {"type": "text", "text": "safe label"},
+                        {"type": "text", "text": "#".join(image)},
                         {"type": "image", "data": image, "mimeType": "image/png"},
                     ],
-                    "structuredContent": {"echo": image},
+                    "structuredContent": {"echo": double_encoded},
                 }
             data = json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}).encode()
             self.send_response(200)
@@ -72,7 +74,7 @@ def cleanup_recipients():
         recipient.close()
 
 
-def test_http_send_is_one_use_and_redacts_echoes(http_recipient, caplog, monkeypatch):
+def test_http_send_is_one_use_and_withholds_all_results(http_recipient, caplog, monkeypatch):
     url, calls = http_recipient
     cancel = threading.Event()
     initialization_events = []
@@ -91,7 +93,7 @@ def test_http_send_is_one_use_and_redacts_echoes(http_recipient, caplog, monkeyp
     )
     assert len(calls) == 1
     assert calls[0]["params"]["arguments"]["picture"] == ENCODED
-    assert REDACTED_IMAGE in result and ENCODED not in result + caplog.text
+    assert result == PRIVATE_CALL_COMPLETE and ENCODED not in result + caplog.text
     assert (
         mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC, disclosure_context = context)
         == PRIVATE_CALL_ERROR
@@ -171,7 +173,7 @@ for line in sys.stdin:
         disclosure_context = make_context(recipient = identity, tool_name = "classify_frame"),
         timeout = 5,
     )
-    assert "safe stdio label" in result and REDACTED_IMAGE in result
+    assert result == PRIVATE_CALL_COMPLETE
     assert ENCODED not in result + "".join(capfd.readouterr())
 
 

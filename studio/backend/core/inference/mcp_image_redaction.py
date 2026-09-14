@@ -19,6 +19,7 @@ from urllib.parse import unquote
 from .mcp_image_disclosure import MAX_IMAGE_BYTES, McpImageDisclosureError
 
 REDACTED_IMAGE = "[shared image echo withheld]"
+PRIVATE_CALL_COMPLETE = "Private MCP image operation completed; server response withheld."
 PRIVATE_CALL_ERROR = "Error: Private MCP image operation failed; no result was released."
 PRIVATE_TRANSPORT_UNAVAILABLE = (
     "Error: This MCP transport cannot safely send private images. No image was shared."
