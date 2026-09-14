@@ -46,6 +46,9 @@ test("Escape collapses from the wrapper, leaving the input's capture slot alone"
   assert.match(wrapper, /onKeyDownCapture=\{\(event\) => \{/);
   assert.match(wrapper, /event\.key === "Escape"/);
   assert.match(wrapper, /!event\.nativeEvent\.isComposing/);
+  // The @-mention popover consumes Escape from a document capture:true listener
+  // that runs first, so an already-defaulted Escape must not collapse as well.
+  assert.match(wrapper, /!event\.nativeEvent\.defaultPrevented/);
 
   // cancelOnEscape is a document capture:true listener, so stopPropagation here
   // would read as suppressing a cancel that already ran.
