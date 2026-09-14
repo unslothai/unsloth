@@ -15,16 +15,19 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
 import importlib.util
 import json
+import os
 import pathlib
+import stat
 import subprocess
 import sys
 import sysconfig
 import tempfile
 import textwrap
-import unittest.mock
 import time
+import unittest.mock
 
 import pytest
 
@@ -170,8 +173,8 @@ def test_update_manifest_merges_into_the_manifest_it_replaces(
             im.write_manifest(
                 root = tmp_path, req_root = tmp_path, package_name = "pytest", no_torch = False
             )
-        with real_lock(root):
-            yield
+        with real_lock(root) as locked:
+            yield locked
 
     monkeypatch.setattr(im, "_manifest_lock", _lock_with_a_peer_ahead_of_us)
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
@@ -211,6 +214,71 @@ def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path)
         child.wait(timeout = 30)
     # Ordering, not duration: the parent's acquire cannot land inside the child's hold.
     assert order.read_text(encoding = "utf-8").split() == ["child-released", "parent-acquired"]
+
+
+def test_the_advisory_write_declines_rather_than_publish_unserialised(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """A peer holding the lock past the timeout is mid-pass. write_manifest and
+    remove_manifest must still go ahead there (failing an install is worse), but this one
+    merges evidence a probe gathered minutes ago: publishing beside that peer risks putting
+    its removed completion marker back over a half-built venv, and losing the evidence costs
+    one probe."""
+    monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    before = _payload(tmp_path)
+    holder = "\n".join([
+        "import sys, time, pathlib",
+        f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+        "import install_manifest as im",
+        f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+        f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+        "    time.sleep(30)",
+    ])
+    child = subprocess.Popen([sys.executable, "-c", holder])
+    try:
+        deadline = time.time() + 20
+        while not (tmp_path / "held").exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert (tmp_path / "held").exists(), "the child never took the lock"
+        assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
+        assert _payload(tmp_path) == before
+        # The two that must never fail an install still do their work.
+        assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        assert im.remove_manifest(root = tmp_path) is True
+    finally:
+        child.kill()
+        child.wait(timeout = 30)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason = "needs O_NOFOLLOW")
+def test_a_symlink_on_the_lock_name_is_not_followed(tmp_path: pathlib.Path) -> None:
+    """Followed, it would open or create a file somewhere else entirely, and a replacement
+    of the target behind it would let two holders think they had the same lock."""
+    elsewhere = tmp_path / "elsewhere.txt"
+    os.symlink(elsewhere, tmp_path / im.LOCK_NAME)
+    with im._manifest_lock(tmp_path) as locked:
+        assert locked is False
+    assert not elsewhere.exists(), "the symlink's target was created"
+    # ...and the writers still work, unserialised, as they did before the lock existed.
+    assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+
+
+def test_a_filesystem_without_locking_is_not_waited_out(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Some NFS and SMB mounts answer immediately that they do not implement locking. Only
+    contention is worth waiting out; retrying that answer would cost the whole deadline on
+    every manifest write."""
+    fcntl = pytest.importorskip("fcntl")
+    monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 5.0)
+
+    def _unsupported(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "locking not supported")
+
+    monkeypatch.setattr(fcntl, "flock", _unsupported)
+    started = time.monotonic()
+    with im._manifest_lock(tmp_path) as locked:
+        assert locked is False
+    assert time.monotonic() - started < 1.0
 
 
 def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatch) -> None:
@@ -339,6 +407,26 @@ def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.
     assert im.remove_manifest(root = tmp_path) is True
     assert not (tmp_path / im.MANIFEST_NAME).exists()
     assert im.read_previous_manifest(root = tmp_path)["schema"] == im.MANIFEST_SCHEMA
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX file modes")
+def test_the_manifest_keeps_the_mode_it_had(tmp_path: pathlib.Path) -> None:
+    """It used to be written through Path.write_text, so it carried the umask default and
+    anything else on the machine could read it. mkstemp creates at 0600, and silently
+    narrowing a file other tooling may read is a change nobody asked for."""
+    previous = os.umask(0o022)
+    try:
+        im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        live = tmp_path / im.MANIFEST_NAME
+        assert stat.S_IMODE(live.stat().st_mode) == 0o644
+        # ...and a mode the user tightened stays tightened.
+        os.chmod(live, 0o600)
+        assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+        assert stat.S_IMODE(live.stat().st_mode) == 0o600
+        im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        assert stat.S_IMODE(live.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
 
 
 def test_two_writers_do_not_share_a_temp_file(tmp_path: pathlib.Path) -> None:

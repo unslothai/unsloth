@@ -931,6 +931,35 @@ def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, t
     assert stack._mlx_stack_is_current() is False
 
 
+def test_the_mlx_audit_does_not_fight_the_bundled_override(monkeypatch) -> None:
+    """An override REPLACES every requirement on the package it names, so the version the
+    installer leaves behind is the override's, not the one mlx-vlm's metadata asks for. Read
+    raw, that disagreement is permanent and the MLX step would run on every update forever."""
+    monkeypatch.setattr(stack, "_installed_index", lambda: {})
+    names = stack._overridden_project_names()
+    # The bundled file is the source of truth; these three are what it currently replaces.
+    assert {"transformers", "anyio", "huggingface-hub"} <= names
+
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["transformers 5.5.0", "anyio 4.13.0"],
+    )
+    assert stack._mlx_closure_unmet() is False
+    # An override-named package that is ABSENT is still this step's work.
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["transformers"]
+    )
+    assert stack._mlx_closure_unmet() is True
+    # ...as is anything the override does not name.
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["transformers 5.5.0", "miniaudio 1.0"],
+    )
+    assert stack._mlx_closure_unmet() is True
+
+
 def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_path) -> None:
     seen: list[str] = []
 
@@ -1580,6 +1609,60 @@ def test_a_known_unmet_field_that_is_not_a_mapping_is_ignored(monkeypatch, gated
         stack._PASS_EVIDENCE["known_unmet"] = value
         # The step ran for nothing it can prove was known, so nothing is carried.
         assert stack._closure_record() == {}
+
+
+def test_a_requirement_that_is_simply_absent_is_never_a_known_conflict(
+    monkeypatch, gated
+) -> None:
+    """closure_unmet_requirements names an absent distribution by itself and one outside its
+    specifier as "name version". Only the second can be a conflict nothing can resolve: an
+    absent one is work this step does, and recording it would excuse the install that repairs
+    it on every later update. Reachable whenever the resolver was told to skip dependencies by
+    something no digest covers -- a pip.conf with no-deps, not only the environment."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "ran"})
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["cobble", "click 8.3.0"],
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+    # ...and a record an earlier build wrote with bare names does not excuse one either.
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["cobble", "click 8.3.0"]}
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+
+def test_a_file_that_includes_another_one_is_never_skipped(monkeypatch, gated, tmp_path) -> None:
+    """pass_inputs digests this file; an -r line's target is a second file it does not name,
+    and missing_requirements skips flag lines, so a pin behind the include could move with
+    nothing in the gate able to see it."""
+    _payload, req_root = gated
+    outer = req_root / "studio.txt"
+    outer.write_text("-r nested.txt\n", encoding = "utf-8")
+    (req_root / "nested.txt").write_text("cobble==0.1.3\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "_inputs_unchanged", lambda keys: True)
+    monkeypatch.setattr(stack, "_effective_requirements", lambda r: (r, []))
+    assert stack._requirements_satisfied(outer, no_deps = True) is False
+    # Every shipped requirements file must stay skippable, or the gate does nothing. The repo's
+    # own tree, not the fixture's: REQ_ROOT points at the temporary copy here.
+    root = REPO_ROOT / "studio" / "backend" / "requirements"
+    shipped = [
+        name
+        for name in stack.install_manifest.PASS_INPUT_FILES
+        if (root / name).is_file() and stack._includes_another_requirements_file(root / name)
+    ]
+    assert shipped == []
+
+
+def test_an_unreadable_requirements_file_is_never_skipped(tmp_path) -> None:
+    """A file the gate cannot read is one whose contents it cannot stand behind."""
+    odd = tmp_path / "req.txt"
+    odd.write_bytes(b"\xff\xfe not utf-8\n")
+    assert stack._includes_another_requirements_file(odd) is True
+    assert stack._includes_another_requirements_file(tmp_path / "absent.txt") is True
 
 
 def test_a_carried_known_unmet_record_drops_what_is_met_again(monkeypatch, gated) -> None:

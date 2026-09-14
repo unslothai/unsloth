@@ -18,6 +18,7 @@ Must import inside that half-installed venv: stdlib only, `packaging` optional.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -332,6 +333,21 @@ def _publish_json(
     try:
         with os.fdopen(descriptor, "w", encoding = "utf-8") as handle:
             handle.write(text)
+        # mkstemp creates at 0600. This file used to be written through Path.write_text, so it
+        # carried the umask default (0644 on a stock box) and anything else on the machine could
+        # read it; a mode this narrow is a change nobody asked for. Keep the mode the manifest
+        # already has when there is one, and otherwise the umask default, so the tightening a
+        # user chose is still theirs.
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass  # Windows, or a filesystem without modes: the content is what matters
         if only_if_present and not path.exists():
             return False
         os.replace(tmp, path)
@@ -356,12 +372,21 @@ def _manifest_lock(root: Optional[Path] = None):
     Best effort by design: this module has to import and run inside a half-built venv, so a
     filesystem that cannot lock (a network mount, a read-only prefix, an interpreter without
     fcntl or msvcrt) proceeds unserialised rather than failing an install. That is the same
-    guarantee as before this existed, and strictly better everywhere else.
+    guarantee as before this existed, and no worse anywhere else. It cannot outlast a stalled
+    filesystem call: the deadline below bounds the retries, not one syscall.
     """
     handle = None
     locked = False
     try:
-        handle = open((root or venv_root()) / LOCK_NAME, "a+b")
+        # O_NOFOLLOW where it exists: a symlink sitting on the reserved name would otherwise be
+        # followed, creating or opening a file somewhere else entirely. O_CREAT|O_RDWR, never
+        # O_TRUNC -- nothing is ever written here, the lock lives on the descriptor.
+        descriptor = os.open(
+            (root or venv_root()) / LOCK_NAME,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+        handle = os.fdopen(descriptor, "a+b")
     except OSError:
         handle = None
     if handle is not None:
@@ -377,7 +402,12 @@ def _manifest_lock(root: Optional[Path] = None):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     locked = True
                     break
-                except OSError:
+                except OSError as exc:
+                    # Only contention is worth waiting out. A filesystem that does not implement
+                    # locking at all (some NFS and SMB mounts) answers immediately and would
+                    # otherwise cost the whole deadline on every manifest write.
+                    if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EINTR):
+                        break
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.02)
@@ -395,7 +425,9 @@ def _manifest_lock(root: Optional[Path] = None):
         except (OSError, ValueError):
             locked = False
     try:
-        yield
+        # The flag, not just the block: a writer that may only publish while it really holds the
+        # lock has to be able to ask, and the two that must never fail an install can ignore it.
+        yield locked
     finally:
         if handle is not None:
             if locked:
@@ -618,7 +650,12 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
         # it started can be a different one by now: another updater may have removed it and
         # finished a new pass, and merging into the copy read back then would put its fields
         # back. Reading here means the merge is always into the manifest being replaced.
-        with _manifest_lock(root):
+        with _manifest_lock(root) as locked:
+            if not locked:
+                # Advisory evidence only: a peer that timed out this lock is mid-pass, and
+                # publishing beside it could put its removed completion marker back over a
+                # half-built venv. Losing what this merges costs one probe; that does not.
+                return False
             data = read_manifest(root)
             if data is None:
                 return False

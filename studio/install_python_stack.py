@@ -7858,6 +7858,23 @@ def _mlx_stack_is_current() -> bool:
     return not _mlx_closure_unmet()
 
 
+def _overridden_project_names() -> "set[str]":
+    """Canonical names the bundled macOS arm64 override file replaces every requirement on."""
+    names: set[str] = set()
+    try:
+        text = _MLX_OVERRIDES.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError, UnicodeDecodeError):
+        return names
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        head = re.split(r"[<>=!~;\[ ]", line, maxsplit = 1)[0].strip()
+        if head:
+            names.add(install_manifest._canonical(head))
+    return names
+
+
 def _mlx_closure_unmet() -> bool:
     """Whether anything in the MLX pins' installed closure is missing or outside its pin."""
     handle = None
@@ -7871,6 +7888,19 @@ def _mlx_closure_unmet() -> bool:
         handle = Path(_name)
         handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
+        # An override REPLACES every requirement on the package it names, so the version the
+        # installer leaves behind is the override's, not the one mlx-vlm's metadata asks for.
+        # Read raw, that disagreement is permanent and this step would run on every update
+        # forever. A package the override names and that is simply ABSENT still counts: the
+        # step is what installs it.
+        overridden = _overridden_project_names()
+        if overridden:
+            unmet = [
+                entry
+                for entry in unmet
+                if " " not in entry
+                or install_manifest._canonical(entry.split(" ", 1)[0]) not in overridden
+            ]
     except Exception:  # noqa: BLE001 - an audit that cannot run is a reason to run the step
         return True
     finally:
@@ -8120,11 +8150,20 @@ def _closure_record() -> "dict[str, list[str]]":
                 except OSError:
                     pass
         audited = not any(entry.startswith("<") for entry in unmet)
+        # Only a version CONFLICT can be a known conflict. closure_unmet_requirements reports a
+        # distribution that is absent by bare name and one outside its specifier as "name version";
+        # an absent one is work this step does (it installs with dependencies), and recording it
+        # would excuse the install that repairs it on every later update. Reached whenever the
+        # resolver was told to skip dependencies by something no digest covers -- a pip.conf with
+        # no-deps, not just the environment variables the guard above reads.
+        unmet = [entry for entry in unmet if entry.startswith("<") or " " in entry]
         if _STEP_RESULTS.get(key) == "skipped":
             # Narrowed to what is still unmet, or a later loss of a since-satisfied package would
             # hide behind the record. An audit that could not run keeps it as it was. A step that
             # did not run adopts nothing, so a record it never stood behind cannot excuse it.
             carried = list(previous.get(key) or []) if isinstance(previous.get(key), list) else []
+            # Same rule for a record written by an earlier build of this code.
+            carried = [entry for entry in carried if " " in entry]
             if audited:
                 carried = [entry for entry in carried if entry in unmet]
             if carried:
@@ -8415,6 +8454,31 @@ def _refuse_step(key: str, reason: str) -> bool:
     return False
 
 
+_INCLUDE_FLAGS = ("-r", "--requirement", "-c", "--constraint")
+
+
+def _includes_another_requirements_file(req: Path) -> bool:
+    """Whether *req* pulls in a second file the pass_inputs digests do not cover.
+
+    Unreadable counts as "yes": a file this cannot read is one whose contents the gate cannot
+    stand behind either, and the step running is the safe answer.
+    """
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError, UnicodeDecodeError):
+        return True
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head = line.split()[0].split("=", 1)[0]
+        if head in _INCLUDE_FLAGS or any(
+            line.startswith(flag) for flag in ("-r", "-c", "--requirement", "--constraint")
+        ):
+            return True
+    return False
+
+
 def _requirements_satisfied(
     req: Path,
     *,
@@ -8456,6 +8520,12 @@ def _requirements_satisfied(
     temps: list[Path] = []
     try:
         effective, temps = _effective_requirements(req)
+        if _includes_another_requirements_file(effective):
+            # The digest covers this file; an -r line's target is a second file it does not name
+            # in pass_inputs, and missing_requirements skips flag lines, so a pin behind the
+            # include could move with nothing here able to see it. None of the shipped files uses
+            # one, which is exactly why the refusal costs nothing and the trap is worth closing.
+            return _refuse_step(key, "the file includes another requirements file")
         missing = install_manifest.missing_requirements(effective)
         if missing:
             return _refuse_step(key, f"not installed or outside the pin: {missing[:5]}")
