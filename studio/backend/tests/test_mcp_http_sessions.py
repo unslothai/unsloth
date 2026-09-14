@@ -693,11 +693,18 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     different chat and nobody is waiting on it, so its teardown must not be
     charged to that caller's budget."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
+    tearing_down = threading.Event()
+    release = threading.Event()
     closed = threading.Event()
 
-    class SlowExit(RecordingClient):
+    class HeldExit(RecordingClient):
         async def __aexit__(self, *exc):
-            await asyncio.sleep(1.5)
+            # Held rather than slow: a sleep only has to outlast the assertion, so a
+            # caller that joins the teardown for PART of it still reads as prompt. This
+            # never finishes until the test says so, leaving a caller that waits on it
+            # at all no way to return, so there is no partial wait to get away with.
+            tearing_down.set()
+            await asyncio.get_running_loop().run_in_executor(None, release.wait)
             out = await super().__aexit__(*exc)
             closed.set()
             return out
@@ -705,14 +712,20 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     monkeypatch.setattr(
         mcp_client,
         "_client",
-        lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
+        lambda url, headers, use_oauth = False: HeldExit(url, headers, use_oauth),
     )
     _call(HTTP_URL, scope = SCOPE)  # fills the cache
     started = time.monotonic()
     assert _call(HTTP_URL, scope = SCOPE_B) == "call-1"
     elapsed = time.monotonic() - started
+    assert tearing_down.wait(10), "the eviction never started, so nothing was under test"
     assert not closed.is_set(), "the caller waited out an unrelated eviction"
-    assert elapsed < 30.0, f"the call never came back: {elapsed:.2f}s"
+    # The one clock left, and derived rather than picked: a teardown held open costs a
+    # caller that waits on it the whole of _SESSION_CLOSE_TIMEOUT, which is exactly the
+    # budget this test says must not be charged to them. Half of it separates the two.
+    ceiling = mcp_client._SESSION_CLOSE_TIMEOUT / 2
+    assert elapsed < ceiling, f"the caller was charged the eviction: {elapsed:.2f}s"
+    release.set()
     assert closed.wait(10), "the evicted session was never closed"
 
 

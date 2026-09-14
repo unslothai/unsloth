@@ -394,11 +394,24 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
     assert writer.submit(receipt)
     assert entered.wait(timeout = 1)
 
+    # What stop() hands its join, not how long the box took to get back: a wall-clock
+    # budget loose enough to survive `-n 4` is also loose enough to pass a stop() that
+    # waited whole seconds, which is the regression named here.
+    joins: list[float | None] = []
+    joining = writer._thread.join
+
+    def record_join(timeout = None):
+        joins.append(timeout)
+        return joining(timeout = timeout)
+
+    monkeypatch.setattr(writer._thread, "join", record_join)
+
     try:
         started = time.perf_counter()
         assert writer.stop(timeout = 0.03) is False
         elapsed = time.perf_counter() - started
-        assert elapsed < 5.0, f"stop() ignored its 0.03s timeout: {elapsed:.3f}s"
+        assert joins == [0.03], f"stop() did not wait for exactly its own timeout: {joins}"
+        assert elapsed < 1.0, f"stop() ignored its 0.03s timeout: {elapsed:.3f}s"
         assert not writer.submit(_api_receipt("rejected-after-stop", datetime.now(timezone.utc)))
         assert writer._thread.is_alive()
         assert "may be lost if the process exits" in caplog.text
