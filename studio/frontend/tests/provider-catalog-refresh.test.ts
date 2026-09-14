@@ -20,7 +20,6 @@ test("a failing OpenRouter connection leaves the catalog for the next connection
     "/src/features/chat/sync-external-providers.ts",
   );
   const catalog = await vite.ssrLoadModule("/src/features/chat/model-catalog.ts");
-  catalog.setModelsDevCatalog({ fetched_at: Date.now() / 1000, providers: {} });
   const asked: string[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -49,7 +48,6 @@ test("an OpenRouter connection on a gateway base URL never writes the shared cat
     "/src/features/chat/sync-external-providers.ts",
   );
   const catalog = await vite.ssrLoadModule("/src/features/chat/model-catalog.ts");
-  catalog.setModelsDevCatalog({ fetched_at: Date.now() / 1000, providers: {} });
   const asked: string[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

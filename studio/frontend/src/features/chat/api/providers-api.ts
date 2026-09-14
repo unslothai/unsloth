@@ -4,7 +4,6 @@
 import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
-import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -75,11 +74,6 @@ export interface ProviderModelCapabilityInfo {
   reasoning?: ProviderModelReasoningInfo | null;
   max_output_tokens?: number | null;
   supported_parameters?: string[] | null;
-}
-
-export interface ModelCatalogResponse {
-  fetched_at: number;
-  providers: Record<string, Record<string, ModelCatalogSnapshotEntry>>;
 }
 
 export interface ProviderTestResult {
@@ -360,11 +354,6 @@ export async function listProviderModels(payload: {
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
   });
-}
-
-export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {
-  const response = await authFetch("/api/providers/model-catalog");
-  return parseJsonOrThrow<ModelCatalogResponse>(response);
 }
 
 export async function listProviderModelCapabilities(payload: {
