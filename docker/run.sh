@@ -30,6 +30,9 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
+#                                           chats, outputs) at /opt/unsloth-studio;
+#                                           set it empty to run without one
 set -euo pipefail
 
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
@@ -49,6 +52,14 @@ esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
+# Studio's data lives under /opt/unsloth-studio and the image relinks its code there at
+# every start, so the volume survives `docker rm` without pinning the code. `-` (not `:-`):
+# an explicitly empty value disables the mount. On :core it is an empty dir the image never reads.
+STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
+STUDIO_MOUNT=()
+if [ -n "$STUDIO_VOLUME" ]; then
+    STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 
@@ -92,6 +103,17 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
             done
         fi
         printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        # published images only (untagged is :latest); a custom image may carry a HIP or Vulkan build
+        if [[ "$IMAGE" == unsloth/unsloth || "$IMAGE" == unsloth/unsloth:* ]]; then
+            printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
+            printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+            if [[ "$IMAGE" == unsloth/unsloth:core* ]]; then
+                printf "      :core refuses a CPU-only start unless UNSLOTH_ALLOW_CPU=1 is set (:latest allows it).\n" >&2
+            fi
+        else
+            printf "      The published unsloth/unsloth images cannot use them (cu128 torch, no HIP\n" >&2
+            printf "      or Vulkan llama.cpp); whether %s does is up to that image.\n" "$IMAGE" >&2
+        fi
     fi
     printf "\n" >&2
 fi
@@ -166,6 +188,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

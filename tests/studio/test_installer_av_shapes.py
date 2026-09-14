@@ -649,6 +649,24 @@ def test_an_unreadable_security_log_is_void_rather_than_clean() -> None:
     assert "void rather than as clean" in body
 
 
+def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
+    """The 4688 window has to be exact at the floor, or it scores the step before it.
+
+    Observed on unslothai/unsloth#10626: a csc.exe recorded at 17:51:57.107 came back from
+    a window whose floor was 17:51:57.58 and failed a measurement whose step had not
+    printed its first line until 17:51:58.58. The compile belonged to the positive control
+    one step earlier. $prior is meant to subtract exactly that, and did not, so the filter
+    itself has to hold to the precision it was given rather than to the hashtable's.
+    """
+    body = _WATCHER.read_text(encoding = "utf-8")
+    assert "StartTime = $Since.AddSeconds(-1)" in body
+    assert "EndTime   = $Until.AddSeconds(1)" in body
+    assert "$_.TimeCreated -ge $Since -and $_.TimeCreated -le $Until" in body, (
+        "the padded query is no longer cut back to the real window, so it reports "
+        "compiles from before the action began"
+    )
+
+
 def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
     """The point of the change is the acquisition, not the ladder: a host where emit fails must
     degrade exactly as one that could not compile already did.
