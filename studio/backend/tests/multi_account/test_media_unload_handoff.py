@@ -24,7 +24,7 @@ from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
 from hub.services.models import account_access as access
 from routes import inference, video
 from state import active_generations
-from utils.account_context import bind_account, reset_account
+from utils.account_context import bind_account, current_account_id, reset_account
 
 from ..test_diffusion_backend import _FakePipeline, fake_runtime  # noqa: F401
 
@@ -147,6 +147,102 @@ def test_cpu_load_cancellation_requires_its_owner(
         assert not errors
         assert backend.is_loaded
     backend.unload()
+
+
+@pytest.mark.parametrize("phase", ["prefetch", "construction"])
+@pytest.mark.parametrize("unloader", ["alice", "bob", "unsloth"])
+def test_pending_caller_cannot_block_load_owner_eject(
+    monkeypatch, accounts, fake_runtime, tmp_path, phase, unloader
+):
+    from core.inference import diffusion as diff_mod
+
+    backend = DiffusionBackend()
+    entered, pending, release, response_ready = (threading.Event() for _ in range(4))
+    threads, errors, responses = [], [], {}
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
+    for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
+        monkeypatch.setattr(access, name, {})
+    monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
+    monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: (0, []))
+    monkeypatch.setattr(backend, "_prefetch_files", lambda *a, **k: str(tmp_path))
+    real_thread = diff_mod.account_thread
+
+    def tracked_thread(**kwargs):
+        thread = real_thread(**kwargs)
+        threads.append(thread)
+        return thread
+
+    monkeypatch.setattr(diff_mod, "account_thread", tracked_thread)
+
+    def start(account, target):
+        token = bind_account(accounts[account])
+        try:
+            tracked_thread(target = target, daemon = True).start()
+        finally:
+            reset_account(token)
+
+    target, name = (
+        (backend, "_prefetch_files") if phase == "prefetch" else (_FakePipeline, "from_pretrained")
+    )
+    original = getattr(target, name)
+
+    def parked(*args, **kwargs):
+        entered.set()
+        assert release.wait(10), "load barrier timed out"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, parked)
+    validate = backend.validate_load_request
+
+    def pending_validation(*args, **kwargs):
+        if current_account_id() == accounts["bob"].account_id:
+            pending.set()
+            assert release.wait(10), "validation barrier timed out"
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(backend, "validate_load_request", pending_validation)
+
+    def load():
+        try:
+            backend.begin_load(str(tmp_path), family_override = "z-image", local_files_only = True)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    def unload(account):
+        with client_for(accounts[account]) as client:
+            responses[account] = client.post("/api/inference/images/unload")
+        response_ready.set()
+
+    start("alice", load)
+    try:
+        assert entered.wait(10), errors
+        assert backend._loading.account_id == accounts["alice"].account_id
+        assert backend._state is None
+        assert gpu_arbiter.current_owner() is None
+        start("bob", load)
+        assert pending.wait(10), errors
+        token, cancel = backend._load_token, backend._cancel_event
+        start(unloader, lambda: unload(unloader))
+        if unloader != "alice":
+            assert response_ready.wait(5), "foreign eject waited on construction"
+            assert responses[unloader].status_code == 409, responses[unloader].text
+            assert responses[unloader].json()["error"] == "gpu_busy"
+            assert not cancel.is_set()
+            assert backend._load_token == token
+            start("alice", lambda: unload("alice"))
+        assert cancel.wait(5), "a pending caller blocked the load owner's eject"
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(10)
+            assert not thread.is_alive()
+    assert responses["alice"].status_code == 200, responses["alice"].text
+    assert backend._state is None
+    assert backend._loading is None
+    assert not backend._load_accounts
+    assert errors and all("cancelled" in error for error in errors)
 
 
 @pytest.mark.parametrize("unloader", ["alice", "unsloth"])

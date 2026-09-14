@@ -6369,15 +6369,16 @@ class DiffusionBackend:
                 ):
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 require_resident_control(DIFFUSION, getattr(self._state, "repo_id", None))
-                # CPU construction has neither a GPU claim nor a published resident.
-                if (
-                    self._loading is not None
-                    and self._loading.error is None
-                    and self._loading.account_id != expected_account
-                ) or any(
-                    token == self._load_token and account != expected_account
-                    for token, account in self._load_accounts.values()
-                ):
+                # Prefer the admitted load over callers still validating.
+                loading = self._loading
+                if loading is not None and loading.error is None:
+                    foreign_load = loading.account_id != expected_account
+                else:
+                    foreign_load = any(
+                        token == self._load_token and account != expected_account
+                        for token, account in self._load_accounts.values()
+                    )
+                if foreign_load:
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
             # Fence loads and generations before waiting for construction.
             self._unload_waiters += 1
