@@ -70,8 +70,7 @@ function isStale(key: string): boolean {
   return !hit || Date.now() - hit.ts >= CACHE_TTL_MS;
 }
 
-// Endpoint in the key: the same repo id names a different repo on a mirror, so a
-// repo-and-token key would serve the old host's answer for the rest of the TTL.
+// Endpoint in the key: the same repo id names a different repo on a mirror, so a repo-and-token key would serve the old host's answer for the rest of the TTL.
 function cacheKey(
   name: string,
   token: string | undefined,

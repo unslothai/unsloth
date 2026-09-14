@@ -184,7 +184,7 @@ export async function fetchDeviceType(options?: {
       // request that resolved after a later forced refresh already picked up device_type and the
       // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
       // refreshes are explicit re-reads, so they still write.
-      // Before the authoritative-platform guard below: this is unauthenticated and
+      // Before the authoritative-platform guard below: unauthenticated and
       // idempotent, and a mirror whose first authoritative reply already landed
       // would otherwise never route its Hub calls.
       setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);

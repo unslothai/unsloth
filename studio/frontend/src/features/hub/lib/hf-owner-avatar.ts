@@ -60,8 +60,7 @@ function release(): void {
   waiting.shift()?.();
 }
 
-// Keyed by endpoint too: a hit is held 24 hours and a 404 permanently, so an
-// entry from the default host would outlive a mirror arriving later.
+// Keyed by endpoint too: a hit is held 24 hours and a 404 permanently, so a default-host entry would outlive a late mirror.
 function avatarKey(name: string): string {
   return `${getHfEndpoint()}::${name}`;
 }

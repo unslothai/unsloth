@@ -128,8 +128,7 @@ function BaseModelReference({
   baseModelSummary?: string | null;
 }) {
   const canOpenHub = baseModelSource === "huggingface" && !!baseModelHubId;
-  // From the store: the parent is memoized, and a middle-click or "copy link"
-  // uses the rendered href rather than the handler that rereads the endpoint.
+  // From the store: the parent is memoized, and "copy link" uses the rendered href, not the handler.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (

@@ -1820,8 +1820,7 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
-/// Mirror endpoints to allow in the webview CSP, from this process and any
-/// backend it adopts.
+/// Mirror endpoints for the webview CSP: this process, plus any backend it adopts.
 fn configured_hf_endpoints() -> Vec<String> {
     let mut raw: Vec<String> = ["HF_ENDPOINT", "HF_DATASETS_SERVER"]
         .into_iter()

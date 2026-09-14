@@ -356,8 +356,7 @@ export function ModelReadme({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
-  // In the key so a mirror arriving after the first lookup restarts it instead
-  // of leaving the pane on the card the default host returned.
+  // In the key so a late mirror restarts the lookup instead of keeping the default host's card.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const stateKey = useMemo(
     () => `${hfEndpoint}::${kind}::${repoId}::${tokenFingerprint}`,

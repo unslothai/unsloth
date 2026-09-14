@@ -652,8 +652,7 @@ export function useHubModelSearch(
     };
   }, [query]);
 
-  // getHfEndpoint() is a plain module read React cannot see change. From the
-  // store it joins the iterator's identity, so a late mirror restarts the search.
+  // From the store, not the module read React cannot see change: in the iterator's identity, a late mirror restarts the search.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const createIter = useCallback(
     (signal: AbortSignal) => {

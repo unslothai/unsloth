@@ -74,8 +74,7 @@ export function SafetensorsDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
-  // In the identity so a mirror arriving after this effect ran refetches, rather
-  // than keeping the expected download size the official host reported.
+  // In the identity so a late mirror refetches rather than keeping the official host's download size.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
   const [modelSize, setModelSize] = useState<{

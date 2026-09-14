@@ -28,8 +28,7 @@ export function useSelectedModelMetadata(
     error: boolean;
   }>(() => ({ repoId: "", result: null, error: false }));
 
-  // In the effect identity, so a mirror arriving after it ran refetches rather
-  // than leaving the pane on the default hub's answer or its error.
+  // In the effect identity, so a late mirror refetches rather than stranding the pane on the default hub's answer.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
 
   useEffect(() => {
