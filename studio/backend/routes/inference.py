@@ -5481,6 +5481,21 @@ def _apply_compaction_nudge(
     return nudge + " " + text
 
 
+def _apply_self_note_nudge(nudge: str) -> str:
+    """Append the self-note instruction when the feature is on.
+
+    Gated on the feature toggle alone: unlike the compaction nudge there is no tool to key
+    on, and a model that is never going to have its note carried should not be told to
+    write one.
+    """
+    from core.inference import self_note
+
+    text = self_note.note_instruction()
+    if not text:
+        return nudge
+    return nudge + " " + text if nudge else text
+
+
 async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set).
@@ -13877,6 +13892,60 @@ def _model_json_response_with_context_truncation(
     content = model.model_dump()
     content["context_truncated"] = context_truncation
     return JSONResponse(content = content)
+
+
+def _extract_and_strip_self_note(text: str) -> tuple[str, str]:
+    """``(user_visible_text, note)`` -- the `<remember>` block pulled out of ``text``.
+
+    ``note`` is "" when there is none, disabled, or ``text`` is not parseable; the caller
+    never needs to branch on failure, only on whether ``note`` is truthy. Never raises: a
+    note is convenience carried across a compaction the user did not ask for, so a bug in
+    reading it must degrade to "no note" rather than break the reply it rides on.
+    """
+    try:
+        from core.inference import self_note
+
+        if not self_note.enabled() or not isinstance(text, str) or not text:
+            return text, ""
+        note = self_note.extract_note(text)
+        visible = self_note.strip_note(text) if note else text
+        return visible, note
+    except Exception:  # noqa: BLE001 -- see docstring: never break the reply for this
+        return text, ""
+
+
+def _model_json_response_with_self_note(
+    model,
+    note: str,
+    *,
+    context_truncation: Optional[dict] = None,
+    status_code: int = 200,
+) -> Response:
+    """Serialize ``model`` as JSON, attaching ``note`` as a `self_note` content part on
+    the assistant message so the client persists and re-sends it.
+
+    ``CompletionMessage.content`` is a plain ``Optional[str]`` (it is not this task's to
+    change), so the part cannot be attached through the pydantic model itself. This mirrors
+    ``_model_json_response_with_context_truncation``: dump to a dict and splice in the
+    extra shape at the JSON layer, matching how ``external_provider.py`` attaches
+    `compaction_block` state onto the assistant message for the client to round-trip.
+    Composes with ``context_truncation`` so a response can carry both.
+    """
+    if not note:
+        return _model_json_response_with_context_truncation(model, context_truncation)
+    content = model.model_dump()
+    if context_truncation is not None:
+        content["context_truncated"] = context_truncation
+    try:
+        message = content["choices"][0]["message"]
+        text = message.get("content") or ""
+        message["content"] = [
+            {"type": "text", "text": text},
+            {"type": "self_note", "content": note},
+        ]
+    except (KeyError, IndexError, TypeError):  # noqa: BLE001 -- degrade to no note, not a 500
+        return _model_json_response_with_context_truncation(model, context_truncation)
+    return JSONResponse(content = content, status_code = status_code)
 
 
 _NOT_SUPPORTED_HINTS = (
@@ -23443,6 +23512,7 @@ async def produce_openai_chat_completions(
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 payload = payload,
             )
+            _nudge = _apply_self_note_nudge(_nudge)
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -24146,6 +24216,9 @@ async def produce_openai_chat_completions(
                         payload, llama_backend
                     ),
                 )
+                # Final-assembly only (see `_extract_and_strip_self_note`): a no-op when the
+                # feature is off, so the byte-identical-when-disabled invariant holds.
+                visible_text, _self_note = _extract_and_strip_self_note(visible_text)
                 message_kwargs = {"content": visible_text}
                 if reasoning_text:
                     message_kwargs["reasoning_content"] = reasoning_text
@@ -24192,8 +24265,10 @@ async def produce_openai_chat_completions(
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
-                return _model_json_response_with_context_truncation(
-                    response, completion_context_truncation
+                return _model_json_response_with_self_note(
+                    response,
+                    _self_note,
+                    context_truncation = completion_context_truncation,
                 )
             except asyncio.CancelledError:
                 cancel_event.set()
@@ -25214,6 +25289,7 @@ async def produce_openai_chat_completions(
         # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
         # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
+        _sf_nudge = _apply_self_note_nudge(_sf_nudge)
 
         _sf_system_prompt = _apply_current_date_prompt(
             system_prompt,
@@ -25588,6 +25664,9 @@ async def produce_openai_chat_completions(
                 parse_think_markers = _sf_parse_think,
                 reasoning_prefilled = _sf_drain_prefilled,
             )
+            # Final-assembly only (see `_extract_and_strip_self_note`): a no-op when the
+            # feature is off, so the byte-identical-when-disabled invariant holds.
+            _visible_text, _sf_self_note = _extract_and_strip_self_note(_visible_text)
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             # Reuse the reason this response carries. Outside the stats block below:
@@ -25631,7 +25710,7 @@ async def produce_openai_chat_completions(
                     ),
                 ),
             )
-            return _model_json_response(response)
+            return _model_json_response_with_self_note(response, _sf_self_note)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
@@ -31114,6 +31193,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         # The safetensors completion appends this too. No `checkpoint_fitted`: only the
         # llama.cpp path fits that way, so neither this count nor its completion resets.
         _nudge = _apply_compaction_nudge(_nudge, _tools_to_use)
+        _nudge = _apply_self_note_nudge(_nudge)
         # The tool-loop completion reapplies the date with include_api_key, which is the
         # one case an API-key request still gets it. The plain call above withholds it,
         # so without this the count is short exactly that line for these completions.
