@@ -2996,6 +2996,11 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     # setConfig that merged could not clear a manual placement: the rows kept the pick and
     # the next Run used it. A plain value replaces, as the useState setter it stands in for does.
     assert 'typeof action === "function" ? action(current) : action' in page
+    # The row is the only reader of the raw text, so its verdict rides on the shared edit: an
+    # editor with Advanced collapsed judges the TOKENS, which formatExtraArgs quotes back into a
+    # balanced string, and would offer to load an unfinished quote the other one refuses.
+    assert "setExtraArgsEditLoadableForDraft(draftKey, loadable)" in page
+    assert "sharedExtraArgsRefused" in page
     assert "resetExtraArgsHydrationForDraft(" not in page
     assert "extraArgsHydrationIdentityForDraft(" not in page
 

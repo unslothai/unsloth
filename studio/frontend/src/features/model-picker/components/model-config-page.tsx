@@ -113,6 +113,7 @@ import {
   replaceModelConfigDraft,
   retainModelConfigDraft,
   setExtraArgsEditForDraft,
+  setExtraArgsEditLoadableForDraft,
   setModelConfigDraftRemember,
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
@@ -1670,9 +1671,13 @@ function ExtraArgsRow({
   const loadable = extraArgsAreLoadable(diagnostics);
   useEffect(() => {
     onLoadableChange(loadable);
+    // On the draft as well: this row is the only reader of the raw text, so an editor with
+    // Advanced collapsed has no way to reach this verdict and would offer to load an
+    // unfinished line the row is refusing.
+    setExtraArgsEditLoadableForDraft(draftKey, loadable);
     // Deliberately no cleanup: collapsing Advanced settings unmounts this row while the tokens
     // stay in the config and still go out with the load. The panel clears it on model change.
-  }, [loadable, onLoadableChange]);
+  }, [loadable, onLoadableChange, draftKey]);
 
   const commit = (next: string) => {
     const { tokens } = parseExtraArgs(next);
@@ -1859,6 +1864,17 @@ export function ModelConfigPage({
   const remember = draftSnapshot?.remember ?? initialFallback.remembered;
   const savedRemember =
     draftSnapshot?.savedRemember ?? initialFallback.remembered;
+  // The other editor's row may be refusing what is typed while this one has no row to ask:
+  // Advanced settings start collapsed, and the collapsed check below judges the TOKENS, which
+  // formatExtraArgs quotes back into a balanced string. Honoured only while the edit still
+  // matches the config, which is the same test the row uses to decide it has been superseded.
+  const sharedExtraArgsEdit = useSyncExternalStore(
+    subscribeModelConfigDraft,
+    () => readExtraArgsEditForDraft(draftKey),
+  );
+  const sharedExtraArgsRefused =
+    sharedExtraArgsEdit?.loadable === false &&
+    sharedExtraArgsEdit.source === formatExtraArgs(configState.llamaExtraArgs);
   // The live config, for the async reads below: an effect that closed over it would hold
   // whatever it was when the request started.
   const configRef = useRef(configState);
@@ -3175,6 +3191,7 @@ export function ModelConfigPage({
               stagedMetadataPending ||
               budgetSettling ||
               !extraArgsLoadable ||
+              sharedExtraArgsRefused ||
               extraArgsHydrating ||
               (isActiveModel &&
                 atBaseline &&

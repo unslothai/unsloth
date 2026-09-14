@@ -27,6 +27,13 @@ export type ModelConfigExtraArgsEdit = {
   text: string;
   /** `formatExtraArgs` of the tokens this edit published, to spot an external replacement. */
   source: string;
+  /**
+   * The row's verdict on `text`, undefined until it has one. Shared because only the row reads
+   * the raw text: an editor whose Advanced section is collapsed has no row and judges the
+   * TOKENS, which `formatExtraArgs` quotes back into a balanced string, so it cannot see the
+   * unfinished quote and left its Run button live over an edit the other one refuses.
+   */
+  loadable?: boolean;
 };
 
 export type ModelConfigDraftSnapshot = {
@@ -237,9 +244,27 @@ export function setExtraArgsEditForDraft(
   edit: ModelConfigExtraArgsEdit,
 ): void {
   const existing = extraArgsEditByDraftKey.get(key);
-  if (existing && existing.text === edit.text && existing.source === edit.source) {
+  if (
+    existing &&
+    existing.text === edit.text &&
+    existing.source === edit.source &&
+    existing.loadable === edit.loadable
+  ) {
     return;
   }
   extraArgsEditByDraftKey.set(key, edit);
+  notify();
+}
+
+/** Records the row's verdict on the edit already stored; a keystroke retires it by replacing it. */
+export function setExtraArgsEditLoadableForDraft(
+  key: string,
+  loadable: boolean,
+): void {
+  const existing = extraArgsEditByDraftKey.get(key);
+  if (!existing || existing.loadable === loadable) {
+    return;
+  }
+  extraArgsEditByDraftKey.set(key, { ...existing, loadable });
   notify();
 }

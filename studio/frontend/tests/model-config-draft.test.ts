@@ -9,6 +9,7 @@ import {
   markExtraArgsHydratedForDraft,
   readExtraArgsEditForDraft,
   setExtraArgsEditForDraft,
+  setExtraArgsEditLoadableForDraft,
   modelConfigDraftKey,
   patchModelConfigDraft,
   primeModelConfigDraft,
@@ -160,4 +161,37 @@ test("the Extra Arguments box is shared, and an external replacement supersedes 
   );
   release();
   assert.equal(readExtraArgsEditForDraft(key), undefined);
+});
+
+test("the row's verdict travels with the edit, and a keystroke retires it", () => {
+  const key = modelConfigDraftKey("unsloth/Verdict-GGUF", VARIANT);
+  const release = retainModelConfigDraft(key);
+  setExtraArgsEditForDraft(key, {
+    text: '--chat-template "a b',
+    source: '--chat-template "a b"',
+  });
+  // Only the row reads the raw text. Without this the other editor judges the TOKENS, which
+  // formatExtraArgs quotes back into a balanced string, and offers to load the unfinished line.
+  setExtraArgsEditLoadableForDraft(key, false);
+  assert.equal(readExtraArgsEditForDraft(key)?.loadable, false);
+  assert.equal(readExtraArgsEditForDraft(key)?.text, '--chat-template "a b');
+  // The next keystroke publishes a new edit with no verdict yet, so a stale refusal cannot
+  // outlive the text it judged.
+  setExtraArgsEditForDraft(key, {
+    text: '--chat-template "a b"',
+    source: '--chat-template "a b"',
+  });
+  assert.equal(readExtraArgsEditForDraft(key)?.loadable, undefined);
+  setExtraArgsEditLoadableForDraft(key, true);
+  assert.equal(readExtraArgsEditForDraft(key)?.loadable, true);
+  release();
+  assert.equal(readExtraArgsEditForDraft(key), undefined);
+});
+
+test("a verdict without an edit is dropped rather than inventing one", () => {
+  const key = modelConfigDraftKey("unsloth/No-Edit-GGUF", VARIANT);
+  const release = retainModelConfigDraft(key);
+  setExtraArgsEditLoadableForDraft(key, false);
+  assert.equal(readExtraArgsEditForDraft(key), undefined);
+  release();
 });
