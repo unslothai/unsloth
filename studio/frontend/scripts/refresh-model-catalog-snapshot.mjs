@@ -26,6 +26,7 @@ const PROVIDER_MAP = {
   huggingface: "huggingface",
   alibaba: "qwen",
   "ollama-cloud": "ollama",
+  lmstudio: "lmstudio",
 };
 
 const EFFORT_SCALE = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];

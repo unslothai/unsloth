@@ -25,7 +25,7 @@ test("an OpenRouter route exposes the snapshot's effort ladder", () => {
   const caps = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
   assert.equal(caps.supportsReasoning, true);
   assert.equal(caps.reasoningStyle, "reasoning_effort");
-  assert.deepEqual([...caps.reasoningEffortLevels], ["high", "xhigh"]);
+  assert.deepEqual([...caps.reasoningEffortLevels], ["none", "high", "xhigh"]);
   assert.equal(caps.supportsReasoningOff, true);
   assert.equal(caps.reasoningAlwaysOn, false);
 });
@@ -85,7 +85,7 @@ test("the live catalog wins over the snapshot and carries the default effort and
   try {
     assert.equal(providerModelCatalogFetchedAt("openrouter"), 1234);
     const caps = getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro");
-    assert.deepEqual([...caps.reasoningEffortLevels], ["high", "max"]);
+    assert.deepEqual([...caps.reasoningEffortLevels], ["none", "high", "max"]);
     assert.equal(caps.defaultEffort, "high");
     assert.equal(getPublishedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-v4-pro"), 65536);
 
@@ -102,7 +102,7 @@ test("the live catalog wins over the snapshot and carries the default effort and
   assert.equal(providerModelCatalogFetchedAt("openrouter"), null);
   assert.deepEqual(
     [...getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro").reasoningEffortLevels],
-    ["high", "xhigh"],
+    ["none", "high", "xhigh"],
   );
   assert.equal(getPublishedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-v4-pro"), null);
 });
@@ -146,4 +146,56 @@ test("the hand-maintained tables still win for the models they cover", () => {
   const caps = getExternalReasoningCapabilities("anthropic", "claude-opus-5");
   assert.deepEqual([...caps.reasoningEffortLevels], ["none", "low", "medium", "high", "xhigh", "max"]);
   assert.equal(caps.supportsReasoningOff, true);
+});
+
+test("DeepSeek direct maps the snapshot ladder onto its low / high / max wire", () => {
+  const caps = getExternalReasoningCapabilities("deepseek", "deepseek-v4-flash");
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.deepEqual([...caps.reasoningEffortLevels], ["none", "low", "high", "max"]);
+  assert.equal(caps.supportsReasoningOff, true);
+  assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-unknown").supportsReasoning, false);
+});
+
+test("Qwen and Kimi only have a wire toggle, so a ladder collapses to on/off", () => {
+  for (const [provider, model] of [["qwen", "qwen3.5-plus"], ["kimi", "kimi-k3"]] as const) {
+    const caps = getExternalReasoningCapabilities(provider, model);
+    assert.equal(caps.reasoningStyle, "enable_thinking", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+  }
+  assert.equal(getExternalReasoningCapabilities("kimi", "kimi-k2.6").supportsReasoning, true);
+});
+
+test("Mistral models outside the table get the documented none / high form", () => {
+  const caps = getExternalReasoningCapabilities("mistral", "mistral-medium-latest");
+  assert.equal(caps.reasoningStyle, "reasoning_effort");
+  assert.deepEqual([...caps.reasoningEffortLevels], ["none", "high"]);
+  const known = getExternalReasoningCapabilities("mistral", "mistral-small-latest");
+  assert.deepEqual([...known.reasoningEffortLevels], ["none", "high"]);
+  assert.equal(getExternalReasoningCapabilities("mistral", "mistral-large-latest").supportsReasoning, false);
+});
+
+test("Hugging Face router forwards the snapshot ladder verbatim", () => {
+  const caps = getExternalReasoningCapabilities("huggingface", "openai/gpt-oss-120b");
+  assert.deepEqual([...caps.reasoningEffortLevels], ["low", "medium", "high"]);
+  assert.equal(caps.supportsReasoningOff, false);
+});
+
+test("vLLM and llama.cpp resolve by bare model name and clamp to low / medium / high", () => {
+  const vllm = getExternalReasoningCapabilities("vllm", "openai/gpt-oss-20b");
+  assert.deepEqual([...vllm.reasoningEffortLevels], ["low", "medium", "high"]);
+  const gguf = getExternalReasoningCapabilities("llama_cpp", "gpt-oss-20b-Q4_K_M.gguf");
+  assert.deepEqual(gguf, vllm);
+  const qwen = getExternalReasoningCapabilities("vllm", "Qwen/Qwen3-14B");
+  assert.equal(qwen.reasoningStyle, "enable_thinking");
+  assert.equal(qwen.supportsReasoningOff, true);
+  assert.equal(getExternalReasoningCapabilities("llama_cpp", "mystery-7b.gguf").supportsReasoning, false);
+  assert.equal(getExternalReasoningCapabilities("custom", "openai/gpt-oss-20b").supportsReasoning, false);
+});
+
+test("Gemini aliases outside the prefix tables fall back to the snapshot", () => {
+  const caps = getExternalReasoningCapabilities("gemini", "gemini-omni-flash-preview");
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.reasoningStyle, "enable_thinking");
+  assert.equal(getExternalReasoningCapabilities("gemini", "gemini-3.1-pro-preview").reasoningStyle, "reasoning_effort");
 });

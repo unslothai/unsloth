@@ -715,4 +715,9 @@ export const MODEL_CATALOG_SNAPSHOT: Readonly<
     "nemotron-3-ultra": {"reasoning":true,"toggle":true,"input":["text"]},
     "qwen3.5:397b": {"reasoning":true,"toggle":true,"input":["text","image"]},
   },
+  "lmstudio": {
+    "openai/gpt-oss-20b": {"reasoning":true,"efforts":["low","medium","high"],"input":["text"]},
+    "qwen/qwen3-30b-a3b-2507": {"input":["text"]},
+    "qwen/qwen3-coder-30b": {"input":["text"]},
+  },
 };

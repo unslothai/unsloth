@@ -217,6 +217,49 @@ export function resolveModelCatalogEntry(
   return null;
 }
 
+const NAME_INDEX_NAMESPACES = [
+  "openrouter",
+  "huggingface",
+  "lmstudio",
+  "ollama",
+  "openai",
+  "deepseek",
+  "qwen",
+  "kimi",
+  "mistral",
+  "gemini",
+  "anthropic",
+];
+let nameIndex: Map<string, ModelCatalogSnapshotEntry> | null = null;
+
+function bareModelName(modelId: string): string {
+  let name = modelId.trim().toLowerCase();
+  name = name.split("/").at(-1) ?? name;
+  name = name.replace(/\.gguf$/, "");
+  const tag = name.indexOf(":");
+  if (tag > 0) name = name.slice(0, tag);
+  return name.replace(/-(?:i?q\d[a-z0-9_]*|f16|bf16|fp16|fp8)$/, "");
+}
+
+export function resolveModelCatalogEntryByName(
+  modelId: string | null | undefined,
+): ModelCatalogEntry | null {
+  if (!modelId) return null;
+  if (!nameIndex) {
+    nameIndex = new Map();
+    for (const namespace of NAME_INDEX_NAMESPACES) {
+      const models = MODEL_CATALOG_SNAPSHOT[namespace];
+      if (!models) continue;
+      for (const [id, entry] of Object.entries(models)) {
+        const name = bareModelName(id);
+        if (!nameIndex.has(name)) nameIndex.set(name, entry);
+      }
+    }
+  }
+  const entry = nameIndex.get(bareModelName(modelId));
+  return entry ? fromSnapshotEntry(entry) : null;
+}
+
 export function modelCatalogSupportsVision(
   providerType: string | null | undefined,
   modelId: string | null | undefined,

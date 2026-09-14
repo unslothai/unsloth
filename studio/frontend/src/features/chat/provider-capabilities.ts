@@ -10,6 +10,8 @@ import {
   REASONING_EFFORT_SCALE,
   type ReasoningEffortLevel,
   resolveModelCatalogEntry,
+  resolveModelCatalogEntryByName,
+  sortReasoningEfforts,
 } from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
@@ -996,31 +998,102 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
-function resolveCatalogReasoningCapabilities(
+type ReasoningWire = {
+  levels: readonly ReasoningEffortLevel[] | null;
+  aliases?: Partial<Record<ReasoningEffortLevel, ReasoningEffortLevel>>;
+  fallbackLevels?: readonly ReasoningEffortLevel[];
+  off: "unified" | "none-level";
+};
+
+const LOCAL_SERVER_WIRE: ReasoningWire = {
+  levels: ["low", "medium", "high"],
+  aliases: { minimal: "low", xhigh: "high", max: "high" },
+  off: "unified",
+};
+
+/** What each backend branch in external_provider.py can put on the wire. `levels: null` forwards
+ *  the whole scale; `levels: []` means the provider only has an on/off switch. */
+const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
+  openrouter: { levels: null, off: "unified" },
+  openai: { levels: null, off: "none-level" },
+  openai_codex: { levels: null, off: "none-level" },
+  anthropic: { levels: null, off: "unified" },
+  gemini: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
+  mistral: {
+    levels: ["high"],
+    aliases: { minimal: "high", low: "high", medium: "high", xhigh: "high", max: "high" },
+    fallbackLevels: ["high"],
+    off: "unified",
+  },
+  kimi: { levels: [], off: "unified" },
+  deepseek: { levels: ["low", "high", "max"], aliases: { minimal: "low", medium: "high", xhigh: "high" }, off: "unified" },
+  qwen: { levels: [], off: "unified" },
+  huggingface: { levels: null, off: "unified" },
+  ollama: { levels: null, off: "unified" },
+  vllm: LOCAL_SERVER_WIRE,
+  llama_cpp: LOCAL_SERVER_WIRE,
+};
+
+function projectCatalogEntry(
   entry: ModelCatalogEntry,
-  offSwitchOnWire: boolean,
+  wire: ReasoningWire,
 ): ExternalReasoningCapabilities {
   if (!entry.reasoning) return withEnableThinkingStyle();
-  if (entry.efforts.length > 0) {
-    return {
-      ...withReasoningEffortStyle({
-        supportsReasoning: true,
-        supportsReasoningOff:
-          !entry.mandatory && (offSwitchOnWire || entry.efforts.includes("none")),
-        reasoningEffortLevels: entry.efforts,
-      }),
-      defaultEffort: entry.defaultEffort,
-    };
+  const supportsOff =
+    wire.off === "unified" ? !entry.mandatory : entry.efforts.includes("none");
+  let levels: ReasoningEffortLevel[] = [];
+  if (wire.levels === null || wire.levels.length > 0) {
+    const mapped = entry.efforts
+      .filter((level) => level !== "none")
+      .map((level) => wire.aliases?.[level] ?? level)
+      .filter((level) => wire.levels === null || wire.levels.includes(level));
+    levels = sortReasoningEfforts(mapped);
+    if (levels.length === 0 && wire.fallbackLevels) levels = [...wire.fallbackLevels];
   }
-  return withEnableThinkingStyle({
-    supportsReasoning: true,
-    reasoningAlwaysOn: entry.mandatory,
-    supportsReasoningOff: !entry.mandatory,
-  });
+  if (levels.length === 0) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: entry.mandatory,
+      supportsReasoningOff: supportsOff,
+    });
+  }
+  const defaultEffort =
+    entry.defaultEffort && levels.includes(wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
+      ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
+      : null;
+  return {
+    ...withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: supportsOff,
+      reasoningEffortLevels: supportsOff ? ["none", ...levels] : levels,
+    }),
+    defaultEffort,
+  };
 }
 
-/** Resolve external-model thinking capabilities. Per-provider resolvers do the matching;
- *  anything else defaults to no reasoning controls. */
+function catalogCapabilities(
+  providerType: string,
+  modelId: string,
+  byName = false,
+): ExternalReasoningCapabilities | null {
+  const wire = CATALOG_REASONING_WIRE[providerType];
+  if (!wire) return null;
+  const entry = byName
+    ? resolveModelCatalogEntryByName(modelId)
+    : resolveModelCatalogEntry(providerType, modelId);
+  return entry ? projectCatalogEntry(entry, wire) : null;
+}
+
+const OPENROUTER_GENERIC_TOGGLE: ExternalReasoningCapabilities = {
+  supportsReasoning: true,
+  reasoningStyle: "enable_thinking",
+  reasoningAlwaysOn: false,
+  supportsReasoningOff: true,
+  reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+};
+
+/** Resolve external-model thinking capabilities: the connection pin, then the hand-maintained
+ *  provider tables, then the model catalog (live OpenRouter data or the models.dev snapshot). */
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -1055,59 +1128,63 @@ export function getExternalReasoningCapabilities(
       ? normalizedModel.split("/").at(-1) ?? normalizedModel
       : normalizedModel;
 
-  const isOpenAIProvider =
-    normalizedProvider === "openai" || normalizedProvider === "openai_codex";
-  const isAnthropicProvider = normalizedProvider === "anthropic";
-  const isKimiProvider = normalizedProvider === "kimi";
-  const isMistralProvider = normalizedProvider === "mistral";
-  const isOpenRouterProvider = normalizedProvider === "openrouter";
-  if (isOpenRouterProvider) {
-    if (!normalizedModel.startsWith("openrouter/")) {
-      const entry = resolveModelCatalogEntry("openrouter", normalizedModel);
-      if (entry) return resolveCatalogReasoningCapabilities(entry, true);
+  switch (normalizedProvider) {
+    case "openrouter": {
+      // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
+      // models, so a route the catalog does not know still gets a toggleable control.
+      if (normalizedModel.startsWith("openrouter/")) return OPENROUTER_GENERIC_TOGGLE;
+      return catalogCapabilities("openrouter", normalizedModel) ?? OPENROUTER_GENERIC_TOGGLE;
     }
-    // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
-    // models, so past the mandatory guard everything gets a toggleable control.
-    return {
-      supportsReasoning: true,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: true,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
-  }
-  if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
-  if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
-  if (normalizedProvider === "gemini") {
-    // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
-    // thinkingConfig payload, so hide the ladder.
-    if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
+    case "kimi": {
+      const table = resolveKimiReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("kimi", normalizedModel) ?? table);
+    }
+    case "mistral": {
+      const table = resolveMistralReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("mistral", normalizedModel) ?? table);
+    }
+    case "gemini": {
+      // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
+      // thinkingConfig payload, so hide the ladder.
+      if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
+        return withEnableThinkingStyle();
+      }
+      const table = resolveGeminiReasoningCapabilities(modelForMatching);
+      return table.supportsReasoning
+        ? table
+        : (catalogCapabilities("gemini", normalizedModel) ?? table);
+    }
+    case "ollama":
+    case "deepseek":
+    case "qwen":
+    case "huggingface":
+      return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
+    case "vllm":
+    case "llama_cpp":
+      return catalogCapabilities(normalizedProvider, normalizedModel, true) ?? withEnableThinkingStyle();
+    case "openai":
+    case "openai_codex":
+    case "anthropic": {
+      const isOpenAIProvider = normalizedProvider !== "anthropic";
+      const providerCaps = isOpenAIProvider
+        ? resolveOpenAIReasoningEffortCapabilities(modelForMatching)
+        : resolveAnthropicReasoningEffortCapabilities(modelForMatching);
+      if (providerCaps.supportsReasoning) {
+        return withReasoningEffortStyle(providerCaps);
+      }
+      if (isOpenAIProvider && OPENAI_NON_REASONING_CHAT_ALIAS.test(modelForMatching)) {
+        return withEnableThinkingStyle();
+      }
+      return (
+        catalogCapabilities(isOpenAIProvider ? "openai" : "anthropic", modelForMatching) ??
+        withEnableThinkingStyle()
+      );
+    }
+    default:
       return withEnableThinkingStyle();
-    }
-    return resolveGeminiReasoningCapabilities(modelForMatching);
   }
-  if (normalizedProvider === "ollama") {
-    const entry = resolveModelCatalogEntry("ollama", normalizedModel);
-    return entry ? resolveCatalogReasoningCapabilities(entry, true) : withEnableThinkingStyle();
-  }
-  if (!isOpenAIProvider && !isAnthropicProvider) {
-    return withEnableThinkingStyle();
-  }
-
-  const providerCaps = isOpenAIProvider
-    ? resolveOpenAIReasoningEffortCapabilities(modelForMatching)
-    : resolveAnthropicReasoningEffortCapabilities(modelForMatching);
-  if (providerCaps.supportsReasoning) {
-    return withReasoningEffortStyle(providerCaps);
-  }
-  if (isOpenAIProvider && OPENAI_NON_REASONING_CHAT_ALIAS.test(modelForMatching)) {
-    return withEnableThinkingStyle();
-  }
-  const entry = resolveModelCatalogEntry(
-    isOpenAIProvider ? "openai" : "anthropic",
-    modelForMatching,
-  );
-  if (entry) return resolveCatalogReasoningCapabilities(entry, false);
-
-  return withEnableThinkingStyle();
 }

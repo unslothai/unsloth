@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from core.inference import external_provider as ep_mod
+from core.inference.external_provider import ExternalProviderClient
+
+_OPENAI_SSE = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
+_GEMINI_SSE = (
+    'data: {"candidates":[{"content":{"parts":[{"text":"ok"}],"role":"model"},"finishReason":"STOP"}],'
+    '"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\n\n'
+)
+_ANTHROPIC_SSE = 'event: message_stop\ndata: {"type": "message_stop"}\n\n'
+
+_BASE_URLS = {
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "anthropic": "https://api.anthropic.com/v1",
+}
+_SSE = {"gemini": _GEMINI_SSE, "anthropic": _ANTHROPIC_SSE}
+
+
+def _body(provider_type: str, model: str, **kwargs) -> dict:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            content = _SSE.get(provider_type, _OPENAI_SSE),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = _BASE_URLS.get(provider_type, "http://127.0.0.1:8000/v1"),
+        api_key = "test-key",
+    )
+
+    async def run() -> None:
+        try:
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = model,
+                **kwargs,
+            ):
+                pass
+        finally:
+            await client.close()
+            await mock_client.aclose()
+
+    loop = asyncio.new_event_loop()
+    previous = ep_mod._http_client
+    ep_mod._http_client = mock_client
+    try:
+        loop.run_until_complete(run())
+    finally:
+        ep_mod._http_client = previous
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+    return captured["body"]
+
+
+@pytest.mark.parametrize(
+    "effort,expected",
+    [("low", "low"), ("high", "high"), ("max", "max"), ("minimal", "low"), ("medium", "high"), ("xhigh", "high")],
+)
+def test_deepseek_effort_is_forwarded_with_thinking_enabled(effort, expected):
+    body = _body("deepseek", "deepseek-v4-flash", reasoning_effort = effort, enable_thinking = True)
+    assert body["thinking"] == {"type": "enabled"}
+    assert body["reasoning_effort"] == expected
+
+
+def test_deepseek_off_disables_thinking():
+    body = _body("deepseek", "deepseek-v4-flash", reasoning_effort = "none", enable_thinking = False)
+    assert body["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in body
+    body = _body("deepseek", "deepseek-v4-flash", enable_thinking = False)
+    assert body["thinking"] == {"type": "disabled"}
+
+
+def test_deepseek_bare_toggle_and_silence():
+    assert _body("deepseek", "deepseek-v4-flash", enable_thinking = True)["thinking"] == {"type": "enabled"}
+    body = _body("deepseek", "deepseek-chat")
+    assert "thinking" not in body and "reasoning_effort" not in body
+
+
+def test_qwen_toggle_is_a_top_level_enable_thinking():
+    assert _body("qwen", "qwen3.5-plus", enable_thinking = True)["enable_thinking"] is True
+    assert _body("qwen", "qwen3.5-plus", enable_thinking = False)["enable_thinking"] is False
+    body = _body("qwen", "qwen3.5-plus", reasoning_effort = "high")
+    assert "reasoning_effort" not in body and "enable_thinking" not in body
+
+
+@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh", "max"])
+def test_huggingface_router_takes_the_effort_verbatim(effort):
+    assert _body("huggingface", "openai/gpt-oss-120b", reasoning_effort = effort)["reasoning_effort"] == effort
+
+
+def test_huggingface_off_and_silence():
+    assert _body("huggingface", "openai/gpt-oss-120b", enable_thinking = False)["reasoning_effort"] == "none"
+    assert _body("huggingface", "openai/gpt-oss-120b", reasoning_effort = "none")["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in _body("huggingface", "openai/gpt-oss-120b", enable_thinking = True)
+
+
+@pytest.mark.parametrize("provider_type", ["vllm", "llama_cpp"])
+def test_local_servers_get_template_toggle_and_effort(provider_type):
+    body = _body(provider_type, "openai/gpt-oss-20b", reasoning_effort = "xhigh", enable_thinking = True)
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert body["reasoning_effort"] == "high"
+    body = _body(provider_type, "Qwen/Qwen3-14B", enable_thinking = False)
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["reasoning_effort"] == "none"
+    body = _body(provider_type, "Qwen/Qwen3-14B", reasoning_effort = "medium")
+    assert body["reasoning_effort"] == "medium"
+    assert "chat_template_kwargs" not in body
+
+
+def test_custom_gateway_still_receives_nothing():
+    body = _body("custom", "some-model", reasoning_effort = "high", enable_thinking = True)
+    assert "reasoning_effort" not in body and "chat_template_kwargs" not in body and "thinking" not in body
+
+
+def test_mistral_models_outside_the_spec_take_the_two_value_form():
+    assert _body("mistral", "mistral-medium-3-5", reasoning_effort = "medium")["reasoning_effort"] == "high"
+    assert _body("mistral", "mistral-medium-3-5", enable_thinking = True)["reasoning_effort"] == "high"
+    assert _body("mistral", "mistral-medium-3-5", reasoning_effort = "none")["reasoning_effort"] == "none"
+    assert _body("mistral", "mistral-medium-3-5", enable_thinking = False)["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in _body("mistral", "mistral-large-latest")
+
+
+def test_mistral_known_specs_are_unchanged():
+    assert _body("mistral", "magistral-medium-latest", reasoning_effort = "high")["prompt_mode"] == "reasoning"
+    assert _body("mistral", "mistral-small-latest", reasoning_effort = "high")["reasoning_effort"] == "high"
+
+
+def test_gemini_families_past_three_use_thinking_level():
+    body = _body("gemini", "gemini-4.1-flash", reasoning_effort = "medium", temperature = 0.7, top_p = 0.95, max_tokens = 64)
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    body = _body("gemini", "gemini-4-pro", reasoning_effort = "minimal", temperature = 0.7, top_p = 0.95, max_tokens = 64)
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    body = _body("gemini", "gemini-2.5-flash", reasoning_effort = "none", temperature = 0.7, top_p = 0.95, max_tokens = 64)
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+
+
+def test_anthropic_models_outside_the_spec_take_the_adaptive_shape():
+    body = _body("anthropic", "claude-opus-6", reasoning_effort = "xhigh", temperature = 0.7, top_p = 0.95, max_tokens = 4096)
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["output_config"] == {"effort": "xhigh"}
+    body = _body("anthropic", "claude-opus-6", reasoning_effort = "none", temperature = 0.7, top_p = 0.95, max_tokens = 4096)
+    assert "output_config" not in body and "thinking" not in body
