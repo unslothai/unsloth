@@ -3,35 +3,28 @@
 
 """Guards that the sharded backend `pytest` job still runs every test it used to.
 
-`(Python 3.13)` was one job discovering all of studio/backend/tests. It is now three
-shards on three runners, and the whole risk of that is a test file landing in no shard:
-the job goes green faster having checked less, and nothing says so.
+`(Python 3.13)` was one job discovering all of studio/backend/tests; it is now three shards
+on three runners, and the whole risk is a file landing in no shard: the job goes green
+faster having checked less, and nothing says so.
 
-So the split is not three allowlists. studio/backend/tests is flat -- 923 files in one
-directory and 17 more under multi_account -- so there are no directory roots to divide,
-and the division is by the first letter of the name after `test_`. Shards 1 and 2 name
-their range and exclude everything else; shard 3 is "tests/ except those two ranges",
-which makes exactly-one-shard a property of the shape rather than of anyone remembering
-to edit the workflow. These tests hold that shape: every file under studio/backend/tests
-is claimed once, the catch-all really is a catch-all for the names the ranges do not
-describe, and the selection the split inherited -- the -k filter, the two timeouts, and
-the twelve files the serial step reruns -- came through it intact.
+So the split is not three allowlists. studio/backend/tests is flat (923 files, plus 17 under
+multi_account), so there are no directory roots to divide and the division is by the first
+letter after `test_`. Shards 1 and 2 name their range and exclude everything else; shard 3 is
+"tests/ except those two ranges", which makes exactly-one-shard a property of the shape
+rather than of anyone remembering to edit the workflow. These tests hold that shape, and hold
+that the inherited selection -- the -k filter, the two timeouts, and the twelve files the
+serial step reruns -- came through intact.
 
-All three shards root at `tests/` and differ only in ignores. That is not a stylistic
-choice: `--ignore=FILE` does not filter a file passed as an explicit argument, checked
-against pytest rather than assumed, so a shard whose root was a shell-expanded glob would
-name the twelve serial files on its command line and run them anyway, past the shared
---ignore list that is supposed to hold them out.
+All three shards root at `tests/` and differ only in ignores, because `--ignore=FILE` does
+not filter a file passed as an explicit argument (checked against pytest): a shard rooted at
+a shell-expanded glob would name the twelve serial files and run them anyway.
 
-The per-test-id partition was checked directly when the split landed, by running each
-shard and the old selection with --junitxml and diffing the reports: 13,073 + 17,483 +
-12,053 = 42,609 ids against the baseline's 42,609, no overlap, no gap, and every id in
-the same state bar three, all of them failure-to-passed and none of them caused by the
-split: two flip between two runs of the UNSHARDED selection over the same tree, and the
-third asserts that four concurrent sizings cannot all claim the same 8GB, which fails
-whenever the box is loaded enough to interleave them and passes three times out of three
-under the smaller shard. That is a measurement of one tree; these tests are what keeps it
-true of the next one.
+The per-test-id partition was checked directly when the split landed, via --junitxml diffs:
+13,073 + 17,483 + 12,053 = 42,609 against the baseline's 42,609, no overlap, no gap, every id
+in the same state bar three failure-to-passed flips, none caused by the split (two flip
+between two runs of the UNSHARDED selection over the same tree; the third asserts four
+concurrent sizings cannot all claim the same 8GB, which fails on a loaded box). That measured
+one tree; these tests keep it true of the next one.
 """
 
 import fnmatch
@@ -46,19 +39,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
 _BACKEND_TESTS = REPO_ROOT / "studio" / "backend" / "tests"
 
-# The catch-all. Named once so the tests below can say "and only there" without repeating
-# the string, and so renaming the shard fails here rather than silently weakening them.
+# Named once so the tests can say "and only there", and so a rename fails here rather than
+# silently weakening them.
 _CATCH_ALL = "rest"
 
-# The twelve files the parallel run ignores and the serial step reruns in one process.
-# Read out of the workflow rather than listed here, so moving one between the two places
-# cannot make it look dropped -- the same reason tests/test_ci_repo_cpu_shards.py reads
-# its isolated paths out of the steps that run them.
+# The twelve files the parallel run ignores and the serial step reruns. Read out of the
+# workflow rather than listed here, so moving one between the two cannot make it look
+# dropped, as tests/test_ci_repo_cpu_shards.py does for its isolated paths.
 _SERIAL_STEP = "Backend tests that cannot share a worker"
 
-# Files this job runs nowhere, and why. A shard losing a file would otherwise look exactly
-# like one of these. Only one, and it predates the split: it is the thirteenth --ignore on
-# the parallel step and, unlike the other twelve, no step reruns it.
+# Files this job runs nowhere: a lost file would otherwise look like one of these. Only one,
+# predating the split -- the thirteenth --ignore on the parallel step, which no step reruns.
 _NOT_IN_ANY_SHARD = {
     "tests/test_studio_api.py": (
         "end-to-end against a live model and a GGUF download, which a GPU-less runner "
@@ -190,11 +181,8 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
     @pytest.mark.parametrize("path", sorted(_NOT_IN_ANY_SHARD))
     def test_the_files_no_shard_runs_are_the_expected_ones(self, path):
-        """Excluded on purpose, and still excluded from every shard rather than from one.
-
-        Without this, a shard quietly dropping a file and a file deliberately not run look
-        identical to the test above.
-        """
+        """Excluded on purpose, and from every shard rather than from one: without this, a
+        dropped file and a deliberately-skipped one look identical to the test above."""
         claiming = _claiming_shards(path, _shards())
         assert (
             claiming == []
@@ -236,12 +224,11 @@ class TestEveryTestFileLandsInExactlyOneShard:
     def test_the_names_the_ranges_do_not_describe_land_in_the_catch_all(self, path):
         """Why shards 1 and 2 exclude their complement rather than name their range.
 
-        `a-k` and `l-r` are letter ranges and not every name is a lowercase letter. A file
-        under a subdirectory, an uppercase or digit first character, and pytest's OTHER
-        default discovery pattern `*_test.py` are all outside both, and each of them would
-        be collected by BOTH ranged shards if those shards said "not l-z" and "not a-k"
-        instead of "not a-k" and "not l-r". The catch-all is the only shard allowed to be
-        open-ended, which is what makes exactly-one hold for names nobody anticipated.
+        Not every name starts with a lowercase letter: a subdirectory, an uppercase or digit
+        first character, and pytest's other discovery pattern `*_test.py` are outside both
+        ranges, and each would be claimed by BOTH ranged shards had they said "not l-z" and
+        "not a-k". Only the catch-all may be open-ended, which is what makes exactly-one hold
+        for names nobody anticipated.
         """
         claiming = _claiming_shards(path, _shards())
         assert claiming == [_CATCH_ALL], (
@@ -252,18 +239,12 @@ class TestEveryTestFileLandsInExactlyOneShard:
     def test_a_name_matching_both_discovery_patterns_falls_out_of_every_shard(self):
         """`test_api_test.py` matches `test_*.py` AND `*_test.py`, and lands nowhere.
 
-        The ranged shards drop it for the `*_test.py` suffix, and the catch-all drops it for
-        the `test_[a-r]*` range. Measured against real pytest: all three collect it zero
-        times. A plain `tool_test.py` must keep going to the catch-all, since neither range
-        describes it and both ranged shards would otherwise claim it, so the suffix rule
-        would have to mean "ends in _test.py unless it starts with test_".
-
-        fnmatch cannot say that. Diverging at each character of the prefix fixes
-        `test_api_test.py` but over-consumes on `te_test.py`, which then lands in BOTH ranged
-        shards; that was tried, and this guard caught it. Completing the rule needs four more
-        literal patterns (`_test.py`, `t_test.py`, `te_test.py`, `tes_test.py`), nine globs
-        per shard, to admit a filename shape this repo does not use. Forbidden by name below
-        instead.
+        The ranged shards drop it for the suffix, the catch-all for the `test_[a-r]*` range;
+        measured against real pytest, all three collect it zero times. Fixing it would need
+        the suffix rule to mean "ends in _test.py unless it starts with test_", which fnmatch
+        cannot say: diverging per prefix character over-consumes `te_test.py` into BOTH ranged
+        shards (tried, and this guard caught it), and completing it needs nine globs per shard
+        for a shape this repo does not use. Forbidden by name below instead.
         """
         assert _claiming_shards("tests/test_api_test.py", _shards()) == [], (
             "this is a known limitation; if it now lands in a shard the patterns have "
@@ -273,17 +254,12 @@ class TestEveryTestFileLandsInExactlyOneShard:
     def test_a_subdirectory_named_like_a_test_file_falls_out_of_every_shard(self):
         """The one shape the catch-all cannot absorb. Recorded, not hidden.
 
-        fnmatch's `*` crosses `/`, and fnmatch_ex matches --ignore-glob against the whole
-        path, so the catch-all's `tests/test_[a-r]*.py` also excludes
-        `tests/test_api/test_auth.py`, which the ranged shards have already excluded via
-        `tests/*/*`. Measured against real pytest, not inferred: all three shards collect
-        that file zero times.
-
-        There is no fix inside the pattern language, and both repairs that suggest
-        themselves were measured and do not work. `[!/]` cannot stop `*` crossing a
-        separator (`tests/test_[a-r][!/]*.py` still matches the nested path), and passing
-        the nested directory as an extra root does not bypass --ignore-glob. So the
-        invariant is enforced by name instead, in the test below.
+        fnmatch's `*` crosses `/` and fnmatch_ex matches the whole path, so the catch-all's
+        `tests/test_[a-r]*.py` also excludes `tests/test_api/test_auth.py`, which the ranged
+        shards already exclude via `tests/*/*`. Measured against real pytest: zero collections
+        in all three. Both obvious repairs were measured and fail -- `[!/]` cannot stop `*`
+        crossing a separator, and an extra root does not bypass --ignore-glob -- so the test
+        below enforces the invariant by name instead.
         """
         assert _claiming_shards("tests/test_api/test_auth.py", _shards()) == [], (
             "this is a known limitation of the split; if it now lands in a shard the "

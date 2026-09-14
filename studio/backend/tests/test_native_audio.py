@@ -18,25 +18,19 @@ import types
 from unittest.mock import MagicMock
 
 
-# core/inference/inference.py imports unsloth, and through it unsloth_zoo, at module scope.
-# This file reaches that module from inside a helper rather than at module scope, so the source
-# scan in test_backend_tests_stub_heavy_imports.py never saw the dependency. The pytest matrix
-# here deliberately does not install unsloth_zoo, so the import only ever succeeded when another
-# file on the same xdist worker had already stubbed unsloth. Sharding the job changed which
-# files share a worker and the luck ran out, so the stub is explicit here now.
+# This file reaches core/inference/inference.py, which imports unsloth at module scope, from
+# inside a helper, so test_backend_tests_stub_heavy_imports.py's source scan never saw it. The
+# import only ever worked when another file on the same xdist worker had already stubbed
+# unsloth; sharding changed who shares a worker, so the stub is explicit here now.
 _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub module for a dep the backend pytest job does not install.
+    """Stub a dep the backend pytest matrix does not install, as test_trainer_stdout_quiet.py does.
 
-    Same helper and reason as test_trainer_stdout_quiet.py: core.training.trainer imports
-    unsloth (and through it unsloth_zoo) and trl at module scope, while the pytest matrix in
-    studio-backend-ci.yml installs studio.txt plus torch and transformers and deliberately
-    stops there, because the repo-cpu-tests job beside it is the one that installs
-    unsloth_zoo, for the REPO-ROOT tests/ tree. Unstubbed, this module fails COLLECTION and
-    takes the whole job down. A real install is left alone. __spec__ = None keeps the
-    trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    That matrix stops at studio.txt plus torch and transformers; repo-cpu-tests is the job that
+    installs unsloth_zoo. Unstubbed, this module fails COLLECTION and takes the job down. A real
+    install is left alone, and __spec__ = None keeps the namespace-shadow guard a no-op here.
     """
     if name in sys.modules:
         return
@@ -74,15 +68,11 @@ from core.inference.native_audio import (
     native_audio_type_from_local_path,
 )
 
-# Bind the dependency the stubs exist for while they still stand, then drop them. Left in
-# place they outlive this module: every file collected after it on the same xdist worker sees
-# "unsloth" already in sys.modules, so its own _stub_if_missing returns before recording
-# ownership and cannot clean up what it did not create. The cost is not hypothetical --
-# utils.hardware.hardware._shared_policy branches on `"unsloth" in sys.modules`, and off a
-# spec-less non-package stub the inner import raises and it returns None, never reaching the
-# find_spec disk fallback below it that loads the real dataset_num_proc.py without importing
-# the package. Same reason and same shape as test_trainer_stdout_quiet.py. A real install
-# stubs nothing, so this is a no-op there.
+# Bind the dependency while the stubs stand, then drop them, as test_trainer_stdout_quiet.py
+# does. Left in place they outlive this module, and a later file's _stub_if_missing returns
+# before recording ownership, so nobody can clean them up. Concretely, _shared_policy branches
+# on `"unsloth" in sys.modules` and returns None off the stub instead of reaching its disk
+# fallback. A real install stubs nothing, so this is a no-op there.
 import core.inference.inference  # noqa: F401,E402 - imported to bind it under the stubs
 
 for _name in reversed(_STUBBED):

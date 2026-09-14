@@ -546,10 +546,8 @@ def test_a_backend_isolated_path_is_ignored_by_the_parallel_run(path, reason):
         if " -n " in f" {command} " and _over_the_backend(command)
     ]
     assert parallel, "the backend parallel run is gone or was renamed past this scan"
-    # Asked of EVERY backend shard, and asked as "does this run reach the path" rather
-    # than "does it spell this --ignore". The shards share one step carrying the thirteen
-    # --ignore flags, so a shard that quietly grew its own root would still have to get
-    # past this.
+    # Asked of EVERY shard, as "does this run reach the path" rather than "does it spell
+    # this --ignore", so a shard that quietly grew its own root still has to get past it.
     for command in parallel:
         assert not _collects(command, path), (
             f"{path} ({reason}) is back in a backend parallel run, where its measurements "
@@ -575,9 +573,8 @@ def test_a_backend_isolated_path_still_runs_serially(path, reason):
 def test_every_tight_elapsed_bound_is_isolated():
     """The rule, applied by scanning rather than by memory.
 
-    Two of the entries above were found by review rather than by CI: they passed on
-    staging and would have flaked later. A new test asserting a 20ms bound would do the
-    same. This finds them, so adding one forces the isolation instead of buying a flake.
+    Two entries above were found by review, not CI: they passed on staging and would have
+    flaked later. This finds them, so adding one forces the isolation instead of a flake.
     """
     isolated = {path for path, _ in BACKEND_ISOLATED}
     stray = {}
@@ -667,32 +664,24 @@ def test_the_scan_finds_all_three_shapes(tmp_path):
     )
     assert not _fragile_timing_asserts(roomy), _fragile_timing_asserts(roomy)
 
-    # Deliberately nothing about the live suite here. The synthetic files above already
-    # exercise every shape the scanner knows, and a "the live suite still has some"
-    # assertion would turn cleaning the last one into a failure, which is the same
-    # dependency on real files this rewrite exists to remove.
+    # Deliberately nothing about the live suite: the synthetic files cover every shape, and
+    # asserting the suite still has some would turn cleaning the last one into a failure.
 
 
 def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():
     """A stub may stand in for a MISSING library, never for an installed one.
 
-    `sys.modules.setdefault("httpx", stub)` reads as deferring to the real library and
-    does not: sys.modules holds what has been IMPORTED, not what is installed, so in a
-    process where nothing has touched httpx yet the stub wins and shadows it for the rest
-    of the session. These stubs carry no Response, starlette.testclient reads
-    httpx.Response at import, and every module collected afterwards that reaches
-    fastapi.testclient or routes.inference dies on it.
+    `sys.modules.setdefault("httpx", stub)` reads as deferring to the real library and does
+    not: sys.modules holds what has been IMPORTED, not what is installed, so where nothing
+    has touched httpx yet the stub wins for the rest of the session. These stubs carry no
+    Response, starlette.testclient reads httpx.Response at import, and every module after it
+    reaching fastapi.testclient or routes.inference dies on it. In a 26,000-test run
+    something always imports httpx first, so this stayed invisible while the suite was one
+    process; the serial step collects ten files, and the 3.10 leg failed collection on two.
 
-    In a 26,000-test run something always imports httpx first, so this was invisible for
-    as long as the suite ran as one process. The serial step collects ten files and
-    nothing else, and the 3.10 leg failed collection on two of them the first time it
-    ran.
-
-    Scoped to the isolated files on purpose. Roughly fifty other backend modules stub
-    structlog the same way, and they are load-bearing in a run that also imports the real
-    one; rewriting them is a separate change with its own risk, and the full parallel run
-    is not the process where a small file list makes the shadowing decisive. What has to
-    hold here is that anything moved OUT of that run stands on its own.
+    Scoped to the isolated files on purpose: ~fifty other backend modules stub structlog the
+    same way and are load-bearing in a run that also imports the real one. What has to hold
+    here is that anything moved OUT of the parallel run stands on its own.
     """
     offenders = {}
     for name, _reason in BACKEND_ISOLATED:

@@ -146,72 +146,55 @@ jobs:
         # away: two interpreters that both accept a line can still behave differently on
         # it, and a sys.version_info branch is only ever parsed, never taken.
         #
-        # So the branches were counted rather than assumed. Seven files in the backend
-        # carry one, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by
-        # the old matrix, whose oldest leg was 3.10, so every leg took the same side of
-        # them and removing legs loses nothing there. 3.14 is above every leg there has
-        # ever been. What is genuinely lost is the PRE-3.12 side of three files, and that
-        # is small enough to keep executing directly.
+        # So the branches were counted rather than assumed. Seven backend files carry one, at
+        # 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by the old matrix
+        # (oldest leg 3.10), and 3.14 is above every leg there has ever been. What is
+        # genuinely lost is the PRE-3.12 side of three files.
         #
-        # Hence the second entry: 3.11, the newest version that still takes that side,
-        # running those three files and nothing else. Roughly 40 tests in under ten
-        # seconds, not a second copy of the suite, and it runs beside the full leg rather
-        # than in front of it, so the critical path is unchanged.
+        # Hence the second entry: 3.11, the newest version still on that side, running those
+        # three files and nothing else. Roughly 40 tests in under ten seconds, beside the full
+        # leg rather than in front of it, so the critical path is unchanged.
         #
-        # The 3.13 leg is three shards of one selection, balanced on measured time rather
-        # than on file count, for the reason repo-cpu-tests was split below: it is now the
-        # longest thing a pull request waits for. Measured on one runner it is 763-822s for
-        # the parallel step plus 201-234s for the serial one, 18 to 21 minutes of job, and
-        # `Repo tests (CPU)` is three shards at 14/6/8 minutes since #10882.
+        # The 3.13 leg is three shards of one selection, balanced on measured time rather than
+        # file count, for the reason repo-cpu-tests was split below: it is now the longest
+        # thing a pull request waits for, at 763-822s parallel plus 201-234s serial.
         #
-        # Summed test time over the whole discovered selection is 1886.1s across 922 files
-        # (`--durations=0 --durations-min=0`, -n 16; the default 0.005s cutoff hides about
-        # 105,000 durations and is not usable for this). It splits by the first letter of
-        # the name after `test_`:
+        # Summed test time is 1886.1s across 922 files (`--durations=0 --durations-min=0`,
+        # -n 16; the default 0.005s cutoff hides ~105,000 durations and is unusable here),
+        # split on the first letter after `test_`:
         #
         #   a-k                        542.8s   396 files   28.8%
         #   l-r                        693.7s   318 files   36.8%
         #   s-z + every subdirectory   649.6s   208 files   34.4%
         #
-        # so the longest shard is 1.103x an ideal third. The letters are lumpy (l alone is
-        # 217.2s, t is 280.4s, and multi_account's 159.3s is stuck in the catch-all) and no
-        # contiguous split does better. A hand-picked letter SET reaches 1.001x, and is not
-        # worth it: it is an allowlist tuned to one measurement, which is the thing the
-        # shape below exists to avoid.
+        # so the longest shard is 1.103x an ideal third. The letters are lumpy (l is 217.2s,
+        # t is 280.4s, multi_account's 159.3s is stuck in the catch-all) and no contiguous
+        # split does better. A hand-picked letter SET reaches 1.001x and is not worth it: an
+        # allowlist tuned to one measurement is what the shape below exists to avoid.
         #
-        # The shape. All three shards root at `tests/` and differ only in what they ignore,
-        # because `--ignore=FILE` does NOT filter a file passed as an explicit argument
-        # (checked against pytest, not assumed), so a shard whose root was an expanded glob
-        # would drag the twelve serial files back in past the shared --ignore list below.
-        # Shards 1 and 2 name their range and exclude everything else, INCLUDING names that
-        # fall outside a-z entirely and anything below a subdirectory. Shard 3 is written as
-        # "tests/ minus the other two ranges", never as an allowlist, so a new file lands in
-        # exactly one shard without a workflow edit: test_apple.py in shard 1, test_monkey.py
-        # in shard 2, and test_snake.py, tests/a_new_dir/test_x.py, a foo_test.py and a
-        # test_Zebra.py all in shard 3. tests/test_ci_backend_pytest_shards.py fails if that
-        # stops being true, and tests/studio/test_backend_ci_parallel_isolation.py fails if a
-        # shard starts collecting one of the twelve.
+        # The shape. All three shards root at `tests/` and differ only in what they ignore:
+        # `--ignore=FILE` does NOT filter a file passed as an explicit argument (checked
+        # against pytest), so a shard rooted at an expanded glob would drag the twelve serial
+        # files back in past the shared --ignore list below. Shards 1 and 2 name their range
+        # and exclude everything else, including names outside a-z and anything below a
+        # subdirectory. Shard 3 is "tests/ minus the other two ranges", never an allowlist, so
+        # a new file lands in exactly one shard with no workflow edit: test_apple.py in 1,
+        # test_monkey.py in 2, and test_snake.py, tests/a_new_dir/test_x.py, foo_test.py and
+        # test_Zebra.py in 3. test_ci_backend_pytest_shards.py fails if that stops holding,
+        # and test_backend_ci_parallel_isolation.py fails if a shard collects one of the twelve.
         #
-        # Two name shapes the split cannot absorb, both measured against real pytest and
-        # both forbidden by name in tests/test_ci_backend_pytest_shards.py rather than left
-        # to be discovered: a subdirectory called test_*, and a file matching BOTH default
-        # discovery patterns such as test_api_test.py. Each lands in no shard, because
-        # fnmatch's * crosses / and the suffix rule cannot be told "unless it starts with
-        # test_" in one pattern.
+        # Two name shapes the split cannot absorb, forbidden by name in that guard rather than
+        # left to be discovered: a subdirectory called test_*, and a file matching BOTH
+        # discovery patterns (test_api_test.py). Each lands in no shard, because fnmatch's *
+        # crosses / and the suffix rule cannot say "unless it starts with test_" in one pattern.
+        # Diverging per prefix character was tried and reverted: it fixes test_api_test.py but
+        # over-consumes te_test.py into BOTH ranged shards, and completing it needs nine globs
+        # per shard for a filename this repo does not use.
         #
-        # Expressing that exception was tried and reverted. Diverging at each character of
-        # the prefix (tests/[!t]*_test.py, tests/t[!e]*_test.py, ...) fixes test_api_test.py
-        # but silently over-consumes on te_test.py, which then lands in BOTH ranged shards;
-        # completing it needs four more literal patterns for _test.py, t_test.py, te_test.py
-        # and tes_test.py, i.e. nine globs per shard to admit a filename this repo does not
-        # use. The inventory guard turns either shape into a named failure, which is the
-        # property that actually matters.
-        #
-        # Verified rather than argued, at the level of the test id and not of the count.
-        # The unsharded selection and the three shards were run with --junitxml and the
-        # reports diffed: 13,073 + 17,483 + 12,053 = 42,609 ids against the baseline's
-        # 42,609, no id in two shards, no id in neither, none in a shard that is not in the
-        # baseline, and the same 332 skipped and 386 errored.
+        # Verified at the level of the test id, not the count: the unsharded selection and the
+        # three shards run with --junitxml and the reports diffed gave 13,073 + 17,483 + 12,053
+        # = 42,609 against the baseline's 42,609, no id in two shards or in neither, and the
+        # same 332 skipped and 386 errored.
         include:
           - python: '3.13'
             scope: full
