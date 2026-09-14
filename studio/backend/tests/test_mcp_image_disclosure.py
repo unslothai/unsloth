@@ -92,7 +92,9 @@ def test_unsupported_mapping_schemas_fail_closed(schema, message):
 def test_reference_is_conversation_bound_and_live_bytes_are_rechecked(monkeypatch):
     import core.inference.mcp_image_disclosure as disclosure
 
-    assert "DecompressionBombError" in disclosure.resolve_tool_only_image.__code__.co_names
+    assert {"DecompressionBombError", "DecompressionBombWarning"} <= set(
+        disclosure.resolve_tool_only_image.__code__.co_names
+    )
 
     image = ResolvedImageAttachment(
         message_id = "message-a",

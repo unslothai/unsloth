@@ -134,10 +134,11 @@ def test_nested_keys_values_uris_resources_and_images_are_sanitized():
 def test_split_echoes_in_content_and_structured_data_are_withheld():
     result = {
         "content": [
-            {"type": "text", "text": ENCODED[:17]},
+            {"type": "text", "text": PERCENT_ENCODED[:53]},
+            {"type": "text", "text": PERCENT_ENCODED[53:54]},
             {"type": "image", "data": "unrelated", "mimeType": "image/png"},
             {"type": "separator", "text": "safe"},
-            {"type": "text", "text": ENCODED[17:]},
+            {"type": "text", "text": PERCENT_ENCODED[54:]},
         ],
         "structuredContent": {
             "parts": [ENCODED[:17], {"separator": "|"}, ENCODED[17:]],
@@ -152,8 +153,9 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
     }
     clean = make_context().redact_result(result)
     assert clean["content"][0]["text"] == REDACTED_IMAGE
-    assert clean["content"][3]["text"] == REDACTED_IMAGE
-    assert clean["content"][1]["data"] == "unrelated"
+    assert clean["content"][1]["text"] == REDACTED_IMAGE
+    assert clean["content"][4]["text"] == REDACTED_IMAGE
+    assert clean["content"][2]["data"] == "unrelated"
     assert ENCODED[:17] not in repr(clean)
     assert ENCODED[17:] not in repr(clean)
     assert clean["structuredContent"]["bytes"] == [REDACTED_IMAGE, REDACTED_IMAGE]
@@ -174,6 +176,21 @@ def test_unrelated_image_and_text_remain_unchanged():
         "structuredContent": {"label": "cat", "probability": 0.9},
     }
     assert make_context().redact_result(result) == result
+
+
+def test_percent_bridge_does_not_redact_an_unused_completion_slot():
+    chunks = [ENCODED[:53] + "%", "2B", ENCODED[53:]]
+    result = [{"type": "text", "text": chunk} for chunk in chunks]
+    clean = make_context().redact_result(result)
+    assert clean[0]["text"] == REDACTED_IMAGE
+    assert clean[1]["text"] == "2B"
+    assert clean[2]["text"] == REDACTED_IMAGE
+
+
+def test_subsequence_match_uses_the_smallest_complete_path():
+    chunks = ["iV", "2B", "BORw0KGgp1bmlxdWUtcHJpdmF0ZS1pbWFnZS1zeW50aGV0aWMt+//v"]
+    clean = make_context().redact_result(chunks)
+    assert clean == [REDACTED_IMAGE, "2B", REDACTED_IMAGE]
 
 
 def test_limits_cycles_and_arbitrary_objects_fail_closed(monkeypatch):

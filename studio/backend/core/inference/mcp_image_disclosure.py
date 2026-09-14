@@ -220,7 +220,13 @@ def resolve_tool_only_image(
         with Image.open(io.BytesIO(data)) as image:
             width, height = image.size
             image_format = (image.format or "").upper()
-    except (Image.DecompressionBombError, UnidentifiedImageError, OSError, ValueError) as exc:
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        UnidentifiedImageError,
+        OSError,
+        ValueError,
+    ) as exc:
         raise McpImageDisclosureError("The selected image is invalid") from exc
     expected_format = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}[mime]
     if (

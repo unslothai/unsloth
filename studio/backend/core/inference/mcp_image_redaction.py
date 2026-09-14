@@ -26,6 +26,7 @@ PRIVATE_TRANSPORT_UNAVAILABLE = (
 MAX_REDACTION_DEPTH = 32
 MAX_REDACTION_NODES = 10_000
 MAX_REDACTION_BYTES = 64 * 1024 * 1024
+MAX_REDACTION_PATHS = 512
 _NORMALIZE_BASE64 = str.maketrans("-_", "+/", " \t\r\n\v\f=")
 
 
@@ -268,18 +269,25 @@ class _ImageEchoSanitizer:
         if value == REDACTED_IMAGE:
             self.found_echo = True
 
-    def _redact_slots(self, slots):
+    def _redact_slots(
+        self,
+        slots,
+        *,
+        bridge_percent = True,
+    ):
         slots = [slot for slot in slots if slot[2] != REDACTED_IMAGE]
         if len(slots) < 2:
             return
         normalized = [self._normalized_text(text) for _, _, text in slots]
+        matched_slots = set()
         combined = "".join(normalized)
         span = self._match_span(combined)
         while span is not None:
             start = 0
-            for slot, text in zip(slots, normalized):
+            for index, (slot, text) in enumerate(zip(slots, normalized)):
                 end = start + len(text)
                 if start < span[1] and end > span[0]:
+                    matched_slots.add(index)
                     self._set_slot(slot, REDACTED_IMAGE)
                 start = end
             span = self._match_span(combined, span[1])
@@ -289,8 +297,8 @@ class _ImageEchoSanitizer:
         # image fingerprint. If a pathological result creates too many partial
         # matches, fail closed by withholding every candidate slot.
         variants = [self.fingerprint[:-1] + final for final in self.final_characters]
-        matched_slots = set()
         work = 0
+        completed_paths = set()
         for fingerprint in variants:
             states = {0: ()}
             for index, text in enumerate(normalized):
@@ -327,7 +335,11 @@ class _ImageEchoSanitizer:
                         end = position + length
                         candidate = path + (index,)
                         if end == len(fingerprint):
-                            matched_slots.update(candidate)
+                            completed_paths.add(candidate)
+                            if len(completed_paths) > MAX_REDACTION_PATHS:
+                                for slot in slots:
+                                    self._set_slot(slot, REDACTED_IMAGE)
+                                return
                         elif length:
                             advanced.setdefault(end, candidate)
                         start = found + 1
@@ -336,8 +348,86 @@ class _ImageEchoSanitizer:
                         self._set_slot(slot, REDACTED_IMAGE)
                     return
                 states = advanced
+        path_sets = {path: frozenset(path) for path in completed_paths}
+        minimal_paths = [
+            path
+            for path in completed_paths
+            if not any(path_sets[other] < path_sets[path] for other in completed_paths)
+        ]
+        for path in minimal_paths:
+            matched_slots.update(path)
         for matched in matched_slots:
             self._set_slot(slots[matched], REDACTED_IMAGE)
+        if bridge_percent:
+            self._redact_percent_bridges(slots, matched_slots)
+
+    def _redact_percent_bridges(self, slots, already_matched):
+        """Decode percent triplets split across one or more result fields."""
+        hex_digits = "0123456789abcdefABCDEF"
+        originals = tuple(text for _, _, text in slots)
+        queue = [(originals, tuple((index,) for index in range(len(slots))))]
+        seen = {originals}
+        comparisons = 0
+        candidates = 0
+        while queue:
+            values, aliases = queue.pop()
+            for left_index, left in enumerate(values):
+                if not left or any(index in already_matched for index in aliases[left_index]):
+                    continue
+                carry = (
+                    1
+                    if left.endswith("%")
+                    else 2
+                    if len(left) > 1 and left[-2] == "%" and left[-1] in hex_digits
+                    else 0
+                )
+                if not carry:
+                    continue
+                needed = 3 - carry
+                for right_index in range(left_index + 1, len(slots)):
+                    comparisons += 1
+                    if comparisons > MAX_REDACTION_NODES * 4:
+                        for slot in slots:
+                            self._set_slot(slot, REDACTED_IMAGE)
+                        return
+                    right = values[right_index]
+                    if (
+                        not right
+                        or any(index in already_matched for index in aliases[right_index])
+                        or any(
+                            character not in hex_digits
+                            for character in right[: min(needed, len(right))]
+                        )
+                    ):
+                        continue
+                    bridged = list(values)
+                    bridged[left_index] = left + right
+                    bridged[right_index] = ""
+                    key = tuple(bridged)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates += 1
+                    if candidates > 16:
+                        for slot in slots:
+                            self._set_slot(slot, REDACTED_IMAGE)
+                        return
+                    bridged_aliases = list(aliases)
+                    bridged_aliases[left_index] += bridged_aliases[right_index]
+                    bridged_aliases[right_index] = ()
+                    probe = list(bridged)
+                    synthetic = [(probe, index, text) for index, text in enumerate(probe)]
+                    self._redact_slots(synthetic, bridge_percent = False)
+                    if any(
+                        value == REDACTED_IMAGE and len(bridged_aliases[index]) > 1
+                        for index, value in enumerate(probe)
+                    ):
+                        for index, value in enumerate(probe):
+                            if value == REDACTED_IMAGE:
+                                for original in bridged_aliases[index]:
+                                    already_matched.add(original)
+                                    self._set_slot(slots[original], REDACTED_IMAGE)
+                    queue.append((key, tuple(bridged_aliases)))
 
     @staticmethod
     def _integer_image_echo(value, data):
