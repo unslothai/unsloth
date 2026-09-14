@@ -174,6 +174,13 @@ mkdir -p "$_alien/archive-v0/torch" "$_alien/lost+found"
 : > "$_alien/archive-v0/torch/libtorch.so"
 : > "$_alien/CACHEDIR.TAG"
 chmod 000 "$_alien/lost+found"
+# Bucket-SHAPED but not a kind uv creates, and closed. uv never opens it, so it must not
+# condemn the cache: it did, and the install redownloaded a Torch it already had.
+_alien_bucket="$_TMP/uvalienbucket"
+mkdir -p "$_alien_bucket/archive-v0/torch" "$_alien_bucket/unused-v999"
+: > "$_alien_bucket/archive-v0/torch/libtorch.so"
+: > "$_alien_bucket/CACHEDIR.TAG"
+chmod 000 "$_alien_bucket/unused-v999"
 # A bucket NAME needs the whole suffix to be the version: a backup copy or a tarball beside
 # the real bucket is not uv's to write, and must not condemn the cache.
 _lookalike="$_TMP/uvlookalike"
@@ -260,6 +267,8 @@ else
     assert_eq "a denied metadata bucket too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/q" '' "$_alien")
     assert_eq "lost+found does not condemn it" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q2" '' "$_alien_bucket")
+    assert_eq "an unknown KIND does not either" "shared" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/v1" '' "$_empty_version")
     assert_eq "an empty -v suffix is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
@@ -287,6 +296,7 @@ for _nc in 0 false; do
     unset UV_NO_CACHE
 done
 chmod 700 "$_alien/lost+found"
+chmod 700 "$_alien_bucket/unused-v999"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
     "$_denied_meta/interpreter-v4" "$_empty_version/archive-v1-v"
@@ -361,6 +371,16 @@ printf '\357\273\277%s\r\n' "$_TMP/crlf/cache/uv" > "$_TMP/crlf/cache/uv-cache-d
 _out=$(_run "$_TMP/crlf" '' "$_populated")
 assert_eq "a BOM+CRLF marker is honoured"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
 assert_eq "and names the right directory"  "$_TMP/crlf/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+
+# Stripping every CR instead of the trailing one turned a cache whose name contains a CR into
+# a name that does not exist, so the marker read as stale and the next run chose elsewhere.
+_cr=$(printf '\r')
+mkdir -p "$_TMP/embedcr/cache" "$_TMP/sha${_cr}red/archive-v0/torch"
+: > "$_TMP/sha${_cr}red/archive-v0/torch/libtorch.so"
+printf '%s\r\n' "$_TMP/sha${_cr}red" > "$_TMP/embedcr/cache/uv-cache-dir"
+_out=$(_run "$_TMP/embedcr" '' "$_empty")
+assert_eq "a CR inside the path survives" "$_TMP/sha${_cr}red" "$(echo "$_out" | cut -d' ' -f2)"
+unset _cr
 
 echo "=== a trailing slash in the marker is the same directory ==="
 mkdir -p "$_TMP/slash/cache/uv/archive-v0/torch"

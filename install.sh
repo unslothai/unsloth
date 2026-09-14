@@ -597,6 +597,14 @@ _uv_is_bucket_name() {
     case "${1##*-v}" in
         ''|*[!0-9]*) return 1 ;;
     esac
+    # And the KIND has to be one uv creates. A read-only `unused-v999` sitting beside a warm
+    # cache is not uv's to write, but it condemned the whole cache, so the install redownloaded
+    # what it already had and an offline one failed outright. Missing a future kind here costs
+    # a visible uv error on the bucket we let through, which is the cheaper way to be wrong.
+    case "${1%-v*}" in
+        archive|builds|built-wheels|environments|flat-index|git|interpreter|sdists|simple|sources|wheels) ;;
+        *) return 1 ;;
+    esac
     return 0
 }
 
@@ -786,7 +794,13 @@ _configure_uv_cache() {
     # CRLF, and a WSL install shares $STUDIO_HOME with the Windows one. The other two readers
     # already defend. Untreated, a CR fails [ -d ] and abandons the warm cache in silence, and
     # a BOM makes the value non-absolute so $PWD gets prepended.
-    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null | tr -d '\r') || _uv_recorded=""
+    # The TRAILING CR only, like Read-StudioUvCacheMarker's Trim(): `tr -d` also deleted a CR
+    # from inside a pathname, so a marker that named a real directory became one that did not
+    # and the next run silently chose somewhere else.
+    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || _uv_recorded=""
+    _uv_cr=$(printf '\r')
+    _uv_recorded="${_uv_recorded%"$_uv_cr"}"
+    unset _uv_cr
     _uv_bom=$(printf '\357\273\277')
     _uv_recorded="${_uv_recorded#"$_uv_bom"}"
     unset _uv_bom

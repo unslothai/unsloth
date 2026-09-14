@@ -428,6 +428,21 @@ def test_a_lost_and_found_does_not_condemn_the_cache(tmp_path):
 
 
 @requires_pwsh
+def test_an_unknown_bucket_kind_does_not_condemn_the_cache(tmp_path):
+    """Bucket-shaped but not a kind uv creates, so uv never opens it. Refusing the whole cache
+    for it redownloaded what the cache already held."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "unused-v999").mkdir()
+    if os.name != "nt":
+        (default / "unused-v999").chmod(0o000)
+    try:
+        assert _select(tmp_path / "studio", str(default))["mode"] == "shared"
+    finally:
+        if os.name != "nt":
+            (default / "unused-v999").chmod(0o755)
+
+
+@requires_pwsh
 def test_a_bucket_that_is_not_a_directory_is_refused(tmp_path):
     """A file where a bucket goes is an existing path to the create uv makes, which fails."""
     default = _warm(tmp_path / "uvdefault")
