@@ -2297,27 +2297,8 @@ def _has_usable_nvidia_gpu() -> bool:
     # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
     # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
     # on the GPU check failing, not on the PATH lookup missing.
-    candidates = []
     _path_exe = shutil.which("nvidia-smi")
-    if _path_exe:
-        candidates.append(_path_exe)
-    if IS_WINDOWS:
-        candidates.extend(
-            (
-                os.path.join(
-                    os.environ.get("ProgramFiles", r"C:\Program Files"),
-                    "NVIDIA Corporation",
-                    "NVSMI",
-                    "nvidia-smi.exe",
-                ),
-                os.path.join(
-                    os.environ.get("SystemRoot", r"C:\Windows"),
-                    "System32",
-                    "nvidia-smi.exe",
-                ),
-            )
-        )
-    for _candidate in candidates:
+    for _candidate in _nvidia_smi_candidates():
         if _candidate != _path_exe and not os.path.isfile(_candidate):
             continue
         if _lists_a_gpu(_candidate):
@@ -3097,13 +3078,47 @@ def _install_bnb_windows_rocm() -> bool:
     return True
 
 
-def _nvidia_smi_path() -> "str | None":
-    """nvidia-smi from PATH, falling back to the canonical Linux install path a
-    stripped-down PATH (systemd units, cron) can miss."""
+def _nvidia_smi_candidates() -> "list[str]":
+    """Every place nvidia-smi is worth looking for, PATH first.
+
+    One list, because two callers that disagree about where nvidia-smi lives disagree
+    about the host: _has_usable_nvidia_gpu would find the driver through the Windows
+    fixed locations while _detect_cuda_torch_index_url, reading PATH only, fell back to
+    its cu126 default and recorded a family the driver never reported.
+    """
+    candidates = []
     exe = shutil.which("nvidia-smi")
-    if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
-        exe = "/usr/bin/nvidia-smi"
-    return exe
+    if exe:
+        candidates.append(exe)
+    if IS_WINDOWS:
+        # The locations install.ps1 / setup.ps1 use; nvidia-smi.exe is routinely off PATH.
+        candidates.extend(
+            (
+                os.path.join(
+                    os.environ.get("ProgramFiles", r"C:\Program Files"),
+                    "NVIDIA Corporation",
+                    "NVSMI",
+                    "nvidia-smi.exe",
+                ),
+                os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32",
+                    "nvidia-smi.exe",
+                ),
+            )
+        )
+    else:
+        # The canonical Linux path a stripped-down PATH (systemd units, cron) can miss.
+        candidates.append("/usr/bin/nvidia-smi")
+    return candidates
+
+
+def _nvidia_smi_path() -> "str | None":
+    """The first nvidia-smi that exists, or None."""
+    for candidate in _nvidia_smi_candidates():
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
 
 def _nvidia_compute_sms(exe: str) -> "list[int] | None":

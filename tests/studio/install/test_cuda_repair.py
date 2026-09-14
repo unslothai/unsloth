@@ -2285,6 +2285,33 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert resolved == "cu128"
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu128"
 
+    def test_the_driver_probe_finds_a_windows_nvidia_smi_off_path(self, monkeypatch, tmp_path):
+        """Both probes have to look in the same places.
+
+        _has_usable_nvidia_gpu already probed the Windows fixed locations, so a host with
+        nvidia-smi.exe off PATH answered "GPU present" while the family probe read PATH
+        only, fell back to its cu126 default, and recorded a family the driver never
+        reported. On Blackwell that wheel has no supported kernels.
+        """
+        program_files = tmp_path / "Program Files"
+        smi = program_files / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"
+        smi.parent.mkdir(parents = True)
+        smi.write_text("")
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", str(program_files))
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda _name: None)
+
+        assert str(smi) in stack_mod._nvidia_smi_candidates()
+        assert stack_mod._nvidia_smi_path() == str(smi)
+
+    def test_the_candidate_list_is_shared_by_both_probes(self):
+        # Two callers that disagree about where nvidia-smi lives disagree about the host.
+        source = inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "_nvidia_smi_candidates()" in source
+        source = inspect.getsource(stack_mod._nvidia_smi_path)
+        assert "_nvidia_smi_candidates()" in source
+
     def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
         # The repair helpers install from the pinned URL, so expecting the driver's family
         # instead would flag the venv they just built correctly.
