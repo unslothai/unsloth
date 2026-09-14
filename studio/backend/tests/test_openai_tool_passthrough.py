@@ -1530,6 +1530,43 @@ class TestChatCompletionRequestToolFields:
         assert calls == []
         assert monitor.active_count() == 0
 
+    def test_audio_input_receives_the_named_system_turn(self, monkeypatch):
+        import numpy as np
+        import routes.inference as inference_route
+
+        calls = []
+        omni = _omni_backend(calls)
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "what is said?"},
+                ],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert calls[0]["system_prompt"] == ""
+        assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [
+            ("system", "supervisor"),
+            ("user", "alice"),
+        ]
+
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
         """Studio fills image_base64 from anywhere in the thread, so it is not a
         per-turn signal. When an earlier turn carries the image the parts decide,

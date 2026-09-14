@@ -34,7 +34,7 @@ from core.inference.runtime_context import (
     generation_budget_within_context,
     runtime_context_length,
 )
-from core.inference.message_content import content_to_text
+from core.inference.message_content import content_to_text, named_turn
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -450,12 +450,6 @@ class _StopSequenceStreamer:
         abort = getattr(self.streamer, "abort", None)
         if abort is not None:
             abort()
-
-
-def _named_turn(turn: dict, source) -> dict:
-    if isinstance(source, dict) and source.get("name"):
-        turn["name"] = source["name"]
-    return turn
 
 
 def _prompt_already_has_bos(tokenizer, prompt):
@@ -1607,7 +1601,7 @@ class InferenceBackend:
                         {"type": "text", "text": user_message},
                     ],
                 }
-                _named_turn(
+                named_turn(
                     user_msg,
                     next(
                         (
@@ -1632,7 +1626,7 @@ class InferenceBackend:
                 # Resume the partial answer instead of opening a new turn.
                 if continue_partial:
                     vision_messages.append(
-                        _named_turn(
+                        named_turn(
                             {
                                 "role": "assistant",
                                 "content": [{"type": "text", "text": continue_partial}],
@@ -1895,25 +1889,37 @@ class InferenceBackend:
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
         user_text = "Please transcribe this audio."
+        user_turn = None
         if messages:
             for msg in reversed(messages):
                 if msg["role"] == "user" and msg.get("content"):
                     user_text = content_to_text(msg["content"])
+                    user_turn = msg
                     break
 
+        # A named system turn arrives in messages with no system_prompt beside it.
+        system_turn = next((m for m in messages or [] if m.get("role") == "system"), None)
+        if not system_prompt and system_turn is not None:
+            system_prompt = content_to_text(system_turn.get("content") or "")
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "audio", "audio": audio_array},
-                    {"type": "text", "text": user_text},
-                ],
-            },
+            named_turn(
+                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                system_turn,
+            ),
+            named_turn(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio", "audio": audio_array},
+                        {"type": "text", "text": user_text},
+                    ],
+                },
+                user_turn,
+            ),
         ]
 
         # Direct processor render like the vision path, so neutralize here too, with
@@ -2757,18 +2763,18 @@ class InferenceBackend:
                     clean_content = re.sub(r"<[^>]+>", "", content).strip()
                     if clean_content:
                         chat_messages.append(
-                            _named_turn({"role": role, "content": clean_content}, msg)
+                            named_turn({"role": role, "content": clean_content}, msg)
                         )
                         last_role = role
                 elif role == "assistant":
-                    assistant_message = _named_turn({"role": role, "content": content}, msg)
+                    assistant_message = named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:
                         assistant_message["reasoning_content"] = reasoning_content
                     chat_messages.append(assistant_message)
                     last_role = role
                 elif role == "system" and last_role is None:
                     # A named system turn arrives in messages with no system_prompt beside it.
-                    chat_messages.append(_named_turn({"role": role, "content": content}, msg))
+                    chat_messages.append(named_turn({"role": role, "content": content}, msg))
                     last_role = role
 
         # A continuation resumes that turn, so dropping it would restart the answer.

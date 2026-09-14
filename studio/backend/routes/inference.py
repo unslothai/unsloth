@@ -22794,6 +22794,9 @@ async def produce_openai_chat_completions(
                 )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
+                chat_messages, system_prompt = _with_named_system_turn(
+                    chat_messages, system_prompt, payload.messages
+                )
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))

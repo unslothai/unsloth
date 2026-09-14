@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict
 from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Optional, Generator
-from core.inference.message_content import content_to_text
+from core.inference.message_content import content_to_text, named_turn
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -3750,18 +3750,35 @@ class MLXInferenceBackend:
 
         # Only the CURRENT user turn may caption the audio; never older history.
         user_text = ""
+        user_turn = None
         for msg in reversed(messages or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
                 user_text = content_to_text(msg.get("content") or "").strip()
+                user_turn = msg
                 break
         if not user_text:
             user_text = "Please transcribe this audio."
+        # A named system turn arrives in messages with no system_prompt beside it.
+        system_turn = next(
+            (m for m in messages or [] if isinstance(m, dict) and m.get("role") == "system"), None
+        )
+        if not system_prompt and system_turn is not None:
+            system_prompt = content_to_text(system_turn.get("content") or "")
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
+            named_turn(
+                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                system_turn,
+            ),
+            named_turn(
+                {
+                    "role": "user",
+                    "content": [{"type": "audio"}, {"type": "text", "text": user_text}],
+                },
+                user_turn,
+            ),
         ]
         prompt = _render_registered_vlm_prompt(
             self._processor,
