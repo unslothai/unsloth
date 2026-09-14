@@ -22,6 +22,14 @@ import types as _types
 import pytest
 
 
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        preview,
+        "list_preview_targets",
+        lambda: [{"ref": "demorun", "is_latest": True}],
+    )
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -182,11 +190,7 @@ def test_models_endpoint_shape(client):
 
 
 def test_list_previews_builds_urls(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     r = client.get("/p")
     assert r.status_code == 200
     data = r.json()["data"]
@@ -197,11 +201,7 @@ def test_list_previews_builds_urls(client, monkeypatch):
 
 
 def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
     r = client.get("/p")
     assert r.status_code == 200
@@ -213,11 +213,7 @@ def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatc
 
 
 def test_list_previews_omits_capability_for_keyless_caller(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     client.app.dependency_overrides[preview.authenticated_without_credential] = lambda: True
     body = client.get("/p").json()
     assert body["data"][0]["key"] is None
@@ -769,6 +765,47 @@ def test_cancelled_json_response_does_not_claim_slot(slot_state):
         await send({"type": "http.response.body", "body": b"{}", "more_body": False})
 
     _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")
+    _reset_keepwarm_counters()
+
+
+def test_cancelled_anthropic_non_streaming_does_not_claim_slot(slot_state):
+    """/v1/messages answers 200 from partial output after a disconnect, same as the twin."""
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    total = 200
+    emitted = []
+
+    async def _app(scope, receive, send):
+        cancel_event = threading.Event()
+        started = threading.Event()
+
+        class _LeavingRequest:
+            def __init__(self):
+                self.scope = scope
+
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _run_gen():
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield "x"
+
+        response = await inference._anthropic_plain_non_streaming(
+            _LeavingRequest(), _run_gen, "msg_1", "m", cancel_event = cancel_event
+        )
+        assert response.status_code == 200
+        assert cancel_event.is_set()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/messages")
+    assert len(emitted) < total
     assert inference._is_preview_resident("/outputs/run/ckpt")
     _reset_keepwarm_counters()
 

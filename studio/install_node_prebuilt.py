@@ -503,6 +503,8 @@ def _pid_is_alive(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
                 **_windows_hidden_kwargs(),
             )
@@ -618,6 +620,8 @@ def _run_node(
         [str(node_bin), *args],
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **_windows_hidden_kwargs(),

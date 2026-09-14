@@ -19,11 +19,12 @@ import {
 } from "./api";
 import { cancelExternalJob, isExternalJob } from "./external-jobs";
 import {
+  CANCELLED_LINGER_MS,
   CANCEL_WATCHDOG_MS,
   COMPLETE_LINGER_MS,
+  ERROR_LINGER_MS,
   HIDDEN_POLL_INTERVAL_MS,
   IDLE_EVICT_GRACE_MS,
-  INTERRUPTED_DOWNLOAD_MESSAGE,
   INVENTORY_BUMP_DEBOUNCE_MS,
   POLL_BACKOFF_AFTER_MS,
   POLL_BACKOFF_INTERVAL_MS,
@@ -269,8 +270,7 @@ export function finalize(
       error: null,
     });
     notify(job, "onCancelled", 0);
-    // Stay in Downloads until dismissed so the user can resume the partial
-    // without searching the model again.
+    scheduleRemoval(key, CANCELLED_LINGER_MS);
   } else {
     const rawError =
       typeof opts.error === "string" && opts.error
@@ -284,6 +284,7 @@ export function finalize(
       etaSeconds: 0,
     });
     notify(job, "onError", 0);
+    scheduleRemoval(key, ERROR_LINGER_MS);
   }
   scheduleInventoryBump();
 }
@@ -430,9 +431,7 @@ function handleIdleAfterProgress(
   } else {
     rt.idleSinceMs ??= Date.now();
     if (Date.now() - rt.idleSinceMs >= IDLE_EVICT_GRACE_MS) {
-      // The backend went idle with the card still up: keep a resumable row
-      // instead of dropping it. "gone" is only when the cache itself vanished.
-      finalize(key, "error", { error: INTERRUPTED_DOWNLOAD_MESSAGE });
+      finalize(key, "gone");
     }
   }
 }

@@ -6,8 +6,9 @@
 ``keep_resident``  -- weights never go back to system RAM while loaded: no idle
 auto-unload, and ``--mlock`` so the OS cannot page them out and re-fault them in.
 
-``no_ram_reserve`` -- no full host-RAM copy: keeps llama.cpp's default mmap path
-and drops ``--no-mmap`` / ``--mlock``.
+``no_ram_reserve`` -- avoids locked or reserved weight buffers. Uses DirectIO on
+supported Windows builds when full GPU offload is confirmed, otherwise keeps
+llama.cpp's default mmap path. Required CPU buffers can still use host RAM.
 
 Both on means "live in VRAM, keep no RAM copy, never idle-unload". ``--mlock`` is
 itself a full-model RAM reservation, so ``no_ram_reserve`` wins on that flag.
@@ -19,6 +20,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from utils.account_context import OWNER, run_as
+
 KEEP_RESIDENT_SETTING_KEY = "model_memory_keep_resident"
 NO_RAM_RESERVE_SETTING_KEY = "model_memory_no_ram_reserve"
 
@@ -29,9 +32,10 @@ DEFAULT_NO_RAM_RESERVE = False
 # Matches openai_auto_switch_settings.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
-_cache: dict[str, tuple[float, Any]] = {}
-# Bumped on every write. A read that began before a write must not fill
-_generation: dict[str, int] = {}
+_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+# Bumped on every write. A read that began before a write must not fill the cache with the value it already fetched, or
+# the new setting would appear to revert for the rest of the TTL and a load could launch contradicting it.
+_generation: dict[tuple[str, str], int] = {}
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -52,21 +56,22 @@ _MAX_REREADS = 3
 
 
 def _cached_setting(key: str) -> Any:
+    cache_key = (OWNER.account_id, key)
     for _attempt in range(_MAX_REREADS):
         with _cache_lock:
-            hit = _cache.get(key)
+            hit = _cache.get(cache_key)
             if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
                 return hit[1]
-            generation = _generation.get(key, 0)
+            generation = _generation.get(cache_key, 0)
         try:
             from storage.studio_db import get_app_setting
-            stored = get_app_setting(key, None)
+            stored = run_as(OWNER, get_app_setting, key, None)
         except Exception:
             # An unreadable DB must not fail a load; fall back to the default.
             return None
         with _cache_lock:
-            if _generation.get(key, 0) == generation:
-                _cache[key] = (time.monotonic(), stored)
+            if _generation.get(cache_key, 0) == generation:
+                _cache[cache_key] = (time.monotonic(), stored)
                 return stored
         # A write committed while this read was in flight, so `stored` predates
         # it. Returning it would let a load launch with flags contradicting the
@@ -79,10 +84,12 @@ def _invalidate(*keys: str) -> None:
     transaction, so invalidating them separately would let a load in between read
     a new keep_resident against a cached old no_ram_reserve and emit --mlock for
     a combination that was never stored."""
+    account_id = OWNER.account_id
     with _cache_lock:
         for key in keys:
-            _cache.pop(key, None)
-            _generation[key] = _generation.get(key, 0) + 1
+            cache_key = (account_id, key)
+            _cache.pop(cache_key, None)
+            _generation[cache_key] = _generation.get(cache_key, 0) + 1
 
 
 def get_keep_resident() -> bool:
@@ -110,9 +117,30 @@ def should_mlock() -> bool:
 def _pair_generations() -> tuple[int, int]:
     with _cache_lock:
         return (
-            _generation.get(KEEP_RESIDENT_SETTING_KEY, 0),
-            _generation.get(NO_RAM_RESERVE_SETTING_KEY, 0),
+            _generation.get((OWNER.account_id, KEEP_RESIDENT_SETTING_KEY), 0),
+            _generation.get((OWNER.account_id, NO_RAM_RESERVE_SETTING_KEY), 0),
         )
+
+
+def capture_model_memory_settings(publish) -> tuple[bool, bool]:
+    """Read the pair and publish it, with no window in between for a save to fall through.
+
+    ``get_model_memory_settings`` closes the window INSIDE the read; this closes the one
+    after it. A launch is committed to the pair from the moment it reads it, so a save
+    landing before the publication is answered from a state where the launch does not
+    exist yet: ``reload_required=false`` about a child that will run the pre-save flags.
+
+    Detected rather than locked, as this module already handles the read: the write
+    bumps a generation, so a capture whose generation moved republishes the newer pair.
+    Holding ``_cache_lock`` instead would mean holding it across the read's DB I/O.
+    """
+    for _attempt in range(_MAX_REREADS):
+        before = _pair_generations()
+        pair = get_model_memory_settings()
+        publish(pair)
+        if _pair_generations() == before:
+            return pair
+    return pair
 
 
 def get_model_memory_settings() -> tuple[bool, bool]:

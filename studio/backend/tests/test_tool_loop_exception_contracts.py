@@ -22,6 +22,16 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    import test_studio_tool_loop as studio_h
+    from core.inference import studio_tool_loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+    return loop_mod, studio_h
+
+
 # Backend root plus the tests dir: the two harnesses this borrows sit alongside
 # and import as top-level modules.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
@@ -111,11 +121,7 @@ def test_the_failing_tool_result_reaches_the_model(monkeypatch):
 
 def test_the_studio_loop_reports_the_real_error_and_continues(monkeypatch):
     """stream_with_studio_tools already had the handler; prove it end to end."""
-    import test_studio_tool_loop as studio_h
-    from core.inference import studio_tool_loop as loop_mod
-
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+    loop_mod, studio_h = _shared_setup_1(monkeypatch)
 
     transport = studio_h.FakeTransport(
         [
@@ -151,11 +157,7 @@ def test_the_studio_loop_reports_the_real_error_and_continues(monkeypatch):
 
 
 def test_the_studio_loop_still_reports_a_genuinely_unknown_tool(monkeypatch):
-    import test_studio_tool_loop as studio_h
-    from core.inference import studio_tool_loop as loop_mod
-
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+    loop_mod, studio_h = _shared_setup_1(monkeypatch)
 
     unknown = studio_h._tool("no_such_tool_at_all")
     transport = studio_h.FakeTransport(
@@ -198,11 +200,7 @@ def test_a_repeated_failing_call_stays_bounded(monkeypatch):
     ..."`` is a failure, so the retry is allowed -- right, since the model can
     now see what went wrong, but only while the loop stays bounded.
     """
-    import test_studio_tool_loop as studio_h
-    from core.inference import studio_tool_loop as loop_mod
-
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
+    loop_mod, studio_h = _shared_setup_1(monkeypatch)
 
     executions: list[dict] = []
     real_execute = loop_mod.execute_tool

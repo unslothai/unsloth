@@ -24,9 +24,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 
-# Checkpoint contracts mirrored from diffusers.modular_pipelines.minimax_h3, which the trainer
-# cannot import; asserted against the live components at load, so a move is caught.
-# ── the model's grid ─────────────────────────────────────────────────────────
+# Checkpoint contracts mirrored from diffusers.modular_pipelines.minimax_h3, which the trainer cannot import; asserted
+# against the live components at load, so a move is caught.
 H3_FPS = 24
 # The video VAE's clip_length and tokens_chunk_size: 17 pixel frames per chunk, 5 latent frames
 # kept per chunk, plus a 2-frame head.

@@ -37,8 +37,9 @@ import {
   setDiffusionDatasetCaption,
 } from "../api";
 
-// One tile: an auth-fetched thumbnail (object URL, revoked on unmount) plus a caption Textarea saved on blur.
-// Uncaptioned tiles get a highlighted ring so a user labeling a small set sees what still needs a caption.
+// One tile: an auth-fetched thumbnail (object URL, revoked on unmount) plus a caption Textarea
+// saved on blur. Uncaptioned tiles get a highlighted ring so a user labeling a small set sees
+// what still needs a caption.
 function LabelTile({
   dataset,
   record,
@@ -63,7 +64,8 @@ function LabelTile({
     let url: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, record.filename, 256))
-      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a dataset thumbnail only needs the URL.
+      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a dataset
+      // thumbnail only needs the URL.
       .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
@@ -175,7 +177,8 @@ function LabelTile({
   );
 }
 
-// A responsive grid over a dataset folder's images with per-image caption editing. Fetches the list on open and whenever `refreshKey` changes.
+// A responsive grid over a dataset folder's images with per-image caption editing. Fetches the
+// list on open and whenever `refreshKey` changes.
 export function DatasetLabelingGrid({
   dataset,
   refreshKey = 0,
@@ -285,7 +288,8 @@ export function DatasetLabelingGrid({
         )}
       </div>
       {/* Two columns at any width: the column is fixed, so viewport breakpoints do not apply. */}
-      {/* auto-rows-min: past max-h the height is definite and auto rows split it, flattening every tile until its thumbnail collapses. */}
+      {/* auto-rows-min: past max-h the height is definite and auto rows split it, flattening every
+          tile until its thumbnail collapses. */}
       <div className="hover-scrollbar grid max-h-[420px] auto-rows-min grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
         {pageRecords.map((r) => (
           <LabelTile

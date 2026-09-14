@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -142,7 +139,8 @@ try:
 
     # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only the parent from
     # sys.modules and keeps its submodules, so this retry re-executes __init__ without rebinding
-    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that.
+    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that, plain attribute
+    # access does not.
     import bitsandbytes.functional as bnb_functional
 except Exception:
     # device_type.py already degrades to 16bit/full finetuning when bnb is missing (gfx906, whose

@@ -110,6 +110,15 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     return backend, gguf
 
 
+def _backend_non_vulkan(
+    *args,
+    vulkan = False,
+    **kwargs,
+):
+    """_backend on a non-vulkan host."""
+    return _backend(*args, vulkan = vulkan, **kwargs)
+
+
 def _launch(backend, gguf, **load_kwargs):
     captured = {}
 
@@ -140,6 +149,33 @@ def _launch(backend, gguf, **load_kwargs):
             )
         )
     return captured
+
+
+def _launch_auto_8k(
+    *args,
+    n_ctx = 8192,
+    speculative_type = "auto",
+    **kwargs,
+):
+    """_launch at 8k context with auto speculation.
+
+    A caller passing ``n_ctx = 0`` means Auto context (the branch that caps); the native
+    8192 named here is then the target it caps down from, not a requested context.
+    """
+    return _launch(*args, n_ctx = n_ctx, speculative_type = speculative_type, **kwargs)
+
+
+def _launch_auto_spec(
+    *args,
+    n_ctx = 4096,
+    n_parallel = 4,
+    speculative_type = "auto",
+    **kwargs,
+):
+    """_launch with the 4k/4-slot auto-speculative load the placement cases share."""
+    return _launch(
+        *args, n_ctx = n_ctx, n_parallel = n_parallel, speculative_type = speculative_type, **kwargs
+    )
 
 
 def _launch_warns(backend, gguf, **load_kwargs):
@@ -225,11 +261,7 @@ def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
 
 @pytest.mark.parametrize("use_fit", [False, True])
 def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit):
-    backend, gguf = _backend(
-        tmp_path,
-        vulkan = False,
-        memory = [(0, 24_000, 24_000)],
-    )
+    backend, gguf = _backend_non_vulkan(tmp_path, memory = [(0, 24_000, 24_000)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._select_gpus = lambda *args, **kwargs: (None, True) if use_fit else ([0], False)
@@ -307,9 +339,8 @@ def test_pass_through_dspark_loads_under_an_auto_fit_placement(tmp_path):
 def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")
-    backend, gguf = _backend(
+    backend, gguf = _backend_non_vulkan(
         tmp_path,
-        vulkan = False,
         memory = [(0, 10_000, 16_000), (1, 8_000, 16_000)],
     )
     backend._select_gpus = lambda *args, **kwargs: ([1], False)
@@ -385,9 +416,8 @@ def _hybrid_mtp_backend(
     partial_offload: bool,
     memory = None,
 ):
-    backend, gguf = _backend(
+    backend, gguf = _backend_non_vulkan(
         tmp_path,
-        vulkan = False,
         memory = [(0, 12 * 1024, 12 * 1024)] if memory is None else memory,
     )
 
@@ -420,13 +450,7 @@ def _hybrid_mtp_backend(
 def test_auto_disables_embedded_hybrid_mtp_under_partial_offload(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -439,13 +463,7 @@ def test_auto_disables_embedded_hybrid_mtp_under_partial_offload(tmp_path):
 def test_forced_embedded_hybrid_mtp_survives_partial_offload(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "mtp",
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, speculative_type = "mtp")
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -456,13 +474,7 @@ def test_forced_embedded_hybrid_mtp_survives_partial_offload(tmp_path):
 def test_auto_keeps_embedded_hybrid_mtp_when_fully_offloaded(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "off"
@@ -473,15 +485,7 @@ def test_auto_keeps_embedded_hybrid_mtp_when_fully_offloaded(tmp_path):
 def test_auto_disables_embedded_hybrid_mtp_with_manual_partial_layers(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        gpu_memory_mode = "manual",
-        gpu_layers = 42,
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 42)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--gpu-layers") + 1] == "42"
@@ -494,15 +498,7 @@ def test_auto_disables_embedded_hybrid_mtp_with_manual_partial_layers(tmp_path):
 def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(tmp_path, gpu_layers):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        gpu_memory_mode = "manual",
-        gpu_layers = gpu_layers,
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, gpu_memory_mode = "manual", gpu_layers = gpu_layers)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--gpu-layers") + 1] == str(gpu_layers)
@@ -517,13 +513,7 @@ def test_auto_keeps_embedded_hybrid_mtp_without_a_gpu(tmp_path):
     # CPU MTP policy stands.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -537,14 +527,7 @@ def test_auto_keeps_embedded_hybrid_mtp_when_the_device_selection_is_cpu(tmp_pat
     # and the rollback copies cost no VRAM.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        extra_args = ["--device", "none"],
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, extra_args = ["--device", "none"])
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -559,13 +542,10 @@ def test_a_hand_pinned_device_is_gpu_evidence_when_the_probe_found_none(tmp_path
     # answer, so the two sides agree.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
-    result = _launch(
+    result = _launch_auto_spec(
         backend,
         gguf,
-        speculative_type = "auto",
         extra_args = ["--device", "Vulkan0", "--gpu-layers", "42"],
-        n_ctx = 4096,
-        n_parallel = 4,
     )
 
     cmd = result["cmd"]
@@ -577,14 +557,7 @@ def test_a_hand_pinned_device_is_gpu_evidence_when_the_probe_found_none(tmp_path
 def test_partial_offload_stand_down_records_the_draft_depth_it_decided_at(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        spec_draft_n_max = 3,
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, spec_draft_n_max = 3)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--spec-type") + 1] == "none"
@@ -602,15 +575,7 @@ def test_manual_auto_layers_is_not_evidence_of_partial_offload(tmp_path):
     # partial offload disabled MTP on a card with room for every layer.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        gpu_memory_mode = "manual",
-        gpu_layers = -1,
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, gpu_memory_mode = "manual", gpu_layers = -1)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -624,15 +589,12 @@ def test_manual_auto_layers_still_reads_a_pass_through_layer_count(tmp_path):
     # user actually said where the layers go.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
+    result = _launch_auto_spec(
         backend,
         gguf,
-        speculative_type = "auto",
         gpu_memory_mode = "manual",
         gpu_layers = -1,
         extra_args = ["--gpu-layers", "42"],
-        n_ctx = 4096,
-        n_parallel = 4,
     )
 
     cmd = result["cmd"]
@@ -643,14 +605,7 @@ def test_manual_auto_layers_still_reads_a_pass_through_layer_count(tmp_path):
 def test_auto_disables_embedded_hybrid_mtp_for_final_partial_layer_override(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        extra_args = ["--gpu-layers", "42"],
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, extra_args = ["--gpu-layers", "42"])
 
     cmd = result["cmd"]
     assert cmd[-2:] == ["--gpu-layers", "42"]
@@ -670,13 +625,7 @@ def test_auto_reports_the_binary_not_the_placement_when_the_build_lacks_mtp(tmp_
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf)
 
     cmd = result["cmd"]
     assert "--spec-type" not in cmd
@@ -690,15 +639,7 @@ def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
     # would read CPU-only for a load that partially offloads.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        gpu_ids = [0],
-        extra_args = ["--device", "none"],
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, gpu_ids = [0], extra_args = ["--device", "none"])
 
     cmd = result["cmd"]
     # The strip already ran: the child never sees the CPU device the classifier
@@ -762,6 +703,25 @@ def _recorded_mtp_reserve(backend, gguf, **load_kwargs):
     return charged
 
 
+def _recorded_mtp_reserve_std(
+    *args,
+    extra_args = ["--spec-type", "draft-mtp"],
+    n_ctx = 8192,
+    n_parallel = 4,
+    speculative_type = "auto",
+    **kwargs,
+):
+    """_recorded_mtp_reserve for the forced draft-mtp 8k/4-slot load."""
+    return _recorded_mtp_reserve(
+        *args,
+        extra_args = extra_args,
+        n_ctx = n_ctx,
+        n_parallel = n_parallel,
+        speculative_type = speculative_type,
+        **kwargs,
+    )
+
+
 def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
     """The reserve the fit saw, plus the callback objects it was handed."""
     charged = []
@@ -787,13 +747,11 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     # spills.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
-    charged = _recorded_mtp_reserve(
+    charged = _recorded_mtp_reserve_std(
         backend,
         gguf,
         dflash_draft_path = str(sidecar),
         speculative_type = "dflash",
-        n_ctx = 8192,
-        n_parallel = 4,
         extra_args = ["--spec-draft-ngl", "0"],
     )
 
@@ -881,15 +839,7 @@ def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
             "supports_kv_unified": True,
         },
     )
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        spec_draft_n_max = requested_depth,
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf, spec_draft_n_max = requested_depth)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -912,14 +862,7 @@ def test_a_legacy_build_inherits_its_own_draft_depth_variable(tmp_path, monkeypa
     )
     monkeypatch.setenv("LLAMA_ARG_DRAFT_MAX", "32")
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -943,14 +886,7 @@ def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeyp
     monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", raising = False)
     monkeypatch.setenv("LLAMA_ARG_DRAFT_MAX", "32")
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -971,14 +907,7 @@ def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
         },
     )
 
-    charged = _recorded_mtp_reserve(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        n_ctx = 8192,
-        n_parallel = 4,
-        extra_args = ["--spec-type", "draft-mtp"],
-    )
+    charged = _recorded_mtp_reserve_std(backend, gguf)
 
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
@@ -999,14 +928,7 @@ def test_an_explicit_pin_the_probe_cannot_see_is_not_a_partial_verdict(tmp_path)
     # says the placement is partial.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        gpu_ids = [0],
-        n_ctx = 4096,
-        n_parallel = 4,
-    )
+    result = _launch_auto_spec(backend, gguf, gpu_ids = [0])
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
@@ -1019,15 +941,7 @@ def test_an_unseen_pin_with_a_concrete_layer_count_still_stands_down(tmp_path):
     # evidence, so the empty probe costs the stand-down nothing here.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
-    result = _launch(
-        backend,
-        gguf,
-        speculative_type = "auto",
-        gpu_ids = [0],
-        n_ctx = 4096,
-        n_parallel = 4,
-        extra_args = ["--gpu-layers", "42"],
-    )
+    result = _launch_auto_spec(backend, gguf, gpu_ids = [0], extra_args = ["--gpu-layers", "42"])
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--spec-type") + 1] == "none"
@@ -1072,13 +986,7 @@ def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     """
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar))
 
     cmd = result["cmd"]
     assert "--model-draft" not in cmd
@@ -1095,13 +1003,7 @@ def test_auto_keeps_a_drafter_that_fits(tmp_path):
     """The drop is scoped to the shortfall: with room for both, nothing changes."""
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 1.5)
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar))
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1114,12 +1016,11 @@ def test_forcing_the_drafter_overrides_the_vram_drop(tmp_path):
     lets the existing context reduction pay for it."""
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
 
-    result = _launch(
+    result = _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
         speculative_type = "dspark",
-        n_ctx = 8192,
     )
 
     cmd = result["cmd"]
@@ -1184,12 +1085,10 @@ def test_a_standalone_model_draft_in_extras_is_not_auto_dropped(tmp_path):
     user_draft = tmp_path / "my-drafter.gguf"
     user_draft.write_bytes(b"draft")
 
-    result = _launch(
+    result = _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
         extra_args = ["--model-draft", str(user_draft)],
     )
 
@@ -1216,13 +1115,7 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
     ]
     backend._get_gpu_free_memory = lambda _binary = None: [(0, 24_576), (1, 800)]
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar))
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1255,12 +1148,10 @@ def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
 
     backend._fit_context_to_vram = recording_fit
 
-    _launch(
+    _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
         extra_args = ("--spec-draft-ngl", "0"),
     )
 
@@ -1306,13 +1197,11 @@ def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
     backend._get_gpu_free_memory = lambda _binary = None: [(0, 12_288), (1, 12_288)]
     backend._tensor_split_aborts = lambda *args, **kwargs: False
 
-    result = _launch(
+    result = _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
         tensor_parallel = True,
-        n_ctx = 8192,
     )
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
@@ -1327,13 +1216,11 @@ def test_a_tensor_request_that_aborted_before_is_probed_as_the_layer_load_it_is(
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._tensor_split_aborts = lambda *args, **kwargs: True
 
-    result = _launch(
+    result = _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
         tensor_parallel = True,
-        n_ctx = 8192,
     )
 
     cmd = result["cmd"]
@@ -1349,13 +1236,11 @@ def test_a_single_gpu_tensor_request_is_probed_as_the_layer_load_it_is(tmp_path)
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._tensor_split_aborts = lambda *args, **kwargs: False
 
-    result = _launch(
+    result = _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
         tensor_parallel = True,
-        n_ctx = 8192,
     )
 
     cmd = result["cmd"]
@@ -1387,9 +1272,8 @@ def test_a_dropped_tensor_request_launches_as_a_layer_split(
     server comes up in layer mode and the user's unrelated extras still reach it.
     Extras are appended last, so a --split-mode tensor left among them would
     re-engage the mode the downgrade just dropped."""
-    backend, gguf = _backend(
+    backend, gguf = _backend_non_vulkan(
         tmp_path,
-        vulkan = False,
         memory = [(i, 24_000, 24_000) for i in range(n_gpus)],
     )
     backend._tensor_split_aborts = lambda *args, **kwargs: aborts
@@ -1441,14 +1325,7 @@ def test_the_probe_prices_the_drafter_at_a_context_the_weakest_card_can_hold(tmp
     assert 1024 + 8192 * 83_886 / mib > 1_546 * 0.97
     assert 1024 + 5888 * 83_886 / mib <= 1_546 * 0.97
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        # 0 = Auto context (the branch that caps); the native 8192 above is the target.
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
@@ -1485,13 +1362,7 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     # 16 GB + a 4 GB KV at 8192 clears the 23.3 GB pin budget; + 6 GB does not.
@@ -1514,12 +1385,10 @@ def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_pa
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_nextn_predict_layers", 1)
 
-    result = _launch(
+    result = _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 8192,
         extra_args = ["--spec-draft-ngl", "0"],
     )
 
@@ -1546,11 +1415,10 @@ def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_pa
         reserved.append(k.get("mtp_engaged")) or requested
     )
 
-    _launch(
+    _launch_auto_8k(
         backend,
         gguf,
         dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
         n_ctx = 0,
         extra_args = ["--spec-draft-ngl", "0"],
     )
@@ -1621,13 +1489,7 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
         mtp_mib_per_tok = 0.25,
     )
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     assert "--model-draft" not in cmd
@@ -1662,13 +1524,7 @@ def test_widening_beats_shrinking_below_the_fit_floor(tmp_path):
         mtp_mib_per_tok = 0.75,
     )
 
-    result = _launch(
-        backend,
-        gguf,
-        dspark_draft_path = str(sidecar),
-        speculative_type = "auto",
-        n_ctx = 0,
-    )
+    result = _launch_auto_8k(backend, gguf, dspark_draft_path = str(sidecar), n_ctx = 0)
 
     cmd = result["cmd"]
     assert "--model-draft" in cmd
@@ -1699,22 +1555,31 @@ def _offload_backend(tmp_path, *, gguf_gb, free_mib, avail_mib, monkeypatch, **k
     return backend, gguf
 
 
+def _offload_backend_std(
+    *args,
+    avail_mib = 10_000,
+    free_mib = 4877,
+    gguf_gb = 13.3,
+    **kwargs,
+):
+    """_offload_backend with the standard 13.3 GB weights against a 4877 MiB free budget."""
+    return _offload_backend(
+        *args, avail_mib = avail_mib, free_mib = free_mib, gguf_gb = gguf_gb, **kwargs
+    )
+
+
 def test_weights_larger_than_vram_plus_ram_still_load_with_a_warning(tmp_path, monkeypatch):
     """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free needs
     about 8.5 GB of host RAM, which a 10 GB host cannot hold. It loads anyway, paging
     the remainder from disk, and says so."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
 
     _launch_warns(backend, gguf)
 
 
 def test_the_same_load_on_a_large_ram_host_still_launches(tmp_path, monkeypatch):
     """Deliberate CPU offload stays supported; only a shortfall refuses."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, avail_mib = 64_000, monkeypatch = monkeypatch)
 
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
@@ -1723,9 +1588,7 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
     """Same model and same host RAM as the refusal above, but a card big enough to hold
     it. The VRAM credit is what separates the two, so the charge is the shortfall and
     not the model size."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, free_mib = 20_000, monkeypatch = monkeypatch)
 
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
@@ -1740,11 +1603,7 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
 )
 def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, memory):
     """Shared Vulkan rows and host RAM describe one pool."""
-    backend, gguf = _backend(
-        tmp_path,
-        vulkan = True,
-        memory = memory,
-    )
+    backend, gguf = _backend_non_vulkan(tmp_path, vulkan = True, memory = memory)
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
     backend._select_gpus = lambda *args, **kwargs: (None, True)
@@ -1758,11 +1617,7 @@ def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch, m
 
 def test_vulkan_igpu_heap_can_hold_weights_missing_from_host_available(tmp_path, monkeypatch):
     """A firmware carve-out remains usable when host-available RAM is low."""
-    backend, gguf = _backend(
-        tmp_path,
-        vulkan = True,
-        memory = [(0, 107 * 1024, 0)],
-    )
+    backend, gguf = _backend_non_vulkan(tmp_path, vulkan = True, memory = [(0, 107 * 1024, 0)])
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(16.5 * 1024**3)
     monkeypatch.setattr(
@@ -2007,11 +1862,7 @@ def test_split_mode_none_still_credits_a_lone_shared_device(tmp_path, monkeypatc
 
 def test_vulkan_igpu_heap_does_not_bypass_a_cgroup_limit(tmp_path, monkeypatch):
     """A shared Vulkan heap remains subject to the process cgroup limit."""
-    backend, gguf = _backend(
-        tmp_path,
-        vulkan = True,
-        memory = [(0, 64 * 1024, 0)],
-    )
+    backend, gguf = _backend_non_vulkan(tmp_path, vulkan = True, memory = [(0, 64 * 1024, 0)])
     _restore_host_guard(backend)
     backend._apu_ram_shortfall_message = LlamaCppBackend._apu_ram_shortfall_message
     backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
@@ -2044,18 +1895,14 @@ def test_a_card_resident_model_is_not_refused_by_a_container_ceiling(tmp_path, m
 
 
 def test_unknown_available_ram_abstains(tmp_path, monkeypatch):
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = None, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, avail_mib = None, monkeypatch = monkeypatch)
 
     assert _launch(backend, gguf)["cmd"]
 
 
 def test_an_unsized_model_abstains(tmp_path, monkeypatch):
     """A GGUF whose size cannot be read leaves nothing to price."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     backend._get_gguf_size_bytes = lambda _path: (_ for _ in ()).throw(OSError("stat failed"))
 
     assert _launch(backend, gguf)["cmd"]
@@ -2079,9 +1926,7 @@ def test_placement_flags_never_turn_an_allowed_load_into_a_refusal(
     Each of these moves bytes onto the host or narrows the reachable VRAM, so a guard
     that read them could only refuse MORE. Leaving them out cannot invent a refusal,
     which is the property that keeps this check free of llama.cpp placement modelling."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, avail_mib = 64_000, monkeypatch = monkeypatch)
 
     assert _launch(backend, gguf, extra_args = extra_args)["cmd"]
 
@@ -2090,9 +1935,7 @@ def test_the_guard_reads_the_model_the_child_opens(tmp_path, monkeypatch):
     """Sizing comes from the argv path, not from the planner's earlier pick, so a
     fallback that rewrote -m is priced as launched."""
     seen = []
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     real_size = backend._get_gguf_size_bytes
 
     def _record(path):
@@ -2110,18 +1953,14 @@ def test_the_env_escape_is_now_a_no_op_that_only_silences_the_warning(tmp_path, 
 
     Both arms must load. Unset, the load carries the advisory; set, it loads just the
     same and says nothing. Kept honoured so existing scripts and docs keep working."""
-    warned, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    warned, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
     assert "--fit" in _launch(warned, gguf)["cmd"]
     assert "does not fit in GPU memory" in (warned.last_load_warning or "")
 
     allowed_dir = tmp_path / "allowed"
     allowed_dir.mkdir()
-    allowed, gguf2 = _offload_backend(
-        allowed_dir, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    allowed, gguf2 = _offload_backend_std(allowed_dir, monkeypatch = monkeypatch)
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
     assert "--fit" in _launch(allowed, gguf2)["cmd"]
     assert allowed.last_load_warning is None
@@ -2167,9 +2006,7 @@ def test_an_oversized_unmapped_load_is_remapped_instead_of_refused(
 ):
     """It launches, the argv the child gets is pageable, and the warning names the
     override -- a silent one would leave the user's own setting quietly undone."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
 
     cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
@@ -2183,9 +2020,7 @@ def test_an_oversized_unmapped_load_is_remapped_instead_of_refused(
 def test_an_unmapped_load_that_fits_is_left_exactly_as_asked(tmp_path, monkeypatch, extra_args):
     """The control. Same request on a host with room: no shortfall, so nothing is
     overridden and no warning is invented. Loading unmapped is a legitimate choice."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, avail_mib = 64_000, monkeypatch = monkeypatch)
 
     cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
 
@@ -2199,9 +2034,7 @@ def test_the_override_keeps_a_lock_rather_than_dropping_it(tmp_path, monkeypatch
     """`mlock` is unmapped too, but it also says "keep this in RAM". The pageable
     equivalent is `mmap+mlock`, which upstream mmaps, so the request survives the
     override instead of being silently discarded."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
 
     cmd = _launch(backend, gguf, extra_args = ["--load-mode", "mlock"])["cmd"]
@@ -2217,9 +2050,7 @@ def test_the_override_reaches_the_env_twin_llama_cpp_reads_first(tmp_path, monke
     stripping the tokens. Unsloth emits no load-mode flag of its own here, so without
     the env half the child would still load unmapped with nothing in the argv to show
     it."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
     monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
 
@@ -2255,9 +2086,7 @@ def test_the_warning_opt_out_never_disables_the_pageable_override(
     escape turned a load that works into one that is killed, which is the opposite of
     what an opt-out from a REFUSAL was ever meant to do. The message goes; the rewrite
     stays, and the log still names it so the load is traceable."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
     logged = _override_log(monkeypatch)
 
@@ -2274,9 +2103,7 @@ def test_the_warning_opt_out_never_disables_the_pageable_override(
 def test_the_opt_out_on_a_fitting_unmapped_load_changes_nothing(tmp_path, monkeypatch, extra_args):
     """The control for the case above. Silenced or not, a load with room to run is
     left exactly as asked and nothing is logged about an override."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 64_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, avail_mib = 64_000, monkeypatch = monkeypatch)
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
     logged = _override_log(monkeypatch)
 
@@ -2619,9 +2446,7 @@ def test_a_genuinely_cpu_only_layout_is_still_recognised(tmp_path):
 def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
     """--rpc places layers on remote devices this cannot size, so refusing on local
     capacity alone would block a viable distributed launch."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     argv = ["llama-server", "-m", str(gguf)]
 
     assert backend._launch_host_shortfall_message(argv, [(0, 4877)]) is not None
@@ -2635,9 +2460,7 @@ def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
 def test_an_rpc_env_launch_abstains(tmp_path, monkeypatch):
     """llama.cpp reads LLAMA_ARG_RPC as the environment twin of --rpc, so the guard has
     to see the child environment or it refuses the same distributed launch."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     argv = ["llama-server", "-m", str(gguf)]
 
     assert backend._launch_host_shortfall_message(argv, [(0, 4877)], {}) is not None
@@ -2767,9 +2590,8 @@ def test_a_fit_derived_load_mode_is_recorded_too(tmp_path, monkeypatch):
 
 
 def _tensor_backend(tmp_path):
-    backend, gguf = _backend(
+    backend, gguf = _backend_non_vulkan(
         tmp_path,
-        vulkan = False,
         memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
     )
     backend._tensor_split_aborts = lambda *args, **kwargs: False
@@ -2887,10 +2709,8 @@ def _apu_and_discrete_shortfall_backend(tmp_path, monkeypatch, *, avail_mib):
 
     The overlap is the point: two guards, two messages, and _record_load_warning keeps
     the first."""
-    backend, gguf = _offload_backend(
+    backend, gguf = _offload_backend_std(
         tmp_path,
-        gguf_gb = 13.3,
-        free_mib = 4877,
         avail_mib = avail_mib,
         monkeypatch = monkeypatch,
         _amd_apu_wants_unified_memory = lambda *_a, **_kw: True,
@@ -2943,9 +2763,7 @@ def test_the_note_is_appended_once_when_only_the_launch_guard_warned(tmp_path, m
     """The control against a double append. With no APU notice recorded there is
     nothing to amend, so the note arrives exactly once, through the launch guard's own
     message."""
-    backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
-    )
+    backend, gguf = _offload_backend_std(tmp_path, monkeypatch = monkeypatch)
     monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
 
     _launch(backend, gguf, extra_args = ["--no-mmap"])

@@ -11,10 +11,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
-PASS=0
-FAIL=0
-
 # Extract _previous_torch_pin and its dependency _torch_release_in_window.
 _FUNC_FILE=$(mktemp)
 {
@@ -25,15 +23,6 @@ _FUNC_FILE=$(mktemp)
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 unset UNSLOTH_TORCH_UPGRADE
 
@@ -93,10 +82,15 @@ echo "=== the preservation probe reads off disk, not through the interpreter ===
 # `import torch` can block forever on a wedged Intel driver, and this probe runs before
 # setup.sh's bounded ones. Executed, not grepped: the stub interpreter records being called.
 _PREVBLK=$(mktemp)
-awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
-    "$INSTALL_SH" > "$_PREVBLK"
+# The interpreter fallback is wrapped in _run_bounded, so the helper has to come along too.
+{
+    sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
+    awk '/^    _PREV_TORCH_VER=""$/{on=1} on{print} on && /tail -n 1 \|\| true\)$/{exit}' \
+        "$INSTALL_SH"
+} > "$_PREVBLK"
 grep -q 'version.py' "$_PREVBLK" || { echo "FATAL: probe block not extracted"; exit 1; }
 grep -q 'import torch' "$_PREVBLK" || { echo "FATAL: extraction lost the fallback"; exit 1; }
+grep -q '^_run_bounded()' "$_PREVBLK" || { echo "FATAL: could not extract _run_bounded"; exit 1; }
 
 _prev_probe() {  # $1 = torch label to put on disk ("" for no version.py)
     _d=$(mktemp -d)
