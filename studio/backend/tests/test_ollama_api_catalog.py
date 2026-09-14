@@ -122,3 +122,21 @@ def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store
 
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
+
+
+def test_a_symlinked_manifests_dir_still_resolves(tmp_path, monkeypatch):
+    """A reference carries the canonical path, a scan the spelling it walked."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    staging = tmp_path / "staging"
+    _write_ollama_store(staging)
+    (staging / "manifests").rename(elsewhere / "manifests")
+    root = tmp_path / "ollama"
+    root.mkdir()
+    (staging / "blobs").rename(root / "blobs")
+    (root / "manifests").symlink_to(elsewhere / "manifests", target_is_directory = True)
+    monkeypatch.setattr(paths, "ollama_model_dirs", lambda: [root])
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: [root])
+
+    (row,) = models_route._scan_ollama_dir(root, materialize_links = False)
+    assert ollama.ollama_model_ref_files(row.id)[0].startswith(str(root / "blobs"))

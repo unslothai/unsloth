@@ -272,7 +272,12 @@ def _ollama_model_info_from_manifest(
     try:
         rel = tag_file.relative_to(manifests_root)
     except ValueError:
-        return None
+        # ``manifests`` can be a symlink onto another volume, and a reference carries the
+        # canonical path while a scan carries the spelling it walked.
+        try:
+            rel = Path(os.path.realpath(tag_file)).relative_to(os.path.realpath(manifests_root))
+        except (OSError, ValueError):
+            return None
     parts = rel.parts
     if len(parts) < 3:
         return None
