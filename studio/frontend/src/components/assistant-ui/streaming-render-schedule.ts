@@ -116,10 +116,16 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
 // line", because the key is a React key: anything captured that marked does not
 // store remounts the whole subtree on every character of it.
 //
-//   destination -- `<?([^\s>]+)>?`, one whitespace-free run. Taking the line
-//   instead put `[g]:` + a following prose line in the key, and a definition in
-//   a container holds its continuation in the SAME block, so `> [g]:` followed
-//   by `> ordinary prose` churned once per character of that prose.
+//   destination -- the two forms marked really accepts, not the one the `def`
+//   rule reads as literally. `<?([^\s>]+)>?` describes the BARE form only;
+//   checked against 16.4.2 and 17.0.6, both register `[g]: <https://x.test/a b>`
+//   with the space, so an angle destination runs to its `>` and a bare one stops
+//   at whitespace. Spelling only the bare form froze the key at
+//   `[g]: <https://x.test/a` and it never moved again as the rest arrived, so a
+//   reference already on screen kept a missing or stale URL.
+//   Taking the whole LINE instead is the other failure: a definition in a
+//   container holds its continuation in the SAME block, so `> [g]:` followed by
+//   `> ordinary prose` churned once per character of that prose.
 //
 //   title -- `(["(][^\n]+[")])`, so it CLOSES on its line, and there is one of
 //   them, reached EITHER on the destination's line or on the line below it,
@@ -132,7 +138,7 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
 // moved once per character while an ordinary quoted sentence arrived and bought
 // nothing: it moves once, when the title closes, which is when marked stores it.
 // An unterminated opener therefore reads as the prose it usually is.
-const LINK_DEFINITION_DESTINATION = "<?[^\\s>]*>?";
+const LINK_DEFINITION_DESTINATION = "(?:<[^>\\n]*>?|[^\\s>]*)";
 const LINK_DEFINITION_TITLE = "[\"'(][^\\n]*[\"')]";
 const LINK_DEFINITION_KEY_RE = new RegExp(
   `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?${LINK_DEFINITION_DESTINATION}` +

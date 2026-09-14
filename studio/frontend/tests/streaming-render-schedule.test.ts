@@ -468,6 +468,36 @@ test("prose after a definition does not move the render key", () => {
   }
 });
 
+// An angle-bracketed destination may hold spaces, and marked stores them: both
+// 16.4.2 and 17.0.6 register `[g]: <https://x.test/a b>` with the space. So the
+// key has to follow one to its `>`, or it settles on the first word and stops
+// moving, and a reference already on screen keeps a missing or stale URL.
+test("an angle-bracketed destination keeps moving the render key", () => {
+  const usage = "See [guide][g].\n\n";
+  const streamed = [
+    "[g]: <https://x.test/a",
+    "[g]: <https://x.test/a ",
+    "[g]: <https://x.test/a b",
+    "[g]: <https://x.test/a b>",
+    '[g]: <https://x.test/a b> "settled"',
+  ];
+
+  let previous = markdownRenderKey(`${usage}[g]: `);
+  for (const step of streamed) {
+    const key = markdownRenderKey(usage + step);
+    assert.notEqual(key, previous, `render key did not move for ${step}`);
+    previous = key;
+  }
+
+  // The bare form still stops at whitespace, which is what keeps prose after a
+  // definition out of the key. Both forms have to hold at once.
+  const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
+  assert.equal(
+    markdownRenderKey(`${usage}[g]: https://x.test/ab\nordinary prose follows`),
+    bare,
+  );
+});
+
 // The scope decides what the cache commits, so it cannot depend on the reply's
 // line ending. This label is 999 characters normalised and 1000 raw with CRLF.
 test("the render scope does not depend on the reply's line ending", () => {
