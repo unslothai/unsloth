@@ -55,13 +55,12 @@ if ! grep -q '_UV_CACHE_MODE=shared' "$_FN"; then
     echo "FAIL: could not extract _configure_uv_cache from install.sh"
     exit 1
 fi
-# Extracting the pieces is not the same as being able to RUN them. If the early block calls a
-# helper this harness has not defined yet, the missing command exits 127, `if !` reads that as
-# an unwritable cache, and the block unsets the very default whose survival every ordering case
-# below depends on -- so the suite would pass while testing nothing. Assert the default lives.
-# Built ONCE and sourced by the runner and by the check below alike, so the order is stated in
-# a single place. A check that repeats the order instead of sharing it passes while the runner
-# does something else, which is exactly how this went unnoticed.
+# Extracting the pieces is not the same as being able to RUN them: a helper this harness has
+# not defined yet exits 127, `if !` reads that as an unwritable cache, and the block unsets the
+# default every ordering case below depends on. The suite would pass while testing nothing.
+# Built ONCE and sourced by the runner and the check alike, so the order is stated in one
+# place. A check that repeats the order instead of sharing it stays green while the runner does
+# something else, which is how this went unnoticed.
 cat "$_FN" "$_EARLY" > "$_BOOT"
 _selfcheck=$(
     STUDIO_HOME=$(mktemp -d "$_TMP/selfcheck.XXXXXX")
@@ -70,9 +69,9 @@ _selfcheck=$(
     . "$_BOOT" 2>/dev/null
     printf '%s' "${UV_CACHE_DIR:-<unset>}"
 )
-# Only that the block kept a cache it could create. NOT that the installer-default flag is
-# true: the flag is what this branch adds, and this suite has to keep running against code
-# that predates it, or it stops being able to demonstrate the bug at all.
+# Only that the block kept a cache it could create, NOT that the installer-default flag is
+# true: that flag is what this branch adds, and this suite must keep running against code that
+# predates it.
 case "$_selfcheck" in
     */cache/uv) ;;
     *)
@@ -85,11 +84,10 @@ unset _selfcheck
 
 _SH="${BASH:-/bin/bash}"
 
-# $_BOOT is _FN then _EARLY, which is install.sh's own order: the helpers are defined around
-# line 622 and the early block RUNS at line 1001. The other way round, the block's call to
-# _uv_cache_root_is_writable names a command that does not exist yet, the shell exits 127, the
-# block reads that as an unwritable cache, and every case with an unset UV_CACHE_DIR quietly
-# stops exercising the ordering bug this suite exists for.
+# $_BOOT is _FN then _EARLY, install.sh's own order: the helpers are defined around line 622
+# and the early block RUNS at line 1001. Reversed, its call to _uv_cache_root_is_writable names
+# a command that does not exist yet, and every unset-UV_CACHE_DIR case stops exercising the
+# ordering bug this suite exists for.
 
 # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = uv's default cache dir,
 # $4 = "true" to isolate, $5 = UV_WORKING_DIR (also runs from $_TMP/cwd, so a relative $3
@@ -118,9 +116,8 @@ _run() {
         step() { :; }
         _record_uv_cache_choice() { :; }
         C_WARN=''
-        # A real file on PATH, not a shell function: the probe runs
-        # \`env -u UV_CACHE_DIR uv cache dir\`, and env execs a binary, so a function would be
-        # skipped and the host's own uv would answer -- which is exactly how the first version
+        # A real file on PATH, not a shell function: the probe runs env, which execs a binary,
+        # so a function is skipped and the host's own uv answers. That is how the first version
         # of this test passed against the wrong cache.
         PATH='$_stub_bin':\"\$PATH\"
         . '$_BOOT'
@@ -184,8 +181,8 @@ mkdir -p "$_lookalike/archive-v0/torch"
 : > "$_lookalike/archive-v0.tar.gz"
 : > "$_lookalike/archive-v0.backup"
 # A lookalike DIRECTORY full of files is not warmth either: `archive-*` matches
-# `archive-v0.backup`, whose bytes uv cannot reuse, so counting it would pick a cache that is
-# empty in practice and forfeit Studio-cache colocation for nothing.
+# `archive-v0.backup`, whose bytes uv cannot reuse, so counting it picks a cache that is empty
+# in practice.
 _lookalike_dir="$_TMP/uvlookalikedir"
 mkdir -p "$_lookalike_dir/archive-v0.backup/pkg"
 : > "$_lookalike_dir/archive-v0.backup/pkg/payload.so"
@@ -196,9 +193,9 @@ _lookalike_kind="$_TMP/uvlookalikekind"
 mkdir -p "$_lookalike_kind/archive-backup-v0/pkg"
 : > "$_lookalike_kind/archive-backup-v0/pkg/payload.so"
 : > "$_lookalike_kind/CACHEDIR.TAG"
-# `##*-v` strips through the LAST `-v`, so a name ending in one leaves an EMPTY suffix that no
-# `*[!0-9]*` can match: `archive-v1-v` read as a bucket, the write probe covered it, and one
-# read-only directory a user happened to name that way condemned an otherwise usable warm cache.
+# `##*-v` strips through the LAST `-v`, so a name ending in one leaves an EMPTY suffix no
+# `*[!0-9]*` matches: `archive-v1-v` read as a bucket, and one read-only directory named that
+# way condemned a usable warm cache.
 _empty_version="$_TMP/uvemptyver"
 mkdir -p "$_empty_version/archive-v0/torch" "$_empty_version/archive-v1-v"
 : > "$_empty_version/archive-v0/torch/libtorch.so"
@@ -332,9 +329,9 @@ _out=$(_run "$_TMP/blocked" '' "$_populated")
 assert_eq "unwritable home -> shared"    "shared" "$(echo "$_out" | cut -d' ' -f1)"
 
 echo "=== an install that predates the marker keeps the cache it already has ==="
-# The installed base from before the marker shipped has a populated $STUDIO_HOME/cache/uv and
-# nothing recording it. One unrelated wheel in uv's default reads as warm, and without this the
-# selection abandons gigabytes of Torch and CUDA to "avoid duplicate downloads".
+# The installed base from before the marker has a populated $STUDIO_HOME/cache/uv and nothing
+# recording it. One unrelated wheel in uv's default reads as warm, and without this the
+# selection abandons gigabytes of Torch and CUDA.
 mkdir -p "$_TMP/pre/cache/uv/archive-v0/torch"
 : > "$_TMP/pre/cache/uv/archive-v0/torch/libtorch.so"
 : > "$_TMP/pre/cache/uv/CACHEDIR.TAG"
@@ -378,10 +375,9 @@ else
 fi
 
 echo "=== a fallback we cannot write is not a fallback ==="
-# The two reachable halves compound: the probe refuses a whole cache for one bucket uv may never
-# touch, and the early block has already given up on an unwritable $STUDIO_HOME/cache/uv, which
-# is the only reason the selection is running. Landing on the certain failure turns an install
-# that used to work into `failed to create cache directory`.
+# The early block has already given up on an unwritable $STUDIO_HOME/cache/uv, which is the
+# only reason the selection is running, so landing on that certain failure turns a working
+# install into `failed to create cache directory`.
 if [ "$(id -u)" = "0" ]; then
     echo "  SKIP: unwritable-fallback case (root writes through the mode bits)"
 else
@@ -406,11 +402,10 @@ else
 fi
 
 echo "=== the same answers under a real /bin/sh, and under the errexit install.sh runs with ==="
-# Everything above runs one shell without errexit, and install.sh is `#!/bin/sh` with `set -e`
-# on line 5. So the arrangement the cases above use is the one arrangement the installer never
-# uses: on Debian and Ubuntu /bin/sh is dash, on Alpine it is busybox ash, and a construct whose
-# status leaks would abort the install rather than answer. The core verdicts are re-run here
-# across every /bin/sh this box has, with errexit both ways.
+# Everything above runs one shell without errexit, which is the one arrangement install.sh
+# never uses: it is `#!/bin/sh` with `set -e` on line 5, /bin/sh is dash on Debian and busybox
+# ash on Alpine, and a construct whose status leaks aborts the install rather than answering.
+# The core verdicts are re-run here across every /bin/sh this box has, errexit both ways.
 _SH_SAVED="$_SH"
 for _alt in /bin/sh /bin/bash; do
     [ -x "$_alt" ] || continue
@@ -439,9 +434,9 @@ done
 _SH="$_SH_SAVED"
 
 echo "=== a marker naming a directory that is gone is stale, not a decision ==="
-# The marker named a cache the user deleted. Skipping the Studio cache because "a marker is a
-# decision" then handed the install uv's default and abandoned a warm Studio cache holding
-# Torch and CUDA -- offline, that is an install that used to succeed and now fails.
+# The marker named a cache the user deleted. Treating that as a decision handed the install
+# uv's default and abandoned a warm Studio cache holding Torch and CUDA, which offline is an
+# install that used to succeed and then failed.
 _stale=$_TMP/stalemarker
 mkdir -p "$_stale/studio/cache/uv/archive-v0/torch"
 : > "$_stale/studio/cache/uv/archive-v0/torch/libtorch.so"
@@ -453,19 +448,18 @@ assert_eq "and not uv's default"                  "$_stale/studio/cache/uv" "$(e
 
 echo "=== a root we can create in but not unlink from is not writable ==="
 # NTFS carries DELETE as its own ACE and an append-only directory does the same on ext4, so
-# "create succeeded" does not mean "uv can rename into this". The bucket probe has always
-# failed the candidate here; the root probe used to swallow it, return true, and leave the
-# probe file behind in the user's cache. Simulated by a failing rm rather than by an ACL,
-# because the mode bits cannot express it and running as root would hide it anyway.
+# "create succeeded" does not mean "uv can rename into this". The bucket probe always failed
+# the candidate here; the root probe swallowed it. A failing rm, not an ACL: the mode bits
+# cannot express this and running as root would hide it.
 _probe_unlink_case() {
     # shellcheck disable=SC2317
     rm() { return 1; }
     if _uv_cache_root_is_writable "$1"; then echo writable; else echo unwritable; fi
 }
-# A delete that FAILS but leaves nothing behind is a delete. An indexer or a scanner holding
-# the handle open makes one rm fail and the next succeed, and a probe another process already
-# removed is cleaned up -- `rm -f` exits 0 on a missing file where PowerShell's Remove-Item
-# -ErrorAction Stop throws ItemNotFoundException, which is the divergence this rule closes.
+# A delete that FAILS but leaves nothing behind is a delete: an indexer holding the handle
+# makes one rm fail and the next succeed, and a probe another process removed is cleaned up.
+# `rm -f` exits 0 on a missing file where Remove-Item -ErrorAction Stop throws, which is the
+# divergence this rule closes.
 _probe_gone_case() {
     # shellcheck disable=SC2317
     rm() { command rm -f "$@" 2>/dev/null; return 1; }

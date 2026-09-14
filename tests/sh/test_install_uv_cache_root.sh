@@ -282,9 +282,8 @@ for shell in sh bash; do
         "$STUDIO_CACHE"
     check_marker "shared mode records the shared cache, not the Studio one" "$BUILDS_CACHE"
 
-    # A rerun or a Desktop repair must not abandon the cache this install already recorded
-    # while it is still warm: uv's default reads as warm on ONE unrelated wheel, and
-    # switching to it re-downloads the Torch and CUDA bytes we already hold.
+    # A rerun must not abandon the cache this install recorded while it is still warm: uv's
+    # default reads as warm on ONE unrelated wheel, and switching re-downloads Torch and CUDA.
     mkdir -p "$STUDIO_CACHE/archive-v0/torch"
     : > "$STUDIO_CACHE/archive-v0/torch/libtorch.so"
     _PRESET_MARKER="$STUDIO_CACHE"
@@ -304,10 +303,9 @@ for shell in sh bash; do
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
         "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
-    # A marker naming a directory that is GONE is different, and used to be treated the same:
-    # it is a stale pointer, not a decision, so it must not cost us a warm Studio cache. Doing
-    # so abandoned cached Torch and CUDA for uv's default, which offline is an install that
-    # used to succeed and then failed.
+    # A marker naming a directory that is GONE used to be treated the same, but it is a stale
+    # pointer, not a decision. Treating it as one abandoned cached Torch and CUDA for uv's
+    # default, which offline is an install that used to succeed and then failed.
     _PRESET_MARKER="$CASE/gone/uv"
     run_case "$shell" "a marker naming a deleted cache keeps Studio" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$STUDIO_CACHE" "$STUDIO_CACHE" studio \
@@ -497,10 +495,9 @@ EXPORTED
     rm -rf "$ROOT/cache"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
         # ...and the launch keeps the shared cache rather than repointing at the Studio one.
-        # This is the ONLY way shared is reachable with an unwritable root -- the early block
-        # has to have failed its own write probe for the selection to run at all -- so the
-        # repoint would hand the autostarted backend a cache uv aborts on, after an install
-        # that just succeeded. The shared cache is the one this install actually filled.
+        # The only way shared is reachable with an unwritable root: the early block must have
+        # failed its own write probe for the selection to run at all. Repointing would hand the
+        # autostarted backend a cache uv aborts on, after an install that just succeeded.
         run_case "$shell" "an unwritable Studio root still installs" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
             "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \

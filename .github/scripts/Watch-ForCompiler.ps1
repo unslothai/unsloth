@@ -348,14 +348,11 @@ function Get-StudioCompilerEvents {
         # Bounded at both ends. Open-ended, a compiler started by something else during
         # the recursive temp scan counted against the action that had already finished.
         #
-        # Padded by a second each way and then filtered exactly, below. The hashtable's
-        # own bounds do not hold to the precision they are given: a csc.exe recorded at
-        # 17:51:57.107 came back from a window whose floor was 17:51:57.58 and failed a
-        # measurement whose step had not printed its first line until 17:51:58.58. Asking
-        # for slightly more than the window and cutting it to size here is answered by
-        # TimeCreated itself, which is the instant the claim is actually about. The pad
-        # also covers the other end, where a bound that rounds the wrong way would drop a
-        # real compile in the window's last fraction of a second.
+        # Padded a second each way, then filtered exactly below: the hashtable's bounds do
+        # not hold to the precision they are given. A csc.exe at 17:51:57.107 came back from
+        # a window whose floor was 17:51:57.58, and failed a step that had not printed its
+        # first line until 17:51:58.58. TimeCreated is the instant the claim is about. The
+        # far pad covers the other end, where rounding could drop a real compile.
         $events = Get-WinEvent -FilterHashtable @{
             LogName   = 'Security'
             Id        = 4688

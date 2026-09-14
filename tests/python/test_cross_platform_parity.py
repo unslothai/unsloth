@@ -1164,8 +1164,8 @@ class TestInstallUvCacheRootParity:
             < sh.index("_UV_CACHE_MODE=isolated")
         ), "the custom branch records before it returns"
         # Three on the ps1 side too, one per recording mode: custom, isolated, and the
-        # selection. UV_NO_CACHE is the deliberate fourth branch that records NOTHING, on both
-        # sides, because a marker written there would name a cache the install never filled.
+        # selection. UV_NO_CACHE is the deliberate fourth that records NOTHING on both sides,
+        # since a marker there would name a cache the install never filled.
         assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 3, ps1.count(
             "Write-StudioUvCacheMarker -StudioRoot"
         )
@@ -1189,12 +1189,10 @@ class TestInstallUvCacheRootParity:
         assert "UV_CACHE_DIR=$(_absolutize_uv_cache_dir)" in sh
         assert "IsPathRooted" in ps1
 
-        # The four selection rules, on both installers. install.sh gained them first and
-        # install.ps1 did not have them, which left Windows abandoning a warm Studio cache on
-        # every rerun and selecting caches uv aborts on. The behaviour is asserted by running
-        # each installer -- tests/sh/test_uv_cache_adaptive_selection.sh and
-        # tests/python/test_windows_uv_cache_selection.py -- and the pairing is asserted here,
-        # so a rule added to one side alone fails even where no shell can run the other.
+        # The selection rules, on both installers. install.sh gained them first, which left
+        # Windows abandoning a warm Studio cache on every rerun and selecting caches uv aborts
+        # on. The behaviour is asserted by running each installer; the PAIRING is asserted
+        # here, so a rule added to one side alone fails even where neither shell can run.
         #   1. the marker outranks uv's default while it is still warm
         assert "cache/uv-cache-dir" in sh
         assert "function Read-StudioUvCacheMarker" in ps1
@@ -1209,9 +1207,9 @@ class TestInstallUvCacheRootParity:
         #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
         assert "_uv_is_bucket_name() {" in sh
         assert "function Test-StudioUvBucketName" in ps1
-        # and the version cannot be EMPTY on either side. `##*-v` strips through the last `-v`,
-        # so `archive-v1-v` leaves "" behind, which no `*[!0-9]*` matches; PowerShell rejected it
-        # on IsNullOrEmpty from the start, so this was a real split, not a spelling difference.
+        # and the version cannot be EMPTY on either side: `##*-v` strips through the last
+        # `-v`, so `archive-v1-v` leaves "" behind, which no `*[!0-9]*` matches. PowerShell
+        # rejected it from the start, so this was a real split.
         bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
         bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split("\n}", 1)[0]
@@ -1223,15 +1221,13 @@ class TestInstallUvCacheRootParity:
         #   5. and a fallback we cannot write is not a fallback, on both sides
         assert "_uv_cache_root_is_writable() {" in sh
         assert "function Test-StudioUvCacheRootWritable" in ps1
-        #   6. creating the probe is not enough on either side: uv RENAMES into these
-        # directories, and NTFS carries DELETE as its own ACE while an append-only directory
-        # does the same on ext4, so a root can grant create and deny unlink. The bucket probes
-        # have always failed the candidate there; the root probes used to swallow it and leave
-        # the probe file behind in the user's cache.
+        #   6. creating the probe is not enough: uv RENAMES into these directories, and NTFS
+        # carries DELETE as its own ACE while an append-only directory does the same on ext4,
+        # so a root can grant create and deny unlink.
         root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
         # Judged by whether the probe is GONE, not by rm's exit status, and retried: a scanner
-        # holding the handle makes one delete fail and the next succeed, and PowerShell's
-        # Remove-Item throws for a probe something else already removed where rm -f exits 0.
+        # holding the handle makes one delete fail and the next succeed, and Remove-Item throws
+        # for a probe something else already removed where rm -f exits 0.
         assert '[ -e "$_uv_root_probe" ] || break' in root_sh, root_sh
         assert "_uv_root_tries" in root_sh, root_sh
         root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split("\n    }", 1)[0]
@@ -1298,7 +1294,7 @@ class TestInstallUvCacheRootParity:
                 "function Test-StudioUvBucketName"
             )
         ]
-        # One helper for every path that has to end up absolute, or they disagree the moment
+        # One helper for every path that must end up absolute, or they disagree the moment
         # UV_WORKING_DIR is set: the caller's value, the marker write, the marker READ, and
         # uv's own answer, which comes back verbatim and may be relative.
         assert ps1.count("Resolve-StudioUvCachePath -Cache") == 4, ps1.count(
@@ -1350,9 +1346,9 @@ class TestInstallUvCacheRootParity:
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh
         assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
-        # The selector and the helpers it was split into: the warmth scan lives in
-        # Test-StudioUvCachePopulated now, so slicing at Set-StudioUvCacheEnvironment alone
-        # would assert on a body that no longer holds the scan and pass for the wrong reason.
+        # The warmth scan lives in Test-StudioUvCachePopulated now, so slicing at
+        # Set-StudioUvCacheEnvironment alone would assert on a body that no longer holds the
+        # scan and pass for the wrong reason.
         selector = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
             "function Set-StudioUvCacheForLaunch", 1
         )[0]

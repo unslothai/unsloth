@@ -26,9 +26,9 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 _FN_FILE=$(mktemp)
 _TMP=$(mktemp -d)
 trap 'rm -rf "$_FN_FILE" "$_TMP"' EXIT
-# The helper first: the block asks it whether the cache is usable, and an extraction that
-# leaves it out does not fail loudly -- `command not found` exits 127, the `if !` reads that
-# as "not writable", and every case quietly reports an unset UV_CACHE_DIR instead.
+# The helper first: the block asks it whether the cache is usable, and leaving it out does not
+# fail loudly. `command not found` exits 127, `if !` reads that as "not writable", and every
+# case quietly reports an unset UV_CACHE_DIR.
 awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN_FILE"
 awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/' \
     "$INSTALL_SH" >> "$_FN_FILE"

@@ -570,20 +570,18 @@ _resolve_studio_destinations() {
 }
 
 # Records which cache this install used, so an update reuses it rather than guessing: the launch below repoints the backend at the Studio cache even in shared mode, so one on-demand install makes an empty Studio cache look full. Never fatal. A relative UV_CACHE_DIR names a different directory in each phase of one install, since uv resolves it against its working directory and setup.sh changes into its own before the dependency pass, so make it absolute once, here.
-# Takes $1, defaulting to UV_CACHE_DIR, and prints it; the scan resolves uv's answer on this same base so two bases cannot miss a warm cache.
+# Takes $1, defaulting to UV_CACHE_DIR, and prints it. The scan resolves uv's answer on this
+# same base, so two different bases cannot miss a warm cache.
 # True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
-# and `archive-v0.tar.gz` are not uv's, so neither the write probe nor the warmth scan may
-# treat them as buckets -- one rule, because tightening only one of them is how they drifted.
+# is not uv's. One rule for the probe and the warmth scan; tightening one is how they drift.
 _uv_is_bucket_name() {
     case "$1" in
         *-v[0-9]*) ;;
         *) return 1 ;;
     esac
-    # '' as well as a non-digit: `##*-v` strips through the LAST `-v`, so `archive-v1-v`
-    # matches the pattern above on its `-v1` and then leaves an EMPTY suffix, which no
-    # `*[!0-9]*` can match. Without this it read as a bucket, the write probe covered it, and
-    # one read-only directory a user happened to name that way condemned the whole warm cache.
-    # Test-StudioUvBucketName rejects it (IsNullOrEmpty), so this was also an sh/ps1 split.
+    # '' too: `##*-v` strips through the LAST `-v`, so `archive-v1-v` leaves an empty suffix
+    # that no `*[!0-9]*` matches. It read as a bucket, and one read-only directory named that
+    # way condemned a warm cache. Test-StudioUvBucketName rejects it, so the two had split.
     case "${1##*-v}" in
         ''|*[!0-9]*) return 1 ;;
     esac
@@ -603,11 +601,9 @@ _absolutize_uv_cache_dir() {
             _uv_cache_path="$_uv_cache_base/$_uv_cache_path"
             ;;
     esac
-    # A trailing slash names the same directory and compares unequal to one written without
-    # it, and that string comparison is what picks `studio` over `shared` below -- a marker
-    # reading `$STUDIO_HOME/cache/uv/` would otherwise be announced as a shared cache and get
-    # the launch repoint the `studio` branch exists to avoid. Never down to the empty string:
-    # the loop stops at the root, which is a real directory.
+    # A trailing slash names the same directory but compares unequal, and that comparison is
+    # what picks `studio` over `shared` below: `$STUDIO_HOME/cache/uv/` would be called shared
+    # and get the repoint `studio` avoids. Stops at the root, which is a real directory.
     while [ "$_uv_cache_path" != / ]; do
         case "$_uv_cache_path" in
             */) _uv_cache_path="${_uv_cache_path%/}" ;;
@@ -617,18 +613,16 @@ _absolutize_uv_cache_dir() {
     printf '%s\n' "$_uv_cache_path"
 }
 
-# Can we create AND fill this directory? A real create, since mkdir -p exits 0 for an existing
-# unwritable directory and -w reads the mode rather than the filesystem. mktemp, since a
-# predictable name in another account's directory can be pre-created as a symlink to follow.
+# Can we create AND fill this directory? A real create, since mkdir -p exits 0 on an existing
+# unwritable one and -w reads the mode, not the filesystem. mktemp, since a predictable name
+# in another account's directory can be pre-created as a symlink to follow.
 _uv_cache_root_is_writable() {
     mkdir -p "$1" 2>/dev/null || return 1
     _uv_root_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null) || return 1
-    # Creating is not enough, the same way it is not enough for a bucket: an ACL that grants
-    # create but denies unlink leaves uv's own renames to fail later, and leaks the probe into
-    # the cache. But GONE is the answer, not rm's exit status. A scanner or an indexer holding
-    # the handle open makes one delete fail and the next succeed, and condemning the cache on
-    # the first failure sends the install to a fallback we may already know is worse. Retry,
-    # then believe the filesystem.
+    # Creating is not enough: an ACL granting create but denying unlink leaves uv's renames
+    # to fail later. But GONE is the answer, not rm's exit status -- a scanner holding the
+    # handle makes one delete fail and the next succeed, and condemning the cache on the first
+    # failure sends the install to a fallback that may be worse. Retry, then believe the fs.
     _uv_root_tries=0
     while :; do
         rm -f "$_uv_root_probe" 2>/dev/null || true
@@ -687,8 +681,8 @@ _restore_uv_cache_marker() {
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
     # A CALLER's UV_CACHE_DIR outranks everything below; our own default must not, and the
-    # variable cannot tell them apart because the block near the top already exported it.
-    # Without the flag this matched on every writable install, so nothing below ever ran.
+    # variable cannot tell them apart because the block above already exported it. Without the
+    # flag this matched on every writable install, so nothing below ever ran.
     if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then
         case "${UV_CACHE_DIR-}" in
             *[![:space:]]*)
@@ -712,16 +706,10 @@ _configure_uv_cache() {
     fi
 
     # uv --no-cache neither reads nor writes a cache, so there is nothing to select: probing
-    # would touch a cache the caller told uv to leave alone, and a marker written here would
-    # name one this install never filled. Mirrors _uv_no_cache_requested() in
-    # unsloth_cli/commands/studio.py, which skips probing and recording for the same reason.
-    # Lowercased, because uv takes this case-insensitively: `True`, `Yes` and `On` all turn
-    # the cache off, and matching a fixed spelling would leave us probing and recording a
-    # cache uv is not using. Not trimmed, since uv rejects a padded value outright rather
-    # than reading it as true.
-    # The literals are clap's, which is what uv binds this to (BoolishValueParser over
-    # `y yes t true on 1`); `y` and `t` are real spellings uv honours, and missing one leaves
-    # us probing and recording a cache uv is not using.
+    # touches a cache the caller told uv to leave alone, and a marker here names one this
+    # install never filled. Mirrors _uv_no_cache_requested() in unsloth_cli/commands/studio.py.
+    # Lowercased, since uv takes it case-insensitively; not trimmed, since uv rejects a padded
+    # value outright. The literals are clap's BoolishValueParser set, `y` and `t` included.
     _uv_no_cache=$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')
     case "$_uv_no_cache" in
         1|y|yes|t|true|on)
@@ -745,23 +733,21 @@ _configure_uv_cache() {
             _uv_default_cache="${HOME}/.cache/uv"
         fi
     fi
-    # A relative cache-dir comes back verbatim and uv resolves it against its working directory, so scanning it as written inspects a same-named directory beside us.
+    # A relative cache-dir comes back verbatim and uv resolves it against its working
+    # directory, so scanning it as written inspects a same-named directory beside us.
     if [ -n "$_uv_default_cache" ]; then
         _uv_default_cache=$(_absolutize_uv_cache_dir "$_uv_default_cache")
     fi
 
-    # The cache THIS install last recorded outranks uv's default, while it is still warm. A
-    # rerun or a Desktop repair would otherwise abandon a Studio cache holding Torch and CUDA
-    # the moment one unrelated wheel made uv's default read as warm, re-downloading gigabytes
-    # to "avoid duplicate downloads". Content cannot decide it -- the launch repoint below
-    # leaves backend bytes in the losing cache -- which is why the marker exists. Same
-    # precedence the update path uses (unsloth_cli/commands/studio.py:_with_studio_uv_cache).
-    # tr and the BOM strip: install.ps1 writes this file with Set-Content -Encoding utf8,
-    # which on Windows PowerShell 5.1 means a BOM and CRLF, and a WSL install shares
-    # $STUDIO_HOME with the Windows one. The other two readers already defend
-    # (Read-StudioUvCacheMarker in install.ps1, utf-8-sig in unsloth_cli/commands/studio.py);
-    # without it here a trailing CR fails [ -d ] and the warm cache is abandoned in silence,
-    # and a BOM makes the value non-absolute so $PWD gets prepended to it.
+    # The cache THIS install last recorded outranks uv's default while it is still warm, or a
+    # rerun abandons a Studio cache holding Torch and CUDA the moment one unrelated wheel makes
+    # uv's default read as warm. Content cannot decide it, because the repoint below leaves
+    # backend bytes in the losing cache; that is what the marker is for. Same precedence as
+    # unsloth_cli/commands/studio.py:_with_studio_uv_cache.
+    # install.ps1 writes this with -Encoding utf8, which under PowerShell 5.1 means BOM and
+    # CRLF, and a WSL install shares $STUDIO_HOME with the Windows one. The other two readers
+    # already defend. Untreated, a CR fails [ -d ] and abandons the warm cache in silence, and
+    # a BOM makes the value non-absolute so $PWD gets prepended.
     _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null | tr -d '\r') || _uv_recorded=""
     _uv_bom=$(printf '\357\273\277')
     _uv_recorded="${_uv_recorded#"$_uv_bom"}"
@@ -771,26 +757,19 @@ _configure_uv_cache() {
         *) _uv_recorded="" ;;
     esac
 
-    # An install from before the marker existed has a populated $STUDIO_HOME/cache/uv and
-    # nothing recording it, and the marker is the ONLY thing keeping the loop below from
-    # abandoning it: one unrelated wheel anywhere in uv's default reads as warm, and the
-    # install then re-downloads the Torch and CUDA it already holds while announcing that it
-    # is avoiding duplicate downloads. Nothing but this product writes to that directory, so a
-    # warm one is self-evidently ours and belongs in the list. Only when there is no marker: a
-    # marker that names somewhere else is a decision, and it outranks a leftover.
-    # ... and a marker naming a directory that is no longer there is stale rather than a
-    # decision, so the Studio cache goes back on the list. Otherwise a marker pointing at a
-    # deleted cache made us skip a warm Studio cache holding Torch and CUDA and take uv's
-    # default instead, which is the very abandonment the marker exists to prevent.
+    # An install from before the marker has a populated $STUDIO_HOME/cache/uv and nothing
+    # recording it, and without this the loop below abandons it for uv's default. Nothing else
+    # writes there, so a warm one is ours. Only when there is no marker, or when the marker
+    # names a directory that is gone: that is a stale pointer, not a decision, and treating it
+    # as one cost us the warm Studio cache the marker exists to keep.
     _uv_unmarked_studio=""
     if [ -z "$_uv_recorded" ] || [ ! -d "$_uv_recorded" ]; then
         _uv_unmarked_studio="$_uv_studio_cache"
     fi
 
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
-    # into the buckets, aborting on either. Nested entries are deliberately NOT probed -- that
-    # walks hundreds of thousands of files, and a denied leaf keeps a warm cache warm
-    # (tests/sh/test_install_uv_cache_root.sh).
+    # into the buckets, aborting on either. Nested entries are deliberately NOT probed: that
+    # walks hundreds of thousands of files, and a denied leaf keeps a warm cache warm.
     _uv_scan_blocked=false
     _uv_blocked_cache=""
     _uv_warn_cache=""
@@ -805,22 +784,19 @@ _configure_uv_cache() {
             case $- in *f*) _uv_glob=off ;; esac
             set +f
 
-            # EVERY existing bucket, not the artifact families below: uv mutates
-            # interpreter-v4 too, and a curated list would miss the next one it adds. A real
-            # create, since -w reads the mode not the filesystem; mktemp, since a fixed name
-            # can be a planted link.
+            # EVERY existing bucket, not just the artifact families below: uv mutates
+            # interpreter-v4 too, and a curated list would miss the next kind it adds.
             for _uv_probe_dir in "$_uv_candidate" "$_uv_candidate"/*; do
-                # The root, then only where a BUCKET should be, which uv names <kind>-v<N>.
-                # Anything else at the top level is not uv's to write: CACHEDIR.TAG and
-                # .gitignore are its own files, and a cache-dir pointed at a mount point has
-                # a root-owned lost+found that must not condemn the whole cache.
+                # The root, then only where a BUCKET should be. Anything else up here is not
+                # uv's to write, and a cache-dir on a mount point has a root-owned lost+found
+                # that must not condemn it.
                 if [ "$_uv_probe_dir" != "$_uv_candidate" ] \
                    && ! _uv_is_bucket_name "${_uv_probe_dir##*/}"; then
                     continue
                 fi
                 if [ ! -d "$_uv_probe_dir" ]; then
-                    # A file, or a symlink dangling or not, is still an existing path to
-                    # mkdir(2), which answers EEXIST, so uv refuses it (see _dir_has_entries).
+                    # A file, or a symlink dangling or not, is an existing path to mkdir(2),
+                    # which answers EEXIST, so uv refuses it.
                     if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
                         _uv_cand_writable=false
                     fi
@@ -828,9 +804,8 @@ _configure_uv_cache() {
                 fi
                 _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
                     || _uv_cand_writable=false
-                # Creating is not enough: an ACL that grants create but denies unlink (NFSv4,
-                # CIFS) leaves uv's own renames to fail later, and leaks the probe. rm -f
-                # exits 0 on a missing file, so a failure here is a real one.
+                # Creating is not enough: an ACL granting create but denying unlink (NFSv4,
+                # CIFS) leaves uv's renames to fail later. rm -f exits 0 on a missing file.
                 if [ -n "$_uv_probe" ] && ! rm -f "$_uv_probe" 2>/dev/null; then
                     _uv_cand_writable=false
                 fi
@@ -846,13 +821,10 @@ _configure_uv_cache() {
                 "$_uv_candidate"/wheels-* \
                 "$_uv_candidate"/sdists-*; do
                 [ -d "$_uv_bucket" ] || continue
-                # Warmth is stricter than the probe above, and deliberately so. Here the
-                # KIND must be one of uv's own artifact buckets: `archive-*` also matches
-                # `archive-backup-v0` and `archive-v0.backup`, whose bytes uv cannot reuse, so
-                # counting them warm picks a cache that is empty in practice. Under-detecting
-                # a future bucket kind only costs a fallback to the Studio cache, whereas
-                # under-PROBING one would let an unwritable cache through, which is why the
-                # probe stays on the open <kind>-v<N> pattern.
+                # Stricter than the probe above, deliberately: the KIND must be one uv fills,
+                # since `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot
+                # reuse. Missing a future kind here costs a fallback; missing one in the PROBE
+                # would let an unwritable cache through, so that stays on the open pattern.
                 _uv_bucket_base="${_uv_bucket##*/}"
                 _uv_is_bucket_name "$_uv_bucket_base" || continue
                 case "${_uv_bucket_base%-v*}" in
@@ -865,9 +837,8 @@ _configure_uv_cache() {
                     [ -n "$_uv_blocked_cache" ] || _uv_blocked_cache="$_uv_candidate"
                     continue
                 fi
-                # `|| true`, not `|| _uv_artifact=""`: head closes the pipe, so find dies on
-                # SIGPIPE on a large bucket, and under pipefail that cleared the path it
-                # printed.
+                # `|| true`: head closes the pipe, so find dies on SIGPIPE on a large bucket,
+                # and under pipefail that cleared the path it had already printed.
                 _uv_artifact=$(find -L "$_uv_bucket" -type f \
                     ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
                     ! -name '.unsloth-write-probe.*' \
@@ -901,13 +872,11 @@ _configure_uv_cache() {
     else
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
-        # A fallback we cannot write is not a fallback. Reachable two ways, and they compound:
-        # the probe refuses a whole cache for one bucket uv may never touch, and the early
-        # block has ALREADY given up on $STUDIO_HOME/cache/uv when it could not write there --
-        # which is the only reason the selection is running. So the certain failure and the
-        # merely suspect cache can both be on the table, and landing on the certain one turns
-        # an install that used to work into `failed to create cache directory`. A populated
-        # cache that only failed the probe is the better bet; the warning below still names it.
+        # A fallback we cannot write is not a fallback. The early block has ALREADY given up
+        # on $STUDIO_HOME/cache/uv, which is the only reason the selection is running, so the
+        # certain failure and the merely suspect cache are both on the table. Landing on the
+        # certain one turns a working install into `failed to create cache directory`, so the
+        # populated cache that only failed the probe wins. The warning below still names it.
         if [ -n "$_uv_warn_cache" ] \
            && [ "$_uv_warn_cache" != "$_uv_studio_cache" ] \
            && ! _uv_cache_root_is_writable "$_uv_studio_cache"; then
@@ -925,9 +894,9 @@ _configure_uv_cache() {
         studio)
             if [ -n "$_uv_chosen_cache" ]; then
                 step "uv cache" "reusing this install's Studio cache ($UV_CACHE_DIR)"
-            # Never about the directory we are falling back TO. The Studio cache is a candidate
-            # itself now, so it can be the one that was refused, and "using X; X is populated
-            # but not writable" claims a fallback that did not happen.
+            # Never about the directory we are falling back TO: the Studio cache is itself a
+            # candidate now, so it can be the one refused, and naming it claims a fallback
+            # that did not happen.
             elif [ "$_uv_scan_blocked" = true ] && [ "$_uv_blocked_cache" != "$UV_CACHE_DIR" ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
             # Warm and still here means the write probe refused it.
@@ -942,11 +911,10 @@ _configure_uv_cache() {
 
 _prepare_studio_uv_cache_for_launch() {
     [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
-    # Only to a cache the backend can actually fill. shared is reachable exactly when the early
-    # block failed its own write probe on $STUDIO_HOME/cache/uv, unset UV_CACHE_DIR and cleared
-    # the flag -- which is what lets the selection run at all -- so repointing unconditionally
-    # hands the autostarted backend a cache uv aborts on, after an install that succeeded.
-    # Keeping the shared one is the honest fallback: it is the cache this install just filled.
+    # Only to a cache the backend can fill. shared is reachable exactly when the early block
+    # failed its write probe on $STUDIO_HOME/cache/uv, so repointing unconditionally hands the
+    # autostarted backend a cache uv aborts on, after an install that succeeded. Keeping the
+    # shared one is honest: it is the cache this install just filled.
     _uv_launch_cache="$STUDIO_HOME/cache/uv"
     _uv_cache_root_is_writable "$_uv_launch_cache" || return 0
     UV_CACHE_DIR="$_uv_launch_cache"
@@ -1018,10 +986,8 @@ if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
     _UV_CACHE_DIR_INSTALLER_DEFAULT=true
-    # The same question the selection asks later, so it gets the same answer: a real create
-    # and delete under an mktemp name, retried, rather than a second copy of the rule that
-    # can drift from it. mktemp, not a $$ name: a predictable path in another account's
-    # directory can be pre-created as a symlink for the write to follow.
+    # The same question the selection asks later, through the same helper, so the two answers
+    # cannot drift apart.
     if ! _uv_cache_root_is_writable "$UV_CACHE_DIR"; then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
@@ -2458,7 +2424,7 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
     # An automatic path belongs to the origin distro; only an override is portable, and the
-    # variable alone cannot tell them apart -- forwarding our own default pins the child to
+    # variable alone cannot tell them apart. Forwarding our own default pins the child to
     # `custom`, which skips its adaptive selection and outranks its --isolated-uv-cache.
     _rr_uv_cache=""
     if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then

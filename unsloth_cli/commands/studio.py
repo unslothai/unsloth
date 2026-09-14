@@ -3219,9 +3219,8 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-# uv's boolish spelling. Anything outside it is a value uv refuses to run on. These are clap's
-# literals, which is what uv binds UV_NO_CACHE to (BoolishValueParser); `y` and `t` are real
-# spellings uv honours and were missing here, in install.sh and in install.ps1 alike.
+# clap's literals, which is what uv binds UV_NO_CACHE to (BoolishValueParser). `y` and `t` are
+# real spellings uv honours, and were missing here, in install.sh and in install.ps1 alike.
 _UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 

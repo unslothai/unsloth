@@ -242,12 +242,10 @@ def _run_ps1_printer(install_dir, strict_mode):
     script_path = Path(install_dir).parent / f"drive_{strict_mode.replace('.', '_')}.ps1"
     script_path.write_text(script, encoding = "utf-8")
     # run_pwsh, not subprocess.run: this file spawns one pwsh per parametrisation, and under
-    # `-n 4` every worker shared one PowerShell startup cache. A torn cache kills the
-    # interpreter before it reaches the script, which lands here as the printer emitting
-    # `Unhandled exception. System.IO.FileLoadException: The given assembly name was invalid.`
-    # instead of a backend line -- a runner crash wearing this file's name. The shared runner
-    # gives each worker its own cache and retries an interpreter that died without answering.
-    # See tests/_shared/unsloth_pwsh_runner.py.
+    # `-n 4` the workers shared one PowerShell startup cache. A torn cache kills the interpreter
+    # before it reaches the script, and surfaces here as a FileLoadException instead of a
+    # backend line: a runner crash wearing this file's name. The shared runner gives each worker
+    # its own cache and retries an interpreter that died without answering.
     proc = run_pwsh(
         [
             "pwsh",
