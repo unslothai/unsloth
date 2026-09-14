@@ -2873,7 +2873,8 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     ("cancelled", "expected_status", "text"),
     [
         (True, "cancelled", "Research cancelled."),
-        (False, "failed", "Research failed: mocked model failure"),
+        # Provider text reaches a Markdown surface here too, so it is quoted literally.
+        (False, "failed", "Research failed: `mocked model failure`"),
     ],
 )
 def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
