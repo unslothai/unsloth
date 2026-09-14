@@ -207,6 +207,42 @@ def _warm_inference_backend() -> None:
     # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection, which lazily is some request, and sync helpers call the getter inline from async handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
     get_inference_backend()
+    _prime_nvlink_topology()
+
+
+def _prime_nvlink_topology() -> Optional[threading.Thread]:
+    """Build the P2P gate's interconnect matrix off the load path. Returns the thread,
+    for tests to join.
+
+    Fire and forget on its own thread: the probe can spend its NVML bound plus the
+    shell-out timeout, and a warm stage blocking that long delays every stage behind
+    it. Nothing here is critical-path, so a prime that never finishes costs one load
+    its head start. prime_nvlink_topology stays NVML-only and success-only: a
+    subprocess running its full timeout perturbs the process, and a miss cached this
+    early would keep P2P off for the life of it (#10613)."""
+
+    def _probe() -> None:
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            # Opted out, so the answer could never be used; the load path skips it too.
+            if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+                return
+            if LlamaCppBackend._p2p_user_opted_out():
+                return
+            if LlamaCppBackend._effective_gpu_count() < 2:
+                return
+            if not LlamaCppBackend._all_selected_gpus_match(
+                LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
+            ):
+                return
+            LlamaCppBackend.prime_nvlink_topology()
+        except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
+            logger.debug("NVLink topology prime skipped: %r", e)
+
+    worker = threading.Thread(target = _probe, daemon = True, name = "nvlink-topology-prime")
+    worker.start()
+    return worker
 
 
 _STAGES = (

@@ -17,6 +17,9 @@ import types
 from pathlib import Path
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
@@ -170,7 +173,7 @@ def test_cpu_target_is_passthrough(uma, force_uma, monkeypatch, tiny_safetensors
 
 
 @pytest.mark.skipif(
-    not (hasattr(torch, "cuda") and torch.cuda.is_available()),
+    not has_real_accelerator(),
     reason = "needs a GPU for the host->device clone-and-move path",
 )
 def test_cuda_target_clones_and_moves(uma, force_uma, monkeypatch, tiny_safetensors):
@@ -190,7 +193,7 @@ def test_cuda_target_clones_and_moves(uma, force_uma, monkeypatch, tiny_safetens
 
 
 @pytest.mark.skipif(
-    not (hasattr(torch, "cuda") and torch.cuda.is_available()),
+    not has_real_accelerator(),
     reason = "needs a GPU for the low-memory fallback path",
 )
 def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_safetensors):
