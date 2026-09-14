@@ -34,6 +34,7 @@ def _isolate_env(monkeypatch):
 
     monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
     monkeypatch.setattr(_mod, "_rejected_warned", set())
+    monkeypatch.setattr(_mod, "_unreachable_warned", set())
     yield
 
 
@@ -356,3 +357,25 @@ def test_a_private_endpoint_reaches_only_a_client_on_a_local_network(monkeypatch
     assert client_reachable_endpoint("127.0.0.1") == "http://127.0.0.1:9700"
     monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
     assert client_reachable_endpoint("8.8.8.8") == "https://hub.internal"
+
+
+def test_the_per_client_fallback_is_logged_once_per_endpoint(monkeypatch, caplog):
+    """Both /api/health and the publish link call this on every request."""
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+    with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        for _ in range(3):
+            assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
+    assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
+
+    # A different endpoint is a different configuration, so it warns on its own.
+    caplog.clear()
+    monkeypatch.setenv("HF_ENDPOINT", "https://10.0.0.5:8443")
+    with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
+    assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
+
+    # A client that CAN reach it is not a fallback and must not warn.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        assert client_reachable_endpoint("192.168.1.50") == "https://10.0.0.5:8443"
+    assert not [r for r in caplog.records if "not reachable" in r.getMessage()]
