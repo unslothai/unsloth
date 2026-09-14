@@ -875,6 +875,30 @@ def _request_compaction_headroom_ratio(payload) -> Optional[float]:
     return clamp_compaction_headroom_ratio(getattr(payload, "compaction_headroom_ratio", None))
 
 
+def _apply_request_self_note_settings(payload) -> None:
+    """Install the request's self-note toggle and reserve for this request's context.
+
+    The chat settings carry `selfNoteEnabled` / `selfNoteReserveTokens`; without this they
+    were accepted, validated and then read by nobody, so the toggle and slider the feature
+    asks for did not actually exist. Set here, at the one entry point every chat path goes
+    through, rather than threaded as a parameter: `self_note.enabled()` is consulted from
+    the prompt nudge, the stream extractor and the checkpoint render, and a ContextVar is
+    how this package already scopes per-request values.
+
+    Unset on the request leaves UNSLOTH_SELF_NOTE in force, so DEFAULT OFF is unchanged and
+    a client that never sends the fields behaves exactly as before. Never raises.
+    """
+    try:
+        from core.inference import self_note
+
+        self_note.apply_request_settings(
+            enabled = getattr(payload, "self_note_enabled", None),
+            reserve_tokens = getattr(payload, "self_note_reserve_tokens", None),
+        )
+    except Exception:  # noqa: BLE001 - never raise out of note handling
+        pass
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
@@ -22468,6 +22492,10 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    # Before anything reads `self_note.enabled()`: the prompt nudge, the stream extractor
+    # and the checkpoint render all consult it, and the first of those is reached inside
+    # this call.
+    _apply_request_self_note_settings(payload)
     # Opt-in per request (see UI_STREAM_EVENTS_HEADER); captured once so every stream
     # generator below shares one answer.
     _ui_events = _ui_stream_events_enabled(request)

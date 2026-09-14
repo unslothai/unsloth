@@ -601,7 +601,9 @@ def fit_checkpoint_context(
             spent = sum(
                 estimate_message({"role": "user", "content": item}) for item in items
             )
-            room = min(self_note_module.MAX_NOTE_TOKENS, max(0, budget - spent))
+            # `max_note_tokens()`, not the module constant: the chat settings slider is
+            # a per-request override, and reading the constant directly would ignore it.
+            room = min(self_note_module.max_note_tokens(), max(0, budget - spent))
             if room <= 0:
                 note = ""
             elif estimate_message({"role": "user", "content": note}) > room:

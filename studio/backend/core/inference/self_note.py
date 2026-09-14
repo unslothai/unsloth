@@ -22,6 +22,10 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Optional
 
 # Off by default. This changes what lands in the system turn, so it is opt-in: an existing
 # user must not inherit a new failure mode from an upgrade.
@@ -35,6 +39,99 @@ SELF_NOTE_ENABLED = os.environ.get("UNSLOTH_SELF_NOTE", "").strip().lower() in (
 # A note is a handful of lines, not a summary. The cap is what stops the model from
 # spending the whole carried-forward budget on itself.
 MAX_NOTE_TOKENS = int(os.environ.get("UNSLOTH_SELF_NOTE_MAX_TOKENS", "256"))
+
+# The per-REQUEST override, so the chat settings toggle and slider actually do something.
+# A ContextVar rather than a threaded parameter because `enabled()` and `MAX_NOTE_TOKENS`
+# are consulted from a dozen places inside one streaming response -- the prompt fragment,
+# the stream extractor, the checkpoint render -- and threading a flag through all of them
+# would be a far larger change than the setting is worth. ContextVar is the pattern the
+# rest of this package already uses for per-request scope (`tools._REQUEST_RESULT_BUDGET`,
+# `context_refusal._REFUSAL_SLOT`): per-task, and asyncio copies the context per request,
+# so one request's setting cannot leak into another's.
+#
+# None means the request did not say, and the env var decides -- so an install that never
+# sends the field behaves exactly as it did before, and OFF remains the default.
+_REQUEST_ENABLED: ContextVar[Optional[bool]] = ContextVar(
+    "unsloth_self_note_enabled",
+    default = None,
+)
+_REQUEST_RESERVE_TOKENS: ContextVar[Optional[int]] = ContextVar(
+    "unsloth_self_note_reserve_tokens",
+    default = None,
+)
+
+# Mirrors the payload bounds in `routes/chat_history.ChatSettingsPayload`, so a value that
+# arrived by any other path is clamped to the same range rather than trusted. The floor is
+# well above zero because a note too small to hold a sentence is worse than no note.
+MIN_RESERVE_TOKENS = 64
+MAX_RESERVE_TOKENS = 4096
+
+
+def clamp_reserve_tokens(value: Any) -> Optional[int]:
+    """``value`` as a usable reserve, or None when it does not say.
+
+    Never raises: note handling is a convenience, and a malformed setting must degrade to
+    the default rather than fail the request. bool is rejected explicitly because it
+    subclasses int, so True would silently become a 1-token reserve.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(MIN_RESERVE_TOKENS, min(MAX_RESERVE_TOKENS, tokens))
+
+
+def _coerce_enabled(value: Any) -> Optional[bool]:
+    """``value`` as a tri-state toggle: True, False, or None for "did not say"."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+        return None
+    return None
+
+
+def apply_request_settings(*, enabled: Any = None, reserve_tokens: Any = None) -> None:
+    """Install one request's self-note settings into the current context.
+
+    Set rather than scoped with a context manager, because the value has to outlive the
+    coroutine that reads the payload: the route returns a StreamingResponse whose
+    generator runs afterwards, and a `with` block would have exited by then. Safe because
+    asyncio copies the context per request, so the value is not process-global -- the same
+    reason `tools._REQUEST_CONTEXT_TOKENS` is set this way.
+
+    Permissive and NEVER raises: an unparseable value is treated as "the request did not
+    say", which leaves the env-var default in force. Note handling is a convenience, and
+    a malformed setting must not fail a chat.
+    """
+    try:
+        _REQUEST_ENABLED.set(_coerce_enabled(enabled))
+        _REQUEST_RESERVE_TOKENS.set(clamp_reserve_tokens(reserve_tokens))
+    except Exception:  # noqa: BLE001 - never raise out of note handling
+        pass
+
+
+@contextmanager
+def request_settings(*, enabled: Any = None, reserve_tokens: Any = None) -> Iterator[None]:
+    """`apply_request_settings` with the previous values restored on exit.
+
+    For synchronous callers and tests, where the scope really does end with the block.
+    """
+    enabled_token = _REQUEST_ENABLED.set(_coerce_enabled(enabled))
+    reserve_token = _REQUEST_RESERVE_TOKENS.set(clamp_reserve_tokens(reserve_tokens))
+    try:
+        yield
+    finally:
+        _REQUEST_ENABLED.reset(enabled_token)
+        _REQUEST_RESERVE_TOKENS.reset(reserve_token)
 
 _OPEN = "<self_note>"
 _CLOSE = "</self_note>"
@@ -62,7 +159,23 @@ _HEADER = (
 
 
 def enabled() -> bool:
+    """Whether the feature is on for THIS request.
+
+    The request wins where it said something; otherwise the env var decides, so a caller
+    that never sends the field sees exactly the behaviour it had before, OFF by default.
+    """
+    requested = _REQUEST_ENABLED.get()
+    if requested is not None:
+        return requested
     return SELF_NOTE_ENABLED
+
+
+def max_note_tokens() -> int:
+    """The note's ceiling for THIS request, request-first then the env var."""
+    requested = _REQUEST_RESERVE_TOKENS.get()
+    if requested is not None:
+        return requested
+    return MAX_NOTE_TOKENS
 
 
 def extract_note(text: str) -> str:

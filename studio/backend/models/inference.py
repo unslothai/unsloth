@@ -2262,6 +2262,24 @@ class ChatCompletionRequest(BaseModel):
             "for checkpoint compaction. Unset keeps the process default."
         ),
     )
+    self_note_enabled: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Let the model leave itself a <remember></remember> note that "
+            "survives a checkpoint compaction, carried in the <self_note> section of "
+            "the carried-forward block. Off by default; unset uses UNSLOTH_SELF_NOTE."
+        ),
+    )
+    self_note_reserve_tokens: Optional[int] = Field(
+        None,
+        ge = 64,
+        le = 4096,
+        description = (
+            "[x-unsloth] Ceiling on the note's share of the carried-forward budget. The "
+            "user's own standing instructions are served first and the note takes what "
+            "is left, capped by this. Unset uses UNSLOTH_SELF_NOTE_MAX_TOKENS (256)."
+        ),
+    )
     studio_tool_history: Optional[bool] = Field(
         None,
         description = (

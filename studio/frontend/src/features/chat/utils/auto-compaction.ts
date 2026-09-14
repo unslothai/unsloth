@@ -85,17 +85,48 @@ export function parseCompactionStyle(value: string): {
   }
 }
 
+/** The self-note request fields, or {} when the request has nothing to say about them.
+ *
+ *  Omitted rather than defaulted when the setting is undefined, so the server`s
+ *  UNSLOTH_SELF_NOTE stays in force and an install that never touched the toggle keeps
+ *  exactly the behaviour it had. The reserve rides along only when the feature is ON:
+ *  sending a budget for a disabled feature is noise.
+ */
+function selfNoteRequestFields(options: {
+  selfNoteEnabled?: boolean;
+  selfNoteReserveTokens?: number;
+}): {
+  self_note_enabled?: boolean;
+  self_note_reserve_tokens?: number;
+} {
+  const enabled = sanitizeSelfNoteEnabled(options.selfNoteEnabled);
+  if (enabled === undefined) return {};
+  if (!enabled) return { self_note_enabled: false };
+  const reserve = sanitizeSelfNoteReserveTokens(options.selfNoteReserveTokens);
+  return {
+    self_note_enabled: true,
+    ...(reserve === undefined ? {} : { self_note_reserve_tokens: reserve }),
+  };
+}
+
 export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
   autoCompactEnabled: boolean;
   contextPolicy: LocalContextPolicy;
   compactionHeadroomRatio: number;
+  selfNoteEnabled?: boolean;
+  selfNoteReserveTokens?: number;
 }): {
   context_overflow?: "error" | "truncate_oldest";
   context_policy?: Exclude<LocalContextPolicy, "inherit">;
   compaction_headroom_ratio?: number;
+  self_note_enabled?: boolean;
+  self_note_reserve_tokens?: number;
 } {
   if (!options.isGguf) return {};
+  // The note is carried by the compaction block, so it only means anything once
+  // compaction can fire at all. Computed up front so every return below carries it.
+  const selfNote = selfNoteRequestFields(options);
   if (!options.autoCompactEnabled) {
     // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still compact. "error" is an
     // explicit refusal of that fallback.
@@ -108,14 +139,16 @@ export function ggufCompactionRequestFields(options: {
       compaction_headroom_ratio:
         sanitizeCompactionHeadroomRatio(options.compactionHeadroomRatio) ??
         DEFAULT_COMPACTION_HEADROOM_RATIO,
+      ...selfNote,
     };
   }
   if (options.contextPolicy === "inherit") {
-    return { context_overflow: "truncate_oldest" };
+    return { context_overflow: "truncate_oldest", ...selfNote };
   }
   return {
     context_overflow: "truncate_oldest",
     context_policy: "checkpoint",
+    ...selfNote,
   };
 }
 
