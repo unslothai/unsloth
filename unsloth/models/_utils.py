@@ -2217,6 +2217,10 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
+elif DEVICE_TYPE == "npu":
+    # Ask torch_npu rather than leaving the module-level False, which silently rewrote an
+    # explicit dtype = torch.bfloat16 to float16 and warned that the device cannot do bf16.
+    SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # Silence xformers CUDA mismatch warnings before import.
 try:
