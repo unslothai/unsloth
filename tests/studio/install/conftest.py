@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -32,6 +33,13 @@ _PASS_STATE_DEFAULTS = {
 }
 
 
+@functools.lru_cache(maxsize = None)
+def _realpath(path: str) -> str:
+    """A module __file__ never changes once imported, so the scan below can resolve each
+    distinct path once instead of syscalling over all of sys.modules twice per test."""
+    return os.path.realpath(path)
+
+
 def _loaded_stacks(test_module):
     """Every live copy of install_python_stack, sys.modules or not.
 
@@ -43,7 +51,7 @@ def _loaded_stacks(test_module):
     runs together. So the module under test is looked up through the test file that
     holds it as well.
     """
-    target = os.path.realpath(_STACK_FILE)
+    target = _realpath(str(_STACK_FILE))
     found = {}
     candidates = list(sys.modules.values())
     if test_module is not None:
@@ -55,10 +63,12 @@ def _loaded_stacks(test_module):
         if not path:
             continue
         try:
-            if os.path.realpath(path) != target:
+            if _realpath(path) != target:
                 continue
         except OSError:
             continue
+        except TypeError:
+            continue  # an unhashable __file__ cannot be cached, and is not a path either
         found[id(module)] = module
     return found.values()
 

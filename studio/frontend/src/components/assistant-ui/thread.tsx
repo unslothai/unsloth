@@ -43,12 +43,16 @@ import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
+import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
+import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  ChatSkillsDialog,
+
   PROMPT_QUEUE_DRAG_TYPE,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
@@ -69,6 +73,7 @@ import {
   stripSearchImageTokens,
   useChatActive,
   useInComparePane,
+  refreshSkillsCatalog,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -2367,6 +2372,8 @@ const Composer: FC<{
     (s) => s.setImageToolsEnabled,
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
@@ -2462,9 +2469,15 @@ const Composer: FC<{
   // Thread on screen, so the guard can tell whether a write belongs to the
   // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
   const draftKeyRef = useRef<string | null>(null);
+  // True while the @skill picker has a row to pick, so Enter selects it instead of sending.
+  const mentionConsumesEnterRef = useRef(false);
+  const setMentionConsumesEnter = useCallback((consumesEnter: boolean) => {
+    mentionConsumesEnterRef.current = consumesEnter;
+  }, []);
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
+      skipEnterRef: mentionConsumesEnterRef,
       onModEnter: queueOnModEnter,
       justSentRef,
       draftKeyRef,
@@ -2483,6 +2496,8 @@ const Composer: FC<{
       plainPasteAtRef.current = isPlainPasteChord(event)
         ? performance.now()
         : 0;
+      // A fresh @ re-reads the skill folders, so a skill written since page load is offered.
+      if (event.key === "@") refreshSkillsCatalog();
     },
     [],
   );
@@ -5039,6 +5054,11 @@ const Composer: FC<{
 
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <SkillMentionPopover
+        enabled={supportsTools}
+        onConsumesEnterChange={setMentionConsumesEnter}
+      />
     <ComposerPrimitive.Root
       ref={attachComposer}
       // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
@@ -5098,6 +5118,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </PromptQueueContext.Provider>
   );
 };
@@ -5154,11 +5175,14 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
+  skipEnterRef,
   onModEnter,
   justSentRef,
   draftKeyRef,
 }: {
   submitOnEnter?: boolean;
+  /** Set while a composer popover will consume plain Enter itself. */
+  skipEnterRef?: RefObject<boolean>;
   /** Cmd/Ctrl+Enter without Shift, claimed before the plain-Enter submit. */
   onModEnter?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   // Guard armed by the last send or queue. See setComposerText below.
@@ -5319,7 +5343,12 @@ function useImeComposerInputHandlers({
         onModEnter(e);
         return;
       }
-      if (submitOnEnter && e.key === "Enter" && !e.shiftKey) {
+      if (
+        submitOnEnter &&
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !skipEnterRef?.current
+      ) {
         e.preventDefault();
         e.currentTarget.form?.requestSubmit();
       }
@@ -5329,6 +5358,7 @@ function useImeComposerInputHandlers({
       onModEnter,
       refreshStuckTimer,
       setCompositionState,
+      skipEnterRef,
       submitOnEnter,
     ],
   );
@@ -6054,6 +6084,7 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
@@ -6162,6 +6193,12 @@ const ComposerToolsMenu: FC<{
         {mcpEnabledForChat && !mcpDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
+      </DropdownMenuItem>
+    ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={2} />
+        Agent Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -6308,6 +6345,7 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -7333,6 +7371,10 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
 );
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+// Read at render time, not module scope: the skill modules reach the chat barrel.
+const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
+  <ReadSkillToolUI {...props} />
+));
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
 /**
@@ -7354,6 +7396,7 @@ const ASSISTANT_PART_COMPONENTS = {
     by_name: {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      read_skill: ReadSkillToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
@@ -7363,6 +7406,7 @@ const ASSISTANT_PART_COMPONENTS = {
     Fallback: ToolFallbackConfirmable,
   },
 } as const;
+
 
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve
