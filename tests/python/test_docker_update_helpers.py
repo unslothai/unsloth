@@ -94,7 +94,9 @@ def _studio_env(
         'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
         '  echo "STUB-PIP $*" >> "$STUB_LOG"\n'
         # a --with-deps run snapshots the dependency set first
-        '  if [ "$3" = "freeze" ]; then [ -n "${STUB_FREEZE_EXIT:-}" ] && exit "$STUB_FREEZE_EXIT"; echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; exit 0; fi\n'
+        # after an install, a dependency the update pulled in shows up in the freeze
+        '  if [ "$3" = "freeze" ]; then [ -n "${STUB_FREEZE_EXIT:-}" ] && exit "$STUB_FREEZE_EXIT"; echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; [ -e "$STUB_LOG.installed" ] && echo "newdep==1.0"; exit 0; fi\n'
+        '  case " $* " in *" -r "*) ;; *" install "*) : > "$STUB_LOG.installed" ;; esac\n'
         # the constraints file is deleted on exit, so record what it pinned
         '  _c=0; for _a in "$@"; do [ "$_c" = 1 ] && { echo "STUB-PIP-CONSTRAINTS $(tr "\\n" " " < "$_a")" >> "$STUB_LOG"; _c=0; }; [ "$_a" = "-c" ] && _c=1; done\n'
         # so is the requirements file a restore reinstalls from
@@ -752,6 +754,31 @@ def test_studio_update_treats_a_previous_tree_without_a_record_as_scratch(tmp_pa
     assert (home / "src" / "OLD_TREE").exists()
     assert "putting it back" not in res.stdout, res.stdout
     assert not _scratch(home)
+
+
+def test_studio_update_with_deps_adds_the_studio_extra_to_a_qualified_unsloth_spec(tmp_path: Path):
+    """--packages can pin or qualify unsloth; the studio extra must still ride along,
+    and unsloth_zoo must not be mistaken for it."""
+    env = _studio_env(tmp_path)
+    res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart", "--packages", "unsloth==2026.9.1 unsloth_zoo"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    calls = _calls(env)
+    assert "unsloth[studio]==2026.9.1" in calls, calls
+    assert "unsloth[studio]_zoo" not in calls and " unsloth_zoo" in calls, calls
+    env = _studio_env(tmp_path / "extras")
+    res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart", "--packages", "unsloth[cu128]>=2026.9"], env)
+    assert "unsloth[studio,cu128]>=2026.9" in _calls(env), _calls(env)
+
+
+def test_studio_update_with_deps_rollback_removes_what_the_update_pulled_in(tmp_path: Path):
+    """Reinstalling the snapshot puts back what was there; a dependency the update
+    introduced would otherwise stay and become part of the next snapshot."""
+    env = _studio_env(tmp_path, import_ok = False)
+    res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart"], env)
+    assert res.returncode != 0
+    calls = _calls(env)
+    assert "STUB-PIP -m pip uninstall -y newdep" in calls, calls
+    assert "uninstall -y transformers" not in calls and "uninstall -y torch" not in calls, calls
 
 
 def test_studio_update_ref_uses_the_lockfile_and_does_not_fall_back_to_npm_install(tmp_path: Path):

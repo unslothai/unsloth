@@ -91,10 +91,18 @@ KEEP_FREEZE="$SRC_DIR/.src-update.freeze"
 # and would leave the new tree's metadata in place), and what the update added taken
 # out. Returns 1 when pip could not do all of it.
 reinstall_recorded() {
-    local rollback="$1" freeze="$2" ok=0 _absent
+    local rollback="$1" freeze="$2" ok=0 _absent _added
     if [ -n "$freeze" ] && [ -s "$freeze" ]; then
         "$PY" -m pip install --no-deps -r "$freeze" >/dev/null \
             || { log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"; ok=1; }
+        # -r reinstalls what was there; what the update pulled in on top is taken out too
+        _added="$("$PY" -m pip freeze --exclude-editable 2>/dev/null | sed -E 's/[=<>!~ @].*//' | sort -u \
+            | comm -23 - <(sed -E 's/[=<>!~ @].*//' "$freeze" | sort -u) | tr '\n' ' ')"
+        if [ -n "${_added// /}" ]; then
+            # shellcheck disable=SC2086
+            "$PY" -m pip uninstall -y $_added >/dev/null \
+                || { log "CRITICAL: pip could not remove what the update pulled in: $_added"; ok=1; }
+        fi
     fi
     if [ -n "$rollback" ] && [ -s "$rollback" ]; then
         "$PY" -m pip install --no-deps --force-reinstall -r "$rollback" >/dev/null \
@@ -416,7 +424,10 @@ else
     _pkgs="$PACKAGES"
     if [ -z "$NO_DEPS" ]; then
         # a release update with dependencies must bring the backend's requirement set too
-        _pkgs="$(printf '%s\n' $PACKAGES | sed 's/^unsloth$/unsloth[studio]/' | tr '\n' ' ')"
+        # whatever qualifies the unsloth spec (extras, a version, a marker) is kept
+        _pkgs="$(printf '%s\n' $PACKAGES \
+            | sed -E 's/^unsloth\[([^]]*)\]/unsloth[studio,\1]/; t; s/^unsloth([=<>!~;@ ]|$)/unsloth[studio]\1/' \
+            | tr '\n' ' ')"
     fi
     log "installing latest release of: $_pkgs"
     keep_record
