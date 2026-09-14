@@ -1917,6 +1917,17 @@ class TestGfx1102Rocm64Floor:
             patch.object(m, "pip_install_try", return_value = True),
             patch.object(m, "_has_usable_nvidia_gpu", return_value = False),
             patch.object(m, "_has_rocm_gpu", return_value = True),
+            # The scenarios below install GENERIC pytorch.org wheels (2.8.0+rocm6.4 and
+            # friends), which do not pull `rocm[libraries]`, so the per-arch family is
+            # None by construction. Left unpatched these two read the RUNNING
+            # interpreter's torch instead of the scenario: on a gfx1151 Strix Halo
+            # runner whose venv holds 2.11.0+rocm7.13.0 they answered "gfx1151", the
+            # per-arch repick arm saw _have != _want and called pip_install, and the two
+            # assert_not_called tests failed on hardware while passing on every CUDA or
+            # CPU box. A test about the generic-wheel floor must not depend on what the
+            # machine running it happens to have installed.
+            patch.object(m, "_torch_requires_rocm_sdk", return_value = False),
+            patch.object(m, "_installed_rocm_wheel_family", return_value = None),
             patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
             patch.object(m, "_detect_rocm_version", return_value = rocm_ver),
             patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
