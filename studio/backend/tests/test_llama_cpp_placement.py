@@ -1790,6 +1790,37 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     )
 
 
+def test_auto_tensor_parallel_honors_user_tensor_split_when_planner_returns_none(tmp_path):
+    """When auto tensor planning decides an even split is safe, the user's
+    per-GPU ratio must still be emitted instead of being silently ignored.
+    Regression for unslothai/unsloth#10355."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )["cmd"]
+
+    assert backend.tensor_parallel is True
+    assert "--split-mode" in cmd
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--tensor-split" in cmd
+    assert cmd[cmd.index("--tensor-split") + 1] == "3,1"
+
+
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
     """A 30 GiB GGUF on a host with 4 GiB of RAM left, full manual offload."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = memory)

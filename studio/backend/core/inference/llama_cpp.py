@@ -23183,18 +23183,30 @@ class LlamaCppBackend:
                 # See llama.cpp --split-mode.
                 if tensor_parallel:
                     cmd.extend(["--split-mode", "tensor"])
+                    _emitted_tensor_split: Optional[str] = None
                     if tp_tensor_split and len(tp_tensor_split) > 1:
-                        cmd.extend(
-                            [
-                                "--tensor-split",
-                                ",".join(str(int(x)) for x in tp_tensor_split),
-                            ]
-                        )
+                        _emitted_tensor_split = ",".join(str(int(x)) for x in tp_tensor_split)
+                    elif gpu_memory_mode != "manual" and tensor_split:
+                        # Auto tensor planning may decide an even split is safe and
+                        # return None, but a user who set a per-GPU ratio still expects
+                        # it to reach llama-server. Fall back to the manual ratio only
+                        # when the planner emitted nothing.
+                        _split_gpus = self._effective_gpu_count(gpu_indices)
+                        _sanitized_split = self._sanitize_tensor_split(tensor_split)
+                        if (
+                            len(_sanitized_split) == _split_gpus
+                            and sum(_sanitized_split) > 0
+                        ):
+                            _emitted_tensor_split = ",".join(
+                                f"{x:g}" for x in _sanitized_split
+                            )
+                    if _emitted_tensor_split is not None:
+                        cmd.extend(["--tensor-split", _emitted_tensor_split])
                     self._tensor_parallel = True
                     self._layer_preserves_tensor_intent = False
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
-                        tp_tensor_split,
+                        _emitted_tensor_split,
                     )
                 else:
                     self._tensor_parallel = False
