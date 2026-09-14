@@ -36,19 +36,40 @@ test("expansion is reset wherever the composer is emptied, not only on send", as
   }
 });
 
-test("Escape collapses from the wrapper, leaving the input's capture slot alone", async () => {
+test("Escape collapses unless it closes the mention popover", async () => {
   const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
+  const mentions = await readSrcAsync(
+    "components/assistant-ui/skill-mentions.tsx",
+  );
 
-  // The input's capture slot is the plain-paste chord's (pasted-text-attachment.test.ts).
-  const at = thread.indexOf('className="unsloth-composer-editor"');
+  // cancelOnEscape preventDefaults every Escape on the document, so a
+  // defaultPrevented gate never collapses. Decide from the window, before it.
+  const at = thread.indexOf("const collapseOnEscape = (");
   assert.notEqual(at, -1);
-  const wrapper = thread.slice(at, thread.indexOf("<ComposerPrimitive.Input", at));
-  assert.match(wrapper, /onKeyDownCapture=\{\(event\) => \{/);
-  assert.match(wrapper, /event\.key === "Escape"/);
-  assert.match(wrapper, /!event\.nativeEvent\.isComposing/);
-  assert.match(wrapper, /!event\.nativeEvent\.defaultPrevented/);
+  const body = thread.slice(at, thread.indexOf("\n  }, []);", at));
+  assert.match(body, /event\.key === "Escape"/);
+  assert.match(body, /!event\.isComposing/);
+  assert.match(body, /!mentionOpenRef\.current/);
+  assert.match(body, /editorRef\.current\?\.contains\(event\.target\)/);
+  assert.doesNotMatch(body, /defaultPrevented/);
+  assert.match(
+    body,
+    /window\.addEventListener\("keydown", collapseOnEscape, true\)/,
+  );
+  assert.match(thread, /onOpenChange=\{setMentionOpen\}/);
 
-  // cancelOnEscape is a document capture:true listener, so stopPropagation here
-  // would read as suppressing a cancel that already ran.
-  assert.doesNotMatch(wrapper, /stopPropagation/);
+  // The same open flag the popover's own Escape handling checks.
+  assert.match(
+    mentions,
+    /const \{ open \} = unstable_useTriggerPopoverScopeContext\(\);/,
+  );
+  assert.match(mentions, /<MentionOpenSignal onChange=\{onOpenChange\} \/>/);
+
+  // The input's capture slot stays the plain-paste chord's (pasted-text-attachment.test.ts).
+  const editor = thread.indexOf('className="unsloth-composer-editor"');
+  const wrapper = thread.slice(
+    editor,
+    thread.indexOf("<ComposerPrimitive.Input", editor),
+  );
+  assert.doesNotMatch(wrapper, /onKeyDownCapture/);
 });

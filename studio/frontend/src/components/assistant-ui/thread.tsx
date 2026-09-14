@@ -2474,6 +2474,11 @@ const Composer: FC<{
   const setMentionConsumesEnter = useCallback((consumesEnter: boolean) => {
     mentionConsumesEnterRef.current = consumesEnter;
   }, []);
+  // True while the @skill picker is open, so Escape closes it without collapsing the composer.
+  const mentionOpenRef = useRef(false);
+  const setMentionOpen = useCallback((open: boolean) => {
+    mentionOpenRef.current = open;
+  }, []);
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
@@ -2615,6 +2620,7 @@ const Composer: FC<{
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const [editorHeight, setEditorHeight] = useState(40);
   const [isWritingExpanded, setIsWritingExpanded] = useState(false);
@@ -4467,6 +4473,24 @@ const Composer: FC<{
   useEffect(() => {
     setIsWritingExpanded(false);
   }, [composerIdentity]);
+  // Window capture runs before the document listeners where the @-mention popover
+  // closes and cancelOnEscape preventDefaults every Escape (canCancel is a runtime
+  // capability, not a live run), so defaultPrevented cannot tell them apart.
+  useEffect(() => {
+    const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !mentionOpenRef.current &&
+        event.target instanceof Node &&
+        editorRef.current?.contains(event.target)
+      ) {
+        setIsWritingExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", collapseOnEscape, true);
+    return () => window.removeEventListener("keydown", collapseOnEscape, true);
+  }, []);
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
@@ -4903,27 +4927,13 @@ const Composer: FC<{
         ) : (
           <>
             <div
+              ref={editorRef}
               className="unsloth-composer-editor"
               style={
                 {
                   "--composer-editor-height": `${composerText.length === 0 ? 40 : Math.max(40, editorHeight)}px`,
                 } as CSSProperties
               }
-              // On the wrapper, not the input: the input's capture slot is the
-              // plain-paste chord's. Cannot suppress assistant-ui's
-              // cancelOnEscape, which listens on the document with capture:true.
-              onKeyDownCapture={(event) => {
-                if (
-                  event.key === "Escape" &&
-                  isWritingExpanded &&
-                  !event.nativeEvent.isComposing &&
-                  // The mention popover already consumed it from a document
-                  // capture:true listener; one Escape, one level.
-                  !event.nativeEvent.defaultPrevented
-                ) {
-                  setIsWritingExpanded(false);
-                }
-              }}
             >
               <ComposerPrimitive.Input
                 id={inputId}
@@ -5052,6 +5062,7 @@ const Composer: FC<{
       <SkillMentionPopover
         enabled={supportsTools}
         onConsumesEnterChange={setMentionConsumesEnter}
+        onOpenChange={setMentionOpen}
       />
     <ComposerPrimitive.Root
       ref={attachComposer}
