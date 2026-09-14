@@ -2583,9 +2583,12 @@ def _studio_home_variable_spellings(resolved: "str | None" = None) -> "list[str]
         value = os.environ.get(var)
         if value and resolved:
             try:
-                points_here = os.path.normpath(os.path.expanduser(value)) == os.path.normpath(
-                    resolved
-                )
+                # normcase as well as normpath: Windows paths are case-insensitive, so a value
+                # spelled with a different drive-letter case is the SAME directory, and comparing
+                # it exactly dropped every spelling of the variable from the guard.
+                points_here = os.path.normcase(
+                    os.path.normpath(os.path.expanduser(value))
+                ) == os.path.normcase(os.path.normpath(resolved))
             except Exception:  # noqa: BLE001 - an unreadable value must not break classification
                 points_here = True
             if not points_here:

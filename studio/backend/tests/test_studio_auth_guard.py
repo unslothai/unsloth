@@ -921,3 +921,32 @@ def test_an_unset_studio_home_variable_stays_registered(monkeypatch, tmp_path):
         assert tools._references_studio_credential("cat $STUDIO_HOME/auth/auth.db")
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_differently_cased_studio_home_value_is_still_ours(monkeypatch, tmp_path):
+    # Windows paths are case-insensitive, so a value spelled with a different drive-letter case is
+    # the same directory. Comparing it exactly dropped every spelling of the variable.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(home).upper())
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert tools._references_studio_credential("cat $UNSLOTH_STUDIO_HOME/auth/auth.db")
+        if os.path.normcase("A") == os.path.normcase("a"):  # a case-insensitive filesystem
+            assert tools._references_studio_credential(r"type %STUDIO_HOME%\auth\auth.db")
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_studio_home_variable_pointing_elsewhere_is_not_ours(monkeypatch, tmp_path):
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(tmp_path / "another-app"))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert not tools._references_studio_credential("cat $STUDIO_HOME/auth/auth.db")
+        assert tools._references_studio_credential("cat $UNSLOTH_STUDIO_HOME/auth/auth.db")
+    finally:
+        tools._studio_auth_markers_cache = None
