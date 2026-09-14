@@ -1887,13 +1887,32 @@ fn is_loopback_host(authority: &str) -> bool {
         _ => authority,
     };
     let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
-    if host == "localhost" || host.ends_with(".localhost") || host == "::1" {
+    if host == "localhost" || host.ends_with(".localhost") {
         return true;
     }
-    let mut octets = host.split('.');
-    matches!(octets.next(), Some("127"))
-        && host.split('.').count() == 4
-        && host.split('.').all(|o| !o.is_empty() && o.chars().all(|c| c.is_ascii_digit()))
+    // Parsed, not string-matched: 0:0:0:0:0:0:0:1 and ::1 are the same host, and
+    // 127.x.y.z is loopback for every x.y.z. Mirrors ipaddress.ip_address(...)
+    // .is_loopback on the backend.
+    matches!(host.parse::<std::net::IpAddr>(), Ok(ip) if ip.is_loopback())
+}
+
+/// Compress an IPv6 literal in an authority, leaving everything else untouched.
+///
+/// A CSP host-source is matched as a string (CSP3 6.7.2.5) and the browser sends
+/// the compressed form, so `[0:0:0:0:0:0:0:1]` in the policy would fail to match
+/// a request to the very host it names. The backend canonicalises the same way.
+fn canonical_authority(authority: &str) -> String {
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((host, tail)) => (host, tail),
+            None => return authority.to_string(),
+        },
+        None => return authority.to_string(),
+    };
+    match host.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => format!("[{ip}]{port}"),
+        Err(_) => authority.to_string(),
+    }
 }
 
 /// Reduce an endpoint to scheme://host[:port] for use as a CSP source.
@@ -1906,7 +1925,7 @@ fn csp_origin_of(endpoint: &str) -> String {
     match split_scheme(endpoint) {
         Some((scheme, rest)) => {
             let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            format!("{scheme}://{authority}")
+            format!("{scheme}://{}", canonical_authority(authority))
         }
         None => endpoint.to_string(),
     }
@@ -2413,6 +2432,22 @@ mod tests {
         // URL parser produces the punycode form anyway.
         assert!(!is_usable_csp_source("https://例子.测试"));
         assert!(is_usable_csp_source("https://xn--fsqu00a.xn--0zwm56d"));
+    }
+
+    #[test]
+    fn every_ipv6_loopback_spelling_is_recognised_and_compressed() {
+        // The backend accepts any spelling (ipaddress parses it) and the browser
+        // sends the compressed one, so a string-matched check here would drop the
+        // endpoint from connect-src and block every Hub request in the desktop.
+        assert!(is_usable_csp_source("http://[0:0:0:0:0:0:0:1]:9700"));
+        assert!(is_usable_csp_source("http://[::1]:9700"));
+        assert!(is_usable_csp_source("http://127.9.9.9"));
+        assert!(!is_usable_csp_source("http://[2001:db8::1]:9700"));
+        assert_eq!(
+            csp_origin_of("http://[0:0:0:0:0:0:0:1]:9700"),
+            "http://[::1]:9700"
+        );
+        assert_eq!(csp_origin_of("http://[0:0:0:0:0:0:0:1]"), "http://[::1]");
     }
 
     #[test]

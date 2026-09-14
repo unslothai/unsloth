@@ -94,6 +94,20 @@ test("a Unicode host is refused, its punycode form is not", () => {
   assert.equal(getHfEndpoint(), "https://xn--fsqu00a.xn--0zwm56d");
 });
 
+test("every IPv6 loopback spelling ends up as the compressed origin", () => {
+  // A CSP host-source is matched as a string and the browser sends [::1], so the
+  // backend, the desktop CSP builder and this all have to agree on that spelling.
+  for (const raw of ["http://[0:0:0:0:0:0:0:1]:9700", "http://[::1]:9700"]) {
+    resetHfEndpoints();
+    setHfEndpoints(raw, null);
+    assert.equal(getHfEndpoint(), "http://[::1]:9700", `for ${raw}`);
+  }
+  // Still loopback-only for plain http: a routable IPv6 mirror is refused.
+  resetHfEndpoints();
+  setHfEndpoints("http://[2001:db8::1]:9700", null);
+  assert.equal(getHfEndpoint(), DEFAULT_HF_ENDPOINT);
+});
+
 test("an older backend that reports neither field keeps the configured mirror", () => {
   // /api/health on an older Studio carries no hf_endpoint at all. Treating that
   // as "reset to default" would send a mirror-only deployment back to a host it

@@ -322,3 +322,20 @@ def test_a_unicode_host_cannot_reach_the_csp_header(monkeypatch):
     assert get_hf_endpoint() == "https://huggingface.co"
     monkeypatch.setenv("HF_ENDPOINT", "https://xn--fsqu00a.xn--0zwm56d")
     assert get_hf_endpoint() == "https://xn--fsqu00a.xn--0zwm56d"
+
+
+def test_an_ipv6_loopback_mirror_is_compressed_the_way_the_browser_sends_it(monkeypatch):
+    """A CSP host-source is matched as a string (CSP3 6.7.2.5).
+
+    The browser sends http://[::1]:9700 whichever spelling was configured, so an
+    uncompressed source would fail to match a request to the very host it names
+    and the policy would block the mirror it was added for.
+    """
+    for raw in ("http://[0:0:0:0:0:0:0:1]:9700", "http://[::1]:9700"):
+        monkeypatch.setenv("HF_ENDPOINT", raw)
+        assert get_hf_endpoint() == "http://[::1]:9700", raw
+    monkeypatch.setenv("HF_ENDPOINT", "http://[0:0:0:0:0:0:0:1]")
+    assert get_hf_endpoint() == "http://[::1]"
+    # Loopback-only still holds for plain http: a routable IPv6 host is refused.
+    monkeypatch.setenv("HF_ENDPOINT", "http://[2001:db8::1]:9700")
+    assert get_hf_endpoint() == "https://huggingface.co"

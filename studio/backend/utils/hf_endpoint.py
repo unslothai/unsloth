@@ -20,7 +20,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from utils.utils import hf_endpoint_url
 
@@ -138,7 +138,7 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             # folds them, so return the folded form: the frontend keys its model
             # cache on this string, and "HTTPS://mirror" and "https://mirror"
             # would otherwise be two different mirrors to it.
-            return parts.scheme + candidate[len(parts.scheme) :]
+            return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :])
     if candidate not in _rejected_warned:
         _rejected_warned.add(candidate)
         logger.warning(
@@ -164,6 +164,29 @@ def client_reachable_endpoint(client_host: str | None) -> str:
     if parts is not None and is_loopback_host(parts.hostname) and not is_loopback_host(client_host):
         return _DEFAULT_HF_ENDPOINT
     return endpoint
+
+
+def _canonical(parts, folded: str) -> str:
+    """Compress an IPv6 literal host, leaving everything else untouched.
+
+    ``http://[0:0:0:0:0:0:0:1]`` and ``http://[::1]`` are the same host, but a
+    CSP host-source is matched as a string (CSP3 6.7.2.5), and the browser sends
+    the compressed form: the uncompressed source would not match its own request
+    and the policy would block the very mirror it names.
+    """
+    host = parts.hostname
+    if not host or ":" not in host:
+        return folded
+    try:
+        compressed = ipaddress.ip_address(host).compressed
+    except ValueError:
+        return folded
+    if compressed == host:
+        return folded
+    netloc = f"[{compressed}]"
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme.lower(), netloc, parts.path, "", ""))
 
 
 def csp_connect_sources() -> tuple[str, str]:
