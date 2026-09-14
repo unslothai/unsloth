@@ -1044,3 +1044,69 @@ def test_a_symlink_on_the_pass_lock_name_is_not_followed(tmp_path: pathlib.Path)
     with im.pass_lock(tmp_path) as uncontended:
         assert uncontended is True
     assert target.read_text(encoding = "utf-8") == "untouched"
+
+
+def test_remove_manifest_reports_a_refusal_rather_than_raising(tmp_path: pathlib.Path) -> None:
+    """An unsearchable venv directory made Path.exists() raise EACCES straight out of
+    remove_manifest. It returned False before the parked copy existed, and it must still."""
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("needs POSIX permissions and a non-root user")
+    root = tmp_path / "venv"
+    root.mkdir()
+    im.write_manifest(root = root, req_root = tmp_path, package_name = "pytest")
+    os.chmod(root, 0o000)
+    try:
+        assert im.remove_manifest(root) is False
+    finally:
+        os.chmod(root, 0o755)
+
+
+def test_the_presence_check_answers_blocked_when_it_cannot_look(tmp_path: pathlib.Path) -> None:
+    """Unknown reads as still there: every caller is asking whether a marker blocks the pass."""
+    if os.name == "nt" or os.geteuid() == 0:
+        pytest.skip("needs POSIX permissions and a non-root user")
+    hidden = tmp_path / "hidden"
+    hidden.mkdir()
+    target = hidden / "unsloth_install_manifest.previous.json"
+    target.write_text("{}", encoding = "utf-8")
+    os.chmod(hidden, 0o000)
+    try:
+        assert im.manifest_is_present(target) is True
+    finally:
+        os.chmod(hidden, 0o755)
+    assert im.manifest_is_present(tmp_path / "absent.json") is False
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        (errno.ENOENT, False),
+        (errno.ENOTDIR, False),
+        (errno.EBADF, False),
+        (errno.ELOOP, False),
+        (errno.EACCES, True),
+        (errno.EPERM, True),
+        (errno.ESTALE, True),
+        (errno.EIO, True),
+        (errno.ETIMEDOUT, True),
+        (errno.ENAMETOOLONG, True),
+    ],
+)
+def test_the_presence_check_reads_the_errno_itself(monkeypatch, code, expected) -> None:
+    """Not Path.exists(): 3.13 raises EACCES out of it and 3.14 returns False (gh-101357), so
+    it means "absent" on one interpreter and "unknown" on the other. Only the four pathlib
+    treated as absent before 3.14 are absent here; anything else is a marker still in place."""
+
+    def refuse(self, *args, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(pathlib.Path, "stat", refuse)
+    assert im.manifest_is_present(pathlib.Path("/whatever")) is expected
+
+
+def test_a_path_this_interpreter_cannot_encode_holds_no_manifest(monkeypatch) -> None:
+    def refuse(self, *args, **kwargs):
+        raise ValueError("embedded null character")
+
+    monkeypatch.setattr(pathlib.Path, "stat", refuse)
+    assert im.manifest_is_present(pathlib.Path("/whatever")) is False
