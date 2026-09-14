@@ -4279,7 +4279,7 @@ export function HubModelPicker({
                   successMessage: `Deleted ${displayName}`,
                   disabled: loaded,
                   onConfirm: async () => {
-                    await deleteLocalPath(model.path);
+                    await deleteLocalPath(model.path, "model_only", displayName);
                   },
                   onDeleted: refreshCachedLists,
                 }

@@ -5386,23 +5386,25 @@ def _is_local_model_related_file(path: Path) -> bool:
     return False
 
 
-def _local_model_base(name: str) -> str:
-    """Normalized base for matching a file to its model entry.
+def _local_dir_weights(entries: List[Path]) -> List[Path]:
+    return [
+        c
+        for c in entries
+        if c.is_file() and Path(c.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES
+    ]
 
-    Strips extension, `-GGUF` suffix, and trailing quant like `-Q4_K_M` / `-IQ1_M`
-    so `Llama-3.2-1B-Instruct-GGUF` matches `llama-3.2-1b-instruct-q4_k_m.gguf`
-    but not `mistral-7b-q4_k_m.gguf`. Generic shard names like
-    `pytorch_model-00001-of-00002.bin` keep their full stem and are handled
-    separately.
-    """
-    low = name.lower().replace(".gguf", "").replace("-gguf", "")
-    # file stems may still carry quant after a dot
-    low = low.split(".")[0]
-    # quant suffixes start with -q / _q / -iq
-    m = _re.search(r"[-._]q\d|[-._]iq\d", low)
+
+def _local_model_base(name: str) -> str:
+    """Base name with separators unified and quant suffix stripped."""
+    low = name.lower()
+    low = _re.sub(r"\.gguf$", "", low)
+    low = _re.sub(r"[-_.\s]+gguf$", "", low)
+    low = _re.sub(r"[-_.\s]+", "-", low)
+    # quant suffixes start with -q / -iq after normalization
+    m = _re.search(r"-i?q\d", low)
     if m:
         low = low[: m.start()]
-    return low.strip("-_.")
+    return low.strip("-")
 
 
 def _local_file_belongs_to_model(file: Path, display_name: Optional[str]) -> bool:
@@ -5419,6 +5421,24 @@ def _local_file_belongs_to_model(file: Path, display_name: Optional[str]) -> boo
     return _local_model_base(file.stem) in _local_model_base(display_name) or _local_model_base(
         display_name
     ) in _local_model_base(file.stem)
+
+
+def _local_weight_belongs_to_model(
+    file: Path, display_name: Optional[str], dir_weights: List[Path]
+) -> bool:
+    """Whether a weight file in a directory belongs to the selected entry.
+
+    Single-model folders (one distinct weight base): everything belongs.
+    Multi-model folders: only the matching group belongs. If the name matches
+    no group at all, fall back to all belonging — deleting just the config
+    while leaving every weight behind is worse than deleting the weights.
+    """
+    bases = {_local_model_base(w.stem) for w in dir_weights}
+    if len(bases) <= 1:
+        return True
+    if _local_file_belongs_to_model(file, display_name):
+        return True
+    return not any(_local_file_belongs_to_model(w, display_name) for w in dir_weights)
 
 
 def _local_delete_target_is_model_file(target: Path) -> bool:
@@ -5480,13 +5500,14 @@ def _local_dir_delete_preview(target: Path, display_name: Optional[str] = None) 
             "other_bytes": 0,
         }
 
+    dir_weights = _local_dir_weights(entries)
     for child in entries:
         try:
             if child.is_file():
                 # Weight files are filtered by display_name so sibling models
                 # count as other files.
                 if Path(child.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                    is_model = _local_file_belongs_to_model(child, display_name)
+                    is_model = _local_weight_belongs_to_model(child, display_name, dir_weights)
                 else:
                     is_model = _is_local_model_related_file(child)
                 try:
@@ -5506,12 +5527,13 @@ def _local_dir_delete_preview(target: Path, display_name: Optional[str] = None) 
                     sub = list(child.iterdir())
                 except OSError:
                     continue
+                sub_weights = _local_dir_weights(sub)
 
                 def _preview_sub_belongs(c: Path) -> bool:
                     if not c.is_file():
                         return True
                     if Path(c.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                        return _local_file_belongs_to_model(c, display_name)
+                        return _local_weight_belongs_to_model(c, display_name, sub_weights)
                     return _is_local_model_related_file(c)
 
                 if sub and all(_preview_sub_belongs(c) for c in sub):
@@ -5520,7 +5542,7 @@ def _local_dir_delete_preview(target: Path, display_name: Optional[str] = None) 
                             continue
                         # For weight files inside a subdir, respect display_name as well.
                         if Path(c.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                            if not _local_file_belongs_to_model(c, display_name):
+                            if not _local_weight_belongs_to_model(c, display_name, sub_weights):
                                 try:
                                     size = c.stat().st_size
                                 except OSError:
@@ -5676,13 +5698,14 @@ async def delete_local_path(
                     raise HTTPException(
                         status_code = 500, detail = "Failed to list model directory"
                     ) from e
+                dir_weights = _local_dir_weights(entries)
                 for child in entries:
                     try:
                         if not child.is_file():
                             continue
                         is_weight = Path(child.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES
                         if is_weight:
-                            if not _local_file_belongs_to_model(child, display_name):
+                            if not _local_weight_belongs_to_model(child, display_name, dir_weights):
                                 continue
                         elif not _is_local_model_related_file(child):
                             continue
@@ -5705,11 +5728,13 @@ async def delete_local_path(
                             except OSError:
                                 continue
 
+                            sub_weights = _local_dir_weights(sub)
+
                             def _sub_belongs(c: Path) -> bool:
                                 if not c.is_file():
                                     return True
                                 if Path(c.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                                    return _local_file_belongs_to_model(c, display_name)
+                                    return _local_weight_belongs_to_model(c, display_name, sub_weights)
                                 return _is_local_model_related_file(c)
 
                             if sub and all(_sub_belongs(c) for c in sub):
