@@ -17,6 +17,9 @@ from __future__ import annotations
 import threading
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
 
@@ -57,7 +60,7 @@ def _with_deadline(fn, timeout):
     return box["result"]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "requires a CUDA GPU")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "requires a CUDA GPU")
 def test_gpu_generation_smoke():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
