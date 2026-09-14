@@ -19,7 +19,10 @@ from unittest import mock
 
 import pytest
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import (
+    _INTEGRATED_GPU_HOST_RESERVE_MIB as _RESERVE,
+    LlamaCppBackend,
+)
 
 
 def _fake_torch(
@@ -103,7 +106,7 @@ def test_integrated_gpu_uses_system_available_ram(monkeypatch):
     )
     _fixed_avail(monkeypatch, 61850)
     with _mock_nvidia_smi_run("0, [N/A], [N/A]\n"):
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 61850, 124610)]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 61850 - _RESERVE, 124610)]
 
 
 def test_discrete_gpu_keeps_mem_get_info_free(monkeypatch):
@@ -137,7 +140,7 @@ def test_integrated_gpu_clamps_down_to_budget(monkeypatch):
     )
     _fixed_avail(monkeypatch, 2000, total = 4096)
     with _mock_nvidia_smi_run("", returncode = 1):
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 2000, 4096)]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 2000 - _RESERVE, 4096)]
 
 
 def test_rocm_integrated_apu_not_overridden(monkeypatch):
@@ -164,7 +167,7 @@ def test_integrated_gpu_clamps_total_to_container_budget(monkeypatch):
     )
     _fixed_avail(monkeypatch, 7000, total = 8192)
     with _mock_nvidia_smi_run("", returncode = 1):
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 7000, 8192)]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 7000 - _RESERVE, 8192)]
 
 
 # ── mixed-host dispatch: an [N/A] line must defer to torch ──
@@ -188,7 +191,7 @@ def test_mixed_host_na_line_defers_to_torch(monkeypatch):
     with _mock_nvidia_smi_run("0, 20000, 24576\n1, [N/A], [N/A]\n"):
         gpus = LlamaCppBackend._get_gpu_memory()
     # Discrete GPU keeps mem_get_info; integrated GPU gets the budget.
-    assert gpus == [(0, 20000, 24576), (1, 50000, 64000)]
+    assert gpus == [(0, 20000, 24576), (1, 50000 - _RESERVE, 64000)]
 
 
 def test_clean_nvidia_smi_does_not_probe_torch(monkeypatch):
@@ -357,3 +360,163 @@ def test_system_budget_v1_unlimited_folds_to_host(monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_host_memory_mib", staticmethod(lambda: (60000, 128000)))
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_mib", staticmethod(lambda: (huge, huge)))
     assert LlamaCppBackend._system_memory_budget_mib() == (60000, 128000)
+
+
+# ── a non-numeric line is NOT proof of unified memory ──
+#
+# nvidia-smi reports a non-numeric memory column for several reasons that have
+# nothing to do with an integrated GPU: a MIG parent reports [N/A] for
+# memory.free by design, and so do a vGPU guest, a card sitting in ERR!, and one
+# the caller lacks permission to query. Discarding the whole nvidia-smi reading
+# on that signal put those devices BACK into the result, priced with
+# mem_get_info numbers that do not describe them, and offered them to auto
+# placement. These tests pin the per-device rule: keep what nvidia-smi priced,
+# fill in a skipped device only when torch says it is integrated.
+
+
+def _mixed_torch(devices):
+    return _fake_torch_multi(devices)
+
+
+def test_mig_parent_na_does_not_resurrect_the_device(monkeypatch):
+    # GPU 0 is a MIG parent (N/A by design, NOT integrated); GPU 1 is healthy.
+    # Only the healthy card may be returned, exactly as before this change.
+    monkeypatch.setitem(sys.modules, "torch", _mixed_torch([
+        {"integrated": False, "free_mib": 1000, "total_mib": 40960},
+        {"integrated": False, "free_mib": 20000, "total_mib": 24576},
+    ]))
+    _fixed_avail(monkeypatch, 61850, total = 124610)
+    with _mock_nvidia_smi_run("0, [N/A], [N/A]\n1, 20000, 24576\n"):
+        assert LlamaCppBackend._get_gpu_memory() == [(1, 20000, 24576)]
+
+
+def test_err_state_card_does_not_resurrect_and_healthy_cards_survive(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _mixed_torch([
+        {"integrated": False, "free_mib": 1, "total_mib": 24576},
+        {"integrated": False, "free_mib": 20000, "total_mib": 24576},
+        {"integrated": False, "free_mib": 18000, "total_mib": 24576},
+    ]))
+    _fixed_avail(monkeypatch, 61850, total = 124610)
+    with _mock_nvidia_smi_run("0, ERR!, ERR!\n1, 20000, 24576\n2, 18000, 24576\n"):
+        assert LlamaCppBackend._get_gpu_memory() == [(1, 20000, 24576), (2, 18000, 24576)]
+
+
+def test_insufficient_permissions_line_is_not_integrated(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _mixed_torch([
+        {"integrated": False, "free_mib": 1000, "total_mib": 24576},
+        {"integrated": False, "free_mib": 20000, "total_mib": 24576},
+    ]))
+    _fixed_avail(monkeypatch, 61850, total = 124610)
+    with _mock_nvidia_smi_run(
+        "0, [Insufficient Permissions], [Insufficient Permissions]\n1, 20000, 24576\n"
+    ):
+        assert LlamaCppBackend._get_gpu_memory() == [(1, 20000, 24576)]
+
+
+def test_healthy_smi_host_never_initialises_cuda(monkeypatch):
+    # Falling through to torch costs the backend process a PERMANENT CUDA
+    # context. A host nvidia-smi answered for must not pay that, so the torch
+    # module must go untouched when every line parsed.
+    touched = {"n": 0}
+    fake = _fake_torch(integrated = False, free_mib = 20000, total_mib = 24576)
+    real_is_available = fake.cuda.is_available
+
+    def counting_is_available():
+        touched["n"] += 1
+        return real_is_available()
+
+    fake.cuda.is_available = counting_is_available
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    _fixed_avail(monkeypatch, 61850, total = 124610)
+    with _mock_nvidia_smi_run("0, 20000, 24576\n1, 18000, 24576\n"):
+        LlamaCppBackend._get_gpu_memory()
+    assert touched["n"] == 0
+
+
+def test_integrated_device_on_mixed_host_is_still_filled_in(monkeypatch):
+    # The case the restructure exists for keeps working: the skipped device IS
+    # integrated, so torch prices it and it rejoins the healthy card.
+    monkeypatch.setitem(sys.modules, "torch", _mixed_torch([
+        {"integrated": False, "free_mib": 20000, "total_mib": 24576},
+        {"integrated": True, "free_mib": 1590, "total_mib": 124610},
+    ]))
+    _fixed_avail(monkeypatch, 50000, total = 64000)
+    with _mock_nvidia_smi_run("0, 20000, 24576\n1, [N/A], [N/A]\n"):
+        assert LlamaCppBackend._get_gpu_memory() == [
+            (0, 20000, 24576), (1, 50000 - _RESERVE, 64000)]
+
+
+# ── host headroom and the shared pool ──
+
+
+def test_integrated_free_keeps_host_headroom(monkeypatch):
+    # This "VRAM" is the RAM the OS runs in; handing all of it to the fit is how
+    # a unified-memory host meets the OOM killer.
+    monkeypatch.setitem(sys.modules, "torch",
+                        _fake_torch(integrated = True, free_mib = 1590, total_mib = 124610))
+    _fixed_avail(monkeypatch, 61850)
+    with _mock_nvidia_smi_run("0, [N/A], [N/A]\n"):
+        free = LlamaCppBackend._get_gpu_memory()[0][1]
+    assert free == 61850 - _RESERVE
+    assert free < 61850
+
+
+def test_two_integrated_devices_do_not_each_claim_the_whole_pool(monkeypatch):
+    # One RAM pool, two integrated devices: a caller that sums across cards must
+    # not be able to commit the pool twice.
+    monkeypatch.setitem(sys.modules, "torch", _mixed_torch([
+        {"integrated": True, "free_mib": 1590, "total_mib": 124610},
+        {"integrated": True, "free_mib": 1500, "total_mib": 124610},
+    ]))
+    _fixed_avail(monkeypatch, 61850, total = 124610)
+    with _mock_nvidia_smi_run("0, [N/A], [N/A]\n1, [N/A], [N/A]\n"):
+        gpus = LlamaCppBackend._get_gpu_memory()
+    assert sum(free for _idx, free, _total in gpus) <= 61850 - _RESERVE
+    assert sum(total for _idx, _free, total in gpus) <= 124610
+
+
+# ── torch shapes that must never cost every GPU ──
+
+
+def test_torch_without_version_module_still_reports_gpus(monkeypatch):
+    # `torch.version` is a submodule and has been absent on stripped builds.
+    # Reading it with attribute access raised into the outer handler and returned
+    # [], i.e. "no GPU at all", dropping Studio to CPU.
+    fake = _fake_torch(integrated = False, free_mib = 20000, total_mib = 24576)
+    del fake.version
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    _fixed_avail(monkeypatch, 61850, total = 124610)
+    with _mock_nvidia_smi_run("", returncode = 1):
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 20000, 24576)]
+
+
+def test_integrated_probe_is_empty_on_rocm(monkeypatch):
+    # AMD APUs report is_integrated too; the physical-id helper must not claim
+    # them, or the merge would price an APU from the CUDA budget.
+    monkeypatch.setitem(sys.modules, "torch",
+                        _fake_torch(integrated = True, free_mib = 65380,
+                                    total_mib = 65536, hip = "7.2.53211"))
+    assert LlamaCppBackend._integrated_gpu_physical_ids() == set()
+
+
+def test_integrated_probe_reports_physical_ids(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _mixed_torch([
+        {"integrated": False, "free_mib": 20000, "total_mib": 24576},
+        {"integrated": True, "free_mib": 1590, "total_mib": 124610},
+    ]))
+    assert LlamaCppBackend._integrated_gpu_physical_ids() == {1}
+
+
+# ── cgroup hardening ──
+
+
+def test_unreadable_memory_stat_does_not_discard_a_real_limit(tmp_path):
+    # Dropping the level here reported the cgroup as uncapped and handed the
+    # caller the whole host, which is the direction that gets a container killed.
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    (root / "memory.max").write_text(str(8 * 1024 ** 3), encoding = "utf-8")
+    (root / "memory.current").write_text(str(2 * 1024 ** 3), encoding = "utf-8")
+    proc = tmp_path / "proc_self_cgroup"
+    proc.write_text("0::/\n", encoding = "utf-8")
+    assert LlamaCppBackend._cgroup_memory_mib(str(proc), str(root)) == (6144, 8192)
