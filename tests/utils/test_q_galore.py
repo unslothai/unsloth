@@ -90,9 +90,8 @@ def requires_bnb_optimizer(device):
             available = False
         _BNB_OPTIMIZER_BACKEND[device] = available
     if not available:
-        pytest.skip(
-            f"This bitsandbytes version cannot run an optimizer step on {device}"
-        )
+        pytest.skip(f"This bitsandbytes version cannot run an optimizer step on {device}")
+
 
 # ======================================================================
 # Projector tests
