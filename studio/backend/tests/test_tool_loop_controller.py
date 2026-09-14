@@ -550,13 +550,7 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
 
 
 def test_replayed_arguments_keep_the_order_the_model_generated():
-    """The replay is the text the model is told it wrote, so its key order must survive.
-
-    `edit_file` is written as `path` then `edits`, and each edit as `old_string` then
-    `new_string`. A sorted replay renders a different token sequence than the one already
-    in llama-server's prompt cache, and every multi-parameter call re-processes from its
-    first parameter (#10791).
-    """
+    """The replay is the text the model is told it wrote, so its key order must survive (#10791)."""
     edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
     arguments = {
         "path": "calc.py",
@@ -572,9 +566,7 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
         replayed
         == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
     )
-    # The card and the replay still share one encoder, so the two stay identical.
     assert decision.tool_start_payload()["arguments_text"] == replayed
-    # Duplicate detection keeps its own sorted key, so it is order-insensitive.
     flipped = {
         "path": "calc.py",
         "edits": [{"old_string": "def add", "new_string": "def subtract"}],
@@ -587,11 +579,7 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
 def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
     """Each call's own order, not one fixed order that happens to look unsorted.
 
-    The expectation in `test_an_mcp_tool_call_parsed_from_xml_arrives_typed` is a single
-    ordering, and a sorted encoder that merely sorted into that ordering would satisfy it.
-    Two calls carrying the same parameters in different document orders cannot both be
-    satisfied by any fixed order, so this is what separates tracking from coincidence: on
-    the sorted encoder both of these replay as the same string.
+    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
     """
 
     def replay(*parameters):
