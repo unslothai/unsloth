@@ -346,3 +346,20 @@ def test_two_keys_that_fold_together_resolve_to_nothing(override_store):
     settings.set_model_override("C:\\models\\FOO.gguf", max_seq_length = 8192)
 
     assert settings.resolve_model_override_key("c:/models/foo.gguf") is None
+
+
+def test_the_disable_aliases_survive_override_normalization():
+    """llama.cpp's own "none", plus "disable" / "disabled", reach /load as off.
+
+    ``_clean_str`` drops anything outside the whitelist, so leaving them out filed an
+    explicit disable as no override at all and the model followed the global
+    preference, which enables a drafter whenever that preference is Auto.
+    """
+    for spelling in ("none", "None", "  DISABLE  ", "disabled"):
+        normalized = settings.normalize_model_override({"speculative_type": spelling})
+        assert normalized.get("speculative_type") == spelling.strip().lower(), spelling
+
+    # An unknown spelling is still dropped, so this widens the set rather than the rule.
+    assert "speculative_type" not in settings.normalize_model_override(
+        {"speculative_type": "bogus"}
+    )

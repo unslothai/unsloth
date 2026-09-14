@@ -24,6 +24,7 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     download_remaining_bytes: Optional[int] = Field(
         None,
         description = (
@@ -141,7 +142,7 @@ class LocalModelInfo(BaseModel):
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",
     )
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -218,6 +219,10 @@ class LocalModelListResponse(BaseModel):
         default_factory = list,
         description = "Ollama model directories that were scanned",
     )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
+    )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
         description = "Discovered local/cached models",
@@ -240,8 +245,8 @@ class CachedRepoBase(BaseModel):
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
-    # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
-    # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
+    # The task-scoped pickers filter On Device rows on the inferred task and the chat picker routes a
+    # diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
     audio_type: Optional[str] = None
 
@@ -269,17 +274,16 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
-    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
-    # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint
+    # needing from_single_file plus a filename. Pickers must not offer it as a pipeline load unless
+    # the catalog carries a curated artifact.
     single_file: bool = False
-    # True for an sd.cpp companion mirror: a VAE / text-encoder repo with no denoiser, so it is
-    # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
-    # is how they are seen and deleted; the pickers filter on this instead.
+    # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
+    # tens of GB and the row is how they are seen and deleted.
     companion: bool = False
-    # True when the SELECTED revision is a diffusers pipeline. An unrecognised one carries no
-    # task and no root config for can_chat, so this flag is all that keeps it out of a chat
-    # picker. Declared because response_model drops undeclared keys, which left the CLI
-    # (reading the dict in-process) and the frontend disagreeing about the same row.
+    # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
+    # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which
+    # left the CLI and the frontend disagreeing about the same row.
     diffusers: bool = False
 
 

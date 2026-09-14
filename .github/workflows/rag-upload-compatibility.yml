@@ -1,0 +1,49 @@
+name: Document upload compatibility
+
+on:
+  pull_request:
+    paths:
+      - "studio/backend/core/rag/**"
+      - "studio/backend/tests/test_rag*"
+      - "studio/frontend/src/features/rag/**"
+      - "studio/frontend/tests/rag-*"
+      - "tests/studio/rag_upload*"
+      - ".github/workflows/rag-upload-compatibility.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rag-upload-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    name: Uploads (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+      - name: Run isolated simulations
+        run: python tests/studio/rag_upload_ci.py
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: document-upload-${{ matrix.os }}
+          path: |
+            temp/rag-upload/*.log
+            temp/rag-upload/*.json
+            temp/rag-upload/*.xml

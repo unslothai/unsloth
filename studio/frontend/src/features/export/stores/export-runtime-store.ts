@@ -118,6 +118,7 @@ export interface ExportRunSummary {
   methodLabel: string;
   method: ExportMethod;
   quantLevels: string[];
+  ggufShardSize?: string | null;
   /** Merged: the selected format values (for the summary "Formats" row and to reseed the picker). */
   mergedFormats: string[];
   destination: ExportDestination;
@@ -141,6 +142,8 @@ export interface RunExportParams {
   quantLevels: string[];
   /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
   useImatrix?: boolean;
+  /** gguf: maximum size for full-precision shards, or "0" for one file. */
+  ggufShardSize?: string | null;
   /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
    *  `label` is the display name for the success banner's per-format output line. */
   mergedSelections?: {
@@ -305,9 +308,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           startedAt: state.startedAt ?? Date.now(),
         };
       }
-      // A recovered (not store-owned) run finished on the backend. Settle from
-      // the last-op record when present (accurate success/error/output path),
-      // else fall back to the optimistic guess.
+      // A recovered (not store-owned) run finished on the backend. Settle from the last-op record
+      // when present (accurate success/error/output path), else fall back to the optimistic guess.
       if (!status.is_export_active && state.isExporting && !state.ownsRun) {
         // A standalone load_checkpoint (or no recorded op) is not an export and
         // must never settle as a finished export. A completed export ends on its
@@ -496,6 +498,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
             private: params.privateRepo,
+            gguf_shard_size: params.ggufShardSize ?? null,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });

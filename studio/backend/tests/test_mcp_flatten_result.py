@@ -125,7 +125,7 @@ def test_strip_removes_only_valid_terminal_envelope():
 
 
 def test_strip_still_handles_images_and_rag_sentinels():
-    assert strip_result_for_model("output\n__IMAGES__:['a.png']") == "output"
+    assert strip_result_for_model('output\n__IMAGES__:["a.png"]') == "output"
     assert strip_result_for_model("answer\n__RAG_SOURCES__:[{}]") == "answer"
 
 
@@ -234,7 +234,7 @@ def test_stdio_session_call_also_passes_raise_on_error_false(monkeypatch):
             "npx fake-stdio-server", None, "take_screenshot", {}, scope = "s=p:t=thread1"
         )
     finally:
-        mcp_client.close_stdio_sessions()
+        mcp_client.close_mcp_sessions()
 
     assert seen["raise_on_error"] is False
     assert out.startswith("Error: boom")

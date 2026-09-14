@@ -29,9 +29,8 @@ PW = os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_fontscale"))
 ART.mkdir(parents = True, exist_ok = True)
 
-# Read the range from the store instead of restating it: the default is the one
-# size at which data-ui-font-size is dropped, and it has already moved once
-# (16 -> 15), which is exactly what a pinned copy here fails on.
+# Read the range from the store instead of restating it: the default is the one size at which data-ui-font-size is
+# dropped, and it has already moved once (16 -> 15), which is exactly what a pinned copy here fails on.
 _STORE = (
     Path(__file__).resolve().parents[2]
     / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
@@ -44,8 +43,7 @@ if _RANGE is None:
     raise AssertionError("[font-scale] FAIL: no UI_FONT_SIZE_RANGE in appearance-custom-store.ts")
 SIZES = (int(_RANGE.group(1)), int(_RANGE.group(2)))
 DEFAULT = int(_RANGE.group(3))
-# The base the authored rem typography is written against; --ui-font-scale is
-# the preference divided by it.
+# The base the authored rem typography is written against; --ui-font-scale is the preference divided by it.
 _BASE = re.search(r"UI_FONT_SIZE_CSS_BASE\s*=\s*(\d+)", _STORE)
 if _BASE is None:
     raise AssertionError(
@@ -146,9 +144,8 @@ def set_input(page, label, value):
 
 
 def open_appearance(page):
-    # The shortcut can fire before the app has wired its key handler, so press
-    # each chord once behind a fixed sleep and a slow boot loses the dialog.
-    # Alternate them on a bounded retry, waiting on the dialog itself.
+    # The shortcut can fire before the app has wired its key handler, so press each chord once behind a fixed sleep and
+    # a slow boot loses the dialog. Alternate them on a bounded retry, waiting on the dialog itself.
     dialog = page.get_by_role("dialog")
     for attempt in range(10):
         page.keyboard.press("Meta+," if attempt % 2 else "Control+,")
@@ -234,8 +231,8 @@ def main():
 
         viewport = page.locator("[data-radix-select-viewport]")
         viewport.wait_for(state = "visible")
-        # Wait for the overflow itself rather than a fixed sleep: the list is
-        # populated asynchronously, so measuring too early reads it as short.
+        # Wait for the overflow itself rather than a fixed sleep: the list is populated asynchronously, so measuring
+        # too early reads it as short.
         try:
             page.wait_for_function(SCROLLABLE_JS, timeout = 10_000)
         except PWTimeout:
@@ -254,17 +251,16 @@ def main():
         if not kb_top > 0:
             fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
 
-        # That read lands mid-scroll and comes in low (24-35px on the ubuntu CI image),
-        # which is neither the floor the wheel has to beat nor a moment a wheel event
-        # survives. Let the scroll finish and re-read instead of racing it.
+        # That read lands mid-scroll and comes in low (24-35px on the ubuntu CI image), which is neither the floor the
+        # wheel has to beat nor a moment a wheel event survives. Let the scroll finish and re-read instead of racing it.
         kb_top = settled_scroll_top(page)
         # At 0 the comparison below is unsatisfiable, so the wheel would always fail.
         if not kb_top > 0:
             fail(f"select viewport returned to the top once the keyboard scroll settled: {kb_top}")
 
         vp_box = viewport.bounding_box()
-        # Keep the pointer inside the viewport: a fixed 40px offset lands outside a
-        # shorter box and the wheel then goes to whatever is underneath.
+        # Keep the pointer inside the viewport: a fixed 40px offset lands outside a shorter box and the wheel then goes
+        # to whatever is underneath.
         page.mouse.move(
             vp_box["x"] + vp_box["width"] / 2,
             vp_box["y"] + min(40, vp_box["height"] / 2),
@@ -309,8 +305,8 @@ def main():
             "() => { const el = document.querySelector('.size-icon');"
             " return el ? parseFloat(getComputedStyle(el).width) : null; }"
         )
-        # Standard icons render at the UI font size itself below the CSS base,
-        # so the smallest setting gives glyphs of exactly that many px.
+        # Standard icons render at the UI font size itself below the CSS base, so the smallest setting gives glyphs of
+        # exactly that many px.
         if not near(icon_w, small):
             fail(f"size-icon did not match the UI font size below {CSS_BASE}: {icon_w}")
         page.goto(BASE, wait_until = "domcontentloaded")

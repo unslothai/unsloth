@@ -381,8 +381,7 @@ def test_the_drafter_pin_falls_back_before_it_gives_up(caps, expected):
 
 def test_a_failed_probe_does_not_cost_the_user_their_drafter():
     """The drop half of the same decision: an unanswered probe must not drop."""
-    drafter, _extras, _warnings = _drafter_gate(
-        paravirtual = True,
+    drafter, _extras, _warnings = _paravirtual_gate(
         caps = {"spec_draft_ngl_flag": None, "mtp_probe_inconclusive": True},
         drafter = "/m/mtp-model.gguf",
         extra_args = None,
@@ -714,6 +713,17 @@ def _drafter_gate(
     return scope["launch_mtp_draft_path"], scope["extra_args"], log.warnings
 
 
+def _paravirtual_gate(
+    *args,
+    caps = {},
+    drafter = None,
+    paravirtual = True,
+    **kwargs,
+):
+    """_drafter_gate on a paravirtual host with no drafter and no probed caps."""
+    return _drafter_gate(*args, caps = caps, drafter = drafter, paravirtual = paravirtual, **kwargs)
+
+
 @pytest.fixture(autouse = True)
 def _no_inherited_draft_env(monkeypatch):
     """The drafter parsers fall back to os.environ, so a stray var on the host must not
@@ -744,17 +754,13 @@ def test_a_drafter_that_cannot_be_pinned_is_dropped(monkeypatch):
     # the caller's own speculative tuning for nothing.
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
     tuning = ["--spec-draft-n-max", "6"]
-    drafter, extras, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, drafter = None, extra_args = tuning
-    )
+    drafter, extras, warnings = _paravirtual_gate(extra_args = tuning)
     assert warnings == []
     assert extras == tuning
     # But an env drafter the extras DO keep alive still drops: their --spec-type is what
     # stops the scrub.
     owned = ["--spec-type", "draft-simple"]
-    drafter, _extras, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, drafter = None, extra_args = owned
-    )
+    drafter, _extras, warnings = _paravirtual_gate(extra_args = owned)
     assert any("draft-layer flag" in w for w in warnings), warnings
 
 
@@ -762,9 +768,7 @@ def test_the_drop_takes_a_user_owned_drafter_with_it():
     """A user --spec-type makes _build_speculative_flags emit nothing, so clearing only
     Unsloth's resolved path would leave their --model-draft on the device."""
     extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf", "--top-k", "40"]
-    drafter, out, warnings = _drafter_gate(
-        paravirtual = True, caps = {}, drafter = None, extra_args = extras
-    )
+    drafter, out, warnings = _paravirtual_gate(extra_args = extras)
     assert drafter is None
     assert warnings
     assert llama_cpp._extra_args_mtp_draft_path(out, {}) is None
@@ -833,12 +837,7 @@ def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeyp
     """Same through the env the child reads directly: the drafter loads whatever
     --spec-type says, so it cannot ride out the drop on the mode alone."""
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
-    drafter, _out, warnings = _drafter_gate(
-        paravirtual = True,
-        caps = {},
-        drafter = None,
-        extra_args = ["--spec-type", "ngram-mod"],
-    )
+    drafter, _out, warnings = _paravirtual_gate(extra_args = ["--spec-type", "ngram-mod"])
     assert drafter is None
     assert warnings
 
@@ -1019,9 +1018,7 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
     --gpu-layers 0."""
     for caps in ({}, {"spec_draft_ngl_flag": "--spec-draft-ngl"}):
         extras = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
-        drafter, out, warnings = _drafter_gate(
-            paravirtual = True, caps = caps, drafter = None, extra_args = extras
-        )
+        drafter, out, warnings = _paravirtual_gate(caps = caps, extra_args = extras)
         assert drafter is None
         assert out == extras
         assert warnings == []
@@ -1320,6 +1317,23 @@ def _target_state(backend, gguf, **overrides):
     )
     kwargs.update(overrides)
     return backend.adopt_load_intent_if_matched(llama_cpp.GgufLoadIntent(**kwargs))
+
+
+def _target_state_auto(
+    *args,
+    gpu_layers = -1,
+    gpu_memory_mode = "auto",
+    speculative_type = "auto",
+    **kwargs,
+):
+    """_target_state for a full-offload auto load, the shape every case here starts from."""
+    return _target_state(
+        *args,
+        gpu_layers = gpu_layers,
+        gpu_memory_mode = gpu_memory_mode,
+        speculative_type = speculative_type,
+        **kwargs,
+    )
 
 
 def _gpu_pin_recorders():
@@ -1829,12 +1843,9 @@ def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(monkey
     )
     assert _route_matches(request, backend) is True
     assert (
-        _target_state(
+        _target_state_auto(
             backend,
             gguf,
-            speculative_type = "auto",
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
             tensor_parallel = True,
             n_cpu_moe = 8,
             extra_args = ["-ngl", "99", "--top-k", "40"],
@@ -1850,17 +1861,7 @@ def test_the_same_pair_still_mismatches_on_a_real_mac(monkeypatch, tmp_path):
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "40"])
     assert _route_matches(request, backend) is False
-    assert (
-        _target_state(
-            backend,
-            gguf,
-            speculative_type = "auto",
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            extra_args = ["--top-k", "40"],
-        )
-        is False
-    )
+    assert _target_state_auto(backend, gguf, extra_args = ["--top-k", "40"]) is False
 
 
 def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
@@ -1870,17 +1871,7 @@ def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "20"])
     assert _route_matches(request, backend) is False
-    assert (
-        _target_state(
-            backend,
-            gguf,
-            speculative_type = "auto",
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            extra_args = ["--top-k", "20"],
-        )
-        is False
-    )
+    assert _target_state_auto(backend, gguf, extra_args = ["--top-k", "20"]) is False
 
 
 def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch, tmp_path):
@@ -1892,15 +1883,7 @@ def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch,
     request = _load_request(gguf, llama_extra_args = ["-sm", "tensor"], tensor_parallel = True)
     assert _route_matches(request, backend) is True
     assert (
-        _target_state(
-            backend,
-            gguf,
-            speculative_type = "auto",
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            tensor_parallel = True,
-            extra_args = ["-sm", "tensor"],
-        )
+        _target_state_auto(backend, gguf, tensor_parallel = True, extra_args = ["-sm", "tensor"])
         is True
     )
 
@@ -1916,17 +1899,7 @@ def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatc
     )
     request = _load_request(gguf, llama_extra_args = list(asked))
     assert _route_matches(request, backend) is True
-    assert (
-        _target_state(
-            backend,
-            gguf,
-            speculative_type = "auto",
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            extra_args = list(asked),
-        )
-        is True
-    )
+    assert _target_state_auto(backend, gguf, extra_args = list(asked)) is True
 
 
 def test_an_apply_that_inherits_the_extras_does_not_reload_the_rewritten_server(
@@ -1964,15 +1937,7 @@ def test_an_edited_spec_flag_still_reloads_after_a_dropped_drafter(monkeypatch, 
     request = _load_request(gguf, llama_extra_args = ["--draft-max", "4", "--top-k", "40"])
     assert _route_matches(request, backend) is False
     assert (
-        _target_state(
-            backend,
-            gguf,
-            speculative_type = "auto",
-            gpu_memory_mode = "auto",
-            gpu_layers = -1,
-            extra_args = ["--draft-max", "4", "--top-k", "40"],
-        )
-        is False
+        _target_state_auto(backend, gguf, extra_args = ["--draft-max", "4", "--top-k", "40"]) is False
     )
 
 

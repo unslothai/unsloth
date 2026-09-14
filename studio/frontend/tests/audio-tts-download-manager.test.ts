@@ -2,13 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/audio/audio-page.tsx");
 
 test("uncached remote TTS GGUFs stage the exact file through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
@@ -81,7 +79,7 @@ test("a preflight that loses to generation queues its load until generation ends
   );
   assert.match(
     source,
-    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current && modeRef\.current === "speak"\)\s*replayQueuedTtsPick\(\)/,
+    /generateAbort\.current = null;\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current && modeRef\.current === "speak"\)\s*replayQueuedTtsPick\(\)/,
   );
 });
 
@@ -127,7 +125,7 @@ test("switching to Transcribe invalidates a pending staged TTS auto-load", () =>
   );
   assert.match(
     source,
-    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(!canTransitionAudioMode\(busyRef\.current\)\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
+    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(\s*!canTransitionAudioMode\(busyRef\.current, generationPhaseRef\.current\)\s*\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
     "a rejected mode switch must not discard the still-owned staged load",
   );
 });

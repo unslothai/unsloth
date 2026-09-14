@@ -5,21 +5,13 @@
 // do not. Read from the source: the node suite has no DOM to compute styles in.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const CSS = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-const INDICATOR = readFileSync(
-  new URL(
-    "../src/features/loaded-models/loaded-models-indicator.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const BANNER = readFileSync(
-  new URL("../src/components/llama-update-banner.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const CSS = readSrc("index.css");
+const INDICATOR = readSrc("features/loaded-models/loaded-models-indicator.tsx");
+const BANNER = readSrc("components/llama-update-banner.tsx");
 
 function surface(source: string, anchor: string): string {
   const at = source.indexOf(anchor);

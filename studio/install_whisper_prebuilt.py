@@ -61,10 +61,10 @@ import subprocess
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-# Put studio/ on sys.path so install_llama_prebuilt / prebuilt_core resolve
-# whether run as a script (from any cwd) or imported by the tests.
+# Put studio/ on sys.path so install_llama_prebuilt / prebuilt_core resolve whether run as a script
+# from any cwd or imported by the tests.
 _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -72,8 +72,8 @@ if _STUDIO_DIR not in sys.path:
 import install_llama_prebuilt as llama  # noqa: E402
 import prebuilt_core as core  # noqa: E402
 
-# Shared machinery re-exported as module globals; the wrappers below resolve
-# these by bare name at call time so tests can monkeypatch them here.
+# Shared machinery re-exported as module globals; the wrappers below resolve these by bare name at
+# call time so tests can monkeypatch them here.
 PrebuiltFallback = core.PrebuiltFallback
 BusyInstallConflict = core.BusyInstallConflict
 auth_headers = llama.auth_headers
@@ -98,13 +98,13 @@ llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
 installed_llama_ggml_tree = llama.installed_llama_ggml_tree
 
-# Late-binding seam for prebuilt_core: name lookups hit this module's globals
-# first (so monkeypatches apply), then the core defaults.
+# Late-binding seam for prebuilt_core: name lookups hit this module's globals first, so
+# monkeypatches apply, then the core defaults.
 _OPS = core.ModuleOps(globals())
 
 
-# Resolver mode keeps stdout to the JSON payload only (setup.sh parses it);
-# main() flips this on for the install path so setup surfaces progress.
+# Resolver mode keeps stdout to the JSON payload only (setup.sh parses it); main() flips this on
+# for the install path so setup surfaces progress.
 _LOG_TO_STDOUT = False
 
 
@@ -114,6 +114,11 @@ class ReleaseCompatibilityError(PrebuiltFallback):
 
 def log(message: str) -> None:
     print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+
+
+def log_lines(lines: Iterable[str]) -> None:
+    for line in lines:
+        log(line)
 
 
 EXIT_SUCCESS = 0
@@ -132,27 +137,21 @@ SHA256_ASSET_NAME = "whisper-prebuilt-sha256.json"
 
 METADATA_FILENAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
-# Backends the installer can select: accelerator identities for the slim pairing
-# (which llama ggml module must exist) and the marker. Only "cpu" can match a fat
-# artifact (the pinned pre-slim escape hatch).
+# Backends the installer can select: accelerator identities for the slim pairing (which llama ggml
+# module must exist) and the marker. Only "cpu" can match a fat artifact, the pinned escape hatch.
 SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 
-# Fallback the core applies on a GPU-selection miss: retry with cpu so the slim
-# bundle can pair via the llama cpu modules, or -- on a pinned pre-slim release --
-# the published fat CPU bundle installs. A miss is an install error unless the
-# valid slim release specifically requires a different paired llama release.
+# Fallback on a GPU-selection miss: retry with cpu so the slim bundle can pair via the llama cpu
+# modules, or the published fat CPU bundle installs on a pinned pre-slim release.
 FALLBACK_BACKEND = "cpu"
 
-# Backends whose slim (ggml-less) whisper bundle can ride the installed llama.cpp
-# prebuilt's ggml runtime. All are eligible: the next whisper release ships only
-# slim bundles, so cpu and metal pair like the GPUs do.
+# Backends whose slim (ggml-less) whisper bundle can ride the installed llama.cpp prebuilt's ggml
+# runtime. All are eligible: the next whisper release ships only slim bundles.
 SLIM_ELIGIBLE_BACKENDS = ("cpu", "cuda", "metal", "rocm", "vulkan")
 
-# ggml backend module the llama bin dir must provide per accelerator, keyed by
-# asset os token, following llama's bundle layout / health globs. A backend with
-# no glob for the host os (metal off macOS) is never slim there. llama's x64 cpu
-# bundles ship per-arch libggml-cpu-<variant> modules, macOS a single
-# libggml-cpu; the cpu globs cover both.
+# ggml backend module the llama bin dir must provide per accelerator.
+# llama's x64 cpu bundles ship per-arch libggml-cpu-<variant> modules and macOS a single libggml-cpu, so the cpu globs
+# cover both; a backend with no glob for the host os (metal off macOS) is never slim there.
 SLIM_BACKEND_MODULE_GLOBS = {
     "cpu": {
         "linux": "libggml-cpu*.so*",
@@ -161,19 +160,15 @@ SLIM_BACKEND_MODULE_GLOBS = {
     },
     "cuda": {"linux": "libggml-cuda.so*", "windows": "ggml-cuda.dll"},
     "metal": {"macos": "libggml-metal*.dylib"},
-    # Windows rocm must name the ggml module: the bundles also ship amdhip64,
-    # hipblas and libhipblaslt, which a looser *hip*.dll would accept.
+    # Windows rocm must name the ggml module: the bundles also ship amdhip64
     "rocm": {"linux": "libggml-hip.so*", "windows": "ggml-hip*.dll"},
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
-# Everything the slim wiring mirrors from the llama bin dir: the core ggml
-# sonames plus every dlopen'd backend module (CPU variants included). libggml*
-# matches .so and .dylib alike; ggml*.dll covers Windows. libomp* rides along
-# because llama's clang-built slices (windows x64/arm64, linux arm64) link ggml
-# against the LLVM OpenMP runtime and ship it in the bundle, so the loader can
-# never find it on the host. Linux x64 (gcc, host libgomp.so.1) and macOS (Apple
-# clang, no OpenMP) ship none, so the globs match nothing there.
+# Everything the slim wiring mirrors from the llama bin dir: core ggml sonames plus every dlopen'd
+# backend module. libomp* rides along because llama's clang-built slices link ggml against the LLVM
+# OpenMP runtime and ship it in the bundle, so the loader can never find it on the host; Linux x64
+# and macOS ship none, so the globs match nothing there.
 SLIM_GGML_LIBRARY_GLOBS = (
     "libggml*",
     "ggml*.dll",
@@ -187,38 +182,30 @@ SLIM_ROCM_LIBRARY_GLOBS = (
     "libhsa*.so*",
     "libroc*.so*",
 )
-# Kernel catalogs a linux ROCm llama bundle can ship, mirrored into the whisper
-# bin dir so the packaged libraries find their Tensile kernels beside them.
+# Kernel catalogs a linux ROCm llama bundle can ship, mirrored into the whisper bin dir so the
+# packaged libraries find their Tensile kernels beside them.
 SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
-# Of those, the ones a paired runtime must actually carry. hipBLASLt builds no
-# Tensile kernels for gfx1030 / RDNA2, so llama's linux-x64-rocm-gfx103X bundle
-# ships libhipblaslt.so.1 with no hipblaslt/ catalog while every other published
-# target carries one. rocblas is load-bearing: libggml-hip links librocblas
-# directly and every published linux ROCm bundle ships rocblas/library. The
-# llama installer copies only the catalogs the archive has, so demanding both
-# here rejected a runtime llama.cpp itself runs fine on (#8364).
+# Of those, the ones a paired runtime must actually carry.
 SLIM_ROCM_REQUIRED_RUNTIME_DIRS = ("rocblas",)
-# 3: libomp*.so*/dylib joined the wiring, so version 2 installs are missing
-# libomp.so.5 on linux arm64 and must re-wire.
+# 3: libomp*.so*/dylib joined the wiring.
 SLIM_RUNTIME_WIRING_VERSION = 3
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
-# Master switch for the staged runtime smoke test (start whisper-server + a tiny
-# transcription) before the atomic activate. Off by default so a bundle whose GPU
-# forward pass JIT-compiles kernels does not stall every install; the check and
-# its CPU-asset retry stay intact -- set True to re-enable.
+# Master switch for the staged runtime smoke test, off by default so a bundle whose GPU forward
+# pass JIT-compiles kernels does not stall every install. The check and its CPU-asset retry are
+# intact: set True to re-enable.
 _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
 # ── Host detection (probes shared with install_llama_prebuilt) ──
 @dataclass(frozen = True)
 class HostInfo:
-    system: str  # platform.system()
-    machine: str  # lowered platform.machine()
-    whisper_os: str  # asset token: linux | macos | windows
+    system: str
+    machine: str
+    whisper_os: str
     whisper_arch: str  # asset token: x64 | arm64
-    archive_ext: str  # .tar.gz | .zip
+    archive_ext: str
     is_windows: bool
     is_macos: bool
     is_apple_silicon: bool
@@ -226,8 +213,7 @@ class HostInfo:
     has_rocm: bool = False
     rocm_gfx: str | None = None
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
-    # Enforces a macOS artifact's min_os so we never pick a bundle that cannot
-    # load on this OS version.
+    # Enforces a macOS artifact's min_os so a bundle that cannot load on this OS version is never picked.
     macos_version: tuple[int, int] | None = None
 
 
@@ -451,9 +437,7 @@ def llama_runtime_pairs(
     if not (isinstance(installed_ggml_tree, str) and installed_ggml_tree):
         if isinstance(installed_repo, str) and installed_repo:
             installed_ggml_tree = published_llama_ggml_tree(installed_tag, installed_repo)
-    # Only probe the required release once the installed side actually resolved:
-    # the comparison below needs both trees, so with no installed tree the answer
-    # cannot change the verdict and the request is a 30s stall for nothing.
+    # Only probe the required release once the installed side actually resolved
     if installed_ggml_tree and not (isinstance(required_ggml_tree, str) and required_ggml_tree):
         required_ggml_tree = published_llama_ggml_tree(required_tag)
     if installed_ggml_tree and required_ggml_tree:
@@ -462,16 +446,59 @@ def llama_runtime_pairs(
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
 
-def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
-    """Whether a paired Windows llama runtime carries a GPU ggml backend module.
+def _ships_gpu_ggml_module(llama_bin_dir: Path, os_key: str) -> bool:
+    """Whether a paired llama runtime carries a GPU ggml backend module.
     Only the cpu bundle links ggml against libomp, and bundle_profile cannot tell
     the two apart: it is absent on both the published rocm artifacts and every
     upstream-sourced install, so the files on disk decide."""
     for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
-        glob = per_os.get("windows")
-        if backend != "cpu" and glob and any(llama_bin_dir.glob(glob)):
+        glob = per_os.get(os_key)
+        # is_file(): a versioned alias still counts, a directory or dangling link does not.
+        if backend != "cpu" and glob and any(path.is_file() for path in llama_bin_dir.glob(glob)):
             return True
     return False
+
+
+def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
+    """Windows spelling of _ships_gpu_ggml_module; kept for call-site clarity."""
+    return _ships_gpu_ggml_module(llama_bin_dir, "windows")
+
+
+def _is_linux_libomp_soname(name: str) -> bool:
+    """LLVM's OpenMP runtime: bundled, so it can go missing. Not host-provided libgomp,
+    and not libomptarget, which a prefix match would sweep up."""
+    lowered = name.lower()
+    return lowered == "libomp.so" or lowered.startswith("libomp.so.")
+
+
+def _ggml_stack_imports_libomp(llama_bin_dir: Path, backend: str) -> bool | None:
+    """Whether the ggml libraries whisper will load actually import LLVM's libomp.
+
+    True on the first import found; False only once every relevant library was inspected
+    and none imported it; None when any could not be inspected.
+
+    The selected backend module is inspected alongside the core: it is dlopen'd after
+    startup, so a dependency living only there is invisible to a --help smoke test.
+    """
+    patterns = ["libggml-base.so*", "libggml.so*"]
+    module_glob = SLIM_BACKEND_MODULE_GLOBS.get(backend, {}).get("linux")
+    if module_glob:
+        patterns.append(module_glob)
+
+    inspected_any = False
+    inspected_all = True
+    for pattern in patterns:
+        for path in sorted(llama_bin_dir.glob(pattern)):
+            if not path.is_file():
+                continue
+            needed = _elf_needed(path)
+            if needed is None:
+                inspected_all = False
+                continue
+            inspected_any = True
+            if any(_is_linux_libomp_soname(dep) for dep in needed):
+                return True
+    return False if inspected_any and inspected_all else None
 
 
 def slim_pairing_for_artifact(
@@ -505,18 +532,29 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
-        # The shared Windows manifest lists libomp only because the cpu bundle's
-        # ggml links against it; a GPU bundle neither ships nor imports it, so
-        # requiring it there only mis-rejects. link_ggml_runtime still wires it.
-        # This drops libomp140.aarch64.dll as readily as the x64 name, which is
-        # safe only while llama publishes no Windows arm64 GPU bundle: that slice
-        # is clang-built and its ggml really does need LLVM OpenMP (see
-        # SLIM_GGML_LIBRARY_GLOBS). Re-check this gate before adding one.
+        # The shared Windows manifest lists libomp only because the cpu bundle's ggml links against it, so
+        # requiring it for a GPU bundle only mis-rejects; link_ggml_runtime still wires it. Dropping the
+        # aarch64 name too is safe only while llama publishes no Windows arm64 GPU bundle, whose
+        # clang-built ggml really does need LLVM OpenMP: re-check this gate before adding one.
         required_sonames = [
             name
             for name in required_sonames
             if not (name.lower().startswith("libomp") and name.lower().endswith(".dll"))
         ]
+    if (
+        host.whisper_os == "linux"
+        and host.whisper_arch == "arm64"
+        and _ships_gpu_ggml_module(llama_bin_dir, "linux")
+        and _ggml_stack_imports_libomp(llama_bin_dir, backend) is False
+    ):
+        # Same shape as the Windows case above: the arm64 manifest names libomp only because
+        # the cpu bundle's ggml links it, so CUDA (GNU libgomp) was rejected for a file it
+        # never needs. Evidence, not arch -- the arm64 Vulkan bundle really does import it.
+        # `is False`, not `is not True`: dropping this on no evidence is unrecoverable, since
+        # the sidecar sends the loader error to DEVNULL and serving never falls back.
+        # arm64 only: linux-x64 ggml really imports its bundled libomp
+        # (test_linux_slim_still_requires_manifest_libomp).
+        required_sonames = [name for name in required_sonames if not _is_linux_libomp_soname(name)]
     missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
         log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
@@ -808,6 +846,8 @@ def _validate_staged_server(staged_root: Path, host: HostInfo) -> None:
             [str(server), "--help"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
             env = env,
             **llama.windows_hidden_subprocess_kwargs(),
@@ -831,7 +871,12 @@ def _elf_needed(path: Path) -> set[str] | None:
     for command in commands:
         try:
             result = subprocess.run(
-                [*command, str(path)], capture_output = True, text = True, timeout = 10
+                [*command, str(path)],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -957,8 +1002,8 @@ def link_runtime_directories(
         )
         if not files:
             if not required:
-                # hipBLASLt has no kernels for this target; llama pairs without
-                # the catalog and runs, so whisper must pair the same way.
+                # hipBLASLt has no kernels for this target, and llama pairs without the catalog and runs, so
+                # whisper must pair the same way.
                 log(f"slim install: paired ROCm runtime ships no {name} kernel catalog; skipping")
                 continue
             missing = "is missing its" if not source_root.is_dir() else "has an empty"
@@ -1092,9 +1137,8 @@ def existing_install_matches(
             )
             return False
         runtime_dirs = marker.get("linked_runtime_directories")
-        # Subset plus required, not equality: a target without hipBLASLt kernels
-        # wires rocblas alone and is complete (#8364), while an unknown name or
-        # a missing rocblas still means stale or hand-edited wiring.
+        # Subset plus required, not equality: a target without hipBLASLt kernels wires rocblas alone and is
+        # complete (#8364), while an unknown name or a missing rocblas still means stale wiring.
         if (
             marker.get("backend") == "rocm"
             and not host.is_windows
@@ -1258,8 +1302,7 @@ def _release_plan_for_host(
     requested_specific_tag = whisper_tag.strip().lower() not in ("", "latest")
     first_bundle: ReleaseBundle | None = None
     first_error: PrebuiltFallback | None = None
-    # An upstream version pin searches manifests directly. It must not depend
-    # on the unrelated newest release or its checksum index being healthy.
+    # An upstream version pin searches manifests directly.
     if not requested_specific_tag or published_release_tag:
         first_bundle, first_checksums = fetch_release_for_install(
             published_repo, published_release_tag = published_release_tag
@@ -1304,9 +1347,8 @@ def _release_plan_for_host(
         if not _bundle_matches_whisper_tag(bundle, whisper_tag):
             continue
         try:
-            # Establish host compatibility before fetching or trusting this
-            # candidate's checksum index. Once selected, integrity failures must
-            # stop the install rather than silently downgrade again.
+            # Establish host compatibility before fetching or trusting this candidate's checksum index: once
+            # selected, integrity failures must stop the install rather than silently downgrade again.
             select_artifact_with_cpu_fallback(bundle.manifest, host, requested_backend)
         except PrebuiltFallback:
             continue
@@ -1403,6 +1445,19 @@ def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
     return {"install_kind": "slim" if artifact.get("install_kind") == "slim" else "fat"}
 
 
+def unavailable_payload(published_repo: str, exc: BaseException) -> dict[str, Any]:
+    """The resolver's negative answer, carrying WHY: the same split the install path
+    makes (ReleaseCompatibilityError is exit 2, everything else exit 1). Flattened, a
+    caller cannot tell a confirmed pairing gap from a probe that never answered."""
+    return {
+        "prebuilt_available": False,
+        "repo": published_repo,
+        "unavailable_reason": (
+            "incompatible" if isinstance(exc, ReleaseCompatibilityError) else "unresolved"
+        ),
+    }
+
+
 def resolve_prebuilt(
     host: HostInfo,
     *,
@@ -1422,8 +1477,8 @@ def resolve_prebuilt(
             requested_backend = requested_backend,
             verify_checksums = False,
         )
-    except PrebuiltFallback:
-        return {"prebuilt_available": False, "repo": published_repo}
+    except PrebuiltFallback as exc:
+        return unavailable_payload(published_repo, exc)
     os_token, arch_token = host_platform_tokens(host)
     payload = {
         "prebuilt_available": True,
@@ -1442,9 +1497,8 @@ def resolve_prebuilt(
     return payload
 
 
-# The whisper component descriptor: the declarative form of everything above,
-# for descriptor-driven consumers (shared tests, future tooling). The shipped CLI
-# runs through this module's wrappers so monkeypatch seams stay intact.
+# The declarative form of everything above, for descriptor-driven consumers; the shipped CLI runs
+# through this module's wrappers so the monkeypatch seams stay intact.
 DESCRIPTOR = core.ComponentDescriptor(
     component = COMPONENT,
     log_prefix = "whisper-prebuilt",
@@ -1526,9 +1580,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.resolve_prebuilt is not None:
-        # Read-only probe: stdout is only the JSON/asset line (setup.sh and
-        # whisper_cpp_update.py parse it), so force diagnostics to stderr and map
-        # any failure to "not available" rather than a traceback.
         _LOG_TO_STDOUT = False
         try:
             host = apply_host_overrides(
@@ -1545,11 +1596,11 @@ def main(argv: list[str] | None = None) -> int:
                 backend = args.backend,
                 cpu_fallback = args.cpu_fallback,
             )
-        except PrebuiltFallback:
-            payload = {"prebuilt_available": False, "repo": args.published_repo}
+        except PrebuiltFallback as exc:
+            payload = unavailable_payload(args.published_repo, exc)
         except Exception as exc:  # noqa: BLE001 - probe must never crash the caller
             log(f"resolve failed: {exc}")
-            payload = {"prebuilt_available": False, "repo": args.published_repo}
+            payload = unavailable_payload(args.published_repo, exc)
         emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
 
@@ -1578,7 +1629,9 @@ def main(argv: list[str] | None = None) -> int:
         log(f"incompatible release: {exc}")
         return EXIT_INCOMPATIBLE
     except PrebuiltFallback as exc:
-        log(f"prebuilt install failed: {exc}")
+        # One prefixed line each: a multi-line reason is otherwise indistinguishable
+        # from unprefixed diagnostics for whoever reads this output back.
+        log_lines(f"prebuilt install failed: {exc}".splitlines())
         return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")

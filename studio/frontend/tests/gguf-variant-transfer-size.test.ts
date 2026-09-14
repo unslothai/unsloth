@@ -12,9 +12,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { ggufVariantTransferBytes, ggufVariantTransferLabel } = await import(
-  "../src/features/hub/lib/gguf-variant-sort.ts"
-);
+const { ggufVariantFitRank, ggufVariantTransferBytes, ggufVariantTransferLabel } =
+  await import("../src/features/hub/lib/gguf-variant-sort.ts");
 
 const GB = 1000 ** 3;
 
@@ -75,4 +74,26 @@ test("a partial with nothing left reads as zero rather than the total", () => {
   };
 
   assert.equal(ggufVariantTransferBytes(variant), 0);
+});
+
+test("the menu is ranked by the footprint the rows are badged by", () => {
+  // Ranking on the weights while badging the total put a "partial" row above "fits".
+  const resources = { gpuGb: 16, systemRamGb: 32 };
+  const main = 12_789_199_648;
+  const row = (over: { download_size_bytes?: number }) => ({
+    quant: "Q3_K_S",
+    filename: "muse-Q3_K_S.gguf",
+    size_bytes: main,
+    download_size_bytes: main,
+    ...over,
+  });
+
+  assert.equal(ggufVariantFitRank(row({}), resources), 0);
+  assert.equal(
+    ggufVariantFitRank(
+      row({ download_size_bytes: main + 3_849_173_920 + 1_451_094_176 }),
+      resources,
+    ),
+    2,
+  );
 });

@@ -115,7 +115,10 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
         for node in ast.walk(function)
         if isinstance(node, ast.Compare)
         and ast.unparse(node.left) == "device_map"
-        and any(ast.unparse(c) == "UNSLOTH_DEVICE_MAP" for c in node.comparators)
+        and any(
+            ast.unparse(c) in ("UNSLOTH_DEVICE_MAP", "_PLANNED_DEVICE_MAPS")
+            for c in node.comparators
+        )
     ]
     assert spends, "the 'unsloth' sentinel reaches SentenceTransformer(device = ...) unresolved"
 
@@ -176,3 +179,70 @@ def test_sentence_transformer_decline_survives_the_env_var():
     assert "os.environ['UNSLOTH_AUTO_DEVICE_MAP']" not in ast.unparse(
         function
     ), "the process-wide pin is back; every other thread sees it"
+
+
+def test_every_planned_map_membership_test_is_guarded_against_a_dict():
+    """`device_map` is a dict as often as it is a string, and dicts are unhashable.
+
+    `{"": 0, "model.vision_tower": 1} in _PLANNED_DEVICE_MAPS` raises TypeError, so an
+    explicit placement -- the one shape a user hand-wrote and most wants honoured -- would
+    fail the load outright. Both call sites take the `isinstance` first for that reason,
+    and there is no way to notice from reading either one alone.
+    """
+    for name in os.listdir(MODELS):
+        if not name.endswith(".py"):
+            continue
+        tree = ast.parse(_source(name))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Compare)
+                and any(ast.unparse(c) == "_PLANNED_DEVICE_MAPS" for c in node.comparators)
+            ):
+                continue
+            # One tree, walked twice: a second parse gives different node objects, so
+            # the identity test below would find no parent and pass on anything.
+            parents = [
+                ast.unparse(outer)
+                for outer in ast.walk(tree)
+                if isinstance(outer, ast.BoolOp) and node in ast.walk(outer)
+            ]
+            assert any("isinstance(" in text and ", str)" in text for text in parents), (
+                f"{name}: a membership test on _PLANNED_DEVICE_MAPS with no isinstance "
+                f"guard beside it -- an explicit dict device_map raises TypeError here"
+            )
+
+
+def test_sentence_transformer_declines_to_a_value_st_device_normalises():
+    """Whatever planned name is asked for, this loader declines to "sequential".
+
+    `st_device` only normalises dicts, "auto" and "sequential"; anything else reaches
+    `SentenceTransformer(device = ...)` and then `.to(...)`, so declining to "balanced"
+    -- the value that name declines to everywhere else -- would raise on a string that
+    is not a torch device. Nothing is sharded here, so the sharding fallback is wrong.
+    """
+    tree = ast.parse(_source("sentence_transformer.py"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+    )
+
+    declines = [
+        ast.unparse(node.value)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "device_map" for t in node.targets)
+        and ast.unparse(node.value) != "requested_device_map(device_map)"
+    ]
+    assert "'sequential'" in declines, "the decline is not a literal 'sequential'"
+    assert (
+        "_PLANNED_DEVICE_MAPS[device_map]" not in declines
+    ), "declining to the sharding fallback sends 'balanced' to SentenceTransformer(device=)"
+
+    whitelists = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.List)
+        and [getattr(e, "value", None) for e in node.elts] == ["auto", "sequential"]
+    ]
+    assert whitelists, "the st_device whitelist changed; re-check what the decline may be"

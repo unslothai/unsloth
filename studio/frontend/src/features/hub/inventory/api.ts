@@ -131,6 +131,7 @@ export interface LocalModelListResponse {
   hf_cache_dir?: string | null;
   lmstudio_dirs: string[];
   ollama_dirs?: string[];
+  hermes_dirs?: string[];
   models: LocalModelInfo[];
 }
 
@@ -181,6 +182,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  shard_count?: number;
   /** Bytes a resume still has to fetch. Set only on a partial variant. */
   download_remaining_bytes?: number | null;
   downloaded?: boolean;

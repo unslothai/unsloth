@@ -4,9 +4,9 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   SHORTCUT_SLOTS,
-  activationBelongsToFocus,
   type ShortcutBinding,
   type ShortcutId,
+  activationBelongsToFocus,
   formatBindingLabel,
   matchesBinding,
   parseBinding,
@@ -50,10 +50,9 @@ export function isImeComposing(event: KeyboardEvent): boolean {
  */
 export function isSurfaceInForeground(selector: string): boolean {
   if (typeof document === "undefined") return false;
-  // Every match, not the first: Compare keeps the base view mounted and inert
-  // behind the panes, so the first composer found is the hidden one. Radix
-  // marks the rest of the page aria-hidden (older React: inert) for a modal's
-  // life, which is the general signal, not a per-dialog store.
+  // Every match, not the first: Compare keeps the base view mounted and inert behind the panes, so
+  // the first composer found is the hidden one. Radix marks the rest of the page aria-hidden (older
+  // React: inert) for a modal's life, which is the general signal, not a per-dialog store.
   return [...document.querySelectorAll(selector)].some(
     (el) => !el.closest('[aria-hidden="true"], [inert]'),
   );
@@ -107,13 +106,21 @@ export interface UseShortcutOptions {
    * past the repeat delay would land wherever the user let go.
    */
   repeats?: boolean;
+  /**
+   * Asked at press time, before the chord is consumed. Return false to leave the
+   * key to whatever else would have had it, the browser's own binding included.
+   * `enabled` cannot answer this: it is read at render, and returning from the
+   * handler is too late, since the event is already prevented by then.
+   */
+  claims?: () => boolean;
 }
 
 /** The chords `id` answers to now, joined so the effect re-runs only on a real change. */
 function useBindingValues(id: ShortcutId): string {
   return useKeyboardShortcutsStore((s) =>
-    SHORTCUT_SLOTS.map((slot) => resolveBinding(s.overrides, id, slot) ?? "")
-      .join("\0"),
+    SHORTCUT_SLOTS.map(
+      (slot) => resolveBinding(s.overrides, id, slot) ?? "",
+    ).join("\0"),
   );
 }
 
@@ -132,6 +139,7 @@ export function useShortcut(
     skipInTextFields = false,
     textFieldException,
     repeats = false,
+    claims,
   } = options;
   const values = useBindingValues(id);
   // A chord claimed by two actions is consumed by whichever listener runs
@@ -154,10 +162,10 @@ export function useShortcut(
     });
     return out;
   }, [values, ownedFlags]);
-  // The handler usually closes over fresh props, so keep it in a ref rather
-  // than tearing down and re-adding the listener on every render.
-  const handlerRef = useRef(handler);
-  handlerRef.current = handler;
+  // These usually close over fresh props, so keep them in a ref rather than
+  // tearing down and re-adding the listener on every render.
+  const latestRef = useRef({ handler, claims });
+  latestRef.current = { handler, claims };
 
   useEffect(() => {
     if (bindings.length === 0 || !enabled) return;
@@ -166,9 +174,8 @@ export function useShortcut(
       if (isImeComposing(event)) return;
       const hit = bindings.find((binding) => matchesBinding(binding, event));
       if (!hit) return;
-      // The exception is for a chord that types nothing there. Decline ships
-      // on Escape; rebound to Enter or a letter, the same pass would deny the
-      // request as the user edits the prompt.
+      // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
+      // Enter or a letter, the same pass would deny the request as the user edits the prompt.
       const exception = typesInTextField(hit) ? undefined : textFieldException;
       if (skipInTextFields && isTextEntryFocused(exception)) return;
       // The focused control keeps its own Enter or Space.
@@ -178,12 +185,14 @@ export function useShortcut(
       ) {
         return;
       }
+      // Before preventDefault, which is the whole point: an unclaimed chord has
+      // to reach the browser untouched.
+      if (latestRef.current.claims?.() === false) return;
       event.preventDefault();
-      // Held past the OS repeat delay the chord arrives again and again. It
-      // stays consumed either way, but only an action that asked for repeats
-      // runs on them.
+      // Held past the OS repeat delay the chord arrives again and again. It stays consumed either
+      // way, but only an action that asked for repeats runs on them.
       if (event.repeat && !repeats) return;
-      handlerRef.current(event);
+      latestRef.current.handler(event);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);

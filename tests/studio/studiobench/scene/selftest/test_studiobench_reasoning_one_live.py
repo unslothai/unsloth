@@ -135,7 +135,7 @@ def test_it_opens_exactly_one_pane_and_leaves_the_rest_shut(make_page):
     assert got.expect_ok is True, got.reason
     assert got.expect["open_after_expand"] == 1
     assert got.expect["open_after_collapse"] == 0
-    # The thread's pane count is reported as CONTEXT beside a fixed gesture. Without it the reading
+    # The thread's pane count is reported as CONTEXT beside a fixed gesture; without it the reading
     # cannot be told apart from the thread-wide one in a payload.
     assert got.expect["panes"] == 8
     assert got.expect["panes_opened"] == 1

@@ -10,7 +10,10 @@ export {
   pinKey,
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
-export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
+export {
+  hfModelFitsDevice,
+  loadScopedGpu,
+} from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
   type NumericValueInputHandle,
@@ -38,6 +41,17 @@ export type {
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
 export {
+  clearModelConfigHandoff,
+  createModelConfigHandoffRequestId,
+  modelConfigHandoffForDestination,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
+  modelConfigTargetMatchesSelection,
+  requestModelConfigHandoff,
+  useModelConfigHandoffStore,
+  type ModelConfigHandoffRequest,
+} from "./model-config/model-config-handoff";
+export {
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -51,8 +65,13 @@ export {
   PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
+  isServedByLlamaCpp,
+  contextPinPatch,
   listPerModelConfigs,
   isServedByMlx,
+  residentIsServedByMlx,
+  savedContextPin,
+  loadedContextFields,
   presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,

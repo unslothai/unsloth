@@ -92,8 +92,6 @@ def _install(monkeypatch, *repos):
 
 
 # --------------------------------------------------------------------------------------------
-# 1. Compatible quants reuse ONE cached copy of the companion assets.
-# --------------------------------------------------------------------------------------------
 
 
 def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
@@ -104,8 +102,6 @@ def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     assert required[BASE_REPO.lower()] == {GGUF_REPO}
 
 
-# --------------------------------------------------------------------------------------------
-# 2. Deletion shows what is reclaimed and what remains.
 # --------------------------------------------------------------------------------------------
 
 
@@ -139,8 +135,6 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
     assert [f["repo_id"] for f in impact["freeable_companions"]] == [BASE_REPO]
 
 
-# --------------------------------------------------------------------------------------------
-# 3. Shared assets are not removed while another installed model needs them. ADVERSARIAL.
 # --------------------------------------------------------------------------------------------
 
 
@@ -184,8 +178,8 @@ def test_a_base_reached_only_through_a_card_tag_is_still_protected(monkeypatch):
     gguf = _repo("unsloth/FLUX.2-klein-9B-GGUF", [("flux-2-klein-9b-Q4_K_M.gguf", Q4_K_M_BYTES)])
     other_base = "black-forest-labs/FLUX.2-klein-9B"
     _install(monkeypatch, gguf, _base_repo(other_base))
-    # Before any load has been recorded: the id says klein-9B, so the curated klein-9B base is
-    # derived even though the family default is klein-4B.
+    # Before any load has been recorded: the id says klein-9B, so the curated klein-9B base is derived
+    # even though the family default is klein-4B.
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
     companion_assets.record_companion_link("unsloth/FLUX.2-klein-9B-GGUF", other_base)
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
@@ -220,8 +214,6 @@ def test_the_guard_leaves_ordinary_repos_alone(monkeypatch):
     assert companion_assets.is_companion_base(BASE_REPO)
 
 
-# --------------------------------------------------------------------------------------------
-# 4. Orphaned companion assets can be found and removed without hand-editing the HF cache.
 # --------------------------------------------------------------------------------------------
 
 
@@ -421,8 +413,8 @@ def test_reusing_an_existing_link_still_refreshes_its_recency(monkeypatch):
     monkeypatch.setattr(companion_assets, "_MAX_LINKS", 2)
     assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is True
     assert companion_assets.record_companion_link("unsloth/new-GGUF", BASE_REPO) is True
-    # The old one resolves again to the SAME base: nothing new to record, but it is now the
-    # freshest link, so the next checkpoint displaces the other one.
+    # The old one resolves again to the SAME base: nothing new to record, but it is now the freshest
+    # link, so the next checkpoint displaces the other one.
     assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is False
     assert companion_assets.read_companion_links()["unsloth/old-gguf"] == [BASE_REPO]
     assert companion_assets.record_companion_link("unsloth/third-GGUF", BASE_REPO) is True

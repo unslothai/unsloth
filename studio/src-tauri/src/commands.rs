@@ -1,8 +1,6 @@
 use crate::diagnostics::{self, DiagnosticsState};
 use crate::install;
 use crate::process::{self, BackendState, ShutdownFlag};
-use crate::desktop_updater;
-use crate::staged_update;
 use crate::update;
 use log::{error, info, warn};
 use std::time::{Duration, Instant};
@@ -350,12 +348,7 @@ pub async fn start_server(
     info!("start_server command called with port {}", port);
 
     let diagnostics_state = diagnostics.inner().clone();
-    let generation = match process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)
-    {
-        Ok(generation) => generation,
-        Err(_error) if process::request_staged_rollback_restart(&app, &state) => return Ok(()),
-        Err(error) => return Err(error),
-    };
+    let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
 
     // Spawn health watchdog for the owned backend — detects
     // deadlocks and hangs that stdout-based crash detection misses.
@@ -390,12 +383,7 @@ pub async fn start_managed_server(
 
     let started = Instant::now();
     let diagnostics_state = diagnostics.inner().clone();
-    let generation = match process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)
-    {
-        Ok(generation) => generation,
-        Err(_error) if process::request_staged_rollback_restart(&app, &state) => return Ok(()),
-        Err(error) => return Err(error),
-    };
+    let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
 
     info!(
         "start_managed_server spawned generation={} in {}ms",
@@ -839,81 +827,6 @@ pub async fn start_backend_update(
         .map_err(|e| format!("Update task panicked: {e}"))?
 }
 
-#[tauri::command]
-pub async fn start_staged_update(
-    app: AppHandle,
-    update_state: tauri::State<'_, update::UpdateState>,
-    install_state: tauri::State<'_, install::InstallState>,
-    desktop_update: tauri::State<'_, desktop_updater::DesktopUpdateState>,
-    diagnostics: tauri::State<'_, DiagnosticsState>,
-) -> Result<(), String> {
-    info!("start_staged_update command called");
-
-    if install_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Cannot prepare an update while installation is in progress.".to_string());
-    }
-    if update::is_staged_update_running(&update_state) || update::is_update_running(&update_state) {
-        return Err("Update is already running.".to_string());
-    }
-
-    let shell_version = desktop_updater::pending_version(&desktop_update)?;
-    let backend_version = desktop_updater::pending_backend_version(&desktop_update)?;
-    let state = update_state.inner().clone();
-    let diagnostics_state = diagnostics.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        update::run_staged_update(app, state, diagnostics_state, shell_version, backend_version)
-    })
-    .await
-    .map_err(|e| format!("Staged update task panicked: {e}"))?
-}
-
-#[tauri::command]
-pub fn cancel_staged_update(
-    update_state: tauri::State<'_, update::UpdateState>,
-    diagnostics: tauri::State<'_, DiagnosticsState>,
-) -> Result<(), String> {
-    let staged = update_state
-        .lock()
-        .map(|s| s.child.is_some() && s.staged)
-        .unwrap_or(false);
-    if !staged {
-        return Ok(());
-    }
-    update::record_update_intentional_stop(&update_state, &diagnostics);
-    update::stop_update(&update_state)?;
-    process::with_studio_runtime_launch_guard(|| {
-        staged_update::discard(&diagnostics::studio_dir());
-        Ok(())
-    })
-}
-
-#[tauri::command]
-pub fn staged_update_status(
-    update_state: tauri::State<'_, update::UpdateState>,
-) -> staged_update::StagedUpdateStatus {
-    let mut status = staged_update::status(&diagnostics::studio_dir());
-    status.staging = update::is_staged_update_running(&update_state);
-    status.staging_shell_version = update::staged_update_shell_version(&update_state);
-    status
-}
-
-#[tauri::command]
-pub fn discard_staged_update(
-    update_state: tauri::State<'_, update::UpdateState>,
-) -> Result<(), String> {
-    if update::is_update_running(&update_state) {
-        return Err("Update is already running.".to_string());
-    }
-    process::with_studio_runtime_launch_guard(|| {
-        staged_update::discard(&diagnostics::studio_dir());
-        Ok(())
-    })
-}
-
 /// Repair a stale managed Unsloth install.
 /// Whether a native path lease this app signs can actually be verified.
 ///
@@ -933,6 +846,15 @@ pub async fn native_path_leases_usable(
     )
 }
 
+/// `force_installer` skips the update attempt and runs the bundled installer directly.
+///
+/// The automatic repair tries `studio update` first because it is the cheap fix for a venv
+/// one release behind. But an update reuses the environment it finds, so a managed venv
+/// whose PyTorch has been replaced by a CPU-only wheel comes back from a successful update
+/// still CPU-only. Only install.ps1 / install.sh re-select the torch index.
+///
+/// Settings' manual "Repair installation" therefore passes true. Absent (the startup
+/// auto-repair path) reads as false, so that path is unchanged.
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -941,8 +863,13 @@ pub async fn start_managed_repair(
     update_state: tauri::State<'_, update::UpdateState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    force_installer: Option<bool>,
 ) -> Result<(), String> {
-    info!("start_managed_repair command called");
+    let force_installer = force_installer.unwrap_or(false);
+    info!(
+        "start_managed_repair command called (force_installer={})",
+        force_installer
+    );
 
     if install_state
         .lock()
@@ -979,29 +906,38 @@ pub async fn start_managed_repair(
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
         .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    let _ = app.emit("repair-progress", "Updating existing Unsloth install...");
-    let update_app = app.clone();
-    let update_state = update_state.inner().clone();
-    let update_diagnostics = diagnostics_state.clone();
-    let update_repair_group_id = repair_group_id.clone();
-    let update_result = tokio::task::spawn_blocking(move || {
-        update::run_backend_update_for_repair(
-            update_app,
-            update_state,
-            update_diagnostics,
-            update_repair_group_id,
-        )
-    })
-    .await
-    .map_err(|e| format!("Repair update task panicked: {e}"))?;
+    // Ok(()) rather than skipping the match: a second copy of the fallback under a
+    // `if force_installer` would be the one place a future change could miss.
+    let update_result = if force_installer {
+        let _ = app.emit("repair-progress", "Running bundled installer...");
+        Ok(())
+    } else {
+        let _ = app.emit("repair-progress", "Updating existing Unsloth install...");
+        let update_app = app.clone();
+        let update_state = update_state.inner().clone();
+        let update_diagnostics = diagnostics_state.clone();
+        let update_repair_group_id = repair_group_id.clone();
+        tokio::task::spawn_blocking(move || {
+            update::run_backend_update_for_repair(
+                update_app,
+                update_state,
+                update_diagnostics,
+                update_repair_group_id,
+            )
+        })
+        .await
+        .map_err(|e| format!("Repair update task panicked: {e}"))?
+    };
 
     match update_result {
-        Ok(()) if managed_install_ready_after_repair().await => {
+        Ok(()) if !force_installer && managed_install_ready_after_repair().await => {
             info!("Managed repair complete after update");
             diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
             let _ = app.emit("repair-complete", ());
             return Ok(());
         }
+        // The forced path already emitted its own progress line and ran no update.
+        Ok(()) if force_installer => {}
         Ok(()) => {
             warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
             let _ = app.emit(
@@ -2277,10 +2213,7 @@ async fn health_watchdog(
                     "missing_validated_port",
                 );
                 error!("Health watchdog: backend never reported a validated port, killing and declaring dead");
-                let stopped = process::stop_backend(&state, &shutdown, Some(&diagnostics));
-                if stopped.is_ok() && process::request_staged_rollback_restart(&app, &state) {
-                    break;
-                }
+                let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
                 let _ = app.emit("server-crashed", ());
                 break;
             }
@@ -2403,10 +2336,7 @@ async fn health_watchdog(
                 } else {
                     error!("Health watchdog: backend unresponsive, killing and declaring dead");
                     // Kill the zombie process so retry can start fresh
-                    let stopped = process::stop_backend(&state, &shutdown, Some(&diagnostics));
-                    if stopped.is_ok() && process::request_staged_rollback_restart(&app, &state) {
-                        break;
-                    }
+                    let _ = process::stop_backend(&state, &shutdown, Some(&diagnostics));
                 }
                 let _ = app.emit("server-crashed", ());
                 break;

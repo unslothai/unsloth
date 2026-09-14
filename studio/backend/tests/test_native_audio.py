@@ -43,6 +43,15 @@ def _backend(audio_type: str, **entry):
     return backend
 
 
+def test_anonymous_worker_token_cannot_fall_back_to_the_host_login():
+    from core.inference.inference import _hf_token_for_loader
+    from core.inference.worker import _config_hf_token
+
+    assert _config_hf_token({"hf_token": "", "anonymous_hf_access": True}) is False
+    assert _hf_token_for_loader(False) is False
+    assert NativeAudioBackend._token_kwargs(False) == {"token": False}
+
+
 @pytest.mark.parametrize(
     ("repo", "companion"),
     (
@@ -620,8 +629,9 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     pipeline = Pipeline()
 
-    def from_pretrained(source, **_kwargs):
+    def from_pretrained(source, **kwargs):
         seen["source"] = source
+        seen["from_pretrained"] = kwargs
         return pipeline
 
     monkeypatch.setitem(
@@ -635,6 +645,7 @@ def test_minimax_loader_resolves_components_from_the_selected_checkpoint(monkeyp
 
     entry = {}
     backend._load_minimax_music3(entry, "/models/minimax-custom", None)
+    assert seen["from_pretrained"]["trust_remote_code"] is False
     assert seen["components"]["pretrained_model_name_or_path"] == "/models/minimax-custom"
     assert seen["device"] == "cuda"
     assert entry["pipeline"] is pipeline

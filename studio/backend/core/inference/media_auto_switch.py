@@ -307,6 +307,7 @@ async def _gated_start_load(
     the switch out, and holding them would block new chat and video requests for as long as the
     re-plan and the load registration take.
     """
+    from fastapi import HTTPException
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
@@ -324,9 +325,7 @@ async def _gated_start_load(
                     kind = kind,
                     openai_errors = openai_errors,
                 )
-            # re-resolved under the gate: a concurrent load can activate the other image engine
             backend = backend_for(owner)
-            # what the drain waited out may have been the very load this request wanted
             if satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return True
             if not await drain(
@@ -339,7 +338,6 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
-            # re-planned because a cache deletion during the drain sees no load to guard against
             await _require_local(
                 owner,
                 pick,
@@ -348,13 +346,23 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
                 hf_token = hf_token,
             )
-            # given its own task and waited on with a cap: a first-run native install runs for
-            # minutes before begin_load, and holding both media gates and chat's that long
-            # blocks every unrelated request. On expiry the load keeps going without them.
+            # Given its own task and waited on with a cap: a first-run native install runs for minutes before
+            # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
+            # the load keeps going without them.
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
+                try:
+                    await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
+                except HTTPException as exc:
+                    # The final arbiter check also covers a generation registered while load preparation was off the loop.
+                    if isinstance(exc.detail, dict) and exc.detail.get("error") == "gpu_busy":
+                        raise busy(
+                            kind,
+                            openai_errors,
+                            retry_after = int(exc.detail["retry_after"]),
+                        ) from exc
+                    raise
             return False
     finally:
         for held in reversed(locks):
@@ -455,7 +463,6 @@ async def maybe_auto_switch_media_model(
         handed_over = False
         try:
             backend = backend_for(owner)
-            # re-read under the lock: a concurrent request may have just loaded this model
             if satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return
             await _require_local(

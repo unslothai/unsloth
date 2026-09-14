@@ -12,15 +12,12 @@
 // sits in both graphs), so these pin the source the way the sibling store tests do.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const store = read("../src/features/chat/stores/chat-runtime-store.ts");
-const storage = read("../src/features/chat/utils/chat-settings-storage.ts");
+const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
+const storage = readText("../src/features/chat/utils/chat-settings-storage.ts");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -87,13 +84,14 @@ test("hydration backfills only from an authoritative read", () => {
     "hydratePersistedSettings: async () => {",
     "\n  beginModelLoading:",
   );
+  // Extra destructured fields are fine; fromServer is the one that gates backfill.
   assert.match(
     hydrate,
-    /const \{ settings, fromServer \} = await loadChatSettingsWithLegacyImport\(\);/,
+    /const \{[\s\S]*?\bsettings,[\s\S]*?\bfromServer,?[\s\S]*?\} = await loadChatSettingsWithLegacyImport\(\);/,
   );
   assert.match(
     hydrate,
-    /if \(fromServer\) backfillMirroredSettings\(settings\);/,
+    /if \(fromServer\) backfillMirroredSettings\(hydratedSettings\);/,
   );
   // An ungated call is the bug: a failed GET would push this browser's stale values.
   assert.doesNotMatch(hydrate, /\n\s*backfillMirroredSettings\(settings\);/);
@@ -130,7 +128,7 @@ test("only the legacy-storage fallback is non-authoritative", () => {
   // ...and it is the branch that never saw a server answer.
   assert.match(
     slice(loader, "} catch (error) {", "\n  const legacySettings"),
-    /return \{ settings: legacySettings, fromServer: false \};/,
+    /return \{ settings: legacySettings, fromServer: false,[^}]*\};/,
   );
   // Every other exit reports an answered GET, so absence stays meaningful.
   assert.ok((loader.match(/fromServer: true/g) ?? []).length >= 4);

@@ -108,7 +108,7 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
-            monkeypatch.setattr(module, "_schema_ready", False)
+            monkeypatch.setattr(module, "_schema_ready", set())
 
 
 # Pytest CLI options
@@ -290,6 +290,25 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_leftover_generation_account(monkeypatch):
+    """Clear the media-generation owner, which is a process global no route ever resets.
+
+    ``routes.video._note_generation_account()`` records who started a generation and
+    nothing writes it back to ``None``, so any test that POSTs a generate leaves the
+    next test's poll looking like a foreign account's job -- the progress route then
+    answers the hidden shape, and an unrelated test dies on ``KeyError: 'active'``
+    somewhere else in the run. Six files already reset this by hand; doing it here
+    covers the rest, and the six keep their explicit version because there it IS the
+    thing under test.
+    """
+    # sys.modules, not an import: a module nothing imported has no global to leak.
+    routes_video = sys.modules.get("routes.video")
+    if routes_video is None:
+        return
+    monkeypatch.setattr(routes_video, "_generation_account", None, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -781,7 +800,7 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root = linkable_temp_base / tmp_path.name
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
-    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
     return root
 
 
@@ -807,8 +826,10 @@ def stub_embeddings(monkeypatch):
     import hashlib
     import math
 
-    from core.rag import embeddings
+    from core.rag import config, embeddings
 
+    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
     def _vec(text: str):
@@ -942,3 +963,64 @@ def real_prequant_safe_globals(monkeypatch):
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
     return resolver
+
+
+@pytest.fixture(autouse = True)
+def _no_carried_over_hardware_measurements():
+    """Both hardware caches start empty for every test, as they do in a fresh process.
+
+    The torch build snapshot and the physical GPU inventory are module globals with a
+    60 second TTL, so one test's host -- a suite that makes `import torch` fail, say --
+    would otherwise answer for every test that ran within a minute of it. Cleared
+    afterwards as well, so a test that warms one deliberately does not leak either.
+    """
+    from utils.hardware import hardware as _hw
+
+    def _clear():
+        # Under the locks: a non-blocking read hands the refresh to a daemon thread that holds
+        # these while it writes, so clearing without waiting lets a previous test's REAL host land
+        # in the cache a moment later. Torch lock FIRST, then the inventory lock, because that is
+        # the order the background refresh takes them in.
+        with _hw._torch_build_snapshot_lock, _hw._physical_gpu_inventory_lock:
+            _hw._torch_build_snapshot_cache = None
+            _hw._physical_gpu_inventory_cache = None
+
+    _clear()
+    yield
+    _clear()
+
+
+@pytest.fixture(autouse = True)
+def _process_shutdown_latch_is_clear():
+    """Clear the process-wide shutdown latch around every test.
+
+    The latch is deliberately sticky in production: quitting is terminal, and only an
+    embedded host calling run_server again clears it. In a suite that makes it a
+    global one test can leave set for the rest of the file, and any test that tears a
+    backend down sets it, so a later spawn test sees a stale "quitting" and fails in
+    whatever order pytest happens to pick.
+    """
+    from utils import process_lifetime
+
+    def _reopen():
+        process_lifetime.begin_process_lifecycle()
+        # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
+        # cancel_pending_loads, which sets it, and only run_server clears it -- so one
+        # such test cancels every load admitted by every test that follows it. That is
+        # how four tunnel-safe tests came to fail in a full run and pass alone.
+        # Only if it is ALREADY imported. Importing it here would drag a heavy module
+        # into every test that never asked for it, which perturbed source-contract and
+        # import-order tests elsewhere; and the latch cannot have been set without the
+        # module being loaded, so there is nothing to miss.
+        mod = sys.modules.get("routes.inference")
+        if mod is not None:
+            try:
+                mod.begin_load_lifecycle()
+            except Exception:
+                pass
+
+    _reopen()
+    try:
+        yield
+    finally:
+        _reopen()

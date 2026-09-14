@@ -205,10 +205,10 @@ def assemble(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     return payload
 
 
-#: How the harness layer's `row_type` values map onto the sections of an assembled payload.
-#: Layer 1 writes rows through its `Recorder`; this layer reads them. Keeping the mapping in one
-#: table rather than spread through the renderer means a new row type is one line here and a
-#: visible `unknown_rows` entry until somebody decides where it belongs.
+#: How the harness layer's `row_type` values map onto the sections of an assembled payload. Layer 1
+#: writes rows through its `Recorder` and this layer reads them; keeping the mapping in one table
+#: means a new row type is one line here and a visible `unknown_rows` entry until somebody decides
+#: where it belongs.
 ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "run_meta": "header",
     "gate": "selfcheck",
@@ -217,28 +217,24 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app. It belongs beside the
-    # identity fields so a reader can see whether the order was balanced without digging.
+    # Bookkeeping about HOW the A/B was run, not a measurement of the app, so it belongs beside the
+    # identity fields where a reader can see whether the order was balanced.
     "ab_plan": "header",
-    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI,
-    # not a timing, and folding it into `actions` would put it in front of the scorer.
+    # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
+    # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
-    # The comparability key. Its own section rather than `header`, for two independent reasons.
-    #
-    # First, `header` is collapsed to its FIRST row when the payload is assembled, so a second row
-    # filed there is dropped without a word. Second, the row's `fields` block is identity
-    # bookkeeping and not a measurement: `instrument_level: 0` is a true statement about how the
-    # run was instrumented, exactly like the `identity` and `config` subtrees, so the section is
-    # exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the row
-    # fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
+    # The comparability key. Its own section rather than `header` for two reasons: `header` is
+    # collapsed to its FIRST row when the payload is assembled, so a second row filed there is dropped
+    # without a word; and the row's `fields` block is identity bookkeeping, not a measurement, so the
+    # section is exempted from the bare-zero ban rather than made to fake a Measure. Left unmapped the
+    # row fell into `unknown_rows`, which nothing exempts, and the walker killed every real-path
     # session on `$.unknown_rows[0].fields.instrument_level = 0`.
     "comparability": "comparability",
-    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer
-    # reads, and NOT an exclusion source: the `cell` row it follows is emitted with
-    # `completed: false` immediately before it on the same path, and `excluded_from_rows` already
-    # turns that into a `rung_incomplete` exclusion. Filing this row as a second exclusion would
-    # count one abort twice. It exists so a reader scanning FORWARD can discard the cell's window
-    # rows, and that is all it is kept for here.
+    # The terminal marker for a cell that did not finish. NOT `cells`, which is what the scorer reads,
+    # and NOT an exclusion source: the `cell` row it follows is emitted with `completed: false`
+    # immediately before it and `excluded_from_rows` already turns that into a `rung_incomplete`
+    # exclusion, so filing this as a second exclusion would count one abort twice. It exists so a
+    # reader scanning FORWARD can discard the cell's window rows.
     "cell_aborted": "aborted_cells",
 }
 

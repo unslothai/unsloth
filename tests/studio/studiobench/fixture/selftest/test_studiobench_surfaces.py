@@ -50,15 +50,15 @@ def test_every_surface_declares_a_reach_a_restore_and_a_root():
             f"{surface.id} declares no reach, so it must also declare no restore: a surface that "
             f"is reached by doing nothing cannot need undoing"
         )
-        # Anything that navigates or opens an overlay has to say how to get back, or the next
-        # surface is reached from a state nobody declared.
+        # Anything that navigates or opens an overlay has to say how to get back, or the next surface is
+        # reached from a state nobody declared.
         opens = any(step[0] in {"goto", "click", "fill", "press"} for step in surface.reach)
         assert not opens or surface.restore, f"{surface.id} opens something and never closes it"
 
 
 def test_every_surface_declares_a_settle_condition():
-    # A sweep with no settle condition is a sweep that digests whatever is on screen when the
-    # sleep expires, which is the one result this tool may not produce.
+    # A sweep with no settle condition digests whatever is on screen when the sleep expires, which
+    # is the one result this tool may not produce.
     for surface in surfaces.surfaces():
         assert surface.settle is not None, surface.id
         assert isinstance(surface.settle, dict)
@@ -88,9 +88,8 @@ def test_every_step_uses_a_known_verb_with_the_right_arity():
 
 
 def test_the_sweep_can_execute_every_verb_the_registry_uses():
-    # The registry and the interpreter are in different files, and a verb added to one and not the
-    # other fails only at run time, on the surface that uses it, as a reach failure that reads
-    # like a broken selector.
+    # The registry and the interpreter are in different files, so a verb added to one and not the
+    # other fails only at run time, on the surface that uses it, and reads like a broken selector.
     used = {
         step[0] for s in surfaces.surfaces() for steps in (s.reach, s.restore) for step in steps
     }
@@ -125,9 +124,9 @@ def test_the_registry_covers_every_major_group(group):
 
 
 def test_the_settings_dialog_covers_every_shipped_tab():
-    # The twelve panels are lazily imported chunks, so a tab that stopped rendering fails only
-    # for the tab. Pinned here so a panel added to the app without a surface is visible as a
-    # missing id rather than as a coverage figure that quietly stayed at 100%.
+    # The twelve panels are lazily imported chunks, so a tab that stopped rendering fails only for
+    # the tab. Pinned so a panel added without a surface shows up as a missing id rather than a
+    # coverage figure that quietly stayed at 100%.
     shipped = {
         "general",
         "profile",
@@ -147,9 +146,8 @@ def test_the_settings_dialog_covers_every_shipped_tab():
 
 
 def test_the_registry_covers_every_routed_path():
-    # From app/router.tsx. `/` and `/settings` are not page surfaces -- both redirect on
-    # beforeLoad -- and the two auth-flow routes are in KNOWN_UNCOVERED with the guard that
-    # redirects them.
+    # From app/router.tsx. `/` and `/settings` are not page surfaces (both redirect on beforeLoad)
+    # and the two auth-flow routes are in KNOWN_UNCOVERED with the guard that redirects them.
     routed = {
         "/chat",
         "/projects",
@@ -216,8 +214,8 @@ def test_the_surface_row_type_is_registered():
 
 
 def test_a_surface_row_must_carry_its_reason():
-    # The single defect this project cares most about: a check that cannot distinguish "did not
-    # run" from "passed". A surface row without `reason` is exactly that row.
+    # The single defect this project cares most about: a check that cannot distinguish 'did not run'
+    # from 'passed'. A surface row without `reason` is exactly that row.
     assert "reason" in ROW_REQUIRED["surface"]
     assert "reached" in ROW_REQUIRED["surface"]
     assert "parity" in ROW_REQUIRED["surface"]
@@ -261,14 +259,14 @@ def test_surface_rows_land_in_their_own_payload_section(tmp_path):
     )
     payload = assemble_rows(path)
     assert len(payload["surfaces"]) == 1
-    # NOT in unknown_rows. A new row type that lands there is carried through the whole report
+    # NOT in unknown_rows: a new row type that lands there is carried through the whole report
     # without anyone noticing it is not being read.
     assert payload["unknown_rows"] == []
 
 
 def test_a_payload_carrying_surface_rows_has_no_bare_zeros():
     # The schema bans a naked numeric zero, because a zero outside a measure is indistinguishable
-    # from "we never ran that". Surface rows carry counts, so they have to attest.
+    # from 'we never ran that'. Surface rows carry counts, so they have to attest.
     rows = surface_sweep.sweep(_FakePage(reach_ok = True), "http://x")[0]
     validate_payload({"excluded_cells": [], "surfaces": rows})
 
@@ -318,8 +316,8 @@ def test_a_conditional_miss_is_counted_apart_from_a_hard_miss():
 
 
 def test_a_volatile_surface_is_reached_but_not_counted_as_comparable():
-    # Reached and volatile are different facts and the manifest has to keep them apart. Folding
-    # them together is how a live memory gauge ends up quoted as a UI change.
+    # Reached and volatile are different facts the manifest must keep apart; folding them together
+    # is how a live memory gauge ends up quoted as a UI change.
     entries = [_one(id = "a"), _one(id = "b", volatile = "shows a live memory gauge")]
     rows = _rows_for(entries, {"a", "b"})
     manifest = surface_sweep.build_manifest(rows, entries, {"scoped": True})
@@ -337,10 +335,9 @@ def test_every_volatile_surface_states_its_mechanism():
 
 
 def test_the_measured_volatile_surfaces_are_declared():
-    # Three consecutive sweeps against one Unsloth agreed on 44 of 53 surfaces. These are the ones
-    # that did not, each with a mechanism established from source or from a text diff. Pinned so
-    # a settle condition that is tightened later shows up as a flag that can now be dropped,
-    # rather than as a flag nobody revisits.
+    # Three consecutive sweeps against one Unsloth agreed on 44 of 53 surfaces; these are the ones
+    # that did not, each with a mechanism established from source or a text diff. Pinned so a
+    # later-tightened settle condition shows up as a flag that can now be dropped.
     declared = {s.id for s in surfaces.surfaces() if s.volatile}
     assert {
         "route:chat",
@@ -358,8 +355,8 @@ def test_the_measured_volatile_surfaces_are_declared():
 
 
 def test_the_unexplained_movers_say_so_rather_than_offering_a_cause():
-    # A plausible-sounding mechanism that has not been established is worse than an admitted gap:
-    # it is the sentence somebody uses to wave away a real difference.
+    # A plausible-sounding mechanism that has not been established is worse than an admitted gap: it
+    # is the sentence somebody uses to wave away a real difference.
     unexplained = [
         s
         for s in surfaces.surfaces()
@@ -397,9 +394,8 @@ def test_the_rendered_manifest_names_every_failure_and_every_known_gap():
 
 
 def test_an_unscoped_sweep_says_so_in_the_rendered_manifest():
-    # An unscoped digest is a whole-page reading taken forty times, and every one of them agrees
-    # with every other for reasons that have nothing to do with the surfaces. That has to be at
-    # the top of the artefact, not inferable from a field somebody might read.
+    # An unscoped digest is a whole-page reading taken forty times, every one agreeing for reasons
+    # that have nothing to do with the surfaces. That has to be at the top of the artefact.
     entries = surfaces.surfaces()[:1]
     manifest = surface_sweep.build_manifest(
         _rows_for(entries, {entries[0].id}),
@@ -511,8 +507,8 @@ def test_a_reach_that_fails_records_a_reason_and_never_a_digest():
     for row in interactive:
         assert row["reached"] is False
         assert "the reach failed" in row["reason"]
-        # Never a digest it did not take. A parity block that claimed `attempted` here would make
-        # a failed sweep read as a passing parity check downstream.
+        # Never a digest it did not take: a parity block claiming `attempted` here would make a failed
+        # sweep read as a passing parity check downstream.
         assert row["parity"]["parity_attempted"] is False
 
 
@@ -559,8 +555,8 @@ def test_the_sweep_streams_rows_to_a_recorder_as_it_goes():
 
 
 def test_the_sweep_returns_to_the_known_state_before_every_surface():
-    # Not "after every surface": an after-only reset trusts each surface's own restore, and the
-    # one that fails is the one whose restore did not run.
+    # Not 'after every surface': an after-only reset trusts each surface's own restore, and the one
+    # that fails is the one whose restore did not run.
     page = _FakePage()
     surface_sweep.sweep(page, "http://x")
     assert surfaces.KNOWN_STATE_PATH == "/chat"
@@ -570,9 +566,9 @@ def test_the_sweep_returns_to_the_known_state_before_every_surface():
 
 
 def test_the_sweep_takes_its_digest_through_parity_capture():
-    # If surfaces.js ever grew its own DOM walk, surface digests and action digests would stop
-    # being comparable -- and nothing downstream would notice, because both would still be hex
-    # strings of the same length.
+    # If surfaces.js grew its own DOM walk, surface digests and action digests would stop being
+    # comparable and nothing downstream would notice, because both would still be hex strings of
+    # the same length.
     text = (Path(__file__).resolve().parents[2] / "scene" / "surfaces.js").read_text(
         encoding = "utf-8"
     )
@@ -581,8 +577,8 @@ def test_the_sweep_takes_its_digest_through_parity_capture():
 
 
 def test_surfaces_js_does_not_edit_the_shared_chat_adapter():
-    # dom.js is the film's adapter and every action reads it. The surface layer restores the root
-    # it moved, so a sweep cannot leave the film digesting the wrong element.
+    # dom.js is the film's adapter and every action reads it. The surface layer restores the root it
+    # moved, so a sweep cannot leave the film digesting the wrong element.
     text = (Path(__file__).resolve().parents[2] / "scene" / "surfaces.js").read_text(
         encoding = "utf-8"
     )

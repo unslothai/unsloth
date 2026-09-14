@@ -83,8 +83,8 @@ export function createChatModelHistoryReader(
       }
       emit(chatModelSwitchTargetFromThread(thread));
     },
-    // every history event for this thread lands here, renames and archives included,
-    // so the model is compared before a new object is handed to the caller.
+    // Every history event for this thread lands here, renames and archives included, so the model is
+    // compared before a new object is handed to the caller.
     applyUpdate(thread: ChatModelThreadSnapshot): void {
       if (disposed || thread.id !== threadId) {
         return;
@@ -98,15 +98,12 @@ export function createChatModelHistoryReader(
   };
 }
 
-/**
- * The picker metadata a "Switch back" has to carry, or undefined when the id needs none.
- *
- * A local / fine-tuned row is in neither `/api/models/list` nor the external ids, so with
- * no metadata `isGguf` resolves false and the /load request drops the llama.cpp flags. A
- * Hub repo resolves itself, and a synthesized `source: "hub"` would only route an on-disk
- * model into the download manager, so just the variant travels. The remembered config
- * stays off both branches: `stageOrLoad` already falls back to `rememberedConfigFor`.
- */
+/** The picker metadata a "Switch back" has to carry, or undefined when the id needs none. A local
+ *  or fine-tuned row is in neither `/api/models/list` nor the external ids, so with no metadata
+ *  `isGguf` resolves false and the /load request drops the llama.cpp flags. A Hub repo resolves
+ *  itself, and a synthesized `source: "hub"` would only route an on-disk model into the download
+ *  manager, so just the variant travels. The remembered config stays off both branches:
+ *  `stageOrLoad` already falls back to `rememberedConfigFor`. */
 export function chatModelSwitchMeta(
   target: ChatModelSwitchTarget,
   loraModels: readonly LoraModelOption[],

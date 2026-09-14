@@ -10,6 +10,7 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
+  accounts: ["settings.accounts.title", "settings.accounts.create"],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -40,9 +41,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    // avatarShape lives inside the avatar edit popover, so it has no
-    // always-rendered label for search to scroll to.
-    // The stats heading and highlight tiles render for every profile; the
+    // avatarShape lives inside the avatar edit popover, so it has no always-rendered label for
+    // search to scroll to. The stats heading and highlight tiles render for every profile; the
     // insight and training cards are conditional, so they stay out.
     "settings.profile.stats.title",
     "settings.profile.stats.lifetimeTokens",
@@ -197,6 +197,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToVideo.label",
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
+    "settings.keyboardShortcuts.actions.findInPage.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",
@@ -260,6 +261,12 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+      // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
+      // Tauri repair controller, so indexing it on the web build would scroll to a row
+      // that is not there. Worth indexing at all because the capability message for a host
+      // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
+      // and searching Settings for "repair" answered "No settings found."
+      "settings.general.repairInstall.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

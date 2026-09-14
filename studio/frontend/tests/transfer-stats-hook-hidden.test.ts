@@ -13,7 +13,6 @@
 // visible again.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -22,12 +21,11 @@ import {
   computeTransferStats,
 } from "../src/lib/transfer-stats.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const MB = 1e6;
 
-const hookSource = readFileSync(
-  new URL("../src/features/chat/hooks/use-transfer-stats.ts", import.meta.url),
-  "utf8",
-);
+const hookSource = readSrc("features/chat/hooks/use-transfer-stats.ts");
 
 test("the shared hook skips sampling while the tab is hidden", () => {
   const guard = hookSource.indexOf("document.hidden");

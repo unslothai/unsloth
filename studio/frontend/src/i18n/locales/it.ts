@@ -19,6 +19,13 @@ export const it = {
     shutdown: "Arresta",
   },
   shell: {
+    find: {
+      label: "Trova nella pagina",
+      previous: "Risultato precedente",
+      next: "Risultato successivo",
+      close: "Chiudi ricerca",
+      truncated: "Questa pagina è troppo lunga per essere cercata per intero.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -143,6 +150,34 @@ export const it = {
     },
   },
   settings: {
+    accounts: {
+      title: "Account",
+      description: "Crea account Studio privati. I nuovi utenti accedono con un codice di configurazione monouso e scelgono una password.",
+      username: "Nome utente",
+      create: "Crea account",
+      setupCode: "Codice di configurazione",
+      setupFor: "Codice di configurazione per {username}",
+      shownOnce: "Copia subito questo codice e condividilo con il titolare dell'account. Viene mostrato solo qui e può essere usato una sola volta entro 60 minuti.",
+      expires: "Scade {expiry}",
+      copy: "Copia codice di configurazione",
+      copied: "Copiato",
+      copyFailed: "Impossibile copiare. Seleziona e copia il codice di configurazione qui sopra.",
+      dismiss: "Fatto",
+      owner: "Proprietario dell'installazione",
+      active: "Attivo",
+      inactive: "Inattivo",
+      regenerate: "Rigenera codice di configurazione",
+      resetTitle: "Reimpostare la password di {username}?",
+      resetDescription: "Rigenerare il codice di configurazione sostituisce la password di {username}, chiude le sue sessioni e revoca le sue chiavi API. Consegnagli il nuovo codice per scegliere di nuovo una password.",
+      deactivate: "Disattiva",
+      reactivate: "Riattiva",
+      delete: "Elimina account",
+      deleteTitle: "Eliminare {username}?",
+      deleteDescription: "Questa operazione revoca le sessioni di {username} e annulla il suo lavoro. Chat, impostazioni, credenziali, caricamenti, dataset, addestramenti, output, esportazioni, gallerie, sandbox, progetti e file temporanei vengono ritirati. Le directory vengono rinominate e messe da parte, mai eliminate. Creare di nuovo questo nome utente avvia un account nuovo senza questi dati.",
+      cancel: "Annulla",
+      retry: "Aggiorna account",
+      failed: "Richiesta account non riuscita.",
+    },
     title: "Impostazioni",
     dialog: {
       title: "Impostazioni",
@@ -154,6 +189,7 @@ export const it = {
       panelReload: "Ricarica",
     },
     tabs: {
+      accounts: "Account",
       general: "Generali",
       profile: "Profilo",
       appearance: "Aspetto",
@@ -190,6 +226,10 @@ export const it = {
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       actions: {
+        findInPage: {
+          label: "Trova nella pagina",
+          description: "Cerca il testo di questa pagina",
+        },
         openSettings: {
           label: "Apri le impostazioni",
           description: "Apri la finestra delle impostazioni",
@@ -422,6 +462,17 @@ export const it = {
       droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
       morePending: "Altre righe sono ancora in lettura; arriveranno al prossimo aggiornamento.",
       staleSession: "La registrazione su file e disattivata, quindi questa e una sessione precedente e non verra aggiornata.",
+      downloadAllLogs: "Scarica tutti i log (.zip)",
+      downloadingAllLogs: "Creazione dell'archivio...",
+      exportMaskedNote: "Nei file esportati le credenziali sono mascherate. I log molto grandi conservano solo le righe più recenti e alcuni possono essere esclusi del tutto; vedi EXPORT_WARNINGS.txt nell'archivio.",
+      downloadedTo: "Salvato in {path}",
+      downloadedToBrowser: "Download avviato.",
+      showInFolder: "Mostra nella cartella",
+      openLogsFolder: "Apri la cartella dei log",
+      openLogsFolderFailed: "Non è stato possibile aprire la cartella dei log.",
+      exportFailed: "Non è stato possibile scaricare i log.",
+      exportTooOld: "Il backend Unsloth in esecuzione è troppo vecchio per esportare i log. Aggiornalo e riavvialo.",
+      exportForbidden: "Per scaricare tutti i log serve una sessione di Studio con accesso eseguito. Una chiave API non basta.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
@@ -451,6 +502,13 @@ export const it = {
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
+        sttDeviceLabel: "Carica in",
+        sttDeviceAuto: "GPU quando disponibile",
+        sttDeviceCpu: "RAM della CPU",
+        sttDeviceAutoDescription:
+          "Usa la GPU quando c'è, altrimenti la CPU.",
+        sttDeviceCpuDescription:
+          "Tieni il modello nella RAM di sistema. La trascrizione è più lenta, ma non usa memoria GPU.",
         sttModelSearchPlaceholder: "Cerca un modello",
         sttModelSearching: "Ricerca su Hugging Face…",
         sttModelValidating: "Verifica della compatibilità con Whisper…",
@@ -825,6 +883,16 @@ export const it = {
         openError: "Impossibile aprire la cartella",
         copyError: "Impossibile copiare il percorso",
       },
+      repairInstall: {
+        label: "Ripara l'installazione",
+        description:
+          "Riesegue il programma di installazione sull'ambiente gestito. Utile se la GPU non viene rilevata o se l'app non si avvia.",
+        action: "Ripara installazione",
+        confirmTitle: "Riparare questa installazione?",
+        confirmDescription:
+          "Arresta il server e riesegue il programma di installazione, che reinstalla PyTorch per la GPU di questa macchina. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
+        confirmAction: "Ripara ora",
+      },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
         label: "Reimposta tutte le preferenze locali",
@@ -881,7 +949,11 @@ export const it = {
         currentStreak: "Serie attuale",
         longestStreak: "Serie più lunga",
         activityTitle: "Attività in token",
-        activityDescription: "Periodo: {weeks} · {total}",
+        activityDescription: {
+          daily: "Periodo: {weeks} · {total}",
+          weekly: "Settimana di punta {total} · ultime {weeks}",
+          cumulative: "{total} accumulati nelle ultime {weeks}",
+        },
         mode: {
           daily: "Giornaliera",
           weekly: "Settimanale",
@@ -1078,6 +1150,8 @@ export const it = {
         currentLoad: "Carico attuale",
         free: "Disponibili: {value}",
         noGpu: "Nessuna GPU visibile",
+        gpuUnusable: "GPU non utilizzabile",
+        gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
       },
       gpu: {
         title: "Dispositivi GPU",
@@ -1087,6 +1161,12 @@ export const it = {
         unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
+        noUsableGpu: "Nessuna GPU di questa macchina è utilizzabile da PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) non riesce a inizializzare le GPU sottostanti, quindi non possono essere usate. Controlla il driver della GPU o ripara l'installazione.",
+        unusableDevice: "non utilizzabile",
         unknownDevice: "GPU sconosciuta",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1152,8 +1232,8 @@ export const it = {
         keepResidentDescription: "Resta nella VRAM tra un prompt e l'altro.",
         keepResidentHint: "Non restituisce i pesi alla RAM di sistema finché il modello resta caricato. Disattiva lo scaricamento automatico in inattività e, quando i pesi risiedono davvero nella RAM host (memoria unificata o offload parziale sulla GPU), passa anche --mlock, così il sistema operativo non li pagina per ricaricarli al prompt successivo.",
         noRamReserve: "Non riservare RAM di sistema per il modello",
-        noRamReserveDescription: "Non tiene una copia completa in RAM.",
-        noRamReserveHint: "Trasferisce i pesi nella VRAM invece di tenerne una copia completa in RAM. Mantiene il caricamento mappato in memoria di llama.cpp e rimuove --no-mmap e --mlock.",
+        noRamReserveDescription: "Riduce la RAM occupata dai pesi del modello.",
+        noRamReserveHint: "Salta il caricamento mappato in memoria sulle build Windows supportate quando il modello è interamente scaricato sulla GPU, così le sue pagine non restano residenti. Altrimenti mantiene il caricamento mappato in memoria. I buffer CPU necessari possono comunque occupare RAM. Rimuove --no-mmap e --mlock.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
         memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
         reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
@@ -1209,11 +1289,12 @@ export const it = {
       description:
         "Collega agenti di programmazione come Claude Code e Codex a un modello locale con unsloth start.",
       intro:
-        "collega Claude Code, Codex, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
+        "collega Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode e altri agenti a un modello servito localmente da Unsloth, completamente offline. Avvia un server compatibile con le API OpenAI e non modifica i file di configurazione del tuo agente.",
       readDocs: "Leggi la documentazione",
       copy: "Copia",
       copied: "Copiato",
       commandBuilder: "Generatore di comandi",
+      commandShell: "Shell per tutti i comandi",
       agent: "Agente di programmazione",
       model: "Modello",
       searchModels: "Cerca modelli GGUF...",
@@ -1231,9 +1312,8 @@ export const it = {
       docs: "Documentazione",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1492,6 +1572,8 @@ export const it = {
       archivedImagesDescription: "Visualizza e gestisci le immagini che hai archiviato.",
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
+      archivedAudio: "Audio archiviati",
+      archivedAudioDescription: "Visualizza e gestisci le clip audio che hai archiviato.",
       manageAction: "Gestisci",
       manageChats: "Gestisci chat",
       manageChatsDescription:
@@ -1682,7 +1764,7 @@ export const it = {
         desktopAvailable:
           "È disponibile la versione {version} dell'app desktop",
         desktopAvailableDescription:
-          "Aggiorna ora per prepararlo in background. Puoi continuare a lavorare e riavviare quando è pronto.",
+          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
           "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
         desktopManualInstall:
@@ -1693,20 +1775,11 @@ export const it = {
         desktopCurrent: "L'app desktop è aggiornata",
         desktopCurrentDescription:
           "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
-        desktopPreparingDescription:
-          "L'aggiornamento viene preparato in background. Puoi continuare a lavorare.",
-        desktopReadyToRestartDescription:
-          "È tutto pronto. Riavvia per completare l'installazione dell'aggiornamento.",
-        desktopReadyToInstallDescription:
-          "L'aggiornamento dell'app è stato scaricato. Completa l'aggiornamento del backend per installarlo.",
         checkForUpdates: "Verifica aggiornamenti",
         checkAgain: "Verifica di nuovo",
         retryCheck: "Riprova",
         checking: "Verifica in corso...",
-        preparing: "Preparazione...",
         updateNow: "Aggiorna ora",
-        restartToUpdate: "Riavvia per aggiornare",
-        finishUpdate: "Completa aggiornamento",
         openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",
@@ -1906,6 +1979,7 @@ export const it = {
       sourceHfCache: "Cache HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Cartella personalizzata",
       sourceLocalModel: "Modello locale",
       vramOomBadge: "OOM",
@@ -2119,6 +2193,7 @@ export const it = {
         ariaLabel: "Modalità dei parametri",
       },
       notSupportedAppleSilicon: "Non supportato su Apple Silicon",
+      doraNeedsVisionLayersOff: "Disattiva l'addestramento dei livelli visivi per usare DoRA",
       projectName: "Nome del progetto",
       optional: "Facoltativo",
       projectNameDescription:

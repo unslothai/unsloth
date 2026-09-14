@@ -55,6 +55,13 @@ export const de = {
     shutdown: "Herunterfahren",
   },
   shell: {
+    find: {
+      label: "Auf der Seite suchen",
+      previous: "Vorheriger Treffer",
+      next: "Nächster Treffer",
+      close: "Suche schließen",
+      truncated: "Diese Seite ist zu lang, um vollständig durchsucht zu werden.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -179,6 +186,34 @@ export const de = {
     },
   },
   settings: {
+    accounts: {
+      title: "Konten",
+      description: "Private Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      username: "Benutzername",
+      create: "Konto anlegen",
+      setupCode: "Einrichtungscode",
+      setupFor: "Einrichtungscode für {username}",
+      shownOnce: "Kopieren Sie diesen Code jetzt und geben Sie ihn an den Kontoinhaber weiter. Er wird nur hier angezeigt und kann innerhalb von 60 Minuten einmal verwendet werden.",
+      expires: "Läuft ab: {expiry}",
+      copy: "Einrichtungscode kopieren",
+      copied: "Kopiert",
+      copyFailed: "Kopieren nicht möglich. Markieren und kopieren Sie den Einrichtungscode oben.",
+      dismiss: "Fertig",
+      owner: "Installationsinhaber",
+      active: "Aktiv",
+      inactive: "Inaktiv",
+      regenerate: "Einrichtungscode neu erstellen",
+      resetTitle: "Passwort von {username} zurücksetzen?",
+      resetDescription: "Ein neu erstellter Einrichtungscode ersetzt das Passwort von {username}, meldet die Person ab und widerruft ihre API-Schlüssel. Geben Sie ihr den neuen Code, damit sie wieder ein Passwort wählen kann.",
+      deactivate: "Deaktivieren",
+      reactivate: "Reaktivieren",
+      delete: "Konto löschen",
+      deleteTitle: "{username} löschen?",
+      deleteDescription: "Dadurch werden die Sitzungen von {username} widerrufen und laufende Arbeiten abgebrochen. Chats, Einstellungen, Zugangsdaten, Uploads, Datensätze, Trainingsläufe, Ausgaben, Exporte, Galerien, Sandboxes, Projekte und temporäre Dateien werden stillgelegt. Verzeichnisse werden beiseite umbenannt, nie gelöscht. Wird dieser Benutzername erneut angelegt, beginnt ein neues Konto ohne diese Daten.",
+      cancel: "Abbrechen",
+      retry: "Konten aktualisieren",
+      failed: "Kontoanfrage fehlgeschlagen.",
+    },
     title: "Einstellungen",
     dialog: {
       title: "Einstellungen",
@@ -190,6 +225,7 @@ export const de = {
       panelReload: "Neu laden",
     },
     tabs: {
+      accounts: "Konten",
       general: "Allgemein",
       profile: "Profil",
       appearance: "Darstellung",
@@ -226,6 +262,10 @@ export const de = {
       browserReserved:
         "Dein Browser behält diese Tastenkombination unter Umständen für sich. In der Desktop-App funktioniert sie.",
       actions: {
+        findInPage: {
+          label: "Auf der Seite suchen",
+          description: "Den Text auf dieser Seite durchsuchen",
+        },
         openSettings: {
           label: "Einstellungen öffnen",
           description: "Den Einstellungsdialog öffnen",
@@ -458,6 +498,17 @@ export const de = {
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
       morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
       staleSession: "Die Protokollierung in Dateien ist deaktiviert, daher ist dies eine fruhere Sitzung und wird nicht aktualisiert.",
+      downloadAllLogs: "Alle Protokolle herunterladen (.zip)",
+      downloadingAllLogs: "Protokolle werden gepackt...",
+      exportMaskedNote: "In den exportierten Dateien werden Zugangsdaten maskiert. Sehr große Logs behalten nur ihre neuesten Zeilen, und einzelne Logs können ganz fehlen; siehe EXPORT_WARNINGS.txt im Archiv.",
+      downloadedTo: "Gespeichert unter {path}",
+      downloadedToBrowser: "Download gestartet.",
+      showInFolder: "Im Ordner anzeigen",
+      openLogsFolder: "Protokollordner öffnen",
+      openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
+      exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
+      exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
@@ -486,6 +537,13 @@ export const de = {
         sttModelLabel: "Spracherkennungsmodell",
         sttModelDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung.",
+        sttDeviceLabel: "Laden in",
+        sttDeviceAuto: "GPU, wenn verfügbar",
+        sttDeviceCpu: "CPU-RAM",
+        sttDeviceAutoDescription:
+          "Die GPU verwenden, sofern vorhanden, sonst die CPU.",
+        sttDeviceCpuDescription:
+          "Das Modell im Arbeitsspeicher halten. Die Transkription ist langsamer, belegt aber keinen GPU-Speicher.",
         sttModelSearchPlaceholder: "Modell suchen",
         sttModelSearching: "Hugging Face wird durchsucht…",
         sttModelValidating: "Whisper-Kompatibilität wird geprüft…",
@@ -855,6 +913,16 @@ export const de = {
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
       },
+      repairInstall: {
+        label: "Installation reparieren",
+        description:
+          "Führt das Installationsprogramm erneut über die verwaltete Umgebung aus. Nützlich, wenn die GPU nicht erkannt wird oder die App nicht startet.",
+        action: "Installation reparieren",
+        confirmTitle: "Diese Installation reparieren?",
+        confirmDescription:
+          "Stoppt den Server und führt das Installationsprogramm erneut aus, wodurch PyTorch für die GPU dieses Rechners neu installiert wird. Chats und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
+        confirmAction: "Jetzt reparieren",
+      },
       resetPreferences: {
         sectionTitle: "Gefahrenzone",
         label: "Alle lokalen Einstellungen zurücksetzen",
@@ -917,7 +985,11 @@ export const de = {
         currentStreak: "Aktuelle Serie",
         longestStreak: "Längste Serie",
         activityTitle: "Token-Aktivität",
-        activityDescription: "Zeitraum: {weeks} · {total}",
+        activityDescription: {
+          daily: "Zeitraum: {weeks} · {total}",
+          weekly: "Spitzenwoche {total} · letzte {weeks}",
+          cumulative: "{total} kumuliert in den letzten {weeks}",
+        },
         mode: {
           daily: "Täglich",
           weekly: "Wöchentlich",
@@ -1112,6 +1184,8 @@ export const de = {
         currentLoad: "Aktuelle Auslastung",
         free: "{value} frei",
         noGpu: "Keine sichtbare GPU",
+        gpuUnusable: "GPU nicht nutzbar",
+        gpuUnusableDetail: "Erkannt, aber PyTorch kann sie nicht nutzen",
       },
       gpu: {
         title: "GPU-Geräte",
@@ -1121,6 +1195,12 @@ export const de = {
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
         noGpu:
           "Keine sichtbare GPU erkannt. Oben werden nur die CPU-Ressourcen angezeigt.",
+        noUsableGpu: "Auf diesem Rechner ist keine GPU für PyTorch nutzbar.",
+        mismatchCpuBuild:
+          "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",
+        mismatchUnavailable:
+          "PyTorch ({version}) kann die GPUs unten nicht initialisieren, daher sind sie nicht nutzbar. Prüfen Sie den Grafiktreiber oder reparieren Sie die Installation.",
+        unusableDevice: "nicht nutzbar",
         unknownDevice: "Unbekannte GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1186,8 +1266,8 @@ export const de = {
         keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
         keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
         noRamReserve: "Keinen System-RAM für das Modell reservieren",
-        noRamReserveDescription: "Keine vollständige Kopie im RAM behalten.",
-        noRamReserveHint: "Die Gewichte werden in den VRAM gestreamt, statt eine vollständige Kopie im RAM zu halten. Behält das speicherabgebildete Laden von llama.cpp bei und entfernt --no-mmap und --mlock.",
+        noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
+        noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
@@ -1243,11 +1323,12 @@ export const de = {
       description:
         "Verbinden Sie Coding-Agenten wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
       intro:
-        "verbindet Claude Code, Codex, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
+        "verbindet Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
       readDocs: "Dokumentation lesen",
       copy: "Kopieren",
       copied: "Kopiert",
       commandBuilder: "Befehlsgenerator",
+      commandShell: "Shell für alle Befehle",
       agent: "Coding-Agent",
       model: "Modell",
       searchModels: "GGUF-Modelle suchen...",
@@ -1265,9 +1346,8 @@ export const de = {
       docs: "Dokumentation",
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1529,6 +1609,8 @@ export const de = {
       archivedImagesDescription: "Bilder anzeigen und verwalten, die du archiviert hast.",
       archivedVideos: "Archivierte Videos",
       archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
+      archivedAudio: "Archivierte Audioclips",
+      archivedAudioDescription: "Audioclips anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
       manageChats: "Chats verwalten",
       manageChatsDescription:
@@ -1715,7 +1797,7 @@ export const de = {
           "Dies dauert in der Regel einige Sekunden.",
         desktopAvailable: "Version {version} der Desktop-App ist verfügbar",
         desktopAvailableDescription:
-          "Aktualisieren Sie jetzt, um das Update im Hintergrund vorzubereiten. Sie können weiterarbeiten und neu starten, sobald es bereit ist.",
+          "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
           "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
         desktopManualInstall:
@@ -1726,20 +1808,11 @@ export const de = {
         desktopCurrent: "Die Desktop-App ist auf dem neuesten Stand",
         desktopCurrentDescription:
           "Unsloth sucht weiterhin automatisch nach Updates.",
-        desktopPreparingDescription:
-          "Das Update wird im Hintergrund vorbereitet. Sie können weiterarbeiten.",
-        desktopReadyToRestartDescription:
-          "Alles ist bereit. Starten Sie neu, um die Installation abzuschließen.",
-        desktopReadyToInstallDescription:
-          "Das App-Update wurde heruntergeladen. Schließen Sie das Backend-Update ab, um es zu installieren.",
         checkForUpdates: "Nach Updates suchen",
         checkAgain: "Erneut suchen",
         retryCheck: "Erneut versuchen",
         checking: "Wird geprüft...",
-        preparing: "Wird vorbereitet...",
         updateNow: "Jetzt aktualisieren",
-        restartToUpdate: "Zum Aktualisieren neu starten",
-        finishUpdate: "Update abschließen",
         openReleasePage: "Release-Seite öffnen",
         unknownInstall:
           "Es konnte nicht erkannt werden, wie Unsloth installiert wurde. Verwenden Sie für Installer- oder PyPI-Installationen die obigen Befehle.",
@@ -1908,6 +1981,7 @@ export const de = {
       sourceHfCache: "HF-Cache",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Benutzerdefinierter Ordner",
       sourceLocalModel: "Lokales Modell",
       vramOomBadge: "OOM",
@@ -2161,6 +2235,7 @@ export const de = {
       memoryEfficient: "Speichereffizient",
       weightDecomposed: "Gewichtszerlegt",
       notSupportedAppleSilicon: "Auf Apple Silicon nicht unterstützt",
+      doraNeedsVisionLayersOff: "Training der Vision-Schichten deaktivieren, um DoRA zu nutzen",
       optimization: "Optimierung",
       schedule: "Zeitplan",
       memory: "Speicher",

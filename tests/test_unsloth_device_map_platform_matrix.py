@@ -55,8 +55,8 @@ ACCELERATORS = [
 
 DEVICE_COUNTS = [0, 1, 2, 8]
 
-# Everything a caller can hand the loader today. None is included because
-# `FastDiffusionModel.from_pretrained` lets the caller clear it.
+# Everything a caller can hand the loader today.
+# None is included because `FastDiffusionModel.from_pretrained` lets the caller clear it.
 UNTOUCHED_DEVICE_MAPS = [
     "sequential",
     "auto",
@@ -153,6 +153,8 @@ def _build(
             exec(ast.get_source_segment(_SRC, node), ns)
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
             "UNSLOTH_DEVICE_MAP",
+            "UNSLOTH_BALANCED_DEVICE_MAP",
+            "_PLANNED_DEVICE_MAPS",
             "DEFAULT_DEVICE_MAP",
             "_SIZE_UNITS",
         ):
@@ -301,8 +303,9 @@ def test_an_old_unsloth_zoo_without_a_planner_still_loads(host, monkeypatch):
     )
     assert ns["resolve_unsloth_device_map"]("unsloth", "unsloth/Qwen3-0.6B") == "sequential"
 
-    # Shape two: no such module. Block the import rather than deleting it from sys.modules,
-    # which on a machine that has the real planner installed just imports it again.
+    # Shape two: no such module.
+    # Block the import rather than deleting it from sys.modules, which on a machine that has the real planner installed
+    # just imports it again.
     class _Blocked:
         def find_module(
             self,

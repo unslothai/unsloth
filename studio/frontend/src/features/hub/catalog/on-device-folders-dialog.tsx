@@ -38,7 +38,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
-  DownloadCircle01Icon,
+  Download01Icon,
   FileSearchIcon,
   FolderAddIcon,
   FolderExportIcon,
@@ -153,10 +153,9 @@ export function OnDeviceFoldersDialog({
     onInventoryChange?.();
   }, [onInventoryChange]);
 
-  // Relocating the cache changes which repos are on disk, but
-  // updateHuggingFaceCacheSettings already bumps the inventory version, which
-  // re-fetches every source. Refreshing here too would scan twice, since the
-  // two rounds carry different version keys and cannot be deduplicated.
+  // Relocating the cache changes which repos are on disk, but updateHuggingFaceCacheSettings
+  // already bumps the inventory version, which re-fetches every source. Refreshing here too would
+  // scan twice, since the two rounds carry different version keys and cannot be deduplicated.
   const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
     setDownloadSaving(true);
     try {
@@ -276,7 +275,7 @@ export function OnDeviceFoldersDialog({
             <div className="rounded-[14px] border border-border/70 bg-muted/20 p-3">
               <div className="mb-2 flex items-center gap-2 text-ui-12 font-medium text-foreground">
                 <HugeiconsIcon
-                  icon={DownloadCircle01Icon}
+                  icon={Download01Icon}
                   strokeWidth={1.75}
                   className="size-3.5 text-muted-foreground"
                 />

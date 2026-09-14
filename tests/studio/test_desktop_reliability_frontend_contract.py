@@ -5,6 +5,13 @@
 
 import re
 from pathlib import Path
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    boolean_table,
+    expand_bindings,
+    gates_the_markup,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -464,7 +471,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -488,7 +495,14 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
+    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
+    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
+    assert gate, "no binding requires both a running status and desktopAuthReady"
+    assert gates_the_markup(
+        source, gate
+    ), f"{gate} is computed but does not condition the mount in the markup"
     assert "Preparing Unsloth" not in source
     assert "Signing in to desktop session" not in source
     assert "desktopBooting" not in source
@@ -605,7 +619,14 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    assert '"pl-3"' in titlebar
+    # The navigation box's left inset is deliberately not asserted here. Whether that
+    # element ends up with one is a computed style: it depends on the tailwind-merge
+    # cascade, the important modifier, whether an arbitrary value is valid CSS, whether
+    # the class is hoisted into a const or interpolated into a template hole, and
+    # whether DesktopTitlebarNavigation applies it from its own className prop. None of
+    # that is decidable from this file, and the exact-value form this replaces failed
+    # #10321 for retuning 12px to 16px, which is what an alignment pass is for. A
+    # computed-style check belongs in a driver that renders the titlebar.
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
@@ -619,6 +640,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
     navbar = NAVBAR.read_text(encoding = "utf-8")
@@ -638,9 +660,14 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         encoding = "utf-8"
     )
     # The nudge has to move the navigation without pushing it out of the titlebar it sits
-    # in, so the button box travels with it. The container's mt-1 is deliberately not in
-    # the sum: translate-y is visual, and the margin already seats the box in the row.
-    button = _titlebar_nav_button_px(TITLEBAR.read_text(encoding = "utf-8"))
+    # in, so the button box travels with it. The mac-only margin is deliberately not in the
+    # sum: translate-y is visual, and the margin already seats the box in the native row.
+    navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
+        "export function WindowTitlebar", 1
+    )[0]
+    assert "mt-1" not in navigation
+    assert "mt-[var(--studio-titlebar-navigation-margin-top,0px)]" in navigation
+    button = _titlebar_nav_button_px(titlebar)
     assert button is not None, "navigation button size no longer readable from buttonClass"
     blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
     nudged = {
@@ -655,8 +682,28 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
+    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
+    # named const and giving it a peek exception: a refactor that changed nothing this
+    # contract protects, and it left main and every open PR red for a day. What must hold is
+    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
+    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    # Asking only that the held-out condition still appears would accept dropping the peek
+    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
+    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
+    # the accessibility tree, over every combination of the four inputs, and let any
+    # spelling that admits exactly those states pass.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
@@ -775,8 +822,9 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert (
-        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
+    assert re.search(
+        r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
+        root,
     )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
@@ -897,7 +945,9 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
-    header = opening + after.split("{/* Train mode", 1)[0]
+    header = (
+        opening + after.split('      {pageMode === "train" ? (\n        <DiffusionTrainPanel', 1)[0]
+    )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
     assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening

@@ -1519,3 +1519,59 @@ class TestHealerSignalAlignment:
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed
+
+
+# --- client-supplied tool schemas -------------------------------------------------------
+# A coding agent on `unsloth start` declares its own tools, so schemas live in the request.
+
+
+def _client_tool(name, properties):
+    return {
+        "type": "function",
+        "function": {"name": name, "parameters": {"type": "object", "properties": properties}},
+    }
+
+
+GREP_TOOL = _client_tool(
+    "Grep",
+    {
+        "pattern": {"type": "string"},
+        "multiline": {"type": "boolean"},
+        "head_limit": {"type": "integer"},
+        "timeout": {"type": "integer"},
+    },
+)
+# Spells `timeout` the other way, so neither call reads through the other tool's schema.
+FETCH_TOOL = _client_tool("WebFetch", {"url": {"type": "string"}, "timeout": {"type": "string"}})
+CLIENT_TOOLS = [FETCH_TOOL, GREP_TOOL]
+CLIENT_NAMES = {"WebFetch", "Grep"}
+
+
+def _healed_arguments(content):
+    msg = {"role": "assistant", "content": content}
+    assert heal_openai_message(msg, CLIENT_NAMES, CLIENT_TOOLS) is True
+    (call,) = msg["tool_calls"]
+    return json.loads(call["function"]["arguments"])
+
+
+class TestClientToolSchemaTyping:
+    def test_xml_parameters_arrive_as_their_declared_types(self):
+        """Both spell "false": the declared flag becomes a boolean, the search text stays text."""
+        arguments = _healed_arguments(
+            "<function=Grep>"
+            "<parameter=pattern>false</parameter>"
+            "<parameter=head_limit>25</parameter>"
+            "<parameter=multiline>false</parameter>"
+            "</function>"
+        )
+        assert arguments == {"pattern": "false", "head_limit": 25, "multiline": False}
+
+    def test_each_call_is_typed_through_its_own_tools_schema(self):
+        """One key, two declarations: `timeout` is milliseconds on Grep and a duration
+        string on WebFetch. A schema picked by position, or merged across the request, has
+        one answer for both keys and so reads one of these calls wrong."""
+        call = (
+            "<function=%s><parameter=%s>x</parameter><parameter=timeout>30</parameter></function>"
+        )
+        assert _healed_arguments(call % ("WebFetch", "url")) == {"url": "x", "timeout": "30"}
+        assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}

@@ -11,11 +11,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+
+const USE_CHAT_MODEL_RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 
 registerBundlerResolver();
 const { residentRuntimeMatchesConfig, residentSpeculativeNeedsRepair } =
@@ -367,19 +367,10 @@ test("one differing field among many agreeing ones is still a reload", () => {
  * carries forceReload, and a native pick carries a lease this path cannot adopt.
  */
 test("selectModel weighs the config and the lease before confirming a reload", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
   // Newline-tolerant: the call wraps once its argument list grows.
-  const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
-  const identityCheck = source.indexOf("residentModelMatchesPick(status");
-  const confirmPrompt = source.indexOf(
+  const configCheck = USE_CHAT_MODEL_RUNTIME.search(/residentRuntimeMatchesConfig\(\s*status/);
+  const identityCheck = USE_CHAT_MODEL_RUNTIME.indexOf("residentModelMatchesPick(status");
+  const confirmPrompt = USE_CHAT_MODEL_RUNTIME.indexOf(
     "await confirmStopRunningChatsIfNeeded(",
   );
   assert.ok(identityCheck > 0, "selectModel no longer checks residency");
@@ -394,7 +385,7 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   // written only by a completed load, so this path must not adopt one.
   // Widened as the gate's preamble grows: what matters is that the guard opens the block
   // the identity check sits in, not how many reads it makes first.
-  const guard = source.lastIndexOf(
+  const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
     identityCheck,
   );
@@ -499,7 +490,7 @@ test("an unset context length is resolved the way the load resolves it", () => {
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 32768 }, BLANK, {
       ...STANDING,
-      // The re-pick branch: ggufContextLength, not 0.
+      // The re-pick branch: loadedContextLength, not 0.
       resolveContextLength: (pin) => pin ?? 32768,
     }),
     true,
@@ -1439,11 +1430,10 @@ test("unset nullable settings ask for the default, not for the resident value", 
       `${key} pinned on the resident load must not be adopted by a blank config`,
     );
   }
-  // spec_draft_n_max is the exception, and it is the backend's: _runtime_matches_intent
-  // rejects a draft-count difference only when `intent.spec_draft_n_max is not None`, so
-  // an unset limit asks for no change and /load answers already_loaded. Reloading for it
-  // could not deliver the default anyway, since that same answer leaves the count alone.
-  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), true);
+  // spec_draft_n_max is no exception either: _runtime_matches_intent rejects the
+  // null-against-explicit flip, so a blank pick against a resident override reloads and
+  // that reload does deliver the platform default.
+  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), false);
   assert.equal(
     matches(
       { ...DEFAULTS, spec_draft_n_max: 16 },
@@ -1547,18 +1537,9 @@ test("a healthy runtime and a pick wanting no drafter both stay on the shortcut"
  * against the live store rather than in this leaf.
  */
 test("the resident shortcut keeps the picked model's own sequence cap", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
-  const rollback = source.indexOf("restorePreviousConfig();", configCheck);
-  const reapply = source.indexOf("pickedMaxSeqLength", configCheck);
+  const configCheck = USE_CHAT_MODEL_RUNTIME.search(/residentRuntimeMatchesConfig\(\s*status/);
+  const rollback = USE_CHAT_MODEL_RUNTIME.indexOf("restorePreviousConfig();", configCheck);
+  const reapply = USE_CHAT_MODEL_RUNTIME.indexOf("pickedMaxSeqLength", configCheck);
   assert.ok(
     rollback > 0,
     "the shortcut no longer rolls the staged config back",
@@ -1567,14 +1548,14 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
     reapply > rollback,
     "the shortcut leaves the outgoing model's maxSeqLength in place",
   );
-  const confirmPrompt = source.indexOf(
+  const confirmPrompt = USE_CHAT_MODEL_RUNTIME.indexOf(
     "await confirmStopRunningChatsIfNeeded(",
   );
   assert.ok(reapply < confirmPrompt, "the re-apply escaped the shortcut");
   // An absent cap is not "leave it alone": applyPerModelConfigToRuntime resolves it to the
   // default, so a pick without one must land on the default rather than the outgoing cap.
   assert.match(
-    source.slice(reapply, reapply + 260),
+    USE_CHAT_MODEL_RUNTIME.slice(reapply, reapply + 260),
     /\?\?\s*defaultInferenceParams\.maxSeqLength/,
     "an absent cap no longer resolves to the default",
   );
@@ -1589,21 +1570,12 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
  * is a silent loss rather than one extra reload.
  */
 test("an outstanding audio probe keeps the shortcut from skipping the load", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  const identity = source.search(/residentModelMatchesPick\(\s*status/);
-  const probe = source.indexOf("status.audio_probe_pending !== true", identity);
+  const identity = USE_CHAT_MODEL_RUNTIME.search(/residentModelMatchesPick\(\s*status/);
+  const probe = USE_CHAT_MODEL_RUNTIME.indexOf("status.audio_probe_pending !== true", identity);
   // The caller tells the repair check whether the load carries a gguf_path, since the
   // route derives that from the identifier and the drafter retry is guarded on it.
   assert.match(
-    source,
+    USE_CHAT_MODEL_RUNTIME,
     /\(loadPath \?\? modelId\)\.toLowerCase\(\)\.endsWith\("\.gguf"\)/,
     "the repair check no longer knows whether the pick sends a path",
   );
@@ -1612,10 +1584,10 @@ test("an outstanding audio probe keeps the shortcut from skipping the load", () 
     "the shortcut adopts a model whose audio probe never finished",
   );
   // Inside the verdict, so the re-read before adopting judges it again.
-  const decision = source.indexOf("const confirmedStatus", identity);
+  const decision = USE_CHAT_MODEL_RUNTIME.indexOf("const confirmedStatus", identity);
   assert.ok(probe < decision, "the probe check escaped the residency verdict");
   // Only an explicit true declines: a backend too old to report it behaves as before.
-  assert.match(source.slice(probe - 40, probe + 40), /!== true/);
+  assert.match(USE_CHAT_MODEL_RUNTIME.slice(probe - 40, probe + 40), /!== true/);
 });
 
 /**
@@ -1628,22 +1600,13 @@ test("an outstanding audio probe keeps the shortcut from skipping the load", () 
  * would leave the picker naming this model while prompts went to the one now loaded.
  */
 test("the shortcut re-reads and re-judges the status before adopting", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
   // The verdict is a named predicate, so it can be applied to more than one status.
   assert.match(
-    source,
-    /const adoptable = \(status: InferenceStatusResponse\) =>/,
+    USE_CHAT_MODEL_RUNTIME,
+    /const adoptable = \(status: InferenceStatusResponse\) =>\s*\(status\.loading\?\.length \?\? 0\) === 0 &&/,
     "the residency verdict is no longer callable against a second status",
   );
-  const decision = source.search(
+  const decision = USE_CHAT_MODEL_RUNTIME.search(
     /const confirmedStatus = await getInferenceStatus\(\)/,
   );
   assert.ok(
@@ -1651,28 +1614,28 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     "the shortcut adopts the status it opened with, across every await above it",
   );
   assert.match(
-    source.slice(decision, decision + 200),
+    USE_CHAT_MODEL_RUNTIME.slice(decision, decision + 200),
     /if \(confirmedStatus && adoptable\(confirmedStatus\)\)/,
     "the re-read is not judged, only fetched",
   );
   // And the adopted status is the fresh one, not the one the window opened with.
-  const adopt = source.indexOf("applyActiveModelStatusToStore(", decision);
+  const adopt = USE_CHAT_MODEL_RUNTIME.indexOf("applyActiveModelStatusToStore(", decision);
   assert.match(
-    source.slice(adopt, adopt + 60),
+    USE_CHAT_MODEL_RUNTIME.slice(adopt, adopt + 60),
     /applyActiveModelStatusToStore\(confirmedStatus/,
   );
   // The pick's own GPU selection survives the hydration, which would otherwise widen it
   // back: the backend records the incoming pool when it adopts on a fitted subset, and
   // skipping /load skips that, so the status still names the GPUs the user removed.
-  const restore = source.indexOf("selectedGpuIds: picked", decision);
-  const hydrate = source.indexOf("applyActiveModelStatusToStore(", decision);
+  const restore = USE_CHAT_MODEL_RUNTIME.indexOf("selectedGpuIds: picked", decision);
+  const hydrate = USE_CHAT_MODEL_RUNTIME.indexOf("applyActiveModelStatusToStore(", decision);
   assert.ok(
     restore > hydrate,
     "the adopted pick no longer keeps its own GPU selection",
   );
   // A failed re-read must not adopt either: falling out of the block reaches /load.
   assert.ok(
-    source.indexOf("await getInferenceStatus().catch(() => null)", decision) ===
+    USE_CHAT_MODEL_RUNTIME.indexOf("await getInferenceStatus().catch(() => null)", decision) ===
       decision + "const confirmedStatus = ".length,
     "the re-read no longer tolerates a failed status",
   );
@@ -1687,29 +1650,20 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
  * client had left running.
  */
 test("with no saved config the gate compares what the load would send", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
+  const configCheck = USE_CHAT_MODEL_RUNTIME.search(/residentRuntimeMatchesConfig\(\s*status/);
   assert.ok(
     configCheck > 0 &&
-      /const comparedConfig =\s*\n\s*pendingConfig \?\?/.test(source),
+      /const comparedConfig =\s*\n\s*pendingConfig \?\?/.test(USE_CHAT_MODEL_RUNTIME),
     "the gate takes an absent config as a wildcard again",
   );
   // Both doors, and the reset one must not be the live store.
   assert.match(
-    source,
+    USE_CHAT_MODEL_RUNTIME,
     /resetsPerModelSettings\s*\?\s*\{\s*\n\s*\.\.\.DEFAULT_PER_MODEL_CONFIG/,
     "a model switch no longer compares against the defaults it would send",
   );
   assert.match(
-    source,
+    USE_CHAT_MODEL_RUNTIME,
     /: currentRuntimePerModelConfig\(\)\)/,
     "a re-pick that switches nothing no longer compares against the live runtime",
   );
@@ -1721,15 +1675,7 @@ test("adopting reseeds the slot and batch controls the rollback left behind", ()
   // kept them: the adopted model could run 4 slots while the control showed the outgoing
   // count, and the next Apply saved that over it. Reachable coming back from an external
   // provider to a still-resident GGUF, which is the case this shortcut began as.
-  const hydrator = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/lib/apply-inference-status-to-store.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const hydrator = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   assert.match(
     hydrator.replace(/\s+/g, " "),
     /const slotsModelChanged = hydratingExistingModel;/,
@@ -1737,31 +1683,13 @@ test("adopting reseeds the slot and batch controls the rollback left behind", ()
   // Every other load-param seed at that call site already keys off the same flag, so the
   // suppression is gone rather than merely unused.
   assert.equal(hydrator.includes("readoptingSameModel"), false);
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  assert.equal(source.includes("readoptingSameModel"), false);
+  assert.equal(USE_CHAT_MODEL_RUNTIME.includes("readoptingSameModel"), false);
 });
 
 /** The repair window is only useful if it is consulted before the reload is decided. */
 test("selectModel asks about a repairable drafter before adopting", () => {
-  const source = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/hooks/use-chat-model-runtime.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
-  const repairCheck = source.indexOf("residentSpeculativeNeedsRepair(");
-  const confirmPrompt = source.indexOf(
+  const repairCheck = USE_CHAT_MODEL_RUNTIME.indexOf("residentSpeculativeNeedsRepair(");
+  const confirmPrompt = USE_CHAT_MODEL_RUNTIME.indexOf(
     "await confirmStopRunningChatsIfNeeded(",
   );
   assert.ok(
@@ -1769,4 +1697,97 @@ test("selectModel asks about a repairable drafter before adopting", () => {
     "selectModel no longer reloads a degraded drafter",
   );
   assert.ok(repairCheck < confirmPrompt);
+});
+
+/**
+ * The store's mapping is what the comparator runs on both sides, so it has to agree with
+ * the backend's `_LEGACY_SPEC_MODE_MAP`. A stored per-model override reaches the config
+ * unnormalized (`model-overrides.ts` binds `speculative_type` straight through), so a
+ * spelling the backend canonicalises to "off" must not read as Auto here: the comparator
+ * would then weigh Auto against a status already reading "off" and re-send /load on every
+ * pick. The store cannot be imported in this suite, its module graph reaching the auth
+ * pages, so the function is lifted out of the source the way chat-model-residency.test.ts
+ * reads it -- but evaluated, so this asserts behavior rather than spelling.
+ */
+test("the speculative normalizer reads llama.cpp's disable spellings as off", () => {
+  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
+  const start = store.indexOf("export function normalizeSpeculativeType");
+  assert.ok(start > 0, "normalizeSpeculativeType moved; follow it here");
+  const source = store
+    .slice(start, store.indexOf("\n}\n", start) + 2)
+    .replace("export function", "function")
+    .replace("  v: string | null | undefined,\n): string | null {", "v) {");
+  const normalize = new Function(
+    `${source}; return normalizeSpeculativeType;`,
+  )() as (v: string | null | undefined) => string | null;
+
+  for (const spelling of [
+    "off",
+    "none",
+    "None",
+    "NONE",
+    "  none  ",
+    "disable",
+    "Disabled",
+    "disabled",
+  ]) {
+    assert.equal(normalize(spelling), "off", `${spelling} must read as off`);
+  }
+  // The rest of the mapping is untouched, so an alias cannot swallow a real mode.
+  assert.equal(normalize("default"), "auto");
+  assert.equal(normalize("draft-mtp"), "mtp");
+  assert.equal(normalize("mtp+ngram"), "mtp+ngram");
+  assert.equal(normalize("bogus"), "auto");
+  assert.equal(normalize(null), null);
+});
+
+/**
+ * Forced ngram-mod on a build that does not advertise the mode stands down and records
+ * "binary_outdated". The settings comparison cannot see that -- the request the picker
+ * would send is identical to the one that stood down -- so the repair check is the only
+ * thing that reloads onto an updated llama.cpp. ngram-mod runs no drafter, so this is the
+ * one reason that reaches it.
+ */
+test("a forced ngram stand-down reloads onto an updated binary", () => {
+  const stoodDown = {
+    spec_fallback_reason: "binary_outdated",
+    spec_fallback_binary_changed: true,
+  };
+  assert.equal(residentSpeculativeNeedsRepair(stoodDown, "ngram"), true);
+  // Same shape as every other binary stand-down: an unchanged binary repairs nothing,
+  // so the prompt must not fire on each re-pick.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { ...stoodDown, spec_fallback_binary_changed: false },
+      "ngram",
+    ),
+    false,
+  );
+  // A healthy forced-ngram runtime still adopts.
+  assert.equal(
+    residentSpeculativeNeedsRepair({ spec_fallback_reason: null }, "ngram"),
+    false,
+  );
+});
+
+/**
+ * The MTP-free recovery clears `_spec_draft_n_max` while `_runtime_matches_intent`
+ * keeps comparing against the count retained in `_last_load_intent`, so the status
+ * reports null for a load the backend still measures against 8. Reading that null as
+ * "the platform default" would agree with a blank pick and skip the reload that
+ * clearing the override is supposed to cause.
+ */
+test("a runtime_error resident does not claim its draft depth is the default", () => {
+  const recovered = { ...DEFAULTS, spec_fallback_reason: "runtime_error" };
+  assert.equal(matches(recovered, BLANK), false);
+  assert.equal(matches(recovered, { ...BLANK, specDraftNMax: 8 }), false);
+  // Every other fallback still compares normally, so this costs one round trip in
+  // exactly the state whose depth the status cannot express.
+  for (const reason of [null, "binary_no_mtp", "drafter_not_found", "mtp_partial_offload"]) {
+    assert.equal(
+      matches({ ...DEFAULTS, spec_fallback_reason: reason }, BLANK),
+      true,
+      `${reason} must still adopt a default-against-default pick`,
+    );
+  }
 });

@@ -60,8 +60,8 @@ def test_loads_object_form_trace() -> None:
 
 
 def test_truncated_trace_fails_the_cell_rather_than_parsing_short() -> None:
-    # A stream that was cut off mid-document must not degrade into "a shorter
-    # trace"; that reads exactly like the expensive work not happening.
+    # A stream cut off mid-document must not degrade into 'a shorter trace'; that reads exactly like
+    # the expensive work not happening.
     try:
         Trace.from_json_text('{"traceEvents":[{"ph":"X","ts":1,"dur":2,"name":"RunTask"')
     except CellFailure as exc:
@@ -127,8 +127,8 @@ def test_profile_parses_and_deltas_match_wall_clock() -> None:
 
 
 def test_nodes_accumulate_across_chunks() -> None:
-    # Only a handful of chunks carry a `nodes` array; a parser that reads nodes
-    # per chunk and forgets them resolves almost nothing.
+    # Only a handful of chunks carry a `nodes` array; a parser that reads nodes per chunk and forgets
+    # them resolves almost nothing.
     tr = _trace()
     chunks_with_nodes = sum(
         1
@@ -178,8 +178,8 @@ def test_stacks_have_ancestry() -> None:
 
 
 def test_clock_anchor_is_the_event_timestamp() -> None:
-    # `args.data.startTime` is in a different clock domain and is kept only to
-    # report the skew, never used to anchor samples.
+    # `args.data.startTime` is in a different clock domain and is kept only to report the skew, never
+    # used to anchor samples.
     prof = C.main_thread_profile(_trace())
     assert prof.declared_start_time
     assert abs(prof.clock_skew_us) < 10_000
@@ -228,8 +228,8 @@ def test_timers_and_frames_and_input_are_all_present() -> None:
 
 def test_harness_cost_is_named_not_hidden() -> None:
     cls = K.classify_thread(_trace())
-    # The devtools pipe running Runtime.evaluate is our own cost. It must have
-    # its own column so it can be watched, and must not be inside the app's.
+    # The devtools pipe running Runtime.evaluate is our own cost. It must have its own column so it
+    # can be watched, and must not be inside the app's.
     assert K.AGENT_IPC in K.ORIGINS
     assert K.AGENT_IPC in K.HARNESS_ORIGINS
 
@@ -434,9 +434,8 @@ def test_bridge_resolves_a_minified_name_by_count_vector() -> None:
     assert b.status == S.OK
     assert b.resolve("/assets/index-abc123.js", 0, 5) == "cloneChildFibers"
     assert b.resolve("/assets/index-abc123.js", 10, 15) == "beginWork"
-    # The anchor legitimately maps to itself, so some identity is expected. What
-    # must not happen is identity DOMINATING, which would mean no minification
-    # was undone.
+    # The anchor legitimately maps to itself, so some identity is expected; what must not happen is
+    # identity DOMINATING, which would mean no minification was undone.
     assert b.identity_mappings / len(b.mapping) <= S.MAX_IDENTITY_MAPPING_FRACTION
 
 
@@ -484,10 +483,9 @@ def test_anchor_mismatch_discards_the_whole_bridge() -> None:
 
 
 def test_same_build_on_both_arms_is_refused() -> None:
-    # The one failure anchors are structurally blind to. If both arms are the
-    # same build, every anchor maps to itself PERFECTLY, so anchor validation
-    # passes and the bridge reports ok while mapping minified names to
-    # themselves. Verified against the real implementation before this guard
+    # The one failure anchors are structurally blind to: if both arms are the same build every anchor
+    # maps to itself PERFECTLY, so anchor validation passes and the bridge reports ok while mapping
+    # minified names to themselves. Verified against the real implementation before this guard
     # existed: it returned status ok with {"Zk": "Zk"}.
     _, prod = _arms(
         {"a": [1, 1]},
@@ -512,8 +510,8 @@ def test_same_build_on_both_arms_is_refused() -> None:
 
 
 def test_an_all_identity_mapping_is_refused() -> None:
-    # Different scripts and offsets, but no minification was undone: every
-    # resolved name is its own name, so the bridge is doing nothing.
+    # Different scripts and offsets, but no minification was undone: every resolved name is its own
+    # name, so the bridge is doing nothing.
     dev, prod = _arms(
         {"Zk": [340, 3400], "qi": [17, 170]},
         {"Zk": [340, 3400], "qi": [17, 170]},
@@ -645,8 +643,8 @@ def test_missing_page_counters_are_skipped_loudly() -> None:
 
 
 def test_page_counter_contract_is_documented() -> None:
-    # Layer 3 emits against these exact key names; a rename here is a contract
-    # change and must be agreed, not discovered at analysis time.
+    # Layer 3 emits against these exact key names; a rename here is a contract change and must be
+    # agreed, not discovered at analysis time.
     assert set(O.PAGE_COUNTER_CONTRACT) == {"m2_reparse", "m3_forced_layout"}
     assert "chars_rescanned" in O.PAGE_COUNTER_CONTRACT["m2_reparse"]
     assert "forced_layouts" in O.PAGE_COUNTER_CONTRACT["m3_forced_layout"]

@@ -148,8 +148,8 @@ def _build_trainer(
     )
     env.setdefault("UNSLOTH_FORCE_FLOAT32", "0")
     if mark_forced_float32:
-        # What from_pretrained stamps on the model. `forced_float32` sets it apart
-        # from the env, which is what an earlier load leaves behind.
+        # What from_pretrained stamps on the model.
+        # `forced_float32` sets it apart from the env, which is what an earlier load leaves behind.
         model._unsloth_forced_float32 = (
             (env["UNSLOTH_FORCE_FLOAT32"] == "1") if forced_float32 is None else forced_float32
         )

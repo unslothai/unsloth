@@ -57,11 +57,9 @@ RAF = "raf"
 IDLE = "idle"
 GC = "gc"
 BROWSER_INTERNAL = "browser_internal"
-# Browser-to-renderer IPC that ran page script. In a harnessed run this is
-# dominated by the devtools pipe delivering `Runtime.evaluate`, which is to say
-# it is OUR OWN cost and it belongs in a column with its own name so that it can
-# be watched for growth with the treatment, not folded into a residual and not
-# hidden inside `browser_internal`.
+# Browser-to-renderer IPC that ran page script. In a harnessed run this is dominated by the
+# devtools pipe delivering `Runtime.evaluate`, which is OUR OWN cost and belongs in a column with
+# its own name so it can be watched for growth with the treatment.
 AGENT_IPC = "agent_ipc"
 UNCLASSIFIED = "unclassified"
 
@@ -78,12 +76,12 @@ ORIGINS = (
     UNCLASSIFIED,
 )
 
-# Origins that are the harness observing, not the app working. Reported, never
-# subtracted: a correction you cannot see is a correction you cannot check.
+# Origins that are the harness observing, not the app working. Reported, never subtracted: a
+# correction you cannot see is a correction you cannot check.
 HARNESS_ORIGINS = (AGENT_IPC,)
 
-# Above this share of main-thread task time in the unclassified bucket, the cell
-# is not quotable. The point of the tool is that we can name things.
+# Above this share of main-thread task time in the unclassified bucket, the cell is not quotable.
+# The point of the tool is that we can name things.
 UNCLASSIFIED_FAIL_PCT = 2.0
 
 _JS_EVENTS = frozenset(
@@ -147,8 +145,8 @@ _INPUT_EVENT_TYPES = frozenset(
     }
 )
 
-# Network-ish streaming: an SSE frame arrives as a `message` event on an
-# EventSource, and a fetch-based stream as a resource event.
+# Network-ish streaming: an SSE frame arrives as a `message` event on an EventSource, and a
+# fetch-based stream as a resource event.
 _NETWORK_EVENT_TYPES = frozenset({"message", "readystatechange", "load", "error", "open"})
 
 _POSTED_FROM_RULES: tuple[tuple[str, str, str], ...] = (
@@ -164,8 +162,8 @@ _POSTED_FROM_RULES: tuple[tuple[str, str, str], ...] = (
     ("v8/src/tasks/", "", GC),
 )
 
-# Tasks the browser posts to itself. Only ever applied to a task that ran NO
-# page script, so this can never swallow a JS bottleneck.
+# Tasks the browser posts to itself. Only ever applied to a task that ran NO page script, so this
+# can never swallow a JS bottleneck.
 _BROWSER_INTERNAL_FILES = (
     "web_frame_widget_impl.cc",
     "main_thread_scheduler_impl.cc",
@@ -189,11 +187,9 @@ _BROWSER_INTERNAL_FILES = (
 _IDLE_MARKERS = ("DoIdleWork", "RunIdleTask", "IdleTask", "ScheduleIdleTask")
 
 # Blink `TaskType` enum names as they appear in
-# `args.renderer_main_thread_task_execution.task_type`. Matched by SUBSTRING on
-# the part after `TASK_TYPE_`, so that both
-# `TASK_TYPE_JAVASCRIPT_TIMER_DELAYED_HIGH_NESTING` and
-# `TASK_TYPE_JAVASCRIPT_TIMER_IMMEDIATE` land on `timer` without enumerating
-# every nesting variant.
+# `args.renderer_main_thread_task_execution.task_type`. Matched by SUBSTRING on the part after
+# `TASK_TYPE_`, so both `..._TIMER_DELAYED_HIGH_NESTING` and `..._TIMER_IMMEDIATE` land on
+# `timer`.
 _TASK_TYPE_RULES: tuple[tuple[str, str], ...] = (
     ("JAVASCRIPT_TIMER", TIMER),
     ("POSTED_MESSAGE", MESSAGE_CHANNEL),
@@ -367,15 +363,10 @@ def classify_task(task: Task) -> ClassifiedTask:
             queue_name = queue_name,
         )
 
-    # 0. Blink's own label, when the `scheduler` category recorded one. This
-    #    outranks everything below it because it is the scheduler stating what
-    #    it dispatched rather than us reconstructing it. Two exceptions are
-    #    handled first, both cases where the label is true but not what a reader
-    #    wants attributed:
-    #      - a V8 task queue that ran no JS is GC or compilation bookkeeping,
-    #        but one that DID run JS is a real JS task and must not be filed
-    #        under GC;
-    #      - a compositor-queue task with a nested input dispatch is input.
+    # 0. Blink's own label, when the `scheduler` category recorded one. It outranks everything below
+    # because it is the scheduler stating what it dispatched. Two exceptions are handled first: a V8
+    # task queue that ran no JS is GC or compilation bookkeeping while one that DID run JS is a real
+    # JS task, and a compositor-queue task with a nested input dispatch is input.
     if task_type:
         if types & _INPUT_EVENT_TYPES:
             return done(
@@ -388,16 +379,14 @@ def classify_task(task: Task) -> ClassifiedTask:
                     continue
                 return done(origin, f"task_type:{task_type}")
 
-    # 1. Input first: a keystroke that also fires a timer is still a keystroke,
-    #    and input latency is the metric a user actually feels.
+    # 1. Input first: a keystroke that also fires a timer is still a keystroke, and input latency is what a user feels.
     if types & _INPUT_EVENT_TYPES:
         return done(INPUT, f"EventDispatch:{sorted(types & _INPUT_EVENT_TYPES)[0]}")
     if "main_thread_event_queue.cc" in src_file:
         return done(INPUT, "posted_from:main_thread_event_queue")
 
-    # 2. GC before everything else that could contain it, because a major GC
-    #    posted from the incremental marking job is not a timer task even when
-    #    it happens to run inside one.
+    # 2. GC before everything else that could contain it, because a major GC posted from the
+    # incremental marking job is not a timer task even when it runs inside one.
     gc_names = {
         n
         for n in names
@@ -422,16 +411,16 @@ def classify_task(task: Task) -> ClassifiedTask:
     if "dom_timer.cc" in src_file:
         return done(TIMER, "posted_from:dom_timer")
 
-    # 6. Network / SSE. Checked before message-channel because both arrive over
-    #    a mojo pipe and only the resource events tell them apart.
+    # 6. Network / SSE. Checked before message-channel because both arrive over a mojo pipe and only
+    # the resource events tell them apart.
     if names & _RESOURCE_EVENTS:
         return done(NETWORK, f"nested:{sorted(names & _RESOURCE_EVENTS)[0]}")
     if types & _NETWORK_EVENT_TYPES and "connector.cc" in src_file:
         return done(NETWORK, f"EventDispatch:{sorted(types & _NETWORK_EVENT_TYPES)[0]}")
 
-    # 7. Message channel, that is, the React scheduler. Blink dispatches a
-    #    `MessagePort` message as a mojo connector task, so the discriminator is
-    #    that page script ran and nothing network-shaped happened.
+    # 7. Message channel, i.e. the React scheduler. Blink dispatches a `MessagePort` message as a
+    # mojo connector task, so the discriminator is that page script ran and nothing network-shaped
+    # happened.
     if ran_js and (
         "connector.cc" in src_file
         or "message_port" in src_file
@@ -439,17 +428,16 @@ def classify_task(task: Task) -> ClassifiedTask:
     ):
         return done(MESSAGE_CHANNEL, "mojo_pipe_running_page_script")
 
-    # 8. The devtools / browser IPC channel running page script. This is what
-    #    `Runtime.evaluate` and `Page.*` look like from inside the renderer, so
-    #    it is measurement cost. Named, so it can be watched for correlation
-    #    with the treatment; never subtracted.
+    # 8. The devtools / browser IPC channel running page script: what `Runtime.evaluate` and `Page.*`
+    # look like from inside the renderer, so it is measurement cost. Named so it can be watched for
+    # correlation with the treatment; never subtracted.
     if ran_js and any(
         f in src_file for f in ("ipc_mojo_bootstrap.cc", "simple_watcher.cc", "mojo_bootstrap")
     ):
         return done(AGENT_IPC, f"posted_from:{src_file.rsplit('/', 1)[-1]}")
 
-    # 9. Browser bookkeeping, and ONLY when no page script ran inside. This
-    #    guard is what stops this class becoming the residual under a new name.
+    # 9. Browser bookkeeping, and ONLY when no page script ran inside. This guard is what stops the
+    # class becoming the residual under a new name.
     if not ran_js and any(f in src_file for f in _BROWSER_INTERNAL_FILES):
         return done(BROWSER_INTERNAL, f"posted_from:{src_file.rsplit('/', 1)[-1]}")
 
@@ -457,9 +445,8 @@ def classify_task(task: Task) -> ClassifiedTask:
         if needle in src_file and (not func_needle or func_needle in src_func):
             return done(origin, f"posted_from:{needle}")
 
-    # 10. Last resort before giving up: the queue the task sat on. Weaker than
-    #     the task type, because a queue carries a mix, but still read from the
-    #     scheduler rather than guessed.
+    # 10. Last resort before giving up: the queue the task sat on. Weaker than the task type, because
+    # a queue carries a mix, but still read from the scheduler rather than guessed.
     for needle, origin in _QUEUE_NAME_RULES:
         if needle == queue_name:
             if origin == GC and ran_js:

@@ -37,12 +37,12 @@ if str(_STUDIO_TESTS) not in sys.path:
 
 _STREAMCOST_JS = _STUDIO_TESTS / "studiobench" / "instruments" / "streamcost.js"
 
-#: The two documents. 40,000 elements is the size the 289.6 ms figure was measured against; 4,000
-#: is roughly what a window of six messages leaves standing at the same rung.
+#: The two documents. 40,000 elements is the size the 289.6 ms figure was measured against; 4,000 is
+#: roughly what a window of six messages leaves standing at the same rung.
 FULL_ELEMENTS = 40_000
 WINDOWED_ELEMENTS = 4_000
 
-#: How many reads to take. The quantity is a few milliseconds, so one reading is noise.
+#:How many reads to take. The quantity is a few milliseconds, so one reading is noise.
 READS = 40
 
 #: What counts as "no longer biased". The old reading's residual is milliseconds per call; the new
@@ -125,8 +125,8 @@ def browser():
 def _page(browser, elements: int):
     page = browser.new_page(viewport = {"width": 900, "height": 600})
     page.set_content("<!doctype html><meta charset=utf-8><body></body>")
-    # BEFORE the document exists, exactly as the real harness installs it via add_init_script:
-    # the hook has to be on TextDecoder.prototype before any decode happens.
+    # BEFORE the document exists, exactly as the real harness installs it via add_init_script: the hook
+    # has to be on TextDecoder.prototype before any decode happens.
     page.add_script_tag(content = _STREAMCOST_JS.read_text(encoding = "utf-8"))
     got = page.evaluate(BUILD_JS, elements)
     page.evaluate(FEED_JS, 200)
@@ -134,8 +134,7 @@ def _page(browser, elements: int):
 
 
 def _per_call_ms(page, which: str) -> float:
-    # Median of several passes. A single pass on a shared machine picks up whatever else is
-    # running, and this box is running other people's sweeps.
+    # Median of several passes: a single pass on a shared machine picks up whatever else is running.
     return statistics.median(page.evaluate(TIME_JS, [which, READS]) for _ in range(5))
 
 
@@ -165,8 +164,8 @@ def test_the_wire_denominator_is_the_same_price_on_a_windowed_document(browser, 
             f"RESIDUAL {wire_residual:+.4f} ms/call"
         )
 
-    # The old reading really is cheaper on the smaller document. If this ever stops being true the
-    # test below is proving nothing, so it is asserted rather than assumed.
+    # The old reading really is cheaper on the smaller document. If this ever stops being true the test
+    # below is proving nothing, so it is asserted rather than assumed.
     assert dom_residual > 0, (
         "the O(document) read was not measurably cheaper on the windowed document, so this "
         f"machine cannot demonstrate the bias at all (full {dom_full}, windowed {dom_win})"
@@ -195,8 +194,8 @@ def test_the_wire_count_is_identical_on_both_documents_for_identical_traffic(bro
     assert a["wire_chars"] == b["wire_chars"] > 0
     assert a["wire_frames"] == b["wire_frames"] == 200
     assert a["wire_parse_failures"] == b["wire_parse_failures"] == 0
-    # The DOM reading, by contrast, is a different number on the two documents -- which is exactly
-    # why it could not be the denominator.
+    # The DOM reading, by contrast, is a different number on the two documents, which is exactly why it
+    # could not be the denominator.
     assert a["wire_chars"] == 200 * len("token 0 ") or a["wire_chars"] > 0
 
 

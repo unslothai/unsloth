@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# web_search image results: a registry keyed by opaque ids plus a thumbnail proxy,
-# so neither the model nor the browser sees an image URL.
 
+# web_search image results: a registry keyed by opaque ids plus a thumbnail proxy, so neither the model nor the browser
+# sees an image URL.
 from __future__ import annotations
 
 import io
@@ -11,6 +11,10 @@ import json
 import re
 import secrets
 import threading
+import sys
+from types import SimpleNamespace
+
+from utils.account_context import current_account_id, is_owner_context
 import time
 from pathlib import Path
 from typing import Any
@@ -26,8 +30,8 @@ MAX_IMAGES_PER_SEARCH = 6
 MAX_THUMBNAIL_BYTES = 3 * 1024 * 1024
 THUMBNAIL_EDGE_PX = 320
 THUMBNAIL_FETCH_TIMEOUT_S = 10
-# Read from the header before decoding. Low because draft() only subsamples JPEG:
-# a 77 KB 6000x4000 PNG decodes to ~100 MB of RGB.
+# Read from the header before decoding. Low because draft() only subsamples JPEG: a 77 KB 6000x4000 PNG decodes to ~100
+# MB of RGB.
 MAX_IMAGE_PIXELS = 6_000_000
 _ALLOWED_FORMATS = frozenset({"JPEG", "PNG", "GIF", "WEBP"})
 
@@ -40,31 +44,52 @@ _MAX_CONCURRENT_FETCHES = 4
 
 _registry: dict[str, dict[str, Any]] = {}
 _registry_lock = threading.Lock()
-# Bumped by clear_cache. A fetch that started before the clear must not publish its
-# thumbnail after it: the write is done under _registry_lock and skipped if this moved.
+# Bumped by clear_cache. A fetch that started before the clear must not publish its thumbnail after it: the write is
+# done under _registry_lock and skipped if this moved.
 _cache_generation = 0
-# The generation at which a CLEAR-EVERYTHING last ran, and the generation at which each
-# individually reaped id was taken. A selective clear must not abort an in-flight fetch for
-# an id it deliberately spared: thumbnail_bytes would answer None, the endpoint 404s, and
-# SearchImageThumb renders nothing and never retries -- its effect depends only on (id,
-# nearViewport), so "re-fetches on the next request" is not true, there is no next request.
-# Bounded; on overflow the per-id record is dropped and the full-clear generation is moved
-# instead, which over-aborts rather than republishing a thumbnail a clear removed.
+# The generation at which a CLEAR-EVERYTHING last ran, plus the generation at which each individually reaped id was
+# taken. A selective clear must not abort an in-flight fetch for an id it spared: thumbnail_bytes would answer None,
+# the endpoint 404s, and SearchImageThumb renders nothing and never retries -- its effect depends only on (id,
+# nearViewport), so "re-fetches on the next request" is not true, there is no next request. Bounded; on overflow the
+# per-id record is dropped and the full-clear generation is moved instead, which over-aborts rather than republishing
+# a thumbnail a clear removed.
 _full_clear_generation = 0
 _reaped_at: dict[str, int] = {}
 _REAPED_AT_MAX = 4096
-# The newest generation whose per-id records have been dropped to stay under that cap. A fetch
-# that started at or after this is still answered exactly, because nothing covering it was
-# dropped; only one older than every record we still hold has to be given up on. Fetches are
-# bounded by THUMBNAIL_FETCH_TIMEOUT_S, so outliving 4096 reaped images is not a real case.
+# The newest generation whose per-id records have been dropped to stay under that cap. A fetch that started at or
+# after this is still answered exactly, because nothing covering it was dropped; only one older than every record we
+# still hold has to be given up on. Fetches are bounded by THUMBNAIL_FETCH_TIMEOUT_S, so outliving 4096 reaped images
+# is not a real case.
 _reaped_floor_generation = 0
-# Ids whose files a clear could not unlink -- on Windows another process holding the
-# JPEG open is enough. The cache-first read and the sidecar read both go around the
-# registry, so without this they would go on serving a picture the user had cleared.
+# Ids whose files a clear could not unlink -- on Windows another process holding the JPEG open is enough. The
+# cache-first read and the sidecar read both go around the registry, so without this they would go on serving a picture
+# the user had cleared.
 _cleared_unservable: set[str] = set()
 _fetch_slots = threading.BoundedSemaphore(_MAX_CONCURRENT_FETCHES)
 _inflight: dict[str, threading.Lock] = {}
 _inflight_lock = threading.Lock()
+
+
+_account_states_lock = threading.Lock()
+_account_states: dict[str, SimpleNamespace] = {}
+
+
+def _account_state():
+    if is_owner_context():
+        return sys.modules[__name__]
+    with _account_states_lock:
+        key = current_account_id()
+        if key not in _account_states:
+            _account_states[key] = SimpleNamespace(
+                _registry = {},
+                _cache_generation = 0,
+                _full_clear_generation = 0,
+                _reaped_at = {},
+                _reaped_floor_generation = 0,
+                _cleared_unservable = set(),
+                _inflight = {},
+            )
+        return _account_states[key]
 
 
 def search_images_enabled() -> bool:
@@ -107,13 +132,16 @@ def _names_public_host(url: str) -> bool:
 
 
 def _prune_registry_locked(now: float) -> None:
-    expired = [key for key, entry in _registry.items() if now - entry["created"] > _REGISTRY_TTL_S]
+    state = _account_state()
+    expired = [
+        key for key, entry in state._registry.items() if now - entry["created"] > _REGISTRY_TTL_S
+    ]
     for key in expired:
-        _registry.pop(key, None)
-    if len(_registry) > _REGISTRY_MAX_ENTRIES:
-        oldest = sorted(_registry.items(), key = lambda item: item[1]["created"])
-        for key, _entry in oldest[: len(_registry) - _REGISTRY_MAX_ENTRIES]:
-            _registry.pop(key, None)
+        state._registry.pop(key, None)
+    if len(state._registry) > _REGISTRY_MAX_ENTRIES:
+        oldest = sorted(state._registry.items(), key = lambda item: item[1]["created"])
+        for key, _entry in oldest[: len(state._registry) - _REGISTRY_MAX_ENTRIES]:
+            state._registry.pop(key, None)
 
 
 def register_images(
@@ -124,13 +152,14 @@ def register_images(
     expected_generation: int | None = None,
 ) -> list[dict[str, str]]:
     # Public entries only; the URLs stay in this process.
+    state = _account_state()
     from .web_access_policy import check_url_access
 
     public: list[dict[str, str]] = []
     persist: list[tuple[str, dict[str, Any], int]] = []
     now = time.monotonic()
     with _registry_lock:
-        generation = _cache_generation
+        generation = state._cache_generation
         if expected_generation is not None and expected_generation != generation:
             return []
         _prune_registry_locked(now)
@@ -150,12 +179,12 @@ def register_images(
             if not (_names_public_host(thumbnail) and _names_public_host(source)):
                 continue
             image_id = secrets.token_hex(6)
-            _registry[image_id] = {
+            state._registry[image_id] = {
                 "thumbnail": thumbnail,
                 "source": source,
                 "created": now,
-                # Kept with the entry: the proxy fetch happens on a later request, and
-                # without it every redirect hop would be re-checked against no policy.
+                # Kept with the entry: the proxy fetch happens on a later request, and without it every redirect hop
+                # would be re-checked against no policy.
                 "policy": website_policy,
             }
             entry = {
@@ -167,28 +196,30 @@ def register_images(
             if subject:
                 entry["subject"] = _clean_text(subject, 80)
             public.append(entry)
-            persist.append((image_id, _registry[image_id], generation))
+            persist.append((image_id, state._registry[image_id], generation))
     for image_id, stored, registered_generation in persist:
         _persist_entry(image_id, stored, registered_generation)
     if persist:
-        # Here too, not only after a thumbnail write: a user who never opens a picture
-        # would otherwise accumulate sidecars with nothing ever bounding them.
+        # Here too, not only after a thumbnail write: a user who never opens a picture would otherwise accumulate
+        # sidecars with nothing ever bounding them.
         _evict_cache()
     return public
 
 
 def cache_generation() -> int:
+    state = _account_state()
     with _registry_lock:
-        return _cache_generation
+        return state._cache_generation
 
 
 def _lookup_locked(image_id: str) -> dict[str, Any] | None:
     """Registry read with the TTL applied. The caller holds ``_registry_lock``."""
-    entry = _registry.get(image_id)
+    state = _account_state()
+    entry = state._registry.get(image_id)
     if entry is None:
         return None
     if time.monotonic() - entry["created"] > _REGISTRY_TTL_S:
-        _registry.pop(image_id, None)
+        state._registry.pop(image_id, None)
         return None
     return dict(entry)
 
@@ -235,8 +266,8 @@ def is_image_entry(entry: object) -> bool:
 
 
 def split_images_envelope(result: str) -> tuple[str, list[dict[str, str]]]:
-    # Payload ends at the next "\n__", as _strip_files_sentinel and the frontend do,
-    # so a sibling sentinel after ours does not make it unreadable.
+    # Payload ends at the next "\n__", as _strip_files_sentinel and the frontend do, so a sibling sentinel after ours
+    # does not make it unreadable.
     start = result.rfind(SEARCH_IMAGES_SENTINEL)
     if start == -1:
         return result, []
@@ -258,8 +289,9 @@ def strip_images_suffix(result: str) -> str:
 
 
 def _cache_dir() -> Path:
-    from utils.paths import ensure_dir, studio_root
-    return ensure_dir(studio_root() / _CACHE_DIRNAME)
+    from utils.paths import ensure_account_dir
+    from utils.paths.storage_roots import account_path
+    return ensure_account_dir(account_path(_CACHE_DIRNAME))
 
 
 def _cache_path(image_id: str) -> Path:
@@ -289,9 +321,8 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
             ensure_ascii = True,
         )
         with _registry_lock:
-            # Per id, like the thumbnail write: a selective clear bumps the generation
-            # without touching this image, and dropping its sidecar then costs the id its
-            # only way back after a restart.
+            # Per id, like the thumbnail write: a selective clear bumps the generation without touching this image, and
+            # dropping its sidecar then costs the id its only way back after a restart.
             if _reaped_since_locked(image_id, generation):
                 return
             # writer-unique, like the JPEG: a torn read must not be possible.
@@ -314,26 +345,25 @@ def _load_persisted_entry(image_id: str) -> dict[str, Any] | None:
     source = raw.get("source")
     if not isinstance(thumbnail, str) or not isinstance(source, str):
         return None
-    # Re-checked on the way back in: what was public when it was written is not
-    # necessarily public now, and this bypasses register_images' own gate.
+    # Re-checked on the way back in: what was public when it was written is not necessarily public now, and this
+    # bypasses register_images' own gate.
     if not (_names_public_host(thumbnail) and _names_public_host(source)):
         return None
     policy = raw.get("policy")
     return {
         "thumbnail": thumbnail,
         "source": source,
-        # No TTL: a disk entry follows the cache beside it, which is capped by file
-        # count rather than age. time.monotonic() from a previous process is meaningless.
+        # No TTL: a disk entry follows the cache beside it, which is capped by file count rather than age.
+        # time.monotonic() from a previous process is meaningless.
         "created": time.monotonic(),
         "policy": policy if isinstance(policy, dict) else None,
     }
 
 
 def _evict_cache() -> None:
-    # Capped per kind. Metadata is written for every registered image but bytes only
-    # for the ones actually viewed, so the sidecars outnumber the JPEGs and need their
-    # own bound; and an evicted JPEG keeps its sidecar, which is what lets it be
-    # fetched again rather than 404.
+    # Capped per kind. Metadata is written for every registered image but bytes only for the ones actually viewed, so
+    # the sidecars outnumber the JPEGs and need their own bound; and an evicted JPEG keeps its sidecar, which is what
+    # lets it be fetched again rather than 404.
     for pattern in ("*.jpg", "*.json"):
         try:
             files = sorted(_cache_dir().glob(pattern), key = lambda p: p.stat().st_mtime)
@@ -354,8 +384,6 @@ def _evict_cache() -> None:
 
 def _encode_thumbnail(raw: bytes) -> bytes | None:
     from PIL import Image
-
-    # Pillow's own process-wide bomb check is left at its default.
     try:
         with Image.open(io.BytesIO(raw)) as im:
             if im.format not in _ALLOWED_FORMATS:
@@ -405,20 +433,21 @@ def _drop_if_cleared(image_id: str) -> bool:
     has usually let go by the next request, and once both files are gone the id is
     ordinary again -- nothing resolves it, so it 404s like any other unknown one.
     """
+    state = _account_state()
     with _registry_lock:
-        if image_id not in _cleared_unservable:
+        if image_id not in state._cleared_unservable:
             return True
         for path in (_cache_path(image_id), _meta_path(image_id)):
             try:
                 path.unlink(missing_ok = True)
             except OSError:
                 return False
-        _cleared_unservable.discard(image_id)
+        state._cleared_unservable.discard(image_id)
         return True
 
 
 def thumbnail_bytes(image_id: str) -> bytes | None:
-    # Cache first: it survives the restart the in-memory registry does not.
+    state = _account_state()
     if not IMAGE_ID_RE.fullmatch(image_id or ""):
         return None
     # Ahead of that read and of the sidecar below, which both go around the registry.
@@ -430,23 +459,22 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
             return path.read_bytes()
     except OSError:
         pass
-    # Generation and entry in ONE acquisition, generation first. Taking them
-    # separately let a clear land in the gap: this call would then read the POST-clear
-    # generation, the check before the write would match, and the thumbnail the clear
-    # had just deleted would be written back. Reading it first is the safe order --
-    # a clear after this point leaves us holding a stale value, which fails the check.
+    # Generation and entry in ONE acquisition, generation first. Taking them separately let a clear land in the gap:
+    # this call would then read the POST-clear generation, the check before the write would match, and the thumbnail the
+    # clear had just deleted would be written back. Reading it first is the safe order -- a clear after this point
+    # leaves us holding a stale value, which fails the check.
     with _registry_lock:
-        generation = _cache_generation
+        generation = state._cache_generation
         entry = _lookup_locked(image_id)
     if entry is None:
-        # Not in memory: the process may have restarted since the search. The metadata
-        # on disk outlives it, the same way the cached bytes do.
+        # Not in memory: the process may have restarted since the search. The metadata on disk outlives it, the same way
+        # the cached bytes do.
         entry = _load_persisted_entry(image_id)
         if entry is None:
             return None
 
     with _inflight_lock:
-        gate = _inflight.setdefault(image_id, threading.Lock())
+        gate = state._inflight.setdefault(image_id, threading.Lock())
     try:
         with gate:
             try:
@@ -460,14 +488,11 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                 return None
             with _registry_lock:
                 if _reaped_since_locked(image_id, generation):
-                    # A clear that covered THIS id landed while the fetch was in flight.
-                    # The chat that asked for it is gone, so publish nothing and hand back
-                    # nothing -- writing here would restore a thumbnail the clear had
-                    # removed, and the cache-first path above would keep serving it.
-                    #
-                    # Asked per id, not off the bare generation: a selective clear bumps
-                    # that too, and aborting on it took down fetches for the images the
-                    # clear had gone out of its way to spare.
+                    # A clear that covered THIS id landed while the fetch was in flight. The chat that asked for it is
+                    # gone, so publish nothing and hand back nothing -- writing here would restore a thumbnail the clear
+                    # had removed, and the cache-first path above would keep serving it. Asked per id, not off the bare
+                    # generation: a selective clear bumps that too, and aborting on it took down fetches for the images
+                    # the clear had gone out of its way to spare.
                     return None
                 try:
                     # Writer-unique: racing writers must not publish a torn JPEG.
@@ -480,14 +505,13 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                         tmp.unlink(missing_ok = True)
                     except OSError:
                         pass
-            # Outside the lock: a glob plus a stat per file, and nothing here needs it.
             _evict_cache()
             return data
     finally:
         with _inflight_lock:
             # Only drop the gate this call owns.
-            if _inflight.get(image_id) is gate and not gate.locked():
-                _inflight.pop(image_id, None)
+            if state._inflight.get(image_id) is gate and not gate.locked():
+                state._inflight.pop(image_id, None)
 
 
 def registered_image_ids() -> set[str] | None:
@@ -497,18 +521,15 @@ def registered_image_ids() -> set[str] | None:
     A clear is global while the chat delete it accompanies is not, so anything that
     registers after this snapshot belongs to a chat the delete is keeping.
     """
+    state = _account_state()
     ids: set[str] = set()
     with _registry_lock:
-        ids.update(_registry)
+        ids.update(state._registry)
     for pattern in ("*.jpg", "*.json"):
         try:
             ids.update(path.stem for path in _cache_dir().glob(pattern))
         except OSError:
-            # Unreadable dir, so the snapshot is incomplete and cannot bound a reap.
-            # None is the sentinel clear_cache reads as "clear everything", which is
-            # what a clear did before this snapshot existed. An empty set is NOT that
-            # sentinel: it is a selective reap of nothing, and would leave the
-            # registry populated and its images still fetchable after a clear.
+            # an unreadable dir means the snapshot cannot bound a reap
             return None
     return ids
 
@@ -534,29 +555,29 @@ def snapshot_and_fence_registrations() -> set[str] | None:
     in-flight FETCHES: those are keyed per id now, and a bare generation move is not one of
     the signals they read.
     """
-    global _cache_generation
+    state = _account_state()
     ids: set[str] = set()
     with _registry_lock:
-        ids.update(_registry)
-        _cache_generation += 1
+        ids.update(state._registry)
+        state._cache_generation += 1
     for pattern in ("*.jpg", "*.json"):
         try:
             ids.update(path.stem for path in _cache_dir().glob(pattern))
         except OSError:
-            # Same fallback as registered_image_ids: an incomplete snapshot cannot bound a
-            # reap, and None is the sentinel clear_cache reads as "clear everything".
+            # Same fallback as registered_image_ids: an incomplete snapshot cannot bound a reap, and None is the
+            # sentinel clear_cache reads as "clear everything".
             return None
     return ids
 
 
 def _reaped_since_locked(image_id: str, generation: int) -> bool:
     """Whether a clear covering ``image_id`` landed after ``generation``. Caller holds the lock."""
-    if _full_clear_generation > generation:
+    state = _account_state()
+    if state._full_clear_generation > generation:
         return True
-    if generation < _reaped_floor_generation:
-        # Older than every record still held, so this cannot be shown to have been spared.
+    if generation < state._reaped_floor_generation:
         return True
-    return _reaped_at.get(image_id, 0) > generation
+    return state._reaped_at.get(image_id, 0) > generation
 
 
 def clear_cache(only_ids: set[str] | None = None) -> None:
@@ -570,56 +591,51 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
     refuse a registration racing a clear -- but the in-flight fetch check is per id, so a
     spared image's fetch is left alone. Aborting it would 404 a card that never retries.
     """
-    global _cache_generation, _full_clear_generation, _reaped_floor_generation
-    # The unlinks are under the lock too, so an in-flight fetch cannot slip its write
-    # in between the bump and the delete and leave a cleared thumbnail on disk.
+    state = _account_state()
+    # The unlinks are under the lock too, so an in-flight fetch cannot slip its write in between the bump and the delete
+    # and leave a cleared thumbnail on disk.
     with _registry_lock:
         if only_ids is None:
-            _registry.clear()
+            state._registry.clear()
         else:
             for image_id in only_ids:
-                _registry.pop(image_id, None)
-        _cache_generation += 1
+                state._registry.pop(image_id, None)
+        state._cache_generation += 1
         if only_ids is None:
-            # Nothing survives, so every in-flight fetch has to abort. One number says so
-            # for all of them, including ids this process has never seen.
-            _full_clear_generation = _cache_generation
-            _reaped_at.clear()
+            # Nothing survives, so every in-flight fetch has to abort. One number says so for all of them, including ids
+            # this process has never seen.
+            state._full_clear_generation = state._cache_generation
+            state._reaped_at.clear()
         else:
-            if len(_reaped_at) + len(only_ids) > _REAPED_AT_MAX:
-                # Out of room. Drop the OLDEST records rather than promoting this to a
-                # full clear: doing that aborts every fetch in flight, including ones for
-                # images this clear deliberately spared, and an aborted fetch is not a
-                # cheap retry -- the card 404s and useSearchThumbnail never asks again.
-                # Raising the floor instead gives up only on fetches older than every
-                # record still held, which the fetch timeout makes unreachable in practice.
-                keep_from = sorted(_reaped_at.values())[len(_reaped_at) // 2 :]
-                floor = keep_from[0] - 1 if keep_from else _cache_generation
-                for stale_id in [key for key, at in _reaped_at.items() if at <= floor]:
-                    _reaped_at.pop(stale_id, None)
-                _reaped_floor_generation = max(_reaped_floor_generation, floor)
+            if len(state._reaped_at) + len(only_ids) > _REAPED_AT_MAX:
+                # Out of room. Drop the OLDEST records rather than promoting this to a full clear: doing that aborts
+                # every fetch in flight, including ones for images this clear spared, and an aborted fetch is not a
+                # cheap retry -- the card 404s and useSearchThumbnail never asks again. Raising the floor instead gives
+                # up only on fetches older than every record still held, which the fetch timeout makes unreachable in
+                # practice.
+                keep_from = sorted(state._reaped_at.values())[len(state._reaped_at) // 2 :]
+                floor = keep_from[0] - 1 if keep_from else state._cache_generation
+                for stale_id in [key for key, at in state._reaped_at.items() if at <= floor]:
+                    state._reaped_at.pop(stale_id, None)
+                state._reaped_floor_generation = max(state._reaped_floor_generation, floor)
             for image_id in only_ids:
-                _reaped_at[image_id] = _cache_generation
+                state._reaped_at[image_id] = state._cache_generation
         for pattern in ("*.jpg", "*.json", "*.tmp"):
             try:
                 paths = list(_cache_dir().glob(pattern))
             except OSError:
                 continue
             for path in paths:
-                # `.tmp` stems carry a writer suffix, so they never match a snapshot id
-                # and are always swept: one was never servable, and a torn write left
-                # behind by a crashed fetch has no owner to spare it for.
+                # `.tmp` stems carry a writer suffix, so they never match a snapshot id and are always swept: one was
+                # never servable, and a torn write left behind by a crashed fetch has no owner to spare it for.
                 if only_ids is not None and pattern != "*.tmp" and path.stem not in only_ids:
                     continue
-                # Per file, as _evict_cache does: one that cannot be unlinked --
-                # a JPEG another process holds open on Windows -- must not leave
-                # every later one on disk, where the cache-first read in
-                # thumbnail_bytes would go on serving it after a clear.
+                # per file: one that cannot be unlinked (a JPEG another process holds open on Windows) must not leave
+                # every later one on disk
                 try:
                     path.unlink(missing_ok = True)
                 except OSError:
-                    # Still on disk, so remember the id and refuse to serve it until
-                    # the unlink does land. `.jpg`/`.json` share a stem; a `.tmp` was
-                    # never servable, and its stem carries the writer suffix.
+                    # Still on disk, so remember the id and refuse to serve it until the unlink does land.
+                    # `.jpg`/`.json` share a stem; a `.tmp` was never servable, and its stem carries the writer suffix.
                     if pattern != "*.tmp":
-                        _cleared_unservable.add(path.stem)
+                        state._cleared_unservable.add(path.stem)
