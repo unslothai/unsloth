@@ -686,9 +686,7 @@ def start_ingestion(
                 (replaces[0],),
             ).rowcount:
                 conn.rollback()
-                raise ReplacementClaimUnavailable(
-                    "This source is already being saved or indexed"
-                )
+                raise ReplacementClaimUnavailable("This source is already being saved or indexed")
         # A re-upload of identical bytes can also retire the document it supersedes
         # (see the stale-embedder and empty-ingest cases below). Only reachable under
         # dedupe, which the caller-supplied `replaces` parameter excludes -- assigning

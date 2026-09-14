@@ -587,7 +587,9 @@ def test_ingestion_with_real_embedder(rag_home, tmp_path):
         conn.close()
 
 
-def test_embedding_reports_progress_for_every_batch(rag_home, stub_embeddings, tmp_path, monkeypatch):
+def test_embedding_reports_progress_for_every_batch(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
     """Embedding is the one stage that can run for many minutes. Reported once on entry, a
     long embed looks identical to a dead worker to anything watching -- which is what the
     save dialog's stall timeout reads -- and it renews the job lease only there too."""

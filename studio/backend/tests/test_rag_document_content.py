@@ -344,7 +344,11 @@ def test_deleting_a_source_mid_save_leaves_nothing_indexed(rag_home, stub_embedd
 
     real_embed_all = ingestion._embed_all
 
-    def delete_original_then_embed(texts, model_name, on_batch = None):
+    def delete_original_then_embed(
+        texts,
+        model_name,
+        on_batch = None,
+    ):
         vectors = real_embed_all(texts, model_name, on_batch)
         # Through the route, so this is the delete a second client would issue.
         assert client.delete(f"/api/rag/documents/{doc_id}").status_code == 200

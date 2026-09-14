@@ -168,9 +168,7 @@ def test_recovery_lets_a_delete_beat_a_completed_replacement(rag_conn):
     removed, under a new id -- so the delete wins here exactly as it does in the worker."""
     _add_doc(rag_conn, "kb_a", "edited", "completed", ["charlie delta"])
     # No 'original' row: it was deleted after the crash.
-    rag_conn.execute(
-        "UPDATE documents SET replaces_document_id='original' WHERE id='edited'"
-    )
+    rag_conn.execute("UPDATE documents SET replaces_document_id='original' WHERE id='edited'")
     rag_conn.commit()
     _orphan_job(rag_conn, "edited", "kb_a")
 
@@ -193,13 +191,9 @@ def test_recovery_removes_the_retired_source_file(rag_conn, tmp_path, monkeypatc
     retired.write_text("body", encoding = "utf-8")
 
     _add_doc(rag_conn, "kb_a", "original", "running", ["alpha bravo"])
-    rag_conn.execute(
-        "UPDATE documents SET stored_path=? WHERE id='original'", (str(retired),)
-    )
+    rag_conn.execute("UPDATE documents SET stored_path=? WHERE id='original'", (str(retired),))
     _add_doc(rag_conn, "kb_a", "edited", "completed", ["charlie delta"])
-    rag_conn.execute(
-        "UPDATE documents SET replaces_document_id='original' WHERE id='edited'"
-    )
+    rag_conn.execute("UPDATE documents SET replaces_document_id='original' WHERE id='edited'")
     rag_conn.commit()
     _orphan_job(rag_conn, "edited", "kb_a")
 
