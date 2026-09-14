@@ -3268,8 +3268,8 @@ _PATH_FLAG_SPECS = {
         # points, independent of whether this invocation creates or extracts the archive itself.
         "-g": "write",
         "--listed-incremental": "write",
-        "-C": "read",
-        "--directory": "read",
+        "-C": "extract_dir",
+        "--directory": "extract_dir",
         "-T": "read",
         "--files-from": "read",
         "-X": "read",
@@ -3537,12 +3537,15 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         # `key=value` forms (dd if=..., --output=...) carry the path on the right.
         if "=" in arg and not _looks_absolute(arg):
             arg = arg.split("=", 1)[1]
-        if not _looks_absolute(arg):
-            continue
         if dest_last:
             writing = position == len(positionals) - 1 and len(positionals) > 1
         else:
             writing = write_cmd or inplace or (creating and position == 0)
+        if not _looks_absolute(arg):
+            # The shell expands a substitution in this position into the operand the command
+            # actually opens, so a literal path inside one counts as if it were written here.
+            operands.extend((path, writing) for path in _substitution_operand_paths(arg))
+            continue
         operands.append((arg, writing))
     return operands
 
@@ -3578,15 +3581,49 @@ def _short_flag_with_value(arg: str, spec) -> "tuple[str | None, str | None]":
     return None, None
 
 
+# A command substitution or arithmetic/brace expansion sitting where a path belongs. shlex keeps the
+# whole thing as ONE token, and that token is not itself absolute, so the operand scan saw nothing at
+# all for `cat "$(printf /media/private/report.txt)"` while the shell handed `cat` the real path.
+_SUBSTITUTION_RE = re.compile(r"\$\((.*?)\)|`([^`]*)`|\$\{([^{}]*)\}", re.DOTALL)
+
+
+def _substitution_operand_paths(token: str) -> "list[str]":
+    """Absolute paths written literally INSIDE a substitution in `token`.
+
+    Only literals are recovered, which is the common shape (`$(printf /abs)`, `$(echo /abs)`,
+    `` `cat /abs` ``). A substitution whose output is genuinely dynamic yields nothing here; that
+    remains the documented static-analysis gap rather than something this pretends to solve.
+    """
+    paths: "list[str]" = []
+    for match in _SUBSTITUTION_RE.finditer(token):
+        inner = next((group for group in match.groups() if group), "")
+        if not inner:
+            continue
+        try:
+            words = shlex.split(inner)
+        except ValueError:
+            words = inner.split()
+        paths.extend(word for word in words if _looks_absolute(word))
+    return paths
+
+
 def _add_flag_operand(operands, kind, value: str, write_cmd: bool, creating: bool) -> None:
     """Record a path supplied as a flag value, with the access that flag implies.
 
     ``kind`` of "skip" means the value was data, not a path, and is simply consumed.
     """
-    if not kind or kind == "skip" or not value or not _looks_absolute(value):
+    if not kind or kind == "skip" or not value:
+        return
+    if not _looks_absolute(value):
+        writing_sub = kind == "write" or (write_cmd and kind != "archive")
+        operands.extend((path, writing_sub) for path in _substitution_operand_paths(value))
         return
     if kind == "archive":
         writing = creating
+    elif kind == "extract_dir":
+        # tar -C is where the operation HAPPENS, so its sense is the inverse of the archive's:
+        # extracting creates and overwrites members under it, creating only reads them from it.
+        writing = not creating
     else:
         writing = kind == "write" or write_cmd
     operands.append((value, writing))
@@ -3766,6 +3803,21 @@ _PY_PATH_KWARGS = (
 )
 
 
+def _python_module_aliases(tree) -> dict:
+    """Local name -> real module, for `import io as stream` and `import os.path as p`.
+
+    Only the ROOT module is recorded, which is what the receiver tables are keyed on.
+    """
+    aliases: dict = {}
+    for node in _tree_nodes(tree):
+        if not isinstance(node, ast.Import):
+            continue
+        for entry in node.names:
+            root = entry.name.split(".", 1)[0]
+            aliases[entry.asname or root] = root
+    return aliases
+
+
 def _python_path_bindings(tree) -> dict:
     """Names bound to a foldable path (`p = '/media/x'`, `p := Path('/media') / 'x'`), so a read
     through the variable folds to the same path a literal would.
@@ -3827,6 +3879,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     """
     bindings = _python_path_bindings(tree)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
+    module_aliases = _python_module_aliases(tree)
     operands: "list[tuple[str, bool]]" = []
 
     def add_subprocess_operands(call) -> None:
@@ -3892,6 +3945,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # the rest of _PY_MODULE_OPEN_RECEIVERS are module functions taking the path FIRST, so
             # folding their receiver yields the bare module name and the read escapes unprompted.
             receiver = getattr(func.value, "id", "") if is_method else ""
+            # `import io as stream` makes the receiver `stream`, which is in no table; resolve the
+            # alias back to the real module or the call reads as a Path-style method and the path
+            # argument is never looked at.
+            receiver = module_aliases.get(receiver, receiver)
             path_is_receiver = is_method and receiver not in _PY_MODULE_OPEN_RECEIVERS
             writing = _open_call_writes(node, mode_index = 0 if path_is_receiver else 1) or (
                 receiver in ("os", "posix")

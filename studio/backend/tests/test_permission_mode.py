@@ -3322,6 +3322,10 @@ _ALLOWLISTED_TERMINAL = (
     "tar -cf out.tar data src",
     "tar -xf archive.tar src",
     "tar czf out.tgz .",
+    # -C in CREATE mode really is only a read, and a substitution naming no path is not an operand.
+    "tar -C /usr/share -cf out.tar .",
+    'echo "$(date)"',
+    'echo "$(ls)"',
 )
 
 _ALLOWLISTED_PYTHON = (
@@ -3336,6 +3340,8 @@ _ALLOWLISTED_PYTHON = (
     # The module-open fix reads the first argument instead of the receiver; a relative one is silent.
     "import io\nprint(io.open('notes.txt').read())",
     "import gzip\ngzip.open('data.gz', 'rb').read()",
+    "import io as stream\nprint(stream.open('notes.txt').read())",
+    "import os.path as p\nprint(p.join('data', 'train.csv'))",
     # ... and the receiver IS the path for Path.open, which must keep working.
     "from pathlib import Path\nPath('out.txt').open('w').write('hi')",
 )
@@ -3358,6 +3364,15 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # -g/--listed-incremental names a snapshot file tar CREATES, in both spellings.
     f"tar --listed-incremental={_OUTSIDE_DIR}/state.snar -cf local.tar src",
     f"tar -g {_OUTSIDE_DIR}/state.snar -cf local.tar src",
+    # -C is where the operation HAPPENS: extracting creates and overwrites members under it, so a
+    # directory that is only READ-silent (a scan folder, /usr/share) is still being written here.
+    "tar -C /usr/share -xf local.tar",
+    f"tar -C {_OUTSIDE_DIR} -xf local.tar",
+    # shlex keeps a command substitution as ONE non-absolute token, so the operand scan saw nothing
+    # while the shell handed the command the real path.
+    f'cat "$(printf {_OUTSIDE_FILE})"',
+    f"cat `echo {_OUTSIDE_FILE}`",
+    f'cp local.txt "$(echo {_OUTSIDE_DIR}/out)"',
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3375,6 +3390,10 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # A chained assignment has more than one target; skipping the statement left the name unfoldable.
     f"source = backup = {_OUTSIDE_FILE!r}\nprint(open(source).read())",
     f"a, b = c, d = {_OUTSIDE_FILE!r}, 'local.txt'\nprint(open(c).read())",
+    # An aliased import leaves a receiver that is in no table, so the call read as a Path-style
+    # method and its first argument was never looked at.
+    f"import io as stream\nstream.open({_OUTSIDE_FILE!r}).read()",
+    f"import gzip as gz\ngz.open({_OUTSIDE_DIR!r} + '/d.gz', 'rb').read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
