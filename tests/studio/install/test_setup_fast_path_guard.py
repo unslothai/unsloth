@@ -455,3 +455,39 @@ def test_the_deep_verify_only_degrades_on_a_tree_that_lacks_the_keyword(
         [sys.executable, "-c", probe.group(1), str(tmp_path)], capture_output = True
     )
     assert result.returncode == expected, result.stderr.decode()
+
+
+def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
+    """A shell that decides "online" while the installer decides "offline" declines a repair
+    with a message contradicting the user. `off` and `no` are the spellings that did it."""
+    import ast as _ast
+    import os
+    import subprocess
+
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_uv_offline_requested() {")
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        sh[start : sh.index("\n}\n", start) + 3]
+        + "\nif _uv_offline_requested; then echo yes; else echo no; fi\n"
+    )
+
+    stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    node = next(
+        n
+        for n in _ast.parse(stack).body
+        if isinstance(n, _ast.FunctionDef) and n.name == "_uv_is_offline"
+    )
+    namespace: dict = {"os": os}
+    exec(compile(_ast.Module(body = [node], type_ignores = []), "<stack>", "exec"), namespace)
+
+    for value in ("1", "0", "t", "f", "true", "false", "y", "n", "yes", "no", "on", "off",
+                  "", "  ", "TRUE", "On", "T", "Y", "maybe", "2"):
+        env = {**os.environ, "UV_OFFLINE": value}
+        shell = subprocess.run(
+            ["bash", str(probe)], capture_output = True, text = True, env = env
+        ).stdout.strip() == "yes"
+        os.environ["UV_OFFLINE"] = value
+        assert shell == namespace["_uv_is_offline"](), (
+            f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"
+        )

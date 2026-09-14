@@ -7331,8 +7331,15 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 
 
 def _uv_is_offline() -> bool:
-    """True when uv has been told not to touch the network."""
-    return os.environ.get("UV_OFFLINE", "").strip().lower() not in ("", "0", "false")
+    """True when uv has been told not to touch the network.
+
+    uv's own boolish set, as setup.sh and setup.ps1 read it. "not in (0, false)" also read
+    `off` and `no` as offline, so a user disabling it that way had repairs declined by a
+    message saying the opposite, while uv went on using the network.
+    """
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in (
+        "1", "t", "true", "y", "yes", "on"
+    )
 
 
 def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
