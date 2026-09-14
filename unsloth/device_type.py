@@ -293,7 +293,7 @@ def get_device_stats() -> tuple[str, str, float]:
         # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
         try:
             import torch_npu
-            snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."
+            snippet = f"NPU. torch_npu: {torch_npu.__version__}."
         except Exception:
             snippet = "NPU."
     else:
