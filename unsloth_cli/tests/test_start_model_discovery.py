@@ -77,3 +77,20 @@ def test_discovery_timeout_is_not_retried_as_old_server(monkeypatch, capsys):
         start._loaded_models(BASE, "key")
     assert "Couldn't list models: timed out" in capsys.readouterr().err
     assert calls == [BASE + "/api/inference/loaded-models"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param([], id = "resident-listing-is-empty"),
+        pytest.param([{"id": "org/Model", "loaded": False}], id = "old-server-lists-only-unloaded"),
+    ],
+)
+def test_nothing_resident_reads_the_same_whatever_the_server_lists(monkeypatch, capsys, data):
+    def http_json(method, url, token, **kwargs):
+        return {"data": data}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "key", None)
+    assert "No model is loaded in Unsloth." in capsys.readouterr().err
