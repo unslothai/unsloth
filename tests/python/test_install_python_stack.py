@@ -92,7 +92,12 @@ class TestUnslothZooGitSpec:
         monkeypatch.setattr(ips, "_resolve_unsloth_zoo_commit", _RESOLVE_ZOO_COMMIT)
         ips._ZOO_COMMIT_CACHE.clear()
 
-    def _fake_ls_remote(self, monkeypatch, stdout, returncode = 0):
+    def _fake_ls_remote(
+        self,
+        monkeypatch,
+        stdout,
+        returncode = 0,
+    ):
         calls = []
 
         def fake_run(cmd, **kwargs):
@@ -118,7 +123,7 @@ class TestUnslothZooGitSpec:
 
         first = ips._unsloth_zoo_git_spec()
         assert ips._unsloth_zoo_git_spec() == first
-        assert len(calls) == 1   # staging and the install must not straddle a branch move
+        assert len(calls) == 1  # staging and the install must not straddle a branch move
 
     def test_an_explicit_ref_is_resolved_too(self, monkeypatch):
         sha = "c" * 40
@@ -139,9 +144,9 @@ class TestUnslothZooGitSpec:
     @pytest.mark.parametrize(
         "stdout, returncode",
         [
-            (b"", 0),                                  # ls-remote matched no ref
-            (b"not-a-sha\trefs/heads/main\n", 0),      # unexpected output shape
-            (b"", 128),                                # remote unreachable
+            (b"", 0),  # ls-remote matched no ref
+            (b"not-a-sha\trefs/heads/main\n", 0),  # unexpected output shape
+            (b"", 128),  # remote unreachable
         ],
     )
     def test_an_unresolvable_ref_falls_back_to_the_url_as_written(
