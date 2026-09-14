@@ -30,6 +30,7 @@ _UNSUPPORTED_FIELD_KEYS = frozenset(
 _UNSUPPORTED_OBJECT_KEYS = frozenset(
     {"$ref", "anyOf", "oneOf", "allOf", "not", "dependentRequired", "dependentSchemas"}
 )
+_REGEX_SCHEMA_KEYS = frozenset({"pattern", "patternProperties"})
 
 
 class McpImageDisclosureError(ValueError):
@@ -102,6 +103,22 @@ def _eligible_field(schema: dict[str, Any], field: str) -> dict[str, Any]:
     return field_schema
 
 
+def _reject_regex_schema(schema: dict[str, Any]) -> None:
+    pending = [schema]
+    nodes = 0
+    while pending:
+        node = pending.pop()
+        nodes += 1
+        if nodes > 10_000:
+            raise McpImageDisclosureError("Mapped tool schema is too complex")
+        if isinstance(node, dict):
+            if _REGEX_SCHEMA_KEYS.intersection(node):
+                raise McpImageDisclosureError("Mapped tool schemas cannot use regular expressions")
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+
+
 def validate_image_input_mappings(
     mappings: Iterable[Any], tools: Iterable[dict[str, Any]]
 ) -> tuple[list[dict[str, str]], str | None]:
@@ -129,6 +146,7 @@ def validate_image_input_mappings(
             raise McpImageDisclosureError(f"MCP tool '{tool_name}' was not discovered")
         schema = _tool_schema(tool)
         _eligible_field(schema, field)
+        _reject_regex_schema(schema)
         digest_rows.append({"mapping": mapping, "schema": schema})
     digest = hashlib.sha256(
         json.dumps(digest_rows, sort_keys = True, separators = (",", ":")).encode("utf-8")

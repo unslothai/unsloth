@@ -82,6 +82,16 @@ def test_model_schema_offers_only_the_issued_opaque_reference():
             "top-level strings",
         ),
         ({"type": "object", "properties": {}}, "top-level strings"),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "image": {"type": "string"},
+                    "label": {"type": "string", "pattern": "^(.+)+:$"},
+                },
+            },
+            "regular expressions",
+        ),
     ],
 )
 def test_unsupported_mapping_schemas_fail_closed(schema, message):
