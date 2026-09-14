@@ -6137,21 +6137,29 @@ def _progress(label: str) -> None:
         pass
 
 
+_ENV_FOR_CMD = object()
+
+
 def run(
     label: str,
     cmd: list[str],
     *,
     quiet: bool = True,
     check: bool = True,
+    env: "dict[str, str] | None | object" = _ENV_FOR_CMD,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a command; on failure print output and exit, unless ``check`` is False."""
+    """Run a command; on failure print output and exit, unless ``check`` is False.
+
+    ``env`` is for a caller that already derived argv from the environment: see
+    _pinned_cmd_and_env.
+    """
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
-        env = _install_env_for_cmd(cmd),
+        env = _install_env_for_cmd(cmd) if env is _ENV_FOR_CMD else env,
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -7300,34 +7308,49 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     return cmd
 
 
-def _uv_cmd_and_env(cmd: "list[str]") -> "tuple[list[str], dict[str, str] | None]":
-    """A uv command with its only-binary flags, and the env it runs with, from ONE read.
+def _pinned_cmd_and_env(cmd: "list[str]") -> "tuple[list[str], dict[str, str] | None]":
+    """A command with its pinned binary-policy arguments, and the env it runs with, from ONE read.
 
     A failed read is not memoised, so a second one can succeed: the policy would then reach
-    the environment, which uv ignores, but not the argv that decides.
+    the environment but not the argv that carries it (uv) or exempts from it (both).
     """
     env = _install_env_for_cmd(cmd)
-    return cmd + _uv_only_binary_args(cmd, env), env
+    return cmd + _pinned_binary_policy_args(cmd, env), env
 
 
-def _uv_only_binary_args(cmd: "list[str]", env: "dict[str, str] | None") -> "list[str]":
-    """The operator's only-binary, as uv flags, for a pinned command.
+# Wheel-less dependencies of the indexes this installer pins: every torch on repo.amd.com's gfx*
+# indexes requires rocm[libraries], which AMD publishes only as an sdist (7.9 through 7.13).
+_PINNED_SDIST_ONLY_PACKAGES = ("rocm",)
+
+
+def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -> "list[str]":
+    """The re-asserted only-binary as argv for a pinned command, plus its package exemptions.
 
     uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
     UV_NO_CONFIG=1 since a discovered uv.toml outranks the CLI pin (#6898), so the
     environment alone leaves the policy unenforced on the leg that runs. Measured on uv
     0.10.7: a pinned install builds the sdist with PIP_ONLY_BINARY=:all: set and refuses it
     given --only-binary. Pinned only: others keep their config file and uv applies it.
+
+    Only when a policy is in force, so an unconfigured host's argv is unchanged, and never for a
+    package the operator named: a CLI --no-binary overrides their rule for it (pip 26.2).
     """
     if not _is_pinned_index_cmd(cmd):
         return []
-    value = (env or {}).get("PIP_ONLY_BINARY", "")
+    parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
+    parts = [part for part in parts if part]
+    if not parts:
+        return []
     args: list[str] = []
-    # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
-    for part in value.split(","):
-        if part.strip():
-            args.extend(["--only-binary", part.strip()])
-    return args
+    if cmd[:1] == ["uv"]:
+        # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
+        for part in parts:
+            args.extend(["--only-binary", part])
+    named = {_canonical_package_name(part) for part in parts}
+    exempt = [
+        name for name in _PINNED_SDIST_ONLY_PACKAGES if _canonical_package_name(name) not in named
+    ]
+    return args + _sdist_only_build_args(*exempt)
 
 
 # uv ranks --index-url LOWEST, so inherited index vars defeat a pinned repair; neutralise them.
@@ -7370,8 +7393,8 @@ _PM_FORCE_SOURCE_ENV_VARS = (
     "UV_EXCLUDE_NEWER",
 )
 
-# PIP_ONLY_BINARY stays in force: the pinned indexes serve wheels, so it costs the pin
-# nothing. Measured on uv 0.10.7, UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
+# PIP_ONLY_BINARY stays in force: the pinned indexes serve wheels, rocm aside (see
+# _PINNED_SDIST_ONLY_PACKAGES), so it costs the pin nothing. Measured on uv 0.10.7, UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
 # environment variables at all, so no uv.toml no-build can reach a pinned command.
 
 
@@ -7944,10 +7967,9 @@ def pip_install_try(
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
     if USE_UV and not force_pip:
-        cmd, env = _uv_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv)
+        cmd, env = _pinned_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv)
     else:
-        cmd = _build_pip_cmd(args) + constraint_args_pip
-        env = _install_env_for_cmd(cmd)
+        cmd, env = _pinned_cmd_and_env(_build_pip_cmd(args) + constraint_args_pip)
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
@@ -8000,7 +8022,9 @@ def pip_install(
 
     try:
         if USE_UV:
-            uv_cmd, uv_env = _uv_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv + req_args_uv)
+            uv_cmd, uv_env = _pinned_cmd_and_env(
+                _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+            )
             if VERBOSE:
                 _safe_print(f"   {label}...")
             result = subprocess.run(
@@ -8024,9 +8048,11 @@ def pip_install(
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
 
-        pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+        pip_cmd, pip_env = _pinned_cmd_and_env(
+            _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+        )
         pip_label = f"{label} (pip)" if USE_UV else label
-        result = run(pip_label, pip_cmd, check = False)
+        result = run(pip_label, pip_cmd, check = False, env = pip_env)
         if result.returncode != 0:
             # Retry once, and only after clearing something pip named as
             # unremovable: a blind retry of a failing install just doubles the wait.
@@ -8034,7 +8060,7 @@ def pip_install(
             if not cleared:
                 _report_failed_command(pip_label, result)
             _step(_LABEL, f"cleared half-written {', '.join(cleared)}, retrying...", _dim)
-            run(pip_label, pip_cmd)
+            run(pip_label, pip_cmd, env = pip_env)
     finally:
         for temp_req in temp_reqs:
             temp_req.unlink(missing_ok = True)

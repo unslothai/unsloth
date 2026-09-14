@@ -96,18 +96,45 @@ class TestUvOnlyBinaryOnPinnedCommands:
     PINNED = ("torch", "--index-url", "https://pin.example/whl")
 
     def _uv_cmd(self, args):
-        return ips._uv_cmd_and_env(ips._build_uv_cmd(args))[0]
+        return ips._pinned_cmd_and_env(ips._build_uv_cmd(args))[0]
+
+    def _pip_cmd(self, args):
+        return ips._pinned_cmd_and_env(ips._build_pip_cmd(args))[0]
 
     def test_a_pinned_uv_command_carries_only_binary_as_flags(self):
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
             cmd = self._uv_cmd(self.PINNED)
-        assert cmd[-2:] == ["--only-binary", ":all:"]
+        assert cmd[-4:] == ["--only-binary", ":all:", "--no-binary", "rocm"]
 
     def test_each_entry_becomes_its_own_flag(self):
         """uv takes the option repeatably, not comma joined the way pip spells it."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
             cmd = self._uv_cmd(self.PINNED)
-        assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
+        assert cmd[-6:] == [
+            "--only-binary",
+            ":none:",
+            "--only-binary",
+            "numpy",
+            "--no-binary",
+            "rocm",
+        ]
+
+    def test_a_pinned_pip_command_keeps_the_policy_in_env_and_the_exemption_in_argv(self):
+        """pip reads PIP_ONLY_BINARY itself; the command line only has to exempt rocm, which
+        repo.amd.com's gfx* torch requires and publishes as an sdist alone."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd, env = ips._pinned_cmd_and_env(ips._build_pip_cmd(self.PINNED))
+        assert "--only-binary" not in cmd
+        assert cmd[-2:] == ["--no-binary", "rocm"]
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+
+    @pytest.mark.parametrize("policy", ("rocm", ":all:,rocm", ":all:,ROCm"))
+    @pytest.mark.parametrize("leg", ("uv", "pip"))
+    def test_a_package_the_operator_names_is_not_exempted(self, policy, leg):
+        """A command-line --no-binary overrides the operator's own rule for that package."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": policy}):
+            cmd = self._uv_cmd(self.PINNED) if leg == "uv" else self._pip_cmd(self.PINNED)
+        assert "--no-binary" not in cmd
 
     @pytest.mark.reads_real_pip_config  # stubbed below with a read that fails once
     @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
@@ -131,16 +158,38 @@ class TestUvOnlyBinaryOnPinnedCommands:
         flagged = cmd[cmd.index("--only-binary") + 1] if "--only-binary" in cmd else None
         assert flagged == (env or {}).get("PIP_ONLY_BINARY")
 
+    @pytest.mark.reads_real_pip_config  # stubbed below with reads that disagree
+    def test_the_pip_fallback_runs_with_the_env_its_exemption_came_from(self, monkeypatch):
+        """uv fails, so pip_install falls back. Had run() read the config again, a policy that
+        appeared on that read would refuse rocm with no exemption on the argv."""
+        answers = iter(({}, {}, {"PIP_ONLY_BINARY": ":all:"}))
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: next(answers, {}))
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append((cmd, kwargs.get("env")))
+            return subprocess.CompletedProcess(cmd, 1 if cmd[:1] == ["uv"] else 0, b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        ips.pip_install("torch", *self.PINNED, constrain = False)
+        pip_cmd, pip_env = runs[-1]
+        assert pip_cmd[:3] == [sys.executable, "-m", "pip"]
+        assert ("--no-binary" in pip_cmd) == bool((pip_env or {}).get("PIP_ONLY_BINARY"))
+
     def test_a_non_pinned_command_is_left_alone(self):
         """It keeps its config file, so uv applies the operator's policy itself."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
-            cmd = self._uv_cmd(("torch",))
-        assert "--only-binary" not in cmd
+            assert self._uv_cmd(("torch",)) == ips._build_uv_cmd(("torch",))
+            assert self._pip_cmd(("torch",)) == ips._build_pip_cmd(("torch",))
 
-    def test_no_policy_adds_no_flag(self):
+    def test_no_policy_leaves_the_argv_untouched(self):
+        """An unconfigured host must run exactly the command main ran, AMD indexes included."""
         env = {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}
         with mock.patch.dict(os.environ, env, clear = True):
-            assert "--only-binary" not in self._uv_cmd(self.PINNED)
+            assert self._uv_cmd(self.PINNED) == ips._build_uv_cmd(self.PINNED)
+            assert self._pip_cmd(self.PINNED) == ips._build_pip_cmd(self.PINNED)
 
 
 class TestBuildUvCmdTorchBackend:
@@ -2937,6 +2986,7 @@ class TestRecordlessDistributionRecovery:
             *,
             quiet = True,
             check = True,
+            env = None,
         ):
             attempts.append(cmd)
             failed = len(attempts) == 1
@@ -2963,6 +3013,7 @@ class TestRecordlessDistributionRecovery:
             *,
             quiet = True,
             check = True,
+            env = None,
         ):
             attempts.append(cmd)
             return types.SimpleNamespace(returncode = 1, stdout = b"ERROR: no matching distribution")
