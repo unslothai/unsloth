@@ -5428,7 +5428,18 @@ exit 0
     # counterpart of the gfx arch shown for AMD, and the driver version the counterpart of
     # the HIP SDK line; one query returns all three. Honour the same visible-device index
     # the AMD probes do.
-    if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged) {
+    #
+    # A mask of "" or -1 hides every device, so it selects nothing to name. It is also not
+    # a UUID, and letting it reach the prefix match below would spend a second probe that
+    # can never match and then name row 0 anyway. $HasNvidiaSmi still drives wheel
+    # selection here, as it does on main, so only the naming is skipped: the banner keeps
+    # the vendor-only wording rather than claiming a card CUDA does not expose.
+    $nvMaskHidesAll = $false
+    if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
+        $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
+        $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
+    }
+    if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
         try {
             # Through the bounded runner, like every other nvidia-smi call here: a
             # wedged driver blocks nvidia-smi indefinitely, and a bare `&` call has
