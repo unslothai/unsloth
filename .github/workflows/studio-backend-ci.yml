@@ -16,6 +16,12 @@
 #   - pytest on 3.13 over studio/backend/tests, with the floor checked statically
 #   - repo-cpu-tests: auto-discovered tests/ + state-isolated spoof files
 #
+#
+# runs-on: ubuntu-24.04, not ubuntu-latest. Same image, so the jobs are unchanged; different
+# queue, because nearly all of the org's ~871 queued runs ask for ubuntu-latest. Identical
+# no-op jobs in one matrix: ubuntu-latest still queued past 40 min, every other label under
+# 2 min (#10914). Cost: the image no longer tracks the fleet default, so bump it for 26.04.
+#
 # Whole-repo Python lint (syntax + ruff + debugger-leftover scan)
 # moved to the dedicated `Lint CI` workflow (.github/workflows/lint-ci.yml)
 # so it fires on every PR rather than only on studio/unsloth/tests
@@ -87,7 +93,7 @@ env:
 jobs:
   pytest:
     name: (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 45 guards against a hang; it is not a performance budget. The comment this replaces
     # claimed 14.1 to 15.0 minutes against a limit of 30, but this step now measures 22.5 to
     # 29.2 minutes across the matrix, and it has been cancelling at the limit: across the six
@@ -353,7 +359,7 @@ jobs:
     # mocked torch.cuda.is_available so the unsloth import chain
     # succeeds on CPU.
     name: Repo tests (CPU, ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Same reason as the matrix above, and now the same number. The comment this replaces
     # claimed 13.4 minutes. Across the last 40 runs of this job on main the pytest step
     # alone measured 852s to 1683s (14.2 to 28.1 minutes), and the install plus the four
@@ -638,7 +644,7 @@ jobs:
     # No pip install here at all -- the runner's own python3 and bash are what these scripts
     # use -- so the job is checkout plus the loop, and it finishes long before the shards do.
     name: Shell installer tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 165s measured, and a hung mock would otherwise sit here until the workflow's own limit.
     timeout-minutes: 15
     steps:

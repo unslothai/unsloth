@@ -2169,6 +2169,15 @@ STUB_EOF
         fi
         _css_lnk_name_ps=$(printf '%s' "$_css_lnk_name" | sed "s/'/''/g")
 
+        # The generated script prefers this to its download.
+        _css_wsl_ico_win=""
+        for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
+            if [ -f "$_sp/unsloth.ico" ] && command -v wslpath >/dev/null 2>&1; then
+                _css_wsl_ico_win=$(wslpath -w "$_sp/unsloth.ico" 2>/dev/null) || _css_wsl_ico_win=""
+            fi
+        done
+        _css_wsl_ico_win_ps=$(printf '%s' "$_css_wsl_ico_win" | sed "s/'/''/g")
+
         # Create shortcuts via a temp PowerShell script to avoid escaping issues
         _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
         if [ -n "$_css_ps1_tmp" ]; then
@@ -2183,6 +2192,13 @@ if (-not \$targetExe) { exit 1 }
 \$preIconHash = \$null
 if (Test-Path -LiteralPath \$iconPath) {
     try { \$preIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash } catch {}
+}
+\$packagedIcon = '$_css_wsl_ico_win_ps'
+if (-not (Test-Path -LiteralPath \$iconPath) -and \$packagedIcon -and (Test-Path -LiteralPath \$packagedIcon)) {
+    try {
+        New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
+        Copy-Item -LiteralPath \$packagedIcon -Destination \$iconPath -Force -ErrorAction Stop
+    } catch {}
 }
 if (-not (Test-Path -LiteralPath \$iconPath)) {
     try {
