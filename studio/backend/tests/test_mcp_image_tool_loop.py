@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import asyncio
 import base64
 import copy
 import io
@@ -9,6 +10,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
 from core.inference import mcp_client, mcp_image_tool_loop as image_loop
@@ -18,6 +20,7 @@ from core.inference.mcp_image_disclosure import (
 )
 from state import tool_approvals
 from storage import studio_db
+from routes import inference
 
 
 @pytest.fixture
@@ -230,8 +233,9 @@ def test_stale_snapshotless_image_request_is_rejected(image_request, location):
         ]
     else:
         f.payload.image_base64 = f.encoded
-    with pytest.raises(McpImageDisclosureError, match = "settings must be checked"):
-        prepare(f)
+    with pytest.raises(HTTPException, match = "settings must be checked") as exc:
+        asyncio.run(inference._prepare_mcp_image_for_route(f.payload, "user", [], None, []))
+    assert exc.value.status_code == 400
 
 
 def test_changed_image_policy_revision_is_rejected_before_model_dispatch(image_request):
