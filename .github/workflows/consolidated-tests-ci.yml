@@ -93,7 +93,46 @@ permissions:
   contents: read
 
 jobs:
+  resolve-zoo-ref:
+    # Both Core halves clone unsloth_zoo. Before the split they shared one checkout per
+    # matrix cell, so the compatibility checks and the suite always saw the same revision.
+    # Cloning a mutable branch twice loses that: a push to unsloth_zoo between the two clones
+    # has `consolidated` check revision A while `consolidated-zoo` runs revision B under one
+    # matrix label, and the run is then not reproducible from anything it recorded.
+    #
+    # Resolving once costs a gating job. That is affordable here and was not while Core sat on
+    # ubuntu-latest: on the pinned label a trivial job waited 11s to 162s across the runs in
+    # #10914, against the roughly seven minutes the split takes off this workflow.
+    #
+    # llama-cpp-smoke still resolves its own ref. It shares no verdict with these two, so a
+    # different revision there cannot make one cell disagree with itself.
+    name: Resolve the unsloth_zoo revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve
+        id: resolve
+        env:
+          REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          # A ref that is already a commit has no remote head to look up, so pass it through.
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            sha="$REF"
+          else
+            sha="$(git ls-remote https://github.com/unslothai/unsloth_zoo "$REF" | cut -f1)"
+          fi
+          if [ -z "$sha" ]; then
+            echo "::error::could not resolve unsloth_zoo ref '$REF' to a commit"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "unsloth_zoo $REF is $sha"
+
   consolidated:
+    needs: resolve-zoo-ref
     # Matrix: three (transformers, TRL) combos cover the failure surface the
     # PR cares about:
     #   1. transformers==4.57.6 + TRL latest <1.0.0 (the just-before-5.x line)
@@ -134,7 +173,7 @@ jobs:
     # the runtime check shim handles patches that legitimately cannot
     # run on a CPU-only runner (real CUDA dispatcher, runtime args).
     env:
-      UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
+      UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
       MATRIX_COMBO_ID: ${{ matrix.combo.id }}
       # Hoisted to job-level so every step (Sanity, Bucket-A, the static and
       # runtime checks) inherits it, and repeated in `consolidated-zoo` for the
@@ -2157,6 +2196,7 @@ jobs:
   # concurrency groups, so a force-push would cancel one and leave the other
   # running against the commit it superseded.
   consolidated-zoo:
+    needs: resolve-zoo-ref
     # Byte-identical to `consolidated`'s matrix, deliberately: the coverage
     # claim for this split is that the same suite still runs under the same
     # three (transformers, TRL) pins. GitHub Actions supports no YAML anchors
@@ -2189,7 +2229,7 @@ jobs:
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
     env:
-      UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
+      UNSLOTH_ZOO_REF: ${{ needs.resolve-zoo-ref.outputs.sha }}
       MATRIX_COMBO_ID: ${{ matrix.combo.id }}
       # Identical to `consolidated`'s env block, and asserted identical by
       # tests/studio/test_zoo_suite_parallel_isolation.py. The reasoning for
