@@ -7445,7 +7445,9 @@ def _pip_subcommand_of(cmd: "list[str]") -> str:
     return _PINNED_PIP_CONFIG_DEFAULT_SECTION
 
 
-def _pinned_pip_config_overrides(subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION) -> "dict[str, str]":
+def _pinned_pip_config_overrides(
+    subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION,
+) -> "dict[str, str]":
     """pip's configured transport and binary policy, as PIP_ environment variables.
 
     ONLY a successful read is memoised, or a transient miss would cost the operator their
@@ -7508,7 +7510,7 @@ def _parse_pinned_pip_config(
         separator_for_key = _PINNED_PIP_CONFIG_SEPARATORS.get(option)
         present = [by_section[name] for name in sections if name in by_section]
         if option not in _PINNED_PIP_CONFIG_ACCUMULATING:
-            value = present[-1]        # the command's section overrides global
+            value = present[-1]  # the command's section overrides global
         else:
             # A repeatable option ACCUMULATES across sections rather than overriding, and
             # pip applies the entries IN ORDER: `:none:` empties the set, so a later
@@ -7516,12 +7518,7 @@ def _parse_pinned_pip_config(
             # [install] :none:,a -- pip keeps a, and so does this concatenation, while
             # deduplicating dropped the re-add and left `:none:` last, which empties the
             # set and lets a pinned install build the sdist the operator forbade.
-            parts = [
-                part
-                for chunk in present
-                for part in chunk.split(separator_for_key)
-                if part
-            ]
+            parts = [part for chunk in present for part in chunk.split(separator_for_key) if part]
             value = separator_for_key.join(parts)
         overrides[f"PIP_{option.upper().replace('-', '_')}"] = value
     return overrides

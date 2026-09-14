@@ -569,7 +569,11 @@ class TestHardenedPipConfigRelaxation:
         ":env:.no-binary=':all:'\n"
     )
 
-    def _overrides(self, listing = None, subcommand = "install"):
+    def _overrides(
+        self,
+        listing = None,
+        subcommand = "install",
+    ):
         return ips._parse_pinned_pip_config(
             (self.LISTING if listing is None else listing).encode(), subcommand
         )
@@ -667,8 +671,10 @@ class TestHardenedPipConfigRelaxation:
         a `pip download` and leaves `pip install` alone. A PIP_ variable is command-wide,
         so reading `[install]` for a download both drops that command's own settings and
         imposes another command's."""
-        listing = (b"global.timeout='30'\ninstall.only-binary=':all:'\n"
-                   b"install.timeout='9'\ndownload.timeout='5'\ndownload.cert='/etc/dl.pem'\n")
+        listing = (
+            b"global.timeout='30'\ninstall.only-binary=':all:'\n"
+            b"install.timeout='9'\ndownload.timeout='5'\ndownload.cert='/etc/dl.pem'\n"
+        )
         for_install = ips._parse_pinned_pip_config(listing, "install")
         assert for_install["PIP_TIMEOUT"] == "9" and for_install["PIP_ONLY_BINARY"] == ":all:"
         assert "PIP_CERT" not in for_install
@@ -676,7 +682,9 @@ class TestHardenedPipConfigRelaxation:
         assert for_download["PIP_TIMEOUT"] == "5" and for_download["PIP_CERT"] == "/etc/dl.pem"
         assert "PIP_ONLY_BINARY" not in for_download, "an install-only policy is not a download one"
         # A section belonging to neither is never read.
-        assert "PIP_FORMAT" not in ips._parse_pinned_pip_config(b"list.format='columns'\n", "install")
+        assert "PIP_FORMAT" not in ips._parse_pinned_pip_config(
+            b"list.format='columns'\n", "install"
+        )
 
     @pytest.mark.parametrize(
         "cmd, expected",
@@ -741,6 +749,7 @@ class TestHardenedPipConfigRelaxation:
         # A scalar still takes the command section alone: two certs cannot be concatenated.
         certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
         assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
+
     def test_trusted_host_takes_section_precedence_instead(self):
         """Not every list key accumulates. Asked of pip 26.2's own parser with [global]
         and [install] both set, `trusted_hosts` comes back as the install value alone (an
@@ -748,7 +757,9 @@ class TestHardenedPipConfigRelaxation:
         that mutates in place). Accumulating trusted-host would re-trust a host the
         install section had dropped, and that is a TLS decision."""
         hosts = b"global.trusted-host='global-a.corp'\ninstall.trusted-host='install-b.corp'\n"
-        assert ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "install-b.corp"
+        assert (
+            ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "install-b.corp"
+        )
         # Multiple hosts WITHIN the winning section are still space separated.
         many = rb"install.trusted-host='a.corp\nb.corp'"
         assert ips._parse_pinned_pip_config(many, "install")["PIP_TRUSTED_HOST"] == "a.corp b.corp"
@@ -759,8 +770,10 @@ class TestHardenedPipConfigRelaxation:
         [install] :none:,a still refuses a's sdist, and so does this concatenation, while
         deduplicating dropped the re-add and left `:none:` last, which empties the set and
         allowed the very build the operator forbade."""
-        listing = (b"global.only-binary='probe-sdist,probe-wheel'\n"
-                   b"install.only-binary=':none:,probe-sdist'\n")
+        listing = (
+            b"global.only-binary='probe-sdist,probe-wheel'\n"
+            b"install.only-binary=':none:,probe-sdist'\n"
+        )
         assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == (
             "probe-sdist,probe-wheel,:none:,probe-sdist"
         )
