@@ -95,10 +95,10 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | --- | --- |
 | Claude Code | `unsloth start claude` |
 | OpenAI Codex | `unsloth start codex` |
-| Hermes Agent | `unsloth start hermes` |
-| OpenClaw | `unsloth start openclaw` |
-| OpenCode | `unsloth start opencode` |
 | DeepSeek Harness | `unsloth start dsh` |
+| Hermes Agent | `unsloth start hermes` |
+| OpenCode | `unsloth start opencode` |
+| OpenClaw | `unsloth start openclaw` |
 
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
