@@ -41,10 +41,8 @@ def _infer_studio_home_from_venv() -> Path | None:
         return None
     if not has_sentinel:
         return None
-    # The Docker image keeps the venv under UNSLOTH_STUDIO_APP and links it into the Studio home, so
-    # sys.prefix resolves to the app dir, which carries the same sentinels. Data written there lands
-    # in the container layer, not the volume, so a process that lost UNSLOTH_STUDIO_HOME must fall
-    # through to the later defaults rather than adopt the app dir as its home.
+    # In the Docker image sys.prefix resolves to UNSLOTH_STUDIO_APP, which carries the same sentinels
+    # but is the container layer, not the volume: never adopt it as the home.
     app_dir = os.environ.get("UNSLOTH_STUDIO_APP", "").strip()
     if app_dir:
         try:

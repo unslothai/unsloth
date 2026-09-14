@@ -7,10 +7,8 @@
 # Bypass for offline tooling/docs/CI: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# Studio image: relink its code into the Studio home, which may be a volume from an
-# earlier image. Before the CUDA tool selection below, which reads the Studio venv.
-# A failure here means Studio would start against a half-linked home, so it is fatal;
-# the base image has no app dir and the linker is a no-op there.
+# Studio image: relink its code into the home (maybe an earlier image's volume) before the
+# CUDA tool selection reads the venv. Fatal on failure (a half-linked home); no-op on the base image.
 if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
     /usr/local/bin/unsloth-studio-home || {
         echo "ERROR: could not link Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2

@@ -52,11 +52,9 @@ esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
-# Studio's accounts, chats and trained models live under /opt/unsloth-studio. The
-# image links its own code into that directory at every start, so the volume keeps
-# the data across `docker rm` without pinning the first image's code. `-` (not `:-`)
-# so an explicitly empty value disables the mount. On :core the volume is an empty
-# directory the image never reads.
+# Studio's data lives under /opt/unsloth-studio and the image relinks its code there at
+# every start, so the volume survives `docker rm` without pinning the code. `-` (not `:-`):
+# an explicitly empty value disables the mount. On :core it is an empty dir the image never reads.
 STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
 STUDIO_MOUNT=()
 if [ -n "$STUDIO_VOLUME" ]; then

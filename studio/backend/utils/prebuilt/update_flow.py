@@ -275,7 +275,7 @@ def is_external_link(path: Optional[Path]) -> bool:
 
 
 def resolves_into_studio_app_tree(path: Path) -> bool:
-    """True when ``path`` resolves inside $UNSLOTH_STUDIO_APP, the tree the Docker image keeps Studio's own code in. The image links each entry of that tree into the Studio home, which is the volume users mount, so a component dir there is a link Unsloth made over its own install rather than one pointing at a user's checkout. Off (False) wherever the variable is unset, i.e. every non-image install."""
+    """True when ``path`` resolves inside $UNSLOTH_STUDIO_APP: the Docker image links its own code from there into the Studio home, so such a link is ours, not a user checkout. False wherever the variable is unset."""
     app = (os.environ.get("UNSLOTH_STUDIO_APP") or "").strip()
     if not app:
         return False

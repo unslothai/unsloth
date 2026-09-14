@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
-# Point the Studio home's code entries at this image's copy.
-#
-# Studio's code (venv, src, Node, whisper.cpp, transformers tiers) lives in
-# $UNSLOTH_STUDIO_APP; $UNSLOTH_STUDIO_HOME keeps only its data and is what users mount
-# a volume on. Each code entry in the home is a symlink into the app dir, so Studio sees
-# one directory and the venv's baked absolute paths keep resolving.
-#
-# The entrypoint runs this at every start, so a volume holding an earlier image's code
-# as real directories, which is what froze Studio at the old version, is relinked to
-# this image's. Nothing in the home is deleted: an entry that is in the way (an earlier
-# image's real directory, or anything the user put there under a code entry's name) is
-# moved aside to $UNSLOTH_STUDIO_HOME/.unsloth-studio-legacy/<name>, a rename on the
-# same filesystem. `unsloth-studio-home --restore` puts them back, which is how a volume
-# goes back to an older image; UNSLOTH_STUDIO_KEEP_LEGACY=0 deletes instead.
-# Anything the app dir does not have is left alone.
+# Link each code entry of $UNSLOTH_STUDIO_APP (venv, src, Node, whisper.cpp, tiers) into
+# $UNSLOTH_STUDIO_HOME, which keeps only data and is what users mount a volume on; the
+# venv's baked absolute paths keep resolving through the links. Runs at every start, so
+# a volume holding an earlier image's real code directories is relinked rather than
+# frozen at that version. Nothing is deleted: an entry in the way is renamed to
+# .unsloth-studio-legacy/<name> (`--restore` puts it back for an older image;
+# UNSLOTH_STUDIO_KEEP_LEGACY=0 deletes). Entries the app dir lacks are left alone.
 set -euo pipefail
 
 APP="${UNSLOTH_STUDIO_APP:-/opt/unsloth-studio-app}"
@@ -24,26 +16,22 @@ LEGACY_NAME=".unsloth-studio-legacy"
 log() { echo "[unsloth-studio] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# A symlink, or anything that is not a directory, where the kept-aside copies go:
-# mkdir -p, rm -rf and mv all follow it, so a link planted at that name aims them at
-# whatever it points at, the app dir included. Refuse instead of writing through it.
+# mkdir -p, rm -rf and mv all follow a link planted at the legacy name (into the app
+# dir, say); refuse rather than write through it.
 check_legacy() {
     if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
         die "$1 must be a directory, not a link or a file; move or remove it, then start the container again"
     fi
 }
 
-# `--restore` puts the entries kept aside back in place of the links. Run it under an
-# image that ships Studio inside the home (before the code/data split) to roll back.
+# `--restore`: put the kept-aside entries back in place of the links, for an image from before the split.
 if [ "${1:-}" = "--restore" ]; then
     legacy="$HOME_DIR/$LEGACY_NAME"
     check_legacy "$legacy"
     shopt -s dotglob nullglob
     if [ ! -d "$legacy" ]; then
-        # A volume first used after the split, or one whose legacy copy was deleted, holds
-        # data plus links into the app dir and no old code at all. An image from before the
-        # split cannot run it as is (its own Studio tree is hidden under the mount and the
-        # links point at nothing there), so give it real copies of this image's code.
+        # No kept copy (first used after the split, or deleted): a pre-split image finds its
+        # own tree hidden under the mount and links to nothing, so give it real copies.
         [ -d "$APP" ] || die "no $legacy to restore and no $APP on this image: run --restore under an image that has the Studio code in $APP (the one that last ran this volume), it copies that code into the home for an older image"
         copied=()
         for target in "$HOME_DIR"/*; do
@@ -53,9 +41,8 @@ if [ "${1:-}" = "--restore" ]; then
             name="${target##*/}"
             # the uv cache is this image's scratch (9 GB); no image before the split reads it
             if [ -e "$link" ] && [ "$name" != "uv-cache" ]; then
-                # Copy beside the link, swap only once the copy is whole: a half-written
-                # $target would be a real entry, which a rerun's symlink-only loop skips,
-                # and --restore would then report success over incomplete code.
+                # copy beside the link and swap only once whole: a half-written real
+                # $target is skipped by this symlink-only loop on the rerun
                 tmp="$target.restore-tmp"
                 rm -rf -- "$tmp"
                 cp -a -- "$link" "$tmp" || {
@@ -76,8 +63,7 @@ if [ "${1:-}" = "--restore" ]; then
         fi
         exit 0
     fi
-    # every link of ours goes, kept copy or not: an older image expects real entries
-    # and Docker copies nothing into a volume that is not empty
+    # every link of ours goes, kept copy or not: Docker copies nothing into a non-empty volume
     for target in "$HOME_DIR"/*; do
         [ -L "$target" ] || continue
         case "$(readlink "$target")" in
@@ -102,8 +88,7 @@ fi
 [ -d "$APP" ] || exit 0
 mkdir -p "$HOME_DIR" || die "cannot create $HOME_DIR"
 
-# Compare the two roots as the kernel sees them: an env override that points both at
-# the same tree, or nests one in the other, would otherwise move the install aside.
+# as the kernel sees them: an override pointing both at one tree would move the install aside
 app_real="$(cd -P -- "$APP" && pwd -P)"
 home_real="$(cd -P -- "$HOME_DIR" && pwd -P)"
 case "$home_real/" in
@@ -137,10 +122,9 @@ set_aside() {
 
 shopt -s dotglob nullglob
 
-# unsloth-studio-update swaps src by renaming it to .src-prev.* and the staged tree into
-# place. A container killed between the two renames boots with no src in the app dir; the
-# previous tree is the only copy, so put it back before the loop below prunes the home's
-# src link as dangling. Nothing else runs at container start, so the scratch is ours.
+# unsloth-studio-update renames src to .src-prev.* and the staged tree into place; a kill
+# between the two leaves the previous tree as the only copy, so put it back before the
+# loop below prunes the home's src link as dangling.
 if [ ! -e "$APP/src" ]; then
     prev=("$APP"/.src-prev.*)
     if [ "${#prev[@]}" -eq 1 ] && [ -d "${prev[0]}" ]; then
@@ -154,8 +138,7 @@ fi
 for entry in "$APP"/*; do
     name="${entry##*/}"
     [ "$name" = "$LEGACY_NAME" ] && continue
-    # unsloth-studio-update's staging and previous-tree directories, left in the app dir
-    # by a killed update: scratch, not code; never linked into the home
+    # a killed update's staging and previous trees: scratch, never linked into the home
     case "$name" in .src-update.*|.src-prev.*) continue;; esac
     target="$HOME_DIR/$name"
     if [ -L "$target" ]; then
@@ -172,8 +155,7 @@ for entry in "$APP"/*; do
         || die "cannot link $target -> $entry$( [ -e "$legacy/$name" ] && echo "; the earlier entry is intact at $legacy/$name")"
 done
 
-# An entry an earlier image had and this one dropped, e.g. a transformers tier, is left
-# as a link to nothing. Only links into the app dir are ours to remove.
+# an entry this image dropped (a transformers tier) leaves a dangling link; only links into the app dir are ours
 for target in "$HOME_DIR"/*; do
     [ -L "$target" ] || continue
     link="$(readlink "$target")"
