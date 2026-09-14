@@ -56,6 +56,10 @@ export interface SystemInfoResponse {
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
   /** Backend-reported dense quant capability. Absent on older backends. */
   dense_quant_supported?: boolean;
+  /** The dense quant schemes this host can actually run, best first ("fp8" on Ada / Hopper /
+   * Blackwell, "int8" on Ampere, empty where the path is unsupported). Absent on older backends,
+   * which report only the boolean above; readers default it to [] and name no precision. */
+  dense_quant_schemes?: string[];
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;

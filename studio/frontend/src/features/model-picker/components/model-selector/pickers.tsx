@@ -66,6 +66,7 @@ import {
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   useDebouncedValue,
+  useDenseQuantSchemes,
   useGpuInfo,
   useHostClass,
   useInferenceGpuInfo,
@@ -889,8 +890,15 @@ function isRuntimeLoadedModel(
 function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
+  denseQuantSchemes?: readonly string[];
 }): DeviceBudget {
-  return { gpuGb: gpu.memoryTotalGb, systemRamGb: gpu.systemRamAvailableGb };
+  return {
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    // Carried so a row an auto load would fetch pre-quantised is judged by that checkpoint's
+    // resident size rather than by the bf16 shards it replaces.
+    denseQuantSchemes: gpu.denseQuantSchemes,
+  };
 }
 
 const META_COLUMN = {
@@ -3121,6 +3129,7 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
+  const denseQuantSchemes = useDenseQuantSchemes();
 
   // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the
   // chat classifier calls unsupported, so it gates on the task.
@@ -3253,11 +3262,11 @@ export function HubModelPicker({
   // A curated row's name and its chips; ids outside the catalog have neither and show the raw repo id.
   const curatedRow = useCallback(
     (id: string) =>
-      (catalog && curatedRowLabelFor(id, catalog, hostClass)) ?? {
+      (catalog && curatedRowLabelFor(id, catalog, hostClass, denseQuantSchemes)) ?? {
         name: id,
         tags: [] as string[],
       },
-    [catalog, hostClass],
+    [catalog, hostClass, denseQuantSchemes],
   );
 
   /** Whether this host can run a curated id at all, as opposed to whether it has room for it. Browse rows only. */

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
+
 /** Media-picker runtime capability. Dense quant is reported by the backend because the backend
  *  name alone cannot distinguish unsupported accelerators. */
 export type HostClass = "unknown" | "gguf-only" | "accelerated" | "dense-quant";
@@ -69,11 +71,31 @@ export function curatedArtifactIsOfferable(
 
 const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
 
-/** Speed qualifier for H3 artifacts. It omits precision because auto may select INT8 or retain BF16. */
-export function h3PerfSuffix(repoId: string, host: HostClass): string | null {
+/** The speed qualifier for a row the dense quant path runs, naming the precision that will
+ *  actually run. The scheme is the backend's own answer for this host -- "fp8" on Ada / Hopper /
+ *  Blackwell, "int8" on Ampere -- so the row says "Fast FP8" where FP8 is what loads and
+ *  "Fast INT8" where INT8 is. An empty list is a host that reports the capability without naming
+ *  a scheme (an older backend), and there the row falls back to the bare "Fast": the qualifier
+ *  still orders the rows, and no precision is claimed that the load might not honour.
+ *  Only the first entry is read; the backend reports them best-first. */
+export function densePerfSuffix(
+  denseQuantSchemes?: readonly string[] | null,
+): string {
+  const scheme = normalizeDenseQuantSchemes(denseQuantSchemes)[0];
+  return scheme ? `Fast ${scheme.toUpperCase()}` : "Fast";
+}
+
+/** Speed qualifier for H3 artifacts. The pipeline row names its precision from the SAME host
+ *  scheme list every other dense-quant row uses, so an Ampere host reads "Fast INT8" where a
+ *  Hopper one reads "Fast FP8" and neither states a precision the host cannot run. */
+export function h3PerfSuffix(
+  repoId: string,
+  host: HostClass,
+  denseQuantSchemes?: readonly string[] | null,
+): string | null {
   if (!hostIsAccelerated(host)) return null;
   const id = repoId.trim().toLowerCase();
-  if (id === H3_PIPELINE_ID) return "Fast";
+  if (id === H3_PIPELINE_ID) return densePerfSuffix(denseQuantSchemes);
   if (id === H3_GGUF_ID) return "Slow";
   return null;
 }

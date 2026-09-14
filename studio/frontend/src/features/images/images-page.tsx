@@ -63,7 +63,7 @@ import {
   curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useHostClass } from "@/hooks/use-host-class";
+import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -186,8 +186,14 @@ function sendsTransformerQuant(kind: string | null | undefined, repoId: string):
 // Curated models come from the shared catalog, one group per model with its artifacts as data and
 // the load kind per artifact from loadSpecFor. Built per render, since a host that can only run
 // the native engine is not offered pipeline rows.
-function useImageModels(host: HostClass): ModelOption[] {
-  return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
+function useImageModels(
+  host: HostClass,
+  denseQuantSchemes: readonly string[],
+): ModelOption[] {
+  return useMemo(
+    () => catalogToModelOptions(IMAGE_CATALOG, host, denseQuantSchemes),
+    [host, denseQuantSchemes],
+  );
 }
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) the model must
@@ -1172,7 +1178,8 @@ export function ImagesPage({
   const initialReadySent = useRef(false);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
-  const imageModels = useImageModels(hostClass);
+  const denseQuantSchemes = useDenseQuantSchemes();
+  const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
