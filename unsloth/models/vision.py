@@ -90,7 +90,6 @@ from transformers import __version__ as transformers_version
 
 import types
 import functools
-import sys
 import os
 import gc
 import math
