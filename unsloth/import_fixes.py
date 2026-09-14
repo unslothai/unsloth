@@ -1377,6 +1377,147 @@ def patch_enable_input_require_grads():
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
 
 
+def fix_unsloth_zoo_fused_ce_nan():
+    """Stop an older unsloth_zoo turning a fully masked microbatch into NaN.
+
+    unsloth_zoo's chunked fused cross entropy computes
+
+        divisor = n_items if n_items is not None else (labels != ignore_index).sum()
+
+    so a microbatch with NO trainable labels and no caller-supplied n_items divides
+    by zero: loss and every gradient come back NaN, the optimizer state is poisoned
+    and the rest of the run is lost. Both halves really co-occur -- unsloth_zoo's own
+    _unsloth_get_batch_samples clears num_items_in_batch when nothing downstream will
+    divide by it, and a sample truncated before its assistant turn is fully masked, so
+    a small per_device_train_batch_size can make it a whole microbatch.
+
+    Fixed in unsloth-zoo PR #616. This exists for version skew: a current unsloth
+    against an older pinned unsloth_zoo. It no-ops the moment zoo carries the fix.
+
+    Patches the autograd Function's forward, not the module level wrapper. Generated
+    forwards in unsloth_compiled_cache/ (and fused_losses/forward_adapter.py) do
+    `from unsloth_zoo.loss_utils import unsloth_fused_ce_loss`, binding the function
+    OBJECT, so rebinding that name would never reach them. That function resolves
+    UnslothFusedLoss from its own globals at call time and torch resolves cls.forward
+    at .apply() time, so a class level patch reaches already imported callers with no
+    cache invalidation.
+    """
+    import inspect
+
+    # torch is not a module-level import here, and _forward below closes over it.
+    try:
+        import torch
+        import unsloth_zoo.fused_losses.cross_entropy_loss as ce
+    except Exception:
+        return
+
+    cls = getattr(ce, "UnslothFusedLoss", None)
+    if cls is None: return
+    if getattr(cls, "_unsloth_fused_ce_nan_patched", False): return
+
+    # Read the descriptor off __dict__ so the staticmethod wrapper is visible and can
+    # be restored in the same form.
+    current = cls.__dict__.get("forward")
+    if current is None: return
+    original = getattr(current, "__func__", current)
+
+    # Structural detection, not a version compare: the PR is not in a numbered release
+    # yet and dev builds share release metadata, so a version gate would be a guess.
+    try:
+        source = inspect.getsource(original)
+    except Exception:
+        return
+    if "chunks = []" in source and "len(chunks) == 0" in source:
+        return  # zoo already skips fully ignored chunks
+
+    def _forward(*args, **kwargs):
+        try:
+            bound = _forward.__signature__.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
+        except Exception:
+            return original(*args, **kwargs)
+
+        try:
+            n_items = arguments.get("n_items")
+            # Only the no-divisor case can divide by zero.
+            if n_items is not None:
+                return original(*args, **kwargs)
+
+            ctx            = arguments["ctx"]
+            hidden_states  = arguments["hidden_states"]
+            lm_head_weight = arguments["lm_head_weight"]
+            lm_head_bias   = arguments.get("lm_head_bias")
+            labels         = arguments["labels"]
+            mask           = arguments.get("mask")
+            scaling        = arguments.get("scaling")
+            shift_labels   = arguments.get("shift_labels", True)
+            overwrite      = arguments.get("overwrite", False)
+            extra_kwargs   = arguments.get("extra_kwargs") or {}
+
+            ignore_index = int(extra_kwargs.get("ignore_index", -100))
+            device = lm_head_weight.device
+
+            # Decide emptiness on the EFFECTIVE labels, after the causal shift and
+            # after the attention mask is folded in, exactly as forward() does. A
+            # batch can be non-empty before shifting and empty after.
+            with torch.no_grad():
+                if shift_labels:
+                    effective = torch.empty_like(labels, device = device)
+                    effective[..., :-1] = labels[..., 1:]
+                    if mask is not None:
+                        _mask = mask.to(device = device)
+                        effective[..., :-1][_mask[..., 1:] == 0] = ignore_index
+                    effective[..., -1] = ignore_index
+                else:
+                    effective = labels.to(device = device)
+                if bool((effective != ignore_index).any().item()):
+                    return original(*args, **kwargs)
+
+            # Nothing trainable: the loss is 0 and every gradient is 0. Mirror the
+            # original's backward contract exactly -- three saved tensors and
+            # ctx.scaling -- or backward fails or returns the wrong arity.
+            grad_inputs = hidden_states if overwrite else torch.zeros_like(hidden_states)
+            if overwrite: grad_inputs.zero_()
+            grad_lm_head = torch.zeros_like(lm_head_weight) \
+                if (lm_head_weight is not None and lm_head_weight.requires_grad) else None
+            grad_lm_head_bias = torch.zeros_like(lm_head_bias) \
+                if (lm_head_bias is not None and lm_head_bias.requires_grad) else None
+            ctx.save_for_backward(grad_inputs, grad_lm_head, grad_lm_head_bias)
+            ctx.scaling = scaling
+            return torch.zeros(1, device = device)[0]
+        except Exception:
+            # Never let the fix itself break a run.
+            return original(*args, **kwargs)
+
+    # apply_autograd_function() builds .apply()'s POSITIONAL argument list from
+    # inspect.signature(cls.forward), so the replacement must present the original
+    # signature or the arguments land in the wrong slots.
+    try:
+        _forward.__signature__ = inspect.signature(original)
+    except Exception:
+        return
+    _forward.__wrapped__ = original
+
+    try:
+        cls.forward = staticmethod(_forward)
+        cls._unsloth_fused_ce_nan_patched = True
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching unsloth_zoo fused CE ({e})")
+        return
+
+    # _get_mapping is functools.cache'd on the class and caches forward's signature.
+    try:
+        ce._get_mapping.cache_clear()
+    except Exception:
+        pass
+
+    logger.info(
+        "Unsloth: Patched unsloth_zoo fused cross entropy so a fully masked "
+        "microbatch returns zero loss instead of NaN"
+    )
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local

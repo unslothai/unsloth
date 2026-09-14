@@ -243,6 +243,7 @@ from .import_fixes import (
     patch_datasets,
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
+    fix_unsloth_zoo_fused_ce_nan,
     patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
@@ -292,6 +293,9 @@ patch_datasets()
 # Apple Silicon M4+ only: psutil <= 7.2.2 reads the clock 1000x too small.
 patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
+# Repairs an older pinned unsloth_zoo whose fused CE NaNs on a fully masked
+# microbatch. No-ops once unsloth_zoo carries the fix itself.
+fix_unsloth_zoo_fused_ce_nan()
 patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
@@ -331,6 +335,7 @@ del patch_trackio
 del patch_datasets
 del patch_psutil_cpu_freq
 del patch_enable_input_require_grads
+del fix_unsloth_zoo_fused_ce_nan
 del fix_openenv_no_vllm
 del patch_openspiel_env_async
 del fix_executorch
