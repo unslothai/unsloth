@@ -106,6 +106,8 @@ def test_commit_checks_actual_recipient_and_is_one_use_under_race():
         base64.urlsafe_b64encode(DATA).decode().rstrip("="),
         " \r\n".join(ENCODED),
         "Result: " + ENCODED + "; done",
+        DATA.hex(),
+        DATA.hex().upper(),
     ],
 )
 def test_finite_echo_forms_are_withheld(echo):
@@ -149,6 +151,11 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
                 "b": ENCODED[17:] + "; done",
             },
             "percent": {"name": "prefix:" + PERCENT_ENCODED[:54], "payload": PERCENT_ENCODED[54:]},
+            "hex": {
+                "left": "prefix:" + DATA.hex()[:21],
+                "noise": "unrelated",
+                "right": DATA.hex()[21:].upper() + "; done",
+            },
         },
     }
     clean = make_context().redact_result(result)
@@ -167,6 +174,11 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
     assert clean["structuredContent"]["percent"] == {
         "name": REDACTED_IMAGE,
         "payload": REDACTED_IMAGE,
+    }
+    assert clean["structuredContent"]["hex"] == {
+        "left": REDACTED_IMAGE,
+        "noise": "unrelated",
+        "right": REDACTED_IMAGE,
     }
 
 

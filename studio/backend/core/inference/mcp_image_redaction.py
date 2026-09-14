@@ -161,6 +161,7 @@ class _ImageEchoSanitizer:
         string_charge_factor = 4,
     ):
         self.fingerprint = fingerprint
+        self.hex_fingerprint = data.hex()
         self.data = data
         self.string_charge_factor = string_charge_factor
         self.nodes = 0
@@ -185,14 +186,25 @@ class _ImageEchoSanitizer:
         start = 0,
     ):
         prefix = self.fingerprint[:-1]
+        base64_span = None
+        cursor = start
         while True:
-            position = compact.find(prefix, start)
+            position = compact.find(prefix, cursor)
             if position < 0:
-                return None
+                break
             end = position + len(prefix)
             if end < len(compact) and compact[end] in self.final_characters:
-                return position, end + 1
-            start = position + 1
+                base64_span = (position, end + 1)
+                break
+            cursor = position + 1
+        hex_position = compact.lower().find(self.hex_fingerprint, start)
+        hex_span = (
+            (hex_position, hex_position + len(self.hex_fingerprint)) if hex_position >= 0 else None
+        )
+        return min(
+            (span for span in (base64_span, hex_span) if span is not None),
+            default = None,
+        )
 
     def _echo(
         self,
@@ -296,12 +308,16 @@ class _ImageEchoSanitizer:
         # blocks between them. Track subsequences of slots against the exact
         # image fingerprint. If a pathological result creates too many partial
         # matches, fail closed by withholding every candidate slot.
-        variants = [self.fingerprint[:-1] + final for final in self.final_characters]
+        variants = [
+            *((self.fingerprint[:-1] + final, False) for final in self.final_characters),
+            (self.hex_fingerprint, True),
+        ]
         work = 0
         completed_paths = set()
-        for fingerprint in variants:
+        for fingerprint, fold_case in variants:
+            scan_texts = [text.lower() for text in normalized] if fold_case else normalized
             states = {0: ()}
-            for index, text in enumerate(normalized):
+            for index, text in enumerate(scan_texts):
                 if not text or text == REDACTED_IMAGE:
                     continue
                 advanced = dict(states)
