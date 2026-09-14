@@ -625,8 +625,9 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // flags the launch did not use.
   assert.match(body, /llamaExtraArgs: stored/);
   // And the key is marked only once a response is in hand, or StrictMode's replayed
-  // effect cancels the first fetch and skips the second.
-  const marked = body.indexOf("extraArgsHydrated.current = identity");
+  // effect cancels the first fetch and skips the second. The mark lives on the shared
+  // draft, so the second host reads it instead of fetching the row again.
+  const marked = body.indexOf("markExtraArgsHydratedForDraft(draftKey, identity)");
   assert.ok(
     marked > body.indexOf("if (cancelled) { return; }"),
     "mark after the response",

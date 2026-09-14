@@ -190,9 +190,12 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   );
   assert.match(PANEL, /configRef\.current === configAtStart/);
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
-  assert.match(PANEL, /setConfig\(serverConfig\);/);
-  assert.match(PANEL, /setRemember\(true\);/);
-  assert.match(PANEL, /setSavedRemember\(true\);/);
+  // Written to the shared draft, so the adopted row reaches both hosts at once rather than
+  // only the instance that happened to run the read.
+  assert.match(
+    PANEL,
+    /replaceModelConfigDraft\(draftKey, serverConfig, \{\s*\n?\s*remember: true,\s*\n?\s*savedRemember: true,\s*\n?\s*\}\);/,
+  );
 });
 
 test("hydration detects a newer save or forget", () => {

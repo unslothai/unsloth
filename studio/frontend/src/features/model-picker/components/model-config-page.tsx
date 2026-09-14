@@ -110,7 +110,7 @@ import {
   primeModelConfigDraft,
   readModelConfigDraft,
   replaceModelConfigDraft,
-  resetExtraArgsHydrationForDraft,
+  retainModelConfigDraft,
   setModelConfigDraftRemember,
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
@@ -1819,6 +1819,21 @@ export function ModelConfigPage({
   };
   const draftKey = modelConfigDraftKey(configId, target.ggufVariant);
   const liveSignature = loadedConfigSignature(loadedConfig);
+  // The draft is shared, so its lifetime is the union of the editors showing it rather than
+  // this one's: the sidebar keeps it alive while the dropdown opens and closes over it, and
+  // the last one out discards it, which is what an unmounted useState used to do.
+  // A LAYOUT effect, and above the priming one, because both hosts key this component on
+  // loadedConfigSignature: every live config change deletes the instance and mounts a new one
+  // with the SAME draft key in one commit. A deleted fiber's layout cleanup runs in the
+  // mutation phase, before the incoming instance's layout effects, so the release lands before
+  // the re-prime. As a passive effect the release ran AFTER it, deleting the draft the new
+  // instance had just seeded and leaving the panel unable to take an edit at all -- and only
+  // in production, since StrictMode's replayed layout effects re-primed it in development.
+  useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey]);
+  // Only the key and the live signature decide what priming DOES. loadedConfig, initialConfig
+  // and gpuDevices are object identities that change on every status poll, and listing them
+  // re-reads localStorage on every render for a call that is already a no-op.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: liveSignature summarizes loadedConfig
   useLayoutEffect(() => {
     const resolved = resolveInitial();
     primeModelConfigDraft(
@@ -1833,16 +1848,7 @@ export function ModelConfigPage({
       },
       liveSignature,
     );
-  }, [
-    draftKey,
-    liveSignature,
-    configId,
-    target.ggufVariant,
-    loadedConfig,
-    initialConfig,
-    isDiffusion,
-    gpuDevices,
-  ]);
+  }, [draftKey, liveSignature]);
   const draftSnapshot = useSyncExternalStore(
     subscribeModelConfigDraft,
     () => readModelConfigDraft(draftKey),
@@ -1904,8 +1910,7 @@ export function ModelConfigPage({
   useEffect(() => {
     setExtraArgsLoadable(true);
     setExtraArgsHydrating(target.isGguf && !isDiffusion);
-    resetExtraArgsHydrationForDraft(draftKey);
-  }, [configId, target.ggufVariant, target.isGguf, isDiffusion, draftKey]);
+  }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
   // Compare against what the backend was asked for, not what it applied: staging a new value
   // must retire a verdict that answered a different request.
