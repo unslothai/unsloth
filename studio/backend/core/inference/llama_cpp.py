@@ -25087,7 +25087,6 @@ class LlamaCppBackend:
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
-                        # --fit flag state, not "does it fit": off means this subset provably fits.
                         # --fit flag state, not "does it fit": off means this subset provably fits,
                         # or the user owns placement. An empty probe with "(manual placement)"
                         # is a deliberately discarded list, not a failed enumeration: the
