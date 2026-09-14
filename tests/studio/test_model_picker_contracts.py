@@ -3003,6 +3003,12 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     # An unticked Remember is a pending Forget, and the read captures the already-changed value,
     # so its own guard passes and it would re-tick the box.
     assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
+    # A peer that fixed the text lifts this editor's retained refusal.
+    assert "(!extraArgsLoadable && !sharedExtraArgsCleared) ||" in page
+    # Run reads the draft, not the render closure: the peer's focused input commits on blur
+    # during the same click, and these refs only reach this editor's own inputs.
+    assert "const liveDraftConfig = readModelConfigDraft(draftKey)?.config;" in page
+    assert "const peerChanged = !perModelConfigsEqual(baseConfig, config);" in page
     assert "markExtraArgsHydratedForDraft(draftKey)" in page
     # Reset passes a plain object, and DEFAULT_PER_MODEL_CONFIG names no GPU field, so a
     # setConfig that merged could not clear a manual placement: the rows kept the pick and

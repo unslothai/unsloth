@@ -1882,9 +1882,15 @@ export function ModelConfigPage({
     subscribeModelConfigDraft,
     () => readExtraArgsEditForDraft(draftKey),
   );
-  const sharedExtraArgsRefused =
-    sharedExtraArgsEdit?.loadable === false &&
+  const sharedExtraArgsCurrent =
+    sharedExtraArgsEdit != null &&
     sharedExtraArgsEdit.source === formatExtraArgs(configState.llamaExtraArgs);
+  const sharedExtraArgsRefused =
+    sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === false;
+  // This editor's row keeps its refusal after it unmounts, so a peer that fixed the text has to
+  // be able to lift it.
+  const sharedExtraArgsCleared =
+    sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === true;
   // The live config, for the async reads below: an effect that closed over it would hold
   // whatever it was when the request started.
   const configRef = useRef(configState);
@@ -2838,9 +2844,15 @@ export function ModelConfigPage({
       committedGpuLayers != null ||
       committedMoeLayers != null;
 
-    const committedConfig = hasPending
-      ? { ...config, ...pendingPatch }
+    // The peer editor's focused input commits on blur during this same click, straight into the
+    // shared draft, and the refs above only reach this editor's own inputs. Read the draft.
+    const liveDraftConfig = readModelConfigDraft(draftKey)?.config;
+    const baseConfig = liveDraftConfig
+      ? reconcileConfigGpuSelection(liveDraftConfig, resolvedIsDiffusion, gpuDevices)
       : config;
+    const peerChanged = !perModelConfigsEqual(baseConfig, config);
+    const committedConfig =
+      hasPending || peerChanged ? { ...baseConfig, ...pendingPatch } : baseConfig;
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
       : committedConfig;
@@ -2854,14 +2866,14 @@ export function ModelConfigPage({
       effectiveConfig.gpuLayers >= 0 &&
       effectiveConfig.customContextLength == null &&
       activeLoadedContext != null;
-    const effectiveRuntimeConfig = hasPending
+    const effectiveRuntimeConfig = (hasPending || peerChanged)
       ? effectivePinFixedLayerContext
         ? { ...effectiveConfig, customContextLength: activeLoadedContext }
         : effectiveConfig
       : runtimeConfig;
     // Non-GGUF load substitutes the resolved max sequence length; recompute from the committed draft.
     const effectiveMaxSeqLengthValue =
-      committedMaxSeqLength == null
+      committedMaxSeqLength == null && !peerChanged
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
@@ -3231,7 +3243,7 @@ export function ModelConfigPage({
             disabled={
               stagedMetadataPending ||
               budgetSettling ||
-              !extraArgsLoadable ||
+              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
               sharedExtraArgsRefused ||
               extraArgsHydrating ||
               (isActiveModel &&
