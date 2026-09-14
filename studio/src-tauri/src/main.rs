@@ -1701,6 +1701,17 @@ fn set_tray_server_status(app: tauri::AppHandle, status: String) {
     }
 }
 
+const MAIN_TRAY_ID: &str = "main";
+
+/// Uses explicit artwork for each system appearance instead of AppKit template recoloring.
+#[cfg(target_os = "macos")]
+fn macos_tray_icon(theme: tauri::Theme) -> tauri::image::Image<'static> {
+    match theme {
+        tauri::Theme::Dark => tauri::include_image!("./icons/tray-icon-dark.png"),
+        _ => tauri::include_image!("./icons/tray-icon-light.png"),
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -1710,10 +1721,20 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     app.manage(TrayServerToggle(toggle));
 
-    TrayIconBuilder::new()
+    #[cfg(target_os = "macos")]
+    let tray_icon = macos_tray_icon(
+        app.get_webview_window("main")
+            .and_then(|window| window.theme().ok())
+            .unwrap_or(tauri::Theme::Light),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
+    TrayIconBuilder::with_id(MAIN_TRAY_ID)
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
@@ -1995,6 +2016,18 @@ fn main() {
         .on_window_event(|window, event| {
             // Record real drops here, in Rust, so the renderer can only register paths the
             // OS actually handed to the native intake commands.
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                    if let Some(tray) = window.app_handle().tray_by_id(MAIN_TRAY_ID) {
+                        if let Err(error) =
+                            tray.set_icon_with_as_template(Some(macos_tray_icon(*theme)), false)
+                        {
+                            warn!("Failed to update tray icon for {theme:?} appearance: {error}");
+                        }
+                    }
+                }
+            }
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 window
                     .state::<native_intents::NativeIntakeState>()
@@ -2785,6 +2818,25 @@ mod tests {
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
         assert_eq!(renderer_activity(&state), (false, true));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tray_icons_match_the_system_appearance() {
+        for (theme, expected_rgb) in [
+            (tauri::Theme::Light, [0, 0, 0]),
+            (tauri::Theme::Dark, [255, 255, 255]),
+        ] {
+            let icon = macos_tray_icon(theme);
+            assert_eq!((icon.width(), icon.height()), (36, 36));
+            let visible: Vec<_> = icon
+                .rgba()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[3] != 0)
+                .collect();
+            assert!(!visible.is_empty());
+            assert!(visible.iter().all(|pixel| pixel[..3] == expected_rgb));
+        }
     }
 
     /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
