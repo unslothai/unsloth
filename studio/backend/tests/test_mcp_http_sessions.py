@@ -639,7 +639,14 @@ def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
     """A popular HTTP server holds a session per chat, and close runs on the
     request thread during an edit or delete."""
     closes = []
-    overlapping = threading.Barrier(6, timeout = 30)
+    # Sized off the configured fan-out, the way the probe test sizes off _PROBE_FANOUT.
+    # `_close_all` batches at _MAX_CLOSE_THREADS, so a fixed Barrier(6) would deadlock a
+    # correctly batched close configured any narrower and report it as serial. One batch
+    # is what has to overlap, so open exactly that many sessions and wait for that many:
+    # a partial last batch would leave stragglers waiting for a party that never arrives.
+    together = min(mcp_client._MAX_CLOSE_THREADS, 6)
+    assert together > 1, f"_MAX_CLOSE_THREADS is {mcp_client._MAX_CLOSE_THREADS}; close is serial"
+    overlapping = threading.Barrier(together, timeout = 30)
 
     class SlowExit(RecordingClient):
         async def __aexit__(self, *exc):
@@ -653,13 +660,13 @@ def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
         "_client",
         lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
     )
-    for i in range(6):
+    for i in range(together):
         _call(HTTP_URL, scope = f"chat-{i}")
     started = time.monotonic()
     close_mcp_sessions()
     elapsed = time.monotonic() - started
-    assert len(closes) == 6
-    assert not overlapping.broken, "closes ran serially: the six never overlapped"
+    assert len(closes) == together
+    assert not overlapping.broken, f"closes ran serially: the {together} never overlapped"
     assert elapsed < 60.0, f"close_mcp_sessions never came back: {elapsed:.2f}s"
 
 
@@ -726,6 +733,19 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
         lambda self: (closed_by.append(threading.get_ident()), closing(self))[1],
     )
 
+    # Handing the teardown off and then waiting for the worker anyway spends the same
+    # deadline, and none of the checks below can see it: a bounded `join(timeout = 5)`
+    # leaves `closed` unset and `closed_by` free of the caller. So watch the join too.
+    joined_worker = []
+    joining = threading.Thread.join
+
+    def record_join(self, timeout = None):
+        if self.name == "mcp-cleanup":
+            joined_worker.append((threading.get_ident(), timeout))
+        return joining(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", record_join)
+
     _call(HTTP_URL, scope = SCOPE)  # fills the cache
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     caller = threading.get_ident()
@@ -737,6 +757,10 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     assert closed_by and caller not in closed_by, (
         "the calling thread closed the evicted session itself, so an unrelated chat's "
         f"teardown is spending the deadline meant for this tool call: {closed_by}"
+    )
+    assert not [entry for entry in joined_worker if entry[0] == caller], (
+        "the calling thread handed the teardown off and then waited on the cleanup worker, "
+        f"which spends the same deadline the handoff was meant to protect: {joined_worker}"
     )
     assert not closed.is_set(), "the caller waited out an unrelated eviction"
     assert elapsed < 30.0, f"the call never came back: {elapsed:.2f}s"
