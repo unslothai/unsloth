@@ -14,7 +14,8 @@ check, not a benchmark. Select/deselect it by name, e.g. `-k gpu_generation`.
 
 from __future__ import annotations
 
-import threading
+import subprocess
+import sys
 
 import pytest
 from real_accelerator import (
@@ -30,34 +31,35 @@ MODEL_ID = "unsloth/gemma-3-270m-it"
 # stay a few seconds.
 MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
-# The hub fetch below is bounded. A connection that is merely slow, rather than failing, would
-# otherwise block a self-hosted GPU runner indefinitely, and --timeout cannot interrupt a
-# blocked socket read. The contract here is to skip when the model is not reachable.
+# A connection that is merely slow, rather than failing, would otherwise block a self-hosted GPU
+# runner indefinitely, and --timeout cannot interrupt a blocked socket read. Only the fetch is
+# bounded: the contract is to skip when the model is not reachable.
 FETCH_TIMEOUT_SECONDS = 300
 
+# The fetch is the only step that touches the network, and it runs in a child process. A thread
+# cannot be interrupted, so bounding it in-process would leave the download running after this
+# test had already skipped, still able to write the cache and to reach CUDA. The child only
+# populates the hub cache and never touches the device, so the runner's selected device is left
+# alone too.
+_PREFETCH = """
+import sys
 
-def _with_deadline(fn, timeout):
-    """Run fn on a daemon thread so a stalled hub connection ends with the deadline.
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    ThreadPoolExecutor joins its workers at interpreter exit, which would move the hang to
-    teardown rather than remove it.
-    """
-    box = {}
+model_id = sys.argv[1]
+AutoTokenizer.from_pretrained(model_id)
+AutoModelForCausalLM.from_pretrained(model_id)
+"""
 
-    def run():
-        try:
-            box["result"] = fn()
-        except BaseException as exc:  # re-raised on the test thread below
-            box["error"] = exc
 
-    thread = threading.Thread(target = run, daemon = True)
-    thread.start()
-    thread.join(timeout)
-    if thread.is_alive():
-        raise TimeoutError(f"timed out after {timeout}s")
-    if "error" in box:
-        raise box["error"]
-    return box["result"]
+def _prefetch(model_id, timeout):
+    """Populate the hub cache for model_id, killing the attempt if it stalls."""
+    return subprocess.run(
+        [sys.executable, "-c", _PREFETCH, model_id],
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+    )
 
 
 @pytest.mark.skipif(not has_real_accelerator(), reason = "requires a CUDA GPU")
@@ -71,16 +73,18 @@ def test_gpu_generation_smoke():
     # tiny, so fp32 is still fast.
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
 
-    def load():
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to("cuda")
-        return tokenizer, model
-
+    # Offline / gated / slow hub access is not a code defect, so an unreachable model skips.
     try:
-        # offline / gated / slow hub access is not a code defect
-        tokenizer, model = _with_deadline(load, FETCH_TIMEOUT_SECONDS)
-    except Exception as exc:
-        pytest.skip(f"could not fetch/load {MODEL_ID}: {exc}")
+        fetch = _prefetch(MODEL_ID, FETCH_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"timed out fetching {MODEL_ID} after {FETCH_TIMEOUT_SECONDS}s")
+    if fetch.returncode != 0:
+        pytest.skip(f"could not fetch {MODEL_ID}: {fetch.stderr.strip()[-500:]}")
+
+    # Everything below is local: construction, placement, and generation all run on this thread,
+    # so a failure here is a real regression and is reported as one rather than skipped.
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to("cuda")
 
     model.eval()
     messages = [{"role": "user", "content": "Say hello in one word."}]
