@@ -51,6 +51,30 @@ def denoiser_prequant_source(
         return None
 
 
+def denoiser_prequant_cached(
+    fam: Any,
+    scheme: Optional[str],
+    *,
+    base_repo: Optional[str],
+    path_override: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+) -> bool:
+    """Whether the artifact this seed would open is ALREADY on disk, answered without a Hub call.
+    The offline twin of the ``model_info`` probe the online plan makes, so a load that may not
+    download can still seed from the cache an earlier load built. Never raises."""
+    source = denoiser_prequant_source(fam, scheme, base_repo = base_repo, path_override = path_override)
+    if source is None:
+        return False
+    if getattr(source, "kind", None) != "repo":
+        # ``usable_prequant_source`` already proved a local override present and baked for this scheme.
+        return True
+    try:
+        from .diffusion_prequant import prequant_checkpoint_cached
+        return prequant_checkpoint_cached(source, cache_dir = cache_dir)
+    except Exception:  # noqa: BLE001 -- an unreadable cache is not proof the artifact is there
+        return False
+
+
 def denoiser_prequant_pipe_kwargs(
     fam: Any,
     base_repo: str,

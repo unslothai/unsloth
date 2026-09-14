@@ -161,6 +161,7 @@ from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
+    denoiser_prequant_cached,
     denoiser_prequant_source,
     pipeline_seed_supported,
     prequant_artifact_label,
@@ -2202,23 +2203,32 @@ class DiffusionBackend:
                 local_files_only = local_files_only,
                 base_repo = base,
             )
-            pipeline_planned = (
-                None
-                if local_files_only
-                else self._pipeline_planned_denoiser_scheme(
-                    fam,
-                    base = base,
-                    kind = kind,
-                    transformer_quant = kwargs.get("transformer_quant"),
-                    speed_mode = kwargs.get("speed_mode"),
-                    memory_mode = kwargs.get("memory_mode"),
-                    cpu_offload = bool(kwargs.get("cpu_offload")),
-                    loras = kwargs.get("loras"),
-                    transformer_prequant_path = kwargs.get("transformer_prequant_path"),
-                    gpu_ordinal = kwargs.get("gpu_ordinal"),
-                    repo_id = kwargs["repo_id"],
-                )
+            pipeline_planned = self._pipeline_planned_denoiser_scheme(
+                fam,
+                base = base,
+                kind = kind,
+                transformer_quant = kwargs.get("transformer_quant"),
+                speed_mode = kwargs.get("speed_mode"),
+                memory_mode = kwargs.get("memory_mode"),
+                cpu_offload = bool(kwargs.get("cpu_offload")),
+                loras = kwargs.get("loras"),
+                transformer_prequant_path = kwargs.get("transformer_prequant_path"),
+                gpu_ordinal = kwargs.get("gpu_ordinal"),
+                repo_id = kwargs["repo_id"],
             )
+            if local_files_only and pipeline_planned not in (None, PIPELINE_SEED_DECLINED):
+                # The offline twin of the Hub probe below, the same swap the video loader makes in
+                # ``_denoiser_prequant_verified``: the first load left this repo's released shards out of the
+                # cache, so suppressing the seed here would assemble bf16 from a snapshot that has none. Cache
+                # only, never a request.
+                if not denoiser_prequant_cached(
+                    fam,
+                    pipeline_planned,
+                    base_repo = base,
+                    path_override = kwargs.get("transformer_prequant_path"),
+                    cache_dir = hub_cache_dir(),
+                ):
+                    pipeline_planned = None
             dit_prequant = (
                 None
                 if local_files_only
@@ -2264,7 +2274,7 @@ class DiffusionBackend:
             kwargs["_pipeline_prequant_planned"] = (
                 PIPELINE_SEED_DECLINED
                 if pipeline_planned == PIPELINE_SEED_DECLINED
-                else (pipeline_planned if skip_transformer_weights else None)
+                else (pipeline_planned if skip_transformer_weights or local_files_only else None)
             )
             kwargs["_pipeline_prequant_skipped"] = tuple(skipped_transformer_files)
             if dit_prequant is not None:

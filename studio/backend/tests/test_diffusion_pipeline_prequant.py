@@ -547,17 +547,36 @@ def test_the_decline_is_pinned_across_plan_and_load(monkeypatch, hub):
 
 
 def test_an_offline_load_never_probes_the_hub_for_an_artifact(monkeypatch):
-    """An offline load never settles a scheme, so it never probes the Hub."""
+    """An offline load answers from the cache alone, so it never probes the Hub."""
     backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8")
 
     def _never(*_a, **_k):
-        raise AssertionError("the offline path settled a hosted checkpoint")
+        raise AssertionError("the offline path asked the Hub about a checkpoint")
 
-    monkeypatch.setattr(DiffusionBackend, "_pipeline_planned_denoiser_scheme", _never)
+    monkeypatch.setattr(DiffusionBackend, "_dit_prequant_plan_source", _never)
+    monkeypatch.setattr(dmod, "denoiser_prequant_cached", lambda *_a, **_k: False)
     backend._run_load(
         repo_id = Z_IMAGE_REPO, model_kind = "pipeline", local_files_only = True, _load_token = 1
     )
     assert seen["_pipeline_prequant_planned"] is None
+    assert fetched == []
+
+
+def test_an_offline_reload_seeds_from_the_cached_artifact(monkeypatch):
+    """The cache the first load built is reusable: an API reload seeds instead of assembling bf16
+    from a snapshot whose released denoiser shards that load deliberately left out."""
+    backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8")
+
+    def _never(*_a, **_k):
+        raise AssertionError("the offline path asked the Hub about a checkpoint")
+
+    monkeypatch.setattr(DiffusionBackend, "_dit_prequant_plan_source", _never)
+    monkeypatch.setattr(dmod, "denoiser_prequant_cached", lambda *_a, **_k: True)
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO, model_kind = "pipeline", local_files_only = True, _load_token = 1
+    )
+    assert seen["_pipeline_prequant_planned"] == "fp8"
+    assert seen["_pipeline_prequant_skipped"] == ()
     assert fetched == []
 
 
