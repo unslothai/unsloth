@@ -219,6 +219,21 @@ def test_unselected_request_rewrites_only_configured_image_fields(image_request)
     )
 
 
+@pytest.mark.parametrize("location", ["message", "legacy"])
+def test_stale_snapshotless_image_request_is_rejected(image_request, location):
+    f = image_request
+    f.payload.mcp_image_attachment = None
+    f.payload.mcp_image_policy = None
+    if location == "message":
+        f.payload.messages = [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f.data_url}}]}
+        ]
+    else:
+        f.payload.image_base64 = f.encoded
+    with pytest.raises(McpImageDisclosureError, match = "settings must be checked"):
+        prepare(f)
+
+
 def test_changed_image_policy_revision_is_rejected_before_model_dispatch(image_request):
     image_request.payload.mcp_image_policy.servers[0].config_revision = 2
     with pytest.raises(McpImageDisclosureError, match = "settings changed"):

@@ -57,11 +57,35 @@ def _image_policy_revisions():
     return sorted(current)
 
 
+def _request_contains_model_image(payload):
+    if getattr(payload, "image_base64", None):
+        return True
+    for message in getattr(payload, "messages", None) or []:
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+            if part_type in {"image_url", "input_image", "image"}:
+                return True
+    return False
+
+
 def _validate_image_policy_snapshot(payload):
     snapshot = getattr(payload, "mcp_image_policy", None)
     selection = getattr(payload, "mcp_image_attachment", None)
     if snapshot is None:
         if selection is not None:
+            raise McpImageDisclosureError("MCP image sharing settings must be checked again")
+        if (
+            getattr(payload, "mcp_enabled", False)
+            and _request_contains_model_image(payload)
+            and _image_policy_revisions()
+        ):
             raise McpImageDisclosureError("MCP image sharing settings must be checked again")
         return
     current = _image_policy_revisions() if getattr(payload, "mcp_enabled", False) else []
