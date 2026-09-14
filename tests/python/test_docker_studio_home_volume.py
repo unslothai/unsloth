@@ -380,6 +380,35 @@ def test_updater_scratch_in_the_app_dir_is_never_linked_into_the_home(tmp_path):
     assert (home / "src").is_symlink()
 
 
+def test_a_src_lost_between_the_updaters_two_renames_is_put_back(tmp_path):
+    """SIGKILL between `mv src .src-prev.X` and `mv .src-update.Y src` leaves the previous
+    tree as the only copy; the home's src link must not be pruned as dangling."""
+    app = _app(tmp_path)
+    (app / "src" / "studio").mkdir()
+    (app / "src").rename(app / ".src-prev.k9x2Qa")
+    (app / ".src-update.abc123").mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "src").symlink_to(app / "src")
+    res = _link(app, home)
+    assert res.returncode == 0, res.stderr
+    assert (app / "src" / "studio").is_dir()
+    assert not (app / ".src-prev.k9x2Qa").exists()
+    assert (home / "src").is_symlink() and (home / "src" / "studio").is_dir()
+    assert "put " in res.stderr
+
+
+def test_two_previous_trees_are_left_for_a_human(tmp_path):
+    app = _app(tmp_path)
+    (app / "src").rename(app / ".src-prev.aaaaaa")
+    (app / ".src-prev.bbbbbb").mkdir()
+    home = tmp_path / "home"
+    res = _link(app, home)
+    assert res.returncode == 0, res.stderr
+    assert not (app / "src").exists()
+    assert "several .src-prev" in res.stderr
+
+
 def test_the_linker_is_a_no_op_without_an_app_dir(tmp_path):
     """The entrypoint belongs to the base image too, which has no Studio."""
     home = tmp_path / "home"

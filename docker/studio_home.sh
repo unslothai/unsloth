@@ -89,6 +89,21 @@ set_aside() {
 }
 
 shopt -s dotglob nullglob
+
+# unsloth-studio-update swaps src by renaming it to .src-prev.* and the staged tree into
+# place. A container killed between the two renames boots with no src in the app dir; the
+# previous tree is the only copy, so put it back before the loop below prunes the home's
+# src link as dangling. Nothing else runs at container start, so the scratch is ours.
+if [ ! -e "$APP/src" ]; then
+    prev=("$APP"/.src-prev.*)
+    if [ "${#prev[@]}" -eq 1 ] && [ -d "${prev[0]}" ]; then
+        mv -T -- "${prev[0]}" "$APP/src" || die "cannot put ${prev[0]} back at $APP/src"
+        log "put ${prev[0]} back at $APP/src: an update was interrupted between its two renames"
+    elif [ "${#prev[@]}" -gt 1 ]; then
+        log "WARNING: $APP/src is missing and several .src-prev.* trees exist; pick one and move it to $APP/src by hand"
+    fi
+fi
+
 for entry in "$APP"/*; do
     name="${entry##*/}"
     [ "$name" = "$LEGACY_NAME" ] && continue
