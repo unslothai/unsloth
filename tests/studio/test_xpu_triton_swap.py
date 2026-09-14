@@ -40,23 +40,50 @@ def _load_real_index_env_scrub():
     It is defined below the slice the swap comes from, so it is pulled in separately rather
     than stubbed -- a hand-written copy here would agree with a broken original forever.
     """
+    import ast as _ast
+    import atexit as _atexit
+    import functools as _functools
     import os as _os
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import sys as _sys
+    import tempfile as _tempfile
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os}
+    ns: dict = {
+        "os": _os,
+        "ast": _ast,
+        "atexit": _atexit,
+        "functools": _functools,
+        "shutil": _shutil,
+        "subprocess": _subprocess,
+        "sys": _sys,
+        "tempfile": _tempfile,
+        # Windows-only console suppression, irrelevant to the scrub and the one dependency
+        # of _pip_config_without_sources that is not a module.
+        "_windows_hidden_subprocess_kwargs": dict,
+    }
     for anchor, end, keep in (
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
-        # _install_env_for_cmd calls both of these, and they resolve from this namespace at CALL time, so omitting
-        # either only shows up as a NameError once a test actually invokes the scrub.
-        ("_PM_POLICY_ENV_VARS = (", "\n)\n", 2),
+        # _install_env_for_cmd calls all of these, and they resolve from this namespace at CALL time, so omitting
+        # any only shows up as a NameError once a test actually invokes the scrub.
+        ("_PM_HASH_ENV_VARS = (", "\n)\n", 2),
+        ("_PM_FORCE_SOURCE_ENV_VARS = (", "\n)\n", 2),
+        # One line, so it ends at the first newline; "\n)\n" would swallow the file.
+        ("_PIP_SOURCE_CONFIG_KEYS = (", "\n", 1),
+        ("def _pip_config_without_sources(", "\n\ndef ", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
+        ("def _is_pip_subcommand(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
+        ("_PINNED_PIP_CONFIG: ", "\n", 1),
+        ("def _pinned_pip_config_file(", "\n\ndef ", 0),
+        ("def _uv_config_build_policy(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
     assert "PIP_NO_INDEX" in ns["_UV_INDEX_ENV_VARS"], "extraction lost the pip vars"
-    assert "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_ENV_VARS"], "extraction lost the policy vars"
+    assert "PIP_REQUIRE_HASHES" in ns["_PM_HASH_ENV_VARS"], "extraction lost the hash vars"
     return ns["_install_env_for_cmd"]
 
 
@@ -392,13 +419,29 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert env is not None, "the fetch inherited the ambient environment"
         assert var not in env
 
-    def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
-        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does.
+    def test_the_fetch_neutralises_the_pip_config_sources(self, monkeypatch, tmp_path):
+        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does, so the
+        # fetch runs against a REWRITE of pip's config with the source keys removed --
+        # not devnull, which would drop the operator's cert, proxy and build policy too.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
-        assert env["PIP_CONFIG_FILE"] == os.devnull
+        assert env["PIP_CONFIG_FILE"] != os.devnull
+        assert os.path.basename(env["PIP_CONFIG_FILE"]) == "pip.conf"
         assert env["UV_NO_CONFIG"] == "1"
+
+    def test_the_fetch_keeps_the_operators_build_policy(self, monkeypatch, tmp_path):
+        # The pin is a wheel, so a no-build / only-binary policy costs it nothing; only hash
+        # enforcement, which no requirement we ship can satisfy, is cleared.
+        monkeypatch.setenv("UV_NO_BUILD", "1")
+        monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
+        monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
+        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        env = mod.__dict__["_test_download_envs"][0]
+        assert env["UV_NO_BUILD"] == "1"
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert env["PIP_REQUIRE_HASHES"] == "0"
 
     def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
         # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate host reaches the index

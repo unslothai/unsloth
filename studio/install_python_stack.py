@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
+import atexit
 import functools
 import glob
 import importlib
@@ -547,8 +548,8 @@ def _pytorch_whl_leaf_url(leaf: str) -> "str | None":
 
     No URL shape pins a query-auth mirror -- pip joins the project name as text, so the token
     swallows either the leaf or the name (see _warn_query_index_unusable). Constructing one
-    anyway is worse than declining: --index-url makes _install_env_for_cmd strip pip.conf and
-    ~/.netrc, the only channel that can carry that credential.
+    anyway is worse than declining: --index-url makes _install_env_for_cmd strip pip.conf's
+    index keys and ~/.netrc, the only channel that can carry that credential.
     """
     if "?" in _PYTORCH_WHL_BASE or "#" in _PYTORCH_WHL_BASE:
         _warn_query_index_unusable(_PYTORCH_WHL_BASE)
@@ -6987,21 +6988,30 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
-# Restrictive policy a pinned install must not inherit from the ENVIRONMENT. The pinned
-# branch neutralises the config FILES (UV_NO_CONFIG=1 + PIP_CONFIG_FILE=devnull), but an
-# env var outranks a config file, so a hardened shell could still fail a torch repair the
-# pin was supposed to make deterministic (#8530).
-_PM_POLICY_ENV_VARS = (
-    "UV_NO_BUILD",
-    "UV_NO_BUILD_PACKAGE",
-    "UV_NO_BINARY",
-    "UV_NO_BINARY_PACKAGE",
+# Hash enforcement a pinned install cannot satisfy: every requirements file we ship is
+# pinned but UNHASHED, so `require-hashes` can only ever abort the install -- it has no
+# artifact to check against. An env var outranks a config file, so the pinned branch has
+# to clear these from the environment as well as neutralise the config (#8530).
+_PM_HASH_ENV_VARS = (
     "UV_REQUIRE_HASHES",
-    "UV_EXCLUDE_NEWER",
-    "PIP_ONLY_BINARY",
-    "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
 )
+
+# Policy that would force a SOURCE build of a pinned wheel. `no-binary` is the inverse of
+# the hardening the other vars express: it makes pip/uv build torch from an sdist, which
+# is both more build-time code execution and a resolution the pinned index cannot serve.
+# Cleared for pinned commands for that reason, not to relax anything.
+_PM_FORCE_SOURCE_ENV_VARS = (
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "PIP_NO_BINARY",
+)
+
+# Deliberately NOT cleared for pinned installs: UV_NO_BUILD, UV_NO_BUILD_PACKAGE,
+# PIP_ONLY_BINARY and UV_EXCLUDE_NEWER are the operator's build-time code execution and
+# upload-cutoff controls, and every pinned index we install from serves wheels, so
+# honouring them costs nothing and dropping them would hand a compromised mirror a source
+# build the operator had forbidden.
 
 
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
@@ -7015,14 +7025,41 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     unpinned name is rejected before anything is built, so the repair would abort on a
     hardened machine and leave the conflict it exists to remove.
 
-    `require-hashes = true` makes pip reject any requirement without a --hash, which is
-    every requirements file we ship; that is what took the pip FALLBACK down in #8530
-    once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
-    overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+    HASH MODE IS THE ONLY THING RELAXED, and only for the command being run: pip applies
+    env vars AFTER config files, so PIP_REQUIRE_HASHES=0 overrides it while pip.conf's
+    index-url, trusted-host, cert, proxy AND its only-binary / no-build policy all stay in
+    force. `require-hashes = true` makes pip reject any requirement without a --hash,
+    which is every requirements file we ship, so it can only ever abort the install; that
+    is what took the pip FALLBACK down in #8530 once uv had failed. The wheel-less
+    requirements are handled by the package-scoped --no-binary in _sdist_only_build_args()
+    instead, so a binary-only policy keeps applying everywhere it can be honoured.
     """
-    if cmd[:1] == ["uv"] or not any(arg in ("install", "download", "wheel") for arg in cmd):
+    if not _is_pip_subcommand(cmd, ("install", "download", "wheel")):
         return {}
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+def _is_pip_subcommand(cmd: "list[str]", subcommands: "tuple[str, ...]") -> bool:
+    """True when ``cmd`` is a pip invocation whose SUBCOMMAND is one of ``subcommands``.
+
+    Structural rather than "does the word install appear anywhere", so the relaxation
+    cannot ride along on an unrelated command that happens to carry a matching argument
+    (a requirements path, a package literally named ``wheel``, a uv command).
+    """
+    args = list(cmd)
+    if args[:1] == ["uv"]:
+        return False
+    if len(args) >= 3 and args[1] == "-m" and args[2] in ("pip", "pip3"):
+        args = args[3:]
+    elif args and os.path.basename(args[0]).split(".")[0].lower() in ("pip", "pip3"):
+        args = args[1:]
+    else:
+        return False
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        return arg in subcommands
+    return False
 
 
 def _uv_is_offline() -> bool:
@@ -7157,8 +7194,12 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
 _PIP_SOURCE_CONFIG_KEYS = ("index-url", "extra-index-url", "find-links", "no-index")
 
 
-def _pip_config_without_sources(directory: str) -> str:
+def _pip_config_without_sources(directory: str, *, drop: "tuple[str, ...]" = ()) -> str:
     """Write pip's own configuration back minus the candidate sources.
+
+    ``drop`` names further options to leave out, for the pinned-index caller: a config
+    `no-binary` would force a SOURCE build of a wheel the pin exists to fetch, the same
+    reason PIP_NO_BINARY is cleared from a pinned environment.
 
     The environment overrides above cannot do this alone. Measured on pip 26.2: with
     `extra-index-url` in pip.conf, an empty PIP_EXTRA_INDEX_URL does NOT suppress it,
@@ -7189,7 +7230,7 @@ def _pip_config_without_sources(directory: str) -> str:
             if not separator or name.startswith(":env:"):
                 continue
             section, _, option = name.strip().rpartition(".")
-            if not section or option in _PIP_SOURCE_CONFIG_KEYS:
+            if not section or option in _PIP_SOURCE_CONFIG_KEYS or option in drop:
                 continue
             try:
                 value = ast.literal_eval(raw.strip())
@@ -7313,13 +7354,24 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
     None (inherit env) when the command does NOT pin an index, so ordinary installs honour
-    the user's mirror. For pinned commands, the uv index/backend vars are removed,
-    UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
-    pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
+    the user's mirror. For pinned commands, the uv index/backend vars are removed and
+    UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin). Mirrors install.sh's
+    gate (#6898).
 
-    A non-pinned `pip` command also gets hash-required mode switched off, the one
-    relaxation with no command-line equivalent; the wheel-less requirements go through
-    the package-scoped --no-binary in _sdist_only_build_args() instead.
+    What a pinned command does NOT get is a blanket amnesty from the operator's
+    package-manager policy. Only two classes of variable go:
+
+      * hash enforcement (_PM_HASH_ENV_VARS), which our unhashed requirements can never
+        satisfy, so it can only abort the install; and
+      * `no-binary` (_PM_FORCE_SOURCE_ENV_VARS), which would FORCE a source build of a
+        pinned wheel -- removing it reduces build-time code execution, not the reverse.
+
+    `no-build` / `only-binary` / `exclude-newer` are left in force: the pinned indexes
+    serve wheels, so honouring them costs nothing and dropping them would let a
+    compromised mirror run a source build the operator had forbidden. The pip config file
+    is rewritten minus its index keys rather than replaced by devnull, for the same
+    reason: the pin needs the index settings gone, not the operator's cert, proxy,
+    trusted-host or build policy.
     """
     if not _is_pinned_index_cmd(cmd):
         relaxed = _relaxed_pip_policy_env(cmd)
@@ -7331,11 +7383,81 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)
-    for name in _PM_POLICY_ENV_VARS:
+    for name in _PM_HASH_ENV_VARS + _PM_FORCE_SOURCE_ENV_VARS:
         env.pop(name, None)
+    # A uv.toml the pin cannot see past has to go wholesale (uv has no per-key override),
+    # so re-assert the build policy it may have carried before discovery is switched off.
+    env.update(_uv_config_build_policy())
     env["UV_NO_CONFIG"] = "1"
-    env["PIP_CONFIG_FILE"] = os.devnull
+    env["PIP_CONFIG_FILE"] = _pinned_pip_config_file()
+    # pip.conf survives the rewrite, and its require-hashes would abort the pinned install
+    # exactly as the env var would; env beats config, so clear it the same way.
+    if _is_pip_subcommand(cmd, ("install", "download", "wheel")):
+        env["PIP_REQUIRE_HASHES"] = "0"
     return env
+
+
+_PINNED_PIP_CONFIG: "str | None" = None
+
+
+def _pinned_pip_config_file() -> str:
+    """pip's own configuration minus the index keys, cached for the whole run.
+
+    Computed once (idempotent: the same path comes back every call) because it costs a
+    `pip config list` subprocess, and torn down with the process. Falls back to devnull if
+    the rewrite cannot be produced, which is the behaviour this replaced.
+    """
+    global _PINNED_PIP_CONFIG
+    if _PINNED_PIP_CONFIG is not None:
+        return _PINNED_PIP_CONFIG
+    try:
+        directory = tempfile.mkdtemp(prefix = "unsloth_pinned_pip_")
+        atexit.register(shutil.rmtree, directory, True)
+        _PINNED_PIP_CONFIG = _pip_config_without_sources(directory, drop = ("no-binary",))
+    except Exception:
+        _PINNED_PIP_CONFIG = os.devnull
+    return _PINNED_PIP_CONFIG
+
+
+def _uv_config_build_policy() -> "dict[str, str]":
+    """The no-build policy a discovered uv config declares, as environment variables.
+
+    UV_NO_CONFIG=1 is how a pinned install stops a uv.toml `[[index]]` outranking the CLI
+    pin, but it takes the whole file with it, including a `no-build` the operator set to
+    stop sdists executing build code. Read it back and re-assert it, so switching off
+    config discovery cannot silently become a policy bypass.
+
+    Best effort and conservative: nothing is asserted unless a boolean `no-build` is
+    literally true in the file uv would read, so a parse failure or an unreadable config
+    leaves the environment exactly as it was.
+    """
+    try:
+        import tomllib
+    except Exception:
+        return {}
+    if os.environ.get("UV_NO_BUILD"):
+        return {}  # already set in the environment, which the pinned branch preserves
+    candidates = []
+    configured = os.environ.get("UV_CONFIG_FILE", "").strip()
+    if configured:
+        candidates.append(configured)
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        base = xdg if xdg else os.path.join(os.path.expanduser("~"), ".config")
+        candidates += [
+            os.path.join(os.getcwd(), "uv.toml"),
+            os.path.join(base, "uv", "uv.toml"),
+        ]
+    for path in candidates:
+        try:
+            with open(path, "rb") as handle:
+                data = tomllib.load(handle)
+        except Exception:
+            continue
+        if data.get("no-build") is True:
+            return {"UV_NO_BUILD": "1"}
+        return {}
+    return {}
 
 
 def pip_install_try(

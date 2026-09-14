@@ -311,16 +311,45 @@ class TestPinnedIndexClearsUvEnv:
         assert env.get("UV_NO_CONFIG") == "1"
         assert "UV_CONFIG_FILE" not in env
 
-    def test_pinned_cmd_disables_pip_config_files(self):
+    def test_pinned_cmd_neutralises_pip_config_sources_only(self):
         """The pip FALLBACK honours user/site pip config files (pip config set
-        global.extra-index-url) even with the PIP_* env vars stripped; pip loads
-        NO configuration files when PIP_CONFIG_FILE is os.devnull. Harmless for
-        uv, decisive for the fallback."""
+        global.extra-index-url) even with the PIP_* env vars stripped, so the pinned
+        branch has to point PIP_CONFIG_FILE somewhere else. Somewhere else is a REWRITE
+        of pip's own config minus the four source keys, not devnull: devnull would take
+        the operator's cert, proxy, trusted-host and only-binary policy with it, and
+        dropping a security policy is not what pinning an index is for."""
         env = ips._install_env_for_cmd(
             ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
         )
         assert env is not None
-        assert env.get("PIP_CONFIG_FILE") == os.devnull
+        path = env.get("PIP_CONFIG_FILE")
+        assert path and path != os.devnull and os.path.basename(path) == "pip.conf"
+        # Idempotent: one rewrite per run, so the same path comes back every call.
+        again = ips._install_env_for_cmd(
+            ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        )
+        assert again["PIP_CONFIG_FILE"] == path
+
+    def test_pinned_pip_config_rewrite_drops_sources_and_forced_source_builds(self, tmp_path):
+        """What the rewrite keeps is the point: everything except the index keys and
+        no-binary, which would force a source build of the wheel the pin exists to
+        fetch."""
+        listing = (
+            "global.index-url='https://mirror/simple'\n"
+            "global.extra-index-url='https://other/simple'\n"
+            "global.no-binary=':all:'\n"
+            "global.only-binary=':all:'\n"
+            "global.require-hashes='true'\n"
+            "global.cert='/etc/ssl/corp.pem'\n"
+        )
+        with mock.patch.object(ips.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode = 0, stdout = listing.encode())
+            path = ips._pip_config_without_sources(str(tmp_path), drop = ("no-binary",))
+        written = Path(path).read_text(encoding = "utf-8")
+        for gone in ("index-url", "extra-index-url", "no-binary ="):
+            assert gone not in written, f"{gone} must not survive the rewrite"
+        for kept in ("only-binary", "require-hashes", "cert"):
+            assert kept in written, f"the rewrite dropped operator policy: {kept}"
 
     def test_non_pinned_cmd_keeps_uv_config_discovery(self):
         """Non-pinned installs inherit the caller env unchanged, so a user's uv
@@ -506,18 +535,87 @@ class TestHardenedPipConfigRelaxation:
             assert ips._install_env_for_cmd(["python", "-m", "pip", "--version"]) is None
             assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
 
-    def test_pinned_cmd_strips_restrictive_policy_env(self):
-        """The pinned branch neutralises the config FILES, but an env var outranks a
-        config file, so a hardened shell could still fail a torch repair the pin was
-        supposed to make deterministic."""
+    def test_pinned_cmd_clears_hash_mode_only(self):
+        """A pinned install clears hash enforcement, which our unhashed requirements can
+        never satisfy, and NOTHING else the operator hardened.
+
+        The pinned indexes serve wheels, so no-build / only-binary / exclude-newer cost
+        the pin nothing and are left in force: dropping them would let a compromised
+        mirror run a source build the operator had forbidden.
+        """
         with mock.patch.dict(os.environ, self.HOSTILE):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
         assert env is not None
-        for name in ("PIP_REQUIRE_HASHES", "PIP_ONLY_BINARY", "UV_NO_BUILD", "UV_EXCLUDE_NEWER"):
-            assert name not in env, f"{name} must be cleared for a pinned install"
-        assert env["UV_NO_CONFIG"] == "1" and env["PIP_CONFIG_FILE"] == os.devnull
+        for name in ("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"):
+            assert name not in env, f"{name} cannot be satisfied by an unhashed pin"
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert env["UV_NO_BUILD"] == "1"
+        assert env["UV_EXCLUDE_NEWER"] == "2024-01-01T00:00:00Z"
+        assert env["UV_NO_CONFIG"] == "1"
+
+    def test_pinned_cmd_clears_forced_source_builds(self):
+        """`no-binary` is the one policy a pinned install must drop, and dropping it is
+        hardening: it would force torch to be BUILT from an sdist the pinned index does
+        not even serve."""
+        with mock.patch.dict(os.environ, {"PIP_NO_BINARY": ":all:", "UV_NO_BINARY": ":all:"}):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert "PIP_NO_BINARY" not in env and "UV_NO_BINARY" not in env
+
+    def test_pinned_pip_cmd_still_overrides_a_config_require_hashes(self):
+        """The pinned pip.conf rewrite keeps require-hashes if the operator set it there,
+        and it would abort the pinned install exactly as the env var would; env beats
+        config, so the pinned branch spells it out for pip commands."""
+        env = ips._install_env_for_cmd(
+            ["python", "-m", "pip", "download", "triton", "--index-url", "https://x/xpu"]
+        )
+        assert env["PIP_REQUIRE_HASHES"] == "0"
+
+    def test_pinned_uv_cmd_reasserts_a_uv_toml_no_build(self, tmp_path, monkeypatch):
+        """UV_NO_CONFIG=1 is how the pin outranks a uv.toml `[[index]]`, but it takes the
+        whole file with it. A `no-build` in that file is an operator control, so it is
+        read back and re-asserted rather than silently lost."""
+        pytest.importorskip("tomllib")
+        config = tmp_path / "uv.toml"
+        config.write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.setenv("UV_CONFIG_FILE", str(config))
+        monkeypatch.delenv("UV_NO_BUILD", raising = False)
+        env = ips._install_env_for_cmd(
+            ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        )
+        assert env["UV_NO_BUILD"] == "1"
+        assert "UV_CONFIG_FILE" not in env and env["UV_NO_CONFIG"] == "1"
+
+    def test_a_uv_toml_without_a_policy_asserts_nothing(self, tmp_path, monkeypatch):
+        """Conservative: only a literal `no-build = true` is re-asserted, so an
+        unreadable or policy-free config leaves the environment as it was."""
+        config = tmp_path / "uv.toml"
+        config.write_text('[[index]]\nurl = "https://mirror/simple"\n', encoding = "utf-8")
+        monkeypatch.setenv("UV_CONFIG_FILE", str(config))
+        monkeypatch.delenv("UV_NO_BUILD", raising = False)
+        env = ips._install_env_for_cmd(
+            ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        )
+        assert "UV_NO_BUILD" not in env
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["python", "-m", "pip", "uninstall", "-y", "install"],
+            ["python", "-m", "pip", "config", "list"],
+            [sys.executable, "/opt/tools/install.py", "--download"],
+            ["uv", "pip", "install", "-r", "extras.txt"],
+        ],
+    )
+    def test_only_a_real_pip_install_is_relaxed(self, cmd):
+        """The relaxation is keyed on the pip SUBCOMMAND, not on the word `install`
+        appearing somewhere in the command, so it cannot ride along on anything else."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert ips._install_env_for_cmd(cmd) is None
 
     def test_the_parent_environment_is_never_mutated(self):
         """The relaxation is a child-env override. Leaking it into os.environ would

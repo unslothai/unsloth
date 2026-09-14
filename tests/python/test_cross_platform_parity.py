@@ -826,9 +826,15 @@ class TestPinnedIndexClearsUvEnvParity:
         and install.ps1 are uv-only (no python -m pip fallback) and need no
         equivalent."""
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert 'env["PIP_CONFIG_FILE"] = os.devnull' in stack, (
-            "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
-            "pinned installs (pip fallback isolation)"
+        assert 'env["PIP_CONFIG_FILE"] = _pinned_pip_config_file()' in stack, (
+            "_install_env_for_cmd must redirect PIP_CONFIG_FILE for pinned installs "
+            "(pip fallback isolation)"
+        )
+        # Redirected at a REWRITE of pip's config minus the index keys, not at devnull:
+        # devnull would take the operator's cert, proxy, trusted-host and only-binary
+        # policy with it, and a pin exists to fix the index, not to drop a hardening.
+        assert '_pip_config_without_sources(directory, drop = ("no-binary",))' in stack, (
+            "the pinned pip config must keep everything except the sources and no-binary"
         )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
