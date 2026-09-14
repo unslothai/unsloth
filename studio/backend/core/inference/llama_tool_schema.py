@@ -1,18 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool schemas as llama-server should receive them: llama.cpp's grammar admits a nested
-object's optional keys only in declared order, so a key written out of order is silently
-dropped (#10839). A permissive union branch lifts that without hiding the original."""
+"""llama.cpp's grammar keeps a nested object's optional keys only in declared order (#10839)."""
 
 from __future__ import annotations
 
 from typing import Any
 
 _PERMISSIVE_OBJECT = {"type": "object", "additionalProperties": True}
-# Child mode per keyword: True wraps, False never wraps, None inherits the parent's instance.
-# Definitions and allOf parts stay bare because llama.cpp merges a $ref or allOf part by its
-# own properties, and a wrapped part contributes none.
+# True wraps, False never (llama.cpp merges $ref/allOf parts by their own keys), None inherits.
 _MAP_KEYWORDS = {
     "$defs": False,
     "definitions": False,

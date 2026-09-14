@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Nested tool-schema objects reach llama-server as a permissive union so the grammar stops
-dropping optional keys written out of declared order (#10839)."""
+"""Nested tool-schema objects reach llama-server as a permissive union (#10839)."""
 
 import copy
 import sys
@@ -148,8 +147,7 @@ def test_objects_under_items_and_refs_are_wrapped_where_they_are_used():
 
 
 def test_allof_ref_parts_keep_their_definition_bare():
-    # llama.cpp merges an allOf $ref part by the target's own properties, so a wrapped
-    # definition compiles to "{}" and every key is dropped.
+    # A wrapped $defs target compiles to "{}" under llama.cpp's allOf merge, dropping every key.
     paging = {
         "type": "object",
         "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
