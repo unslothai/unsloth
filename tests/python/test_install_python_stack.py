@@ -10,6 +10,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -68,6 +69,22 @@ sys.path.insert(0, str(STUDIO_DIR))
 import install_python_stack as ips
 
 STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
+
+# The pinned scrub reads `pip config list` once per process and memoises it. A CI image
+# carrying its own /etc/pip.conf would otherwise leak into these assertions, and a test
+# that mocks subprocess could poison the cache for whatever runs next under -p randomly.
+REAL_PINNED_PIP_CONFIG_OVERRIDES = ips._pinned_pip_config_overrides
+
+
+@pytest.fixture(autouse = True)
+def _hermetic_pinned_pip_config(request):
+    ips._pinned_pip_config_overrides.cache_clear()
+    if "reads_real_pip_config" in request.keywords:
+        yield
+    else:
+        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda: {}):
+            yield
+    ips._pinned_pip_config_overrides.cache_clear()
 
 
 class TestBuildUvCmdTorchBackend:
@@ -555,15 +572,7 @@ class TestHardenedPipConfigRelaxation:
     )
 
     def _overrides(self, listing = None):
-        ips._pinned_pip_config_overrides.cache_clear()
-        with mock.patch.object(ips.subprocess, "run") as run:
-            run.return_value = mock.Mock(
-                returncode = 0, stdout = (self.LISTING if listing is None else listing).encode()
-            )
-            try:
-                return ips._pinned_pip_config_overrides()
-            finally:
-                ips._pinned_pip_config_overrides.cache_clear()
+        return ips._parse_pinned_pip_config((self.LISTING if listing is None else listing).encode())
 
     def test_devnull_gives_the_operators_policy_and_transport_back(self):
         """What devnull switches off is put back one key at a time. only-binary is the
@@ -602,16 +611,41 @@ class TestHardenedPipConfigRelaxation:
         Re-asserting them would undo the vars the pinned branch just cleared."""
         assert "PIP_NO_BINARY" not in self._overrides()
 
-    def test_a_pip_that_cannot_answer_changes_nothing(self):
-        """A venv with no pip yet is the normal case early in a fresh install."""
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            mock.Mock(returncode = 1, stdout = b""),                 # no pip in the venv yet
+            mock.Mock(returncode = 0, stdout = None),                # nothing captured
+            OSError("no pip"),
+            subprocess.TimeoutExpired("pip", 60),                    # a wedged pip
+            mock.Mock(returncode = 0, stdout = mock.Mock()),         # not even bytes
+        ],
+    )
+    def test_a_pip_that_cannot_answer_changes_nothing(self, outcome):
+        """This sits on the path to every pinned install, including the final torch
+        repair, so anything other than a clean listing has to degrade to no overrides."""
         ips._pinned_pip_config_overrides.cache_clear()
-        with mock.patch.object(ips.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode = 1, stdout = b"")
+        kwargs = (
+            {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
+        )
+        with mock.patch.object(ips.subprocess, "run", **kwargs):
             assert ips._pinned_pip_config_overrides() == {}
         ips._pinned_pip_config_overrides.cache_clear()
-        with mock.patch.object(ips.subprocess, "run", side_effect = OSError("no pip")):
-            assert ips._pinned_pip_config_overrides() == {}
-        ips._pinned_pip_config_overrides.cache_clear()
+
+    def test_garbage_in_the_listing_is_ignored_not_fatal(self):
+        for listing in (b"", b"not a config listing\n", b"global.cert\n", b"=\n",
+                        b"global.cert=<unparseable>\n", b"\xff\xfe binary \x00\n"):
+            assert ips._parse_pinned_pip_config(listing) == {}
+
+    def test_a_command_section_beats_global_for_the_same_option(self):
+        """pip's own precedence, resolved by position rather than by whichever order the
+        listing happened to print the two lines in."""
+        for listing in (
+            b"global.only-binary=':all:'\ninstall.only-binary='numpy'\n",
+            b"install.only-binary='numpy'\nglobal.only-binary=':all:'\n",
+        ):
+            assert ips._parse_pinned_pip_config(listing)["PIP_ONLY_BINARY"] == "numpy"
 
     def test_the_callers_own_environment_wins(self):
         """The re-assertion fills gaps; it never overwrites a variable the caller set."""

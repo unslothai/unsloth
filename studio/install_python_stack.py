@@ -7451,6 +7451,10 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
     `:env:` entries are skipped: those come from the environment, which the child already
     inherits, and re-asserting them would undo the variables the pinned branch just
     cleared on purpose.
+
+    Nothing in here may raise. It sits on the path to every pinned install, including the
+    torch repair that runs last, so an unreadable or unexpected listing has to degrade to
+    "no overrides" the way a missing pip already does, not take the install down.
     """
     try:
         result = subprocess.run(
@@ -7462,12 +7466,21 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
             timeout = 60,
             **_windows_hidden_subprocess_kwargs(),
         )
-    except (OSError, subprocess.TimeoutExpired):
+        if result.returncode != 0:
+            return {}
+        return _parse_pinned_pip_config(result.stdout or b"")
+    except Exception:
         return {}
-    if result.returncode != 0:
-        return {}
-    overrides: dict[str, str] = {}
-    for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+
+
+def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
+    """`pip config list` output, filtered to the allowlist, as PIP_ variables.
+
+    A command section beats `global` for the same option, which is pip's own precedence,
+    and is resolved by position rather than by the order the listing happens to print in.
+    """
+    found: dict[str, dict[str, str]] = {}
+    for line in stdout.decode("utf-8", "replace").splitlines():
         name, separator, raw = line.partition("=")
         if not separator or name.startswith(":env:"):
             continue
@@ -7484,7 +7497,14 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
         # environment spelling of the same list is whitespace separated.
         text = " ".join(str(value).split())
         if text:
-            overrides[f"PIP_{option.upper().replace('-', '_')}"] = text
+            found.setdefault(option, {})[section] = text
+    overrides: dict[str, str] = {}
+    for option, by_section in found.items():
+        # _PINNED_PIP_CONFIG_SECTIONS is ordered global first, so each command section
+        # present overwrites it and the most specific one set wins.
+        for section in _PINNED_PIP_CONFIG_SECTIONS:
+            if section in by_section:
+                overrides[f"PIP_{option.upper().replace('-', '_')}"] = by_section[section]
     return overrides
 
 
