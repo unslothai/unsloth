@@ -4972,7 +4972,7 @@ import inspect
 deep = {'deep': True} if 'deep' in inspect.signature(install_manifest.verify_install).parameters else {}
 sys.exit(0 if install_manifest.verify_install(**deep)['ok'] else 1)
 " "$PSScriptRoot" 2>$null | Out-Null
-        # Out-Null, not just 2>$null: an unassigned native call leaves stdout in the function's
+        # Out-Null, not just 2>$null: an unassigned native call leaves stdout in the
         # success stream, so `return $false` came back as @("...", $false), which is truthy.
         return ($LASTEXITCODE -eq 0)
     } catch { return $false }
@@ -5049,9 +5049,8 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) {
-        # Starts bad and is cleared only on a confirmed exit 0, mirroring setup.sh's `if !`:
-        # an invocation that throws left it false, so an install under the floor kept the
-        # fast path, and $LASTEXITCODE would be a previous command's.
+        # Cleared only on a confirmed exit 0, mirroring setup.sh's `if !`: an invocation that
+        # throws left it false, so an install under the floor kept the fast path.
         $_desktopVerBad = $true
         try {
             & python -c "

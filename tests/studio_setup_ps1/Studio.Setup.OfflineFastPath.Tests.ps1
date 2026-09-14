@@ -401,9 +401,8 @@ Invoke-FastPathEscapes
 
 Describe "Test-StudioInstallVerified returns a Boolean, not a collection" {
     It "stays falsey when the verifier prints to stdout and then fails" {
-        # An unassigned native call leaves stdout in the function's success stream, so
-        # `return $false` came back as @("...", $false): truthy, and the offline keep
-        # was taken on a failed verify.
+        # Stray stdout made `return $false` come back as @("...", $false), which is truthy,
+        # so a failed verify read as verified.
         $body = (Get-Content -Raw (Join-Path $PSScriptRoot "../../studio/setup.ps1"))
         $match = [regex]::Match($body, '(?ms)^function Test-StudioInstallVerified \{.*?^\}')
         $match.Success | Should -BeTrue
@@ -425,8 +424,7 @@ Describe "Test-StudioInstallVerified returns a Boolean, not a collection" {
 Describe "The desktop backend floor check fails closed" {
     It "forces the pass when the version check cannot run, as setup.sh does" {
         # setup.sh uses `if ! python ...`, so a check that cannot execute forces the pass.
-        # PowerShell's empty catch left $_desktopVerBad false, so an install below the floor
-        # kept the fast path, and $LASTEXITCODE would have been a previous command's.
+        # PowerShell's empty catch left the flag false, keeping an under-floor install.
         $ps1 = Get-Content -Raw (Join-Path $PSScriptRoot "../../studio/setup.ps1")
         $ps1 | Should -Match '\$_desktopVerBad = \$true'
         $ps1 | Should -Match 'if \(\$LASTEXITCODE -eq 0\) \{ \$_desktopVerBad = \$false \}'
