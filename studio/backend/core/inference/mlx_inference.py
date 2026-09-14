@@ -538,24 +538,73 @@ def _mlx_adapter_modules(model):
     return adapters, unsupported
 
 
+_MLX_FUSION_UNAVAILABLE = set()
+
+
+def _mlx_fusion_unavailable(name, error):
+    """Log once per distinct cause. These fire per request, so repeating would flood."""
+    key = (name, type(error).__name__, str(error))
+    if key not in _MLX_FUSION_UNAVAILABLE:
+        _MLX_FUSION_UNAVAILABLE.add(key)
+        logger.warning(
+            "Optional MLX fusion %s is unavailable, continuing with native inference: %s: %s",
+            name,
+            type(error).__name__,
+            error,
+        )
+
+
 def _mlx_inference_patch(name):
+    """Look up an optional Zoo fusion helper, or None when it cannot be used.
+
+    Never raises. The fusions are a throughput optimization, so every way Zoo can fail to
+    provide one -- not installed, installed without the module, installed without the mlx
+    extras its module imports, or a version whose module raises on import -- has to leave
+    native inference working rather than failing a load or a request.
+    """
     try:
         patches = importlib.import_module("unsloth_zoo.mlx.inference")
     except ModuleNotFoundError as error:
         if error.name != "unsloth_zoo.mlx.inference":
-            raise
+            # A transitive import inside Zoo's module failed. That is still just the
+            # optional feature being unavailable, so say so instead of raising.
+            _mlx_fusion_unavailable(name, error)
+        return None
+    except Exception as error:
+        # A partial or skewed install raises ImportError rather than ModuleNotFoundError.
+        _mlx_fusion_unavailable(name, error)
         return None
     return getattr(patches, name, None)
 
 
+@contextmanager
+def _mlx_optional_fusion(name, model):
+    """Hold an optional Zoo fusion scope, or yield the model unfused.
+
+    Only entry is guarded: once a scope is open its unwind runs through the ExitStack
+    exactly as an unguarded `with` would, so an interrupted or failed generation still
+    restores the module tree.
+    """
+    patch = _mlx_inference_patch(name)
+    with ExitStack() as scope:
+        active = model
+        if patch is not None:
+            try:
+                entered = scope.enter_context(patch(model))
+            except Exception as error:
+                _mlx_fusion_unavailable(name, error)
+            else:
+                if entered is not None:
+                    active = entered
+        yield active
+
+
 def _mlx_fused_moe_gate_up(model):
-    patch = _mlx_inference_patch("fused_moe_gate_up")
-    return patch(model) if patch is not None else nullcontext(model)
+    return _mlx_optional_fusion("fused_moe_gate_up", model)
 
 
 def _mlx_fused_decode_conv_silu(model):
-    patch = _mlx_inference_patch("fused_decode_conv_silu")
-    return patch(model) if patch is not None else nullcontext(model)
+    return _mlx_optional_fusion("fused_decode_conv_silu", model)
 
 
 @contextmanager

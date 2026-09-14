@@ -36,16 +36,33 @@ def mlx_decode(mlx_inference_patches):
 
 
 @pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
-@pytest.mark.parametrize("missing", ["feature", "mlx", "unsloth_zoo"])
-def test_mlx_fusion_import_only_falls_back_for_the_optional_feature(monkeypatch, missing, feature):
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError("injected", name = "unsloth_zoo.mlx.inference"),
+        # Zoo installed without the mlx extras its fusion module imports.
+        ModuleNotFoundError("injected", name = "mlx"),
+        ModuleNotFoundError("injected", name = "unsloth_zoo"),
+        # A skewed or partial install raises ImportError, not ModuleNotFoundError.
+        ImportError("cannot import name 'gather_qmm'"),
+        RuntimeError("zoo fusion module failed at import"),
+    ],
+    ids = ["feature", "mlx", "unsloth_zoo", "import-error", "raising-module"],
+)
+def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
+    """No way for Zoo to be unusable may fail a load or a generation.
+
+    The fusions are a throughput optimization, so an absent, older, partially installed
+    or broken Zoo has to leave native inference working. A transitive failure is logged
+    rather than raised, since raising would take down a path that worked before the
+    optimization existed.
+    """
     from core.inference import mlx_inference
 
     module_name = "unsloth_zoo.mlx.inference"
     helper = getattr(mlx_inference, f"_mlx_fused_{feature}")
-    missing = module_name if missing == "feature" else missing
 
     original_import = mlx_inference.importlib.import_module
-    error = ModuleNotFoundError("injected", name = missing)
 
     def fail(name, *args, **kwargs):
         if name == module_name:
@@ -53,14 +70,52 @@ def test_mlx_fusion_import_only_falls_back_for_the_optional_feature(monkeypatch,
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(mlx_inference.importlib, "import_module", fail)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     model = object()
-    if missing == module_name:
-        with helper(model) as active:
-            assert active is model
-    else:
-        with pytest.raises(ModuleNotFoundError) as caught:
-            helper(model)
-        assert caught.value is error
+    with helper(model) as active:
+        assert active is model
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_fusion_that_cannot_be_entered_keeps_native(monkeypatch, mlx_inference_patches,
+                                                        feature):
+    """Packing can fail on the model in hand (headroom, an unsupported layout) after the
+    module imported cleanly. That must degrade to native, not fail the request."""
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("cannot pack this model")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+        assert active is model
+
+
+def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
+    """The base-model scope is entered inside load_model, so a fusion that refuses there
+    must not turn a good load into a failed one."""
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("no headroom to pack")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config) is True
+    assert backend.active_model_name == "fake/text"
+    assert backend._model is not None
+    assert backend.unload_model("fake/text")
 
 
 @pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
