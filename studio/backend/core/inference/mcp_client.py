@@ -1617,9 +1617,30 @@ def _block_image(block: Any) -> Optional[tuple[str, str]]:
     return None
 
 
+def _block_attachment(block: Any) -> Optional[str]:
+    if getattr(block, "data", None):
+        kind = getattr(block, "type", "binary")
+        mime = _resource_mime(block)
+        uri = None
+    else:
+        resource = getattr(block, "resource", None)
+        if resource is None or not getattr(resource, "blob", None):
+            return None
+        kind = "file"
+        mime = _resource_mime(resource)
+        uri = getattr(resource, "uri", None)
+    label = f"{kind} attachment"
+    if mime:
+        label += f" ({mime})"
+    if uri and not str(uri).lower().startswith("data:"):
+        label += f" <{uri}>"
+    return f"{label} not shown to the model"
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
     images = []
+    unshown = []
     omitted = 0
     has_text = False
     budget = MAX_IMAGE_PAYLOAD_CHARS
@@ -1641,18 +1662,23 @@ def _flatten_result(result: Any) -> str:
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
+            continue
+        attachment = _block_attachment(block)
+        if attachment:
+            unshown.append(attachment)
     body = "\n".join(parts)
-    if not has_text:
+    if not (has_text or images or omitted or unshown):
         structured = getattr(result, "structured_content", None)
         if structured is not None:
             body = f"{structured}\n{body}" if body else str(structured)
-    if images or omitted:
+    if images or omitted or unshown:
         notes = []
         if images:
             n = len(images)
             notes.append(f"{n} image{'s' if n > 1 else ''} attached; displayed to the user")
         if omitted:
             notes.append(f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)")
+        notes.extend(unshown)
         note = f"[{'; '.join(notes)}]"
         body = f"{body}\n{note}" if body else note
 
