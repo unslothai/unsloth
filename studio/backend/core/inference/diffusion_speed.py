@@ -27,8 +27,9 @@ it; a separate compiled dequant would break that graph). ``supports_torch_compil
 checks gate regional compile.
 
   ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1``  whether a compiled load also compiles the VAE decode.
-                                        ``auto`` (default) covers DiTs as well as U-Nets, minus
-                                        ``_VAE_COMPILE_DENY``: the decode was the largest non-GEMM
+                                        ``auto`` (default) covers U-Nets plus the image DiT VAE classes it was
+                                        measured on (``_VAE_COMPILE_ALLOW`` minus
+                                        ``_VAE_COMPILE_DENY``): the decode was the largest non-GEMM
                                         bucket of a DiT render (z-image 1024 119.4 -> 27.0 ms,
                                         flux.1 1024 117.6 -> 27.1 ms). ``0`` restores the earlier
                                         U-Net-only behaviour, ``1`` forces it past the deny set.
@@ -590,13 +591,19 @@ _VAE_FALSE_TOKENS = ("0", "false", "no", "off")
 # 25.7 ms.
 _VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage"})
 
+# VAE classes ``auto`` compiles: the ones the decode compile was measured on. The video backend runs this same helper
+# for every video DiT (video.py:4513, video.py:5264), and its VAEs decode 5-D latents tiled, offloaded and chunked, so
+# without an allow list ``auto`` would compile decodes nobody has timed. A video class joins this set when its own
+# measurement says it wins.
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
+
 
 def _vae_decode_compile_allowed(pipe: Any) -> bool:
     """Whether the VAE decode compile covers this pipe. ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1``.
 
     A U-Net family always compiles it (measured with the whole-module compile it ships with). For a DiT, ``auto``
-    (the default) compiles it too unless its VAE class is on ``_VAE_COMPILE_DENY``, ``0`` restores the earlier
-    U-Net-only behaviour, and ``1`` forces it even for a denied class."""
+    (the default) compiles it when its VAE class is on ``_VAE_COMPILE_ALLOW`` and not on ``_VAE_COMPILE_DENY``, ``0``
+    restores the earlier U-Net-only behaviour, and ``1`` forces it for any class."""
     if _denoiser_unet(pipe) is not None:
         return True
     raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
@@ -604,7 +611,8 @@ def _vae_decode_compile_allowed(pipe: Any) -> bool:
         return False
     if raw in _VAE_TRUE_TOKENS:
         return True
-    return type(getattr(pipe, "vae", None)).__name__ not in _VAE_COMPILE_DENY
+    name = type(getattr(pipe, "vae", None)).__name__
+    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
 
 
 def _compile_vae_decode(
@@ -621,6 +629,10 @@ def _compile_vae_decode(
     decode = getattr(vae, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
+    # A dual-DiT family calls apply_speed_optims once per denoiser view over the SAME pipe (video.py:4513), and both
+    # views read through to one ``pipe.vae``; without this the second call would compile the compiled decode again.
+    if getattr(vae, "_unsloth_compiled_decode", False):
+        return True
     try:
         import torch
 
@@ -628,6 +640,7 @@ def _compile_vae_decode(
         if max_autotune:
             kwargs["mode"] = "max-autotune-no-cudagraphs"
         vae.decode = torch.compile(decode, **kwargs)
+        vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)

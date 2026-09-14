@@ -12,6 +12,7 @@ reports a GPU busier than the wall clock. Both are asserted here."""
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -172,3 +173,64 @@ def test_every_harness_script_parses_its_arguments_without_a_gpu():
         with pytest.raises(SystemExit) as exc:
             module.main(["--help"])
         assert exc.value.code == 0
+
+
+class _Processor:
+    def __init__(self, backend):
+        self._attention_backend = backend
+
+
+class _Attn:
+    def __init__(self, backend):
+        self.processor = _Processor(backend)
+
+
+class _Denoiser:
+    """The two levels ``observed_backends`` walks: a module tree whose attention submodules hold the
+    processor diffusers writes the backend onto."""
+
+    def __init__(self, *backends):
+        self._subs = [_Attn(b) for b in backends]
+
+    def modules(self):
+        return [self, *self._subs]
+
+
+def test_a_refused_attention_switch_is_dropped_before_the_arm_is_timed():
+    # set_attention_backend leaves the PREVIOUS backend installed when it refuses, and the render
+    # after it then succeeds on that backend, so an arm judged only by whether its render raised
+    # publishes the old kernel's time under the new kernel's label.
+    ab = _script("nvfp4_budget_attention_ab")
+    ok = {"requested": "_native_flash", "observed": ["_native_flash"], "errors": []}
+    assert ab.switch_failure(ok) is None
+    refused = {
+        "requested": "_native_flash",
+        "observed": ["_native_cudnn"],
+        "errors": ["FluxTransformer2DModel: ValueError: `backend=` must be one of"],
+    }
+    assert "refused" in ab.switch_failure(refused)
+    silent = {"requested": "_native_flash", "observed": ["_native_cudnn"], "errors": []}
+    assert "not _native_flash" in ab.switch_failure(silent)
+    # Nothing exposed a backend at all is unverifiable rather than wrong, so that arm still runs.
+    assert ab.switch_failure({"requested": "_native_flash", "observed": [], "errors": []}) is None
+
+
+def test_the_observed_backend_is_read_off_the_processors_not_the_denoiser():
+    # diffusers writes processor._attention_backend; the denoiser module carries no such attribute,
+    # so reading it there reports None for a switch that worked and would drop every arm.
+    ab = _script("nvfp4_budget_attention_ab")
+    backend = types.SimpleNamespace(value = "_native_cudnn")
+    assert ab.observed_backends([_Denoiser(backend, backend)]) == ["_native_cudnn"]
+    assert ab.observed_backends([_Denoiser(None)]) == []
+    mixed = _Denoiser(backend, types.SimpleNamespace(value = "_native_flash"))
+    assert ab.observed_backends([mixed]) == ["_native_cudnn", "_native_flash"]
+
+
+def test_compile_off_loads_the_eager_tier_rather_than_relabelling_a_compiled_run():
+    # --compile off is a control arm: it has to reach the loader, or the JSON records
+    # compile_mode "off" for a run that was regionally compiled like every other.
+    profile = _script("nvfp4_budget_profile")
+    assert profile.resolve_load_speed_mode("off", "default") == "eager"
+    assert profile.resolve_load_speed_mode("off", "max") == "eager"
+    assert profile.resolve_load_speed_mode("regional", "default") == "default"
+    assert profile.resolve_load_speed_mode("whole", "max") == "max"

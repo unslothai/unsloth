@@ -42,6 +42,40 @@ BACKENDS = {
 }
 
 
+def observed_backends(modules) -> list[str]:
+    """The backend actually installed on the attention processors of ``modules``.
+
+    ``set_attention_backend`` writes ``processor._attention_backend`` on every attention submodule
+    (diffusers modeling_utils.py:642-649); the denoiser itself carries no such attribute, so reading
+    it off the module would report ``None`` for a switch that worked. Empty means nothing exposed a
+    backend, which is unverifiable rather than wrong."""
+    seen = set()
+    for module in modules:
+        for sub in module.modules():
+            processor = getattr(sub, "processor", None)
+            if processor is None:
+                continue
+            value = getattr(processor, "_attention_backend", None)
+            if value is not None:
+                seen.add(str(getattr(value, "value", value)))
+    return sorted(seen)
+
+
+def switch_failure(info: dict) -> str | None:
+    """Why this arm must not be timed, or None if the requested backend is really installed.
+
+    A rejected ``set_attention_backend`` leaves the PREVIOUS backend live, and the render that
+    follows then succeeds on it: timing that arm would publish the old kernel's number under the new
+    kernel's label. Both the recorded exception and an observed mismatch are refusals."""
+    if info.get("errors"):
+        return f"set_attention_backend refused: {info['errors'][0]}"
+    requested = info.get("requested")
+    observed = info.get("observed") or []
+    if observed and observed != [requested]:
+        return f"backend observed as {observed}, not {requested}"
+    return None
+
+
 def main(argv = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--family", required = True)
@@ -209,8 +243,12 @@ def main(argv = None) -> int:
                 except Exception as exc:  # noqa: BLE001 - a refusal is the result
                     errs.append(f"{type(m).__name__}: {type(exc).__name__}: {exc}"[:300])
             cg.reset_all(getattr(state, "cuda_graphs", ()) or ())
-            observed = [getattr(m, "_attention_backend", None) for m in denoisers]
-            return {"requested": name, "observed": observed, "errors": errs}
+            return {
+                "requested": name,
+                "observed": observed_backends(denoisers),
+                "module_attrs": [getattr(m, "_attention_backend", None) for m in denoisers],
+                "errors": errs,
+            }
 
         # Warm the load once on the shipped backend before any switching.
         for _ in range(args.warmups):
@@ -221,6 +259,12 @@ def main(argv = None) -> int:
         for label in labels:
             info = switch(label)
             per_backend[label]["switch"] = info
+            failure = switch_failure(info)
+            if failure is not None:
+                per_backend[label]["switch_error"] = failure
+                dropped.add(label)
+                print(f"[ab] DROPPED {label}: {failure}", flush = True)
+                continue
             try:
                 render(args.seed_base - 1)  # re-capture the graph on this kernel
             except Exception as exc:  # noqa: BLE001
@@ -229,11 +273,20 @@ def main(argv = None) -> int:
                 print(f"[ab] DROPPED {label}: {per_backend[label]['warm_error']}", flush = True)
         live = [b for b in labels if b not in dropped]
         record["dropped"] = sorted(dropped)
+        record["dropped_reasons"] = {
+            label: per_backend[label].get("switch_error") or per_backend[label].get("warm_error")
+            for label in sorted(dropped)
+        }
 
         for rot in range(args.rotations):
             seed = args.seed_base + rot
             for label in live:
-                switch(label)
+                info = switch(label)
+                failure = switch_failure(info)
+                if failure is not None:
+                    # A backend that validated above and refuses now would silently hand the rest of
+                    # the rotation to whatever kernel stayed live.
+                    raise RuntimeError(f"{label}: {failure}")
                 render(args.seed_base - 1)  # re-capture after the switch, never timed
                 want_numerics = rot == 0
                 latent_box["arm"] = want_numerics
@@ -250,7 +303,10 @@ def main(argv = None) -> int:
 
         # One profiled render per backend, for the attention bucket and the kernel names.
         for label in live:
-            switch(label)
+            info = switch(label)
+            failure = switch_failure(info)
+            if failure is not None:
+                raise RuntimeError(f"{label}: {failure}")
             render(args.seed_base - 1)
             hooks = PG.PhaseHooks(torch, pipe, denoisers).install()
             from torch.profiler import ProfilerActivity, profile

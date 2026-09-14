@@ -202,6 +202,14 @@ def test_restore_is_independent_per_flag(monkeypatch):
 # ── applier ───────────────────────────────────────────────────────────────────
 
 
+class AutoencoderKL(types.SimpleNamespace):
+    """The class NAME is load bearing: ``auto`` compiles the decode only for the VAE classes it was measured on."""
+
+
+class AutoencoderKLWan(types.SimpleNamespace):
+    """A video VAE, reached through the same helper by video.py's per-view apply_speed_optims calls."""
+
+
 class _Pipe:
     def __init__(
         self,
@@ -209,8 +217,9 @@ class _Pipe:
         with_compile = False,
         with_fuse = False,
         with_second_dit = False,
+        vae_cls = AutoencoderKL,
     ) -> None:
-        self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to, decode = lambda z: z)
+        self.vae = vae_cls(mem_format = None, to = self._vae_to, decode = lambda z: z)
         self.transformer = types.SimpleNamespace()
         if with_compile:
             self.transformer.compile_repeated_blocks = self._compile
@@ -476,6 +485,28 @@ def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
         speed_mode = SPEED_DEFAULT,
     )
     assert applied["compiled_vae_decode"] is True
+
+
+def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
+    # video.py calls apply_speed_optims for every compile-eligible video DiT (video.py:4513), and once per proxy view
+    # on a dual-DiT family, so `auto` must not reach a 5-D tiled video decode nobody measured, and one shared VAE must
+    # not be compiled twice.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    # The same pipe passed twice (the real second call arrives as a proxy view onto it) compiles the decode once.
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    for _ in range(2):
+        applied = apply_speed_optims(
+            pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        )
+        assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
 
 
 def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):

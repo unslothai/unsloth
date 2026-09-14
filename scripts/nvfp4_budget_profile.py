@@ -591,6 +591,17 @@ class PhaseHooks:
 
 
 # ------------------------------------------------------------------------------------------ run
+def resolve_load_speed_mode(compile_mode: str, speed_mode: str) -> str:
+    """The Studio ``speed_mode`` a ``--compile`` choice has to load with.
+
+    ``off`` is the shipped ``eager`` tier: every lossless optimisation of ``default`` (channels-last
+    VAE, cudnn.benchmark, fp16 accumulation, the attention pin) with no torch.compile at all, which
+    is the only way to get a compile-free control out of the shipped loader. Loading it as
+    ``default`` and merely recording ``compile_mode: off`` would label a regionally compiled run as
+    the eager control. ``regional`` and ``whole`` leave the requested tier alone."""
+    return "eager" if compile_mode == "off" else speed_mode
+
+
 def _install_whole_compile(torch_mod, denoisers, state) -> dict:
     """``torch.compile(fullgraph=True, dynamic=False)`` over the WHOLE denoiser forward.
 
@@ -600,10 +611,10 @@ def _install_whole_compile(torch_mod, denoisers, state) -> dict:
     graphs it replaces ``GraphedForward.orig`` (what the capture records), and without graphs it
     goes straight into the instance slot.
 
-    NOTE: Studio's REGIONAL compile has already run by this point and there is no shipped env knob
-    to turn it off (`UNSLOTH_COMPILE_SCOPE` is a proposal in the plan, not code), and turning it off
-    would mean editing the worktree. So this arm is whole-compile ON TOP OF regional compile, and
-    says so.
+    NOTE: Studio's REGIONAL compile has already run by this point: this arm loads at the requested
+    tier (``--compile whole`` keeps ``--speed-mode default``), so it is whole-compile ON TOP OF
+    regional compile, and says so. The compile-free control is ``--compile off``, which loads the
+    shipped ``eager`` tier instead (see ``resolve_load_speed_mode``).
     """
     out = {"modules": [], "nested_on_regional_compile": True}
     torch_mod._dynamo.config.recompile_limit = 64
@@ -740,6 +751,8 @@ def run_one(args, graphs: str, pre: dict, root: str) -> int:
         "graphs": graphs,
         "attention_requested": args.attention,
         "compile_mode": args.compile_mode,
+        "speed_mode_requested": args.speed_mode,
+        "speed_mode_loaded": resolve_load_speed_mode(args.compile_mode, args.speed_mode),
         "backend_root": root,
         "backend_kind": args.backend,
         "warmups": args.warmups,
@@ -789,7 +802,7 @@ def run_one(args, graphs: str, pre: dict, root: str) -> int:
         backend = get_backend()
         load_kwargs: dict = {
             "hf_token": os.environ.get("HF_TOKEN"),
-            "speed_mode": args.speed_mode,
+            "speed_mode": resolve_load_speed_mode(args.compile_mode, args.speed_mode),
             "transformer_quant": None if args.arm == "bf16" else args.arm,
         }
         for key, value in (

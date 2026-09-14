@@ -74,7 +74,13 @@ whole-transformer compile arm:
 ```bash
 TORCHDYNAMO_DISABLE=1 python3 scripts/nvfp4_budget_profile.py ... --out "$OUT/flux.1_1024_fp8_graphson_shipped_nodynamo.json"
 python3 scripts/nvfp4_budget_profile.py ... --compile whole --out "$OUT/z-image_1024_nvfp4_wholecompile_graphson_shipped.json"
+python3 scripts/nvfp4_budget_profile.py ... --compile off --out "$OUT/z-image_1024_nvfp4_nocompile_graphson_shipped.json"
 ```
+
+`--compile off` loads the shipped `eager` tier: every lossless optimisation of `default`
+(channels-last VAE, cudnn.benchmark, fp16 accumulation, the attention pin) and no torch.compile,
+which is the compile-free control the other two arms are read against. The tier each run actually
+loaded is in the JSON as `speed_mode_loaded`, beside the requested `compile_mode`.
 
 VAE decode compile, before and after, at 1024 with graphs on. `UNSLOTH_DIFFUSION_COMPILE_VAE=0` is
 the U-Net-only behaviour the switch replaced; `auto` is the default:
