@@ -361,10 +361,10 @@ def test_a_successful_prefetch_writes_a_ready_marker_and_never_touches_the_venv(
     assert payload["cache_dir"] == "/cache/uv"
     assert payload["shell_version"] == "0.1.900-beta"
     assert payload["core_records"] == {
-        "unsloth-2026.9.2.dist-info": _studio_prefetch.digest_file(
-            target / "unsloth-2026.9.2.dist-info" / "RECORD"
-        )
+        "unsloth-2026.9.2.dist-info": _studio_prefetch._digest_bytes(b"unsloth/__init__.py,,\n")
     }
+    # The fetched copy is scratch; the marker and the owned root stay.
+    assert not target.exists()
     assert set(payload["requirement_digests"]) == {"studio.txt", "base.txt"}
 
     on_disk = json.loads(_studio_prefetch.marker_path(managed).read_text(encoding = "utf-8"))
@@ -382,11 +382,15 @@ def test_a_gguf_only_install_prepares_two_wheels_and_not_the_cuda_stack(managed,
     )
     target = _studio_prefetch.site_dir(managed)
     recorder = _Recorder([])
+    read_requirements: dict = {}
 
     def respond(cmd, env):
         recorder(cmd, env)
         cmd = list(cmd)
         if "--dry-run" in cmd:
+            if "-r" in cmd:
+                requirement = Path(cmd[-1])
+                read_requirements[requirement.name] = requirement.read_text(encoding = "utf-8")
             return _plan_response(" + unsloth==2026.9.2\n")
         if "--target" in cmd:
             _install_new_wheel_tree(target)
@@ -405,7 +409,7 @@ def test_a_gguf_only_install_prepares_two_wheels_and_not_the_cuda_stack(managed,
     assert not any(Path(c[-1]).name.startswith("base") for c in recorder.commands)
     extras = [c for c in recorder.commands if Path(c[-1]).name.startswith((".extras", "extras"))]
     assert extras, recorder.commands
-    filtered = Path(extras[0][-1]).read_text(encoding = "utf-8")
+    filtered = read_requirements[Path(extras[0][-1]).name]
     assert "librosa" not in filtered and "openai_whisper" not in filtered
     assert "soundfile" in filtered
 
@@ -715,6 +719,29 @@ def test_uv_no_cache_is_read_as_the_update_reads_it(monkeypatch, value):
     from unsloth_cli.commands import studio
     monkeypatch.setenv("UV_NO_CACHE", value)
     assert _studio_prefetch.uv_no_cache_requested() == studio._uv_no_cache_requested()
+
+
+def test_a_failed_core_download_leaves_no_partial_tree_behind(managed, monkeypatch):
+    target = _studio_prefetch.site_dir(managed)
+
+    def respond(cmd, env):
+        cmd = list(cmd)
+        if "--dry-run" in cmd:
+            return _plan_response(" + unsloth==2026.9.2\n")
+        if "--target" in cmd:
+            # Part of the wheel is unpacked before the download gives out.
+            _install_new_wheel_tree(target)
+            return _completed(1, stderr = "error: Failed to download `torch`")
+        return _completed(0)
+
+    monkeypatch.setattr(_studio_prefetch, "_run", respond)
+
+    with pytest.raises(_studio_prefetch.PrefetchError):
+        _studio_prefetch.run(studio_home = managed, floor = "2026.9.2", echo = lambda line: None)
+
+    assert not target.exists()
+    assert not _studio_prefetch.marker_path(managed).exists()
+    assert (_studio_prefetch.prefetch_root(managed) / _studio_prefetch.OWNED_MARKER).is_file()
 
 
 def test_a_full_disk_stops_the_prefetch_before_it_writes_anything(managed, monkeypatch):

@@ -1035,23 +1035,29 @@ def _run_unguarded(
         no_torch = no_torch,
         uv = uv,
     )
-    with _within_budget(deadline):
-        return _run_prefetch(
-            studio_home = studio_home,
-            core_cmd = core_cmd,
-            child_env = child_env,
-            floor = floor,
-            shell_version = shell_version,
-            cache_dir = cache_dir,
-            interpreter = interpreter,
-            uv = uv,
-            no_torch = no_torch,
-            target = target,
-            live_constraints = live_constraints,
-            deadline = deadline,
-            step = step,
-            live_override = live_override,
-        )
+    try:
+        with _within_budget(deadline):
+            return _run_prefetch(
+                studio_home = studio_home,
+                core_cmd = core_cmd,
+                child_env = child_env,
+                floor = floor,
+                shell_version = shell_version,
+                cache_dir = cache_dir,
+                interpreter = interpreter,
+                uv = uv,
+                no_torch = no_torch,
+                target = target,
+                live_constraints = live_constraints,
+                deadline = deadline,
+                step = step,
+                live_override = live_override,
+            )
+    finally:
+        # Scratch on every outcome: the swap reads the uv cache, and a failed fetch's partial tree
+        # has no marker for any later cleanup to find.
+        shutil.rmtree(target, ignore_errors = True)
+        shutil.rmtree(root / "req", ignore_errors = True)
 
 
 def _run_prefetch(
