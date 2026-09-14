@@ -17434,12 +17434,19 @@ async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(ge
 
 
 def _decode_and_resize_image(backend, encoded: str):
-    """Decode one request image and run Pillow resampling off the event loop."""
+    """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
+    all but RGB/RGBA converts because CMYK, PA, F and LAB decode and none can be saved back."""
     from PIL import Image
     from io import BytesIO
 
     image_data = base64.b64decode(encoded)
-    return backend.resize_image(Image.open(BytesIO(image_data)))
+    image = Image.open(BytesIO(image_data))
+    image.load()
+    # After the resize: converting first resamples interpolated RGB, a different picture.
+    image = _scaled_from_16_bit(backend.resize_image(image))
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGB")
+    return image
 
 
 @router.post("/generate/stream")
@@ -30929,6 +30936,18 @@ def _select_anthropic_server_tools(
     return [tool for tool in available if tool["function"]["name"] in selected_names]
 
 
+def _scaled_from_16_bit(image):
+    """8-bit values for a 16-bit source, which ``convert`` would otherwise read as 8-bit and clip
+    above 255, turning the picture nearly all white. The I;16 family only: plain "I" and "F"
+    declare no range, so a TIFF whose samples already sit in 0..255 would be scaled to black.
+    I;16B / I;16L reject point(), hence the normalisation to "I"."""
+    if not image.mode.startswith("I;16"):
+        return image
+    if image.mode != "I;16":
+        image = image.convert("I")
+    return image.point(lambda v: v * (1.0 / 257), mode = "L")
+
+
 def _image_bytes_to_png_b64(raw: bytes) -> str:
     """Decode raw image bytes and re-encode to a base64-ascii PNG string.
 
@@ -30937,22 +30956,7 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     input; callers wrap the call in ``try`` -> HTTPException(400)."""
     from PIL import Image
 
-    img = Image.open(io.BytesIO(raw))
-    # A 16-bit source carries 0..65535, but convert("RGB") reads those as 8-bit
-    # and clips everything above 255, which turns the picture nearly all white.
-    # Scale to 8 bits first, the way stb_image does when llama-server reads the
-    # same file itself. I;16B / I;16L reject point(), so normalise them to "I".
-    #
-    # Only the I;16 family: plain "I" and "F" declare no range, and a 32-bit or
-    # float TIFF whose samples already sit in 0..255 (or 0..1) would be scaled
-    # to black. Those keep the straight convert("RGB"). A 16-bit PNG -- the
-    # reachable case here, since this decodes pasted images -- opens as I;16 on
-    # every Pillow this repo pins.
-    if img.mode.startswith("I;16"):
-        if img.mode != "I;16":
-            img = img.convert("I")
-        img = img.point(lambda v: v * (1.0 / 257), mode = "L")
-    img = img.convert("RGB")
+    img = _scaled_from_16_bit(Image.open(io.BytesIO(raw))).convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
