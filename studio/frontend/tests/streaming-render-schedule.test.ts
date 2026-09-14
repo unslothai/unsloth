@@ -706,3 +706,37 @@ test("a live reference pair inside a list or quote still holds as one document",
     assert.equal(isFullDocumentMode(cache), true, definition);
   }
 });
+
+test("a mid-stream reference is scoped from the repaired document", () => {
+  // remend synthesises the closing `]` of `[docs][ref` four characters before
+  // the real one arrives. Scope on the unrepaired source stayed `blocks` across
+  // those frames, so a prefix committed earlier survived into a reply whose
+  // repaired split was already one document.
+  const source = `${paragraphs(20, "lead")}[ref]: /docs\n\n${paragraphs(5, "mid")}See [docs][ref] for more.`;
+  const cache = new IncrementalMarkdownCache();
+  for (let length = 0; length <= source.length; length += 1) {
+    const input = source.slice(0, length);
+    const render = cache.update(input);
+    assert.deepEqual(
+      render.parseMarkdownIntoBlocks(render.markdown),
+      parseMarkdownIntoRenderableBlocks(remend(input)),
+      `block mismatch at prefix ${length}`,
+    );
+  }
+});
+
+test("replies that stay on the blocks path remain incremental", () => {
+  // Scoping from the repaired document must not pull ordinary incremental
+  // replies onto the sticky full-document path. These never grow a
+  // reference/definition pair, even after remend, so they stay on the blocks
+  // path and keep retaining.
+  for (const source of [
+    `${paragraphs(20, "lead")}plain prose with a [link](https://x.test).\n\n${paragraphs(20, "tail")}`,
+    `See [a][ref].\n\n1. item\n   \`\`\`python\n   def f() -> list[str]:\n       return []\n   \`\`\`\n\n${paragraphs(20, "tail")}`,
+  ]) {
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", source.slice(0, 40));
+    assert.equal(isFullDocumentMode(cache), false, source.slice(0, 40));
+    assert.ok(render.markdown.length < source.length / 4, source.slice(0, 40));
+  }
+});

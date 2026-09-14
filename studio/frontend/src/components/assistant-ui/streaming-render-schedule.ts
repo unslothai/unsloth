@@ -1355,10 +1355,21 @@ export class IncrementalMarkdownCache {
     // full-document mode -- answer without it, and the precise scope costs a lex of everything
     // received so far. Reaching this point means the reply is still a retention candidate,
     // which is the only case where the answer is used.
+    //
+    // Scope is read off the repaired document, not the unrepaired source. remend
+    // synthesises the closing bracket of a mid-stream `[label][ref`, and the
+    // suite invariant evaluates `parseMarkdownIntoRenderableBlocks` on that
+    // repaired text. Using the source instead kept a prefix committed across
+    // those frames, so the incremental split was `[committed, tail]` while the
+    // repaired split was already one document.
+    const repairedDocument =
+      this.committedLength === 0
+        ? repaired
+        : markdown.slice(0, this.committedLength) + repaired;
     if (
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired) ||
-      markdownRenderScope(markdown) === "document"
+      markdownRenderScope(repairedDocument) === "document"
     ) {
       return this.renderFullDocument(markdown);
     }
