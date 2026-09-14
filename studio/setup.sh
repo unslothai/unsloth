@@ -2288,6 +2288,8 @@ if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -x "$VENV_DIR/bin/python" ]; then
     fi
 fi
 
+_setup_frontend_reap_if_exited
+
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
 else
