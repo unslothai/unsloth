@@ -74,10 +74,14 @@ def _json_dumps_value(value: Any) -> str:
     if isinstance(value, _JsonNumber):
         return str(value)
     if isinstance(value, dict):
-        return "{" + ", ".join(
-            f"{json.dumps(str(key), ensure_ascii = False)}: {_json_dumps_value(item)}"
-            for key, item in value.items()
-        ) + "}"
+        return (
+            "{"
+            + ", ".join(
+                f"{json.dumps(str(key), ensure_ascii = False)}: {_json_dumps_value(item)}"
+                for key, item in value.items()
+            )
+            + "}"
+        )
     if isinstance(value, list):
         return "[" + ", ".join(_json_dumps_value(item) for item in value) + "]"
     return json.dumps(value, ensure_ascii = False, allow_nan = False)
