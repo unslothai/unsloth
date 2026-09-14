@@ -47,11 +47,35 @@ case "$host_os" in
         if [[ "$host_os" == Darwin ]]; then
             say "macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
             say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
-        else
-            say "Windows: Docker Desktop with the WSL 2 backend brings its own GPU support, nothing to install here."
-            say "Keep a current NVIDIA Windows driver installed (from nvidia.com), then: docker run --gpus all ..."
-            say "Only a WSL 2 distro running its own Docker Engine needs this script; run it inside that distro."
+            exit 0
         fi
+        # On Windows the GPU comes from Docker Desktop's WSL 2 backend only
+        # (https://docs.docker.com/desktop/features/gpu/); the Hyper-V backend runs a LinuxKit VM
+        # that no NVIDIA GPU reaches, and answering it "nothing to install" left the user with a
+        # --gpus that fails at the daemon. The two backends differ in the kernel the daemon reports:
+        # WSL 2 is Microsoft's (5.15.167.4-microsoft-standard-WSL2), Hyper-V is Docker's own (6.6.x-linuxkit).
+        desktop_info="$(docker info --format '{{.OperatingSystem}}|{{.KernelVersion}}' 2>/dev/null)" \
+            || fail "Docker Desktop is not running, or the Docker CLI cannot reach it. Start Docker Desktop,
+       wait until it reports running, then run this again." 2
+        desktop_os_name="${desktop_info%%|*}"
+        desktop_os="$(printf '%s' "$desktop_os_name" | tr '[:upper:]' '[:lower:]')"
+        desktop_kernel="${desktop_info#*|}"
+        kernel_lc="$(printf '%s' "$desktop_kernel" | tr '[:upper:]' '[:lower:]')"
+        case "$desktop_os" in
+            *"docker desktop"*)
+                case "$kernel_lc" in
+                    *microsoft*|*wsl*)
+                        say "Windows: Docker Desktop with the WSL 2 backend brings its own GPU support, nothing to install here."
+                        say "Keep a current NVIDIA Windows driver installed (from nvidia.com), then: docker run --gpus all ..."
+                        say "Only a WSL 2 distro running its own Docker Engine needs this script; run it inside that distro."
+                        exit 0 ;;
+                esac
+                fail "Docker Desktop is running on the Hyper-V backend (kernel ${desktop_kernel}), which has no
+       GPU support. Switch it to WSL 2 (Settings > General > Use the WSL 2 based engine), keep a
+       current NVIDIA Windows driver installed (from nvidia.com), then: docker run --gpus all ..." 2 ;;
+        esac
+        say "Windows: this Docker CLI drives ${desktop_os_name:-a daemon}, not Docker Desktop, and a Windows shell cannot configure it."
+        say "Only a WSL 2 distro running its own Docker Engine needs this script; run it inside that distro."
         exit 0 ;;
 esac
 

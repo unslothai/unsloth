@@ -88,6 +88,9 @@ def _setup(
     rootless: bool | str = False,
     chunked: bool = False,
     gpus: int = 1,
+    desktop_os: str = "Docker Desktop",
+    desktop_kernel: str = "5.15.167.4-microsoft-standard-WSL2",
+    desktop_info_fails: bool = False,
 ) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -127,6 +130,11 @@ def _setup(
         rec
         + 'if [ "$1" = context ]; then case "${DOCKER_CONTEXT:-}" in remote*) echo "tcp://gpu-box:2376" ;; missing*) echo "context not found" >&2; exit 1 ;; *) echo "unix:///var/run/docker.sock" ;; esac; exit 0; fi\n'
         + 'if [ "$1" = info ]; then\n'
+        + (
+            '  case "$3" in *OperatingSystem*) echo "cannot connect to the Docker daemon" >&2; exit 1 ;; esac\n'
+            if desktop_info_fails
+            else f'  case "$3" in *OperatingSystem*) echo "{desktop_os}|{desktop_kernel}"; exit 0 ;; esac\n'
+        )
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         # A real daemon does not hand `docker info` over in one write. Pausing here puts the
         # rest of the output after the point where a `grep -q` consumer has already matched.
@@ -616,6 +624,71 @@ def test_a_windows_shell_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: 
     assert res.returncode == 2
     assert "cannot inspect the Docker context" in res.stderr
     assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_windows_shell_on_the_hyper_v_backend_is_told_to_switch(tmp_path: Path):
+    """Docker Desktop's GPU support is the WSL 2 backend only; the Hyper-V backend runs a
+    LinuxKit VM no GPU reaches, so "nothing to install" there leaves --gpus failing at the
+    daemon. The backends are told apart by the kernel `docker info` reports."""
+    _, log, env = _setup(
+        tmp_path, desktop = True, driver = False, desktop_kernel = "6.6.87.2-linuxkit"
+    )
+    _stub(
+        tmp_path / "bin" / "uname",
+        'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
+    )
+    res = _run(env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "Use the WSL 2 based engine" in res.stderr
+    assert "6.6.87.2-linuxkit" in res.stderr
+    assert "nothing to install" not in res.stdout
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_windows_shell_that_cannot_reach_docker_desktop_says_so(tmp_path: Path):
+    """With Desktop stopped the backend is unknowable, so neither answer can be given."""
+    _, log, env = _setup(tmp_path, driver = False, desktop_info_fails = True)
+    _stub(
+        tmp_path / "bin" / "uname",
+        'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
+    )
+    res = _run(env)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "Docker Desktop is not running" in res.stderr
+    assert "WSL 2 backend" not in res.stdout
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_windows_shell_on_a_non_desktop_daemon_is_sent_into_the_distro(tmp_path: Path):
+    """A Docker Engine inside a WSL distro, reached through its pipe or socket, and Rancher
+    Desktop both answer `docker info` with something other than Docker Desktop. Neither can
+    be configured from a Windows shell, and neither is an error."""
+    _, log, env = _setup(
+        tmp_path,
+        driver = False,
+        desktop_os = "Ubuntu 24.04.1 LTS",
+        desktop_kernel = "5.15.167.4-microsoft-standard-WSL2",
+    )
+    _stub(
+        tmp_path / "bin" / "uname",
+        'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
+    )
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "run it inside that distro" in res.stdout
+    assert "Ubuntu 24.04.1 LTS" in res.stdout
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_a_mac_never_asks_the_daemon_which_backend_it_is(tmp_path: Path):
+    """No Mac takes an NVIDIA GPU whatever the daemon is, so the backend probe added for
+    Windows must not make macOS depend on a reachable daemon."""
+    _, log, env = _setup(tmp_path, driver = False, desktop_info_fails = True)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "no NVIDIA GPU" in res.stdout and "UNSLOTH_ALLOW_CPU=1" in res.stdout
+    assert not any(c.startswith("docker info") for c in _calls(log))
 
 
 def test_a_mac_with_an_uninspectable_context_gets_the_error_not_nothing_to_install(tmp_path: Path):

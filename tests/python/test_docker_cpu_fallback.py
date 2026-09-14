@@ -143,6 +143,13 @@ class TestRunShDegradesWithoutNvidia:
             "an AMD host must be told the container still runs on the CPU:\n" + stderr
         )
 
+    def test_the_untagged_published_name_is_recognised(self, tmp_path):
+        """`unsloth/unsloth` is :latest to Docker, so the AMD notice has to treat it as a
+        published image rather than as somebody else's."""
+        _, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True, image = "unsloth/unsloth")
+        assert "runs on the CPU" in stderr, stderr
+        assert "up to that image" not in stderr, stderr
+
     def test_the_cpu_only_claim_is_scoped_to_the_published_images(self, tmp_path):
         """A custom image may carry a HIP or Vulkan build; run.sh cannot know, so it
         must not claim the container runs on the CPU."""
