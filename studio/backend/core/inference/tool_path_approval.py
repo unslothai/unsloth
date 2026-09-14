@@ -1291,7 +1291,8 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
     if raw is None or raw == list(tokens):
         return False
     return any(
-        _path_needs_approval(path, writing = writing) for path, writing in _terminal_path_operands(raw)
+        _path_needs_approval(path, writing = writing)
+        for path, writing in _terminal_path_operands(raw)
     )
 
 
