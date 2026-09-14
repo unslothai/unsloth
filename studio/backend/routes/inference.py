@@ -3881,8 +3881,7 @@ def _selects_only_provider_hosted_tools(
     if not enabled or not isinstance(enabled, list):
         return False
 
-    # Skill tools named with no skill enabled select nothing; the async caller passes the
-    # catalog it already fetched off the event loop.
+    # Skill tools named with no skill enabled select nothing.
     if {"read_skill", "create_skill"} & set(enabled):
         if enabled_skills is None:
             enabled_skills = _enabled_agent_skills()
@@ -4865,8 +4864,7 @@ _TOOL_ARTIFACT_TIP = (
 
 _AGENT_SKILLS_CACHE_TTL_S = 1.0
 _AGENT_SKILLS_CACHE_LOCK = threading.Lock()
-# One entry per acting account (None is the owner): a managed account's catalog is read from
-# its own workspace and must never be served to, or from, another account.
+# One entry per acting account (None is the owner); catalogs never cross accounts.
 _AGENT_SKILLS_CACHE: dict[Optional[str], tuple[float, list[dict]]] = {}
 
 
@@ -4902,10 +4900,15 @@ def _enabled_agent_skills() -> list[dict]:
         return current
 
 
-def _skill_tool_tip(*, can_create: bool) -> str:
-    from core.inference.skills import format_skill_catalog
+def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
+    from core.inference.skills import (
+        LARGE_SKILL_CATALOG_BYTES,
+        MAX_SKILL_CATALOG_BYTES,
+        format_skill_catalog,
+    )
 
-    catalog = format_skill_catalog(_enabled_agent_skills())
+    budget = MAX_SKILL_CATALOG_BYTES if compact else LARGE_SKILL_CATALOG_BYTES
+    catalog = format_skill_catalog(_enabled_agent_skills(), budget = budget)
     if not catalog:
         return ""
     create_tip = (
@@ -4952,23 +4955,26 @@ def _build_tool_action_nudge(
     has_skills = bool({"read_skill", "create_skill"} & tool_names)
     if not (has_web or has_code or has_artifact or has_research or has_skills):
         return ""
+    model_size_b = _extract_model_size_b(model_name)
+    # Small models get the shorter web tip and the smaller skill catalog.
+    compact = model_size_b is not None and model_size_b < 9
+    skill_tip = _skill_tool_tip(can_create = "create_skill" in tool_names, compact = compact)
     if full_access_only:
         tips = []
         if full_access and has_code:
             tips.append(_full_access_tip(code_tools))
         if has_skills:
-            tips.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
+            tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
     if not (has_web or has_code or has_artifact):
         tips = []
         if has_research:
             tips.append(_TOOL_RESEARCH_TIP)
         if has_skills:
-            tips.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
+            tips.append(skill_tip)
         return " ".join(tip for tip in tips if tip)
 
-    model_size_b = _extract_model_size_b(model_name)
-    compact_web_tip = model_size_b is not None and model_size_b < 9
+    compact_web_tip = compact
     tool_tip_parts: list[str] = []
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
@@ -4983,7 +4989,7 @@ def _build_tool_action_nudge(
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
     if has_skills:
-        tool_tip_parts.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
+        tool_tip_parts.append(skill_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -5317,9 +5323,7 @@ async def _select_request_tools(
     tools = [
         tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
     ]
-    # Inline, not on a worker thread: the api_monitor row is already open here and only
-    # the generation hop finalizes it on CancelledError, so an extra await would leave a
-    # cancelled request's row running. The per-account 1 s cache bounds the scan cost.
+    # Inline on purpose: an await here escapes the api_monitor cancel handling; the cache bounds it.
     enabled_skills = _enabled_agent_skills() if tools_on else []
     if enabled_skills:
         from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
@@ -21022,8 +21026,7 @@ async def _proxy_to_external_provider(
     # protocol (tool_start / tool_end and the approval handshake all ride the
     # stream), so a non-streaming request still cannot honour confirm_tool_calls
     # and must still be refused below rather than silently proxied without it.
-    # Fetched once here (cached per account for 1 s), so the hosted-tool check below does
-    # not scan the skill roots a second time.
+    # Fetched once so the hosted-tool check below does not rescan.
     _loop_agent_skills = _enabled_agent_skills()
     studio_tool_loop = (
         # Model-aware: Gemini's image models drop the function catalog inside the
@@ -21288,9 +21291,7 @@ async def _proxy_to_external_provider(
             tool_payloads = studio_tool_payloads
             # This path runs python/terminal locally too (disable_sandbox =
             # bypass_permissions), so it has the same false-isolation problem.
-            # Only the Full access sentence and the skill catalog are added: the
-            # path has never carried the general tool nudge, and widening it
-            # would change every non-Full-access Codex run as a side effect.
+            # Only the Full access sentence and the skill catalog; this path never carried the general nudge.
             _codex_nudge = _build_tool_action_nudge(
                 tools = studio_tool_payloads,
                 model_name = model,
@@ -21631,8 +21632,7 @@ async def _proxy_to_external_provider(
         )
     # Built before the date, because whether a nudge exists decides whether the Modelfile
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
-    # Full access disables the sandbox at execution time, so the schemas must say so too. The
-    # skill catalog rides along; the general tool nudge stays off this path.
+    # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
     _external_nudge = ""
     if run_studio_tool_loop:
         _external_nudge = _build_tool_action_nudge(

@@ -335,9 +335,9 @@ def test_create_skill_writes_valid_manifest_without_overwriting(isolated_skills)
     assert record["name"] == "release-notes"
     assert record["source"] == "agents"
     created = home / ".agents" / "skills" / "release-notes" / "SKILL.md"
-    assert (
-        skills._validate_skill_dir(created.parent)["description"] == "Draft concise release notes."
-    )
+    metadata, real_dir = skills._validate_skill_dir(created.parent)
+    assert metadata["description"] == "Draft concise release notes."
+    assert real_dir == created.parent
     with pytest.raises(skills.SkillError, match = "already exists"):
         skills.create_skill("release-notes", "Different", "Do something else.", home = home)
     assert "Different" not in created.read_text(encoding = "utf-8")
@@ -410,8 +410,39 @@ def test_catalog_is_bounded_at_complete_entries():
 
     catalog = skills.format_skill_catalog(candidates)
 
-    assert len(catalog.encode("utf-8")) <= skills.MAX_SKILL_CATALOG_BYTES
-    assert all(line.startswith("- skill-") for line in catalog.splitlines())
+    *listed, marker = catalog.splitlines()
+    assert len("\n".join(listed).encode("utf-8")) <= skills.MAX_SKILL_CATALOG_BYTES
+    assert all(line.startswith("- skill-") for line in listed)
+    assert (
+        marker
+        == f"- {20 - len(listed)} more enabled skills not listed; mention one as @skill-name."
+    )
+    large = skills.format_skill_catalog(candidates, budget = skills.LARGE_SKILL_CATALOG_BYTES)
+    assert len(large.splitlines()) > len(listed)
+    assert "more enabled skills" not in skills.format_skill_catalog(candidates[:2])
+
+
+def test_linked_skill_directory_is_followed_once_and_pinned(isolated_skills, tmp_path):
+    home, _ = isolated_skills
+    real = tmp_path / "dotfiles" / "skills" / "linked"
+    real.mkdir(parents = True)
+    (real / "SKILL.md").write_text(
+        "---\nname: linked\ndescription: Linked in.\n---\nREAL", encoding = "utf-8"
+    )
+    root = home / ".agents" / "skills"
+    root.mkdir(parents = True)
+    (root / "linked").symlink_to(real, target_is_directory = True)
+    (root / "dangling").symlink_to(tmp_path / "gone", target_is_directory = True)
+    (root / "to-file").symlink_to(real / "SKILL.md")
+
+    records = {record["name"]: record for record in skills.list_skills(home = home)}
+
+    assert records["linked"]["valid"] is True
+    assert records["dangling"]["valid"] is False and records["to-file"]["valid"] is False
+    assert skills.read_skill_resource("linked", home = home).endswith("REAL")
+    (real / "escape.md").symlink_to(tmp_path / "dotfiles")
+    with pytest.raises(skills.SkillError, match = "symbolic links"):
+        skills.read_skill_resource("linked", "escape.md", home = home)
 
 
 def test_catalog_skips_an_oversized_entry_without_hiding_later_skills():
@@ -423,7 +454,10 @@ def test_catalog_skips_an_oversized_entry_without_hiding_later_skills():
     catalog = skills.format_skill_catalog(candidates)
 
     assert "oversized" not in catalog
-    assert catalog == "- usable: Use this skill."
+    assert catalog.splitlines() == [
+        "- usable: Use this skill.",
+        "- 1 more enabled skills not listed; mention one as @skill-name.",
+    ]
 
 
 def test_authenticated_list_and_toggle_routes(isolated_skills, monkeypatch):
@@ -535,8 +569,7 @@ def test_skill_tools_registration_selection_and_prompt(isolated_skills, monkeypa
     assert "- guided: Guide this task" in nudge
     assert "@skill-name" in nudge
     assert "create_skill" in nudge
-    # Codex and external-provider paths never carry the general tool nudge; they
-    # still need the catalog so an @mention can be followed.
+    # Codex and external paths skip the general nudge but keep the catalog for @mentions.
     narrow = inference_routes._build_tool_action_nudge(
         tools = [*selected, tools_module.WEB_SEARCH_TOOL],
         model_name = "test",

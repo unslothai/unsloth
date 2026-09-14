@@ -25,6 +25,7 @@ MAX_SKILL_FILE_BYTES = 2 * 1024 * 1024
 MAX_SKILL_PAGE_CHARS = 8_000
 MIN_SKILL_PAGE_CHARS = 64
 MAX_SKILL_CATALOG_BYTES = 1_536
+LARGE_SKILL_CATALOG_BYTES = 4_096
 MAX_SKILL_RESOURCE_PATH_BYTES = 400
 MAX_SKILL_PATH_COMPONENTS = 256
 MAX_SKILLS_PER_ROOT = 1_000
@@ -34,8 +35,7 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.RLock()
 _OVERRIDES_NAME = "skill-overrides.json"
-# Descriptor-relative opens pin a read to the directory selected at discovery time; without
-# them (Windows) the path is re-walked at open and checked against that identity instead.
+# dir_fd opens pin reads to the discovered directory; Windows re-walks and checks identity.
 _DIR_FD_OPENS = (
     hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
 )
@@ -159,8 +159,7 @@ def _write_new_skill_manifest(
         try:
             current = [os.stat(path, follow_symlinks = False) for path in directories]
             if all(map(os.path.samestat, expected, current)):
-                # Only the manifest this call created is removed; a file another writer put
-                # in its place is theirs, and rmdir then fails on the non-empty directory.
+                # Remove only the manifest this call created; another writer's file stays.
                 if created_status is not None and os.path.samestat(
                     os.stat(skill_file, follow_symlinks = False), created_status
                 ):
@@ -333,16 +332,25 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
     return parsed
 
 
-def _validate_skill_dir(skill_dir: Path) -> dict:
-    if _is_linked_path(skill_dir) or not skill_dir.is_dir():
+def _validate_skill_dir(skill_dir: Path) -> tuple[dict, Path]:
+    """Metadata plus the real directory. A linked entry (npx skills, Zed, dotfiles) is
+    followed once here; every later read is pinned to the resolved directory, not the link."""
+    target = skill_dir
+    if _is_linked_path(skill_dir):
+        try:
+            target = skill_dir.resolve(strict = True)
+        except OSError as exc:
+            raise SkillError("Skill directory is missing or unsafe.") from exc
+    if _is_linked_path(target) or not target.is_dir():
         raise SkillError("Skill directory is missing or unsafe.")
-    manifest = skill_dir / "SKILL.md"
+    manifest = target / "SKILL.md"
     if _is_linked_path(manifest) or not manifest.is_file():
         raise SkillError("Skill directory must contain a regular SKILL.md file.")
-    return _parse_skill_markdown(
-        _read_limited(manifest, MAX_SKILL_MD_BYTES, contained_in = skill_dir),
+    metadata = _parse_skill_markdown(
+        _read_limited(manifest, MAX_SKILL_MD_BYTES, contained_in = target),
         skill_dir.name,
     )
+    return metadata, target
 
 
 _BUNDLED_ROOT = ("bundled", Path(__file__).with_name("bundled_skills"))
@@ -359,8 +367,7 @@ def _skill_roots(home: Optional[Path] = None) -> tuple[tuple[str, Path], ...]:
         base = home
         return (("agents", base / ".agents" / "skills"), ("claude", base / ".claude" / "skills"))
     if not is_owner_context():
-        # A managed account never reads the host account's home folders: its skills live in
-        # its own workspace (accounts/<id>/skills), and only the bundled ones are shared.
+        # Managed accounts read their own workspace plus bundled skills, never the host home.
         return (("agents", workspace_root() / _MANAGED_SKILLS_DIR), _BUNDLED_ROOT)
     base = _owner_home()
     return (
@@ -371,8 +378,7 @@ def _skill_roots(home: Optional[Path] = None) -> tuple[tuple[str, Path], ...]:
 
 
 def _default_enabled(source: str) -> bool:
-    # Bundled skills ship disabled: enabling one is the user's choice in the dialog, so a fresh
-    # install does not put read_skill/create_skill and a catalog into every chat.
+    # Bundled skills ship disabled so a fresh install does not add skill tools to every chat.
     return source != "bundled"
 
 
@@ -383,8 +389,7 @@ def _override_path() -> Path:
 
 
 def _load_overrides() -> dict[str, bool]:
-    # The file only records toggles, so a damaged one is treated as empty and the next toggle
-    # rewrites it, rather than taking every skill down until someone edits it by hand.
+    # A damaged toggle file counts as empty; the next toggle rewrites it.
     path = _override_path()
     try:
         payload = json.loads(path.read_text(encoding = "utf-8"))
@@ -448,8 +453,7 @@ def _candidate_dirs(root: Path) -> list[Path]:
             candidate.name.encode("utf-8")
         except UnicodeEncodeError:
             continue
-        # A stray README or license next to the skills is not a broken skill; a link still
-        # goes through validation so it is reported as unsafe rather than silently dropped.
+        # Stray files are skipped; links still go through validation so they are reported.
         try:
             if not candidate.is_dir() and not _is_linked_path(candidate):
                 continue
@@ -498,8 +502,8 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "shadowed": False,
             }
             try:
-                identity = os.stat(candidate, follow_symlinks = False)
-                metadata = _validate_skill_dir(candidate)
+                metadata, skill_dir = _validate_skill_dir(candidate)
+                identity = os.stat(skill_dir, follow_symlinks = False)
             except OSError:
                 found.append(
                     ({**base, "error": "Skill directory is missing or unsafe."}, None, None)
@@ -531,7 +535,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "valid": True,
             }
             selected[name] = record
-            found.append((record, candidate, identity))
+            found.append((record, skill_dir, identity))
     return found
 
 
@@ -638,8 +642,7 @@ def create_skill(
                     pass
             raise
 
-    # Where it landed, as the user would name it: the owner's home folder, or a managed account's
-    # own workspace. Not the resolved host path.
+    # The path as the user would name it, not the resolved host path.
     display = "~/.agents/skills" if root is None else f"{_MANAGED_SKILLS_DIR}"
     return {
         **metadata,
@@ -651,18 +654,25 @@ def create_skill(
     }
 
 
-def format_skill_catalog(skills: Optional[list[dict]] = None) -> str:
+def format_skill_catalog(
+    skills: Optional[list[dict]] = None, *, budget: int = MAX_SKILL_CATALOG_BYTES
+) -> str:
     candidates = enabled_skills() if skills is None else skills
     lines: list[str] = []
     size = 0
+    dropped = 0
     for skill in candidates:
         line = f"- {skill['name']}: {' '.join(skill['description'].split())}"
         encoded = line.encode("utf-8")
         separator = 1 if lines else 0
-        if size + separator + len(encoded) > MAX_SKILL_CATALOG_BYTES:
+        if size + separator + len(encoded) > budget:
+            dropped += 1
             continue
         lines.append(line)
         size += separator + len(encoded)
+    if dropped:
+        # read_skill accepts any enabled name, so the model must know the list is cut.
+        lines.append(f"- {dropped} more enabled skills not listed; mention one as @skill-name.")
     return "\n".join(lines)
 
 
@@ -686,8 +696,7 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
         )
     ):
         raise SkillError("Skill resource path must stay inside the skill directory.")
-    # Rejected everywhere, not only on Windows: a skill is portable, and a resource that cannot
-    # exist on one platform is a broken skill rather than an escape attempt.
+    # Rejected on every OS: a portable skill cannot carry a name Windows refuses.
     if any(part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_STEMS for part in path.parts):
         raise SkillError("Skill resource path cannot use a Windows reserved device name.")
     try:
