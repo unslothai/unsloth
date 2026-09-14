@@ -85,6 +85,7 @@ import {
 } from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
+import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
@@ -282,9 +283,6 @@ const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
-// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
-// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
-const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -834,6 +832,20 @@ function MarkdownTextRenderer({
   statusType,
   text,
 }: MarkdownTextRendererProps) {
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const threadId = remoteId ?? activeThreadId ?? undefined;
+  // Streamdown's memo comparator ignores rehypePlugins.
+  const sandboxScopeKey = JSON.stringify([threadId, projectId]);
+  const rehypePlugins = useMemo(
+    () =>
+      // Streamdown caches processors by plugin name and serialized options.
+      withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
+        [rehypeSandboxImages, { threadId, projectId }],
+      ]),
+    [threadId, projectId],
+  );
   const searchImages = useMemo(
     () => parseSearchImagesSignature(searchImagesKey),
     [searchImagesKey],
@@ -896,7 +908,7 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
             parseMarkdownIntoBlocksFn={
@@ -908,7 +920,7 @@ function MarkdownTextRenderer({
             plugins={STREAMDOWN_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
-            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
+            rehypePlugins={rehypePlugins}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
