@@ -1259,8 +1259,19 @@ class TestInstallUvCacheRootParity:
         # and it decides only the NAME: a colliding file must reach the rejection below.
         assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
         probe_kinds = {
-            "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
-            "git", "interpreter", "osv", "python", "sdists", "simple", "wheels",
+            "archive",
+            "binaries",
+            "builds",
+            "built-wheels",
+            "environments",
+            "flat-index",
+            "git",
+            "interpreter",
+            "osv",
+            "python",
+            "sdists",
+            "simple",
+            "wheels",
         }
         assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
         case_body = re.search(

@@ -88,7 +88,12 @@ class _ScriptedIter:
     read rather than starting a fresh one per keepalive tick.
     """
 
-    def __init__(self, immediate = (), gate = None, after_gate = ()):
+    def __init__(
+        self,
+        immediate = (),
+        gate = None,
+        after_gate = (),
+    ):
         self._immediate = list(immediate)
         self._gate = gate
         self._after_gate = list(after_gate)
@@ -147,12 +152,12 @@ def test_keepalives_flow_during_prefill_without_restarting_the_read():
 
     seen_keepalives, items, upstream = asyncio.run(_run())
 
-    assert seen_keepalives >= 3, (
-        f"pump must keep emitting keepalives while upstream is silent; got {seen_keepalives}"
-    )
-    assert items == ["data: first-token"], (
-        f"the real item must still arrive after the keepalives; got {items}"
-    )
+    assert (
+        seen_keepalives >= 3
+    ), f"pump must keep emitting keepalives while upstream is silent; got {seen_keepalives}"
+    assert items == [
+        "data: first-token"
+    ], f"the real item must still arrive after the keepalives; got {items}"
     assert upstream.anext_calls == 1, (
         "keepalive ticks must await the SAME __anext__, not restart the read "
         f"(httpcore closes the body on any streaming exception); got {upstream.anext_calls} calls"
@@ -187,12 +192,12 @@ def test_keepalives_flow_during_a_post_first_token_stall_then_the_guard_fires():
     seen_keepalives, items, message = asyncio.run(_run())
 
     assert items == ["data: a"], f"the first item must be relayed; got {items}"
-    assert seen_keepalives >= 3, (
-        f"a stall after the first token must keepalive too; got {seen_keepalives}"
-    )
-    assert message == "The model stopped producing tokens mid-response.", (
-        f"the stall guard must still fire, with its own message; got {message!r}"
-    )
+    assert (
+        seen_keepalives >= 3
+    ), f"a stall after the first token must keepalive too; got {seen_keepalives}"
+    assert (
+        message == "The model stopped producing tokens mid-response."
+    ), f"the stall guard must still fire, with its own message; got {message!r}"
 
 
 def test_first_token_deadline_still_fires_and_no_sentinel_when_disabled():
@@ -217,12 +222,12 @@ def test_first_token_deadline_still_fires_and_no_sentinel_when_disabled():
 
     seen, message = asyncio.run(_run())
 
-    assert seen == [], (
-        f"keepalive_interval_s=None must relay in silence, emitting no sentinel; got {seen}"
-    )
-    assert message == "The model did not produce a first token in time.", (
-        f"the first-token deadline must still bound the wait; got {message!r}"
-    )
+    assert (
+        seen == []
+    ), f"keepalive_interval_s=None must relay in silence, emitting no sentinel; got {seen}"
+    assert (
+        message == "The model did not produce a first token in time."
+    ), f"the first-token deadline must still bound the wait; got {message!r}"
     assert keepalive is not None
 
 
@@ -248,9 +253,9 @@ def test_teardown_cancels_the_in_flight_read():
 
     upstream = asyncio.run(_run())
 
-    assert upstream.cancelled == 1, (
-        f"aclose() must cancel the pending read exactly once; got {upstream.cancelled}"
-    )
+    assert (
+        upstream.cancelled == 1
+    ), f"aclose() must cancel the pending read exactly once; got {upstream.cancelled}"
 
 
 # ── Structural (AST) ─────────────────────────────────────────
@@ -310,9 +315,9 @@ def test_sentinel_is_an_object_not_a_string():
     # filters, and could in principle collide with upstream bytes.
     pump_ns = _load_pump()
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
-    assert not isinstance(keepalive, (str, bytes)), (
-        f"sentinel must not be a string; got {type(keepalive).__name__}"
-    )
+    assert not isinstance(
+        keepalive, (str, bytes)
+    ), f"sentinel must not be a string; got {type(keepalive).__name__}"
 
 
 # ── Client tolerance ─────────────────────────────────────────

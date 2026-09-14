@@ -3092,18 +3092,14 @@ async def _aiter_llama_stream_items(
                 hard_deadline = first_token_deadline
             else:
                 stall_timeout_s = _post_first_timeout_s()
-                hard_deadline = (
-                    None if stall_timeout_s is None else last_item_at + stall_timeout_s
-                )
+                hard_deadline = None if stall_timeout_s is None else last_item_at + stall_timeout_s
             timed_out_message = (
                 "The model did not produce a first token in time."
                 if waiting_first_item
                 else "The model stopped producing tokens mid-response."
             )
 
-            remaining_s = (
-                None if hard_deadline is None else hard_deadline - time.monotonic()
-            )
+            remaining_s = None if hard_deadline is None else hard_deadline - time.monotonic()
             if remaining_s is not None and remaining_s <= 0:
                 raise httpx.ReadTimeout(timed_out_message)
             if keepalive_interval_s:
