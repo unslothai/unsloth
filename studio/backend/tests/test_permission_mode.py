@@ -3317,6 +3317,11 @@ _ALLOWLISTED_TERMINAL = (
     "diff old.py new.py",
     "cp build/a.txt build/b.txt",
     "find . -name '*.safetensors'",
+    # The other side of the tar fix: a relative operand stays silent in every spelling, and an
+    # ordinary filename containing a "c" must not read as tar's create mode.
+    "tar -cf out.tar data src",
+    "tar -xf archive.tar src",
+    "tar czf out.tgz .",
 )
 
 _ALLOWLISTED_PYTHON = (
@@ -3328,6 +3333,11 @@ _ALLOWLISTED_PYTHON = (
     "import numpy as np\nnp.save('embeddings.npy', np.zeros(3))",
     "from pathlib import Path\nPath('results').mkdir(exist_ok=True)",
     "import json\nprint(json.load(open('config.json')))",
+    # The module-open fix reads the first argument instead of the receiver; a relative one is silent.
+    "import io\nprint(io.open('notes.txt').read())",
+    "import gzip\ngzip.open('data.gz', 'rb').read()",
+    # ... and the receiver IS the path for Path.open, which must keep working.
+    "from pathlib import Path\nPath('out.txt').open('w').write('hi')",
 )
 
 
@@ -3341,6 +3351,13 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f"echo {_OUTSIDE_FILE} | xargs cat",  # the path arrives through the pipeline, not an operand
     f"tar cf - {_OUTSIDE_DIR}",
     f"D={_OUTSIDE_DIR}; cat $D/memory.md",  # assembled from an assignment
+    # tar's legacy option word is only the FIRST argument. The ordinary hyphenated spelling has no
+    # such word, so a blanket positional skip ate the real operand and the whole tree read silently.
+    f"tar -cf local.tar {_OUTSIDE_DIR}",
+    f"tar -czf local.tgz {_OUTSIDE_DIR}",
+    # -g/--listed-incremental names a snapshot file tar CREATES, in both spellings.
+    f"tar --listed-incremental={_OUTSIDE_DIR}/state.snar -cf local.tar src",
+    f"tar -g {_OUTSIDE_DIR}/state.snar -cf local.tar src",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3350,6 +3367,14 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     f"import fileinput\nfor line in fileinput.input({_OUTSIDE_FILE!r}):\n    print(line)",
     f"import zipfile\nzipfile.ZipFile({_OUTSIDE_DIR!r} + '/a.zip', 'w')",
     f"import pathlib\npathlib.Path({_OUTSIDE_FILE!r}).open().read()",  # the path is the receiver
+    # Spelled as an attribute, but these are MODULE functions taking the path first, so treating the
+    # receiver as the path folded the bare module name and the read escaped.
+    f"import io\nio.open({_OUTSIDE_FILE!r}).read()",
+    f"import gzip\ngzip.open({_OUTSIDE_DIR!r} + '/data.gz', 'rb').read()",
+    f"import os\nos.open({_OUTSIDE_FILE!r}, os.O_CREAT | os.O_WRONLY)",
+    # A chained assignment has more than one target; skipping the statement left the name unfoldable.
+    f"source = backup = {_OUTSIDE_FILE!r}\nprint(open(source).read())",
+    f"a, b = c, d = {_OUTSIDE_FILE!r}, 'local.txt'\nprint(open(c).read())",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.

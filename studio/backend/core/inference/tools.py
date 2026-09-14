@@ -3201,6 +3201,18 @@ _PATH_ARG_SKIP = {
     "openssl": 1,
     "xargs": 1,
 }
+# Commands whose skipped positional is a LEGACY OPTION WORD, which GNU tar only recognises as the
+# very first argument (`tar cf out.tar src`). Skipping unconditionally eats a real operand from the
+# ordinary hyphenated spelling: in `tar -cf local.tar /media/private`, `-cf` and its archive value
+# are already consumed as flags, so the skip would discard `/media/private` and the read would never
+# be classified. grep and sed are NOT in here: their skipped positional is a pattern, which is the
+# first POSITIONAL rather than the first argument, so their skip stays unconditional.
+_PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
+# Module-level `open()` functions, whose path is the FIRST ARGUMENT even though the call is spelled
+# as an attribute. Contrast `Path(p).open()`, where the receiver is the path.
+_PY_MODULE_OPEN_RECEIVERS = frozenset(
+    {"io", "os", "posix", "gzip", "bz2", "lzma", "codecs", "tokenize", "dbm", "shelve", "wave"}
+)
 # Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
 # from an operand position.
 _PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
@@ -3252,6 +3264,10 @@ _PATH_FLAG_SPECS = {
     "tar": {
         "-f": "archive",
         "--file": "archive",
+        # The listed-incremental snapshot is CREATED or updated by tar, so it is a write wherever it
+        # points, independent of whether this invocation creates or extracts the archive itself.
+        "-g": "write",
+        "--listed-incremental": "write",
         "-C": "read",
         "--directory": "read",
         "-T": "read",
@@ -3473,14 +3489,20 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     )
     spec = _PATH_FLAG_SPECS.get(command, {})
     # `tar cf out.tar .` / `tar -cf out.tar .` create the archive; the same flags only read when extracting.
+    # Scan every short-flag token, not just args[0]: `tar -g snap -cf out.tar src` carries the mode
+    # on a later flag, and reading only the first argument would classify out.tar as a read. Limited
+    # to args[0] (the legacy option word) plus single-dash tokens, because an ORDINARY FILENAME can
+    # contain a "c" -- `tar -xf a.tar src` must not look like a create.
     creating = command in _PATH_ARCHIVE_COMMANDS and any(
-        "c" in arg.lstrip("-") and not arg.startswith("--") for arg in args[:1]
+        "c" in arg.lstrip("-")
+        for index, arg in enumerate(args)
+        if not arg.startswith("--") and (index == 0 or arg.startswith("-"))
     )
     skip = _PATH_ARG_SKIP.get(command, 0)
     operands: "list[tuple[str, bool]]" = []
     positionals: "list[str]" = []
     pending_flag = None
-    for arg in args:
+    for index, arg in enumerate(args):
         if pending_flag is not None:
             flag, pending_flag = pending_flag, None
             _add_flag_operand(operands, spec.get(flag), arg, write_cmd, creating)
@@ -3503,8 +3525,13 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                 pending_flag = flag
             continue
         if skip > 0:
-            skip -= 1
-            continue
+            # For a legacy-option-word command the skip is only owed to the first ARGUMENT; anything
+            # later is a real operand. `positionals` is still empty exactly when no positional has
+            # been taken yet, which is what "this is args[0]" means once flags are discounted.
+            if command not in _PATH_SKIP_FIRST_ARG_ONLY or index == 0:
+                skip -= 1
+                continue
+            skip = 0
         positionals.append(arg)
     for position, arg in enumerate(positionals):
         # `key=value` forms (dd if=..., --output=...) carry the path on the right.
@@ -3745,34 +3772,29 @@ def _python_path_bindings(tree) -> dict:
 
     A name bound more than once keeps EVERY path it was bound to, not the last one: rebinding
     ``p`` after the read must not reclassify the read that already happened.
+
+    EVERY target of a chained assignment is bound, not just the first: `src = backup = '/media/x'`
+    has to make `open(src)` foldable, or the read runs unprompted.
     """
     bindings: dict = {}
     extra: "dict[str, list[str]]" = {}
     for node in _tree_nodes(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            targets, value = node.targets, node.value
+        if isinstance(node, ast.Assign):
+            targets, value = list(node.targets), node.value
         elif isinstance(node, ast.NamedExpr):
             targets, value = [node.target], node.value
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             targets, value = [node.target], node.value
-        elif (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Tuple)
-        ):
-            targets, value = list(node.targets[0].elts), node.value
         else:
             continue
-        # `p, _ = "/media/x", 1` binds elementwise.
+        # `p, _ = "/media/x", 1` binds elementwise, and it does so per target, so the tuple halves of
+        # `a, b = c, d = "/media/x", "/media/y"` are both reached.
         pairs = []
-        if (
-            len(targets) == 1
-            and isinstance(targets[0], ast.Tuple)
-            and isinstance(value, (ast.Tuple, ast.List))
-        ):
-            pairs = list(zip(targets[0].elts, value.elts))
-        else:
-            pairs = [(target, value) for target in targets]
+        for target in targets:
+            if isinstance(target, ast.Tuple) and isinstance(value, (ast.Tuple, ast.List)):
+                pairs.extend(zip(target.elts, value.elts))
+            else:
+                pairs.append((target, value))
         for target, bound in pairs:
             if not isinstance(target, ast.Name):
                 continue
@@ -3865,14 +3887,17 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # The mode decides: `open(p)` reads, `open(p, 'w')` creates or truncates. As a METHOD
             # (Path(p).open('w')) the receiver is the path, so the mode moves to the first argument.
             # os.open is the low-level create and counts as a write either way.
-            writing = _open_call_writes(node, mode_index = 0 if is_method else 1) or (
-                is_method and getattr(func.value, "id", "") in ("os", "posix")
+            #
+            # An attribute call is NOT automatically receiver-based: `io.open(p)`, `gzip.open(p)` and
+            # the rest of _PY_MODULE_OPEN_RECEIVERS are module functions taking the path FIRST, so
+            # folding their receiver yields the bare module name and the read escapes unprompted.
+            receiver = getattr(func.value, "id", "") if is_method else ""
+            path_is_receiver = is_method and receiver not in _PY_MODULE_OPEN_RECEIVERS
+            writing = _open_call_writes(node, mode_index = 0 if path_is_receiver else 1) or (
+                receiver in ("os", "posix")
             )
             writing_default = writing
-            if is_method:
-                add(func.value, writing)
-            else:
-                add(first, writing)
+            add(func.value if path_is_receiver else first, writing)
         elif name in _PY_PATH_ARCHIVE_CTORS:
             # ZipFile(name) reads, ZipFile(name, "w") writes -- the same mode position as open().
             writing = _open_call_writes(node, mode_index = 1)
