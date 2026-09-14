@@ -3351,6 +3351,15 @@ _ALLOWLISTED_PYTHON = (
     "from io import open as fopen\nprint(fopen('notes.txt').read())",
     "from os.path import join as j\nprint(j('data', 'train.csv'))",
     "base = 'local'\np = base + '/report.txt'\nopen(p).read()",
+    "import os\nos.rename('a.txt', 'b.txt')",
+    "import shutil\nshutil.copy('a.txt', 'b.txt')",
+    "import tarfile\ntarfile.open('out.tar', 'w')",
+    "import numpy as np\nnp.save('emb.npy', [1])",
+    (
+        "base = 'local'\n"
+        + "\n".join(f"base = 'r{i}'" for i in range(30))
+        + "\np = base + '/r.txt'\nopen(p).read()"
+    ),
     # ... and the receiver IS the path for Path.open, which must keep working.
     "from pathlib import Path\nPath('out.txt').open('w').write('hi')",
 )
@@ -3421,6 +3430,22 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # the moment the path is assembled rather than used directly.
     f"base = 'local'\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()",
     f"import os\nb = 'local'\nb = {_OUTSIDE_DIR!r}\np = os.path.join(b, 'r.txt')\nopen(p).read()",
+    # A module function spelled as an attribute puts BOTH paths in its arguments; reading the
+    # receiver as the source folded the bare module name and lost the destination entirely.
+    f"import os\nos.rename('local.txt', {_OUTSIDE_DIR!r} + '/out.txt')",
+    f"import shutil\nshutil.copy('local.txt', {_OUTSIDE_DIR!r} + '/out.txt')",
+    # tarfile.open takes the path first like the other module opens.
+    f"import tarfile\ntarfile.open({_OUTSIDE_DIR!r} + '/a.tar', 'w')",
+    # The serializer receiver has to be resolved through the alias, or the call falls through to a
+    # branch that never looks at the second argument.
+    f"import torch as t\nt.save(m, {_OUTSIDE_DIR!r} + '/model.pt')",
+    # The alternate cap must bound WORK, not coverage: eight benign reassignments ahead of the
+    # absolute one must not hide it.
+    (
+        "base = 'local'\n"
+        + "\n".join(f"base = 'r{i}'" for i in range(9))
+        + f"\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()"
+    ),
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.

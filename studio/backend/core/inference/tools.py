@@ -3226,7 +3226,29 @@ _PATTERN_SUPPLYING_FLAGS = {
 # Module-level `open()` functions, whose path is the FIRST ARGUMENT even though the call is spelled
 # as an attribute. Contrast `Path(p).open()`, where the receiver is the path.
 _PY_MODULE_OPEN_RECEIVERS = frozenset(
-    {"io", "os", "posix", "gzip", "bz2", "lzma", "codecs", "tokenize", "dbm", "shelve", "wave"}
+    {
+        "io",
+        "os",
+        "posix",
+        "gzip",
+        "bz2",
+        "lzma",
+        "codecs",
+        "tokenize",
+        "dbm",
+        "shelve",
+        "wave",
+        # tarfile.open(name, mode) takes the path first like the rest; without it the module read as
+        # a path-bearing receiver and the archive operand was never scanned.
+        "tarfile",
+    }
+)
+# Receivers that are MODULES rather than paths, for every path-taking call, not only `open`. An
+# attribute call on one of these puts its paths in the ARGUMENTS: `os.rename(src, dst)` moves dst,
+# where `Path(src).rename(dst)` moves the receiver. Reading the receiver as a path on the module
+# form folds the bare module name and loses the real destination.
+_PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
+    {"shutil", "pathlib", "zipfile", "json", "pickle", "numpy", "np", "torch", "joblib", "cv2"}
 )
 # Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
 # from an operand position.
@@ -3583,14 +3605,22 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     return operands
 
 
-def _serializes_to_second_arg(func) -> bool:
-    """True for ``torch.save(obj, path)``-style calls, where the path is the SECOND argument."""
+def _serializes_to_second_arg(func, module_aliases: "dict | None" = None) -> bool:
+    """True for ``torch.save(obj, path)``-style calls, where the path is the SECOND argument.
+
+    The receiver is resolved through the import aliases first: `import torch as t` makes it `t`,
+    which is in no table, and the call would otherwise fall through to the generic writer branch
+    that never looks at the second argument.
+    """
     if not isinstance(func, ast.Attribute):
         return False
     receiver = func.value
     while isinstance(receiver, ast.Attribute):
         receiver = receiver.value
-    return isinstance(receiver, ast.Name) and receiver.id in _PY_SERIALIZE_SECOND_ARG_MODULES
+    if not isinstance(receiver, ast.Name):
+        return False
+    name = (module_aliases or {}).get(receiver.id, receiver.id)
+    return name in _PY_SERIALIZE_SECOND_ARG_MODULES
 
 
 def _short_flag_with_value(arg: str, spec) -> "tuple[str | None, str | None]":
@@ -3915,7 +3945,7 @@ def _python_path_bindings(tree) -> dict:
             derived: "list[str]" = []
             if extra:
                 for used in {n.id for n in ast.walk(bound) if isinstance(n, ast.Name)}:
-                    for alternate in extra.get(used, ())[:_MAX_REBOUND_ALTERNATES]:
+                    for alternate in _capped_alternates(extra.get(used, ())):
                         try:
                             other = _folded_path(bound, {**bindings, used: alternate})
                         except Exception:  # noqa: BLE001 - folding is best effort
@@ -3924,14 +3954,14 @@ def _python_path_bindings(tree) -> dict:
                             derived.append(other)
             if not isinstance(folded, str) or not folded or "\x00" in folded:
                 # The primary fold failed, but a rebound dependency can still make it resolvable.
-                for candidate in derived[:_MAX_REBOUND_ALTERNATES]:
+                for candidate in _capped_alternates(derived):
                     extra.setdefault(target.id, []).append(candidate)
                 continue
             if target.id in bindings and bindings[target.id] != folded:
                 extra.setdefault(target.id, []).append(folded)
             else:
                 bindings[target.id] = folded
-            for candidate in derived[:_MAX_REBOUND_ALTERNATES]:
+            for candidate in _capped_alternates(derived):
                 if candidate != bindings.get(target.id):
                     extra.setdefault(target.id, []).append(candidate)
     # Rebindings ride along under a private key so `add` can test every value a name ever held.
@@ -3945,6 +3975,23 @@ _REBOUND_PATHS_KEY = "\x00__rebound__"
 # Ceiling on alternates carried through a derived binding. A loop that rebinds a name many times
 # would otherwise grow this without bound for no extra signal.
 _MAX_REBOUND_ALTERNATES = 8
+
+
+def _capped_alternates(values) -> "list[str]":
+    """Bound a list of candidate paths WITHOUT dropping the ones that can need approval.
+
+    A plain slice discards by position, so eight benign reassignments ahead of
+    `base = "/media/private"` hid the only value that mattered. Absolute candidates are kept first
+    and the cap is spent on the remainder, so the bound limits work rather than coverage.
+    """
+    values = list(values)
+    if len(values) <= _MAX_REBOUND_ALTERNATES:
+        return values
+    absolute = [v for v in values if _looks_absolute(v)]
+    if len(absolute) >= _MAX_REBOUND_ALTERNATES:
+        return absolute[:_MAX_REBOUND_ALTERNATES]
+    relative = [v for v in values if not _looks_absolute(v)]
+    return absolute + relative[: _MAX_REBOUND_ALTERNATES - len(absolute)]
 
 
 def _python_path_operands(tree) -> "list[tuple[str, bool]]":
@@ -4014,6 +4061,15 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         first = node.args[0] if node.args else None
         second = node.args[1] if len(node.args) > 1 else None
         is_method = isinstance(func, ast.Attribute)
+        # Whether an attribute call's receiver is a MODULE rather than a path, resolved through the
+        # import aliases. Decided once here: every branch below that treats the receiver as a path
+        # has a module-function counterpart that does not.
+        receiver_name = (
+            module_aliases.get(getattr(func.value, "id", ""), getattr(func.value, "id", ""))
+            if is_method
+            else ""
+        )
+        module_receiver = is_method and receiver_name in _PY_MODULE_PATH_RECEIVERS
         writing_default = name in _PY_PATH_WRITE_CALLS
         if name in ("open", "fdopen"):
             # The mode decides: `open(p)` reads, `open(p, 'w')` creates or truncates. As a METHOD
@@ -4023,11 +4079,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # An attribute call is NOT automatically receiver-based: `io.open(p)`, `gzip.open(p)` and
             # the rest of _PY_MODULE_OPEN_RECEIVERS are module functions taking the path FIRST, so
             # folding their receiver yields the bare module name and the read escapes unprompted.
-            receiver = getattr(func.value, "id", "") if is_method else ""
-            # `import io as stream` makes the receiver `stream`, which is in no table; resolve the
-            # alias back to the real module or the call reads as a Path-style method and the path
-            # argument is never looked at.
-            receiver = module_aliases.get(receiver, receiver)
+            # `import io as stream` makes the receiver `stream`, which is in no table; the alias is
+            # resolved above, or the call reads as a Path-style method and the path argument is
+            # never looked at.
+            receiver = receiver_name
             path_is_receiver = is_method and receiver not in _PY_MODULE_OPEN_RECEIVERS
             writing = _open_call_writes(node, mode_index = 0 if path_is_receiver else 1) or (
                 receiver in ("os", "posix")
@@ -4045,9 +4100,12 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             add_subprocess_operands(node)
         elif name in _PY_PATH_DEST_SECOND_CALLS:
             # shutil.copy(src, dst) as a function; as a METHOD (Path(p).rename(q)) the receiver is the source.
-            add(func.value if is_method else first, False)
-            add(first if is_method else second, True)
-        elif name in _PY_PATH_SERIALIZE_CALLS and _serializes_to_second_arg(func):
+            # `os.rename(...)` is spelled as an attribute but is the FUNCTION form, so its receiver is
+            # a module and both paths are arguments.
+            receiver_is_path = is_method and not module_receiver
+            add(func.value if receiver_is_path else first, False)
+            add(first if receiver_is_path else second, True)
+        elif name in _PY_PATH_SERIALIZE_CALLS and _serializes_to_second_arg(func, module_aliases):
             # torch.save(obj, path) / joblib.dump(obj, path) put the DESTINATION second, the opposite of
             # numpy.save(path, arr) and df.to_csv(path), so the receiver decides which argument to read.
             add(second, True)
