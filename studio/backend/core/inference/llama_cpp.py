@@ -505,7 +505,7 @@ class _CombinedCancelEvent:
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         if self.is_set():
-            return bool(body.get("n_erased") is not None and body.get("id_slot") == slot)
+            return True
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         while True:
             remaining = None if deadline is None else deadline - time.monotonic()
