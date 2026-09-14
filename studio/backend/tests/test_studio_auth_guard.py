@@ -455,3 +455,67 @@ def test_the_auth_path_assembled_through_a_shell_variable(monkeypatch, tmp_path)
             assert not tools._references_studio_credential_here(command, str(sandbox)), command
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_python_path_built_in_pieces_is_still_the_auth_dir(monkeypatch, tmp_path):
+    # `os.path.join("..", "..", "auth", "auth.db")` names the protected database in pieces, so the
+    # text scan sees four ordinary strings and no path at all, and Bypass Permissions has already
+    # skipped the code analyzer. auth.db carries no prefix the result mask can key on either.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import os\nprint(open(os.path.join("..", "..", "auth", "auth.db")).read())',
+            'from pathlib import Path\nprint((Path("..") / ".." / "auth" / "auth.db").read_text())',
+            f'import os\nprint(open(os.path.join("{home}", "auth", "auth.db")).read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # A path built the same way that lands anywhere else is ordinary work.
+        for code in (
+            'import os\nprint(os.path.join("..", "data", "x.csv"))',
+            'import os\nprint(os.path.join("src", "auth", "views.py"))',
+            'print("auth")',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_edit_file_is_checked_on_the_resolved_target(monkeypatch, tmp_path):
+    # The raw argument can be relative, and the resolve joins it to the sandbox workdir, a sibling
+    # of the auth directory. Bypass Permissions also lifts containment, and the receipt echoes a
+    # window of the file back, so an edit there is a read.
+    home = tmp_path / "studio-home"
+    agent_dir = home / "auth" / "agents" / "opencode"
+    agent_dir.mkdir(parents = True)
+    (agent_dir / "opencode.json").write_text("{}", encoding = "utf-8")
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert (
+            tools._edit_file(
+                {
+                    "path": "../../auth/agents/opencode/opencode.json",
+                    "edits": [{"old_string": "{}", "new_string": "{ }"}],
+                },
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        # An ordinary relative edit in the sandbox still goes through.
+        assert "Created" in tools._edit_file(
+            {"path": "notes.txt", "edits": [{"old_string": "", "new_string": "hi"}]},
+            _SESSION,
+            disable_sandbox = True,
+        )
+    finally:
+        tools._studio_auth_markers_cache = None

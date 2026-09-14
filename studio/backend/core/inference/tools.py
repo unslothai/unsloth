@@ -2806,6 +2806,33 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     return False
 
 
+def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
+    """True when a path the CODE builds names the auth directory, however it is spelled.
+
+    `os.path.join("..", "..", "auth", "auth.db")` names the protected database in pieces, so the
+    text scan sees four ordinary strings and nothing that looks like a path. `_folded_path` is the
+    same fold the sensitive-path analyzer already applies to python; here its result is put through
+    the credential test, resolved against the cwd like any other relative path."""
+    lowered = code.lower()
+    if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
+        return False
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:  # the executor reports the error itself; nothing to fold
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Call, ast.BinOp, ast.JoinedStr)):
+            continue
+        folded = _folded_path(node)
+        # NUL is a dynamic piece and \x02 a name bound more than once: neither is a path this can
+        # answer for, and both are already the sensitive-path analyzer's business.
+        if not folded or "\x00" in folded or "\x02" in folded:
+            continue
+        if _references_studio_credential_here(folded, workdir):
+            return True
+    return False
+
+
 def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":
     """The cwd the executor is about to use, or None if it cannot be resolved cheaply."""
     try:
@@ -9289,6 +9316,14 @@ def _edit_file(
     )
     if error:
         return error
+    # Again on the RESOLVED path: the raw argument can be relative, and the resolve joins it to the
+    # sandbox workdir, which is a sibling of the auth directory, so `../../auth/agents/...` only
+    # names the protected tree once it has been resolved. Bypass Permissions also turns containment
+    # off, and the receipt echoes a window of the file back, so an edit there is a read.
+    if _references_studio_credential(target) or _references_studio_credential(
+        os.path.realpath(target)
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -15561,8 +15596,9 @@ def _python_exec(
 
     # Refused in every mode, for the same reason _bash_exec refuses it: this install's credentials are not tool input.
     # Relative too: the cwd is a sibling of the auth directory, so `open('../../auth/auth.db')` reaches it.
-    if _references_studio_credential_here(
-        code, _tool_workdir_for_guard(session_id) if ".." in code else None
+    _guard_workdir = _tool_workdir_for_guard(session_id) if ".." in code else None
+    if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
+        code, _guard_workdir
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
