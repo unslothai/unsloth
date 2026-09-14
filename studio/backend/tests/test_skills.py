@@ -431,16 +431,20 @@ def test_linked_skill_directory_is_followed_once_and_pinned(isolated_skills, tmp
     )
     root = home / ".agents" / "skills"
     root.mkdir(parents = True)
-    (root / "linked").symlink_to(real, target_is_directory = True)
-    (root / "dangling").symlink_to(tmp_path / "gone", target_is_directory = True)
-    (root / "to-file").symlink_to(real / "SKILL.md")
+    try:
+        (root / "linked").symlink_to(real, target_is_directory = True)
+        (root / "dangling").symlink_to(tmp_path / "gone", target_is_directory = True)
+        (root / "to-file").symlink_to(real / "SKILL.md")
+        (real / "escape.md").symlink_to(tmp_path / "dotfiles")
+    except (OSError, NotImplementedError):
+        # Reason: Windows may deny symlink creation without Developer Mode.
+        pytest.skip("symlinks are unavailable on this platform")
 
     records = {record["name"]: record for record in skills.list_skills(home = home)}
 
     assert records["linked"]["valid"] is True
     assert records["dangling"]["valid"] is False and records["to-file"]["valid"] is False
     assert skills.read_skill_resource("linked", home = home).endswith("REAL")
-    (real / "escape.md").symlink_to(tmp_path / "dotfiles")
     with pytest.raises(skills.SkillError, match = "symbolic links"):
         skills.read_skill_resource("linked", "escape.md", home = home)
 
