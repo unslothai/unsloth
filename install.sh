@@ -3016,73 +3016,45 @@ case "$0" in
         [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
 esac
 
-# Sets _ZOO_REF / _ZOO_GIT_SPEC / _ZOO_REF_LABEL for the --local unsloth-zoo overlay.
-# Honors UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker publish
-# workflow forwards one ref to both builds); unset means main. The branch is then pinned
-# to the commit it points at right now, the same way docker/build.sh resolves its refs:
-# installing a branch name leaves pip fetching whatever it holds at fetch time, with
-# nothing recording what was installed and no name to reproduce or audit it by. The code
-# fetched is identical either way -- the pin names the tip the bare ref would have given.
-# Unresolvable (no git, offline, gone ref) falls back to the ref as written: this buys
-# auditability, it is not a gate on the install.
+# Pins the --local unsloth-zoo overlay to the commit UNSLOTH_ZOO_REF (default main)
+# names, as docker/build.sh does. Unresolvable falls back to the ref as written: this
+# buys a reproducible install, it is not a gate on one.
 _resolve_zoo_git_spec() {
     _ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
-    # Narrower than git's own ref rules on purpose: `git check-ref-format` accepts
-    # `a#b`, `a;b` and `release@2026`, and inside a pip requirement those read as a
-    # fragment, a marker separator and the revision delimiter itself (measured: uv
-    # reads `repo@release@2026` as revision "2026"). `+` is legal in a branch name and
-    # inert here, so it is allowed. Percent-encoding does not help: uv asks the remote
-    # for a ref literally named `release%402026`.
+    # Narrower than check-ref-format, which accepts `a#b`, `a;b` and `release@2026`:
+    # a requirement reads those as a fragment, a marker separator and the revision
+    # delimiter (uv resolves `repo@release@2026` as "2026"; `%40` is not decoded).
     case "$_ZOO_REF" in
         -*|*..*|*[!A-Za-z0-9._/+-]*)
-            # Said out loud: silently installing main when a specific ref was asked for
-            # is the failure this whole function exists to prevent.
             echo "unsloth: UNSLOTH_ZOO_REF='${_ZOO_REF}' cannot be used in a pip requirement; installing unsloth-zoo main instead" >&2
             _ZOO_REF="main" ;;
     esac
     _ZOO_PIN=""
     if [ "$STUDIO_LOCAL_INSTALL" = true ] && command -v git >/dev/null 2>&1; then
-        # A silent probe must never become a prompt or an unbounded wait. The repo is
-        # public so no credentials are needed, but a proxy answering 401 can still send
-        # git to a credential helper and leave the installer waiting on a human. No
-        # helper, no terminal prompt, and a bounded run where `timeout` exists.
-        # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
-        # The two branches are spelled out rather than built from a "timeout 20" prefix
-        # variable: an unquoted expansion is one word in zsh, so a prefix would run as a
-        # command literally named "timeout 20" for anyone who invokes this with zsh.
-        # Full ref names, never the bare one: an ls-remote pattern matches the TAIL of a
-        # ref at slash boundaries, so `main` also matches refs/heads/archive/main, which
-        # sorts first and would pin an unrelated history. A ref that is already fully
-        # qualified is asked for as given, or it would become refs/heads/refs/heads/x
-        # and match nothing. Positional parameters rather than a space-joined string:
-        # `for w in $list` relies on word splitting, which zsh does not do.
+        # Full ref names: a pattern matches the ref TAIL at slash boundaries, so bare
+        # `main` also matches refs/heads/archive/main, which sorts first. A qualified
+        # ref goes as given. Positional parameters: zsh does not word-split a list.
         case "$_ZOO_REF" in
             refs/*) set -- "$_ZOO_REF" "$_ZOO_REF^{}" ;;
             *)      set -- "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" ;;
         esac
-        # Empty GIT_ASKPASS/SSH_ASKPASS plus -c core.askPass=: an askpass helper is a
-        # second door that GIT_TERMINAL_PROMPT does not close, and VS Code exports
-        # GIT_ASKPASS in its integrated terminal, which is where a --local install gets
-        # run. Empty rather than unset, because git takes the first of the three that is
-        # SET and treats an empty one as "no askpass".
-        # http.lowSpeed*: the bound for hosts with no `timeout` binary, which is stock
-        # macOS. Measured against a listener that accepts and then says nothing, git
-        # waited indefinitely without these and gave up after 20.1s with them.
+        # Empty askpass rather than unset: git runs the first of GIT_ASKPASS,
+        # core.askPass, SSH_ASKPASS that is SET and reads an empty one as none.
+        # http.lowSpeed* is the only bound where `timeout` is absent (stock macOS).
+        # Both branches spelled out: a "timeout 20" prefix is one word in zsh.
         # shellcheck disable=SC1007  # the empty askpass assignments are deliberate
         if command -v timeout >/dev/null 2>&1; then
             _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= timeout 20 git -c credential.helper= -c core.askPass= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
         else
             _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git -c credential.helper= -c core.askPass= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
         fi
-        # Branch first, then the commit an annotated tag points at, then the tag object:
-        # the same order `git clone --branch` resolves a name in.
+        # Branch, then an annotated tag's commit, then the tag object, as `git clone
+        # --branch` resolves. ls-remote exits 0 even when nothing matched.
         case "$_ZOO_REF" in
             refs/*) set -- "$_ZOO_REF^{}" "$_ZOO_REF" ;;
             *)      set -- "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" "refs/tags/$_ZOO_REF" ;;
         esac
-        # 2>/dev/null on the awk: a minimal image without it (the log filter at the top
-        # of this file allows for the same) must cost the pin and nothing else, least of
-        # all a "command not found" in the middle of the install output.
+        # A minimal image may ship no awk: that costs the pin, not a visible error.
         for _ZOO_WANT in "$@"; do
             _ZOO_LS="$(printf '%s\n' "$_ZOO_LS_OUT" | awk -F'\t' -v want="$_ZOO_WANT" '$2 == want { print $1; exit }' 2>/dev/null || true)"
             case "$_ZOO_LS" in
@@ -3092,7 +3064,6 @@ _resolve_zoo_git_spec() {
         done
     fi
     _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_PIN:-$_ZOO_REF}"
-    # What the progress lines show: the branch plus the commit it was pinned to.
     if [ -n "$_ZOO_PIN" ]; then
         _ZOO_REF_LABEL="$_ZOO_REF ($(printf '%.12s' "$_ZOO_PIN"))"
     else

@@ -2410,12 +2410,8 @@ exit 1
         return $false
     }
 
-    # The --local overlay installs unsloth-zoo straight from git, which on a bare URL is
-    # "whatever the default branch holds at fetch time": nothing records what was
-    # installed and two machines running the same command can get different code.
-    # Resolving the branch to the commit it points at installs the identical code, but
-    # pins and names it. No git or no network keeps the bare URL, so an install that
-    # works today still works -- this buys auditability, it does not gate the install.
+    # Pins the --local unsloth-zoo overlay to the commit main points at. No git, no
+    # network or no match keeps the bare URL: reproducibility, not a gate.
     $script:ZooGitSpec = $null
     $script:ZooGitLabel = $null
     function Resolve-UnslothZooGitSpec {
@@ -2430,15 +2426,9 @@ exit 1
         try {
             $git = Get-Command git -ErrorAction SilentlyContinue
             if (-not $git) { return }
-            # A silent probe must never become a prompt or an unbounded wait. The repo is
-            # public so no credentials are needed, but Git Credential Manager will happily
-            # raise a window if a proxy answers 401, and the installer would sit behind it.
-            # No helper, no terminal prompt, and the same bounded-process idiom the smi
-            # probes use, so a wedged network cannot hang the install.
-            # An askpass helper is a second door that GIT_TERMINAL_PROMPT does not
-            # close, and Git Credential Manager and VS Code both supply one. Empty
-            # rather than removed: git takes the first of GIT_ASKPASS, core.askPass and
-            # SSH_ASKPASS that is SET and treats an empty one as "no askpass".
+            # Git Credential Manager raises a window on a 401. Empty askpass rather
+            # than removed: git runs the first of GIT_ASKPASS, core.askPass,
+            # SSH_ASKPASS that is SET and reads an empty one as none.
             $env:GIT_TERMINAL_PROMPT = '0'
             $env:GIT_ASKPASS = ''
             $env:SSH_ASKPASS = ''
@@ -2462,9 +2452,7 @@ exit 1
                 return
             }
             if ($proc.ExitCode -ne 0) { return }
-            # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
-            # Matched by exact ref name, so a second line for some other ref can never
-            # be the one that is taken.
+            # Matched by exact ref name; ls-remote exits 0 even when nothing matched.
             $sha = ''
             foreach ($line in @("$($outTask.Result)" -split "`r?`n")) {
                 $parts = "$line".Trim() -split '\s+', 2
@@ -2480,8 +2468,7 @@ exit 1
         } catch {
             # unreachable remote, killed git, anything else: keep the bare URL
         } finally {
-            # The caller's own values go back exactly as they were, including having been
-            # unset: the rest of the install must not inherit this probe's.
+            # Restored exactly, including having been unset.
             foreach ($name in @($probeEnv.Keys)) {
                 if ($null -eq $probeEnv[$name]) {
                     Remove-Item "Env:$name" -ErrorAction SilentlyContinue

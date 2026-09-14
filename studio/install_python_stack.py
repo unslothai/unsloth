@@ -6200,20 +6200,15 @@ def _shared_base_requirements() -> Path | None:
 _UNSLOTH_ZOO_GIT_REPO = "https://github.com/unslothai/unsloth-zoo"
 _UNSLOTH_ZOO_GIT_URL = f"unsloth-zoo @ git+{_UNSLOTH_ZOO_GIT_REPO}"
 
-# The ref is pasted into a pip direct-reference requirement, which is why this is
-# narrower than git's own ref rules: `git check-ref-format` accepts `a#b`, `a;b` and
-# `release@2026`, and each of those means something else again inside a requirement
-# string (fragment, marker separator, and the revision delimiter itself -- measured,
-# uv reads `repo@release@2026` as revision "2026" and fails). `+` IS safe and is a
-# real branch-name character, so it is allowed. Percent-encoding is not an escape
-# hatch here: uv passes `%40` through literally and asks the remote for a ref by
-# that name.
+# Narrower than git's ref rules: check-ref-format accepts `a#b`, `a;b` and
+# `release@2026`, which a pip requirement reads as a fragment, a marker separator, and
+# the revision delimiter (uv resolves `repo@release@2026` as revision "2026"; `%40` is
+# not decoded either). `+` is legal and inert, so it is allowed.
 _GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$")
 _GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
-# Resolved once per process: the overlay spec is read again by the staging and
-# metadata-repair paths, and a branch that moved in between would install a
-# different commit than the one that was staged.
+# Resolved once per process: staging and the install read the spec separately, and a
+# branch that moved in between would install a commit that was never staged.
 _ZOO_COMMIT_CACHE: dict = {}
 _ZOO_REF_WARNED: set = set()
 
@@ -6226,8 +6221,7 @@ def _requested_unsloth_zoo_ref() -> str:
     """UNSLOTH_ZOO_REF, or "" when unset or not ref-shaped."""
     ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip()
     if ref and not _is_valid_git_ref(ref):
-        # Said once: the spec is read again by the staging and label paths.
-        if ref not in _ZOO_REF_WARNED:
+        if ref not in _ZOO_REF_WARNED:   # the spec is read more than once
             _ZOO_REF_WARNED.add(ref)
             _step(_LABEL, f"ignoring malformed UNSLOTH_ZOO_REF: {ref!r}", _dim)
         return ""
@@ -6235,23 +6229,15 @@ def _requested_unsloth_zoo_ref() -> str:
 
 
 def _unsloth_zoo_ref() -> str:
-    """The unsloth-zoo git ref the --local overlay installs.
-
-    UNSLOTH_ZOO_REF lets the Studio venv track the requested zoo instead of
-    always main, which is what the Docker build pins against and what
-    install.sh reads into _ZOO_REF. Unset means main.
-    """
+    """The ref the --local overlay installs: UNSLOTH_ZOO_REF, or main."""
     return _requested_unsloth_zoo_ref() or "main"
 
 
 def _zoo_ls_remote_patterns(ref: str) -> list:
     """Full ref names to ask ls-remote for, never the bare name.
 
-    An ls-remote pattern matches the TAIL of a ref name at slash boundaries, so
-    `main` also matches `refs/heads/archive/main`, and that one sorts first: taking
-    the first line would pin an archived branch and install code from a different
-    history. Asking for the full names, and then matching them exactly below, is the
-    only way to get the ref that was asked for.
+    A pattern matches the ref TAIL at slash boundaries, so `main` also matches
+    refs/heads/archive/main, which sorts first and would pin another history.
     """
     if ref.startswith("refs/"):
         return [ref, ref + "^{}"]
@@ -6259,12 +6245,10 @@ def _zoo_ls_remote_patterns(ref: str) -> list:
 
 
 def _pick_zoo_commit(output: str, ref: str) -> str:
-    """The commit for `ref` in ls-remote output, matching the ref name exactly.
+    """The commit for `ref` in ls-remote output, matched by exact ref name.
 
-    A branch beats a tag of the same name, which is what `git clone --branch` does.
-    `refs/tags/<ref>^{}` is the commit an annotated tag points at and beats the tag
-    object itself: both install the same code (uv and pip dereference the tag), but
-    the pin should name the commit it resolved to, not an object that points at one.
+    Branch before tag, as `git clone --branch` resolves; and an annotated tag's
+    `^{}` commit before the tag object, so the pin names a commit.
     """
     found = {}
     for line in output.splitlines():
@@ -6284,15 +6268,8 @@ def _pick_zoo_commit(output: str, ref: str) -> str:
 def _resolve_unsloth_zoo_commit(ref: str) -> str:
     """The commit `ref` names on unslothai/unsloth-zoo right now, or "".
 
-    Installing a branch name leaves pip fetching whatever the branch points at
-    when it happens to run: nothing records what was installed, two machines
-    running the same command get different code, and there is no name in the log
-    to audit afterwards. Resolving the branch here first pins the very same code
-    to an immutable commit and prints it.
-
-    Returns "" when git is missing, the remote is unreachable or the ref does not
-    exist, because none of those are reasons to fail an install that already
-    works -- the caller falls back to the ref as written, exactly as before.
+    "" whenever git is missing, unreachable or has no such ref: the caller then
+    falls back to the ref as written, since none of those should fail an install.
     """
     if _GIT_COMMIT_RE.match(ref):
         return ref
@@ -6302,40 +6279,24 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
     git = shutil.which("git")
     if git:
         try:
-            # A silent probe must never become a prompt. The repository is public, so
-            # nothing here needs credentials, but a box with a credential helper or an
-            # askpass GUI can be asked for them by a proxy that answers 401, and would
-            # then sit waiting for a human on a step that used to ask nothing at all.
-            # No helper plus no terminal prompt makes git fail instead, which falls
-            # back to the unresolved URL.
+            # An unattended probe must not be able to ask a human: a 401 from a proxy
+            # reaches a credential helper or an askpass GUI otherwise. Empty askpass
+            # rather than removed, because git runs the first of GIT_ASKPASS,
+            # core.askPass, SSH_ASKPASS that is SET and reads an empty one as none.
             env = dict(os.environ)
             env["GIT_TERMINAL_PROMPT"] = "0"
-            # An askpass helper is a second door, and GIT_TERMINAL_PROMPT does not
-            # close it: VS Code exports GIT_ASKPASS in its integrated terminal, which
-            # is exactly where a --local install gets run, and a 401 would then raise
-            # its dialog over an unattended probe. Measured against a local endpoint
-            # that answers 401: invoked with only the prompt disabled, not invoked
-            # once these are empty. Empty rather than removed, because git takes the
-            # first of GIT_ASKPASS, core.askPass and SSH_ASKPASS that is SET and
-            # treats an empty one as "no askpass".
             env["GIT_ASKPASS"] = ""
             env["SSH_ASKPASS"] = ""
-            # ls-remote exits 0 whether or not a ref matched, so an empty stdout is
-            # "no such ref" and has to be treated like a failure to resolve.
+            # ls-remote exits 0 even when nothing matched.
             result = subprocess.run(
-                # http.lowSpeed*: git gives up on a transfer that stalls, which the wall
-                # timeout below cannot do early and which is the only bound install.sh
-                # has on a host with no `timeout` binary. Measured against a listener
-                # that accepts and then says nothing: indefinite without, 20.1s with.
+                # http.lowSpeed* ends a stalled transfer early, and is the only bound
+                # install.sh has on a host with no `timeout` binary.
                 [git, "-c", "credential.helper=", "-c", "core.askPass=",
                  "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
                  "ls-remote", _UNSLOTH_ZOO_GIT_REPO, *_zoo_ls_remote_patterns(ref)],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
-                # 20s, the same bound install.sh and install.ps1 use: a ref
-                # advertisement for one small repository takes a second or two, and a
-                # network that has not answered in twenty is not going to.
-                timeout = 20,
+                timeout = 20,   # the same bound install.sh and install.ps1 use
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),
             )
@@ -6348,16 +6309,10 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
 
 
 def _unsloth_zoo_git_spec() -> str:
-    """The pip requirement string for the unsloth-zoo overlay.
+    """The pip requirement for the overlay, pinned to the resolved commit.
 
-    Pinned to the commit the requested ref resolves to, so the install is
-    reproducible and auditable rather than "whatever the branch holds at fetch
-    time". The code installed is the same code either way: the pin names the tip
-    the bare URL would have fetched.
-
-    When the commit cannot be resolved the URL is left as it was before -- bare
-    for an unset UNSLOTH_ZOO_REF, since a bare git URL already clones the default
-    branch, and every caller and the staging path expect that byte for byte.
+    Unresolvable leaves the URL as it was: bare when UNSLOTH_ZOO_REF is unset, since
+    a bare git URL already clones the default branch.
     """
     ref = _requested_unsloth_zoo_ref()
     commit = _resolve_unsloth_zoo_commit(ref or "main")
@@ -6386,9 +6341,7 @@ def _overlay_local_core_package(
     elif canonical == "unsloth-zoo":
         zoo_ref = _unsloth_zoo_ref()
         spec = _unsloth_zoo_git_spec()
-        # Name the commit actually being installed, so the log says what was fetched
-        # rather than only which branch it came from.
-        commit = spec.rpartition("@")[2]
+        commit = spec.rpartition("@")[2]   # named in the log, so it is auditable
         if _GIT_COMMIT_RE.match(commit) and commit != zoo_ref:
             zoo_ref = f"{zoo_ref} ({commit[:12]})"
         step_label = f"overlaying unsloth-zoo from git {zoo_ref}"

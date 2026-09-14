@@ -74,11 +74,8 @@ _RESOLVE_ZOO_COMMIT = ips._resolve_unsloth_zoo_commit
 
 @pytest.fixture(autouse = True)
 def _no_zoo_commit_lookup(monkeypatch):
-    """Keep the overlay spec at its unresolved form for every test but the pinning ones.
-
-    The spec is otherwise resolved against github.com, so what the overlay tests assert
-    would depend on the network and on wherever unsloth-zoo main happened to point.
-    """
+    """Unresolved spec everywhere but the pinning tests, which would otherwise
+    depend on the network and on wherever unsloth-zoo main happened to point."""
     ips._ZOO_COMMIT_CACHE.clear()
     monkeypatch.setattr(ips, "_resolve_unsloth_zoo_commit", lambda _ref: "")
 
@@ -88,8 +85,6 @@ class TestUnslothZooGitSpec:
 
     @pytest.fixture(autouse = True)
     def _allow_lookup(self, monkeypatch):
-        # Put the real resolver back over the module-wide stub: these tests drive it
-        # against a fake git rather than skipping it.
         monkeypatch.setattr(ips, "_resolve_unsloth_zoo_commit", _RESOLVE_ZOO_COMMIT)
         ips._ZOO_COMMIT_CACHE.clear()
 
@@ -124,12 +119,8 @@ class TestUnslothZooGitSpec:
         ]
 
     def test_a_ref_that_merely_ends_in_the_name_is_not_the_ref(self, monkeypatch):
-        """`main` as a pattern also matches refs/heads/archive/main, which sorts first.
-
-        ls-remote matches a pattern against the tail of a ref name at slash
-        boundaries, so the first line is not necessarily the branch that was asked
-        for. Taking it would pin an unrelated history and install it.
-        """
+        """A pattern matches the ref tail at slash boundaries, so `main` also matches
+        refs/heads/archive/main, which sorts first: line one is the wrong history."""
         wanted, archived = "a" * 40, "b" * 40
         self._fake_ls_remote(
             monkeypatch,
@@ -150,11 +141,7 @@ class TestUnslothZooGitSpec:
         assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{branch}"
 
     def test_an_annotated_tag_pins_the_commit_it_points_at(self, monkeypatch):
-        """`refs/tags/v1` is the tag object; `refs/tags/v1^{}` is its commit.
-
-        Both install the same code, since uv and pip dereference the tag object, but
-        a pin that names a commit is the point of resolving at all.
-        """
+        """Both install the same code, but a pin that names a commit is the point."""
         tag_object, commit = "a" * 40, "b" * 40
         self._fake_ls_remote(
             monkeypatch,
@@ -173,12 +160,8 @@ class TestUnslothZooGitSpec:
         assert calls[0][-2:] == ["refs/heads/main", "refs/heads/main^{}"]
 
     def test_the_probe_can_never_stop_and_ask_a_human(self, monkeypatch):
-        """A 401 from a proxy must not send git to a credential helper and wait.
-
-        Nothing on this path needed credentials before the pin existed, and an
-        install that stops behind a hidden prompt is worse than one that skips the
-        pin, so the probe disables both ways of asking and bounds its own wait.
-        """
+        """An install that stops behind a hidden credential prompt is worse than one
+        that skips the pin, so the probe closes both doors and bounds its wait."""
         sha = "a" * 40
         calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/main\n".encode())
         monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
@@ -187,14 +170,11 @@ class TestUnslothZooGitSpec:
         ips._unsloth_zoo_git_spec()
 
         assert calls[0][1:3] == ["-c", "credential.helper="]
-        # A stalled transfer has to end on its own too: the wall timeout cannot fire
-        # early, and install.sh has only this bound on a host with no `timeout`.
+        # install.sh's only bound on a host with no `timeout`.
         assert "http.lowSpeedLimit=1000" in calls[0]
         assert "http.lowSpeedTime=20" in calls[0]
         kwargs = self.kwargs[0]
         assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
-        # The other door: an askpass helper is invoked regardless of the terminal
-        # prompt setting, and VS Code exports GIT_ASKPASS in its integrated terminal.
         # Empty, not removed: git uses the first of the three that is SET.
         assert kwargs["env"]["GIT_ASKPASS"] == ""
         assert kwargs["env"]["SSH_ASKPASS"] == ""
@@ -232,12 +212,7 @@ class TestUnslothZooGitSpec:
 
     @pytest.mark.parametrize("ref", ["feature+cuda", "release/2026.5", "v2026.5.4", "a.b_c-d"])
     def test_a_legal_branch_name_is_not_quietly_rewritten_to_main(self, monkeypatch, ref):
-        """`+` is legal in a branch name and inert in a requirement, so it must pass.
-
-        The character set here is narrower than git's own rules because the ref lands
-        inside a pip requirement, but narrowing it past what a requirement can carry
-        would silently install main when a specific ref was asked for.
-        """
+        """`+` is legal and inert in a requirement, so it must not become main."""
         sha = "e" * 40
         calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/{ref}\n".encode())
         monkeypatch.setenv("UNSLOTH_ZOO_REF", ref)
@@ -305,10 +280,8 @@ class TestUnslothZooGitSpec:
             "../../attacker/repo",
             "-oProxyCommand=evil",
             "main\nunsloth-zoo @ git+https://example.invalid/repo",
-            # A legal git ref, but the requirement grammar takes the revision after the
-            # last @, so uv reads this as revision "2026" against a repository URL that
-            # does not exist. Percent-encoding does not rescue it either: uv asks the
-            # remote for a ref literally named release%402026.
+            # Legal in git, but uv reads the revision after the last @, so this is
+            # revision "2026" against a URL that does not exist.
             "release@2026",
         ],
     )
