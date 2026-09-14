@@ -3,7 +3,9 @@
 
 """Gate torch.compile on Triton's C toolchain, on Windows (#7595). `import triton` succeeding does not
 mean a compile will: Triton's clang-cl JIT dies on `'stdlib.h'` mid-run when the CRT headers are absent.
-It passes its own `/I` dirs and never reads `INCLUDE`, so there is nothing to repair, only a state to refuse."""
+It passes its own `/I` dirs and never reads `INCLUDE`, so there is nothing to repair, only a state to refuse.
+The module also owns torch/triton import order on TheRock ROCm builds, where triton-first loads the
+driver's amdhip64_7.dll and torch_hip.dll then fails with WinError 126 (triton-windows#35)."""
 
 from __future__ import annotations
 
@@ -204,6 +206,7 @@ def _torch_is_rocm_build() -> bool:
 
         return "+rocm" in version("torch")
     except Exception:  # noqa: BLE001
+        logger.debug("Could not read the installed torch's version", exc_info = True)
         return False
 
 
@@ -217,7 +220,7 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
             # torch_hip.dll fails to load with WinError 126 (triton-windows#35).
             import torch  # noqa: F401, PLC0415
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("The torch preload failed; probing triton anyway", exc_info = True)
     try:
         import triton  # noqa: F401, PLC0415
     except ImportError:

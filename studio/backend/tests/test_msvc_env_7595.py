@@ -474,6 +474,7 @@ def test_gate_survives_a_probe_that_raises(monkeypatch):
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
 
     def boom():
         raise RuntimeError("sysconfig has no platlib on this scheme")
@@ -492,6 +493,8 @@ def _gate(monkeypatch, *, triton_importable, headers_ok):
     monkeypatch.setitem(
         sys.modules, "triton", types.ModuleType("triton") if triton_importable else None
     )
+    # Live, this would read the test host's own torch and answer for the wrong machine.
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
     monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: headers_ok)
     records = []
     logger = logging.getLogger("test_gate_7595")
@@ -509,6 +512,11 @@ def test_gate_is_noop_off_win32(monkeypatch):
         _msvc_env,
         "crt_headers_reachable",
         lambda: (_ for _ in ()).throw(AssertionError("gate ran off win32")),
+    )
+    monkeypatch.setattr(
+        _msvc_env,
+        "_torch_is_rocm_build",
+        lambda: (_ for _ in ()).throw(AssertionError("ROCm check ran off win32")),
     )
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
     assert "TORCHDYNAMO_DISABLE" not in os.environ
@@ -538,6 +546,7 @@ def test_gate_does_not_disable_where_triton_already_compiles(monkeypatch, tmp_pa
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")
     monkeypatch.delenv("INCLUDE", raising = False)
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
     _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
 
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
