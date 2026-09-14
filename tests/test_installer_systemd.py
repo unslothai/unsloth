@@ -83,6 +83,46 @@ def test_install_sh_offers_systemd_before_autostart_prompt():
     )
 
 
+def test_offer_systemd_skips_interactive_prompt_without_user_session():
+    """Plain ./install.sh on non-systemd Linux must reach autostart unchanged (#9308)."""
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    assert source.index("_systemd_user_session_available") < source.index(
+        "_offer_systemd_user_service"
+    )
+    offer_start = source.index("_offer_systemd_user_service() {")
+    offer_end = source.index("\n}\n\n# ── Helper: install packages via apt", offer_start)
+    offer_body = source[offer_start:offer_end]
+    systemd_prompt = (
+        "Install a systemd user service for auto-start on boot and crash recovery? [y/N]"
+    )
+    prompt_at = offer_body.index(systemd_prompt)
+    guard_at = offer_body.index("_systemd_user_session_available", 0, prompt_at)
+    assert guard_at != -1
+    assert "_INSTALL_SYSTEMD" in offer_body[guard_at:prompt_at]
+    skip_autostart_at = source.index('if [ "$_SYSTEMD_STARTED" = true ]; then')
+    assert skip_autostart_at > source.index("_offer_systemd_user_service")
+    assert source.index("Start Unsloth Studio now? [Y/n]") > skip_autostart_at
+
+
+@pytest.mark.skipif(not Path("/bin/sh").exists(), reason = "POSIX shell is unavailable")
+def test_systemd_user_session_helper_matches_install_script():
+    source = INSTALL_SH.read_text(encoding = "utf-8")
+    helper = re.search(
+        r"_systemd_user_session_available\(\) \{.*?^\}",
+        source,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    assert helper is not None
+    result = subprocess.run(
+        ["sh", "-c", helper.group(0) + "\n_systemd_user_session_available; echo $?"],
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+    # CI runners may or may not have a user bus; either outcome must be 0/1 from the probe.
+    assert result.stdout.strip() in {"0", "1"}
+
+
 def test_uninstall_sh_removes_managed_systemd_unit():
     source = UNINSTALL_SH.read_text(encoding = "utf-8")
     assert "_remove_systemd_user_service" in source

@@ -1333,12 +1333,23 @@ print(importlib.resources.files('studio') / 'systemd' / 'install_user_service.sh
     find "$VENV_DIR" -path '*/studio/systemd/install_user_service.sh' -print -quit 2>/dev/null
 }
 
+_systemd_user_session_available() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show-environment >/dev/null 2>&1
+}
+
 _offer_systemd_user_service() {
     [ "$OS" = "linux" ] || return 0
     [ "$_SKIP_SYSTEMD" = true ] && return 0
 
     _sd_script=$(_resolve_systemd_install_script)
     [ -n "$_sd_script" ] && [ -f "$_sd_script" ] || return 0
+
+    # Non-systemd or headless boxes without a user bus should behave like pre-#9258:
+    # no extra question; the usual "Start Unsloth Studio now?" prompt follows unchanged.
+    if [ "$_INSTALL_SYSTEMD" != true ] && ! _systemd_user_session_available; then
+        return 0
+    fi
 
     _sd_wants=false
     if [ "$_INSTALL_SYSTEMD" = true ]; then

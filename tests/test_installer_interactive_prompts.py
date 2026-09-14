@@ -66,8 +66,9 @@ APPROVED_PROMPTS: dict[tuple[str, str], str] = {
         "Windows half of the sanctioned launch prompt above."
     ),
     ("install.sh", "install a systemd user service for auto-start on boot and crash recovery?"): (
-        "Linux-only opt-in for a managed user unit (#9258). Non-interactive installs "
-        "use UNSLOTH_INSTALL_SYSTEMD / UNSLOTH_SKIP_SYSTEMD; the prompt only runs on a TTY "
+        "Linux-only opt-in for a managed user unit (#9258). Skipped silently when systemd "
+        "or the user bus is unavailable unless UNSLOTH_INSTALL_SYSTEMD is set. Non-interactive "
+        "installs use UNSLOTH_INSTALL_SYSTEMD / UNSLOTH_SKIP_SYSTEMD; the prompt only runs on a TTY "
         "and defaults to no so curl|sh never stalls."
     ),
     ("install.sh", "accept?"): (
