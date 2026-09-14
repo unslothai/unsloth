@@ -519,3 +519,36 @@ def test_edit_file_is_checked_on_the_resolved_target(monkeypatch, tmp_path):
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_cd_earlier_in_the_command_moves_what_a_relative_path_means(monkeypatch, tmp_path):
+    # `cd ../..` from the session sandbox lands on the Studio root, and the `auth/auth.db` that
+    # follows is then the protected database under a name that matches nothing on its own. Resolving
+    # the traversal and the later relative path INDEPENDENTLY against the original cwd misses it:
+    # neither half reaches the auth directory, only the composition does.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    sandbox = home / "sandbox" / "sess1"
+    sandbox.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            "cd ../..; python -c 'import sqlite3; sqlite3.connect(\"auth/auth.db\")'",
+            "cd ../.. && cat auth/auth.db",
+            "cd ../../ && cat auth/.cli_api_key_cli_99bb88401742",
+            f"cd {home} && cat auth/auth.db",
+        ):
+            assert tools._references_studio_credential_here(command, str(sandbox)), command
+
+        # Moving around is ordinary, and an `auth` directory the user owns DEEPER in the sandbox is
+        # still theirs: after `cd subdir` that path is sandbox/subdir/auth, not Studio's.
+        for command in (
+            "cd ../.. && ls models",
+            "cd ../.. && cat README.md",
+            "cd subdir && cat auth/config.json",
+            "cd build && make",
+        ):
+            assert not tools._references_studio_credential_here(command, str(sandbox)), command
+    finally:
+        tools._studio_auth_markers_cache = None

@@ -2776,6 +2776,32 @@ def _references_studio_credential(text: str) -> bool:
 # working directory: a relative path without one stays inside the sandbox, which is not where the
 # credentials are.
 _TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
+# Any path-shaped token carrying a separator. Used only once a `cd` has moved the working directory,
+# where a plain relative path like `auth/auth.db` stops being "somewhere inside the sandbox".
+_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
+# `cd DIR`, including the `cd /d DIR` spelling, at a command position.
+_CD_TARGET_RE = re.compile(r"(?:^|[;&|(]\s*|\s)cd\s+(?:/d\s+)?([^\s;&|)]+)")
+# Ceiling on the directories walked. A command with many `cd`s gains no signal from the long tail.
+_MAX_TRACKED_CWDS = 8
+
+
+def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
+    """Every working directory *text* walks into via `cd`, in order.
+
+    `cd ../..` from the session sandbox lands on the Studio root, and the `auth/auth.db` that
+    follows is then the protected database under a name that matches nothing on its own.
+    """
+    cwd = workdir
+    walked: "list[str]" = []
+    for match in _CD_TARGET_RE.finditer(text):
+        target = match.group(1).strip("'\"")
+        if not target or target.startswith("-"):
+            continue
+        cwd = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
+        walked.append(cwd)
+        if len(walked) >= _MAX_TRACKED_CWDS:
+            break
+    return walked
 
 
 def _references_studio_credential_here(text: str, workdir: "str | None") -> bool:
@@ -2795,6 +2821,16 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
         expanded = _expand_shell_assignments(text)
         if expanded != text and _references_studio_credential(expanded):
             return True
+    # A `cd` earlier in the same command moves the directory every later relative path is opened
+    # from, so those paths have to be re-resolved against where the command actually ended up.
+    if workdir and "cd" in text:
+        for cwd in _cwds_after_cd(workdir, text):
+            for token in _RELATIVE_PATH_TOKEN_RE.findall(text):
+                if os.path.isabs(token) or token.startswith("~"):
+                    continue
+                resolved = os.path.normpath(os.path.join(cwd, token.replace("\\", "/")))
+                if _references_studio_credential(resolved):
+                    return True
     if not workdir or ".." not in text:
         return False
     for token in _TRAVERSAL_TOKEN_RE.findall(text):
