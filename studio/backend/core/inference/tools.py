@@ -2837,7 +2837,9 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 # `cd DIR`, `cd /d DIR` or `pushd DIR` at a command position; `pushd` moves the cwd as `cd` does.
 # Case-insensitive because the shell is `cmd /c` on a Windows host without a trusted bash.
 _CD_TARGET_RE = re.compile(
-    r"(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)", re.IGNORECASE
+    r"(?:^|[;&|(\n]\s*|\b(?:then|do|else)\s+)(?:cd|pushd)\s+"
+    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
+    re.IGNORECASE,
 )
 # Distinct directories, not `cd` commands: padding with repeats must not spend the budget.
 _MAX_TRACKED_CWDS = 64
@@ -2981,9 +2983,10 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     )
     # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
     # path that does not exist raises, and code that catches it carries on from where it was.
+    chdir_names = _chdir_names(tree)
     cwds: "list[str | None]" = [workdir]
     for node in nodes:
-        if isinstance(node, ast.Call) and _is_chdir_call(node):
+        if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names):
             argument = _chdir_argument(node)
             target = None if argument is None else _folded_path(argument)
             if target and "\x00" not in target and "\x02" not in target:
@@ -3004,12 +3007,15 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         if not folded:
             continue
         if "\x02" in folded:
-            # `Path.cwd().parents[1] / "auth" / "auth.db"` folds the parent walk to \x02. The
-            # analyzer that reads that is skipped in bypass mode, and the walk is from the cwd,
-            # which is known here: each \x02 is one level up from it.
-            if not any(_parent_walk_reaches_the_auth_dir(folded, cwd) for cwd in cwds):
-                continue
-            return True
+            # `Path.cwd().parents[1] / "auth" / "auth.db"` folds the parent walk to a marker. The
+            # analyzer that reads that is skipped in bypass mode, so resolve it here, from the base
+            # and the level count in the expression rather than from the folded text.
+            if any(
+                _references_studio_credential(target)
+                for target in _parent_walk_targets(node, folded, cwds)
+            ):
+                return True
+            continue
         if "\x00" in folded:
             # A dynamic piece is the sensitive-path analyzer's, unless the code reads a
             # studio-home variable: bypass keeps that in the child env, so its value is known.
@@ -3031,28 +3037,73 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     return False
 
 
-def _parent_walk_reaches_the_auth_dir(folded: str, cwd: "str | None") -> bool:
-    """Whether a folded `.parent` / `.parents[n]` walk from *cwd* lands in the auth directory.
+def _parent_chain(node) -> "tuple | None":
+    """``(base node, levels walked up)`` for a `.parent` / `.parents[n]` chain, else None."""
+    levels = 0
+    current = node
+    while True:
+        if isinstance(current, ast.Attribute) and current.attr == "parent":
+            levels += 1
+            current = current.value
+            continue
+        if (
+            isinstance(current, ast.Subscript)
+            and isinstance(current.value, ast.Attribute)
+            and current.value.attr == "parents"
+        ):
+            index = current.slice
+            if isinstance(index, ast.Constant) and isinstance(index.value, int):
+                levels += index.value + 1
+                current = current.value.value
+                continue
+            return None
+        break
+    return (current, levels) if levels else None
 
-    `_folded_path` writes \x02 for each level walked up, so the remainder after the last one is the
-    path opened relative to that ancestor.
-    """
-    if not cwd or "\x02" not in folded:
+
+def _is_cwd_call(node) -> bool:
+    """`Path.cwd()`, `os.getcwd()` and the bare spellings of either."""
+    if not isinstance(node, ast.Call):
         return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    return name in ("cwd", "getcwd")
+
+
+def _parent_walk_targets(node, folded: str, cwds: "list") -> "list[str]":
+    """Where a `.parent` / `.parents[n]` expression can land, resolved rather than guessed.
+
+    The fold writes one marker for the whole walk, so the level count and the base come from the
+    expression itself: `Path('/tmp').parent / 'auth'` is `/auth`, not something under the sandbox.
+    """
     tail = folded.rsplit("\x02", 1)[-1].lstrip("/\\")
-    # EVERY ancestor, not a level count: `parents[1]` folds to a single marker whatever n is, so the
-    # number of levels is not in the folded text. Only a tail that lands exactly in the auth
-    # directory matches, so walking the whole chain does not widen this.
-    base = cwd
-    for _ in range(64):
-        resolved = os.path.normpath(os.path.join(base, tail)) if tail else base
-        if _references_studio_credential(resolved):
-            return True
-        parent = os.path.dirname(base.rstrip("/\\"))
-        if not parent or parent == base:
-            return False
-        base = parent
-    return False
+    left = node
+    while isinstance(left, ast.BinOp):
+        left = left.left
+    chain = _parent_chain(left)
+    if chain is None:
+        return []
+    base_node, levels = chain
+    bases: "list[str]" = []
+    if _is_cwd_call(base_node) or isinstance(base_node, ast.Name):
+        bases = [c for c in cwds if c]
+    else:
+        folded_base = _folded_path(base_node)
+        if folded_base and "\x00" not in folded_base and "\x02" not in folded_base:
+            bases = (
+                [folded_base]
+                if os.path.isabs(folded_base)
+                else [os.path.normpath(os.path.join(c, folded_base)) for c in cwds if c]
+            )
+    out: "list[str]" = []
+    for base in bases:
+        for _ in range(min(levels, 64)):
+            parent = os.path.dirname(base.rstrip("/\\"))
+            if not parent or parent == base:
+                break
+            base = parent
+        out.append(os.path.normpath(os.path.join(base, tail)) if tail else base)
+    return out
 
 
 def _chdir_argument(node: "ast.Call"):
@@ -3065,12 +3116,36 @@ def _chdir_argument(node: "ast.Call"):
     return None
 
 
-def _is_chdir_call(node: "ast.Call") -> bool:
-    """True for `os.chdir(...)` and a bare `chdir(...)` bound from it."""
+def _chdir_names(tree) -> "set[str]":
+    """Every name that refers to `os.chdir` in this snippet, including aliases.
+
+    `from os import chdir as move` and `move = os.chdir` are both ordinary python, and a walk that
+    only knows the literal name resolves everything after `move('../..')` against the wrong place.
+    """
+    names = {"chdir"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "chdir" and alias.asname:
+                    names.add(alias.asname)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+            if not isinstance(target, ast.Name):
+                continue
+            if (isinstance(value, ast.Attribute) and value.attr == "chdir") or (
+                isinstance(value, ast.Name) and value.id in names
+            ):
+                names.add(target.id)
+    return names
+
+
+def _is_chdir_call(node: "ast.Call", names: "set[str] | None" = None) -> bool:
+    """True for `os.chdir(...)`, a bare `chdir(...)`, and any alias bound from it."""
+    names = names or {"chdir"}
     func = node.func
     if isinstance(func, ast.Attribute):
-        return func.attr == "chdir"
-    return isinstance(func, ast.Name) and func.id == "chdir"
+        return func.attr in names
+    return isinstance(func, ast.Name) and func.id in names
 
 
 def _code_reads_the_studio_home(code: str) -> bool:

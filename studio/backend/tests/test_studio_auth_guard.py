@@ -1141,7 +1141,6 @@ def test_a_pathlib_parent_walk_and_the_option_terminator(monkeypatch, tmp_path):
             'print(sqlite3.connect(Path.cwd().parents[1] / "auth" / "auth.db"))',
             "from pathlib import Path\n"
             'print((Path.cwd().parent.parent / "auth" / ".desktop_secret").read_text())',
-            'from pathlib import Path\nprint((Path.cwd().parents[3] / "auth" / "auth.db"))',
         ):
             assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED
@@ -1161,6 +1160,9 @@ def test_a_pathlib_parent_walk_and_the_option_terminator(monkeypatch, tmp_path):
             'from pathlib import Path\nprint(Path.cwd().parent / "data" / "x.csv")',
             'from pathlib import Path\nprint(Path("x.txt").parent)',
             'from pathlib import Path\nprint((Path.cwd().parents[1] / "models" / "m.gguf").exists())',
+            # The sandbox is <home>/sandbox/<session>, so parents[1] is the home and parents[3] is
+            # two levels above it, which is not this install.
+            'from pathlib import Path\nprint((Path.cwd().parents[3] / "auth" / "auth.db"))',
         ):
             assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
                 tools._STUDIO_CREDENTIAL_BLOCKED
@@ -1168,6 +1170,55 @@ def test_a_pathlib_parent_walk_and_the_option_terminator(monkeypatch, tmp_path):
         assert (
             tools._bash_exec(
                 "cd -- ../models; ls",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_command_positions_explicit_bases_and_chdir_aliases(monkeypatch, tmp_path):
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        # A `cd` still counts wherever a shell would run one.
+        for command in (
+            "cd ../..; cat auth/auth.db",
+            "x=1 && cd ../.. && cat auth/auth.db",
+            "if true; then cd ../..; cat auth/auth.db; fi",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # ...and nowhere else: `cd` as an ARGUMENT changes no directory, and reading a project's own
+        # auth/ after one was refused in every mode.
+        for ordinary in (
+            "echo cd ../..; cat auth/config.json",
+            'echo "cd ../.."',
+            "grep -rn cd ../../src",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        # An alias of os.chdir moves the directory exactly as the name does.
+        for code in (
+            "from os import chdir as move\nmove('../..')\nprint(open('auth/auth.db').read())",
+            "import os\ngo = os.chdir\ngo('../..')\nprint(open('auth/auth.db').read())",
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # A parent walk from an EXPLICIT base is that base's parent, not the sandbox's.
+        assert (
+            tools._python_exec(
+                "from pathlib import Path\nprint(Path('/tmp').parent / 'auth' / 'auth.db')",
                 None,
                 30,
                 _SESSION,
