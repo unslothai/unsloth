@@ -6425,18 +6425,40 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
         # A host whose NVIDIA GPU is merely HIDDEN reaches here, and must not take the CPU
-        # bundle either. has_usable_nvidia is `visible_device_tokens != []` on both probe
-        # paths, so has_physical_nvidia without it means exactly one thing: the GPU is there
-        # and CUDA_VISIBLE_DEVICES is empty. That mask is scoped to this process, but the
-        # install it would pick is persistent and activate_install_tree replaces the tree in
-        # place, so one masked run would leave a CUDA machine on the CPU bundle for good.
-        # Source-build instead, as the ROCm branch does. install_python_stack already refuses
-        # to conclude a torch flavor from an emptied mask for the same reason.
+        # bundle. has_usable_nvidia is `visible_device_tokens != []` on both probe paths, so
+        # has_physical_nvidia without it means exactly one thing: the GPU is there and
+        # CUDA_VISIBLE_DEVICES is empty or -1. That mask is scoped to this process, but the
+        # install is not -- activate_install_tree replaces the tree in place -- so one masked
+        # run would leave a CUDA machine on the CPU bundle for good.
+        #
+        # Select CUDA as if unmasked rather than source-building: nvidia-smi -L,
+        # --query-gpu=compute_cap and the driver CUDA version are all driver queries and keep
+        # answering under an empty mask (measured on a masked 5x B200 host), so compute_caps
+        # and driver_cuda_version are fully populated and the normal coverage match applies.
+        # The mask still does its job at RUN time: the CUDA build simply sees no devices and
+        # runs on CPU, exactly as the CPU bundle would, and the install stays correct for the
+        # next unmasked run.
+        #
+        # Placed here, not in the `if` above, so ROCm keeps its precedence: a masked NVIDIA
+        # host that also has usable ROCm still takes the ROCm branch. An explicit CPU request
+        # never reaches this either, because _apply_host_overrides clears has_physical_nvidia.
         if host.has_physical_nvidia:
             log(
                 "NVIDIA GPU present but hidden by CUDA_VISIBLE_DEVICES="
-                f"{host.visible_cuda_devices!r}; not installing the CPU bundle over it"
+                f"{host.visible_cuda_devices!r}; selecting the CUDA bundle for the hardware "
+                "rather than installing the CPU bundle over it"
             )
+            torch_preference = detect_torch_cuda_runtime_preference(host)
+            masked_selection = linux_cuda_choice_from_release(
+                host,
+                bundle,
+                preferred_runtime_line = torch_preference.runtime_line,
+                selection_preamble = torch_preference.selection_log,
+            )
+            if masked_selection is not None:
+                attempts.extend(masked_selection.attempts)
+            # No CUDA match: fall through to an empty list so the caller source-builds with
+            # CUDA, exactly as a visible NVIDIA host with no match does. Never the CPU bundle.
             return attempts
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
