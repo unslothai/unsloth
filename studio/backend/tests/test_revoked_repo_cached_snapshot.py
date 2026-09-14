@@ -42,6 +42,7 @@ def _repository_not_found():
         "401 Client Error. Repository Not Found for url: "
         f"https://huggingface.co/{REPO}/resolve/main/config.json."
     )
+
     # hub >= 1.x requires the originating response; older releases take the message alone.
     class _Request:
         method = "HEAD"
@@ -103,13 +104,12 @@ def test_revoked_repo_reads_cached_config(cached_repo, monkeypatch):
     chain: it means "I could not tell", which drops tier selection onto the substring
     matcher. With a snapshot present, the answer is knowable and must be False here.
     """
+
     # Nothing may go to the wire once the snapshot is found.
     def _no_download(*args, **kwargs):
         raise AssertionError("hf_hub_download called despite a cached snapshot")
 
-    monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download", _no_download, raising = False
-    )
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _no_download, raising = False)
 
     result = model_config._raw_config_has_vision_config(REPO, hf_token = "hf_" + "a" * 34)
 
@@ -182,6 +182,7 @@ def test_transient_hub_failure_still_raises(cached_repo, monkeypatch):
     Only a definitive refusal (404/403) may take the fallback. Anything else keeps the
     previous behaviour, so a flaky network never changes what a model is understood to be.
     """
+
     def _timeout(*args, **kwargs):
         raise TimeoutError("connection timed out")
 
