@@ -1016,7 +1016,9 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
 
-    status = _load_into(backend, tmp_path, hf_token = "hf_secret", display_repo_id = "Org/pinned-z-image")
+    status = _load_into(
+        backend, tmp_path, hf_token = "hf_secret", display_repo_id = "Org/pinned-z-image"
+    )
     assert status["loaded"] is True
     assert status["family"] == "z-image"
     assert status["base_repo"] == "base/repo"
