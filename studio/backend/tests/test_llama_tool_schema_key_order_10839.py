@@ -117,7 +117,9 @@ def test_wrapper_keeps_the_fields_chat_templates_read():
 @pytest.mark.parametrize("template", ["gemma-4.jinja", "gemma-4-edge.jinja"])
 def test_gemma_prompt_still_declares_nested_fields(template):
     sandbox = pytest.importorskip("jinja2.sandbox")
-    source = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / template).read_text()
+    source = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / template).read_text(
+        encoding = "utf-8"
+    )
     parameters = {
         "type": "object",
         "properties": {"filter": copy.deepcopy(_PAGING), "next": copy.deepcopy(_DESCRIBED_REF)},
