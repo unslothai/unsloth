@@ -164,15 +164,24 @@ def test_cache_does_not_bypass_revocation():
     assert storage.validate_api_key(raw) is None  # cache hit still re-checks is_active
 
 
-def test_cache_does_not_bypass_expiry():
+def test_cache_does_not_bypass_expiry(monkeypatch):
     seed_user()
-    # Expires between the two calls: the first warms the cache, the second is still rejected.
-    near = (datetime.now(timezone.utc) + timedelta(milliseconds = 600)).isoformat()
-    raw = make_key(near)
-    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
-    import time
+    # Wall-clock sleep made this flake under parallel CI: a 600 ms TTL could
+    # already have elapsed before the first assertion (#10147). Drive the
+    # storage clock instead so the cache still re-checks expires_at.
+    t0 = datetime(2026, 9, 3, 12, 0, 0, tzinfo = timezone.utc)
+    raw = make_key((t0 + timedelta(hours = 1)).isoformat())
 
-    time.sleep(0.8)
+    class Clock(datetime):
+        current = t0
+
+        @classmethod
+        def now(cls, tz = None):
+            return cls.current if tz is None else cls.current.astimezone(tz)
+
+    monkeypatch.setattr(storage, "datetime", Clock)
+    assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME
+    Clock.current = t0 + timedelta(hours = 2)
     assert storage.validate_api_key(raw) is None
 
 
