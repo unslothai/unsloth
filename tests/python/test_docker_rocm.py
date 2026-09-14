@@ -292,7 +292,7 @@ class TestBuildShRocm:
 
 
 def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
-                python_body = None, env_extra = None):
+                python_body = None, env_extra = None, build_info_gfx = ""):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     dev_root = tmp_path / "root"
@@ -306,7 +306,7 @@ def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
     # the two torch heredocs; stand in for torch on this host
     _stub(str(bindir / "python"), python_body or "cat > /dev/null\nexit 0\n")
     build_info = tmp_path / "build-info"
-    build_info.write_text("TORCH_INDEX_URL=x\nROCM_GFX=\nROCM_VERSION=7.2.4\n")
+    build_info.write_text(f"TORCH_INDEX_URL=x\nROCM_GFX={build_info_gfx}\nROCM_VERSION=7.2.4\n")
     dump = tmp_path / "ran"
     env = {
         "PATH": str(bindir) + ":/usr/bin:/bin",
@@ -395,6 +395,58 @@ class TestRocmEntrypoint:
         rc, ran, err = _entrypoint(tmp_path / "ok", python_body = python_body)
         assert rc == 0 and ran, err
         assert "RDNA 3" in err, err
+
+    def _fake_torch(self, tmp_path, arch):
+        fake = tmp_path / "fake"
+        (fake / "torch" / "cuda").mkdir(parents = True)
+        (fake / "torch" / "__init__.py").write_text(
+            "__version__ = '2.12.1+rocm7.2'\nclass version:\n    hip = '7.2.53211'\nfrom . import cuda\n")
+        (fake / "torch" / "cuda" / "__init__.py").write_text(
+            f"class _P:\n    gcnArchName = '{arch}'\n"
+            "def is_available(): return True\ndef device_count(): return 1\n"
+            "def get_device_name(i): return 'AMD GPU'\ndef get_device_properties(i): return _P()\n"
+            "def is_bf16_supported(): return False\n")
+        return f'PYTHONPATH="{fake}" exec python3 "$@"\n'
+
+    def test_a_spoofed_gfx1033_is_caught_from_the_kernels_topology(self, tmp_path):
+        """HSA_OVERRIDE_GFX_VERSION=10.3.0 makes ROCr report gfx1030 for a Steam Deck,
+        and run.sh forwards that variable, so gcnArchName alone would wave it through.
+        amdkfd's gfx_target_version (100303) is immune to the userland spoof."""
+        topo = tmp_path / "topo" / "1"
+        topo.mkdir(parents = True)
+        (topo / "properties").write_text("vendor_id 4098\ngfx_target_version 100303\n")
+        (tmp_path / "topo" / "0").mkdir()
+        (tmp_path / "topo" / "0" / "properties").write_text("vendor_id 0\ngfx_target_version 0\n")
+        body = self._fake_torch(tmp_path, "gfx1030")
+        rc, ran, err = _entrypoint(tmp_path, python_body = body, env_extra = {
+            "UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"), "HSA_OVERRIDE_GFX_VERSION": "10.3.0"})
+        assert rc == 1 and not ran, err
+        assert "kernel reports a gfx1033" in err and "10.3.0" in err, err
+        # the same topology without the spoof: torch already names gfx1033 and the plain refusal fires
+        (tmp_path / "b").mkdir()
+        rc, ran, err = _entrypoint(tmp_path / "b", python_body = self._fake_torch(tmp_path / "b", "gfx1033"),
+                                   env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")})
+        assert rc == 1 and not ran and "refuses" in err, err
+        # a real gfx1030 with the override set is not refused
+        (tmp_path / "c").mkdir()
+        (tmp_path / "topo" / "1" / "properties").write_text("vendor_id 4098\ngfx_target_version 100300\n")
+        rc, ran, err = _entrypoint(tmp_path / "c", python_body = self._fake_torch(tmp_path / "c", "gfx1030"),
+                                   env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"),
+                                                "HSA_OVERRIDE_GFX_VERSION": "10.3.0"})
+        assert rc == 0 and ran, err
+        assert "KFD reports: gfx1030" in err, err
+
+    def test_a_per_arch_image_on_a_generic_card_points_at_the_generic_image(self, tmp_path):
+        """Dockerfile.rocm refuses ROCM_GFX outside the per-arch families, so the advice
+        must not be a rebuild command that fails on the spot."""
+        body = self._fake_torch(tmp_path, "gfx1100:sramecc+")
+        rc, ran, err = _entrypoint(tmp_path, python_body = body, build_info_gfx = "gfx1151")
+        assert rc == 0 and ran, err
+        assert "no per-arch index" in err and "ROCM_GFX=gfx1100" not in err, err
+        (tmp_path / "d").mkdir()
+        rc, ran, err = _entrypoint(tmp_path / "d", python_body = self._fake_torch(tmp_path / "d", "gfx1201"),
+                                   build_info_gfx = "gfx1151")
+        assert rc == 0 and "ROCM_GFX=gfx1201 bash docker/build.sh --rocm" in err, err
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public

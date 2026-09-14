@@ -167,6 +167,45 @@ FAMILY = {
     "gfx1201": "RDNA 4",
 }
 
+
+def kfd_physical_archs():
+    """gfx arches the KERNEL sees, from KFD topology sysfs. amdkfd writes
+    gfx_target_version itself, so HSA_OVERRIDE_GFX_VERSION (a ROCr userland
+    spoof, which run.sh forwards) cannot hide the silicon here. Encoding is
+    major*10000 + minor*100 + stepping: 100303 is gfx1033, 110501 is gfx1151.
+    Same reader as install.sh's _kfd_gfx_targets; empty when sysfs is not there."""
+    out = []
+    # UNSLOTH_KFD_TOPOLOGY: the regression tests stage a topology; unset in normal use
+    root = os.environ.get("UNSLOTH_KFD_TOPOLOGY") or "/sys/class/kfd/kfd/topology/nodes"
+    if not os.path.isdir(root):
+        return out
+    for node in sorted(os.listdir(root)):
+        try:
+            with open(os.path.join(root, node, "properties"), encoding = "utf-8") as fh:
+                props = dict(ln.split(None, 1) for ln in fh if len(ln.split(None, 1)) == 2)
+        except OSError:
+            continue
+        gtv = int(props.get("gfx_target_version", "0").strip() or 0)
+        if props.get("vendor_id", "").strip() != "4098" or gtv <= 0:
+            continue
+        maj, mn, step = gtv // 10000 % 100, gtv // 100 % 100, gtv % 100
+        if maj <= 0 or mn > 9 or step > 15:
+            continue
+        out.append(f"gfx{maj}{mn}{step:x}")
+    return out
+
+
+physical = kfd_physical_archs()
+if physical:
+    print(f"KFD reports: {' '.join(physical)}")
+if "gfx1033" in physical and os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
+    print("ERROR: the kernel reports a gfx1033 (Van Gogh, Steam Deck) and HSA_OVERRIDE_GFX_VERSION is")
+    print(f"       set ({os.environ['HSA_OVERRIDE_GFX_VERSION']}), which makes ROCm present it as another arch.")
+    print("       gfx1033 computes incorrect results under ROCm whatever it is called (training")
+    print("       diverges to NaN, studio/ROCM_RDNA2_APU.md), so this image refuses to train on it.")
+    print("       UNSLOTH_SKIP_GPU_CHECK=1 bypasses this check; the results stay wrong.")
+    sys.exit(1)
+
 for i in range(torch.cuda.device_count()):
     props = torch.cuda.get_device_properties(i)
     arch = getattr(props, "gcnArchName", "").split(":")[0]  # strip e.g. :sramecc+
@@ -189,10 +228,13 @@ for i in range(torch.cuda.device_count()):
     if image_gfx:
         if arch == image_gfx or (arch in RDNA4 and image_gfx in RDNA4):
             print(f"  -> {fam}: this image was built for {image_gfx}")
-        else:
-            print(f"  NOTE: this image carries per-arch wheels for {image_gfx}, not {arch}.")
-            print("        Use the generic image (unsloth/unsloth-rocm:latest), or rebuild:")
+        elif arch in STRIX or arch in RDNA4:
+            print(f"  NOTE: this image carries per-arch wheels for {image_gfx}, not {arch}. Rebuild:")
             print(f"          ROCM_GFX={arch} bash docker/build.sh --rocm")
+        else:
+            print(f"  NOTE: this image carries per-arch wheels for {image_gfx}, not {arch}, which has")
+            print("        no per-arch index. Use the generic image: unsloth/unsloth-rocm:latest")
+            print("        (bash docker/build.sh --rocm).")
     elif arch == "gfx906":
         if here >= (6, 4):
             print(f"  NOTE: {arch} ({fam}) has no kernels in ROCm {image_rocm}: AMD dropped it after 6.3,")
