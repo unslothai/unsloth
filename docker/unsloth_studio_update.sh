@@ -11,8 +11,14 @@
 #   --zoo-ref <ref>      unsloth-zoo ref to pair with --ref (default: the same ref, else main)
 #   --packages "<specs>" what a release update installs (default: unsloth unsloth_zoo)
 #   UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=<seconds>  how long to wait for /api/health after the
-#                        restart (default 180; 0 skips the check)
+#                        restart (default 180). The previous install is kept until Studio
+#                        answers; if it does not, or the restart fails, it goes back and the
+#                        helper exits 1. 0 skips the wait: the update is committed as soon as
+#                        the restart command succeeds, with no proof that it can serve.
 #   UNSLOTH_NPM_REGISTRY=<url>  npm registry for the --ref frontend build, as in the installer
+#
+# One update at a time: a second invocation while one runs exits 1 without touching
+# anything.
 #
 # Not `unsloth studio update`: that re-runs the full installer, which re-probes the
 # host GPU for torch wheels and in a CPU-only container downgrades torch to CPU/cu126.
@@ -74,9 +80,21 @@ log() { echo "[studio-update] $*"; }
 log "Studio venv: $PY"
 log "before: unsloth $(version_of)"
 
+# Two updaters at once would each take the other's staging and previous trees for
+# leftovers (below) and swap over each other's src. The lock is held on an open fd for
+# the whole run, so the kernel drops it however the run ends, SIGKILL included; the name
+# matches the linker's scratch pattern so it is never linked into the home.
+LOCK="$SRC_DIR/.src-update.lock"
+command -v flock >/dev/null 2>&1 || { echo "unsloth-studio-update: flock (util-linux) is missing; refusing to run unlocked." >&2; exit 1; }
+exec 9>>"$LOCK" || { echo "unsloth-studio-update: cannot open $LOCK" >&2; exit 1; }
+if ! flock -n 9; then
+    echo "unsloth-studio-update: another unsloth-studio-update is running (holding $LOCK); wait for it to finish, then retry. Nothing was changed." >&2
+    exit 1
+fi
+
 # A run that was killed outright (docker stop ends in SIGKILL, so no trap ran) can leave
 # its previous tree beside src as .src-prev.*, or its staging tree as .src-update.*.
-# Nothing else writes those names here, and one updater runs at a time in a container,
+# Nothing else writes those names here, and the lock above makes this the only updater,
 # so at start they are always leftovers: put a lone previous tree back when src is gone,
 # and clear the rest.
 shopt -s nullglob
@@ -87,6 +105,7 @@ if [ ! -e "$SRC" ] && [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
 fi
 if [ -d "$SRC" ]; then
     for _stale in "$SRC_DIR"/.src-update.* "$SRC_DIR"/.src-prev.*; do
+        [ "$_stale" = "$LOCK" ] && continue
         log "removing $_stale, left behind by an earlier update"
         rm -rf "$_stale"
     done
@@ -139,7 +158,9 @@ restore() {
             || log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"
     fi
     if [ -n "$ROLLBACK" ] && [ -s "$ROLLBACK" ]; then
-        "$PY" -m pip install --no-deps -r "$ROLLBACK" >/dev/null \
+        # --force-reinstall: pip takes a same-version editable tree as already satisfying
+        # `unsloth==<version>`, and would leave the new tree's metadata in place
+        "$PY" -m pip install --no-deps --force-reinstall -r "$ROLLBACK" >/dev/null \
             || log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$ROLLBACK")"
     fi
 }
@@ -158,6 +179,9 @@ cleanup() {
     [ -n "$ROLLBACK" ] && rm -f "$ROLLBACK"
     [ -n "$FREEZE" ] && rm -f "$FREEZE"
     [ -n "$CONSTRAINTS" ] && rm -f "$CONSTRAINTS"
+    # the lock is still held on fd 9 until exit; a waiter that opened this inode blocks
+    # on it until then, and one that starts later creates a fresh file
+    rm -f "$LOCK"
     return 0
 }
 trap cleanup EXIT
@@ -180,7 +204,9 @@ for name in sys.argv[2:]:
     info = json.loads(raw) if raw else {}
     url = info.get("url", "")
     if info.get("dir_info", {}).get("editable") and url.startswith("file://"):
-        out.append("-e " + url[len("file://"):])
+        # the URI as recorded: pip accepts `-e file:///path`, and a path with spaces
+        # comes back percent-encoded, which as a bare path is not a valid editable
+        out.append("-e " + url)
     elif "vcs_info" in info:
         out.append(f"{name} @ git+{url}@{info['vcs_info']['commit_id']}")
     elif url:
@@ -239,7 +265,13 @@ build_source_tree() {
         if [ -f "$oxc/package.json" ]; then
             cd "$oxc" || exit 1
             log "installing the oxc validator runtime"
-            npm install --no-fund --no-audit --loglevel=error ${NPM_REGISTRY_ARGS[@]+"${NPM_REGISTRY_ARGS[@]}"} || exit 1
+            # the same lockfile rule as the frontend
+            if [ -f package-lock.json ]; then
+                npm ci --no-fund --no-audit --loglevel=error ${NPM_REGISTRY_ARGS[@]+"${NPM_REGISTRY_ARGS[@]}"} \
+                    || { log "ERROR: npm ci failed for the oxc validator (lockfile drift or the registry)"; exit 1; }
+            else
+                npm install --no-fund --no-audit --loglevel=error ${NPM_REGISTRY_ARGS[@]+"${NPM_REGISTRY_ARGS[@]}"} || exit 1
+            fi
         fi
     ) || return 1
     rm -rf "$tree/studio/frontend/node_modules"
@@ -339,12 +371,30 @@ if ! studio_tree_ok; then
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
-# DONE before the previous tree goes: a signal after that must not "restore" the old
-# package pins on top of the new tree
-DONE=1
-if [ "$SWAPPED" = "1" ]; then
-    rm -rf "$PREV_SRC"
-fi
+# The previous tree stays beside src until the restarted service proves it can serve:
+# an import that passes says nothing about a backend that dies at startup. Committing
+# sets DONE before the previous tree goes, so a signal after that cannot "restore" the
+# old package pins on top of the new tree.
+commit_update() {
+    DONE=1
+    if [ "$SWAPPED" = "1" ]; then
+        rm -rf "$PREV_SRC"
+    fi
+}
+# The restarted service did not come up: put the previous install back and start that,
+# so the container is not left without a Studio.
+back_out() {
+    log "ERROR: $1; putting the previous install back"
+    restore
+    "$SUPCTL" restart studio >/dev/null 2>&1 || "$SUPCTL" start studio >/dev/null 2>&1 || true
+    if "$SUPCTL" status studio; then
+        log "the previous install is running again"
+    else
+        log "CRITICAL: the previous install is back but supervisorctl could not start it either (see docker logs)"
+    fi
+    echo "unsloth-studio-update: $1; the previous install is back in place." >&2
+    exit 1
+}
 
 if [ "$RESTART" = "1" ]; then
     SUPCTL="$(command -v supervisorctl || true)"
@@ -360,32 +410,38 @@ if [ "$RESTART" = "1" ]; then
         [ "$_st" = "3" ] && _cmd=start
         log "${_cmd}ing the studio service"
         if ! "$SUPCTL" "$_cmd" studio; then
-            log "ERROR: supervisorctl $_cmd studio failed; the update is installed but Studio is not running"
-            "$SUPCTL" status studio || true
-            exit 1
+            back_out "supervisorctl $_cmd studio failed"
         fi
         _wait="${UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT:-180}"
         case "$_wait" in ''|*[!0-9]*) log "ignoring UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT='${_wait}' (not a number of seconds); using 180"; _wait=180;; esac
-        _deadline=$(( $(date +%s) + _wait ))
-        _up=0
-        while [ "$(date +%s)" -lt "$_deadline" ]; do
-            curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8000/api/health && { _up=1; break; }
-            sleep 2
-        done
-        if [ "$_up" = "1" ]; then
-            log "Studio is answering on port 8000"
-        elif [ "$_wait" -gt 0 ]; then
-            log "ERROR: Studio did not answer on port 8000 within ${_wait}s; the update is installed but Studio is not serving (see docker logs)"
-            "$SUPCTL" status studio || true
-            exit 1
+        if [ "$_wait" -eq 0 ]; then
+            # no validation asked for: the restart command succeeded, and that is all
+            # this run knows
+            commit_update
+            log "health check skipped (UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=0); the update is committed"
         else
-            log "health check skipped (UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=0)"
+            _deadline=$(( $(date +%s) + _wait ))
+            _up=0
+            while [ "$(date +%s)" -lt "$_deadline" ]; do
+                curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8000/api/health && { _up=1; break; }
+                sleep 2
+            done
+            if [ "$_up" = "1" ]; then
+                commit_update
+                log "Studio is answering on port 8000"
+            else
+                back_out "Studio did not answer on port 8000 within ${_wait}s (see docker logs)"
+            fi
         fi
     else
+        # nothing here can start Studio, so the import and frontend checks above are
+        # the whole validation
+        commit_update
         log "supervisor not managing 'studio' here; restart Studio yourself"
         log "  (e.g. 'docker restart <container>')"
     fi
 else
+    commit_update
     log "--no-restart: restart Studio to load the update"
     log "  docker exec <container> supervisorctl restart studio"
 fi

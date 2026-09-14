@@ -97,6 +97,8 @@ def _studio_env(
         '  if [ "$3" = "freeze" ]; then echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; exit 0; fi\n'
         # the constraints file is deleted on exit, so record what it pinned
         '  _c=0; for _a in "$@"; do [ "$_c" = 1 ] && { echo "STUB-PIP-CONSTRAINTS $(tr "\\n" " " < "$_a")" >> "$STUB_LOG"; _c=0; }; [ "$_a" = "-c" ] && _c=1; done\n'
+        # so is the requirements file a restore reinstalls from
+        '  _r=0; for _a in "$@"; do [ "$_r" = 1 ] && { echo "STUB-PIP-REQ $(tr "\\n" " " < "$_a")" >> "$STUB_LOG"; _r=0; }; [ "$_a" = "-r" ] && _r=1; done\n'
         # an interrupted install: the updater is waiting on this child, so the signal
         # lands on it and its trap runs once we exit
         '  case " $* " in *" -e "*) [ -n "${STUB_PIP_INTERRUPT:-}" ] && kill -INT "$PPID" ;; esac\n'
@@ -145,6 +147,7 @@ def _studio_env(
         ' echo "{}" > "$dir/studio/frontend/package.json";'
         ' [ -n "${STUB_LOCKFILE:-}" ] && echo "{}" > "$dir/studio/frontend/package-lock.json";'
         ' echo "{}" > "$dir/studio/backend/core/data_recipe/oxc-validator/package.json";'
+        ' [ -n "${STUB_OXC_LOCKFILE:-}" ] && echo "{}" > "$dir/studio/backend/core/data_recipe/oxc-validator/package-lock.json";'
         ' echo new > "$dir/NEW_TREE" ;;\n'
         "esac\nexit 0\n",
     )
@@ -178,7 +181,11 @@ def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_pa
     )
     assert res.returncode != 0, "a broken update must not report success"
     assert "--with-deps" in res.stdout, "the remedy must still be printed"
-    assert "install --no-deps -r" in calls, "the previous install must be put back:\n" + calls
+    # --force-reinstall: pip takes a same-version editable as already satisfying the
+    # pin and would leave the new tree's metadata in place
+    assert "install --no-deps --force-reinstall -r" in calls, (
+        "the previous install must be put back:\n" + calls
+    )
 
 
 def test_studio_update_does_not_restart_into_a_tree_without_a_built_frontend(tmp_path: Path):
@@ -190,7 +197,7 @@ def test_studio_update_does_not_restart_into_a_tree_without_a_built_frontend(tmp
     assert res.returncode != 0
     assert "no built frontend" in res.stdout
     assert "STUB-SUPERVISORCTL restart studio" not in calls, calls
-    assert "install --no-deps -r" in calls, calls
+    assert "install --no-deps --force-reinstall -r" in calls, calls
 
 
 @pytest.mark.parametrize("status_exit, verb", [(0, "restart"), (3, "start")])
@@ -206,13 +213,57 @@ def test_studio_update_restarts_a_studio_that_is_not_running(tmp_path: Path, sta
 
 
 def test_studio_update_fails_when_supervisor_cannot_restart_studio(tmp_path: Path):
-    """The update is installed, but a restart that fails left Studio down while the
-    helper reported success."""
+    """A restart that fails used to leave the new install in place with Studio down and
+    the previous tree already deleted. The previous tree is kept until the service is
+    up, so a failed restart puts it back and starts that."""
     env = _studio_env(tmp_path, restart_exit = 1)
-    res = _run(STUDIO_UPDATE, [], env)
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    calls = _calls(env)
     assert res.returncode != 0, res.stdout
     assert "ERROR: supervisorctl restart studio failed" in res.stdout, res.stdout
-    assert "STUB-SUPERVISORCTL status studio" in _calls(env).splitlines()[-1], _calls(env)
+    assert "previous install is back in place" in res.stderr, res.stderr
+    assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
+    assert not (home / "src" / "NEW_TREE").exists()
+    assert not list(home.glob(".src-*"))
+    assert "install --no-deps --force-reinstall -r" in calls, calls
+    sup = [l for l in calls.splitlines() if l.startswith("STUB-SUPERVISORCTL")]
+    assert sup[-1] == "STUB-SUPERVISORCTL status studio", calls
+    assert "STUB-SUPERVISORCTL restart studio" in sup[1:], (
+        "the previous install must be started again:\n" + calls
+    )
+    # the release path has no tree to swap, but its pins go back the same way
+    env = _studio_env(tmp_path / "release", restart_exit = 1)
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode != 0, res.stdout
+    assert "install --no-deps --force-reinstall -r" in _calls(env), _calls(env)
+
+
+def test_studio_update_refuses_to_run_beside_another_updater(tmp_path: Path):
+    """Two updaters at once would take each other's staging and previous trees for
+    leftovers and swap over each other's src."""
+    fcntl = pytest.importorskip("fcntl")
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    lock = home / ".src-update.lock"
+    fd = os.open(lock, os.O_WRONLY | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+        assert res.returncode == 1, res.stderr + res.stdout
+        assert "another unsloth-studio-update is running" in res.stderr, res.stderr
+        assert "STUB-PIP" not in _calls(env) and "STUB-NPM" not in _calls(env), _calls(env)
+        assert (home / "src" / "OLD_TREE").exists()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert (home / "src" / "NEW_TREE").exists()
+    # the lock file shares the scratch prefix so the home linker never links it, and
+    # the startup sweep must not take it for a leftover
+    assert "left behind" not in res.stdout, res.stdout
+    assert not list(home.glob(".src-*")), "the lock file must not outlive the run"
 
 
 def test_studio_update_reports_an_unmanaged_studio(tmp_path: Path):
@@ -281,6 +332,43 @@ def test_studio_update_ref_installs_the_oxc_runtime_after_a_good_build(tmp_path:
         if "STUB-NPM install" in l and l.endswith("oxc-validator")
     ]
     assert oxc, _calls(env)
+    # the same lockfile rule as the frontend: a ref that ships one is installed from it
+    env = _studio_env(tmp_path / "locked")
+    env["STUB_OXC_LOCKFILE"] = "1"
+    env["UNSLOTH_NPM_REGISTRY"] = "https://mirror.example/npm/"
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    oxc = [l for l in _calls(env).splitlines() if "STUB-NPM" in l and l.endswith("oxc-validator")]
+    assert len(oxc) == 1 and oxc[0].startswith("STUB-NPM ci "), _calls(env)
+    assert "--registry https://mirror.example/npm/" in oxc[0], oxc[0]
+    env = _studio_env(tmp_path / "drift")
+    env["STUB_OXC_LOCKFILE"] = "1"
+    env["STUB_NPM_CI_EXIT"] = "1"
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert res.returncode != 0
+    assert "npm ci failed for the oxc validator" in res.stdout, res.stdout
+    assert not [
+        l
+        for l in _calls(env).splitlines()
+        if "STUB-NPM install" in l and l.endswith("oxc-validator")
+    ], "lockfile drift must not be re-resolved:\n" + _calls(env)
+    assert (Path(env["UNSLOTH_STUDIO_HOME"]) / "src" / "OLD_TREE").exists()
+
+
+def test_studio_update_rollback_keeps_the_editable_uri_pip_recorded(tmp_path: Path):
+    """direct_url.json holds a file:// URI; a path with a space comes back percent
+    encoded, and pip rejects that as a bare path but takes it as the URI."""
+    env = _studio_env(tmp_path, import_ok = False)
+    site = tmp_path / "site"
+    info = site / "unsloth-2026.9.4.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.4\n")
+    (info / "direct_url.json").write_text(
+        '{"url": "file:///opt/my%20studio/src", "dir_info": {"editable": true}}'
+    )
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env)
+    assert res.returncode != 0
+    assert "STUB-PIP-REQ -e file:///opt/my%20studio/src" in _calls(env), _calls(env)
 
 
 def test_studio_update_ref_restores_the_tree_when_interrupted_after_the_swap(tmp_path: Path):
@@ -307,7 +395,9 @@ def test_studio_update_release_restores_the_pins_when_interrupted_during_pip(tmp
     res = _run(STUDIO_UPDATE, ["--no-restart"], env)
     calls = _calls(env)
     assert res.returncode == 130, res.stderr + res.stdout
-    assert "install --no-deps -r" in calls, "the previous install was not put back:\n" + calls
+    assert "install --no-deps --force-reinstall -r" in calls, (
+        "the previous install was not put back:\n" + calls
+    )
     assert "interrupted" in res.stdout, res.stdout
 
 
@@ -325,7 +415,7 @@ def test_studio_update_restores_once_and_leaves_no_temp_files_when_signalled_mid
     res = _run(STUDIO_UPDATE, ["--no-restart"], env)
     calls = _calls(env)
     assert res.returncode != 0
-    assert calls.count("install --no-deps -r") == 1, "restore ran more than once:\n" + calls
+    assert calls.count("--force-reinstall -r") == 1, "restore ran more than once:\n" + calls
     assert not list(tmpd.iterdir()), "temp files left behind: " + str(list(tmpd.iterdir()))
 
 
@@ -350,9 +440,9 @@ def test_studio_update_with_deps_puts_the_dependency_set_back(tmp_path: Path):
     calls = _calls(env)
     assert res.returncode != 0
     assert "STUB-PIP -m pip freeze --exclude-editable" in calls, calls
-    assert calls.count("install --no-deps -r") == 2, (
-        "dependency snapshot and previous install:\n" + calls
-    )
+    # the dependency snapshot goes back as pinned, the package identity by force
+    assert calls.count("install --no-deps -r") == 1, "dependency snapshot:\n" + calls
+    assert calls.count("install --no-deps --force-reinstall -r") == 1, "previous install:\n" + calls
     # the backend's requirement set is the `studio` extra, and torch/CUDA must not be
     # re-resolved (the venv's nvidia libs are linked into the base venv)
     assert "unsloth[studio]" in calls, calls
@@ -434,25 +524,59 @@ def test_studio_update_puts_the_install_back_when_pip_itself_fails(tmp_path: Pat
 
 
 def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_path: Path):
+    """A backend that imports can still die at startup; the previous tree is kept
+    until /api/health answers, and goes back when it does not."""
     env = _studio_env(tmp_path)
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "1"
     _stub(tmp_path / "bin", "curl", 'echo "STUB-CURL $*" >> "$STUB_LOG"\nexit 22\n')
-    res = _run(STUDIO_UPDATE, [], env)
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    calls = _calls(env)
     assert res.returncode != 0, res.stdout
     assert "did not answer on port 8000" in res.stdout, res.stdout
-    assert "STUB-CURL" in _calls(env)
+    assert "STUB-CURL" in calls
+    assert "previous install is back in place" in res.stderr, res.stderr
+    assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
+    assert not (home / "src" / "NEW_TREE").exists()
+    assert not list(home.glob(".src-*"))
+    assert "install --no-deps --force-reinstall -r" in calls, calls
+    assert calls.splitlines()[-1] == "STUB-SUPERVISORCTL status studio", calls
     env = _studio_env(tmp_path / "ok")
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "5"
     _stub(tmp_path / "ok" / "bin", "curl", "exit 0\n")
-    res = _run(STUDIO_UPDATE, [], env)
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
     assert res.returncode == 0, res.stdout
     assert "answering on port 8000" in res.stdout
+    assert (home / "src" / "NEW_TREE").exists()
+    assert not list(home.glob(".src-*")), "the previous tree must go once Studio is up"
     env = _studio_env(tmp_path / "junk")
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "soon"
     _stub(tmp_path / "junk" / "bin", "curl", "exit 0\n")
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stdout
     assert "not a number" in res.stdout
+
+
+def test_studio_update_health_wait_zero_commits_once_the_restart_command_succeeds(tmp_path: Path):
+    """0 asks for no validation: the previous tree goes as soon as the restart command
+    returns, and nothing is fetched from port 8000."""
+    env = _studio_env(tmp_path)
+    env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "0"
+    _stub(tmp_path / "bin", "curl", 'echo "STUB-CURL $*" >> "$STUB_LOG"\nexit 22\n')
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "the update is committed" in res.stdout, res.stdout
+    assert "STUB-CURL" not in _calls(env)
+    assert (home / "src" / "NEW_TREE").exists()
+    assert not list(home.glob(".src-*"))
+    # with a restart that fails there is still nothing to commit
+    env = _studio_env(tmp_path / "down", restart_exit = 1)
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode != 0
+    assert (home / "src" / "OLD_TREE").exists()
 
 
 def test_studio_update_clears_leftovers_of_a_killed_run_before_it_starts(tmp_path: Path):
