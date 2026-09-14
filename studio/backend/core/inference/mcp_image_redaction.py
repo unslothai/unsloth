@@ -161,7 +161,6 @@ class _ImageEchoSanitizer:
         string_charge_factor = 4,
     ):
         self.fingerprint = fingerprint
-        self.hex_fingerprint = data.hex()
         self.data = data
         self.string_charge_factor = string_charge_factor
         self.nodes = 0
@@ -174,6 +173,25 @@ class _ImageEchoSanitizer:
         unused = {0: 0, 1: 4, 2: 2}[len(data) % 3]
         final = alphabet.index(fingerprint[-1])
         self.final_characters = frozenset(alphabet[final : final + (1 << unused)])
+        reversible = [
+            *((fingerprint[:-1] + char, False) for char in self.final_characters),
+            (data.hex(), True),
+            (base64.b32encode(data).decode("ascii"), True),
+            (base64.b32hexencode(data).decode("ascii"), True),
+            (base64.a85encode(data).decode("ascii"), False),
+            (base64.b85encode(data).decode("ascii"), False),
+        ]
+        self.text_fingerprints = tuple(
+            dict.fromkeys(
+                (
+                    self._normalized_text(encoded).lower()
+                    if fold_case
+                    else self._normalized_text(encoded),
+                    fold_case,
+                )
+                for encoded, fold_case in reversible
+            )
+        )
 
     def _charge(self, size):
         self.material += size
@@ -185,24 +203,14 @@ class _ImageEchoSanitizer:
         compact,
         start = 0,
     ):
-        prefix = self.fingerprint[:-1]
-        base64_span = None
-        cursor = start
-        while True:
-            position = compact.find(prefix, cursor)
-            if position < 0:
-                break
-            end = position + len(prefix)
-            if end < len(compact) and compact[end] in self.final_characters:
-                base64_span = (position, end + 1)
-                break
-            cursor = position + 1
-        hex_position = compact.lower().find(self.hex_fingerprint, start)
-        hex_span = (
-            (hex_position, hex_position + len(self.hex_fingerprint)) if hex_position >= 0 else None
-        )
+        spans = []
+        for fingerprint, fold_case in self.text_fingerprints:
+            haystack = compact.lower() if fold_case else compact
+            position = haystack.find(fingerprint, start)
+            if position >= 0:
+                spans.append((position, position + len(fingerprint)))
         return min(
-            (span for span in (base64_span, hex_span) if span is not None),
+            spans,
             default = None,
         )
 
@@ -308,13 +316,9 @@ class _ImageEchoSanitizer:
         # blocks between them. Track subsequences of slots against the exact
         # image fingerprint. If a pathological result creates too many partial
         # matches, fail closed by withholding every candidate slot.
-        variants = [
-            *((self.fingerprint[:-1] + final, False) for final in self.final_characters),
-            (self.hex_fingerprint, True),
-        ]
         work = 0
         completed_paths = set()
-        for fingerprint, fold_case in variants:
+        for fingerprint, fold_case in self.text_fingerprints:
             scan_texts = [text.lower() for text in normalized] if fold_case else normalized
             states = {0: ()}
             for index, text in enumerate(scan_texts):
@@ -325,11 +329,10 @@ class _ImageEchoSanitizer:
                     start = 0
                     while position < len(fingerprint) and start < len(text):
                         found = text.find(fingerprint[position], start)
-                        scanned = (len(text) - start) if found < 0 else (found - start + 1)
-                        # Initial searches are bounded by the existing material
-                        # limit and run in native code. Charge spans only after a
-                        # prior slot has begun reconstructing the fingerprint.
-                        work += scanned if position else 1
+                        # Searches run in native code and material has its own
+                        # byte cap. Charge attempts plus Python-level matching so
+                        # a large unrelated field cannot trigger fail-closed.
+                        work += 1
                         if work > MAX_REDACTION_NODES * 32:
                             for slot in slots:
                                 self._set_slot(slot, REDACTED_IMAGE)

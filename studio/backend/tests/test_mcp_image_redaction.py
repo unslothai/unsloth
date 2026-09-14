@@ -108,6 +108,10 @@ def test_commit_checks_actual_recipient_and_is_one_use_under_race():
         "Result: " + ENCODED + "; done",
         DATA.hex(),
         DATA.hex().upper(),
+        base64.b32encode(DATA).decode().lower(),
+        base64.b32hexencode(DATA).decode(),
+        base64.a85encode(DATA).decode(),
+        base64.b85encode(DATA).decode(),
     ],
 )
 def test_finite_echo_forms_are_withheld(echo):
