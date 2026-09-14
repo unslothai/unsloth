@@ -823,8 +823,7 @@ if FP8GroupedLinear is not None:
         # The upstream eval path runs its own fp8e4nv kernels, so pre-sm89 has to use the
         # dequant path here too, not only while training.
         if self.weight.element_size() > 1 or (
-            not self.training
-            and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            not self.training and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
         ):
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None
