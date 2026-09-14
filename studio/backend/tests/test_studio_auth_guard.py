@@ -846,6 +846,42 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_quoted_cd_into_the_studio_root_is_not_a_move(monkeypatch, tmp_path):
+    # `echo 'cd <root>'; grep auth README` prints the text and searches a project. Matched wherever
+    # it appeared, the quoted text read as a move into the studio root and refused ordinary work.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    root = str(home)
+    try:
+        for ordinary in (
+            f"echo 'cd {root}'; grep auth README",
+            f"echo cd {root}; cat auth.py",
+            f"grep -rn 'cd {root}' src/; grep auth README",
+            f"cd {root}/models && grep auth README",
+            f"cd {root}-backup && ls auth",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        # A real move into the root, in every position a shell runs one, still counts.
+        for command in (
+            f"cd {root} && cat auth/auth.db",
+            f"cd {root}; ls auth",
+            f"cd '{root}'/auth && ls",
+            f"builtin cd {root} && cat auth/auth.db",
+            f"if true; then cd {root}; cat auth/auth.db; fi",
+            f"pushd {root} && cat auth/auth.db",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_shell_punctuation_ends_a_credential_name(monkeypatch, tmp_path):
     # A name ends where the shell ends a word, so `cat /tmp/.bootstrap_password; echo done` names
     # the file. Accepting only whitespace or a quote as the boundary matched none of these.

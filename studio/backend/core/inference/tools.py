@@ -2772,9 +2772,12 @@ def _studio_auth_dir_markers() -> tuple:
     roots = [m for m in root_markers if m and m not in ("/", "\\")]
     # The root must END where it matched, or continue into `auth`. Without the boundary
     # `cd <home>-backup && ls auth` and `cd <home>/models && grep auth README` were both refused.
+    # Only where a shell would RUN one: `echo 'cd <root>'; grep auth README` prints the text and
+    # searches a project, and matched unanchored it read as a move into the studio root.
     cd_re = (
         re.compile(
-            r"cd\s+(?:/d\s+)?[\"']?(?:"
+            r"(?:^|[;&|(\n]\s*|\b(?:then|do|else)\s+)(?:(?:builtin|command|exec)\s+)*"
+            r"(?:cd|pushd)\s+(?:/d\s+)?[\"']?(?:"
             + "|".join(re.escape(m) for m in roots)
             + r")(?:[\"']|\s|[;&|]|$|[/\\]auth(?![\w-]))",
             re.IGNORECASE,
