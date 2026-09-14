@@ -247,3 +247,33 @@ def test_gemma_on_gemini_toggles_with_thinking_level_not_budget():
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
     body = _body("gemini", "gemma-4-31b-it", **sampling)
     assert "thinkingConfig" not in body.get("generationConfig", {})
+
+
+# Wire proof for older Claude models, run against a mocked Anthropic stream rather than the live API. Anthropic documents
+# adaptive thinking as a 400 on Claude 4.5 and earlier, and budget_tokens as the only thinking mode there:
+# https://platform.claude.com/docs/en/build-with-claude/extended-thinking
+@pytest.mark.parametrize(
+    "model,effort,budget",
+    [
+        ("claude-sonnet-4-20250514", "high", 4096),
+        ("claude-opus-4-1-20250805", "low", 1024),
+        ("claude-3-7-sonnet-20250219", "medium", 2048),
+    ],
+)
+def test_earlier_claude_thinking_models_keep_budget_tokens(model, effort, budget):
+    body = _body(
+        "anthropic", model, reasoning_effort = effort, temperature = 0.7, top_p = 0.95, max_tokens = 8192
+    )
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": budget}
+    assert "output_config" not in body
+
+
+@pytest.mark.parametrize(
+    "model", ["claude-3-5-haiku-20241022", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229"]
+)
+def test_claude_models_without_extended_thinking_stream_without_a_thinking_field(model):
+    sampling = {"temperature": 0.7, "top_p": 0.95, "max_tokens": 4096}
+    body = _body("anthropic", model, reasoning_effort = "high", **sampling)
+    assert "thinking" not in body and "output_config" not in body
+    body = _body("anthropic", model, **sampling)
+    assert "thinking" not in body and "output_config" not in body

@@ -452,6 +452,19 @@ _ANTHROPIC_THINKING_SPECS = (
         kind = "manual",
         efforts = ("none", "low", "medium", "high"),
     ),
+    # Earlier Claude 4 models and 3.7 Sonnet only take manual budget_tokens; adaptive thinking returns a 400 there.
+    _AnthropicThinkingSpec(
+        prefixes = (
+            "claude-opus-4-1",
+            "claude-opus-4-0",
+            "claude-opus-4-2025",
+            "claude-sonnet-4-0",
+            "claude-sonnet-4-2025",
+            "claude-3-7-sonnet",
+        ),
+        kind = "manual",
+        efforts = ("none", "low", "medium", "high"),
+    ),
 )
 
 
@@ -460,6 +473,15 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
         if model.startswith(spec.prefixes):
             return spec
     return None
+
+
+# A Claude id the spec table does not list yet takes adaptive thinking only when it is numbered after 4.6.
+def _anthropic_model_newer_than_specs(model: str) -> bool:
+    match = _ANTHROPIC_MODEL_VERSION.match(model.strip().lower())
+    if match is None:
+        return False
+    major, minor = int(match.group("major")), int(match.group("minor") or 0)
+    return major >= 5 or (major == 4 and minor >= 6)
 
 
 # Anthropic ships date-pinned tool versions per model family: the newer `_20260209`/`_20260120` variants only run on
@@ -2346,10 +2368,13 @@ class ExternalProviderClient:
             if not sampling_removed:
                 body["temperature"] = 1
             body.pop("top_p", None)
-            if thinking_spec is None or thinking_spec.kind == "adaptive":
+            adaptive = (thinking_spec is not None and thinking_spec.kind == "adaptive") or (
+                thinking_spec is None and _anthropic_model_newer_than_specs(model)
+            )
+            if adaptive:
                 # Force display="summarized": it defaults to "omitted" on Opus 4.7, which emits an empty thinking
-                # block and leaves the panel blank. Harmless no-op on 4.6. A model outside the spec table is newer
-                # than 4.5, so it takes the adaptive shape.
+                # block and leaves the panel blank. Harmless no-op on 4.6. An unlisted id older than that gets no
+                # thinking field, since Claude 4.5 and earlier reject the adaptive shape.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
                 # Adaptive effort lives under `output_config.effort`, not top-level (top-level 400s "Extra inputs are
                 # not permitted"). Allowed: low|medium|high|xhigh|max.
