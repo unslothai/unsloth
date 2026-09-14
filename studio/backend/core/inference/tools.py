@@ -3012,6 +3012,11 @@ def _looks_absolute(text: str) -> bool:
         return False
     if text[0] == "/":
         return True
+    # A local `file:` URI is an absolute reference spelled with a scheme, so the operand scanners
+    # have to keep it rather than dropping it as a relative name.
+    if text[:5].lower() == "file:":
+        uri_path = _file_uri_path(text)
+        return bool(uri_path) and _looks_absolute(uri_path)
     if text[0] == "~":
         # A PLAIN `~` is the sandbox: `_build_safe_env` and `_build_bypass_env` both set the child's
         # HOME to the tool workdir, so the shell and `expanduser` alike resolve `~/notes.txt` to a
@@ -3030,6 +3035,34 @@ def _looks_absolute(text: str) -> bool:
 _PROC_MAGIC_LINK_RE = re.compile(
     r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/(?:root|cwd|fd)(?:/|$)"
 )
+
+
+# A local `file:` URI, in the spellings sqlite3 and the stdlib accept: `file:/p`, `file:///p` and
+# `file://localhost/p`. A host other than localhost is a remote resource, not a path here.
+_FILE_URI_RE = re.compile(r"^file://(?:localhost)?(?=/)|^file:(?=/)", re.IGNORECASE)
+
+
+def _file_uri_path(text: str) -> "str | None":
+    """The filesystem path a local `file:` URI names, or None if *text* is not one.
+
+    `sqlite3.connect("file:/media/alice/private.db?mode=ro", uri = True)` opens the same database the
+    bare path does, but the scheme made it read as a relative name and the read went silent. The
+    query and fragment are the URI's own, not part of the path, and `%XX` is decoded because the OS
+    sees the decoded form.
+    """
+    if not _FILE_URI_RE.match(text):
+        return None
+    path = _FILE_URI_RE.sub("", text, count = 1)
+    for separator in ("?", "#"):
+        cut = path.find(separator)
+        if cut != -1:
+            path = path[:cut]
+    if "%" in path:
+        try:
+            path = urllib.parse.unquote(path)
+        except Exception:  # noqa: BLE001 - a malformed escape must not break classification
+            pass
+    return path or None
 
 
 def _path_needs_approval(text, *, writing: bool = False) -> bool:
@@ -3052,6 +3085,10 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # \x00 is a segment the folder could not resolve, which is not a decidable path.
     if "\x00" in text:
         return False
+    # A `file:` URI names the same file the bare path does, so it is classified as that path.
+    uri_path = _file_uri_path(text)
+    if uri_path is not None:
+        return _path_needs_approval(uri_path, writing = writing)
     if not _looks_absolute(text):
         # Relative: resolves inside the session workdir. Only the credential/traversal scan applies.
         return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
@@ -3204,7 +3241,7 @@ _PATH_READ_COMMANDS = frozenset(
 )
 # Commands whose file operands are CREATED or OVERWRITTEN.
 _PATH_WRITE_COMMANDS = frozenset(
-    {"tee", "touch", "mkdir", "truncate", "shred", "unzip", "gunzip", "zip", "gzip", "bzip2", "xz"}
+    {"tee", "touch", "mkdir", "truncate", "shred", "gunzip", "zip", "gzip", "bzip2", "xz"}
 )
 # Copy-like commands: the LAST operand is the destination (a write), the earlier ones are sources (reads).
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
@@ -3241,6 +3278,8 @@ _PATH_SCRIPT_COMMANDS = frozenset(
         "rscript",
         "sqlite3",
         "duckdb",
+        # `unzip` READS its archive; the extraction destination is a flag (`-d`) handled above.
+        "unzip",
     }
 )
 # `git` carries its paths on flags rather than in operand position, so it only needs the flag spec
@@ -3443,6 +3482,10 @@ _PATH_FLAG_SPECS = {
         "--namespace": "skip",
     },
     "zip": {"-x": "skip", "-i": "skip"},
+    # `unzip ... archive ... [-d exdir]` (`unzip -hh`): the ARCHIVE is read and the extraction
+    # target is written. Listed as all-writes, even `unzip -l /usr/share/doc/example.zip` asked,
+    # because a read under the read-silent /usr was measured against the narrower write roots.
+    "unzip": {"-d": "write", "-x": "skip", "-O": "skip", "-P": "skip"},
     "cut": {
         "-d": "skip",
         "--delimiter": "skip",
@@ -3499,6 +3542,8 @@ for _alias, _base in (
 # Archive tools: creating writes the archive, extracting reads it.
 _PATH_ARCHIVE_COMMANDS = frozenset({"tar", "zip", "7z"})
 # Wrapper flags that take a SEPARATE value, so the token after them is the wrapper's, not the command.
+# The shared set is the fallback; a wrapper listed in `_WRAPPER_VALUE_FLAGS_BY_CMD` uses its own,
+# which is the accurate one. `stdbuf -o L cat FILE` stopped the scan on `L` and lost the file.
 _WRAPPER_VALUE_FLAGS = frozenset(
     {"-n", "-u", "--unset", "-S", "--signal", "-k", "--kill-after", "--chdir", "-C"}
 )
@@ -3633,8 +3678,9 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             if candidate.startswith("-") and candidate != "-":
                 # A wrapper flag that takes a separate value consumes the token after it.
                 index += 1
+                takes_value = _WRAPPER_VALUE_FLAGS_BY_CMD.get(base)
                 if (
-                    candidate in _WRAPPER_VALUE_FLAGS
+                    candidate in (takes_value if takes_value else _WRAPPER_VALUE_FLAGS)
                     and index < len(segment)
                     and not segment[index].startswith("-")
                 ):

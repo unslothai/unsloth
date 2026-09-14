@@ -3432,6 +3432,12 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # git carries its working directory on a flag, so nothing sits in an operand position.
     "git -C /media/kuser/MEDIA_SSD/private-repo show HEAD:secret.txt",
     "git --git-dir=/media/kuser/MEDIA_SSD/r/.git log",
+    # A `file:` URI names the same file the bare path does.
+    'sqlite3 file:/media/kuser/MEDIA_SSD/x.db?mode=ro "select 1"',
+    # `stdbuf -o L` takes its value as a separate token, so the scan stopped on `L`.
+    "stdbuf -o L cat /media/kuser/MEDIA_SSD/private.txt",
+    "unzip /media/kuser/MEDIA_SSD/private.zip",
+    "unzip a.zip -d /media/kuser/MEDIA_SSD/out",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3535,6 +3541,12 @@ _INDIRECT_BENIGN_TERMINAL = (
     "git status",
     "git -C src log",
     'git -c user.name=x commit -m "y"',
+    'sqlite3 file:local.db "select 1"',
+    'sqlite3 file:/usr/share/x.db "select 1"',
+    "stdbuf -o L cat notes.txt",
+    # The archive is READ, so a listing under the read-silent /usr must not ask.
+    "unzip -l /usr/share/doc/example.zip",
+    "unzip a.zip",
     "cat ~/notes.txt",
     "mkdir ~/.config/myapp",
 )
