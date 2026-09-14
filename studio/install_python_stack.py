@@ -7422,10 +7422,17 @@ _PINNED_PIP_CONFIG_KEEP_KEYS = (
 _PINNED_PIP_CONFIG_GLOBAL_SECTION = "global"
 _PINNED_PIP_CONFIG_DEFAULT_SECTION = "install"
 
-# Keys pip accumulates as a LIST, where the newline `pip config list` renders is a
-# separator. Nowhere else: it would corrupt `C:\Program  Files\ca.pem`. Measured
-# separators: only-binary comma, trusted-host space.
-_PINNED_PIP_CONFIG_LIST_KEYS = {"trusted-host": " ", "only-binary": ","}
+# Keys pip reads as a LIST, and the separator each is spelled with in the environment.
+# Only these: elsewhere the newline `pip config list` renders is part of one value, and
+# collapsing it would corrupt a path like `C:\Program  Files\ca.pem`.
+_PINNED_PIP_CONFIG_SEPARATORS = {"trusted-host": " ", "only-binary": ","}
+
+# ...and of those, the one pip ACCUMULATES across sections instead of overriding. Asked of
+# pip 26.2's own parser with [global] and [install] both set: `trusted_hosts` comes back as
+# the install value alone (an append option, assigned per section) while `format_control`
+# holds both (a callback that mutates in place). Treating trusted-host as accumulating
+# would re-trust a host the install section had dropped, which is a TLS decision.
+_PINNED_PIP_CONFIG_ACCUMULATING = frozenset({"only-binary"})
 
 _PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
 
@@ -7489,7 +7496,7 @@ def _parse_pinned_pip_config(
             value = ast.literal_eval(raw.strip())
         except (ValueError, SyntaxError):
             continue
-        separator_for_key = _PINNED_PIP_CONFIG_LIST_KEYS.get(option)
+        separator_for_key = _PINNED_PIP_CONFIG_SEPARATORS.get(option)
         if separator_for_key is None:
             text = str(value).strip()
         else:
@@ -7498,10 +7505,10 @@ def _parse_pinned_pip_config(
             found.setdefault(option, {})[section] = text
     overrides: dict[str, str] = {}
     for option, by_section in found.items():
-        separator_for_key = _PINNED_PIP_CONFIG_LIST_KEYS.get(option)
+        separator_for_key = _PINNED_PIP_CONFIG_SEPARATORS.get(option)
         present = [by_section[name] for name in sections if name in by_section]
-        if separator_for_key is None:
-            value = present[-1]        # scalar: the command's section overrides global
+        if option not in _PINNED_PIP_CONFIG_ACCUMULATING:
+            value = present[-1]        # the command's section overrides global
         else:
             # A repeatable option ACCUMULATES across sections rather than overriding, and
             # pip applies the entries IN ORDER: `:none:` empties the set, so a later

@@ -738,12 +738,21 @@ class TestHardenedPipConfigRelaxation:
         install, which is the control this change exists to preserve."""
         listing = b"global.only-binary=':all:'\ninstall.only-binary='numpy'\n"
         assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == ":all:,numpy"
-        # trusted-host is repeatable too, and space separated in the environment.
-        hosts = b"global.trusted-host='a.corp'\ninstall.trusted-host='b.corp'\n"
-        assert ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "a.corp b.corp"
         # A scalar still takes the command section alone: two certs cannot be concatenated.
         certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
         assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
+    def test_trusted_host_takes_section_precedence_instead(self):
+        """Not every list key accumulates. Asked of pip 26.2's own parser with [global]
+        and [install] both set, `trusted_hosts` comes back as the install value alone (an
+        append option, assigned per section) while `format_control` holds both (a callback
+        that mutates in place). Accumulating trusted-host would re-trust a host the
+        install section had dropped, and that is a TLS decision."""
+        hosts = b"global.trusted-host='global-a.corp'\ninstall.trusted-host='install-b.corp'\n"
+        assert ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "install-b.corp"
+        # Multiple hosts WITHIN the winning section are still space separated.
+        many = rb"install.trusted-host='a.corp\nb.corp'"
+        assert ips._parse_pinned_pip_config(many, "install")["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+
     def test_a_reset_entry_keeps_its_order(self):
         """pip applies a repeatable option IN ORDER and `:none:` empties the set, so a
         re-add after a reset has to survive. Measured on pip 26.2: [global] a,b with
