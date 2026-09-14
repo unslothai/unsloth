@@ -647,20 +647,23 @@ def test_no_reprompt_on_crlf_complete_python_game():
 # ── ReDoS guards ───────────────────────────────────────────────────
 
 # What these guards are looking for is catastrophic backtracking, which costs seconds or
-# minutes, not a few extra milliseconds. A single wall-clock sample cannot tell a regressed
-# quantifier from a shared runner descheduling the process mid-match: the tilde case below
-# measures about 11ms and has been seen at 60.9ms on CI for that reason alone. Take the
-# fastest of several runs, which drops preemption noise while leaving a real blow-up
-# untouched, since every repeat pays it.
+# minutes, not a few extra milliseconds. A wall clock cannot tell a regressed quantifier from a
+# shared runner descheduling the process mid-match: the tilde case below measures about 11ms of
+# work and has been seen at 60.9ms on CI for that reason alone. The quantity the budget is about
+# is the regex's own CPU time, so measure that directly with process_time, which does not run
+# while this process is off the CPU. Best of several runs on top, for the contention
+# process_time cannot see: cache and memory pressure from a neighbour are real work here. A
+# genuine blow-up survives both, since every repeat pays it in full. Same pairing as
+# test_tool_loop_controller.py.
 _REDOS_BUDGET_MS = 50
 
 
 def _guard_ms(payload, repeats = 5):
     best = None
     for _ in range(repeats):
-        t0 = time.perf_counter()
+        t0 = time.process_time()
         _has_answer_artifact(payload)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
+        elapsed_ms = (time.process_time() - t0) * 1000
         if best is None or elapsed_ms < best:
             best = elapsed_ms
     return best
