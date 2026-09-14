@@ -634,10 +634,9 @@ def _overlay_is_configured(model):
 
 
 def _has_media_token_types(kwargs):
-    """Media markers in the token-type ids, the signal upstream keys on and the
-    only one an `inputs_embeds` request carries. Emitted for text-only prompts
-    too, so the values decide, not the presence.
-    """
+    """Media markers in the token-type ids: the signal upstream keys on, and the
+    only one an `inputs_embeds` request carries. Text-only prompts emit the ids
+    too, so the values decide, not the presence."""
     for name in _TOKEN_TYPE_KWARGS:
         ids = kwargs.get(name)
         if ids is None:
@@ -651,11 +650,9 @@ def _has_media_token_types(kwargs):
 
 
 def _needs_bidirectional_multimodal_mask(model, kwargs):
-    """True when this request carries media and the model overlays a
-    bidirectional block on the causal mask (Gemma 3 / 4). A static cache drops
-    that overlay, leaving media tokens causal; Qwen2-VL, Llava and PaliGemma
-    have no overlay and stay on the static path.
-    """
+    """True when the request carries media and the model overlays a bidirectional
+    block on the causal mask (Gemma 3 / 4), which a static cache drops. Qwen2-VL,
+    Llava and PaliGemma have no overlay and stay on the static path."""
     module = sys.modules.get(type(model).__module__, None)
     if module is None:
         return False
@@ -669,10 +666,8 @@ def _needs_bidirectional_multimodal_mask(model, kwargs):
 
 
 def _dynamic_cache_choice(kwargs):
-    """Cache to force for a media request. Only a static one drops the mask, so
-    keep a growing cache the caller named, like offloaded, and the memory budget
-    that came with it.
-    """
+    """Cache to force for a media request. Only a static one drops the mask, so a
+    growing cache the caller named, like offloaded, is kept along with its budget."""
     requested = kwargs.get("cache_implementation")
     if requested is None and "generation_config" in kwargs:
         requested = getattr(kwargs["generation_config"], "cache_implementation", None)
@@ -944,9 +939,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
-    # A static cache drops the media block mask at prefill (#6028). Pin the
-    # literal: _prepare_generation_config refills a None from the model default.
-    # Not the local default: kwargs and the caller's config are applied after it.
+    # A static cache drops the media block mask at prefill (#6028). Name the cache
+    # rather than None, which _prepare_generation_config refills from the default.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
