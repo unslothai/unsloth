@@ -511,12 +511,10 @@ def test_the_scan_finds_all_three_shapes(tmp_path):
     )
     assert not _fragile_timing_asserts(roomy), _fragile_timing_asserts(roomy)
 
-    live = {
-        path.name: _fragile_timing_asserts(path)
-        for path in sorted(BACKEND_TESTS.glob("*.py"))
-        if _fragile_timing_asserts(path)
-    }
-    assert live, "the scan found nothing in the backend suite at all"
+    # Deliberately nothing about the live suite here. The synthetic files above already
+    # exercise every shape the scanner knows, and a "the live suite still has some"
+    # assertion would turn cleaning the last one into a failure, which is the same
+    # dependency on real files this rewrite exists to remove.
 
 
 def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():

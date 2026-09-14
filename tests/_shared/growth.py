@@ -26,6 +26,7 @@ def growth(
     units: int,
     factor: int = 4,
     repeats: int = 3,
+    abort_over_s: float = None,
 ):
     """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
 
@@ -83,6 +84,11 @@ def growth(
         big = big_elapsed if big is None else min(big, big_elapsed)
         # A timer's own resolution must not read as superlinear growth on a very fast machine.
         ratios.append(big_elapsed / max(small_elapsed, 1e-4))
+        # Checked here, not after the loop: on the regression these guards exist for, the
+        # big leg is the minutes-long one, so finishing all `repeats` of it to report a
+        # number the caller will reject anyway is the slow way to reach the same verdict.
+        if abort_over_s is not None and big_elapsed > abort_over_s:
+            break
 
     return _statistics.median(ratios), big, result
 
@@ -103,13 +109,15 @@ def assert_linear(
     big leg is `factor`x bigger than anything that was ever measured, and on the regression
     being guarded against that leg is `factor ** 2`x slower again. A guard whose broken case
     takes a minute at the old size would then take a quarter of an hour, and the job's own
-    timeout kills it before the ratio below can say why. The `big < 60.0` backstop cannot
-    save that: it is checked after the measurement, not during it.
+    timeout kills it before the ratio below can say why.
     """
-    ratio, big, result = growth(run, build, units, factor)
+    budget = 60.0
+    # Passed down rather than checked here: on a path slow enough to trip it, every repeat
+    # is another minute spent measuring something already known to be too slow.
+    ratio, big, result = growth(run, build, units, factor, abort_over_s = budget)
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
-    assert big < 60.0, f"{label} path took {big:.1f}s on {units * factor} units"
+    assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
     assert ratio < tolerance, (
         f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time "
         f"(linear is ~{factor}, quadratic is ~{factor ** 2})"

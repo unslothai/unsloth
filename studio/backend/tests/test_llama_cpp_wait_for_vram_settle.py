@@ -163,8 +163,11 @@ class _Sleeps:
     those and keep one generous ceiling for the case where it never returns at all.
     """
 
-    def __init__(self):
+    def __init__(self, clock = None):
         self.durations: list[float] = []
+        # With a clock, the nap is charged to it instead of taken: the helper's deadline
+        # then advances exactly as far as it asked to wait, with no runner in between.
+        self._clock = clock
 
     def __enter__(self):
         self._patch = patch.object(time, "sleep", self._record)
@@ -177,11 +180,36 @@ class _Sleeps:
 
     def _record(self, seconds):
         self.durations.append(seconds)
+        if self._clock is not None:
+            return self._clock.advance(seconds)
         return _real_sleep(seconds)
 
     @property
     def total(self) -> float:
         return sum(self.durations)
+
+
+class _Clock:
+    """``time.monotonic`` as a number the test moves, for the one claim real time cannot
+    answer: that a nap was cut to what was left of the budget. Only what is charged to it
+    advances it, so there is no scheduler to eat the window being measured."""
+
+    def __init__(self):
+        # Not 0.0: the helper reads `since_kill <= 0.0` as cold start, and `_kw()` takes
+        # that stamp off this clock, so an origin of zero short-circuits the whole wait.
+        self.now = 1000.0
+
+    def __enter__(self):
+        self._patch = patch.object(time, "monotonic", lambda: self.now)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+        return False
+
+    def advance(self, seconds):
+        self.now += seconds
 
 
 def test_cold_start_returns_immediately_without_probing():
@@ -277,26 +305,32 @@ def test_max_wait_respected_when_never_settles():
 
 
 def test_max_wait_respected_when_probe_is_slow():
-    """Slow probe: clipped sleep keeps the wall-clock bound honest."""
+    """Slow probe: clipped sleep keeps the wall-clock bound honest.
+
+    On a fake clock, because this one cannot be asked in real time. The claim is that
+    the nap AFTER the slow probe is cut to what is left of the budget, so the test needs
+    a nap to have been requested at all -- and if a real scheduler pause eats the 0.1s
+    that remained, a correct helper returns at the deadline check without napping and
+    the assertion fails on a run that did nothing wrong. Nothing here is about how fast
+    the box is, so the box is taken out: the probe charges its cost to the clock instead
+    of sleeping, and every sample is exact.
+    """
 
     def _slow_probe():
-        _real_sleep(0.30)  # the probe's own cost, not one of the helper's naps
+        clock.advance(0.30)  # the probe's own cost, not one of the helper's naps
         return [(0, 10000)]
 
     ctx, _state = _patch_probe([_slow_probe])
-    with ctx, _Sleeps() as sleeps:
-        start = time.monotonic()
+    with ctx, _Clock() as clock, _Sleeps(clock) as sleeps:
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(max_wait = 0.4, interval = 0.25),
         )
-        elapsed = time.monotonic() - start
     # The probe burned 0.30 of a 0.4s budget, so the nap after it must be clipped.
     assert sleeps.durations, "helper never napped, so nothing was clipped"
     assert (
         sleeps.durations[-1] < 0.25
     ), f"helper slept the full interval past the deadline: {sleeps.durations}"
     assert sleeps.total <= 0.4 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
-    assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
 
 
 def test_gpu_index_set_change_returns():
