@@ -2212,7 +2212,7 @@ def _count_gguf_admission_prompt(
 ) -> int:
     """Count the prepared chat, retaining the existing allowance for media embeddings.
 
-    A tokenizer failure reserves the pool instead of admitting overlapping requests
+    If no exact count succeeds, reserve the pool instead of overlapping requests
     on the character estimate that undercounts numeric and other dense ASCII text.
     """
     budget = _openai_llama_admission_budget(llama_backend) or 0
@@ -2222,6 +2222,7 @@ def _count_gguf_admission_prompt(
             text_messages,
             tools = tools,
             strict = True,
+            prefer_native = images == 0,
             chat_template_kwargs = llama_backend._request_reasoning_kwargs(
                 payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
             ),

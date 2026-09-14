@@ -76,6 +76,7 @@ def test_counts_prepared_messages_and_tools_with_generation_options():
     assert kwargs == dict(
         tools = tools,
         strict = True,
+        prefer_native = True,
         chat_template_kwargs = {"enable_thinking": False},
         continue_final_message = False,
     )
@@ -131,3 +132,159 @@ def test_tool_recost_keeps_the_model_count(monkeypatch):
         assert queue.snapshot().committed == 23584
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failed_path", ["legacy", "native", "unsupported", "invalid", "timeout"])
+def test_exact_count_endpoint_failover_preserves_short_chat_concurrency(monkeypatch, failed_path):
+    import httpx
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    calls = []
+
+    def respond(request):
+        path = request.url.path
+        calls.append(path)
+        if path == "/v1/chat/completions/input_tokens":
+            if failed_path == "timeout":
+                raise httpx.ReadTimeout("count timed out", request = request)
+            if failed_path in ("native", "unsupported"):
+                return httpx.Response(404 if failed_path == "unsupported" else 503)
+            if failed_path == "invalid":
+                return httpx.Response(200, json = {"input_tokens": True})
+            return httpx.Response(200, json = {"input_tokens": 20})
+        if failed_path == "legacy":
+            return httpx.Response(503)
+        if path == "/apply-template":
+            return httpx.Response(200, json = {"prompt": "rendered prompt"})
+        assert path == "/tokenize"
+        return httpx.Response(200, json = {"tokens": list(range(20))})
+
+    client_type = httpx.Client
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: client_type(transport = transport, **kw))
+    backend = _backend(20)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    payload = _payload()
+    payload.messages = [{"role": "user", "content": "Hello"}]
+
+    async def scenario():
+        queue = LlamaAdmissionQueue("endpoint-failover")
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda _: queue)
+        reservations = await asyncio.gather(
+            *(
+                inference._reserve_counted_gguf_chat(
+                    request = None,
+                    llama_backend = backend,
+                    payload = payload,
+                    messages = payload.messages,
+                )
+                for _ in range(3)
+            )
+        )
+        leases = [reservation.lease_nowait() for reservation, _ in reservations]
+        try:
+            assert all(lease is not None for lease in leases)
+            assert queue.snapshot().committed == 3 * (20 + 1024)
+        finally:
+            for (reservation, _), lease in zip(reservations, leases):
+                if lease is not None:
+                    lease.release()
+                else:
+                    reservation.cancel()
+
+    asyncio.run(scenario())
+    assert calls.count("/v1/chat/completions/input_tokens") == 3
+    assert calls.count("/apply-template") == (0 if failed_path == "legacy" else 3)
+
+
+def test_native_count_preserves_rendering_options_and_tools(monkeypatch):
+    import httpx
+    import json
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    bodies = []
+
+    def respond(request):
+        assert request.url.path == "/v1/chat/completions/input_tokens"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json = {"input_tokens": 22560})
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: client_type(transport = httpx.MockTransport(respond), **kw)
+    )
+    backend = _backend(22560)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Partial"}]
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+    assert (
+        backend.count_chat_tokens(
+            messages,
+            system = "System instructions",
+            tools = tools,
+            strict = True,
+            chat_template_kwargs = {"enable_thinking": False},
+            continue_final_message = True,
+            prefer_native = True,
+        )
+        == 22560
+    )
+    assert bodies == [
+        {
+            "messages": [{"role": "system", "content": "System instructions"}] + messages,
+            "tools": tools,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "continue_final_message": True,
+            "add_generation_prompt": False,
+        }
+    ]
+
+
+def test_all_count_endpoints_unavailable_still_reserves_pool(monkeypatch):
+    import httpx
+    from types import MethodType
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    client_type = httpx.Client
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kw: client_type(
+            transport = httpx.MockTransport(lambda _: httpx.Response(503)), **kw
+        ),
+    )
+    backend = _backend(0)
+    backend.base_url = "http://llama.test"
+    backend.is_loaded = True
+    backend.markup_profile = None
+    backend._auth_headers = None
+    backend.count_chat_tokens = MethodType(LlamaCppBackend.count_chat_tokens, backend)
+    payload = _payload()
+    assert inference._count_gguf_admission_prompt(backend, payload, payload.messages) == 30000
+
+
+def test_media_keeps_existing_allowance_without_native_embedding_count():
+    backend = _backend(20)
+    payload = _payload()
+    payload.messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+            ],
+        }
+    ]
+    count = inference._count_gguf_admission_prompt(backend, payload, payload.messages)
+    assert count == 20 + inference._openai_llama_admission_image_tokens(backend)
+    assert backend.count_chat_tokens.call_args.kwargs["prefer_native"] is False
