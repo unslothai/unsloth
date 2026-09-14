@@ -46,6 +46,7 @@ def _invoke_run_sh(
     nvidia,
     amd,
     groups = "both",
+    image = None,
 ):
     """Run docker/run.sh with a recording `docker` stub and a staged /dev tree.
 
@@ -101,6 +102,9 @@ def _invoke_run_sh(
     env["UNSLOTH_WORKDIR"] = str(tmp_path)
     for leak in ("HF_TOKEN", "WANDB_API_KEY", "UNSLOTH_GPUS", "UNSLOTH_ALLOW_CPU"):
         env.pop(leak, None)
+    env.pop("UNSLOTH_IMAGE", None)
+    if image:
+        env["UNSLOTH_IMAGE"] = image
 
     # absolute: the "absent" case strips /usr/bin from PATH, so `bash` itself would
     # not resolve either
@@ -135,9 +139,17 @@ class TestRunShDegradesWithoutNvidia:
         assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
         # the devices go through, but no part of the image can drive them: torch is
         # cu128 and the bundled llama.cpp has neither a HIP nor a Vulkan backend
-        assert "HIP" in stderr and "CPU" in stderr, (
+        assert "HIP" in stderr and "runs on the CPU" in stderr, (
             "an AMD host must be told the container still runs on the CPU:\n" + stderr
         )
+
+    def test_the_cpu_only_claim_is_scoped_to_the_published_images(self, tmp_path):
+        """A custom image may carry a HIP or Vulkan build; run.sh cannot know, so it
+        must not claim the container runs on the CPU."""
+        argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True, image = "myorg/custom:rocm")
+        assert "/dev/kfd" in argv
+        assert "runs on the CPU" not in stderr, stderr
+        assert "myorg/custom:rocm" in stderr and "unsloth/unsloth" in stderr, stderr
 
     def test_the_group_lookup_is_guarded_on_getent_existing(self):
         """A host with no getent at all (busybox, some slim images) must skip the

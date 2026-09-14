@@ -16,6 +16,8 @@
 #   PUBLIC_KEY/SSH_KEY OpenSSH public key for root login; sshd stays disabled
 #                      when neither is set (nothing to authenticate with --
 #                      password login is never enabled for root)
+#   UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY=1  exit 0 right after the settings checks, before
+#                      anything is written (tests only)
 set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
@@ -27,6 +29,9 @@ if [[ "${JUPYTER_PORT}" == "8000" ]]; then
     printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
     exit 1
 fi
+# The regression tests run this launcher on the test host; past this point it writes
+# /etc/profile.d, /root/.jupyter and /workspace, which is the container's business only.
+[[ -n "${UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-}" ]] && exit 0
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 

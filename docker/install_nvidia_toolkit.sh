@@ -25,8 +25,18 @@ command -v docker >/dev/null 2>&1 \
 # and the script elevating to install on the one daemon it exists to leave alone.
 
 # No Mac takes an NVIDIA GPU, whatever runs the daemon. Before the endpoint check below,
-# which sent colima and Rancher Desktop users off to configure a socket by hand.
+# which sent colima and Rancher Desktop users off to configure a socket by hand. The one
+# Mac the toolkit concerns is a CLI pointed at a remote Linux daemon (tcp:// or ssh://):
+# that host needs it, and gets the same answer as any remote endpoint. Same precedence as
+# the endpoint check: DOCKER_CONTEXT over DOCKER_HOST over the selected context.
 if [[ "$(uname -s)" == Darwin ]]; then
+    mac_endpoint="${DOCKER_HOST:-}"
+    if [[ -n "${DOCKER_CONTEXT:-}" || -z "$mac_endpoint" ]]; then
+        mac_endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+    fi
+    case "$mac_endpoint" in
+        tcp://*|ssh://*) fail "the Docker CLI on this Mac talks to a remote daemon (${mac_endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
+    esac
     say "macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
     say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
     exit 0

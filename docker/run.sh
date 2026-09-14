@@ -91,9 +91,15 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
                 [[ -n "$_gid" ]] && GPU_FLAG+=(--group-add "$_gid")
             done
         fi
-        printf "      AMD devices found: passing /dev/kfd and /dev/dri through, but nothing\n" >&2
-        printf "      in the image uses them yet: torch is cu128 and the bundled llama.cpp\n" >&2
-        printf "      has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+        printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        # true of the published images; a custom image may well carry a HIP or Vulkan build
+        if [[ "$IMAGE" == unsloth/unsloth:* ]]; then
+            printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
+            printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+        else
+            printf "      The published unsloth/unsloth images cannot use them (cu128 torch, no HIP\n" >&2
+            printf "      or Vulkan llama.cpp); whether %s does is up to that image.\n" "$IMAGE" >&2
+        fi
     fi
     printf "\n" >&2
 fi
