@@ -151,8 +151,7 @@ def test_both_installers_require_every_ffmpeg_library(probe):
     body = probe()
     # All seven, read from the shipped libtorchcodec_core*.so NEEDED entries. A subset
     # reports a partial FFmpeg as present and sends the user at the wrong fix.
-    for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter",
-                "swscale", "swresample"):
+    for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
         assert f"'{lib}'" in body or f'"{lib}"' in body, (lib, body)
 
 
@@ -234,9 +233,9 @@ def test_the_probe_is_skipped_when_python_deps_were_skipped(script):
     probe = text.index(opener)
     guard = text.rfind("if ", 0, probe)
     line = text[guard : text.index("\n", guard)]
-    assert any(name in line for name in names), (
-        f"the probe's enclosing condition does not test the skip-python-deps flag: {line!r}"
-    )
+    assert any(
+        name in line for name in names
+    ), f"the probe's enclosing condition does not test the skip-python-deps flag: {line!r}"
 
 
 def test_the_shell_probe_is_skipped_in_llama_only_mode():
