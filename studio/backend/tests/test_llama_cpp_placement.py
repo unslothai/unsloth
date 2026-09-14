@@ -216,9 +216,7 @@ def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
 
 
 def test_vision_mmproj_defaults_batch_and_ubatch_above_image_tokens(tmp_path):
-    """A projector encodes non-causally, so llama.cpp aborts when the micro-batch
-    cannot hold one whole image chunk (#10559). At llama.cpp's 512 default that is
-    every Gemma 4 image, so the launch has to carry its own floor."""
+    """A projector launch emits the non-causal batch floor (#10559)."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -241,17 +239,13 @@ def test_vision_mmproj_defaults_batch_and_ubatch_above_image_tokens(tmp_path):
 
 
 def test_a_projector_named_only_in_advanced_arguments_still_gets_the_floor(tmp_path):
-    """_resolve_launch_mmproj_path reads intent.mmproj_path and nothing else, so a
-    --mmproj typed into Advanced Arguments leaves effective_is_vision False while the
-    extras, appended last, still hand the child a projector. That launch emitted no
-    batch flags at all and hit the same non-causal assert #10559 is about."""
+    """An extras --mmproj reaches the child without Studio resolving one, so it is floored too."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
         memory = [(0, 24_000, 24_000)],
     )
     mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
-    # Studio's own resolution finds nothing: the projector exists only in the extras.
     backend._resolve_launch_mmproj_path = lambda **_kwargs: None
 
     cmd = _launch(
@@ -267,11 +261,7 @@ def test_a_projector_named_only_in_advanced_arguments_still_gets_the_floor(tmp_p
 
 
 def test_no_mmproj_does_not_excuse_an_explicitly_named_projector(tmp_path):
-    """--no-mmproj sets params.no_mmproj, which stops Unsloth resolving one and stops
-    the HF auto-download, but server-context.cpp gates the load on a non-empty
-    mmproj.path and never reads that field (the same reasoning
-    test_mmproj_placement_policy.py applies to an inherited projector). The named file
-    still opens, so it still needs the floor."""
+    """--no-mmproj does not stop server-context.cpp loading an explicitly named projector."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -287,15 +277,12 @@ def test_no_mmproj_does_not_excuse_an_explicitly_named_projector(tmp_path):
         extra_args = ["--mmproj", str(mmproj), "--no-mmproj"],
     )["cmd"]
 
-    # The projector is still on the command line, which is the whole premise.
     assert cmd[cmd.index("--mmproj") + 1] == str(mmproj)
     assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
     assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
 
 
 def test_no_mmproj_alone_still_floors_nothing(tmp_path):
-    """Without a named path there is nothing for the opt-out to fail to unload, so the
-    resolve is suppressed, no projector opens, and no floor is priced."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -312,9 +299,7 @@ def test_no_mmproj_alone_still_floors_nothing(tmp_path):
 
 
 def test_the_retry_leaves_a_pass_through_batch_last_wins(tmp_path):
-    """The argv is managed-flags-first with the extras appended after, so only the
-    first occurrence is ours. Rewriting every one deletes the user's pass-through, and
-    appending ours at the end puts it after their -b and quietly wins."""
+    """Only the managed (first) batch flags are rewritten; pass-through ones still win."""
     vision_cmd = [
         "/fake/llama-server",
         "--batch-size",
@@ -333,24 +318,17 @@ def test_the_retry_leaves_a_pass_through_batch_last_wins(tmp_path):
         LlamaCppBackend._strip_mmproj_args(vision_cmd), None, None, 1
     )
 
-    # Ours is gone; both of theirs survive, in their original order and position.
     assert retried == ["/fake/llama-server", "-b", "4096", "--batch-size", "4096"]
 
 
 @pytest.mark.parametrize(
     "requested,expected",
     [
-        # Nothing was asked for, so nothing is emitted and llama.cpp keeps its own
-        # defaults -- pinning 2048 here is the 4x compute buffer the retry is trying
-        # to give back.
         ((None, None), None),
         ((1024, 1024), ("1024", "1024")),
     ],
 )
 def test_the_text_only_retry_gives_back_the_projector_batch_floor(requested, expected):
-    """The retry has just dropped the projector, so nothing on that child encodes
-    non-causally. Carrying the floor into it keeps 1.8-2.3 GB of compute buffers in
-    precisely the recovery meant to rescue a load that ran out of memory."""
     vision_cmd = [
         "/fake/llama-server",
         "-m",
@@ -369,7 +347,6 @@ def test_the_text_only_retry_gives_back_the_projector_batch_floor(requested, exp
     )
 
     assert "--mmproj" not in retried
-    # Everything the retry is not about survives the rewrite.
     assert retried[:3] == ["/fake/llama-server", "-m", "model.gguf"]
     assert "--jinja" in retried
     if expected is None:
@@ -381,8 +358,6 @@ def test_the_text_only_retry_gives_back_the_projector_batch_floor(requested, exp
 
 
 def test_the_text_only_retry_keeps_the_slot_floor_on_the_batch():
-    """--batch-size below the slot count aborts llama-server, so the restored value
-    goes back through the same emitted-batch floor the launch used."""
     retried = LlamaCppBackend._restore_batch_args(
         ["/fake/llama-server", "--batch-size", "2048", "--ubatch-size", "2048"],
         4,
@@ -395,8 +370,6 @@ def test_the_text_only_retry_keeps_the_slot_floor_on_the_batch():
 
 
 def test_a_text_only_load_keeps_the_llama_cpp_batch_defaults(tmp_path):
-    """The floor is bought with compute buffers four times the size, so it has to stop
-    at the launches that need it. No projector, no non-causal encode, no flags."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -413,17 +386,10 @@ def test_a_text_only_load_keeps_the_llama_cpp_batch_defaults(tmp_path):
 @pytest.mark.parametrize(
     "env,expected_batch,expected_ubatch",
     [
-        # Both above the floor: the emitted flags beat the environment in llama.cpp, so
-        # writing 2048 here would downgrade the user and reinstate the assert.
         ({"LLAMA_ARG_BATCH": "4096", "LLAMA_ARG_UBATCH": "4096"}, "4096", "4096"),
-        # A micro-batch alone is NOT carried up. llama.cpp's own batch default is
-        # 2048 and it derives n_ubatch = min(n_batch, n_ubatch), so this launch was
-        # always going to run at 2048; raising the batch to honour the 4096 would
-        # change the setting rather than floor it.
+        # Clamped to llama.cpp's default batch of 2048, so not carried up.
         ({"LLAMA_ARG_UBATCH": "4096"}, "2048", "2048"),
-        # Below the floor is what the floor is for.
         ({"LLAMA_ARG_BATCH": "128", "LLAMA_ARG_UBATCH": "128"}, "2048", "2048"),
-        # Unparseable is what llama.cpp itself ignores.
         ({"LLAMA_ARG_UBATCH": "not-a-number"}, "2048", "2048"),
     ],
 )
@@ -449,7 +415,6 @@ def test_the_projector_floor_keeps_a_larger_inherited_batch(
 
 
 def test_an_explicitly_larger_batch_field_survives_the_projector_floor(tmp_path):
-    """The floor is a minimum, not a setting. A user asking for 8192 gets 8192."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3773,12 +3738,7 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
 
 @pytest.mark.parametrize("var", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
 def test_an_inherited_projector_is_deliberately_not_floored(tmp_path, monkeypatch, var):
-    """arg.cpp applies these before argv, so the environment alone does load a
-    projector that encodes non-causally, and it does hit the assert. It is still not
-    floored, because the projector-recovery gate reads only argv and cannot see this
-    source: quadrupling its compute buffers would turn a launch that used to fit into a
-    startup failure with no fallback. It was already broken this way and is no worse
-    for the change. The follow-up has to teach recovery first."""
+    """Env projectors are not floored: the argv-only recovery gate could not rescue an OOM."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3798,9 +3758,7 @@ def test_an_inherited_projector_is_deliberately_not_floored(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("extras", [["-mm", "{p}"], ["--mmproj={p}"]], ids = ["short", "inline"])
 def test_an_aliased_extras_projector_keeps_the_text_only_fallback(tmp_path, extras):
-    """The floor recognises -mm and --mmproj=, so recovery has to as well: a floored
-    launch that fails at startup must still reach the text-only retry, with the
-    projector really gone and the requested batch given back."""
+    """-mm and --mmproj= are floored, so recovery must recognize them too."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3829,8 +3787,7 @@ _PROJECTOR_OOM_OUT = (
 
 @pytest.mark.parametrize("pinned", [False, True], ids = ["cpu-projector-retry", "already-pinned"])
 def test_an_oom_under_the_raised_floor_still_reaches_the_text_only_retry(tmp_path, pinned):
-    """Moving the projector to CPU keeps the floored compute buffers, so a GPU OOM there
-    is not proof that text-only cannot fit: the text-only retry drops the floor too."""
+    """An OOM with the projector on CPU still retries text-only when that drops the floor."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3865,8 +3822,7 @@ def test_an_oom_under_the_raised_floor_still_reaches_the_text_only_retry(tmp_pat
     ids = ["fields-above-floor", "env-at-floor", "pass-through-wins"],
 )
 def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path, monkeypatch, fields, env, extras):
-    """When the effective micro-batch is the same with or without the floor, the
-    text-only retry frees nothing, so the projector-on-CPU OOM is still the real error."""
+    """The OOM stays terminal when the floor did not change the effective micro-batch."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3891,8 +3847,6 @@ def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path, monkeypatch, fi
 
 
 def test_an_inherited_projector_the_vision_switch_scrubs_is_not_floored(tmp_path, monkeypatch):
-    """The switch drops the URL and every image-capable inherited path before the
-    child sees them, so there is no non-causal encoder left to size for."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3910,10 +3864,7 @@ def test_an_inherited_projector_the_vision_switch_scrubs_is_not_floored(tmp_path
 
 
 def test_the_cpu_replay_that_restores_vision_restores_the_floor_too():
-    """A text-only retry that also signal-crashes replays the ORIGINAL vision argv on
-    CPU, projector and 2048 flags included. The retry unwound the fields, and the
-    post-launch record reads the fields rather than the argv, so leaving them unwound
-    reports 512 for a 2048 child and understates the prompt-cache slot estimate."""
+    """The CPU replay of the vision argv restores the floored fields the text-only retry unwound."""
     import ast
     import inspect
     import textwrap
@@ -3921,27 +3872,21 @@ def test_the_cpu_replay_that_restores_vision_restores_the_floor_too():
     src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
     compact = "".join(src.split())
     assert "_floored_batch_pair=(n_batch,n_ubatch)" in compact
-    # Captured after the floor was applied, not before it.
     assert compact.index("n_batch,n_ubatch=_mmproj_batch_floor(") < compact.index(
         "_floored_batch_pair=(n_batch,n_ubatch)"
     )
-    # And put back on the branch that keeps vision, after the retry unwound them.
     assert "n_batch,n_ubatch=_floored_batch_pair" in compact
     assert compact.index("n_batch,n_ubatch=_requested_batch_pair") < compact.index(
         "n_batch,n_ubatch=_floored_batch_pair"
     )
-    # The restore belongs to the same branch that clears the text-only diagnosis.
     assert ast.parse(src) is not None
 
 
 @pytest.mark.parametrize(
     "env,expected",
     [
-        # Zero micro-batch means "use batch", so this pair is really 4096/4096 and
-        # flooring the literal zero would emit 4096/2048 -- a downgrade wearing a
-        # raise, and the assert back for any chunk between 2049 and 4096 tokens.
+        # Zero means "use batch", so this is 4096/4096, not 4096/2048.
         ({"LLAMA_ARG_BATCH": "4096", "LLAMA_ARG_UBATCH": "0"}, ("4096", "4096")),
-        # Zero with nothing to borrow from still lands on the floor.
         ({"LLAMA_ARG_UBATCH": "0"}, ("2048", "2048")),
     ],
 )
@@ -3967,9 +3912,7 @@ def test_a_zero_micro_batch_means_use_batch_before_it_means_floor(
 
 
 def test_an_explicit_field_beats_a_larger_environment_batch(tmp_path, monkeypatch):
-    """The field is emitted as a flag and arg.cpp lets a flag overwrite what it read
-    from the environment, so the field is what the launch runs at. Taking the max of
-    both would emit a value the user's own field contradicts."""
+    """The field is emitted as a flag, which beats the environment in arg.cpp."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3989,17 +3932,12 @@ def test_an_explicit_field_beats_a_larger_environment_batch(tmp_path, monkeypatc
         n_ubatch = 1024,
     )["cmd"]
 
-    # The field is below the floor, so the floor wins -- but at 2048, not the 8192
-    # the environment would have contributed to a max().
     assert cmd[cmd.index("--batch-size") + 1] == VISION_MMPROJ_MIN_BATCH
     assert cmd[cmd.index("--ubatch-size") + 1] == VISION_MMPROJ_MIN_BATCH
 
 
 def test_an_inherited_micro_batch_is_clamped_to_the_batch_before_the_floor(tmp_path, monkeypatch):
-    """llama.cpp derives n_ubatch = min(n_batch, n_ubatch), so an explicit 2048 batch
-    beside an inherited 32768 micro-batch runs at 2048. Taking the raw 32768 into the
-    floor emitted 32768 for both: it overrides the batch the caller set and reserves
-    tens of GB of compute buffer for a micro-batch the launch never had."""
+    """llama.cpp clamps ubatch to batch, so inherited ubatch 32768 with batch 2048 runs at 2048."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -4023,10 +3961,7 @@ def test_an_inherited_micro_batch_is_clamped_to_the_batch_before_the_floor(tmp_p
 
 
 def test_a_remembered_mmproj_auto_is_deliberately_not_floored(tmp_path):
-    """--mmproj-auto really does make llama-server rediscover the adjacent projector,
-    so this child gets a non-causal encoder at llama.cpp's 512 and can hit the assert.
-    Not floored, for the same reason as the inherited case: the recovery gate cannot
-    see this source either, so the raise would cost the fallback."""
+    """--mmproj-auto is not floored, for the same recovery reason as the env projector."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -4041,8 +3976,6 @@ def test_a_remembered_mmproj_auto_is_deliberately_not_floored(tmp_path):
 
 
 def test_mmproj_auto_turned_back_off_gets_no_floor(tmp_path):
-    """llama.cpp is last-wins on the enable/disable pair, so a trailing
-    --no-mmproj-auto means nothing is rediscovered and nothing needs sizing."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,

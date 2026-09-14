@@ -3245,14 +3245,7 @@ class TestFourMoreLaunchNormalizations:
 
 
 class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
-    """load_model raises --batch-size / --ubatch-size to 2048 whenever it emits
-    --mmproj, because a projector's encoder runs non-causal and llama.cpp aborts on a
-    micro-batch that cannot hold one whole image or audio chunk (#10559). Its own fit
-    is sized from the raised value, but the panel and the training-coexistence guard
-    are a different code path: priced at llama.cpp's 512 default they charge a quarter
-    of the compute buffers the child allocates, which on a 12B-class VLM is 1.8-2.3 GB
-    the guard would let a chat load take out from under a running training job.
-    """
+    """The panel and the training guard price the projector batch floor the loader emits."""
 
     @pytest.fixture
     def vision(self, tmp_path):
@@ -3285,8 +3278,6 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
         weight, config = vision
         priced = ri._gguf_memory_breakdown(config, weight, n_ctx = 8192)
         pinned = ri._gguf_memory_breakdown(config, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048)
-        # Identical, because the launch runs at 2048 either way. Before the mirror the
-        # left-hand side priced 512 and came out four times smaller.
         assert priced.compute_bytes == pinned.compute_bytes
 
     def test_a_text_only_load_still_prices_the_llama_cpp_default(self, vision):
@@ -3298,8 +3289,6 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
         floored = ri._gguf_memory_breakdown(
             text_only, weight, n_ctx = 8192, n_batch = 2048, n_ubatch = 2048
         )
-        # No projector, no floor: the two must NOT agree, or the mirror leaked into
-        # every text load and inflated the panel for models that never encode an image.
         assert priced.compute_bytes < floored.compute_bytes
 
     def test_the_training_guard_charges_the_raised_micro_batch(self, vision):
@@ -3312,8 +3301,6 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
 
     def test_no_mmproj_in_the_extras_prices_no_floor(self, vision):
         weight, config = vision
-        # --no-mmproj stops Unsloth resolving one, so nothing non-causal launches and
-        # the panel must not quote a raise the child never gets.
         suppressed = ri._gguf_memory_breakdown(
             config, weight, n_ctx = 8192, llama_extra_args = ["--no-mmproj"]
         )
@@ -3328,24 +3315,16 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
         assert suppressed.compute_bytes < floored.compute_bytes
 
     def test_the_resident_files_figure_does_not_absorb_the_raised_buffers(self, vision):
-        """_gguf_resident_file_gb subtracts a context term from the required-GB total,
-        so both halves have to be priced at the same batch. Floored on one side only,
-        the difference between a 512 and a 2048 compute buffer stays behind and is
-        reported to the panel as FILES, which do not move with the batch at all."""
+        """Both halves of the files subtraction are priced at the floored batch."""
         weight, config = vision
         files_gb = ri._gguf_resident_file_gb(config)
         on_disk = (
             Path(weight).stat().st_size + Path(config.gguf_mmproj_file).stat().st_size
         ) / 1024**3
-        # Whatever the projector's runtime allowance adds, it is nothing like the
-        # ~1.8 GB an unpaired subtraction leaked here.
         assert files_gb == pytest.approx(on_disk, abs = 0.2)
 
     def test_a_family_mismatched_projector_is_not_priced_at_the_floor(self, tmp_path):
-        """_resolve_launch_mmproj_path rejects a projector whose filename carries a
-        different model-family token and launches text-only, so pricing 2048 for that
-        child overstates the panel by the same amount the missing floor understated it
-        by, just in the other direction."""
+        """The loader launches a family-mismatched projector text-only, so it gets no floor."""
         weight = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "gemma-3-12b-Q4_K_M.gguf")
         matching = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-gemma-3-F16.gguf")
         stranger = _write_gguf(tmp_path, "clip", {"block_count": 2}, name = "mmproj-qwen3vl-F16.gguf")
@@ -3363,7 +3342,6 @@ class TestTheProjectorBatchFloorIsPricedNotJustLaunched:
         ok = SimpleNamespace(**base, gguf_mmproj_file = matching)
         mismatched = SimpleNamespace(**base, gguf_mmproj_file = stranger)
 
-        # Both files exist; only the family token separates them.
         assert Path(stranger).is_file()
         assert ri._launch_raises_projector_batch(ok, None, False) is True
         assert ri._launch_raises_projector_batch(mismatched, None, False) is False

@@ -10737,11 +10737,7 @@ def _estimate_gguf_required_gb(
             extra_args_disable_mmproj,
         )
 
-        # Price the batch the launch will emit, not the one that was requested: a
-        # projector load is floored to 2048 before any of load_model's own reserves are
-        # sized, so charging llama.cpp's 512 default here under-reserves the compute
-        # buffers by 4x (~1.8-2.3 GB on a 12B-class VLM) in the one estimate that
-        # decides whether a chat load may sit next to a training job.
+        # Price the batch the launch emits: load_model floors a projector load to 2048.
         if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
             from core.inference.llama_cpp import _mmproj_batch_floor
             n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
@@ -11038,10 +11034,7 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
-            # Nothing is on disk yet, so the predicate above could not see a projector.
-            # The listing can: a repo shipping one is a load that will fetch it and
-            # launch floored, and this is the guard that protects a training job, so the
-            # 4x compute reserve belongs in the charge.
+            # Nothing is on disk for the predicate above; the listing says a projector ships.
             if has_vision and not extra_args_disable_mmproj(llama_extra_args):
                 from core.inference.llama_cpp import _mmproj_batch_floor
                 n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
@@ -11506,9 +11499,7 @@ def _gguf_resident_file_gb(
     required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
     if required_gb is None:
         return None  # deliberately not cached: usually a download still in flight
-    # The batch the required-GB arm priced with. It applies the projector floor
-    # internally, so a subtraction taken at llama.cpp's 512 default leaves the
-    # difference between the two compute buffers behind and reports it as FILES.
+    # Subtract at the batch the required-GB arm priced, or the floor reads as files.
     _term_batch, _term_ubatch = (None, None)
     if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
         from core.inference.llama_cpp import _mmproj_batch_floor
@@ -11667,19 +11658,9 @@ def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
 def _launch_raises_projector_batch(
     config: ModelConfig, extras: Optional[list[str]], disable_vision: bool
 ) -> bool:
-    """Whether the launch being priced will carry the loader's non-causal batch floor.
+    """Whether load_model applies the projector batch floor (#10559) to this launch.
 
-    ``load_model`` raises --batch-size / --ubatch-size to at least 2048 whenever it
-    emits --mmproj, because a projector's encoder runs non-causal and llama.cpp aborts
-    on a micro-batch that cannot hold one whole image or audio chunk (#10559). That
-    quadruples the ubatch-dependent compute buffers against llama.cpp's 512 default, so
-    an estimator that keeps pricing 512 understates the Load-Model panel and lets the
-    coexistence guard admit a chat load over VRAM a running training job needs.
-
-    Mirrors the loader's own condition, which is two things OR'd: Studio's resolved
-    projector, which needs the config's vision flag; and a --mmproj typed into Advanced
-    Arguments, which does not, because the extras are appended last and hand the child a
-    projector whatever the config says.
+    Mirrors the loader: an extras --mmproj, or Studio's resolved projector for a vision config.
     """
     from core.inference.llama_cpp import (
         _MMPROJ_PATH_FLAGS,
@@ -11692,12 +11673,7 @@ def _launch_raises_projector_batch(
     override = _extra_args_device(extras, _MMPROJ_PATH_FLAGS)
     if override and Path(override).is_file():
         return True
-    # An inherited LLAMA_ARG_MMPROJ / _URL and a remembered --mmproj-auto are NOT
-    # priced at the floor, because load_model does not apply it to them: the recovery
-    # gate cannot see either source, so raising their buffers would remove the fallback
-    # from a launch that used to fit. Mirrored here so the panel keeps describing the
-    # child that actually starts. Both are tracked for a follow-up that teaches the
-    # recovery path the same sources.
+    # Inherited LLAMA_ARG_MMPROJ(_URL) and --mmproj-auto are not floored by the loader either.
     if extra_args_disable_mmproj(extras):
         return False
     if not getattr(config, "is_vision", False):
@@ -11705,10 +11681,7 @@ def _launch_raises_projector_batch(
     resolved = getattr(config, "gguf_mmproj_file", None)
     if not resolved or not Path(str(resolved)).is_file():
         return False
-    # The loader resolves through _resolve_launch_mmproj_path, which rejects a projector
-    # whose name does not match the model family and launches text-only. Pricing 2048
-    # for that child overstates the panel and the guard by the same 1.8-2.3 GB the
-    # missing floor understated them by, just in the other direction.
+    # The loader launches text-only when the projector does not match the model family.
     main = getattr(config, "gguf_file", None)
     if main:
         try:
@@ -11718,8 +11691,7 @@ def _launch_raises_projector_batch(
         except Exception:
             pass
     if disable_vision:
-        # The switch drops an image tower and keeps an audio-only one, and the kept
-        # projector still launches, so it still carries the floor.
+        # The vision switch keeps an audio-only projector, which still launches.
         try:
             from utils.models.gguf_metadata import mmproj_accepts_image
             return not mmproj_accepts_image(str(resolved))
@@ -12086,10 +12058,7 @@ def _gguf_memory_breakdown(
         strip_shadowing_flags,
     )
 
-    # The panel quotes what the launch will really run, and a projector load runs
-    # floored to 2048 (see _launch_raises_projector_batch). Priced at llama.cpp's 512
-    # default the compute line reads a quarter of the buffers the child allocates,
-    # which is the half of the row that moves with the settings above it.
+    # Price the floored batch the launch will run (see _launch_raises_projector_batch).
     if _launch_raises_projector_batch(config, llama_extra_args, disable_vision):
         from core.inference.llama_cpp import _mmproj_batch_floor
         n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
