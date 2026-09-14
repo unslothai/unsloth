@@ -506,6 +506,8 @@ export function useTauriUpdate(isExternalServer = false) {
       console.warn("Background app download failed:", e);
       if (preparingVersionRef.current !== version) return;
       patchPreparation({ shell: "failed" });
+      // The offer goes back to Update; without the reason a persistent failure is a button that does nothing.
+      toast.error("Could not download the app update", { description: String(e) });
     } finally {
       unlisten?.();
     }

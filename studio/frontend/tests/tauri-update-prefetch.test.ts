@@ -18,6 +18,8 @@ interface HarnessOptions {
   holdUpdate?: () => Promise<void>;
   /** The first start_backend_update fails, as an update that broke midway does. */
   failUpdateOnce?: boolean;
+  /** Every app bundle download is refused. */
+  bundleFails?: boolean;
 }
 
 interface Controller {
@@ -96,6 +98,7 @@ function harness(
     bundleReady = false,
     holdUpdate,
     failUpdateOnce = false,
+    bundleFails = false,
   }: HarnessOptions = {},
 ) {
   const host = createHookReact();
@@ -121,6 +124,7 @@ function harness(
       }),
     downloadDesktopUpdate: (_version: string, onProgress: (p: number) => void) => {
       calls.push("download_desktop_update");
+      if (bundleFails) return Promise.reject(new Error("signature verification failed"));
       downloaded = true;
       onProgress(100);
       return Promise.resolve();
@@ -182,7 +186,13 @@ function harness(
       },
       "@/lib/tauri-updater": updater,
       "@/lib/update-preparation": preparation,
-      "@/lib/toast": { toast: { error: () => undefined } },
+      "@/lib/toast": {
+        toast: {
+          error: (title: string, options?: { description?: string }) => {
+            calls.push(`toast: ${title}: ${options?.description ?? ""}`);
+          },
+        },
+      },
       "@tauri-apps/api/core": {
         invoke: async (command: string) => {
           calls.push(command);
@@ -426,4 +436,20 @@ test("a retained failure's retry installs instead of preparing again", async (t)
   await settle();
   assert.equal(installs(), 2);
   assert.equal(hook.calls.filter((c) => c === "start_prefetch_update").length, prefetches);
+});
+
+test("a bundle download that keeps failing says why each time and installs nothing", async (t) => {
+  const hook = harness(t, { bundleFails: true });
+  await hook.controller.checkForUpdate();
+
+  for (let press = 0; press < 2; press += 1) {
+    await hook.controller.installUpdate();
+    await settleUntil(() => hook.statusUpdates.at(-1) === "available");
+  }
+
+  const toasts = hook.calls.filter((call) => call.startsWith("toast: "));
+  assert.equal(toasts.length, 2);
+  assert.match(toasts[0], /Could not download the app update: .*signature verification failed/);
+  assert.equal(hook.statusUpdates.at(-1), "available");
+  assert.ok(!hook.calls.includes("start_backend_update"));
 });
