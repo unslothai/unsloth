@@ -962,9 +962,8 @@ def _repair_bad_anyio() -> None:
     )
 
 
-# constraints.txt caps accelerate <1.15 on Windows (#10819), but install.ps1 resolves the core
-# packages itself with no -c and then sets SKIP_STUDIO_BASE=1, so the one constrained step that
-# would apply the cap never runs and no later step re-resolves accelerate. Same shape as anyio.
+# The constraints cap cannot reach a fresh install: install.ps1 resolves accelerate with no -c,
+# then hands off with SKIP_STUDIO_BASE=1, and no later step re-resolves it (#10819).
 _ACCELERATE_BAD_FLOOR = (1, 15)
 
 
@@ -975,14 +974,8 @@ def _repair_bad_accelerate() -> None:
     if installed is None or installed < _ACCELERATE_BAD_FLOOR:
         return
     _note(f"accelerate {installed[0]}.{installed[1]} found -- reinstalling accelerate<1.15...")
-    # --no-deps: accelerate requires torch>=2.0.0, so a with-deps reinstall would re-resolve
-    # torch and drop a generic PyPI build over the ROCm wheel this exists to keep working.
-    #
-    # _try, so a failure is nonfatal. pip_install exits the process, and on Windows today
-    # this step fires on essentially every fresh install, so a transient PyPI blip would
-    # turn an install that used to finish into one that dies here. Same call that
-    # _ensure_rocm_torch makes for the AMD index, for the same reason. The user ends up
-    # where they already were, with a warning naming it, rather than with no Studio.
+    # --no-deps: accelerate requires torch>=2.0.0, and a with-deps reinstall replaces the ROCm
+    # wheel. _try, not pip_install: that exits, and this fires on nearly every Windows install.
     if not pip_install_try(
         "Repairing accelerate version",
         "--no-cache-dir",
@@ -7625,7 +7618,7 @@ def install_python_stack() -> int:
     # every branch including its skips).
     base_total = 13 if IS_WINDOWS else 14
     if IS_WINDOWS:
-        base_total += 1  # accelerate repair (step 8c), same gate as the step itself
+        base_total += 1  # 8c, gated exactly as the step is
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -7981,8 +7974,7 @@ def install_python_stack() -> int:
     _progress("anyio check")
     _repair_bad_anyio()
 
-    # 8c. accelerate repair (#10819). Outside the skip_base branch on purpose: install.ps1 is
-    # the path that lands a capped-out accelerate, and it is the path that sets skip_base.
+    # 8c. Outside skip_base on purpose: install.ps1 sets it and is the path that lands 1.15.
     if IS_WINDOWS:
         _progress("accelerate check")
         _repair_bad_accelerate()

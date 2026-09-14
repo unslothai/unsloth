@@ -5153,11 +5153,9 @@ class TestProgressStepCountMatchesTotal:
 
 
 class TestAccelerateRepair:
-    """accelerate 1.15.0 made prepare_model call model_has_dtensor() unconditionally, which
-    imports torch._C._distributed_c10d -- absent from AMD's Windows ROCm wheels, so training
-    dies at trainer start (huggingface/accelerate#4249). constraints.txt caps it, but only
-    the core-packages step passes -c, and install.ps1 sets SKIP_STUDIO_BASE=1 to skip that
-    step after resolving accelerate itself without -c. The repair covers that path."""
+    """accelerate 1.15 reaches torch._C._distributed_c10d, absent from AMD's Windows ROCm
+    wheels (huggingface/accelerate#4249). The constraints cap misses a fresh install, which
+    resolves accelerate with no -c and hands off with SKIP_STUDIO_BASE=1."""
 
     def _repair(
         self,
@@ -5175,15 +5173,13 @@ class TestAccelerateRepair:
         return mock_pip
 
     def test_a_failed_repair_does_not_abort_the_install(self):
-        """pip_install exits the process. On Windows this step fires on essentially every
-        fresh install today, so using it would let one unreachable index turn an install
-        that used to finish into one that dies here. It must warn and carry on."""
+        """pip_install exits, and this fires on nearly every fresh Windows install, so one
+        unreachable index would fail an install that used to finish."""
         mock_pip = self._repair((1, 15), succeeds = False)
         assert mock_pip.call_count == 1
 
     def test_the_repair_is_never_the_fatal_variant(self):
-        """Guards the same thing at the source level, since a future edit could swap the
-        call back without changing any behaviour the mock above can see."""
+        """At source level: swapping the call back changes nothing the mock above sees."""
         src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
         body = src.split("def _repair_bad_accelerate()")[1].split("\ndef ")[0]
         assert "pip_install_try(" in body
@@ -5197,19 +5193,16 @@ class TestAccelerateRepair:
 
     @pytest.mark.parametrize("installed", [None, (1, 14), (1, 9), (0, 34)])
     def test_leaves_a_good_or_missing_accelerate_alone(self, installed):
-        """None is "not installed"; (1, 9) guards against a string compare, where "1.9"
-        would sort above "1.15" and trigger a needless downgrade."""
+        """(1, 9) guards a string compare, where "1.9" sorts above "1.15"."""
         assert self._repair(installed).call_count == 0
 
     @pytest.mark.parametrize("is_windows", [False, True])
     def test_only_windows_is_touched(self, is_windows):
-        """The cap's marker is sys_platform == "win32". Linux, WSL (sys.platform "linux")
-        and macOS ship a distributed build, so they keep current accelerate."""
+        """WSL reports sys.platform "linux", and every non-Windows build ships c10d."""
         assert self._repair((1, 15), is_windows = is_windows).call_count == int(is_windows)
 
     def test_repair_is_no_deps(self):
-        """accelerate requires torch>=2.0.0. A with-deps reinstall would re-resolve torch
-        and put a generic PyPI build over the ROCm wheel this exists to keep working."""
+        """accelerate requires torch>=2.0.0: with deps, the reinstall replaces the ROCm wheel."""
         args = [str(a) for a in self._repair((1, 15)).call_args.args]
         assert "--no-deps" in args
         assert "--force-reinstall" not in args
