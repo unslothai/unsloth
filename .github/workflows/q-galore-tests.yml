@@ -28,15 +28,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # q_galore_adamw.py calls into bitsandbytes' Optimizer2State, whose constructor
-        # signature is not stable across the range pyproject.toml allows
-        # (bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0, no upper bound). Pinning one version
-        # here would test one point of that range and miss the rest, which is how a
-        # constructor call that silently misbinds its arguments on 0.50.x reached main.
-        #
-        #   0.45.5  the floor, and the version 8 pyproject extras hard-pin
-        #   0.49.2  last release with percentile_clipping / block_wise
-        #   0.50.2  first release without them, and the first with CPU optimizer kernels
+        # Optimizer2State's constructor signature is not stable across the range
+        # pyproject allows, which is how a call that misbinds its arguments on 0.50.x
+        # reached main. 0.45.5 is the floor, 0.49.2 the last with percentile_clipping /
+        # block_wise, 0.50.2 the first without them and with CPU optimizer kernels.
         bitsandbytes: ["0.45.5", "0.49.2", "0.50.2"]
     name: q-galore (bitsandbytes ${{ matrix.bitsandbytes }})
     steps:
@@ -51,8 +46,6 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.0'
           python -m pip install 'pytest==9.0.3' 'bitsandbytes==${{ matrix.bitsandbytes }}'
       - name: Run Q-GaLore regressions
-        # No --confcutdir: tests/conftest.py is the GPU-spoof harness, and this file
-        # loads unsloth/optimizers/*.py through importlib specs rather than importing
-        # the unsloth package, so it neither needs the spoof nor is disturbed by it.
-        # Checked: the suite passes identically with and without the repo conftest.
+        # No --confcutdir: this file loads the optimizers through importlib specs, so the
+        # GPU-spoof conftest neither helps nor hinders it. Verified both ways.
         run: python -m pytest tests/utils/test_q_galore.py -q

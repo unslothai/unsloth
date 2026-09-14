@@ -61,21 +61,10 @@ _BNB_OPTIMIZER_BACKEND = {}
 def requires_bnb_optimizer(device):
     """Skip unless bitsandbytes can really run an optimizer step on ``device``.
 
-    ``bitsandbytes.supported_torch_devices`` is the wrong thing to ask. It does not exist
-    at all before 0.46.0, and from 0.46.0 through 0.49.x it already lists "cpu" even
-    though the CPU optimizer kernels only landed in 0.50.0. Gating on it therefore lets
-    these tests run, and fail, on 0.47.x and 0.49.x -- both of which pyproject.toml
-    allows (`bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0`, no upper bound).
-
-    Observed on CPU with torch 2.10.0:
-        0.45.5  NameError: name 'str2optimizer32bit' is not defined
-        0.47.0  AttributeError: 'NoneType' object has no attribute 'shape'
-        0.49.2  AttributeError: 'NoneType' object has no attribute 'shape'
-        0.50.2  works
-
-    So run one step and find out. The probe drives bitsandbytes' own AdamW32bit rather
-    than QGaLoreAdamW8bit, so a genuine regression in the code under test still fails
-    the test instead of silently turning it into a skip.
+    Not `supported_torch_devices`: it lists "cpu" from 0.46.0 but the CPU kernels landed in
+    0.50.0, so gating on it fails these tests on 0.47.x/0.49.x, which pyproject allows.
+    The probe drives bitsandbytes' own AdamW32bit, so a real regression in the code under
+    test still fails rather than turning into a skip.
     """
     available = _BNB_OPTIMIZER_BACKEND.get(device)
     if available is None:
