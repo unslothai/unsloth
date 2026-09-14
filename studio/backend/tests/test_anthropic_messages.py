@@ -216,6 +216,20 @@ def test_think_parsing_expected_gates_on_capability_and_request():
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
+    # Inkling: _coerce_reasoning_effort rewrites the "none" sentinel to 0, so 0 reads as off.
+    class _NumericEffortBackend(_Backend):
+        def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
+            return {"reasoning_effort": 0.0 if reasoning_effort == "none" else 0.2}
+
+    assert (
+        _think_parsing_expected(_NumericEffortBackend(), _basic_payload(reasoning_effort = "none"))
+        is False
+    )
+    assert (
+        _think_parsing_expected(_NumericEffortBackend(), _basic_payload(enable_thinking = False))
+        is True
+    )
+
 
 def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
     # Effort-only requests must drive enable_thinking-style templates the same
@@ -535,6 +549,22 @@ class TestToolActionNudge:
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
         assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
+
+    def test_read_skill_only_nudge_does_not_advertise_create_skill(self, monkeypatch):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [{"type": "function", "function": {"name": "read_skill"}}],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "create_skill" not in nudge
 
 
 # =====================================================================
@@ -1220,6 +1250,28 @@ class TestAnthropicToolsToOpenAI:
         )
 
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
+
+    @pytest.mark.parametrize(
+        ("requested_studio_tools", "enabled_tools"),
+        [({"web_search"}, None), (set(), ["web_search"])],
+    )
+    def test_explicit_server_tool_selection_does_not_add_read_skill(
+        self, monkeypatch, requested_studio_tools, enabled_tools
+    ):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        result = _select_anthropic_server_tools(
+            [{"type": "function", "function": {"name": "web_search"}}],
+            requested_studio_tools = requested_studio_tools,
+            enabled_tools = enabled_tools,
+        )
+
+        assert [tool["function"]["name"] for tool in result] == ["web_search"]
 
     def test_pydantic_model_input(self):
         tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
@@ -2331,6 +2383,14 @@ class TestAnthropicRequestedStudioTools:
         tools = [{"type": "web_search_20250305", "name": "web_search"}]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
+    def test_recognizes_read_skill_server_tool_by_type(self):
+        tools = [{"type": "read_skill", "name": "read_skill"}]
+        assert _anthropic_requested_studio_tools(tools) == {"read_skill"}
+
+    def test_create_skill_is_not_available_without_a_confirmation_channel(self):
+        tools = [{"type": "create_skill", "name": "create_skill"}]
+        assert _anthropic_requested_studio_tools(tools) == set()
+
     def test_bare_name_without_type_is_not_treated_as_server_tool(self):
         # Anthropic dispatches server tools by `type`; bare-name matching
         # would let a malformed client tool (missing input_schema) silently
@@ -3311,6 +3371,14 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls == []
 
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        # An Anthropic web-search request must not inherit the confirmation-gated create_skill tool.
+        monkeypatch.setattr(
+            inf_mod,
+            "_enabled_agent_skills",
+            lambda: [{"name": "skill-creator", "description": "Create a skill."}],
+        )
         # ask is a request for a per-call pause this channel cannot honor, so it is
         # always rejected, even for a safe-only server tool (web_search).
         safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]

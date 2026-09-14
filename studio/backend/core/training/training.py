@@ -10,6 +10,20 @@ orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, 
 exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
+from core.training.account_jobs import (
+    account_is_retired,
+    account_process_spec,
+    init_job_owner,
+    job_busy,
+    job_control,
+    job_is_foreign,
+    job_pump,
+    job_read,
+    owned_job,
+    validate_job_paths,
+    worker_alive,
+)
+from utils.account_context import account_thread, current_account
 import json as _json
 import math
 import multiprocessing as mp
@@ -30,6 +44,7 @@ from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
+from hub.utils.hf_tokens import hf_token_arg
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -78,6 +93,7 @@ class TrainingStartRequestRecord:
     message: str
     error: Optional[str] = None
     error_code: Optional[str] = None
+    account_id: str = field(default_factory = lambda: current_account().account_id)
 
 
 class TrainingStartCancellationCapacityError(RuntimeError):
@@ -258,6 +274,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
+        "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
@@ -564,6 +581,8 @@ def _cleanup_cancelled_checkpoints(output_dir: Union[str, os.PathLike]) -> None:
     Completed ``checkpoint-<int>/`` dirs survive. Symlinked output_dir / children
     are skipped so containment can't be bypassed.
     """
+    if account_is_retired():
+        return
     out = Path(output_dir)
     if not out.exists() or not out.is_dir() or out.is_symlink():
         return
@@ -631,6 +650,10 @@ class TrainingProgress:
     is_run_summary: bool = False
 
 
+# Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
+_UNSET = object()
+
+
 class _MLXTrainerAdapter:
     """Adapts the legacy UnslothTrainer API to the shared Unsloth MLX worker path."""
 
@@ -695,6 +718,7 @@ class _MLXTrainerAdapter:
         trust_remote_code: bool = False,
         full_finetuning: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
     ) -> bool:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
@@ -730,6 +754,7 @@ class _MLXTrainerAdapter:
             "is_dataset_audio": bool(is_dataset_audio),
             "trust_remote_code": bool(trust_remote_code),
             "gpu_ids": gpu_ids,
+            "gradient_checkpointing": use_gradient_checkpointing,
         }
         self._update_progress(
             is_training = False,
@@ -753,11 +778,14 @@ class _MLXTrainerAdapter:
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
-        use_gradient_checkpointing: Union[str, bool] = "unsloth",
+        use_gradient_checkpointing: Union[str, bool] = _UNSET,
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
     ) -> bool:
+        if use_gradient_checkpointing is _UNSET:
+            # This entry overrides load_model's, so default to the mode recorded there.
+            use_gradient_checkpointing = self._model_config.get("gradient_checkpointing", "unsloth")
         self._peft_config = {
             "use_lora": bool(use_lora),
             "lora_r": lora_r,
@@ -864,12 +892,12 @@ class _MLXTrainerAdapter:
             status_message = "Initializing MLX training...",
         )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = account_thread(
             target = self._run_training_thread,
             args = (config, event_queue, stop_queue),
             daemon = True,
         )
-        self._pump_thread = threading.Thread(
+        self._pump_thread = account_thread(
             target = self._pump_events,
             args = (event_queue, self.training_thread),
             daemon = True,
@@ -1074,14 +1102,26 @@ def create_mlx_trainer_adapter(*args, **kwargs):
 
 
 class TrainingBackend:
-    """
-    Training orchestration backend — subprocess-based.
-    Launches a fresh subprocess per job, communicates via mp.Queue.
-    """
+    """Training orchestration backend: launches a fresh subprocess per job and communicates via
+    mp.Queue."""
 
     FLUSH_THRESHOLD: int = 10
 
     def __init__(self):
+        init_job_owner(
+            self,
+            lambda: (
+                self._pending_start_request_id is not None
+                or worker_alive(self)
+                or self.is_training_active()
+            ),
+            lambda: (
+                self.cancel_start_request(self._pending_start_request_id)
+                if self._pending_start_request_id
+                else self.stop_training(save = False, expected_job_id = self.current_job_id or "")
+            ),
+            self._clear_account_result,
+        )
         self._proc: Optional[mp.Process] = None
         # True from the sidecar-swap handshake until the worker is recorded (startup counts as active).
         self._spawn_in_progress: bool = False
@@ -1100,7 +1140,6 @@ class TrainingBackend:
         self._stop_watchdog_proc: Optional[mp.Process] = None
         self._complete_seen = threading.Event()
 
-        # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
@@ -1114,7 +1153,6 @@ class TrainingBackend:
         self._last_progress_log_elapsed: Optional[float] = None
         self._last_progress_log_tokens: Optional[int] = None
 
-        # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
         self.step_history: list = []
@@ -1152,9 +1190,36 @@ class TrainingBackend:
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
+    def _clear_account_result(self):
+        self._progress = TrainingProgress()
+        for name in (
+            "loss_history",
+            "lr_history",
+            "step_history",
+            "grad_norm_history",
+            "grad_norm_step_history",
+            "eval_loss_history",
+            "eval_step_history",
+        ):
+            getattr(self, name).clear()
+        self.current_job_id = self.current_start_request_id = None
+        self._status_start_request_id = self._output_dir = None
+        self.eval_enabled = False
+
+    def _require_start_request_account(self, start_request_id):
+        record = self._start_requests.get(start_request_id)
+        if record is None:
+            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            record = cancelled[1] if cancelled else None
+        if record is not None and record.account_id != current_account().account_id:
+            from auth.policy import require_account_scope
+            require_account_scope(record.account_id)
+
+    @owned_job()
     def reserve_start_request(
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
+        self._require_start_request_account(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
@@ -1195,12 +1260,14 @@ class TrainingBackend:
             self._prune_start_requests_locked()
             return "reserved", record
 
+    @job_read(lambda self, *args, **kwargs: None)
     def peek_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         """The lookup half of reserve_start_request(), with no reservation.
 
         Returns the record a retry would replay (live or cancellation-tombstoned), refreshing
         the tombstone TTL as the reserve path does so a retry keeps a cancellation alive, or
         None when the id is unknown and the caller is free to reserve it."""
+        self._require_start_request_account(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
@@ -1216,6 +1283,7 @@ class TrainingBackend:
             )
             return record
 
+    @job_pump
     def resolve_start_request(
         self,
         start_request_id: str,
@@ -1225,6 +1293,7 @@ class TrainingBackend:
         error: Optional[str] = None,
         error_code: Optional[str] = None,
     ) -> Optional[TrainingStartRequestRecord]:
+        self._require_start_request_account(start_request_id)
         if state not in {"accepted", "rejected"}:
             raise ValueError(f"Invalid training start request state: {state}")
         with self._lock:
@@ -1245,9 +1314,11 @@ class TrainingBackend:
                 self._pending_start_request_id = None
             return record
 
+    @job_control
     def cancel_start_request(
         self, start_request_id: str
     ) -> tuple[Literal["cancelled", "superseded"], TrainingStartRequestRecord]:
+        self._require_start_request_account(start_request_id)
         from .lifecycle import training_lifecycle_guard
 
         reserved_cancel_tombstone = False
@@ -1403,7 +1474,9 @@ class TrainingBackend:
         record = self._start_requests.get(start_request_id)
         return bool(record is not None and record.state == "pending" and record.job_id == job_id)
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
+        self._require_start_request_account(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
             record = self._start_requests.get(start_request_id)
@@ -1412,6 +1485,7 @@ class TrainingBackend:
             cancelled = self._start_cancel_tombstones.get(start_request_id)
             return cancelled[1] if cancelled is not None else None
 
+    @job_read(lambda self, *args, **kwargs: None)
     def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
             if self._status_start_request_id is None:
@@ -1455,7 +1529,9 @@ class TrainingBackend:
                         self._spawn_in_progress = False
                         self._new_job_spawn_id = None
 
+    @job_control
     def acknowledge_start_request(self, start_request_id: str) -> bool:
+        self._require_start_request_account(start_request_id)
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
             record = self._start_requests.get(start_request_id)
@@ -1527,6 +1603,7 @@ class TrainingBackend:
             del self._start_requests[request_id]
             overflow -= 1
 
+    @owned_job()
     def start_training(
         self,
         job_id: str,
@@ -1538,6 +1615,7 @@ class TrainingBackend:
     ) -> bool:
         # Reserve before lifecycle locking and validation: routes call start_training from worker threads,
         # so this compare-and-set stops two requests reaching the spawn.
+        validate_job_paths(kwargs, cached_resources = True)
         with self._new_job_spawn_reservation(job_id) as spawn_reserved:
             if not spawn_reserved:
                 logger.warning("Training subprocess already running")
@@ -1574,17 +1652,14 @@ class TrainingBackend:
         spawn_already_reserved: bool = False,
         **kwargs,
     ) -> bool:
-        """Spawn a subprocess to run the full training pipeline.
+        """Spawn a subprocess to run the full training pipeline. All kwargs are serialized into a
+        config dict and sent to the worker; returns True if the subprocess started successfully.
 
-        All kwargs are serialized into a config dict and sent to the worker.
-        Returns True if the subprocess started successfully.
-
-        ``before_spawn`` is an optional no-arg callable run after synchronous
-        validation (start guards, config build, explicit gpu_ids) passes but
-        before VRAM-dependent auto GPU-selection and the spawn -- used to free
-        VRAM (e.g. unload chat) without tearing it down on a refused start, while
-        still letting auto-selection place training against the freed memory.
-        Hook failures never block the start.
+        ``before_spawn`` is an optional no-arg callable run after synchronous validation (start
+        guards, config build, explicit gpu_ids) passes but before VRAM-dependent auto GPU-selection
+        and the spawn -- used to free VRAM (e.g. unload chat) without tearing it down on a refused
+        start, while still letting auto-selection place training against the freed memory. Hook
+        failures never block the start.
         """
         with self._lock:
             if not self._start_request_allows_spawn_locked(start_request_id, job_id):
@@ -1610,6 +1685,9 @@ class TrainingBackend:
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
+        hf_token = hf_token_arg(
+            config["hf_token"], allow_ambient_token = config.get("allow_ambient", True)
+        )
 
         _apply_cache_pins(config)
         from .provenance import initialize_resource_provenance
@@ -1624,7 +1702,7 @@ class TrainingBackend:
         gpu_ids = kwargs.get("gpu_ids")
         gpu_selection_kwargs = dict(
             model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
+            hf_token = hf_token,
             training_type = config["training_type"],
             load_in_4bit = config["load_in_4bit"],
             batch_size = config.get("batch_size", 4),
@@ -1672,7 +1750,7 @@ class TrainingBackend:
                 effective_training_load_in_4bit(
                     config,
                     config.get("model_snapshot_path") or config["model_name"],
-                    config.get("hf_token") or None,
+                    hf_token,
                 )
             with self._lock:
                 if not self._start_request_allows_spawn_locked(start_request_id, job_id):
@@ -1707,14 +1785,20 @@ class TrainingBackend:
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
 
-                    proc = _CTX.Process(
-                        target = run_without_native_path_secret,
-                        args = ("core.training.worker", "run_training_process", cache_env),
-                        kwargs = {
+                    process_args, process_kwargs = account_process_spec(
+                        "core.training.worker",
+                        "run_training_process",
+                        cache_env,
+                        {
                             "event_queue": event_queue,
                             "stop_queue": stop_queue,
                             "config": config,
                         },
+                    )
+                    proc = _CTX.Process(
+                        target = run_without_native_path_secret,
+                        args = process_args,
+                        kwargs = process_kwargs,
                         daemon = True,
                     )
                     from utils.process_lifetime import adopt_pid, is_process_shutting_down
@@ -1846,7 +1930,9 @@ class TrainingBackend:
                 return False
 
             # Assign handles and start the pump under the lock, else a poll sees a live _proc with no pump.
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            new_pump = account_thread(
+                target = self._pump_loop, account = self._result_account, daemon = True
+            )
             with self._lock:
                 self._pump_running = False
                 self._event_queue = event_queue
@@ -1867,13 +1953,13 @@ class TrainingBackend:
                 )
             return True
 
+    @job_control
     def stop_training(
         self,
         save: bool = True,
         *,
         expected_job_id: str,
     ) -> bool:
-        """Send stop signal to the training subprocess."""
         from .lifecycle import training_lifecycle_guard
         with training_lifecycle_guard():
             return self._stop_training_with_lifecycle_reserved(
@@ -1947,6 +2033,7 @@ class TrainingBackend:
         self._start_stop_watchdog(cancel = not save, expected_job_id = run_id)
         return True
 
+    @job_control
     def reset_training_state(self, expected_job_id: Optional[str] = None) -> str:
         from .lifecycle import training_lifecycle_guard
 
@@ -2025,8 +2112,9 @@ class TrainingBackend:
                 and self._stop_watchdog_proc is proc
             ):
                 return
-            watchdog = threading.Thread(
+            watchdog = account_thread(
                 target = self._stop_watchdog_loop,
+                account = self._result_account,
                 args = (proc, cancel, self.current_job_id),
                 kwargs = {"grace_s": grace_s, "terminal_seen": terminal_seen},
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
@@ -2102,22 +2190,21 @@ class TrainingBackend:
         target_proc: "Optional[mp.Process]" = None,
         watched_job_id: Optional[str] = None,
     ) -> None:
-        """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
-        even if the worker is wedged in driver teardown; preserves output_dir on a save so
-        the checkpoint is kept, and clears it on a cancel (Stop without saving must not
-        offer resume/export). No-ops if a new run already replaced the watched worker, so a
-        stale watchdog never marks a fresh run stopped or drops its handle.
+        """Finalize parent state after a force-terminate so the UI leaves "Stopping..." even if the
+        worker is wedged in driver teardown; preserves output_dir on a save so the checkpoint is
+        kept, and clears it on a cancel (Stop without saving must not offer resume/export). No-ops
+        if a new run already replaced the watched worker.
 
         Supersession is checked on both the watched proc and job id: start_training sets
-        current_job_id before it installs the new _proc, so a stale watchdog entering that
-        startup window still sees the old (dead) handle and is caught by the job-id guard.
+        current_job_id before it installs the new _proc, so a stale watchdog entering that startup
+        window still sees the old (dead) handle and is caught by the job-id guard.
 
-        The run's terminal DB state is recorded (create-if-needed + finish by captured id)
-        BEFORE _proc is dropped: a wedged worker still reports alive, so the pump never
-        reaches its own finalize and would bail on its _proc-is-None guard once the handle
-        is gone. While the handle is held is_training_active() stays true, so no new run can
-        start and current_job_id stays the watched run for the write. _proc is dropped last,
-        re-guarded on target_proc so a run that did replace the worker keeps its handle."""
+        The run's terminal DB state is recorded (create-if-needed + finish by captured id) BEFORE
+        _proc is dropped: a wedged worker still reports alive, so the pump never reaches its own
+        finalize and would bail on its _proc-is-None guard once the handle is gone. While the handle
+        is held is_training_active() stays true, so no new run can start and current_job_id stays
+        the watched run for the write. _proc is dropped last, re-guarded on target_proc.
+        """
         with self._lock:
             if target_proc is not None and self._proc is not target_proc:
                 return
@@ -2275,7 +2362,7 @@ class TrainingBackend:
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
 
-        if cancelled and output_dir:
+        if cancelled and output_dir and not account_is_retired():
             try:
                 _cleanup_cancelled_checkpoints(output_dir)
             except Exception:
@@ -2423,14 +2510,20 @@ class TrainingBackend:
                     ):
                         event_queue = _CTX.Queue()
                         stop_queue = _CTX.Queue()
-                        new_proc = _CTX.Process(
-                            target = run_without_native_path_secret,
-                            args = ("core.training.worker", "run_training_process", cache_env),
-                            kwargs = {
+                        process_args, process_kwargs = account_process_spec(
+                            "core.training.worker",
+                            "run_training_process",
+                            cache_env,
+                            {
                                 "event_queue": event_queue,
                                 "stop_queue": stop_queue,
                                 "config": config,
                             },
+                        )
+                        new_proc = _CTX.Process(
+                            target = run_without_native_path_secret,
+                            args = process_args,
+                            kwargs = process_kwargs,
                             daemon = True,
                         )
                         from utils.process_lifetime import adopt_pid, is_process_shutting_down
@@ -2482,7 +2575,9 @@ class TrainingBackend:
                 logger.info(
                     "Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid
                 )
-                new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+                new_pump = account_thread(
+                    target = self._pump_loop, account = self._result_account, daemon = True
+                )
                 with self._lock:
                     self._in_model_load = False
                     self._event_queue = event_queue
@@ -2500,11 +2595,11 @@ class TrainingBackend:
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
 
-        Defence in depth behind _pump_loop's guards. _pump_running stays True only
-        after an abnormal exit (the loop clears it on intended exits), so a True
-        flag plus a dead thread is an unambiguous crash. Restarts even after worker
-        exit so a fresh pump can drain the terminal events and finalize; otherwise
-        the run looks stuck "running" forever. Returns True if restarted.
+        Defence in depth behind _pump_loop's guards. _pump_running stays True only after an abnormal
+        exit (the loop clears it on intended exits), so a True flag plus a dead thread is an
+        unambiguous crash. Restarts even after worker exit so a fresh pump can drain the terminal
+        events and finalize; otherwise the run looks stuck running forever. Returns True if
+        restarted.
         """
         with self._lock:
             if not self._pump_running:
@@ -2518,7 +2613,9 @@ class TrainingBackend:
                 "Training event pump thread died while the worker is still running; "
                 "restarting it so progress updates resume."
             )
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            new_pump = account_thread(
+                target = self._pump_loop, account = self._result_account, daemon = True
+            )
             self._pump_thread = new_pump
             new_pump.start()
         return True
@@ -2543,7 +2640,6 @@ class TrainingBackend:
             return self._run_finished_locked()
 
     def is_training_active(self) -> bool:
-        """Check if training is currently active."""
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
             self, "_spawn_in_progress", False
@@ -2593,6 +2689,7 @@ class TrainingBackend:
 
             return False
 
+    @job_read(lambda self, *args, **kwargs: None)
     def active_output_dir(self) -> Optional[str]:
         if not self.is_training_active():
             return None
@@ -2607,8 +2704,13 @@ class TrainingBackend:
             output_dir = _output_dir_from_resume_checkpoint(resume_from_checkpoint)
         return str(output_dir) if output_dir else None
 
+    @job_read(
+        lambda self, *args, **kwargs: (
+            None,
+            TrainingProgress(status_message = "Busy" if job_busy(self) else "Ready to train"),
+        )
+    )
     def get_training_status(self, theme: str = "light") -> Tuple:
-        """Get current training status and loss plot."""
         with self._lock:
             progress = self._progress
 
@@ -2618,8 +2720,8 @@ class TrainingBackend:
         plot = self._create_loss_plot(progress, theme)
         return (plot, progress)
 
+    @job_read(lambda self, *args, **kwargs: None)
     def refresh_plot_for_theme(self, theme: str) -> "Optional[plt.Figure]":
-        """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
         if self.loss_history:
@@ -2637,6 +2739,10 @@ class TrainingBackend:
 
         @property
         def training_progress(self):
+            if job_is_foreign(self._backend):
+                return TrainingProgress(
+                    status_message = "Busy" if job_busy(self._backend) else "Ready to train"
+                )
             return self._backend._progress
 
         @training_progress.setter
@@ -2644,6 +2750,10 @@ class TrainingBackend:
             self._backend._progress = value
 
         def get_training_progress(self):
+            if job_is_foreign(self._backend):
+                return TrainingProgress(
+                    status_message = "Busy" if job_busy(self._backend) else "Ready to train"
+                )
             return self._backend._progress
 
         def _update_progress(self, **kwargs):
@@ -2669,14 +2779,14 @@ class TrainingBackend:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
             logger.exception("Training event pump: failed to handle %s event; skipping", etype)
 
+    @job_pump
     def _pump_loop(self) -> None:
         """Background thread: consume subprocess events and update state.
 
-        Sole writer of the in-memory progress state that /progress, /status,
-        /metrics and DB history read. If it exited while the worker still ran, the
-        run would burn GPU with events piling up while every surface froze. So no
-        single bad event or transient queue/DB error may end it; it returns only
-        through intended exits (worker gone, respawn handed off, finalized).
+        Sole writer of the in-memory progress state that /progress, /status, /metrics and DB history
+        read. If it exited while the worker still ran, the run would burn GPU with events piling up
+        while every surface froze, so no single bad event or transient queue/DB error may end it; it
+        returns only through intended exits (worker gone, respawn handed off, finalized).
         """
         self._pump_running = True
         while True:
@@ -3115,6 +3225,8 @@ class TrainingBackend:
 
     def _persist_output_dir(self) -> None:
         # Re-queue the claimed batch at the front so it retries on the next flush.
+        if account_is_retired():
+            return
         with self._lock:
             if (
                 not self._output_dir
@@ -3185,6 +3297,8 @@ class TrainingBackend:
         caller create at a time, and ``_db_run_created`` is published only after
         ``create_run`` commits, so a concurrent finalize never runs ``finish_run`` against a
         not-yet-inserted row (a zero-row UPDATE that would leave the run stuck as running)."""
+        if account_is_retired():
+            return
         self._run_intent_lock.acquire()
         with self._lock:
             if (
@@ -3255,6 +3369,8 @@ class TrainingBackend:
         progress are snapshotted under the lock and threaded through the flush/finish calls,
         so a new run racing between this claim and the DB writes can't be flushed or marked
         stopped under the old run's finalize."""
+        if account_is_retired():
+            return
         with self._provenance_lock:
             with self._lock:
                 if expected_job_id is not None and self.current_job_id != expected_job_id:
@@ -3313,6 +3429,8 @@ class TrainingBackend:
         metric batch, and progress snapshot are all taken under the lock, so a concurrent
         flush can't double-remove metrics and a racing new run can't redirect the write to
         a different job. A finalizer passes ``run_id`` to pin the target to its captured run."""
+        if account_is_retired():
+            return
         with self._lock:
             target = run_id if run_id is not None else self.current_job_id
             if not self._metric_buffer or not target or not self._db_run_created:
@@ -3491,12 +3609,10 @@ class TrainingBackend:
         return fig
 
 
-# ========== GLOBAL INSTANCE ==========
 _training_backend = None
 
 
 def get_training_backend() -> TrainingBackend:
-    """Get global training backend instance"""
     global _training_backend
     if _training_backend is None:
         _training_backend = TrainingBackend()

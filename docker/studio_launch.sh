@@ -16,9 +16,23 @@
 #   PUBLIC_KEY/SSH_KEY OpenSSH public key for root login; sshd stays disabled
 #                      when neither is set (nothing to authenticate with --
 #                      password login is never enabled for root)
+#   UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY=1  exit 0 right after the settings checks, before
+#                      anything is written (tests only)
 set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
+# Studio is fixed at 8000 (studio_run.sh); JupyterLab starts first and wins the bind, so
+# Studio silently falls back to an unpublished 8001. Compared as traitlets does, via int():
+# whitespace, leading zeros, a leading + and underscores ("08000", " 8000", "8_000") all bind 8000.
+jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
+jupyter_port_digits="${jupyter_port_digits#+}"
+if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == 8000 )); then
+    printf "\033[1;31mERROR:\033[0m JUPYTER_PORT=8000 is Unsloth Studio's port inside the container.\n" >&2
+    printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
+    exit 1
+fi
+# tests run this on the host; everything past here writes /etc/profile.d, /root/.jupyter, /workspace
+[[ "${UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-0}" == 1 ]] && exit 0
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 

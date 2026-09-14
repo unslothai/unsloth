@@ -125,7 +125,7 @@ def test_strip_removes_only_valid_terminal_envelope():
 
 
 def test_strip_still_handles_images_and_rag_sentinels():
-    assert strip_result_for_model("output\n__IMAGES__:['a.png']") == "output"
+    assert strip_result_for_model('output\n__IMAGES__:["a.png"]') == "output"
     assert strip_result_for_model("answer\n__RAG_SOURCES__:[{}]") == "answer"
 
 

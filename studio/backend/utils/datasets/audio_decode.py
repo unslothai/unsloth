@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decode `datasets` Audio columns with soundfile when torchcodec cannot load.
-
-`datasets` 4.x decodes audio only through torchcodec, which needs an FFmpeg full-shared
-install to dlopen its native libraries. Windows has none by default, so
-`disable_torchcodec_if_broken` clears `datasets.config.TORCHCODEC_AVAILABLE` and every
-audio column raises, blocking the dataset format check and all six audio trainer paths
-on an otherwise working host. A soundfile decoder restores the pre-4.0 output contract,
-`{"path", "array", "sampling_rate"}`, which is what those callers already read.
-"""
+"""Decode `datasets` Audio columns with soundfile when torchcodec cannot load. `datasets` 4.x decodes audio only through torchcodec, which needs an FFmpeg full-shared install to dlopen its native libraries; Windows has none by default, so `disable_torchcodec_if_broken` clears `datasets.config.TORCHCODEC_AVAILABLE` and every audio column raises, blocking the dataset format check and all six audio trainer paths on an otherwise working host. A soundfile decoder restores the pre-4.0 output contract, `{"path", "array", "sampling_rate"}`, which is what those callers already read."""
 
 from __future__ import annotations
 
@@ -27,13 +19,7 @@ _install_lock = threading.Lock()
 
 
 def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
-    """Pick the credential belonging to the repository this URL points at.
-
-    A mapping holds one entry per source repo, and `concatenate_datasets` or
-    `interleave_datasets` over streaming splits puts several in it at once, so taking an
-    arbitrary value would send one repo's token to another repo's host. Resolved the way
-    `datasets.Audio.decode_example` does it, from the repo id embedded in the URL.
-    """
+    """Pick the credential belonging to the repository this URL points at. A mapping holds one entry per source repo, and `concatenate_datasets` or `interleave_datasets` over streaming splits puts several in it at once, so taking an arbitrary value would send one repo's token to another repo's host. Resolved the way `datasets.Audio.decode_example` does it, from the repo id embedded in the URL."""
     if not token_per_repo_id:
         return None
     from datasets import config
@@ -52,8 +38,7 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
         # Older `datasets` raise here instead of returning None.
         fields = None
     if fields is None:
-        # Not a Hub URL, so no repo id to key on. One entry is unambiguous and is the
-        # shape every caller in this codebase passes; more than one is not guessable.
+        # Not a Hub URL, so no repo id to key on. One entry is unambiguous and is the shape every caller in this codebase passes; more than one is not guessable.
         values = list(token_per_repo_id.values())
         return values[0] if len(values) == 1 else None
     return token_per_repo_id.get(fields["repo_id"])
@@ -106,18 +91,7 @@ def _decode_with_soundfile(
 
 
 def _encode_with_soundfile(self, value) -> dict:
-    """Stand-in for `datasets.Audio.encode_example` that never needs FFmpeg.
-
-    The audio VLM path maps without `remove_columns`, so reading `["array"]` writes the
-    decoded value back and `cast_storage` re-encodes it through torchcodec's encoder,
-    failing a run the decoder above had just unblocked.
-
-    The plain path/bytes forms need no encoder at all, but `datasets` imports
-    `torchcodec.encoders` at the top of `encode_example` before it looks at the value, so
-    casting a column of file paths raises on a broken host too. Those are handled here
-    rather than delegated. Only an `AudioDecoder` value falls through, which genuinely
-    needs torchcodec and cannot arrive while this shim is installed.
-    """
+    """Stand-in for `datasets.Audio.encode_example` that never needs FFmpeg. The audio VLM path maps without `remove_columns`, so reading `["array"]` writes the decoded value back and `cast_storage` re-encodes it through torchcodec's encoder, failing a run the decoder above had just unblocked. The plain path/bytes forms need no encoder at all, but `datasets` imports `torchcodec.encoders` at the top of `encode_example` before it looks at the value, so casting a column of file paths raises on a broken host too; those are handled here rather than delegated. Only an `AudioDecoder` value falls through, which genuinely needs torchcodec and cannot arrive while this shim is installed."""
     import io
     from pathlib import Path
 
@@ -139,27 +113,19 @@ def _encode_with_soundfile(self, value) -> dict:
 
 
 def ensure_audio_decoding() -> bool:
-    """Install the soundfile decoder when torchcodec is unusable. Idempotent.
-
-    False means neither backend is importable, and the caller should report that rather
-    than let a decode raise deep inside `datasets`.
-    """
+    """Install the soundfile decoder when torchcodec is unusable. Idempotent. False means neither backend is importable, and the caller should report that rather than let a decode raise deep inside `datasets`."""
     global _installed
     try:
         from datasets import config
         from datasets.features.audio import Audio
     except ImportError:
         return False
-    # `datasets` < 4 (pyproject still allows >=3.4.1) decodes through soundfile itself and
-    # defines no TORCHCODEC_AVAILABLE, so the read below raised AttributeError at the
-    # unguarded call site. Nothing to install there, so say so.
+    # `datasets` < 4 (pyproject still allows >=3.4.1) decodes through soundfile itself and defines no TORCHCODEC_AVAILABLE, so the read below raised AttributeError at the unguarded call site. Nothing to install there, so say so.
     if not hasattr(config, "TORCHCODEC_AVAILABLE"):
         return True
     if config.TORCHCODEC_AVAILABLE and not _installed:
         try:
-            # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes
-            # that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag
-            # here.
+            # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag here.
             from datasets.features._torchcodec import AudioDecoder  # noqa: F401
         except (ImportError, OSError, RuntimeError) as exc:
             logger.info("torchcodec is installed but unusable (%s)", exc)
@@ -169,8 +135,7 @@ def ensure_audio_decoding() -> bool:
     if _installed:
         return True
     try:
-        # librosa too: every trainer path casts to a target rate, so a decoder that cannot
-        # resample would raise from inside `datasets` exactly where this returns False.
+        # librosa too: every trainer path casts to a target rate, so a decoder that cannot resample would raise from inside `datasets` exactly where this returns False.
         import librosa  # noqa: F401
         import soundfile  # noqa: F401
     except (ImportError, OSError) as exc:

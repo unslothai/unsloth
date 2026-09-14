@@ -24,6 +24,19 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    return b, finalized
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -298,14 +311,7 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
 
 def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
     # Stop-without-save interrupted before its complete event: /status must not serve the cleared output_dir.
-    b = TrainingBackend()
-    finalized: dict = {}
-    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
-    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
-
-    b._proc = _FakeProc(alive = False)
-    b._event_queue = _IdleQueue()
-    b._progress.is_training = True
+    b, finalized = _shared_setup_1(monkeypatch)
     b._should_stop = True
     b._cancel_requested = True
     b._output_dir = "/out/x"
@@ -319,14 +325,7 @@ def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
 
 
 def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
-    b = TrainingBackend()
-    finalized: dict = {}
-    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
-    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
-
-    b._proc = _FakeProc(alive = False)
-    b._event_queue = _IdleQueue()
-    b._progress.is_training = True
+    b, finalized = _shared_setup_1(monkeypatch)
     b._should_stop = True
     b._cancel_requested = False
     b._output_dir = "/out/x"
@@ -351,14 +350,7 @@ def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
 
 def test_dead_worker_crash_preserves_output_dir(monkeypatch):
     # A crash (no stop requested) after output_dir was emitted must keep the dir: checkpoints may exist.
-    b = TrainingBackend()
-    finalized: dict = {}
-    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
-    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
-
-    b._proc = _FakeProc(alive = False)
-    b._event_queue = _IdleQueue()
-    b._progress.is_training = True
+    b, finalized = _shared_setup_1(monkeypatch)
     b._output_dir = "/out/x"
 
     b._pump_loop()
