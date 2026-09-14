@@ -1544,49 +1544,31 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
-    # A command substitution at command position synthesizes the executed word, so a blocked name
-    # it produces (`$(echo reboot)`) or an executable enumeration it selects from
-    # (`$(ls /usr/bin | grep "^reb")`) never appears literally for the scan above. Screen the body
-    # instead: a blocked literal anywhere in it may become the command, and an enumeration
-    # primitive makes the result unknowable. Argument-position substitutions (`echo $(date)`)
-    # only feed text to their outer command and stay out.
-    #
-    # A variable launders the same shapes one step further (`c=$(ls ... | grep x); $c`,
-    # `printf -v c reboot; $c`, `c=reboot; $c`): the assignment binds an unscreenable value and a
-    # later `$c` at command position executes it. The mapping is collected first so bodies can
-    # reference it too (`$(echo $c)` runs echo over unknown text, whose output is the command).
+    # A substitution at command position synthesizes the executed word, so `$(ls /usr/bin | grep
+    # "^reb")` never reaches the scan above; screen the body instead. A variable launders the same
+    # shapes (`c=$(...); $c`), so bindings are collected first - bodies reference them too.
     if _BLOCKED_COMMANDS:
-        # Where each character sits in the command's quoting, computed ONCE and shared by every
-        # screen below. A substitution only runs when bash expands it, and bash expands nothing
-        # inside single quotes, so `sed 's|x|$(ls)|' f` must not read as a site.
         quote_states = _shell_quote_states(command)
 
         def _site_expands(match: "re.Match") -> bool:
-            """Whether the substitution this match opens is one bash actually expands AT command
-            position, rather than text inside an argument the outer command already owns."""
+            """Whether bash expands this substitution AT command position, rather than inside an
+            argument the outer command already owns."""
             opener = match.end() - 1
             state = quote_states[opener] if opener < len(quote_states) else ""
             if state in ("'", "$'", _ESCAPED_CHAR_STATE):
-                # Single-quoted or backslash-escaped: bash substitutes nothing at all.
-                return False
+                return False  # bash substitutes nothing here
             if state == '"':
-                # Inside double quotes bash DOES substitute, but the result is a word the outer
-                # command receives (`echo "found if $(ls) here"`), not a command. The exception is
-                # the `"$(...)"` spelling at command position, where the quote opens at the site
-                # itself and the expansion becomes the command word.
+                # Double quotes DO substitute, but into a word the outer command receives - unless
+                # the quote opens at the site itself (`"$(...)"`), which is a command word.
                 return match.group(0).endswith('"$(')
             return True
 
-        # Laundered names to the blocked literal they are known to hold, or None when the value
-        # is unscreenable (a substitution, `printf -v`). Keyed case-sensitively: `$C` is not `$c`.
+        # Name -> the literal it holds, or None when unscreenable. `$C` is not `$c`.
         laundered: "dict[str, str | None]" = {}
         for assign in _SUBST_ASSIGN_RE.finditer(command):
             if assign.group(1) in laundered or not _site_expands(assign):
                 continue
-            # The value starts a substitution (the regex guarantees it): screen its body like a
-            # command-position one. An enumerating body (ls/compgen/find/glob) makes the output
-            # unknowable even when a blocked literal (usually the grep selector) is visible, so
-            # those stay unknown; otherwise report the literal found, if any.
+            # An enumerating body is unknowable even when a literal (the grep selector) shows.
             opener = assign.end() - 1  # `(` of `$(`, or the backtick
             assign_body = _command_subst_body(command, opener).lower()
             if _SUBST_ENUMERATES_COMMANDS_RE.search(assign_body):
@@ -1616,11 +1598,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             if _site_expands(site)
         ]
         if len(sites) > _MAX_SUBST_SITES:
-            # Reading every site costs a span walk over the rest of the line, so a command made of
-            # thousands of unterminated `$(` openers turned a screen that has no length cap into
-            # minutes of CPU on the request thread (`";$(" * 10000`: 0.1s before this screen
-            # existed, over 30s after). Nothing legitimate runs commands out of that many
-            # substitutions, so stop reading and refuse - fail CLOSED, never open.
+            # Refuse rather than read: each site costs a span walk to end of line, so `";$(" * 10000`
+            # took over 30s on the request thread. Fail CLOSED, never open.
             blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
             sites = []
         for site in sites:
@@ -1633,32 +1612,26 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif laundered_in_body_pattern is not None and re.search(
                 laundered_in_body_pattern, body
             ):
-                # The body runs over laundered text (`$(echo $c)`), so its output - the
-                # executed word - is unknowable.
+                # `$(echo $c)`: the body runs over laundered text, so its output is unknowable.
                 blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
         if laundered_refs:
             var_exec_pattern = (
                 _SUBST_CMD_SEP
                 + r"\s*"
                 + _SUBST_WRAPPER_RUN
-                # Named throughout: a positional group added in front of these would silently
-                # renumber them, and the name then read back as the whole `$c` rather than `c`.
+                # Named, not positional: a group added in front would silently renumber these.
                 + r"(?P<var>\"?\$(?:(?P<bare>"
                 + laundered_refs
                 + r")|\{(?P<braced>"
                 + laundered_refs
                 + r")\})"
-                # `"$c"` and `"${c}"` are the RECOMMENDED way to run a variable, so the closing
-                # quote has to end the word too; without it the quoted spelling walked straight
-                # through the screen the bare one is caught by.
+                # The closing quote ends the word too, or `"$c"` - the recommended spelling -
+                # walks through the screen the bare one is caught by.
                 r"\"?)(?=\s|$|[;&|)\]}])"
             )
             for hit in re.finditer(var_exec_pattern, command):
                 if _is_wrapper_flag_operand(command, hit.start("var")):
-                    # `xargs -P $n`: the expansion is the operand of the option in front of it,
-                    # not the command the wrapper runs. The regex alone cannot rule this out -
-                    # it just backtracks to the shorter reading - so it is checked here.
-                    continue
+                    continue  # `xargs -P $n`: operand of the option, not the command
                 name = hit.group("bare") or hit.group("braced")
                 precise = laundered.get(name)
                 blocked.add(precise if precise is not None else _BLOCKED_SYNTHESIZED_COMMAND)
@@ -5061,27 +5034,14 @@ _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
 )
-# Command-position separators shared by the substitution screens below: statement
-# separators, `&&`/`||`, brace-group openers, and shell keywords whose following word the shell
-# executes (conditions, branch bodies, negation). `:` is deliberately absent: its arguments are
-# expanded but never executed as the command, so only a blocked literal inside them matters and
-# that is already caught.
+# Command-position separators for the screens below. `:` is absent on purpose: its arguments are
+# expanded but never executed.
 _SUBST_CMD_SEP = r"(?:^|[;&|\n({]|&&|\|\||\b(?:then|do|else|elif|if|while|until)\b\s*|!\s*)"
-# Wrappers that forward to their operand, so the operand sits at command position behind them.
-# Bounded flat repetitions (no nested stars): up to 3 wrapper words, each followed by up to 4 of
-# the wrapper's OWN arguments. Unbounded nesting here caused catastrophic backtracking on long
-# lines.
-#
-# Those arguments are flags, `VAR=value` settings and bare numbers - the same three shapes
-# _exec_child_index steps over - and deliberately not "any word". A wrapper's first plain word IS
-# its command (`timeout 60 python`), so once one has been seen the wrapper is spent and nothing
-# after it is at command position any more. Accepting arbitrary words made every substitution
-# within ~15 words of a `timeout`/`nohup`/`xargs` read as command position, which hard-blocked
-# ordinary commands like `timeout 60 python train.py --data $(ls -d data/*)`.
-#
-# A wrapper option whose value is a SEPARATE token has to swallow that token as well, exactly as
-# _exec_child_index does: in `xargs -P $n -I{} cmd` the `$n` is the operand of `-P`, not the
-# command, and reading it as one refused an ordinary `n=$(nproc); xargs -P $n -I{} echo {}`.
+# Wrappers forward to their operand. Repetitions are bounded and flat: unbounded nesting caused
+# catastrophic backtracking. A wrapper's arguments are flags, `VAR=value` and bare numbers (the
+# shapes _exec_child_index steps over), NOT "any word" - its first plain word IS its command, and
+# accepting arbitrary words hard-blocked `timeout 60 python train.py --data $(ls -d data/*)`. An
+# option taking a separate value swallows it too, or `xargs -P $n` reads the `$n` as the command.
 _ALL_WRAPPER_VALUE_FLAGS = frozenset(
     flag for flags in _WRAPPER_VALUE_FLAGS_BY_CMD.values() for flag in flags
 )
@@ -5096,44 +5056,32 @@ _SUBST_WRAPPER_RUN = (
     r"(?:(?:env|command|builtin|exec|time|nohup|nice|setsid|stdbuf|timeout|ionice|chroot"
     r"|setpriv|sudo|doas|su|xargs)\s+(?:" + _SUBST_WRAPPER_ARG + r"\s+){0,4}){0,3}"
 )
-# A command substitution or backtick substitution at command position synthesizes the word Bash
-# executes, so a blocked name it produces (`$(ls /usr/bin | grep "^reb")` reboots the host) never
-# appears literally for the token scan. VAR=x prefixes are stepped over like the token scan does;
-# a leading double quote is allowed (`"$(...)"` still substitutes), a single quote is not (no
-# substitution inside it); arithmetic `$((...))` evaluates to a number and is not a command.
+# VAR=x prefixes are stepped over; `(?!\()` drops arithmetic, which is a number, not a command.
 _SUBST_AT_CMD_SITE_RE = re.compile(
     _SUBST_CMD_SEP + r"\s*"
     r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*" + _SUBST_WRAPPER_RUN + r"(?:\"\$\((?!\()|\$\((?!\()|`)",
     re.IGNORECASE,
 )
-# A substitution synthesizing the command a find/fd -exec payload runs: the words after the
-# directive are the executed argv, so `find . -exec $(...) \;` runs whatever the body prints.
+# The words after a find/fd -exec directive are the executed argv, so `find . -exec $(...) \;`
+# runs whatever the body prints.
 _SUBST_EXEC_DIRECTIVE_RE = re.compile(
     r"(?:-exec(?:dir)?|--exec(?:-batch)?|-ok(?:dir)?)\s+"
     r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*" + _SUBST_WRAPPER_RUN + r"(?:\"\$\((?!\()|\$\((?!\()|`)",
     re.IGNORECASE,
 )
-# An assignment binds a name wherever it appears, so these three lead on any separator OR plain
-# whitespace rather than on the statement-separator class they used to. With the narrower
-# `(?:^|[;&|\n])`, every launder sitting behind a keyword, a subshell or another assignment went
-# uncollected and ran: `if true; then c=$(ls /usr/bin|grep rm); fi; $c`, `(c=$(...); $c)` and
-# `x=1 c=$(...); $c` all really delete. Widening only COLLECTS more names; a collected name is
-# still reported only where it is later executed at command position, so this cannot refuse a
-# command on its own.
+# An assignment binds wherever it appears, so these three lead on any separator OR whitespace:
+# under `(?:^|[;&|\n])` a launder behind a keyword or subshell went uncollected and ran. Widening
+# only COLLECTS; a name is reported only where it is executed at command position.
 _ASSIGN_LEAD = (
     r"(?:^|[\s;&|\n(){])(?:(?:export|local|readonly)\s+|(?:declare|typeset)(?:\s+[-\w+]+)*\s+)?"
 )
-# An assignment (optionally behind export/local/readonly/declare/typeset) whose value starts a
-# substitution or backticks: the name is laundered, its content unscreenable. `(?!\()` excludes
-# arithmetic: `sec=$((60*5))` evaluates to a number, can never hold a command name, and treating
-# it as laundered hard-blocked `sec=$((60*5)); timeout $sec make test`.
+# The name is laundered, its content unscreenable. `(?!\()` excludes arithmetic, whose inclusion
+# hard-blocked `sec=$((60*5)); timeout $sec make test`.
 _SUBST_ASSIGN_RE = re.compile(_ASSIGN_LEAD + r"([A-Za-z_]\w*)=[\"']?(?:\$\((?!\()|`)")
-# `printf -v NAME ...` stores its formatted output in NAME without running anything, but a
-# later `$NAME` at command position executes it: equally laundered.
+# `printf -v NAME` runs nothing, but a later `$NAME` at command position executes it.
 _PRINTF_V_ASSIGN_RE = re.compile(_ASSIGN_LEAD + r"\bprintf\s+-v\s+([A-Za-z_]\w*)\b")
-# A plain assignment whose value starts with a blocked command name: `c=reboot` makes `$c` at
-# command position run reboot. Only the value's first word counts (`c="my rm"` tries to run
-# `my`, which does not exist), and arrays never match (the value class excludes parens).
+# `c=reboot` makes `$c` at command position run reboot. Only the value's first word counts, and
+# arrays never match (the value class excludes parens).
 _ASSIGN_BLOCKED_LITERAL_RE = re.compile(_ASSIGN_LEAD + r"([A-Za-z_]\w*)=([^\s;&|()]+)")
 
 
@@ -5154,22 +5102,14 @@ def _command_subst_body(command: str, opener: int) -> str:
     return command[opener + 1 : end if end >= len(command) else end - 1]
 
 
-# Label recorded when a command-position substitution synthesizes its command from an executable
-# enumeration, so there is no literal name to report. Reads as
-# "Blocked command(s) for safety: command substitution" downstream.
+# For an enumerated command with no literal name to report.
 _BLOCKED_SYNTHESIZED_COMMAND = "command substitution"
-# Primitives that enumerate executable names when they appear in a command-position substitution
-# body: listing binaries, compgen, find, or expanding a pathname glob with echo/printf. A
-# name-resolving lookup for one literal binary (`$(which python)`) stays out: the executed name
-# is visible in the body itself.
+# Primitives that enumerate executable names inside a substitution body. A lookup for one literal
+# binary (`$(which python)`) stays out: that name is visible in the body itself.
 _SUBST_ENUMERATES_COMMANDS_RE = re.compile(
     r"(?:\bcompgen\b|\b(?:ls|dir|find)\b|\b(?:echo|printf)\b[^\n;&|]*[*?[])"
 )
-# How many command-position substitutions are read before the screen gives up and refuses. Each
-# one costs a span walk over the rest of the line, and _find_blocked_commands has no length cap
-# (unlike _terminal_is_high_risk's _MAX_TERMINAL_SCAN_CHARS), so thousands of unterminated `$(`
-# openers turn into minutes of CPU on the request thread. Nothing legitimate is built out of this
-# many substitutions.
+# Sites read before refusing instead: each costs a span walk and this function has no length cap.
 _MAX_SUBST_SITES = 64
 
 
@@ -5178,11 +5118,9 @@ def _blocked_body_word_pattern_for(words: "frozenset[str]") -> "re.Pattern":
     """A blocked name appearing anywhere in a command-substitution body.
 
     Looser than the command-position scan on purpose: anything in the body may become the word
-    that runs. But `.` - the POSIX synonym for `source`, and a blocked command in its own right -
-    cannot use the same loose boundary, because ANY dot in a filename then matches it: `$(cat
-    .env)` was refused with the nonsense message "Blocked command(s) for safety: .", and
-    `echo "check if $(ls -1 *.py | wc -l) files"` picked `.` out of `*.py`. Punctuation names get
-    the strict command-position boundary instead, which is the only place they can run anyway.
+    that runs. `.` (the synonym for `source`) cannot share that boundary, because any dot in a
+    filename then matches it - `$(cat .env)` was refused as "Blocked command(s) for safety: .".
+    Punctuation names get the strict boundary, the only place they can run anyway.
     """
     word_like = sorted(w for w in words if w[:1].isalnum() or w[:1] == "_")
     punctuation = sorted(w for w in words if w not in set(word_like))
@@ -5199,11 +5137,9 @@ def _blocked_body_word_pattern_for(words: "frozenset[str]") -> "re.Pattern":
 def _is_wrapper_flag_operand(command: str, start: int) -> bool:
     """Whether the word at ``start`` is the VALUE of a wrapper option rather than a command.
 
-    `xargs -P $n -I{} cmd` gives `-P` the `$n`; `timeout -k $t ...` gives `-k` the `$t`. Such a
-    word is never the command the wrapper forwards to, so a laundered name sitting there must not
-    be reported. Kept out of the regex on purpose: a regex that tries to consume the option and
-    its value simply backtracks to the shorter reading, and the atomic group that would pin it
-    needs Python 3.11 while this file supports 3.9.
+    `xargs -P $n` gives `-P` the `$n`, which is never the command the wrapper forwards to. Checked
+    here, not in the regex: a regex consuming the option and its value backtracks to the shorter
+    reading, and the atomic group that would pin it needs 3.11 while this file supports 3.9.
     """
     preceding = command[:start].split()
     return bool(preceding) and preceding[-1] in _ALL_WRAPPER_VALUE_FLAGS

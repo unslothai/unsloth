@@ -832,9 +832,8 @@ class TestBashBlocklistPosition:
             # Only the long spellings carry an attached command; -x belongs to too
             # many other utilities to read its neighbour as one.
             pytest.param("grep -x rm file.txt", id = "short_flag_neighbour_not_read_as_command"),
-            # A name-resolving lookup for one literal binary (`$(which python)`)
-            # leaves the executed name visible in the body, so it stays out, as do
-            # substitutions that only feed text to their outer command.
+            # `$(which python)` leaves the executed name visible in the body; the rest only
+            # feed text to their outer command.
             pytest.param("$(which python) script.py", id = "which_lookup_allowed"),
             pytest.param("env $(which python) script.py", id = "wrapper_which_lookup_allowed"),
             pytest.param("echo $(date)", id = "arg_position_subst_allowed"),
@@ -842,9 +841,7 @@ class TestBashBlocklistPosition:
             pytest.param("$(echo hello)", id = "subst_benign_literal_allowed"),
             pytest.param("FOO=$(date) echo hi", id = "assignment_value_subst_allowed"),
             pytest.param("echo $((1+2))", id = "arithmetic_expansion_allowed"),
-            # Same slots, benign bodies: brace groups, branches, loops, -exec
-            # without a substitution, and variables never bound to anything
-            # dangerous stay out.
+            # Same slots, benign bodies.
             pytest.param("{ echo hi; }", id = "brace_group_benign_allowed"),
             pytest.param("if true; then echo hi; fi", id = "branch_body_benign_allowed"),
             pytest.param("for f in a b; do echo $f; done", id = "loop_var_benign_allowed"),
@@ -852,9 +849,8 @@ class TestBashBlocklistPosition:
             pytest.param("c=hello; echo $c", id = "benign_var_arg_allowed"),
             pytest.param("c=reboot; echo $c", id = "blocked_var_arg_allowed"),
             pytest.param("PATH=/usr/bin; ls", id = "path_assignment_allowed"),
-            # A wrapper forwards to ONE operand: its first plain word is the command it runs, so
-            # nothing further along the line is at command position any more. Reading any word
-            # within reach of a wrapper as command position refused these everyday commands.
+            # A wrapper is spent on its first plain word, so nothing further along the line is
+            # at command position. Reading any word within reach of one refused these.
             pytest.param(
                 "timeout 60 python train.py --data $(ls -d data/*)",
                 id = "wrapper_spent_on_its_own_command_allowed",
@@ -869,18 +865,15 @@ class TestBashBlocklistPosition:
             pytest.param(
                 "v=$(date); env FOO=1 ./run.sh $v", id = "laundered_var_after_env_assign_allowed"
             ),
-            # `-P` takes its value as a separate token, so the `$n` behind it is that value and
-            # not the command xargs runs.
+            # `-P` takes a separate value, so the `$n` is that value, not the command.
             pytest.param(
                 "n=$(nproc); xargs -P $n -I{} echo {}", id = "wrapper_value_flag_operand_allowed"
             ),
-            # Arithmetic evaluates to a number and can never hold a command name, so it launders
-            # nothing - in an assignment either, not just on its own.
+            # Arithmetic can never hold a command name, in an assignment either.
             pytest.param(
                 "sec=$((60*5)); timeout $sec make test", id = "arithmetic_assignment_allowed"
             ),
-            # Bash expands nothing inside single quotes, and an expansion inside double quotes is
-            # a word the outer command receives rather than a command of its own.
+            # Single quotes expand nothing; double quotes expand into an argument, not a command.
             pytest.param(
                 'echo "check if $(ls -1 *.py | wc -l) files"',
                 id = "subst_inside_double_quoted_argument_allowed",
@@ -918,16 +911,14 @@ class TestBashBlocklistPosition:
             pytest.param(
                 "curl", "while true; do curl --version; break; done", id = "while_do_blocked"
             ),
-            # A command-position substitution synthesizes the executed word, so the
-            # blocked name never appears literally: `$(echo reboot)` runs reboot.
+            # `$(echo reboot)` runs reboot without the name appearing literally.
             pytest.param("reboot", "$(echo reboot)", id = "subst_synthesized_literal_blocked"),
             pytest.param(
                 "shutdown",
                 '$(printf "%s" shutdown)',
                 id = "subst_printf_literal_blocked",
             ),
-            # An executable enumeration piped through a selector (`ls` of a bin
-            # dir, compgen, find) produces an unknowable command name: fail closed.
+            # An enumeration through a selector gives an unknowable name: fail closed.
             pytest.param(
                 "command substitution",
                 '$(ls /usr/bin/ | grep "^reb")',
@@ -973,8 +964,7 @@ class TestBashBlocklistPosition:
                 '"$(ls /usr/bin | grep reb)"',
                 id = "quoted_subst_enumeration_blocked",
             ),
-            # The same synthesis smuggled past separators: brace groups, branch
-            # bodies, loop bodies, and find -exec payloads all execute it.
+            # The same synthesis past separators, all of which execute it.
             pytest.param(
                 "command substitution",
                 "{ $(ls /usr/bin|grep reb); }",
@@ -995,8 +985,7 @@ class TestBashBlocklistPosition:
                 "find /tmp -name x -exec $(ls /usr/bin | grep reb) \\;",
                 id = "find_exec_subst_blocked",
             ),
-            # A variable launders the synthesis (`c=$(...); $c`), a printf -v
-            # assignment, or even a plain blocked literal (`c=reboot; $c`).
+            # A variable launders the synthesis, a printf -v, or a plain literal.
             pytest.param(
                 "command substitution",
                 "c=$(ls /usr/bin|grep reb); $c",
@@ -1014,9 +1003,8 @@ class TestBashBlocklistPosition:
                 "export c=$(compgen -c | grep rm); $c",
                 id = "exported_laundered_subst_blocked",
             ),
-            # An assignment binds a name wherever it appears, so the launder has to be collected
-            # from every one of these too. Each really deletes: verified by running them against
-            # a stand-in `rm` on PATH.
+            # An assignment binds wherever it appears. Each of these really deletes: verified
+            # against a stand-in `rm` on PATH.
             pytest.param(
                 "command substitution",
                 "if true; then c=$(ls /usr/bin|grep rm); fi; $c",
@@ -1037,8 +1025,7 @@ class TestBashBlocklistPosition:
                 "for i in 1; do c=$(ls /usr/bin|grep rm); done; $c",
                 id = "laundered_in_loop_body_blocked",
             ),
-            # Quoting the expansion is the RECOMMENDED way to run a variable, so it cannot be the
-            # spelling that escapes the screen the bare one is caught by.
+            # The quoted spelling is the recommended one; it cannot be the one that escapes.
             pytest.param(
                 "command substitution",
                 'c=$(ls /usr/bin|grep rm); "$c"',
@@ -1050,9 +1037,8 @@ class TestBashBlocklistPosition:
                 id = "laundered_quoted_brace_exec_blocked",
             ),
             pytest.param("reboot", 'c=reboot; "$c"', id = "laundered_literal_quoted_exec_blocked"),
-            # Reading every substitution costs a span walk over the rest of the line and this
-            # screen has no length cap, so a command built from thousands of unterminated `$(`
-            # openers is refused rather than scanned. Fail closed, never open.
+            # Thousands of unterminated `$(` openers are refused, not scanned: each costs a
+            # span walk and this screen has no length cap.
             pytest.param(
                 "command substitution",
                 ";$(" * 200,
