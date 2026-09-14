@@ -277,3 +277,30 @@ test("Gemini image models keep no reasoning control even though the catalog list
     assert.equal(getExternalReasoningCapabilities("gemini", model).supportsReasoning, false, model);
   }
 });
+
+test("a live catalog default of none survives when the model can switch reasoning off", () => {
+  setProviderModelCatalog(
+    "openrouter",
+    [
+      {
+        id: "openai/gpt-5.1",
+        reasoning: { supported_efforts: ["high", "medium", "low", "none"], mandatory: false, default_effort: "none" },
+      },
+      {
+        id: "acme/always-on",
+        reasoning: { supported_efforts: ["high", "none"], mandatory: true, default_effort: "none" },
+      },
+    ],
+    1,
+  );
+  try {
+    const gpt51 = getExternalReasoningCapabilities("openrouter", "openai/gpt-5.1");
+    assert.deepEqual([...gpt51.reasoningEffortLevels], ["none", "low", "medium", "high"]);
+    assert.equal(gpt51.defaultEffort, "none");
+    const alwaysOn = getExternalReasoningCapabilities("openrouter", "acme/always-on");
+    assert.equal(alwaysOn.supportsReasoningOff, false);
+    assert.equal(alwaysOn.defaultEffort, null, "a mandatory model cannot default to off");
+  } finally {
+    clearProviderModelCatalog("openrouter");
+  }
+});

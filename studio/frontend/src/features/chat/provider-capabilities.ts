@@ -1052,15 +1052,17 @@ function projectCatalogEntry(
       supportsReasoningOff: supportsOff,
     });
   }
-  const defaultEffort =
-    entry.defaultEffort && levels.includes(wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
-      ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
-      : null;
+  const ladder: ReasoningEffortLevel[] = supportsOff ? ["none", ...levels] : levels;
+  // Checked against the final ladder: OpenRouter reports default_effort "none" for models such as openai/gpt-5.1.
+  const mappedDefault = entry.defaultEffort
+    ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
+    : null;
+  const defaultEffort = mappedDefault && ladder.includes(mappedDefault) ? mappedDefault : null;
   return {
     ...withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: supportsOff,
-      reasoningEffortLevels: supportsOff ? ["none", ...levels] : levels,
+      reasoningEffortLevels: ladder,
     }),
     defaultEffort,
   };
