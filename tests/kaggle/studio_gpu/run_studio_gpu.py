@@ -1169,6 +1169,15 @@ class Payload:
             "status_tensor_parallel": (status or {}).get("tensor_parallel")
             if isinstance(status, dict)
             else None,
+            # What /status SAYS the split is, alongside what the child was
+            # actually launched with. These two disagreed for the whole life of
+            # the auto path -- the property returned the manual-mode field,
+            # which auto never writes -- so a client had no way to see the
+            # ratio at all. Reported as its own key so the report shows the
+            # pair rather than one of them.
+            "status_tensor_split": (status or {}).get("tensor_split")
+            if isinstance(status, dict)
+            else None,
             "llama_server_pid": pid,
             "split_mode": split_mode,
             "tensor_split": tensor_split,
@@ -1272,6 +1281,25 @@ class Payload:
                 f"--tensor-split is {first.get('tensor_split')!r}, which is not the "
                 f"proportion {ratio} that was asked for"
             )
+        else:
+            # And the API has to be able to SAY so. The argv is ground truth,
+            # but a user cannot read /proc; for the whole life of the auto path
+            # the status property returned the manual-mode field, which auto
+            # never writes, so a server running 3,1 reported null and there was
+            # no way to tell a forwarded ratio from a dropped one from outside.
+            reported = first.get("status_tensor_split")
+            if reported is None:
+                failures.append(
+                    f"the live llama-server runs --tensor-split "
+                    f"{first.get('tensor_split')!r} and /api/inference/status reports "
+                    f"tensor_split: null, so the applied ratio is invisible to every "
+                    f"client"
+                )
+            elif split_ratio(",".join(str(x) for x in reported)) != first.get("tensor_split_ratio"):
+                failures.append(
+                    f"/api/inference/status reports tensor_split {reported!r} while the "
+                    f"live llama-server runs {first.get('tensor_split')!r}"
+                )
 
         # It has to still serve. A split that loaded and cannot decode is not a
         # fix, and a CPU fallback answers a chat request just as happily.
