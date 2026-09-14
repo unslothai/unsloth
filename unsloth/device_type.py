@@ -102,7 +102,7 @@ def get_device_type():
         return "cuda"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
-    # After xpu: a host exposing both keeps selecting xpu, as it did before Ascend.
+    # After xpu: a host exposing both keeps selecting xpu, as it did before NPU.
     elif npu_is_available():
         return "npu"
     accelerator = None
