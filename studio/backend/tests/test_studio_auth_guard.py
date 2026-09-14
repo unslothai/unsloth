@@ -770,3 +770,38 @@ def test_the_studio_home_variable_is_read_in_any_case(monkeypatch, tmp_path):
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_wildcard_that_expands_to_the_auth_directory(monkeypatch, tmp_path):
+    # The shell expands `a?th` to `auth` before the command opens anything, so comparing the literal
+    # text alone let the database through under a name that matches no marker.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'sqlite3 ../../a?th/auth.db "select jwt_secret from auth_user"',
+            "cat ../../aut[h]/auth.db",
+            "cat ../../a[a-z]th/auth.db",
+            "cat ../../au*/auth.db",
+            "cat ../../auth/auth.d?",
+            "cat ../../a?th/.cli_api_key_cli_1",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # A segment that is nothing but a wildcard names the auth directory only in the sense that
+        # listing its parent does, so it stays ordinary work.
+        for ordinary in (
+            "ls ../../*",
+            "ls ../../models/*.gguf",
+            "grep -r auth src/*.py",
+            "ls data[0].csv",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

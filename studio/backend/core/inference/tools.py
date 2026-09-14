@@ -2689,6 +2689,35 @@ def _canonical_path_text(text: str) -> str:
     return "/".join(out)
 
 
+_GLOB_META_RE = re.compile(r"[*?\[]")
+# A bracket glob class, which matches exactly one character wherever it stands.
+_BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
+
+
+def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
+    """True when *lowered*, read as a shell glob, can expand to *marker* or something under it.
+
+    `sqlite3 ../../a?th/auth.db` never spells the auth directory, but bash expands `a?th` to `auth`
+    before sqlite3 opens anything, so comparing the literal text alone let the database through.
+    Matched segment by segment, because a shell wildcard does not cross a separator while
+    `fnmatch`'s does.
+
+    A segment whose literal characters are all metacharacters is skipped: `ls <studio root>/*` names
+    the auth directory only in the sense that listing a parent does, and refusing it would break
+    ordinary work for no secret read.
+    """
+    candidate = lowered.split("/")
+    wanted = marker.split("/")
+    if len(candidate) < len(wanted):
+        return False
+    aligned = candidate[len(wanted) - 1]
+    if not _GLOB_META_RE.sub("", aligned).strip("]-"):
+        return False
+    return all(
+        fnmatch.fnmatchcase(want, have) for want, have in zip(wanted, candidate[: len(wanted)])
+    )
+
+
 def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
     """True when ``marker`` appears in ``lowered`` as a whole path, not merely as a prefix.
 
@@ -2765,6 +2794,14 @@ def _references_studio_credential(text: str) -> bool:
         for candidate in lowered_canonicals
     ):
         return True
+    # The same comparison once more with the candidate read as a glob. Only for a text that carries
+    # a wildcard, so the ordinary command pays a single character scan for it.
+    if _GLOB_META_RE.search(lowered) and any(
+        _glob_can_name_the_marker(candidate, canonical_marker)
+        for _, canonical_marker in auth_markers
+        for candidate in lowered_canonicals
+    ):
+        return True
     return bool(
         cd_into_root_re is not None
         and _BARE_AUTH_SEGMENT_RE.search(text)
@@ -2831,6 +2868,13 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     leave the sandbox at all."""
     if _references_studio_credential(text):
         return True
+    # `aut[h]` is a one-character glob class, and the brackets are the same characters that end a
+    # path token, so the scans below split it in half. Rewriting it to `aut?` keeps the token whole
+    # and lands on the wildcard handling, which is where it belongs.
+    if "[" in text:
+        collapsed = _BRACKET_CLASS_RE.sub("?", text)
+        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+            return True
     # `/proc/self/cwd/../../auth/auth.db`: the kernel resolves the symlink to the session sandbox
     # FIRST and applies `..` to that, so a lexical normpath reads it as `/proc/self/auth/auth.db`
     # and misses. Substituting the cwd back is what the kernel is going to do anyway.
