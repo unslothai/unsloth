@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which failed settings writes are worth keeping, and which have to be let go. The settings
-// queue coalesces every change into one patch and requeues it when the PUT fails, which is
-// right for a server that is down and wrong for one that refuses this patch.
-// /api/chat/settings is extra="forbid" and rejects the WHOLE body on one bad field, so a
-// permanently-rejected value requeued forever takes every later save down with it: after one
-// 400 no chat setting can persist again for the life of the tab. Reachable without a bug on
-// either side whenever the two versions differ.
-// A new bundle against a rolled-back backend has every mirrored field rejected as extra_forbidden,
-// which is exactly the shape below.
+// Which failed settings writes are worth keeping, and which have to be let go. The settings queue
+// coalesces every change into one patch and requeues it when the PUT fails, which is right for a
+// server that is down and wrong for one that refuses this patch. /api/chat/settings is
+// extra="forbid" and rejects the WHOLE body on one bad field, so a permanently-rejected value
+// requeued forever takes every later save down with it: after one 400 no chat setting can persist
+// again for the life of the tab. Reachable without a bug on either side whenever the two versions
+// differ. A new bundle against a rolled-back backend has every mirrored field rejected as
+// extra_forbidden, which is exactly the shape below.
 
 /** A non-2xx answer from the settings endpoint, carrying what the server said. */
 export class ChatSettingsRequestError extends Error {

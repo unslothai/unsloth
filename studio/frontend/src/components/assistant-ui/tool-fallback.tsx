@@ -333,9 +333,8 @@ function ToolFallbackResult({
   }
 
   const imageResult = isMcpImageResult(result) ? result : null;
-  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
-  // escapes that a plain <pre> cannot style; strip them so the pane stays
-  // readable (#7962).
+  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR escapes that a plain
+  // <pre> cannot style; strip them so the pane stays readable (#7962).
   const resultText = imageResult ? null : stringifyToolResult(result);
 
   return (

@@ -29,6 +29,34 @@ from pathlib import Path
 import pytest
 import yaml
 
+
+def _shared_setup_1(monkeypatch):
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
+    return deleted
+
+
+def _shared_setup_2():
+    entry = {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 0.4,
+    }
+    return entry
+
+
+def _shared_setup_3(deleted, monkeypatch):
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
+    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    return api
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_DIR = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -317,10 +345,7 @@ def test_a_kernel_past_its_ceiling_is_reaped_and_reported(tmp_path, monkeypatch)
     now, and a wedged one bills to its ceiling unwatched: one here was measured
     ignoring Kaggle's own `-t` timeout for over two hours. Reported as a failure
     rather than dropped, or the commit stays pending forever."""
-    deleted: list[str] = []
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
+    deleted = _shared_setup_1(monkeypatch)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -339,10 +364,7 @@ def test_a_kernel_past_its_ceiling_is_reaped_and_reported(tmp_path, monkeypatch)
 def test_a_kernel_with_no_timestamp_is_never_reaped(tmp_path, monkeypatch):
     """A missing timestamp is not evidence that a kernel is old, and guessing in
     that direction DELETES A RUNNING SESSION."""
-    deleted: list[str] = []
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
+    deleted = _shared_setup_1(monkeypatch)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -368,13 +390,7 @@ def test_evidence_is_downloaded_before_the_kernel_is_deleted(tmp_path, monkeypat
         launch, "delete_kernel", lambda slug, deadline = None: order.append("delete") or True
     )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
-    entry = {
-        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
-        "sha": "abcdef01",
-        "kind": "notebook",
-        "legacy": False,
-        "age_hours": 0.4,
-    }
+    entry = _shared_setup_2()
     collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert order == ["fetch", "delete"], order
 
@@ -392,17 +408,8 @@ def test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted(tmp_path, monk
 
     deleted: list[str] = []
     monkeypatch.setattr(launch, "fetch_evidence", _boom)
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
-    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
-    entry = {
-        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
-        "sha": "abcdef01",
-        "kind": "notebook",
-        "legacy": False,
-        "age_hours": 0.4,
-    }
+    api = _shared_setup_3(deleted, monkeypatch)
+    entry = _shared_setup_2()
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     # `pending`, not `infra`: an infra verdict posts green and is released by
     # --delete-collected, breaking the "next pass retries" promise.
@@ -415,18 +422,9 @@ def test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted(tmp_path, monk
 def test_an_unreadable_status_does_nothing_at_all(tmp_path, monkeypatch):
     """Both available actions are destructive: delete and we may kill a running
     session, report and we may fail a run that was fine. Ask again next pass."""
-    deleted: list[str] = []
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
+    deleted = _shared_setup_1(monkeypatch)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": RuntimeError("503 upstream")})
-    entry = {
-        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
-        "sha": "abcdef01",
-        "kind": "notebook",
-        "legacy": False,
-        "age_hours": 0.4,
-    }
+    entry = _shared_setup_2()
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending"
     assert deleted == []
@@ -742,10 +740,7 @@ def test_collection_never_deletes_and_the_release_step_comes_after_posting(path)
 
 
 def test_a_kernel_whose_status_did_not_post_is_KEPT_for_the_next_pass(tmp_path, monkeypatch):
-    deleted: list[str] = []
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
+    deleted = _shared_setup_1(monkeypatch)
     result = tmp_path / "collect_result.json"
     result.write_text(
         json.dumps(
@@ -772,10 +767,7 @@ def test_no_delivery_record_at_all_keeps_every_kernel_that_had_something_to_post
     tmp_path, monkeypatch
 ):
     """The poster never ran, so deleting would lose every verdict of the pass."""
-    deleted: list[str] = []
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
+    deleted = _shared_setup_1(monkeypatch)
     result = tmp_path / "collect_result.json"
     result.write_text(
         json.dumps(
@@ -897,10 +889,7 @@ def test_an_incomplete_download_judges_nothing_and_keeps_the_kernel(tmp_path, mo
         lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": True},
     )
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
-    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    api = _shared_setup_3(deleted, monkeypatch)
     record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending", record
     assert deleted == []
@@ -922,10 +911,7 @@ def test_a_kernel_another_collector_finished_first_posts_nothing(tmp_path, monke
 
     deleted: list[str] = []
     monkeypatch.setattr(launch, "fetch_evidence", _gone)
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
-    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    api = _shared_setup_3(deleted, monkeypatch)
     record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "gone", record
     assert deleted == [] and collect.statuses_from([record]) == []
@@ -1675,10 +1661,7 @@ def test_the_scheduled_collector_uploads_once_and_reports_real_deletions():
 def test_a_kernel_whose_status_record_was_rejected_is_kept(tmp_path, monkeypatch):
     """The poster refuses a malformed record and posts nothing for it. Keeping
     only the refused posts released that kernel with no status delivered."""
-    deleted: list[str] = []
-    monkeypatch.setattr(
-        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
-    )
+    deleted = _shared_setup_1(monkeypatch)
     slug = "me/unsloth-t4-ci-nabcdef012345-1111"
     result = tmp_path / "collect_result.json"
     result.write_text(

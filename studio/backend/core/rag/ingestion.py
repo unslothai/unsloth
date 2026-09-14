@@ -8,6 +8,8 @@ daemon thread, pushing progress onto a per-job queue (streamed as SSE by
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_is_retired, account_key, account_path
+from utils.account_context import account_thread, current_account
 import hashlib
 import logging
 import os
@@ -16,9 +18,9 @@ import re
 import threading
 from collections.abc import Callable
 
-from storage import rag_db
+from core.rag import account_db as rag_db
 
-from . import captioner, chunking, config, embeddings, job_leases, parsers, store
+from . import captioner, chunking, config, embeddings, job_leases, parsers, pdf_ocr, store
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 # Poll with a timeout so the generator notices a gone client or a worker that died without the None sentinel.
 _SSE_POLL_SECONDS = 1.0
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+
+_RETIRE_JOIN_SECONDS = 10.0
 
 
 def _sha256_file(path: str) -> str:
@@ -68,7 +72,7 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
 
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
-        q = _jobs.get(job_id)
+        q = _jobs.get(account_key(job_id))
     if q is not None:
         q.put(event)
 
@@ -95,6 +99,8 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
+    if account_is_retired():
+        raise job_leases.JobLeaseLost("Account is retired")
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
@@ -110,7 +116,7 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     indexed and retire the document it was replacing.
     """
     conn.execute("BEGIN IMMEDIATE")
-    if store.get_document(conn, document_id) is not None:
+    if not account_is_retired() and store.get_document(conn, document_id) is not None:
         return False
     conn.rollback()
     _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
@@ -167,8 +173,8 @@ def _ocr_scanned_pages(
     ocr: bool | None = None,
 ) -> tuple[list, set[int]]:
     """Replace text on near-empty (scanned/image-only) PDF pages with vision-model OCR
-    so image PDFs become searchable. ``ocr`` overrides ``config.OCR_SCANNED`` per upload
-    (``None`` = config default); no-op without scanned pages or a vision model. OCR'd
+    so image PDFs become searchable. Local Tesseract is the fallback. The per-upload
+    ``ocr`` flag overrides ``config.OCR_SCANNED``; no-op without scanned pages. OCR'd
     pages have no text layer, so no preview highlight regions, but stay searchable.
     Returns ``(pages, ocred)``: new ``Page`` objects for OCR'd pages (originals
     otherwise) and the set of page numbers actually transcribed."""
@@ -177,10 +183,14 @@ def _ocr_scanned_pages(
     scanned = [
         p.page_number
         for p in pages
-        if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
+        if p.page_number is not None
+        and (p.needs_ocr or len((p.text or "").strip()) < config.OCR_MIN_CHARS)
     ]
-    if not scanned or captioner.vision_endpoint() is None:
+    if not scanned:
         return pages, set()
+    required = {p.page_number for p in pages if p.needs_ocr}
+    # Optional short/blank pages must not displace actual scans from the budget.
+    scanned.sort(key = lambda number: number not in required)
     if len(scanned) > config.OCR_MAX_PAGES:
         logger.warning(
             "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
@@ -190,11 +200,22 @@ def _ocr_scanned_pages(
         )
     scanned = scanned[: config.OCR_MAX_PAGES]
     _progress(conn, job_id, "ocr", 0.25)
-    page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
-    texts = captioner.ocr_pages(
-        page_pngs,
-        on_progress = lambda done, total: _progress(conn, job_id, "ocr", 0.25 + 0.15 * done / total),
-    )
+    texts = {}
+    if captioner.vision_endpoint() is not None:
+        page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
+        texts = captioner.ocr_pages(
+            page_pngs,
+            on_progress = lambda done, total: _progress(
+                conn, job_id, "ocr", 0.25 + 0.15 * done / total
+            ),
+        )
+    # Keep the existing vision pass, but allow scanned PDFs with text-only models too.
+    local_pages = [
+        p.page_number
+        for p in pages
+        if p.needs_ocr and p.page_number in scanned and p.page_number not in texts
+    ]
+    texts.update(pdf_ocr.ocr_pages(stored_path, local_pages))
     if not texts:
         return pages, set()
 
@@ -286,6 +307,7 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         is_pdf = stored_path.lower().endswith(".pdf")
+        scanned_pages = {p.page_number for p in pages if p.needs_ocr}
         ocred: set[int] = set()
         if is_pdf:
             pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
@@ -320,15 +342,38 @@ def _run(
                 logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
                 tiles = []
             if tiles:
+                complete_captions: set[int] = set()
+                captioned_tiles: dict[int, set[int]] = {}
+
+                def record_caption(image):
+                    number = image.page_number
+                    if image.full_page:
+                        complete_captions.add(number)
+                    elif image.tile_index is not None and image.tile_count:
+                        indices = captioned_tiles.setdefault(number, set())
+                        indices.add(image.tile_index)
+                        if len(indices) == image.tile_count:
+                            complete_captions.add(number)
+
                 captions = captioner.merge_page_captions(
                     captioner.caption_images(
                         tiles,
+                        on_caption = record_caption,
                         on_progress = lambda done, total: _progress(
                             conn, job_id, "captioning", 0.4 + 0.2 * done / total
                         ),
                     )
                 )
                 pages = captioner.splice_captions(pages, captions)
+                ocred.update(complete_captions)
+
+        if scanned_pages - ocred:
+            if _abort_if_document_deleted(conn, job_id, document_id):
+                return
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
+            raise pdf_ocr.unreadable_pages_error(scanned_pages - ocred)
 
         _progress(conn, job_id, "chunking", 0.6)
         count = embeddings.token_counter(model_name)
@@ -339,18 +384,14 @@ def _run(
             count = count,
         )
         if not chunks:
-            # An empty parse still completes the document and retires the one it replaces, so it needs the same
-            # guard as the chunk write.
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
-            # inside the write transaction the guard opened, as _progress does
             if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
                 raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
-            store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-            _replace_old_document(conn, replaces, stored_path, document_id)
-            _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
-            _emit(job_id, {"type": "complete", "num_chunks": 0})
-            return
+            raise ValueError(
+                "No extractable text found in file. Upload a document containing readable text."
+            )
 
         _progress(conn, job_id, "embedding", 0.65)
         # An ST encode failure swaps the process to llama-server, so the embedder that produced these
@@ -409,7 +450,7 @@ def _run(
             conn.close()
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
-            _workers.pop(job_id, None)
+            _workers.pop(account_key(job_id), None)
         _emit(job_id, None)
 
 
@@ -440,6 +481,9 @@ def start_ingestion(
     through instead of paying for a second full read of the file. Must be the lowercase
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
     the wrong hash, so it is trusted as given and never reverified here."""
+    account_path(stored_path)
+    if account_is_retired():
+        raise RuntimeError("Account is retired")
     ext = os.path.splitext(stored_path)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
@@ -501,7 +545,7 @@ def start_ingestion(
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
                 _remove_upload(stored_path, keep_path = doc.get("stored_path"))
                 with _jobs_lock:
-                    _jobs[job_id] = queue.Queue()
+                    _jobs[account_key(job_id)] = queue.Queue()
                 _emit(
                     job_id,
                     {"type": "complete", "num_chunks": doc.get("num_chunks") or 0, "deduped": True},
@@ -535,7 +579,7 @@ def start_ingestion(
     try:
         job_leases.activate(job_leases.INGESTION, job_id)
         with _jobs_lock:
-            _jobs[job_id] = queue.Queue()
+            _jobs[account_key(job_id)] = queue.Queue()
         args = (
             job_id,
             document_id,
@@ -549,7 +593,7 @@ def start_ingestion(
         if not background:
             _run(*args)
             return document_id, job_id
-        worker = threading.Thread(
+        worker = account_thread(
             target = _run,
             # effective_model, not the raw model_name, pins the embedder for the whole job: a Settings change
             # mid-ingestion must not switch tokenizer or embedder between batches.
@@ -557,11 +601,11 @@ def start_ingestion(
             daemon = True,
         )
         with _jobs_lock:
-            _workers[job_id] = worker
+            _workers[account_key(job_id)] = worker
         worker.start()
     except Exception:
         with _jobs_lock:
-            _workers.pop(job_id, None)
+            _workers.pop(account_key(job_id), None)
         job_leases.release(job_leases.INGESTION, job_id)
         fail_stalled_job(job_id, "Ingestion worker could not start")
         # _run never entered, so its finally cannot retire the orphan this retry replaced.
@@ -577,7 +621,7 @@ def start_ingestion(
 def job_worker_alive(job_id: str) -> bool:
     """Return whether this process still has a live worker for a persisted job."""
     with _jobs_lock:
-        worker = _workers.get(job_id)
+        worker = _workers.get(account_key(job_id))
     return worker is not None and worker.is_alive()
 
 
@@ -654,12 +698,17 @@ def _reap_finished_jobs() -> None:
     forever. Safe while streaming: ``job_events`` holds its queue reference.
     """
     with _jobs_lock:
-        job_ids = list(_jobs.keys())
+        job_ids = [
+            key if isinstance(key, str) else key[1]
+            for key in _jobs
+            if (isinstance(key, str) and current_account().is_owner)
+            or (isinstance(key, tuple) and key[0] == current_account().account_id)
+        ]
     for jid in job_ids:
         row = get_job_status(jid)
         if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
             with _jobs_lock:
-                _jobs.pop(jid, None)
+                _jobs.pop(account_key(jid), None)
 
 
 def delete_terminal_job(job_id: str) -> bool:
@@ -675,7 +724,7 @@ def delete_terminal_job(job_id: str) -> bool:
         conn.close()
     if cursor.rowcount:
         with _jobs_lock:
-            _jobs.pop(job_id, None)
+            _jobs.pop(account_key(job_id), None)
         return True
     return False
 
@@ -694,7 +743,7 @@ def job_events(job_id: str):
     The stream ends only on a terminal status, the ``None`` sentinel, or disconnect.
     """
     with _jobs_lock:
-        q = _jobs.get(job_id)
+        q = _jobs.get(account_key(job_id))
     if q is None:
         return
     terminal = False
@@ -737,7 +786,7 @@ def job_events(job_id: str):
                 terminal = False
         if terminal:
             with _jobs_lock:
-                _jobs.pop(job_id, None)
+                _jobs.pop(account_key(job_id), None)
 
 
 def get_job_status(job_id: str) -> dict | None:
@@ -754,3 +803,31 @@ def get_job_status(job_id: str) -> dict | None:
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+def retire_account_ingestions() -> None:
+    """Stop renewing this account's jobs, then reap their workers before the roots move:
+    a thread parked in a long parse only notices retirement at its next checkpoint."""
+    with _jobs_lock:
+        keys = [
+            key
+            for key in _workers
+            if (isinstance(key, str) and current_account().is_owner)
+            or (isinstance(key, tuple) and key[0] == current_account().account_id)
+        ]
+    for key in keys:
+        job_leases.release(job_leases.INGESTION, key if isinstance(key, str) else key[1])
+    stragglers = []
+    for key in keys:
+        with _jobs_lock:
+            worker = _workers.get(key)
+        # Never join from the worker itself.
+        if worker is None or worker is threading.current_thread():
+            continue
+        worker.join(timeout = _RETIRE_JOIN_SECONDS)
+        if worker.is_alive():
+            stragglers.append(key if isinstance(key, str) else key[1])
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account ingestion workers have not stopped: {sorted(stragglers)}"
+        )

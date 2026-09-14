@@ -27,18 +27,16 @@ export function LanguageSelect() {
   const preference = useLocalePreference();
   const pendingPreference = usePendingLocalePreference();
   const catalogFailed = useLocaleCatalogFailed();
-  // Name no entry at all whenever the preference's own catalog failed and a
-  // fallback was adopted. A controlled Select never fires onValueChange for the
-  // value it already holds, so whichever entry it names is the one entry the
-  // user cannot pick, and after a failure both of them are needed: the failed
-  // preference is the retry, and the fallback in effect is how English becomes
-  // a real preference instead of something the app is doing temporarily. The
-  // empty string is Radix's "no selection", so every entry stays pickable and
-  // the trigger shows the language actually in effect as the placeholder.
-  // Whether the catalog failed has to come from the store rather than a
-  // `preference !== locale` comparison, because a failed `auto` still reads as
-  // `auto`, and its fallback locale is indistinguishable from a successful
-  // detection that landed on the same language.
+  // Name no entry at all whenever the preference's own catalog failed and a fallback was adopted. A
+  // controlled Select never fires onValueChange for the value it already holds, so whichever entry
+  // it names is the one entry the user cannot pick, and after a failure both of them are needed:
+  // the failed preference is the retry, and the fallback in effect is how English becomes a real
+  // preference instead of something the app is doing temporarily. The empty string is Radix's "no
+  // selection", so every entry stays pickable and the trigger shows the language actually in effect
+  // as the placeholder. Whether the catalog failed has to come from the store rather than a
+  // `preference !== locale` comparison, because a failed `auto` still reads as `auto`, and its
+  // fallback locale is indistinguishable from a successful detection that landed on the same
+  // language.
   const fallbackLabel = catalogFailed ? LOCALES[locale].nativeLabel : "";
 
   return (

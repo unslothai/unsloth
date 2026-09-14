@@ -22,6 +22,57 @@ from core.rag import folder_sync, store
 from storage import rag_db
 from utils.paths import rag_db_path
 
+
+def _shared_setup_1(conn, folder):
+    after = dict(
+        conn.execute(
+            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+        ).fetchone()
+    )
+    return after
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
+    )
+
+
+def _shared_setup_3(rag_home):
+    source, folder = _folder(rag_home)
+    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
+    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    (source / "doomed.txt").unlink()
+    return folder, source
+
+
+def _shared_setup_4():
+    from routes import rag as rag_routes
+    with _connection() as conn:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    # Only the module escapes: `_connection` is a `closing(...)`, so `conn` is shut.
+    return rag_routes
+
+
+def _shared_setup_5(rag_home):
+    from core.rag import job_leases
+
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    return folder, job_id, job_leases
+
+
+def _shared_setup_6(payload, snapshot):
+    try:
+        assert Path(snapshot).read_bytes() == payload
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
 requires_sqlite_vec = pytest.mark.skipif(
     not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
 )
@@ -204,10 +255,7 @@ def test_failed_deletion_commit_keeps_the_snapshot_readable(rag_home, stub_embed
 @requires_sqlite_vec
 def test_skipped_reconciliation_releases_a_claim_the_queue_already_activated(rag_home):
     """Otherwise the heartbeat renews it forever and the unlink never returns."""
-    from core.rag import job_leases
-
-    _, folder = _folder(rag_home)
-    job_id = folder_sync.request_sync(folder["id"])
+    folder, job_id, job_leases = _shared_setup_5(rag_home)
     assert folder_sync._claim_job(job_id) == (job_id, folder["id"])
     with _connection() as conn:
         assert job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
@@ -305,10 +353,7 @@ def test_periodic_scheduling_reaps_orphans_a_survivor_never_saw_at_startup(rag_h
 
 @requires_sqlite_vec
 def test_normal_scheduling_reclaims_an_expired_running_job(rag_home):
-    from core.rag import job_leases
-
-    _, folder = _folder(rag_home)
-    job_id = folder_sync.request_sync(folder["id"])
+    folder, job_id, job_leases = _shared_setup_5(rag_home)
     with _connection() as conn:
         conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (job_id,))
         conn.execute(
@@ -499,11 +544,7 @@ def test_reconcile_retains_mapping_when_missing_file_reappears(
     assert result["status"] == "failed"
     assert result["deleted"] == 0
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["document_id"] == before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "durable", 5)
 
@@ -531,11 +572,7 @@ def test_extension_changing_rename_reingests_with_the_new_parser(rag_home, stub_
     assert result["added"] == 1
     assert result["deleted"] == 1
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["relative_path"] == "notes.txt"
         assert after["document_id"] != before["document_id"]
         assert store.get_document(conn, before["document_id"]) is None
@@ -562,11 +599,7 @@ def test_rename_reuse_verifies_content_before_reusing_the_document(rag_home, stu
     assert result["added"] == 1
     assert result["deleted"] == 1
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)
 
@@ -583,11 +616,7 @@ def test_edited_rename_failure_retains_the_prior_mapping(rag_home, stub_embeddin
     original.rename(renamed)
     renamed.write_text("replacement content that fails", encoding = "utf-8")
     assert renamed.stat().st_ino == before["inode"]
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
 
     result = _run(folder["id"])
     assert result["status"] == "failed"
@@ -613,11 +642,7 @@ def test_rename_over_existing_path_failure_retains_both_prior_mappings(
     destination.write_text("durable destination", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
     os.replace(old, destination)
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
 
     result = _run(folder["id"])
 
@@ -646,11 +671,7 @@ def test_changed_file_failure_and_unavailable_scan_retain_prior_index(
     prior = _mapping(folder)
 
     path.write_text("replacement content that fails", encoding = "utf-8")
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
     failed = _run(folder["id"])
     assert failed["status"] == "failed"
     with _connection() as conn:
@@ -951,10 +972,7 @@ def test_snapshot_copies_the_source_byte_for_byte(rag_home):
 
     snapshot = folder_sync._snapshot(str(source), _snapshot_metadata(document))
 
-    try:
-        assert Path(snapshot).read_bytes() == payload
-    finally:
-        folder_sync._remove_snapshot(snapshot)
+    _shared_setup_6(payload, snapshot)
 
 
 def test_snapshot_accepts_a_source_the_scan_could_not_identify(rag_home):
@@ -968,10 +986,7 @@ def test_snapshot_accepts_a_source_the_scan_could_not_identify(rag_home):
 
     snapshot = folder_sync._snapshot(str(source), metadata)
 
-    try:
-        assert Path(snapshot).read_bytes() == payload
-    finally:
-        folder_sync._remove_snapshot(snapshot)
+    _shared_setup_6(payload, snapshot)
 
 
 def test_snapshot_still_rejects_a_changed_source_without_an_identity(rag_home):
@@ -1030,10 +1045,7 @@ def test_snapshot_ignores_a_path_recovered_identity_os_fstat_disagrees_with(rag_
 
     snapshot = folder_sync._snapshot(str(source), metadata)
 
-    try:
-        assert Path(snapshot).read_bytes() == payload
-    finally:
-        folder_sync._remove_snapshot(snapshot)
+    _shared_setup_6(payload, snapshot)
 
 
 @requires_sqlite_vec
@@ -1097,11 +1109,7 @@ def test_same_size_same_mtime_inode_replacement_is_reconciled(rag_home, stub_emb
     result = _run(folder["id"])
     assert result["changed"] == 1
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["inode"] != before["inode"]
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)
@@ -1192,11 +1200,7 @@ def test_content_identical_touch_updates_metadata_without_reembedding(
     assert result["status"] == "completed"
     assert result["changed"] == 0
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["document_id"] == before["document_id"]
         assert after["mtime_ns"] != before["mtime_ns"]
         assert store.search_lexical(conn, folder["scope"], "stable", 5)
@@ -1602,10 +1606,7 @@ def test_unlink_keeps_snapshot_cleanup_retryable(rag_home, stub_embeddings, monk
 
 @requires_sqlite_vec
 def test_unlink_waits_for_a_foreign_sync_lease(rag_home):
-    from core.rag import job_leases
-
-    _, folder = _folder(rag_home)
-    job_id = folder_sync.request_sync(folder["id"])
+    folder, job_id, job_leases = _shared_setup_5(rag_home)
     with _connection() as conn:
         conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (job_id,))
         conn.execute(
@@ -2020,10 +2021,7 @@ def test_project_rag_cleanup_atomically_removes_retired_scope(rag_home):
 def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     rag_home, stub_embeddings, monkeypatch
 ):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     folders = []
     for name in ("kb-first", "kb-second"):
         source = rag_home / name
@@ -2090,10 +2088,7 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
 
 @requires_sqlite_vec
 def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_home, monkeypatch):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     source = rag_home / "failed-kb-delete"
     source.mkdir()
     folder = folder_sync.create_folder(
@@ -2128,10 +2123,7 @@ def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_h
 
 @requires_sqlite_vec
 def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home, monkeypatch):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     source = rag_home / "locked-kb-delete"
     source.mkdir()
     folder = folder_sync.create_folder(
@@ -2172,10 +2164,7 @@ def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home
 
 @requires_sqlite_vec
 def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     folder_sync.retire_scope(store.kb_scope("knowledge"))
     monkeypatch.setattr(
         rag_routes,
@@ -2207,12 +2196,7 @@ def test_preview_containment_is_component_aware(rag_home):
 def test_unrelated_ingest_failure_still_removes_deleted_sources(
     rag_home, stub_embeddings, monkeypatch
 ):
-    source, folder = _folder(rag_home)
-    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
-    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
-    assert _run(folder["id"])["status"] == "completed"
-
-    (source / "doomed.txt").unlink()
+    folder, source = _shared_setup_3(rag_home)
     (source / "poison.txt").write_text("never indexes", encoding = "utf-8")
     real_start = folder_sync.ingestion.start_ingestion
     monkeypatch.setattr(
@@ -2302,11 +2286,7 @@ def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
     renamed = source / "report-final.txt"
     renamed.write_text("rewritten content that fails", encoding = "utf-8")
     original.unlink()
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
 
     result = _run(folder["id"])
 
@@ -2320,12 +2300,7 @@ def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
 def test_an_unreadable_file_stops_withholding_removals_after_one_pass(
     rag_home, stub_embeddings, monkeypatch
 ):
-    source, folder = _folder(rag_home)
-    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
-    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
-    assert _run(folder["id"])["status"] == "completed"
-
-    (source / "doomed.txt").unlink()
+    folder, source = _shared_setup_3(rag_home)
     (source / "unreadable.txt").write_text("cannot be copied", encoding = "utf-8")
     monkeypatch.setattr(
         folder_sync,
@@ -2343,18 +2318,9 @@ def test_an_unreadable_file_stops_withholding_removals_after_one_pass(
 def test_a_failing_file_that_keeps_changing_cannot_block_removals(
     rag_home, stub_embeddings, monkeypatch
 ):
-    source, folder = _folder(rag_home)
-    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
-    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
-    assert _run(folder["id"])["status"] == "completed"
-
-    (source / "doomed.txt").unlink()
+    folder, source = _shared_setup_3(rag_home)
     churn = source / "churn.txt"
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
     churn.write_text("attempt one", encoding = "utf-8")
     assert _run(folder["id"])["deleted"] == 0
     churn.write_text("attempt two, a different size entirely", encoding = "utf-8")

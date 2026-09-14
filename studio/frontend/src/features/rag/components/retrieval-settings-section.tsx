@@ -215,10 +215,10 @@ export function RetrievalSettingsSection() {
           <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             OCR scanned pages
             <InfoHint>
-              Read text off scanned or image-only PDF pages with the loaded
-              model's vision, at upload time, so picture-only documents become
-              searchable. Needs a vision model; pages with a text layer are
-              unaffected.
+              Read scanned or image-only PDF pages at upload time using the
+              loaded vision model or local Tesseract OCR. Local OCR requires
+              installed language data. Selectable headers alone may not cover a
+              scanned page's body.
             </InfoHint>
           </span>
           <span className="text-ui-12 leading-[1.3] text-muted-foreground">
@@ -238,9 +238,9 @@ export function RetrievalSettingsSection() {
           <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Describe figures &amp; charts
             <InfoHint>
-              Caption PDF figures, charts, tables and diagrams at upload with the
-              loaded model's vision, so their content becomes searchable. Needs a
-              vision model; adds vision calls for detected figures.
+              Caption PDF figures, charts, tables and diagrams at upload with
+              the loaded model's vision, so their content becomes searchable.
+              Needs a vision model; adds vision calls for detected figures.
             </InfoHint>
           </span>
           <span className="text-ui-12 leading-[1.3] text-muted-foreground">

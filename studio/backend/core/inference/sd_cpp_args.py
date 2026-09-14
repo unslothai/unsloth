@@ -24,7 +24,6 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 
-# in supply order, keyed by DiffusionFamily.name so the family registry need not import sd.cpp specifics
 # Per-family text-encoder flags, in supply order. Keyed by ``DiffusionFamily.name`` so the family registry need not
 # import sd.cpp specifics.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
@@ -157,7 +156,6 @@ def metal_text_encoder_flags() -> list[str]:
     ggml's Metal backend gates RMS_NORM on contiguous rows and calls ``GGML_ABORT`` when that does
     not hold, with no per-op CPU fallback, so an LLM text encoder (Qwen3 for FLUX.2 / Z-Image, T5
     for FLUX.1) takes the whole sd-server process down mid-generation:
-
         ggml_metal_op_encode_impl: error: unsupported op 'RMS_NORM' -> ggml_abort
         LLMEmbedder::encode_prompt -> LLMRunner::compute -> GGMLRunner::compute
 
@@ -175,14 +173,11 @@ def metal_text_encoder_flags() -> list[str]:
     return ["--clip-on-cpu"]
 
 
-# sd.cpp prefers GPU -> iGPU -> CPU and only --backend changes which backend EXECUTES the graph (--offload-to-cpu moves
-# parameters)
-# Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend
-# EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal
-# entirely.
+# Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
+# backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes
+# ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
-# a negative --max-vram auto-detects free VRAM per device
 # Graph-cut segmented execution; a negative --max-vram auto-detects free VRAM per device, sparing that many GiB. It
 # segments on its own, so it stands alone.
 GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
@@ -242,7 +237,6 @@ def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
     return out
 
 
-# ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() is false
 # The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when
 # ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The
 # SIGABRT takes sd-server down mid-generation.
@@ -355,7 +349,6 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    # leaving them unset lets sd.cpp derive the size from an input image
     # Emit explicit dims when given. An image-conditioned run leaving them unset omits the flags so sd.cpp derives the
     # size from the input; a plain txt2img keeps the 1024 default.
     if params.width is not None or params.height is not None:
@@ -643,8 +636,6 @@ def build_img_gen_request(
         req["seed"] = int(seed)
     if sample_params:
         req["sample_params"] = sample_params
-    # the API resolves each `path` against the server's --lora-model-dir (prompt-embedded <lora:> tags are unsupported
-    # server-side)
     # Structured LoRA list: the API resolves each ``path`` against the server's ``--lora-model-dir`` (prompt-embedded
     # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
