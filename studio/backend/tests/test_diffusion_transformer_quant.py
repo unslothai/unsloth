@@ -104,7 +104,6 @@ def test_auto_blackwell_prefers_int8_then_walks_the_ladder(monkeypatch):
 
 
 def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
-    # Consumer Blackwell (RTX 50xx): fp8 FP32 accumulate is halved, int8 is full-rate.
     _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
@@ -127,7 +126,7 @@ def test_auto_workstation_unknown_prefers_int8(monkeypatch):
 
 
 def test_auto_professional_rtx_prefers_int8(monkeypatch):
-    # Professional parts count as data-center for the accumulate gate, but the ladder order does not depend on it.
+    # The accumulate gate still calls these data-center; the ladder order does not depend on it.
     for device_name, cc in (
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
         ("NVIDIA RTX 6000 Ada Generation", (8, 9)),

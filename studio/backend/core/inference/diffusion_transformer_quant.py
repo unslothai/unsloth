@@ -13,8 +13,7 @@ low-memory default and fallback.
 
 Scheme by architecture (``auto`` picks the best supported, best first): int8 leads every tier, then
 fp8 on Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8
-alone. nvfp4 is an explicit opt-in and is not in the auto ladder. ``_AUTO_LADDER`` is the ordering
-that ships, this is its summary.
+alone. nvfp4 is an explicit opt-in and is not in the auto ladder.
 
 Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
 loader compiles the repeated block after this. torch / torchao imported lazily; every probe is
@@ -206,10 +205,8 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and workstation
-# cards (which halve fp8 FP32 accumulate) and is within a few percent of fp8 on data-center parts.
-# nvfp4 is an explicit opt-in kept OUT of the ladder: it is both slower and less accurate at DiT shapes, and auto
-# must never silently drop to such a scheme. Uncomment the Blackwell tier below to re-enable it under auto.
+# int8 leads every tier: full-rate on consumer and workstation cards (which halve fp8 FP32 accumulate) and within a
+# few percent of fp8 on data-center parts. nvfp4 is kept OUT: slower AND less accurate at DiT shapes.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_INT8, TQ_FP8, TQ_MXFP8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
     # ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),  # restore to re-enable nvfp4 under auto
