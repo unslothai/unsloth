@@ -2211,6 +2211,45 @@ def test_a_dropped_unloadable_drafter_reports_its_own_reason(monkeypatch):
     assert "--model-draft" not in flags
 
 
+@pytest.mark.parametrize("mode", ["auto", "mtp"])
+def test_a_dropped_sidecar_is_explained_on_a_non_gemma_quant(monkeypatch, mode):
+    """The PR's own motivating case, which the Gemma-only fallback used to miss.
+
+    RVN-Q6_K.gguf reports no nextn_predict_layers and carries no -mtp in its name, so
+    the sidecar beside it was its ONLY MTP signal. Clearing mtp_draft_path made
+    is_mtp_model read false, _mtp_drafter_missing recognised Gemma alone, and neither
+    Auto nor forced MTP reached the fallback: MTP went off with spec_fallback_reason
+    null, so the panel had nothing to show. No --model-draft either way; emitting MTP
+    without a drafter is what aborts llama-server.
+    """
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type = mode,
+        mtp_draft_path = None,
+        mtp_drafter_unloadable = True,
+    )
+
+    assert backend._spec_fallback_reason == "drafter_unloadable"
+    assert "--model-draft" not in flags
+    assert "draft-mtp" not in flags
+
+
+def test_a_plain_quant_with_no_sidecar_at_all_is_untouched(monkeypatch):
+    """The negative: keeping the dropped sidecar as a signal must not invent MTP for a
+    model that never had any. Nothing was dropped here, so nothing is explained."""
+    backend = _spec_backend(monkeypatch)
+    _spec_flags(
+        backend,
+        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type = "auto",
+        mtp_draft_path = None,
+    )
+
+    assert backend._spec_fallback_reason is None
+
+
 def test_a_genuinely_absent_drafter_still_reports_not_found(monkeypatch):
     """The negative: the new reason must not swallow the case it was split out of."""
     backend = _spec_backend(monkeypatch)

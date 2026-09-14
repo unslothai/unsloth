@@ -27889,6 +27889,12 @@ class LlamaCppBackend:
             bool(self._nextn_predict_layers)
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
+            # A dropped sidecar was this quant's ONLY MTP signal: the motivating
+            # RVN-Q6_K.gguf reports no nextn_predict_layers and carries no -mtp in its
+            # name, so clearing mtp_draft_path made it read as a plain model and every
+            # arm below was skipped, leaving spec_fallback_reason null and the drop
+            # unexplained. Kept as a signal, it reaches the fallback instead.
+            or mtp_drafter_unloadable
         )
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
@@ -27896,12 +27902,17 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
-        # Drafterless Gemma (name-only MTP, no embedded head): emitting MTP
-        # would abort llama-server, so every mode below falls back instead.
+        # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
+        # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
+        # every mode below falls back instead. Without the second case the fallback is
+        # Gemma-only, and a dropped sidecar on any other repo disables MTP in silence.
         _mtp_drafter_missing = (
-            _is_gemma_mtp_name(model_identifier, model_path)
-            and not mtp_draft_path
+            not mtp_draft_path
             and not self._nextn_predict_layers
+            and (
+                _is_gemma_mtp_name(model_identifier, model_path)
+                or mtp_drafter_unloadable
+            )
         )
         # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
         # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,
