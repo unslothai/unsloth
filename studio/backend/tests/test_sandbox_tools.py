@@ -890,6 +890,15 @@ class TestBashBlocklistPosition:
                 id = "suffixed_duration_wrapper_spent_allowed",
             ),
             pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
+            pytest.param("> out.log echo hi", id = "spaced_redirection_benign_allowed"),
+            # A substitution that IS the redirection target names a file; nothing runs.
+            pytest.param("> $(date).log echo hi", id = "subst_as_redirection_target_allowed"),
+            pytest.param('echo "`date`"', id = "quoted_backtick_in_argument_allowed"),
+            pytest.param('echo "$(printf r)m"', id = "glued_subst_in_argument_allowed"),
+            pytest.param(
+                "env --chdir /tmp python train.py --data $(ls -d data/*)",
+                id = "env_long_option_value_wrapper_spent_allowed",
+            ),
             # A laundered expansion glued into an ARGUMENT is not a command word.
             pytest.param("v=$(date); echo ${v}Z", id = "laundered_prefix_in_argument_allowed"),
         ],
@@ -1120,6 +1129,37 @@ class TestBashBlocklistPosition:
                 "command substitution",
                 "x=$(printf r); ${x}m -rf victim",
                 id = "laundered_prefix_command_word_blocked",
+            ),
+            # Bash allows whitespace between a redirection operator and its target.
+            pytest.param(
+                "command substitution",
+                "> out.log $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "spaced_redirection_subst_blocked",
+            ),
+            # `env -C/--chdir DIR` takes a separate value (env --help); unconsumed, the DIR read
+            # as the command and the real one behind it was never reached.
+            pytest.param(
+                "command substitution",
+                "env --chdir /tmp $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "env_long_option_value_subst_blocked",
+            ),
+            # A double-quoted backtick expands exactly like `"$(...)"`.
+            pytest.param(
+                "command substitution",
+                "\"`ls /usr/bin | grep '^rm$'`\" -rf victim",
+                id = "quoted_backtick_subst_blocked",
+            ),
+            # Bash concatenates adjacent fragments, so the body being benign proves nothing about
+            # the word that runs: `$(printf r)m` is `rm`.
+            pytest.param(
+                "command substitution",
+                '"$(printf r)"m -rf victim',
+                id = "quoted_subst_glued_to_literal_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "$(printf r)m -rf victim",
+                id = "bare_subst_glued_to_literal_blocked",
             ),
         ],
     )

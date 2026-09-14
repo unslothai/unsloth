@@ -1559,8 +1559,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 return False  # bash substitutes nothing here
             if state == '"':
                 # Double quotes DO substitute, but into a word the outer command receives - unless
-                # the quote opens at the site itself (`"$(...)"`), which is a command word.
-                return match.group(0).endswith('"$(')
+                # the quote opens at the site itself (`"$(...)"`, `"`...`"`), which is a command
+                # word.
+                return match.group(0).endswith(('"$(', '"`'))
             return True
 
         # Name -> the literal it holds, or None when unscreenable. `$C` is not `$c`.
@@ -1608,7 +1609,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             body = _command_subst_body(command, opener)
             lowered_body = body.lower()
             blocked.update(_blocked_body_words(lowered_body))
-            if _SUBST_ENUMERATES_COMMANDS_RE.search(lowered_body):
+            if _subst_is_word_fragment(command, opener):
+                # `"$(printf r)"m` concatenates into `rm`. The body alone is benign, so nothing
+                # above can name the command: only the fact that it is unknowable is reportable.
+                blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+            elif _SUBST_ENUMERATES_COMMANDS_RE.search(lowered_body):
                 blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
             elif laundered_in_body_pattern is not None and re.search(
                 laundered_in_body_pattern, body
@@ -5064,7 +5069,17 @@ _SUBST_CMD_SEP = (
 # option taking a separate value swallows it too, or `xargs -P $n` reads the `$n` as the command.
 _ALL_WRAPPER_VALUE_FLAGS = frozenset(
     flag for flags in _WRAPPER_VALUE_FLAGS_BY_CMD.values() for flag in flags
-)
+) | {
+    # `env -C DIR` / `--chdir DIR` (env --help) takes a separate value, so an unconsumed DIR
+    # reads as the command and the real one behind it is never reached. Added HERE rather than
+    # to _WRAPPER_VALUE_FLAGS_BY_CMD because that table also drives the high-risk classifier,
+    # where `-C /` is exactly what makes a following relative `etc/passwd` sensitive.
+    #
+    # `-S`/`--split-string` is deliberately absent: its operand is split into the argv that RUNS,
+    # so consuming it as a value loses the command (`env -S 'rm -rf /tmp/x'` went unblocked).
+    "-C",
+    "--chdir",
+}
 _WRAPPER_VALUE_FLAG_ALT = "|".join(
     re.escape(flag) for flag in sorted(_ALL_WRAPPER_VALUE_FLAGS, key = len, reverse = True)
 )
@@ -5087,10 +5102,16 @@ _SUBST_WRAPPER_RUN = (
     r"|setpriv|sudo|doas|su|xargs)\s+(?:" + _SUBST_WRAPPER_ARG + r"\s+)*)*"
 )
 # Redirections may precede the command word (`>out.log $(...)` runs the substitution's output),
-# and the token walker already treats them as leaving command position intact.
-_SUBST_REDIR_PREFIX = r"(?:\d*(?:>>|<<<|<<|>&|<&|>|<)[^\s;&|()]*\s*)*"
+# and the token walker already treats them as leaving command position intact. Bash allows
+# whitespace between the operator and its target, so `> out.log $(...)` is the same command.
+#
+# The target and the space after it are both MANDATORY, which is what keeps `>$(ls) cmd` out: a
+# substitution that IS the redirection target names a file, it is not run, and an optional target
+# would let this prefix match nothing and read that `$(` as the command word.
+_SUBST_REDIR_PREFIX = r"(?:\d*(?:>>|<<<|<<|>&|<&|>|<)\s*[^\s;&|()]+\s+)*"
 # VAR=x prefixes are stepped over; `(?!\()` drops arithmetic, which is a number, not a command.
-_SUBST_OPENER = r"(?:\"\$\((?!\()|\$\((?!\()|`)"
+# A double-quoted backtick expands exactly like `"$(...)"`, so it opens a command word too.
+_SUBST_OPENER = r"(?:\"\$\((?!\()|\$\((?!\()|\"`|`)"
 _SUBST_CMD_WORD_PREFIX = (
     _SUBST_REDIR_PREFIX
     + r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
@@ -5178,6 +5199,23 @@ def _blocked_body_word_pattern_for(words: "frozenset[str]") -> "re.Pattern":
         alt = "|".join(re.escape(w) for w in punctuation)
         parts.append(rf"(?:^|[;&|`\n(])\s*({alt})(?=\s)")
     return re.compile("|".join(parts) if parts else r"(?!)")
+
+
+def _subst_is_word_fragment(command: str, opener: int) -> bool:
+    """Whether more of the command WORD follows the substitution opening at ``opener``.
+
+    Bash concatenates adjacent fragments, so `$(printf r)m` and `"$(printf r)"m` both run `rm`.
+    The body is benign in each, so a scan that only reads bodies reports nothing; what is
+    reportable is that the executed word cannot be known.
+    """
+    if command[opener] == "`":
+        closer = command.find("`", opener + 1)
+        end = len(command) if closer < 0 else closer + 1
+    else:
+        end = _substitution_span(command, opener - 1)
+    if end < len(command) and command[end] == '"':
+        end += 1  # the `"` closing a `"$(...)"` / `"`...`"` word
+    return end < len(command) and (command[end].isalnum() or command[end] in "_.-/")
 
 
 def _case_arm_sites(
