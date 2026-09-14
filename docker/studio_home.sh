@@ -53,8 +53,17 @@ if [ "${1:-}" = "--restore" ]; then
             name="${target##*/}"
             # the uv cache is this image's scratch (9 GB); no image before the split reads it
             if [ -e "$link" ] && [ "$name" != "uv-cache" ]; then
+                # Copy beside the link, swap only once the copy is whole: a half-written
+                # $target would be a real entry, which a rerun's symlink-only loop skips,
+                # and --restore would then report success over incomplete code.
+                tmp="$target.restore-tmp"
+                rm -rf -- "$tmp"
+                cp -a -- "$link" "$tmp" || {
+                    rm -rf -- "$tmp"
+                    die "cannot copy $link to $target; nothing was changed, rerun --restore"
+                }
                 rm -f -- "$target"
-                cp -a -- "$link" "$target" || die "cannot copy $link to $target; the home now lacks $name, rerun --restore"
+                mv -T -- "$tmp" "$target" || die "cannot put $tmp at $target; move it there by hand"
                 copied+=("$name")
             else
                 rm -f -- "$target"

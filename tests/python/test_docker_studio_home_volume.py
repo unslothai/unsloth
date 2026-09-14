@@ -411,6 +411,39 @@ def test_a_link_where_the_kept_aside_copies_go_is_refused(tmp_path):
     assert (home / "src").is_symlink()
 
 
+def test_a_restore_copy_that_fails_leaves_the_link_and_no_half_tree(tmp_path):
+    """The copy lands beside the link and is swapped in whole. A partial real directory
+    at the entry's name would be skipped by the rerun's symlink-only loop, so --restore
+    would then report success over code that is missing files."""
+    app = _app(tmp_path)
+    (app / "src" / "studio").mkdir()
+    (app / "src" / "studio" / "main.py").write_text("code")
+    home = tmp_path / "home"
+    assert _link(app, home).returncode == 0
+    bindir = tmp_path / "bin"
+    _stub(
+        bindir,
+        "cp",
+        'case "$*" in\n'
+        '    *"/src "*) mkdir -p "${@: -1}"; echo half > "${@: -1}/half.py";\n'
+        '           echo "cp: simulated failure" >&2; exit 1;;\n'
+        "esac\n"
+        'exec /bin/cp "$@"\n',
+    )
+    res = _link(app, home, "--restore", path = str(bindir))
+    assert res.returncode == 1
+    assert "rerun --restore" in res.stderr
+    assert (home / "src").is_symlink()
+    assert not (home / "src.restore-tmp").exists()
+    # the rerun sees the link it left intact and finishes the job
+    res = _link(app, home, "--restore")
+    assert res.returncode == 0, res.stderr
+    assert (home / "src").is_dir() and not (home / "src").is_symlink()
+    assert (home / "src" / "studio" / "main.py").read_text() == "code"
+    assert not (home / "src" / "half.py").exists()
+    assert not (home / "src.restore-tmp").exists()
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores directory modes")
 def test_a_read_only_home_fails_loudly_and_touches_nothing(tmp_path):
     app = _app(tmp_path)
