@@ -3,8 +3,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ChannelId, findChannel } from "../lib/channels";
-import { fingerprintToken } from "../lib/token-fingerprint";
-import { isChannelEntryFresh, useHubFeedStore } from "../stores/hub-feed-store";
+import { usePlatformStore } from "@/config/env";
+import {
+  feedIdentity,
+  isChannelEntryFresh,
+  useHubFeedStore,
+} from "../stores/hub-feed-store";
 import {
   type HfModelResult,
   fetchChannelFirstPage,
@@ -58,9 +62,13 @@ export function useHubFeed(opts: {
   deviceType: string | null;
 }): UseHubFeedResult {
   const { accessToken, online, enabled, deviceType } = opts;
+  // Endpoint included: see feedIdentity. Everything downstream (the freshness
+  // check, clearForToken, this hook's effect deps) already keys off this value,
+  // so a late-arriving or changed endpoint invalidates and refetches.
+  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const tokenFingerprint = useMemo(
-    () => fingerprintToken(accessToken),
-    [accessToken],
+    () => feedIdentity(hfEndpoint, accessToken),
+    [hfEndpoint, accessToken],
   );
 
   const channels = useHubFeedStore((s) => s.channels);

@@ -3,8 +3,8 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import type { ChannelId } from "../lib/channels";
-import { fingerprintToken } from "../lib/token-fingerprint";
-import { useHubFeedStore } from "../stores/hub-feed-store";
+import { usePlatformStore } from "@/config/env";
+import { feedIdentity, useHubFeedStore } from "../stores/hub-feed-store";
 import type { HfModelResult } from "./use-hub-model-search";
 
 export function useFeedWriteBack(opts: {
@@ -15,9 +15,10 @@ export function useFeedWriteBack(opts: {
 }): void {
   const { channelId, results, isLoading, accessToken } = opts;
   const setChannelEntry = useHubFeedStore((s) => s.setChannelEntry);
+  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const tokenFingerprint = useMemo(
-    () => fingerprintToken(accessToken),
-    [accessToken],
+    () => feedIdentity(hfEndpoint, accessToken),
+    [hfEndpoint, accessToken],
   );
   const writtenKeyRef = useRef<string | null>(null);
 

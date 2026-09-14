@@ -107,7 +107,6 @@ import {
   registerRefresh,
   supersedingRefresh,
 } from "./lib/superseded-refresh";
-import { fingerprintToken } from "./lib/token-fingerprint";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
@@ -117,7 +116,11 @@ import {
   matchesFormat,
 } from "./lib/view-models";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
-import { isChannelEntryFresh, useHubFeedStore } from "./stores/hub-feed-store";
+import {
+  feedIdentity,
+  isChannelEntryFresh,
+  useHubFeedStore,
+} from "./stores/hub-feed-store";
 import type {
   CachedInventoryRow,
   CapabilityFilter,
@@ -760,9 +763,10 @@ export function ModelsPage() {
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
+  const hubHfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const tokenFingerprint = useMemo(
-    () => fingerprintToken(apiHfToken),
-    [apiHfToken],
+    () => feedIdentity(hubHfEndpoint, apiHfToken),
+    [hubHfEndpoint, apiHfToken],
   );
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);

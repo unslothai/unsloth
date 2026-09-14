@@ -85,7 +85,10 @@ export function fetchReadme(
   kind: ReadmeKind = "model",
   token: string | null = null,
 ): Promise<FetchedReadme | null> {
-  const key = `${kind}::${repoId}::${fingerprintToken(token)}`;
+  // Endpoint in the key: a successful card is cached with no expiry, so one
+  // fetched from the default host before /api/health reported the mirror would
+  // be shown for the rest of the session without the mirror ever being asked.
+  const key = `${getHfEndpoint()}::${kind}::${repoId}::${fingerprintToken(token)}`;
   const cached = cache.get(key);
   if (cached && Date.now() < cached.staleAt) return cached.promise;
 
