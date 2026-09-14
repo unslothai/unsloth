@@ -3855,9 +3855,18 @@ def test_an_oom_under_the_raised_floor_still_reaches_the_text_only_retry(tmp_pat
     assert backend.mmproj_fallback_reason == "projector_startup_failure"
 
 
-def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path):
-    """A batch already at or above the floor is unchanged by the text-only retry, so the
-    projector-on-CPU OOM is still the real error."""
+@pytest.mark.parametrize(
+    "fields,env,extras",
+    [
+        ({"n_batch": 4096, "n_ubatch": 4096}, {}, []),
+        ({}, {"LLAMA_ARG_BATCH": "2048", "LLAMA_ARG_UBATCH": "2048"}, []),
+        ({}, {}, ["-ub", "512"]),
+    ],
+    ids = ["fields-above-floor", "env-at-floor", "pass-through-wins"],
+)
+def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path, monkeypatch, fields, env, extras):
+    """When the effective micro-batch is the same with or without the floor, the
+    text-only retry frees nothing, so the projector-on-CPU OOM is still the real error."""
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -3865,6 +3874,10 @@ def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path):
     )
     mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf", architecture = "clip")
     backend._resolve_launch_mmproj_path = lambda **_kwargs: str(mmproj)
+    for name in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
 
     with pytest.raises(Exception, match = "out of memory"):
         _launch_with_text_only_fallback(
@@ -3872,9 +3885,8 @@ def test_an_oom_the_floor_did_not_cause_stays_terminal(tmp_path):
             gguf,
             abort_out = _PROJECTOR_OOM_OUT,
             mmproj_path = str(mmproj),
-            n_batch = 4096,
-            n_ubatch = 4096,
-            extra_args = ["--no-mmproj-offload"],
+            extra_args = ["--no-mmproj-offload", *extras],
+            **fields,
         )
 
 

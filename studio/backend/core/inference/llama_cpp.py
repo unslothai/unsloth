@@ -21742,6 +21742,7 @@ class LlamaCppBackend:
                 # Kept for the text-only retry far below, which drops the projector and
                 # so has nothing non-causal left to hold: see _restore_batch_args.
                 _requested_batch_pair = (n_batch, n_ubatch)
+                _requested_effective_ubatch = _effective_ubatch
                 if _launch_opens_projector:
                     _floor_from = (n_batch, n_ubatch)
                     n_batch, n_ubatch = _mmproj_batch_floor(n_batch, n_ubatch)
@@ -21760,6 +21761,9 @@ class LlamaCppBackend:
                 # What the vision argv was built with, for the CPU replay far below that
                 # puts that argv back after a text-only retry also crashed.
                 _floored_batch_pair = (n_batch, n_ubatch)
+                # After env and pass-through precedence: only then does the text-only
+                # retry's restore release GPU compute buffers.
+                _projector_floor_raised = _effective_ubatch != _requested_effective_ubatch
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
@@ -27905,8 +27909,6 @@ class LlamaCppBackend:
                     ):
                         _vision_gpu_cmd = list(_last_spawn_cmd)
                         _cpu_projector_cmd = None
-                        # A raised floor is GPU memory only the text-only retry releases.
-                        _projector_floor_raised = _floored_batch_pair != _requested_batch_pair
                         if not _projector_msg and _paravirtual_mmproj_pinnable(server_caps):
                             _cpu_projector_cmd = self._with_mmproj_offload_disabled(
                                 _vision_gpu_cmd, env
