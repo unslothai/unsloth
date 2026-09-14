@@ -1731,6 +1731,27 @@ def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
     assert len(calls) == 2
 
 
+def test_download_does_not_retry_an_unwritable_cache(monkeypatch, tmp_path):
+    """A cache directory the user cannot write to is not a transfer that can go better, and
+    run.py starts the launch tunnel inline: the pauses would delay the banner for nothing."""
+    import tempfile
+    import urllib.request
+
+    slept = []
+    opened = []
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: opened.append(1))
+
+    # Raised rather than chmod'd: a read-only directory still accepts writes on Windows.
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", denied)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert slept == []
+    assert opened == []
+
+
 def test_download_retries_share_one_deadline(monkeypatch, tmp_path):
     """A transfer that stalls for most of the budget and then resets gets what is left,
     not a fresh budget. Three fresh budgets would hold the launch banner for minutes."""

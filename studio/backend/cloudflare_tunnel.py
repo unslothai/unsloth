@@ -186,9 +186,15 @@ def _download(
         tmp_path: Optional[Path] = None
         try:
             dest.parent.mkdir(parents = True, exist_ok = True)
-            with tempfile.NamedTemporaryFile(
+            handle = tempfile.NamedTemporaryFile(
                 prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
-            ) as handle:
+            )
+        except OSError as exc:
+            # A cache directory that cannot be written answers the same every attempt.
+            last_error = exc
+            break
+        try:
+            with handle:
                 tmp_path = Path(handle.name)
                 # GitHub's CDN 403s the default Python-urllib User-Agent.
                 req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
