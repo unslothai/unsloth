@@ -2829,10 +2829,12 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 # `cd DIR`, `cd /d DIR` or `pushd DIR` at a command position; `pushd` moves the cwd as `cd` does.
 # Case-insensitive because the shell is `cmd /c` on a Windows host without a trusted bash.
 _CD_TARGET_RE = re.compile(
-    r"(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:/d\s+)?([^\s;&|)]+)", re.IGNORECASE
+    r"(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:(?:-[LPe@]+|/d)\s+)*([^\s;&|)]+)", re.IGNORECASE
 )
 # Distinct directories, not `cd` commands: padding with repeats must not spend the budget.
 _MAX_TRACKED_CWDS = 64
+# Hard ceiling on the directories reported, well past any real command.
+_MAX_WALKED_CWDS = 2048
 
 
 # A symlink to the cwd, which the kernel resolves before any `..` that follows. `$$` and `$BASHPID`
@@ -2866,9 +2868,13 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
             if nxt not in seen:
                 seen.add(nxt)
                 walked.append(nxt)
-        # Both outcomes stay live, capped so a long chain cannot grow the set without bound.
-        states = (moved + [c for c in states if c not in moved])[:_MAX_TRACKED_CWDS]
-        if len(walked) >= _MAX_TRACKED_CWDS:
+        # Both outcomes stay live, capped so a long chain cannot grow the set without bound. The
+        # starting directory is kept FIRST: it is where the shell is when every `cd` fails, which is
+        # what a padded command relies on, and truncating the tail used to drop exactly that state.
+        # The cap bounds the STATES only, never the scan, or the padding hides the `cd ../..`.
+        ordered = [workdir] + [c for c in states if c != workdir] + moved
+        states = list(dict.fromkeys(ordered))[:_MAX_TRACKED_CWDS]
+        if len(walked) >= _MAX_WALKED_CWDS:
             break
     return walked
 
@@ -2960,8 +2966,9 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # path that does not exist raises, and code that catches it carries on from where it was.
     cwds: "list[str | None]" = [workdir]
     for node in nodes:
-        if isinstance(node, ast.Call) and _is_chdir_call(node) and node.args:
-            target = _folded_path(node.args[0])
+        if isinstance(node, ast.Call) and _is_chdir_call(node):
+            argument = _chdir_argument(node)
+            target = None if argument is None else _folded_path(argument)
             if target and "\x00" not in target and "\x02" not in target:
                 moved: "list[str | None]" = []
                 for cwd in cwds:
@@ -2998,6 +3005,16 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
             if _references_studio_credential_here(folded, cwd):
                 return True
     return False
+
+
+def _chdir_argument(node: "ast.Call"):
+    """The path a `chdir` call is given, positionally or as `path=`."""
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg == "path":
+            return keyword.value
+    return None
 
 
 def _is_chdir_call(node: "ast.Call") -> bool:

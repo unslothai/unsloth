@@ -1016,3 +1016,50 @@ def test_a_failed_directory_change_leaves_the_cwd_where_it_was(monkeypatch, tmp_
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_cd_options_padding_and_a_keyword_chdir(monkeypatch, tmp_path):
+    # `cd [-L|[-P [-e]] [-@]] [dir]` is what bash documents, so an option is not the target;
+    # padding with failing `cd`s must not spend the state budget that holds the real sandbox; and
+    # `os.chdir(path=...)` is the same call as the positional one.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        padded = "; ".join(f"cd missing{i}" for i in range(7)) + "; cd ../..; cat auth/auth.db"
+        for command in (
+            "cd -P ../..; cat auth/auth.db",
+            'cd -L -e ../.. && sqlite3 auth/auth.db "select 1"',
+            padded,
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        assert (
+            tools._python_exec(
+                "import os\nos.chdir(path='../..')\nprint(open('auth/auth.db').read())",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        for ordinary in ("cd -P ../models; ls", "cd -; ls"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        assert (
+            tools._python_exec(
+                "import os\nos.chdir(path='../data')\nprint(1)",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
