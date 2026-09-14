@@ -1673,11 +1673,17 @@ function ExtraArgsRow({
     onLoadableChange(loadable);
     // On the draft as well: this row is the only reader of the raw text, so an editor with
     // Advanced collapsed has no way to reach this verdict and would offer to load an
-    // unfinished line the row is refusing.
-    setExtraArgsEditLoadableForDraft(draftKey, loadable);
+    // unfinished line the row is refusing. An unprobed row may only LOWER it: until the
+    // catalogue lands every flag reads as unknown, so a second row mounting -- or any row
+    // re-probing after the update banner invalidates the catalogue -- would otherwise clear a
+    // refusal another row had already verified. A refusal found without one still holds, since
+    // that is a parse failure rather than a flag lookup.
+    if (catalog !== null || !loadable) {
+      setExtraArgsEditLoadableForDraft(draftKey, loadable);
+    }
     // Deliberately no cleanup: collapsing Advanced settings unmounts this row while the tokens
     // stay in the config and still go out with the load. The panel clears it on model change.
-  }, [loadable, onLoadableChange, draftKey]);
+  }, [loadable, onLoadableChange, draftKey, catalog]);
 
   const commit = (next: string) => {
     const { tokens } = parseExtraArgs(next);

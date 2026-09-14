@@ -2999,6 +2999,9 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     # The row is the only reader of the raw text, so its verdict rides on the shared edit: an
     # editor with Advanced collapsed judges the TOKENS, which formatExtraArgs quotes back into a
     # balanced string, and would offer to load an unfinished quote the other one refuses.
+    # Only ever LOWERED by a row that has no catalogue: until the probe lands every flag reads
+    # as unknown, so a second row mounting would otherwise clear a refusal another row verified.
+    assert "if (catalog !== null || !loadable) {" in page
     assert "setExtraArgsEditLoadableForDraft(draftKey, loadable)" in page
     assert "sharedExtraArgsRefused" in page
     assert "resetExtraArgsHydrationForDraft(" not in page
