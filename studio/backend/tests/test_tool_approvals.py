@@ -293,20 +293,38 @@ def test_durable_cancel_still_denies():
 
 
 def test_an_unanswered_park_is_released_by_the_settles_cancel_not_a_ceiling():
-    """What releases an approval nobody answers is the lease sweeper, not a timeout.
+    """The sweeper's settle-cancel releases a park that the park timeout has not yet reached.
 
-    The sweeper settles a run whose progress lease expired (parking does not renew it) and
-    ``supervisor.cancel()`` sets this very event; the parked gate must then deny and pop its own
-    slot, so the reservation unwinds. Pinned past the ceiling on purpose: the timeout elapsing
-    alone must release nothing — only the settle's cancel does.
+    At 0.6s the default park timeout (300s) has not elapsed, so the only thing that can release
+    the gate is an external cancel — exactly what ``supervisor.cancel()`` does after
+    ``reconcile_runs`` settles a lease-expired run. The parked gate must deny and pop its own
+    slot, so the reservation unwinds.
     """
     cancel = threading.Event()
     cancel.durable = True
     aid = new_approval_id()
     w = _Waiter("sess", aid, cancel_event = cancel, timeout = 0.2).start()
-    # The short ceiling has long passed; only what comes next releases anything.
+    # Well within the park timeout (300s default); only an external cancel can release now.
     time.sleep(0.6)
-    assert _has_pending(aid), "the elapsed ceiling must not release the park"
+    assert _has_pending(aid), "the park has not timed out yet; only cancel releases it"
     cancel.set()  # what reconcile_runs' settle does to a lease-expired run
     assert w.join(timeout = 3.0) == "deny", "the settle's cancel must read as deny"
     assert _wait_until(lambda: not _has_pending(aid)), "the slot must be popped on release"
+
+
+def test_durable_park_denies_at_park_timeout(monkeypatch):
+    """A durable park denies at the park timeout so an unattended agent adapts and continues.
+
+    This is the release path for agentic work where the user has left: the approval times out,
+    the model receives TOOL_REJECTED_MESSAGE, and the loop proceeds to the next step. The sweeper
+    remains a backstop for producers wedged before they reach wait_tool_decision.
+    """
+    monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    # Park timeout (0.2s) has elapsed; the gate must deny on its own, no cancel needed.
+    time.sleep(0.6)
+    assert w.join(timeout = 3.0) == "deny", "the park timeout must release an unanswered approval"
+    assert _wait_until(lambda: not _has_pending(aid)), "the slot must be popped on timeout"
