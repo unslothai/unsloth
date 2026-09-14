@@ -4134,7 +4134,11 @@ def _python_path_fold_aliases(tree) -> "tuple[set, set]":
     return ctors, joins
 
 
-def _python_path_bindings(tree, ctors = None, joins = None) -> dict:
+def _python_path_bindings(
+    tree,
+    ctors = None,
+    joins = None,
+) -> dict:
     """Names bound to a foldable path (`p = '/media/x'`, `p := Path('/media') / 'x'`), so a read
     through the variable folds to the same path a literal would.
 
@@ -4180,9 +4184,7 @@ def _python_path_bindings(tree, ctors = None, joins = None) -> dict:
                 for used in {n.id for n in ast.walk(bound) if isinstance(n, ast.Name)}:
                     for alternate in _capped_alternates(extra.get(used, ())):
                         try:
-                            other = _folded_path(
-                                bound, {**bindings, used: alternate}, ctors, joins
-                            )
+                            other = _folded_path(bound, {**bindings, used: alternate}, ctors, joins)
                         except Exception:  # noqa: BLE001 - folding is best effort
                             continue
                         if isinstance(other, str) and other and "\x00" not in other:
@@ -4222,6 +4224,7 @@ def _capped_alternates(values) -> "list[str]":
     values = list(values)
     if len(values) <= _MAX_REBOUND_ALTERNATES:
         return values
+
     # Ranked by what the value would COST, not by whether it happens to be absolute: a path under a
     # silent root needs no approval, so filling the cap with sandbox rebindings would drop the one
     # `/media/...` value that does. Ordering by need keeps the bound on work, not coverage.
