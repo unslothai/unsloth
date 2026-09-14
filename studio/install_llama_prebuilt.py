@@ -377,8 +377,7 @@ class HostInfo:
     has_usable_nvidia: bool
     has_rocm: bool = False
     has_intel_gpu: bool = False
-    # AMD GPU present but ROCm unusable. Linux and Windows, probed only when there is no
-    # usable NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
+    # AMD present, ROCm unusable. Probed only when neither NVIDIA nor ROCm is usable.
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
@@ -2791,17 +2790,12 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     has_amd_gpu_without_rocm = True
         elif is_windows:
             # Registry first (in-process; see windows_intel_gpu_in_registry).
-            # The CIM query stays as the fallback when the registry shows
-            # neither adapter. AMD is read here too, not just Intel: without it
-            # an AMD host with no usable ROCm falls through to windows-cpu,
-            # while the Linux branch above routes the same host to Vulkan.
+            # CIM stays the fallback for a registry that names neither adapter.
             has_intel_gpu = windows_intel_gpu_in_registry()
             if not _amd_hidden_by_mask:
                 has_amd_gpu_without_rocm = windows_amd_gpu_in_registry()
-            # Only when NEITHER was found. `or` here defeated the fast path on every
-            # single-vendor host (an Intel-only box has no AMD match and vice versa) and paid
-            # the CIM probe's full 15s timeout for nothing. Either flag alone already carries
-            # the Vulkan gate, so a hit on one makes the other irrelevant to the decision.
+            # `and`, not `or`: either flag alone settles the Vulkan gate, and `or` made every
+            # single-vendor host pay the CIM probe's 15s timeout after the registry answered.
             if not has_intel_gpu and not has_amd_gpu_without_rocm:
                 _ps = shutil.which("powershell") or shutil.which("pwsh")
                 if _ps:
@@ -3664,10 +3658,8 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
-        # Intel or AMD GPU on Windows: use Vulkan. No physical NVIDIA so a CUDA-hidden card
-        # isn't reached through Vulkan, and the ROCm branch above still wins wherever ROCm
-        # runs. This mirrors the Linux branch; without the AMD half, a Strix Halo box whose
-        # ROCm tooling is absent took windows-cpu while the same silicon took Vulkan on Linux.
+        # Mirrors the Linux branch: without the AMD half a Strix Halo box with no ROCm
+        # tooling took windows-cpu, where the same silicon takes Vulkan on Linux.
         if (
             (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
             and not host.has_physical_nvidia
@@ -3768,10 +3760,7 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        # Intel OR AMD-without-usable-ROCm, mirroring the Linux branch. Measured on a
-        # gfx1151 (Radeon 8060S) box whose amd-smi could not load and where HIP_PATH and
-        # ROCM_PATH were unset: with the Intel-only gate every ref resolved windows-cpu,
-        # even though the release ships a windows-vulkan bundle.
+        # Intel OR AMD-without-usable-ROCm, mirroring the Linux branch.
         if (
             (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
             and not host.has_physical_nvidia

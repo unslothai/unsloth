@@ -1207,9 +1207,7 @@ def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
 
 
 def test_detect_host_registry_amd_skips_cim_probe(monkeypatch):
-    # The AMD half of the registry fast path has to earn the same skip the Intel
-    # half does. A single-vendor AMD box has no Intel match at all, so gating the
-    # CIM probe on both vendors being found would pay its full timeout here.
+    # A single-vendor AMD box has no Intel match, so an `and` gate is what earns this skip.
     winreg = _FakeWinreg(
         _FakeRegKey(
             subkeys = {
