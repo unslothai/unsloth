@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
 
 REPO = Path(__file__).resolve().parents[2]
 BACKEND = REPO / "studio/backend"
@@ -1545,13 +1546,18 @@ def test_setext_headings_are_release_boundaries(notes_module):
 
 
 def test_a_long_backtick_run_does_not_stall_the_parser(notes_module):
-    """The code-span guard used to backtrack: 20k backticks took over a minute."""
-    import time
+    """The code-span guard used to backtrack: 20k backticks took over a minute.
 
-    text = "## 1.0\n\n- " + "`" * 20_000 + " <!--\n"
-    started = time.perf_counter()
-    parse_sections(notes_module, text)
-    assert time.perf_counter() - started < 1.0
+    Asked as growth. `< 1.0` is a budget, and this runs in the `-n 4` CPU leg where a
+    second of wall clock says as much about the other three workers as about the parser.
+    Backtracking is superlinear, so 4x the backticks costing ~4x the time is the property.
+    """
+    assert_linear(
+        lambda text: parse_sections(notes_module, text),
+        lambda n: "## 1.0\n\n- " + "`" * n + " <!--\n",
+        "backtick run",
+        20_000,
+    )
 
 
 def test_the_remote_fetch_has_a_total_deadline(notes_module):
@@ -2206,16 +2212,22 @@ def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
     """The comment scanner restarted its code-span search per opener, so N spans
     cost N squared. A 203 KiB line is well inside the 2 MiB accepted, and notes
     are reparsed on every request, so one held a worker for over ten seconds."""
-    line = "`a` <!--x--> " * 16_000
-    assert len(line) < notes_module.RELEASES_MAX_BYTES
-    started = time.monotonic()
-    visible, in_comment = notes_module._strip_comments(line, False, False)
-    elapsed = time.monotonic() - started
-    # Roughly 40ms scanning forward against roughly 11s restarting each time.
-    assert elapsed < 2.0, f"comment stripping took {elapsed:.1f}s"
+    # A quarter of the size the budget form used, because assert_linear also measures the
+    # 4x input: 4 * 4_000 spans is the 16_000 that shape was checked at, and the big input
+    # stays inside RELEASES_MAX_BYTES.
+    spans = 4_000
+    assert len("`a` <!--x--> " * (spans * 4)) < notes_module.RELEASES_MAX_BYTES
+    # N spans cost N squared when the scanner restarts per opener: about 11s against about
+    # 40ms. That is the shape to assert, rather than an absolute `< 2.0` in the `-n 4` leg.
+    visible, in_comment = assert_linear(
+        lambda text: notes_module._strip_comments(text, False, False),
+        lambda n: "`a` <!--x--> " * n,
+        "comment stripping",
+        spans,
+    )
     # Same result as before: the spans survive and the comments are gone.
     assert in_comment is False
-    assert "<!--" not in visible and visible.count("`a`") == 16_000
+    assert "<!--" not in visible and visible.count("`a`") == spans * 4
 
 
 def test_the_three_scanners_share_one_list_column_rule():

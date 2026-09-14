@@ -954,26 +954,33 @@ def test_audio_stream_stays_responsive_under_blocking_next():
     async def _run(loop_coro):
         return await asyncio.gather(loop_coro, _fire_early())
 
+    # Counted in chunks, not seconds. The two patterns are run one after the other, so
+    # comparing their two separately-taken elapsed times reads a quiet window against a
+    # busy one as a real difference (or hides a real one), and `>= 0.13` was a 130ms
+    # floor on a shared runner besides. The chunk counts say the same thing exactly: the
+    # blocking loop never lets _fire_early run, so it drains all eight and only then sees
+    # a cancel that arrived at 50ms; the awaiting loop yields and stops at the first one.
     cancel_event.clear()
     t0 = time.monotonic()
     prefix_seen, _ = asyncio.run(_run(_prefix_loop()))
     prefix_elapsed = time.monotonic() - t0
-    assert prefix_elapsed >= 0.13, (
-        f"pre-fix pattern should block event loop for >=1 chunk time "
-        f"(~150ms); got {prefix_elapsed:.3f}s, {len(prefix_seen)} chunks"
+    assert len(prefix_seen) == 8, (
+        "pre-fix pattern let the cancel through, so it is no longer modelling a blocked "
+        f"event loop; got {len(prefix_seen)} chunks"
     )
 
     cancel_event.clear()
-    t0 = time.monotonic()
     postfix_seen, _ = asyncio.run(_run(_postfix_loop()))
-    postfix_elapsed = time.monotonic() - t0
-    assert postfix_elapsed < prefix_elapsed, (
-        f"post-fix pattern must exit faster than pre-fix (blocking) "
-        f"pattern; post={postfix_elapsed:.3f}s vs pre={prefix_elapsed:.3f}s"
-    )
     assert (
         len(postfix_seen) < 8
     ), f"post-fix loop must not drain all chunks; got {len(postfix_seen)}"
+    assert len(postfix_seen) < len(prefix_seen), (
+        f"post-fix pattern saw as much as the blocking one: post={len(postfix_seen)} "
+        f"vs pre={len(prefix_seen)}"
+    )
+    # The blocking loop really does run to the end of the generator, so keep one loose
+    # ceiling for the case where nothing comes back at all.
+    assert prefix_elapsed < 30.0, f"the blocking loop never returned: {prefix_elapsed:.3f}s"
 
 
 def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():

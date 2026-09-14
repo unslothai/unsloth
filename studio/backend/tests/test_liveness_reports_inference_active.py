@@ -173,8 +173,13 @@ def test_the_marker_costs_nothing_to_read():
     a registry len() rather than asking the backend what it is doing."""
     result = _probe()["probes"]
 
+    # `has_busy_key` above is what pins the behaviour; the marker is a registry len() and
+    # the busy states here are stubbed, so no bound this test can set separates "read the
+    # registry" from "waited on it". What is left for the clock is the case where the
+    # route grows a real wait, and that wants a ceiling a contended runner cannot trip
+    # rather than the 0.5s one, which is 4 subprocess probes on a shared 2-vCPU box.
     for state, sample in result.items():
-        assert sample["elapsed"] < 0.5, (
+        assert sample["elapsed"] < 30.0, (
             f"/api/liveness took {sample['elapsed']:.2f}s while {state}; it must read the "
             f"registry rather than wait on the generations in it"
         )

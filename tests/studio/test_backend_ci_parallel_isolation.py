@@ -447,7 +447,7 @@ def test_every_tight_elapsed_bound_is_isolated():
     )
 
 
-def test_the_scan_finds_all_three_shapes():
+def test_the_scan_finds_all_three_shapes(tmp_path):
     """A scan that matched nothing would pass the test above on an empty set.
 
     One of each form the suite actually uses, because each needed its own handling and
@@ -455,30 +455,71 @@ def test_the_scan_finds_all_three_shapes():
       elapsed < 0.05                        a name assigned from a difference
       time.monotonic() - started < 0.2      the difference written inline
       _elapsed(big) < 8 * _elapsed(small)   a helper that returns a difference
+
+    Written out here rather than named as three real files. Naming them made this test a
+    second, invisible reason those files had to keep their fragile bounds: rewriting
+    `test_llama_cpp_wait_for_vram_settle.py` to assert on the naps the helper asks for
+    instead of on how long they took -- which is the outcome the scan exists to push
+    people toward -- failed HERE, in a file about CI topology, with a message about a
+    sample. The scan's own coverage should not depend on the suite still containing the
+    thing it is trying to remove.
     """
-    found = {
+    shapes = {
+        "assigned name": (
+            "import time\n"
+            "def test_x():\n"
+            "    started = time.monotonic()\n"
+            "    work()\n"
+            "    elapsed = time.monotonic() - started\n"
+            "    assert elapsed < 0.05\n"
+        ),
+        "inline difference": (
+            "import time\n"
+            "def test_x():\n"
+            "    started = time.monotonic()\n"
+            "    work()\n"
+            "    assert time.monotonic() - started < 0.05\n"
+        ),
+        "helper, relative": (
+            "import time\n"
+            "def _elapsed(fn):\n"
+            "    started = time.perf_counter()\n"
+            "    fn()\n"
+            "    return time.perf_counter() - started\n"
+            "def test_x():\n"
+            "    assert _elapsed(big) < 8 * _elapsed(small)\n"
+        ),
+    }
+    for label, source in shapes.items():
+        sample = tmp_path / f"test_{label.replace(' ', '_').replace(',', '')}.py"
+        sample.write_text(source, encoding = "utf-8")
+        assert _fragile_timing_asserts(sample), (
+            f"the scan does not recognise the {label} shape, so a test written that way "
+            "could carry a 50ms bound into the -n 4 run unnoticed"
+        )
+
+    # And it must not fire on a bound with real headroom, or every test that keeps one
+    # generous anti-hang ceiling would be pushed into the serial step for nothing.
+    roomy = tmp_path / "test_roomy.py"
+    roomy.write_text(
+        "import time\n"
+        "def test_x():\n"
+        "    started = time.monotonic()\n"
+        "    work()\n"
+        "    elapsed = time.monotonic() - started\n"
+        "    assert elapsed < 30.0\n",
+        encoding = "utf-8",
+    )
+    assert not _fragile_timing_asserts(roomy), _fragile_timing_asserts(roomy)
+
+    # Still exercised against the real tree, so a scan that silently stopped parsing
+    # anything is caught too.
+    live = {
         path.name: _fragile_timing_asserts(path)
         for path in sorted(BACKEND_TESTS.glob("*.py"))
         if _fragile_timing_asserts(path)
     }
-    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found  # named
-    assert "test_tool_xml_strip.py" in found, found  # named
-    assert "test_diffusion_checkpoint_resume.py" in found, found  # helper, relative
-
-    # The inline form, which the suite currently uses only at 0.2s, above the threshold.
-    inline = ast.parse(
-        "import time\n"
-        "def t():\n"
-        "    started = 0\n"
-        "    assert time.monotonic() - started < 0.05\n"
-    )
-    names, helpers = _timed_names(inline), _timing_helpers(inline)
-    node = [n for n in ast.walk(inline) if isinstance(n, ast.Assert)][0]
-    compare = node.test
-    assert _is_timed(compare.left, names, helpers), (
-        "an inline clock difference is not recognised as a duration, so a test written "
-        "that way could assert a 20ms bound and run under -n 4 unnoticed"
-    )
+    assert live, "the scan found nothing in the backend suite at all"
 
 
 def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():

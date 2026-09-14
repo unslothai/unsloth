@@ -148,16 +148,51 @@ def _kw(**extra):
     return base
 
 
+# Captured before anything patches it, so a probe that wants to be genuinely slow can
+# still sleep for real while the helper's own naps are being recorded.
+_real_sleep = time.sleep
+
+
+class _Sleeps:
+    """The naps ``_wait_for_vram_settle`` asks for, in order.
+
+    Every claim in this file is about the helper's sleeping: did it skip the wait, did
+    it nap once per poll, did it clip the last nap to the deadline. Measuring that as
+    wall clock made each one a budget -- ``elapsed < 0.05`` around a short-circuit, which
+    a GC pause on a shared runner exceeds while the helper did exactly the right thing.
+    The durations it requests are the same facts without the runner in them, so ask for
+    those and keep one generous ceiling for the case where it never returns at all.
+    """
+
+    def __init__(self):
+        self.durations: list[float] = []
+
+    def __enter__(self):
+        self._patch = patch.object(time, "sleep", self._record)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+        return False
+
+    def _record(self, seconds):
+        self.durations.append(seconds)
+        return _real_sleep(seconds)
+
+    @property
+    def total(self) -> float:
+        return sum(self.durations)
+
+
 def test_cold_start_returns_immediately_without_probing():
     """Default ``since_kill=0.0`` is cold-start: no kill recorded, so the
     helper short-circuits without invoking the probe."""
     ctx, state = _patch_probe([[(0, 10000)], [(0, 10000)]])
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(max_wait = 2.0, interval = 0.25)
-        elapsed = time.monotonic() - start
     assert state["calls"] == 0, "cold start must skip the probe entirely"
-    assert elapsed < 0.05
+    assert sleeps.durations == [], f"cold start slept anyway: {sleeps.durations}"
 
 
 def test_stale_kill_skips_wait():
@@ -174,12 +209,12 @@ def test_stale_kill_skips_wait():
 def test_empty_first_sample_returns_immediately():
     """CPU-only host: probe returns [] → no wait, no further polls."""
     ctx, state = _patch_probe([[]])
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.25))
-        elapsed = time.monotonic() - start
     assert state["calls"] == 1
-    assert elapsed < 0.5, "CPU-only short-circuit must not sleep through the interval"
+    assert sleeps.durations == [], (
+        f"CPU-only short-circuit slept through the interval: {sleeps.durations}"
+    )
 
 
 def test_first_probe_raises_returns_without_polling():
@@ -200,13 +235,12 @@ def test_two_consecutive_samples_within_tolerance_settles():
             [(0, 11550)],
         ]
     )
-    with ctx:
-        start = time.monotonic()
+    with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
-        elapsed = time.monotonic() - start
     assert state["calls"] == 3
-    # interval * 2 sleeps = 0.10; allow slack for scheduler jitter.
-    assert elapsed < 1.0
+    # One nap before each poll after the first, at the interval it was given. Asserted on
+    # the naps rather than on how long the three probes took to come back.
+    assert sleeps.durations == [0.05, 0.05], sleeps.durations
 
 
 def test_probe_raises_mid_loop_returns():
@@ -232,31 +266,41 @@ def test_max_wait_respected_when_never_settles():
         return [(0, drift["v"])]
 
     ctx, _state = _patch_probe([_drifty])
-    with ctx:
+    with ctx, _Sleeps() as sleeps:
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
         elapsed = time.monotonic() - start
-    # Must stop near max_wait, not run forever. Generous upper bound for CI.
-    assert 0.3 <= elapsed < 2.0, f"helper ignored max_wait: elapsed={elapsed:.3f}s"
+    # It waited, and it stopped: the naps it asked for fit inside max_wait, and it asked
+    # for more than one. A contended runner can stretch `elapsed` past any tight bound
+    # while the helper behaved perfectly, so the tight bound is on the naps instead.
+    assert len(sleeps.durations) > 1, f"helper did not wait at all: {sleeps.durations}"
+    assert sleeps.total <= 0.5 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
+    # The one thing wall clock still answers: it came back rather than looping forever.
+    assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
 
 
 def test_max_wait_respected_when_probe_is_slow():
     """Slow probe: clipped sleep keeps the wall-clock bound honest."""
 
     def _slow_probe():
-        time.sleep(0.30)
+        _real_sleep(0.30)  # the probe's own cost, not one of the helper's naps
         return [(0, 10000)]
 
     ctx, _state = _patch_probe([_slow_probe])
-    with ctx:
+    with ctx, _Sleeps() as sleeps:
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(
             **_kw(max_wait = 0.4, interval = 0.25),
         )
         elapsed = time.monotonic() - start
-    # First probe (0.30 s) + at most one clipped sleep + bail.
-    # Hard cap well below the old 0.30 + 0.25 + 0.30 = 0.85.
-    assert elapsed < 0.85, f"helper exceeded the deadline due to slow probes: {elapsed:.3f}s"
+    # The property, stated directly: the probe burned 0.30 of a 0.4 s budget, so the nap
+    # that follows has to be clipped to what is left rather than taking the full interval.
+    assert sleeps.durations, "helper never napped, so nothing was clipped"
+    assert sleeps.durations[-1] < 0.25, (
+        f"helper slept the full interval past the deadline: {sleeps.durations}"
+    )
+    assert sleeps.total <= 0.4 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
+    assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
 
 
 def test_gpu_index_set_change_returns():

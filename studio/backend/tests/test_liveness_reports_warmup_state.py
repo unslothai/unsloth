@@ -224,9 +224,14 @@ def test_liveness_answers_immediately_and_never_starts_detection():
     15s. The stub raises if detection is started, so returning at all proves it was not."""
     result = _probe(settled = False)
 
-    assert result["elapsed"] < 0.5, (
-        f"/api/liveness took {result['elapsed']:.2f}s; it must read the settled snapshot "
-        f"rather than wait for one"
+    # Returning at all is the assertion, and the snippet is built so that it is: the stub
+    # at `must_not_run` raises if the route starts detection, and DETECTION_COMPLETE is
+    # cleared, so a route that waits for a settled snapshot blocks until the subprocess
+    # is killed. `elapsed < 0.5` could not distinguish either of those from a busy
+    # runner -- it only ever failed for the third reason.
+    assert result["elapsed"] < 30.0, (
+        f"/api/liveness took {result['elapsed']:.2f}s, which is long enough that it was "
+        "waiting on something rather than reading the snapshot"
     )
     # Still the full port-validation payload the launcher matches on. The key must be
     # present because the launcher reads it; its value is environment-derived and is

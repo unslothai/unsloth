@@ -39,6 +39,8 @@ from core.inference.tool_call_parser import (
     _strip_mistral_closed_calls,
 )
 
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
+
 from typing import Optional as _Optional
 
 _ns = {
@@ -446,25 +448,28 @@ def test_gdpval_parameter_orphans_get_stripped(leak):
 
 
 def test_no_catastrophic_backtracking_on_open_bracket_spam():
-    # 256KB of '<' must fail fast (literal mismatch char 2), not backtrack.
-    import time
+    """'<' spam must fail fast on the literal mismatch at char 2, not backtrack.
 
-    adv = "<" * (1024 * 256) + "X"
-    t0 = time.perf_counter()
-    _TOOL_XML_RE.sub("", adv)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.5, f"regex took {elapsed*1000:.0f}ms on 256KB '<' spam"
+    Asked as growth rather than as a deadline. Backtracking here is superlinear by
+    definition, so 4x the spam costing ~4x the time IS the property; `elapsed < 0.5`
+    was a budget that said as much about the runner as about the regex.
+    """
+    assert_linear(
+        lambda text: _TOOL_XML_RE.sub("", text),
+        lambda n: "<" * n + "X",
+        "'<' spam",
+        64 * 1024,
+    )
 
 
 def test_no_catastrophic_backtracking_on_orphan_opening_spam():
-    # 1000 unclosed openings: first alt must consume them all greedily.
-    import time
-
-    adv = "<tool_call>X" * 1000
-    t0 = time.perf_counter()
-    cleaned = _TOOL_XML_RE.sub("", adv)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
+    """1000 unclosed openings: the first alternative must consume them all greedily."""
+    cleaned = assert_linear(
+        lambda text: _TOOL_XML_RE.sub("", text),
+        lambda n: "<tool_call>X" * n,
+        "orphan opens",
+        1000,
+    )
     assert "<tool_call>" not in cleaned
 
 
