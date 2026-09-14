@@ -999,8 +999,22 @@ _uv_cache_probe_writable() {
         unset _uv_cache_probe
         return 1
     fi
-    rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
+    # Creating is not enough: an ACL granting create but denying unlink leaves uv's renames to
+    # fail later. GONE is the answer, not rm's exit status, since a scanner holding the handle
+    # makes one delete fail and the next succeed. Retry, then believe the filesystem. Same
+    # bounded loop as install.sh's _uv_cache_root_is_writable.
+    _uv_cache_tries=0
+    while :; do
+        rm -f "$_uv_cache_probe" 2>/dev/null || true
+        [ -e "$_uv_cache_probe" ] || break
+        _uv_cache_tries=$((_uv_cache_tries + 1))
+        if [ "$_uv_cache_tries" -ge 3 ]; then
+            unset _uv_cache_probe _uv_cache_tries
+            return 1
+        fi
+        sleep 1
+    done
+    unset _uv_cache_probe _uv_cache_tries
     return 0
 }
 
@@ -1011,7 +1025,16 @@ _uv_cache_usable() {
     _uv_cache_probe_writable "$1" || return 1
     for _uvu_bucket in "$1"/*; do
         _uv_is_bucket_name "${_uvu_bucket##*/}" || continue
-        [ -d "$_uvu_bucket" ] || continue
+        if [ ! -d "$_uvu_bucket" ]; then
+            # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
+            # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of
+            # archive-v0, interpreter-v4, sdists-v9, simple-v20 or wheels-v6 exits 1 or 2.
+            if [ -e "$_uvu_bucket" ] || [ -L "$_uvu_bucket" ]; then
+                unset _uvu_bucket
+                return 1
+            fi
+            continue
+        fi
         if ! _uv_cache_probe_writable "$_uvu_bucket"; then
             unset _uvu_bucket
             return 1
@@ -1039,6 +1062,15 @@ _uv_cache_warm() {
     for _uvw_bucket in "$1"/archive-* "$1"/builds-* "$1"/built-wheels-* \
         "$1"/wheels-* "$1"/sdists-*; do
         [ -d "$_uvw_bucket" ] || continue
+        # Stricter than the probe, deliberately, and exactly as install.sh's scan: `archive-*`
+        # also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting those reads a
+        # cache as warm that then fails an offline update (measured: uv exit 1, not in cache).
+        _uvw_base="${_uvw_bucket##*/}"
+        _uv_is_bucket_name "$_uvw_base" || continue
+        case "${_uvw_base%-v*}" in
+            archive|builds|built-wheels|wheels|sdists) ;;
+            *) continue ;;
+        esac
         # Unreadable is not empty, but it is also not proof of warmth.
         [ -r "$_uvw_bucket" ] && [ -x "$_uvw_bucket" ] || continue
         # -L: a bucket can be a symlink, as Get-ChildItem -Recurse follows. -print -quit, never
@@ -1051,11 +1083,11 @@ _uv_cache_warm() {
         # `|| true`: find exits nonzero after an unreadable leaf even once it printed the hit,
         # and the hit is already assigned.
         if [ -n "$_uvw_hit" ]; then
-            unset _uvw_bucket _uvw_hit
+            unset _uvw_bucket _uvw_hit _uvw_base
             return 0
         fi
     done
-    unset _uvw_bucket _uvw_hit
+    unset _uvw_bucket _uvw_hit _uvw_base
     return 1
 }
 

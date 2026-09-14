@@ -3351,7 +3351,14 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     try:
         # Only the directories uv OWNS: an unrelated read-only one must not disqualify a
         # usable cache, and that is what the kind list above is for.
-        probes.extend(p for p in cache_dir.iterdir() if _uv_is_store_name(p.name) and p.is_dir())
+        for entry in cache_dir.iterdir():
+            if not _uv_is_store_name(entry.name):
+                continue
+            if not entry.is_dir():
+                # A file, or a symlink dangling or not, is an existing path to mkdir, so uv
+                # cannot make the store and aborts. Skipping it would report the cache writable.
+                return False
+            probes.append(entry)
     except OSError:
         return False
     for target in probes:

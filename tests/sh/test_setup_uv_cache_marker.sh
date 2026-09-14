@@ -173,6 +173,29 @@ for shell in sh bash; do
         chmod 0755 "$MULTI/simple-v24" 2>/dev/null || true
     fi
 
+    # `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting them
+    # reads this cache as warm and then fails the offline update it was picked for (measured on
+    # uv 0.10.7: exit 1, "not found in the cache"). install.sh's scan rejects it the same way.
+    LOOKALIKE="$CASE/lookalike bucket/uv"
+    mkdir -p "$LOOKALIKE/archive-v0.backup/pkg"
+    : > "$LOOKALIKE/archive-v0.backup/pkg/torch.whl"
+    record "$HOME_DIR" "$LOOKALIKE\\n"
+    assert_eq "$shell: a lookalike bucket is not warmth" \
+        "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+
+    # A store path occupied by a FILE is an existing path to mkdir(2), so uv cannot create the
+    # store and aborts (measured: a plain file at archive-v0 exits 1, at interpreter-v4,
+    # sdists-v9, simple-v20 or wheels-v6 exits 2). Skipping it would call the cache usable.
+    BLOCKFILE="$CASE/store is a file/uv"
+    warm "$BLOCKFILE"
+    : > "$BLOCKFILE/interpreter-v4"
+    record "$HOME_DIR" "$BLOCKFILE\\n"
+    assert_eq "$shell: a file where a store belongs is not usable" \
+        "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+    rm -f "$BLOCKFILE/interpreter-v4"
+    assert_eq "$shell: and the same cache is adopted once it is gone" \
+        "$BLOCKFILE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one

@@ -1077,3 +1077,26 @@ def test_a_mistyped_studio_home_is_not_materialised_by_the_probe(monkeypatch, tm
     assert not missing.exists(), sorted(p.name for p in tmp_path.iterdir())
     # Still named, so setup.sh is told the same path it would have picked itself.
     assert env["UV_CACHE_DIR"] == str(missing / "cache" / "uv")
+
+
+def test_a_file_where_a_store_belongs_makes_the_cache_unusable(tmp_path):
+    """An existing non-directory is an existing path to mkdir, so uv cannot create the store and
+    aborts: measured on uv 0.10.7, a plain file at archive-v0 exits 1 and at interpreter-v4,
+    sdists-v9, simple-v20 or wheels-v6 exits 2. Skipping it reports the cache writable."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    blocked = cache / "interpreter-v4"
+    blocked.write_bytes(b"")
+    assert studio._uv_cache_is_writable(cache) is False
+    blocked.unlink()
+    assert studio._uv_cache_is_writable(cache) is True
+
+
+def test_a_dangling_symlink_where_a_store_belongs_is_rejected(tmp_path):
+    """Same reason, and the shape a moved cache leaves behind: mkdir fails on the link itself."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    (cache / "simple-v24").symlink_to(tmp_path / "gone")
+    assert studio._uv_cache_is_writable(cache) is False
