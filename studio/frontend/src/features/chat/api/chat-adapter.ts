@@ -6185,6 +6185,8 @@ export function createOpenAIStreamAdapter(
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+              selfNoteEnabled: runtime.selfNoteEnabled,
+              selfNoteReserveTokens: runtime.selfNoteReserveTokens,
             }),
             temperature: params.temperature,
             top_p: params.topP,
