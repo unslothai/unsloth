@@ -1005,6 +1005,17 @@ _uv_cache_usable() {
         fi
     done
     unset _uvu_bucket
+    # uv opens its own control files on every command, so an unreadable one aborts cache init.
+    # Only these, not package files: unreadable package bytes do not stop uv.
+    for _uvu_file in "$1"/CACHEDIR.TAG "$1"/.gitignore "$1"/.lock \
+        "$1"/*-v[0-9]*/.git "$1"/*-v[0-9]*/.gitignore "$1"/*-v[0-9]*/.lock; do
+        [ -f "$_uvu_file" ] || continue
+        if [ ! -r "$_uvu_file" ]; then
+            unset _uvu_file
+            return 1
+        fi
+    done
+    unset _uvu_file
     return 0
 }
 

@@ -615,6 +615,18 @@ _probe_uv_cache_usable() {
         fi
     done
     unset _uv_probe_bucket
+    # uv opens its own control files on every command, cache init included: an unreadable one
+    # aborts uv 0.10.7 with "Failed to initialize cache ... Permission denied". Only these, not
+    # package files: with package bytes unreadable uv still installs anything not cached there.
+    for _uv_probe_file in "$1"/CACHEDIR.TAG "$1"/.gitignore "$1"/.lock \
+        "$1"/*-v[0-9]*/.git "$1"/*-v[0-9]*/.gitignore "$1"/*-v[0-9]*/.lock; do
+        [ -f "$_uv_probe_file" ] || continue
+        if [ ! -r "$_uv_probe_file" ]; then
+            unset _uv_probe_file
+            return 1
+        fi
+    done
+    unset _uv_probe_file
     return 0
 }
 

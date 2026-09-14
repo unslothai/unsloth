@@ -126,6 +126,9 @@ def _uv_cache_functions(source: str) -> str:
     return "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            # Set-StudioUvCacheForLaunch probes before repointing, so its helper comes too or
+            # the snippet dies on CommandNotFoundException rather than testing the handoff.
+            "Test-StudioDirectoryUsable",
             "Resolve-StudioUvCachePath",
             "Write-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",

@@ -597,6 +597,32 @@ ISOLATED
         chmod 0755 "$STRAY/notes from someone" 2>/dev/null || true
     fi
 
+    # uv opens its own control files on every command, so an unreadable one aborts cache init
+    # ("Failed to initialize cache ... Permission denied", uv 0.10.7, exit 2) before any package
+    # is touched. Package bytes are different: with those unreadable uv still installs anything
+    # not cached there, so they must NOT disqualify the cache.
+    CTRL="$CASE/unreadable control/uv"
+    mkdir -p "$CTRL/archive-v0/pkg"
+    : > "$CTRL/archive-v0/pkg/payload.whl"
+    : > "$CTRL/CACHEDIR.TAG"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$CTRL/CACHEDIR.TAG" 2>/dev/null \
+       && [ ! -r "$CTRL/CACHEDIR.TAG" ]; then
+        run_case "$shell" "an unreadable uv control file disqualifies the cache" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$CTRL" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $CTRL holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 644 "$CTRL/CACHEDIR.TAG" 2>/dev/null || true
+    fi
+    # ...while an unreadable PACKAGE file does not: uv tolerates it.
+    chmod 000 "$CTRL/archive-v0/pkg/payload.whl" 2>/dev/null || true
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && [ ! -r "$CTRL/archive-v0/pkg/payload.whl" ]; then
+        run_case "$shell" "an unreadable package file does not disqualify the cache" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$CTRL" "$CTRL" shared \
+            "reusing existing shared cache ($CTRL) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+    fi
+    chmod 644 "$CTRL/archive-v0/pkg/payload.whl" 2>/dev/null || true
+
     # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.
     mkdir -p "$CASE/work/relcache/archive-v0/pkg"
     : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"
