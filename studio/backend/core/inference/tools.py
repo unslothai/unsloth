@@ -3196,6 +3196,41 @@ _PATH_WRITE_COMMANDS = frozenset(
 )
 # Copy-like commands: the LAST operand is the destination (a write), the earlier ones are sources (reads).
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
+# Interpreters and clients whose operands are files they LOAD. `python /media/private/job.py` reads
+# that file and runs it, which is strictly more than `cat` of the same path, yet the command was in
+# no table so every operand was dropped. Treated as reads, since that is what decides the prompt;
+# whether the loaded program then writes is not knowable here.
+# `awk` and `jq` are deliberately absent: their first positional is a PROGRAM, and a script that
+# starts with a slash (`awk '/^\/usr/ {print}'`) would read as an absolute path.
+_PATH_SCRIPT_COMMANDS = frozenset(
+    {
+        "python",
+        "python2",
+        "python3",
+        "py",
+        "perl",
+        "bash",
+        "sh",
+        "zsh",
+        "ksh",
+        "dash",
+        "fish",
+        "csh",
+        "tcsh",
+        "source",
+        "ruby",
+        "node",
+        "deno",
+        "bun",
+        "php",
+        "lua",
+        "luajit",
+        "julia",
+        "rscript",
+        "sqlite3",
+        "duckdb",
+    }
+)
 # Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
 # `grep /usr/bin list.txt` must not read as absolute-path operands. The value is how many positionals to skip.
 _PATH_ARG_SKIP = {
@@ -3258,6 +3293,10 @@ _PY_MODULE_OPEN_RECEIVERS = frozenset(
         # tarfile.open(name, mode) takes the path first like the rest; without it the module read as
         # a path-bearing receiver and the archive operand was never scanned.
         "tarfile",
+        # `import builtins; builtins.open(p, "w")` is the builtin under a qualified name. Without it
+        # the module itself read as the path and the real one was never added.
+        "builtins",
+        "__builtin__",
     }
 )
 # Receivers that are MODULES rather than paths, for every path-taking call, not only `open`. An
@@ -3582,7 +3621,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if command.endswith(".exe"):
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
-    read_cmd = command in _PATH_READ_COMMANDS
+    read_cmd = command in _PATH_READ_COMMANDS or command in _PATH_SCRIPT_COMMANDS
     write_cmd = command in _PATH_WRITE_COMMANDS
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last):

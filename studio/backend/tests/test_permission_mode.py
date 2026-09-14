@@ -3425,6 +3425,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # position for.
     "diff --from-file=/home/alice/private.txt local.txt",
     "diff --to-file /home/alice/private.txt local.txt",
+    # An interpreter READS the file it is handed, and then runs it.
+    "python /home/alice/private.py",
+    "bash /home/alice/job.sh",
+    "sqlite3 /home/alice/private.db 'select 1'",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3490,6 +3494,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
         "\n".join(f"base = 'sub{i}'" for i in range(9))
         + "\nbase = '/usr/share'\np = base + '/out'\nopen(p, 'w').write('x')"
     ),
+    # The builtin under a qualified name, and under an alias of the module.
+    'import builtins\nbuiltins.open("/media/kuser/MEDIA_SSD/x", "w").write("y")',
+    'import builtins as b\nb.open("/media/kuser/MEDIA_SSD/x").read()',
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3502,6 +3509,12 @@ _INDIRECT_BENIGN_TERMINAL = (
     "cat /proc/self/status",
     "diff -u a.txt b.txt",
     "diff -W 80 --label /before a.txt b.txt",
+    "python train.py",
+    "python -m pytest -q",
+    "python -c 'print(1)'",
+    "bash scripts/build.sh",
+    "python /usr/lib/python3/dist-packages/x.py",
+    "sqlite3 data.db 'select 1'",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
@@ -3513,6 +3526,7 @@ _INDIRECT_BENIGN_PYTHON = (
     "import pandas as pd\nrc = pd.read_csv\nrc('data.csv')",
     # Bound twice, so which function it holds at the call is not answerable.
     "reader = open\nreader = None\nprint(reader)",
+    'import builtins\nbuiltins.open("notes.txt").read()',
 )
 
 
