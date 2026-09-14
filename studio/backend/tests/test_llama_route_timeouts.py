@@ -47,21 +47,13 @@ def test_stream_first_item_deadline_after_headers():
 
 
 def test_stream_read_is_never_cancelled_to_implement_a_deadline():
-    """These two tests used to assert `__anext__` ran in the request task.
+    """Replaces a pair that asserted `__anext__` ran in the request task.
 
-    That was aimed at `asyncio.wait_for`, which implements a timeout by
-    CANCELLING the read -- and httpcore closes the response body on any
-    streaming exception, so a cancelled read is a dead stream, which then
-    surfaces as a silently truncated 200. Cancellation was the hazard; the task
-    identity was the proxy for it.
-
-    The pump now has to emit keepalive comments while a read is outstanding
-    (llama-server sends nothing for the whole prefill and Node/undici drops a
-    stream after 300s of silence), which is not expressible without handing the
-    read to a task. It uses `asyncio.wait`, which the docs guarantee does not
-    cancel its futures on timeout, so the real invariant is preserved and is
-    what these tests now pin directly. Verified separately against real
-    httpx/httpcore: 3001 cross-task read activations, zero cancel-scope errors.
+    That targeted `asyncio.wait_for`, which times out by CANCELLING the read --
+    and httpcore closes the body on any streaming exception, so a cancelled read
+    is a dead stream that surfaces as a truncated 200. Cancellation was the
+    hazard, task identity only its proxy; emitting while a read is outstanding
+    needs a task, so pin the hazard itself.
     """
 
     async def _run():
@@ -96,21 +88,15 @@ def test_stream_read_is_never_cancelled_to_implement_a_deadline():
 
         assert out == ["data: {}", "data: {}"]
         assert cancels == [], "a keepalive tick must never cancel the in-flight read"
-        # One read per item plus the one that raises StopAsyncIteration: ticks
-        # must await the same read, never restart it.
+        # One per item plus the StopAsyncIteration: same read, never restarted.
         assert len(reads) == 3, reads
 
     asyncio.run(_run())
 
 
 def test_stream_pump_does_not_require_asyncio_timeout(monkeypatch):
-    """Python 3.9/3.10 have no `asyncio.timeout`; the repo floor is 3.9.
-
-    The old pump reached for it through `_same_task_timeout`, with a hand-rolled
-    fallback for older versions. The rewrite needs only `ensure_future` + `wait`,
-    so removing `asyncio.timeout` entirely must change nothing -- this is what
-    the former compat-shim test was really protecting.
-    """
+    """The repo floor is 3.9, which has no `asyncio.timeout`. The rewrite needs
+    only `ensure_future` + `wait`, so removing it must change nothing."""
     monkeypatch.setattr(inf_mod.asyncio, "timeout", None, raising = False)
 
     async def _run():

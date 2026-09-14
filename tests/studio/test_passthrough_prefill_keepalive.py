@@ -1,18 +1,13 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """A passthrough relay must not go silent while llama-server prefills.
 
-llama-server flushes response headers as soon as the request is queued and then
-sends nothing at all until the first token. Node's undici -- the transport under
-every JS agent `unsloth start` supports -- aborts a response after 300s with no
-bytes and reports a bare `terminated`, and each retry lands on a different
-llama-server slot whose KV cache shares no prefix, so the retries restart prefill
-from zero and never converge.
-
-Behavioural verifies the extracted `_aiter_llama_stream_items` emits keepalives
-across a stalled read *without restarting that read* (restarting it is not an
-option: httpcore closes the body stream on any streaming exception), that the
-stall guard still fires, and that teardown leaves no pending read. Structural
-verifies every call site translates the sentinel before it can be mistaken for
-an upstream item, so a fifth passthrough surface cannot be added without one.
+llama-server sends nothing until the first token and undici aborts a response
+after 300s with no bytes. Behavioural checks that the pump keepalives across a
+stalled read without restarting it, that the stall guard still fires, and that
+teardown leaves no pending read; structural checks that no fifth passthrough
+surface can be added without translating the sentinel.
 """
 
 from __future__ import annotations
@@ -30,22 +25,13 @@ SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "rout
 SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(SRC)
 
-# Short enough to keep the suite fast, long enough that a tick is unambiguous.
 _TICK_S = 0.05
 
 _WANTED = {"_LlamaStreamKeepalive", "_LLAMA_STREAM_KEEPALIVE", "_aiter_llama_stream_items"}
 
-
-# ── Loading ──────────────────────────────────────────────────
-
-
 def _load_pump():
-    """The real pump, cut from disk and exec'd against stubs.
-
-    Importing `routes.inference` would pull in the whole backend package; the
-    pump only needs httpx, asyncio and two constants, so give it exactly those.
-    Each call gets a fresh namespace so no test can leak state into another.
-    """
+    """The real pump, cut from disk and exec'd against stubs: importing
+    `routes.inference` would pull in the whole backend package."""
     chunks = []
     for node in _TREE.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -73,7 +59,6 @@ def _load_pump():
         "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": 1200.0,
         "_first_token_timeout_s": lambda: 1200.0,
         "_TEARDOWN_TASK_STOP_TIMEOUT_S": 5.0,
-        # Records the socket-level ceiling without needing a real response.
         "_set_stream_response_read_timeout": lambda response, read_timeout_s = None: None,
         "_discard_task_outcome": lambda task: None,
     }
@@ -82,11 +67,8 @@ def _load_pump():
 
 
 class _ScriptedIter:
-    """Async iterator that yields, then blocks on a gate, then yields again.
-
-    Counts `__anext__` entries so a test can prove the pump kept waiting on one
-    read rather than starting a fresh one per keepalive tick.
-    """
+    """Yields, blocks on a gate, yields again. Counts `__anext__` entries so a
+    test can prove the pump waited on one read rather than restarting per tick."""
 
     def __init__(
         self,
@@ -118,10 +100,6 @@ class _ScriptedIter:
             return self._after_gate.pop(0)
         raise StopAsyncIteration
 
-
-# ── Behavioural ──────────────────────────────────────────────
-
-
 def test_keepalives_flow_during_prefill_without_restarting_the_read():
     pump_ns = _load_pump()
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
@@ -141,7 +119,6 @@ def test_keepalives_flow_during_prefill_without_restarting_the_read():
                 if got is keepalive:
                     seen_keepalives += 1
                     if seen_keepalives >= 3:
-                        # Only now let the single in-flight read complete.
                         gate.set()
                     continue
                 items.append(got)
@@ -245,8 +222,7 @@ def test_teardown_cancels_the_in_flight_read():
         async for got in stream:
             assert got is keepalive
             break
-        # Abandoning mid-stall must not leave the read running: the response is
-        # closed right after, and a live __anext__ would raise "already running".
+        # A live __anext__ here would raise "already running" on the close.
         await stream.aclose()
         await asyncio.sleep(0)
         return upstream
@@ -259,13 +235,8 @@ def test_teardown_cancels_the_in_flight_read():
 
 
 def test_closing_the_pump_first_leaves_the_iterator_closable():
-    """The teardown-order contract, end to end.
-
-    A real async generator is parked inside the pump's pending read. Closing it
-    while the pump still holds that read raises "asynchronous generator is
-    already running"; closing the pump first must make it clean, which is the
-    whole reason teardown passes `items` before `iterator`.
-    """
+    """Closing the iterator while the pump still holds its read raises
+    "already running"; closing the pump first must make it clean."""
     pump_ns = _load_pump()
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
 
@@ -313,10 +284,6 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
 
     ordered = asyncio.run(_run(close_pump_first = True))
     assert ordered == [], f"closing the pump first must leave a clean close; got {ordered}"
-
-
-# ── Env plumbing ─────────────────────────────────────────────
-
 
 def _load_env_accessors():
     wanted = {
@@ -386,10 +353,6 @@ def test_first_token_timeout_env_never_unbounded(monkeypatch, raw, expected):
         f"must never return None or a non-positive value; got {got!r}"
     )
 
-
-# ── Structural (AST) ─────────────────────────────────────────
-
-
 _PUMP_LOCAL = "items_iter"
 
 
@@ -420,12 +383,8 @@ def _passthrough_relay_loops():
 
 
 def test_pump_is_bound_not_inlined_so_teardown_can_close_it():
-    """The pump parks at a keepalive yield holding a live __anext__ on the
-    upstream iterator. Teardown must aclose() the pump BEFORE that iterator, or
-    the iterator close lands on a running generator, raises "asynchronous
-    generator is already running", and is swallowed -- leaving it unclosed.
-    Inlining the pump in the `async for` makes it unreachable to teardown.
-    """
+    """Inlining the pump in the `async for` leaves it unnameable, so teardown
+    cannot aclose() it before the iterator it is still reading."""
     made = _pump_constructions()
     assert len(made) == 4, (
         "expected the 4 passthrough surfaces to each bind the pump to a local; "
@@ -478,7 +437,6 @@ def test_every_teardown_closes_the_pump_before_the_iterator():
             "to match the documented close order"
         )
 
-    # And the helper must actually close items first.
     helper = next(
         n
         for n in ast.walk(_TREE)
@@ -524,25 +482,19 @@ def test_every_relay_loop_translates_the_sentinel_first():
 
 
 def test_sentinel_is_an_object_not_a_string():
-    # A string would be silently eaten by the call sites' startswith("data:")
-    # filters, and could in principle collide with upstream bytes.
+    # A string would be eaten by the call sites' startswith("data:") filters.
     pump_ns = _load_pump()
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
     assert not isinstance(
         keepalive, (str, bytes)
     ), f"sentinel must not be a string; got {type(keepalive).__name__}"
 
-
-# ── Client tolerance ─────────────────────────────────────────
-
-
 @pytest.mark.parametrize("module_name", ["openai", "anthropic"])
 def test_sdk_sse_readers_ignore_the_keepalive_comment(module_name):
     """The whole fix rests on `:` comments being invisible to SSE readers."""
     streaming = pytest.importorskip(f"{module_name}._streaming")
     decoder = streaming.SSEDecoder()
-    # split("\n"), not splitlines(): the trailing blank line is the dispatch
-    # point, so dropping it would skip the only place an event could surface.
+    # split, not splitlines: the trailing blank line is the dispatch point.
     events = [
         event
         for line in ": keep-alive\n\n".split("\n")

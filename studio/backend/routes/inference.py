@@ -1739,16 +1739,9 @@ _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
 
 
 class _LlamaStreamKeepalive:
-    """Pump-level wake-up yielded by ``_aiter_llama_stream_items`` while the
-    upstream socket is silent.
-
-    Not an upstream item: call sites translate it into their own framing's
-    comment and must not let it advance any stream state (``saw_stream_item``,
-    the tool-call healer, the API monitor, the last-chunk id/model/created).
-    A sentinel object rather than the comment string itself, because every call
-    site filters relayed lines with ``startswith("data:")``, which would drop a
-    bare string on the floor.
-    """
+    """Pump wake-up, translated per call site and never treated as an upstream
+    item (no stream state, healer or monitor). An object, not the comment
+    string: every site filters relayed lines on ``startswith("data:")``."""
 
     __slots__ = ()
 
@@ -2594,17 +2587,10 @@ def _openai_compat_stream_stall_timeout():
 def _first_token_timeout_s() -> float:
     """How long a passthrough waits for llama-server's first token.
 
-    Once keepalives stop the client from giving up, this is the binding limit
-    on a very slow prefill, so it needs a way out on a CPU host that legitimately
-    takes longer. Unlike the stall guard, 0 does not disable it: the deadline is
-    unconditional downstream, so an unparseable or non-positive value keeps the
-    default rather than removing the bound.
-
-    Raising it is the intended direction. Lowering it also tightens the
-    non-streaming generation timeout, which is built from this same value and,
-    passed positionally to httpx.Timeout, covers connect/read/write/pool -- and
-    for a non-streaming request time-to-first-byte is time-to-last-byte. That
-    sharing predates the env var; the knob only makes it reachable.
+    Unlike the stall guard, 0 does NOT disable it: the deadline is unconditional
+    downstream, so a non-positive value keeps the default. Raise it, do not lower
+    it: the same value builds the non-streaming timeout, where httpx.Timeout's
+    positional form also covers connect/read/write/pool.
     """
     value = _positive_float_env(
         _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
@@ -2616,15 +2602,8 @@ def _first_token_timeout_s() -> float:
 def _openai_passthrough_stream_keepalive_interval():
     """Idle gap before a passthrough relay emits an SSE keepalive comment.
 
-    llama-server flushes response headers as soon as the request is queued and
-    then says nothing at all for the whole prefill, which on a CPU host is
-    minutes. Node's undici -- the transport under every JS agent we support --
-    aborts a response after 300s with no bytes, surfacing to the user as a bare
-    ``terminated``, and each retry lands on a different llama-server slot whose
-    KV cache shares no prefix, so the retries restart prefill from zero and
-    never converge. Comments cost nothing and every conformant SSE reader drops
-    them, so pace them at the same interval the header wait already uses. Set
-    the env var to 0 to relay in silence like before.
+    llama-server is silent for the whole prefill and undici aborts a response
+    after 300s with no bytes. 0 relays in silence like before.
     """
     return _positive_float_env(
         _OPENAI_COMPAT_STREAM_KEEPALIVE_ENV,
@@ -2829,12 +2808,8 @@ async def _aclose_stream_resources(
         except (asyncio.CancelledError, Exception):
             pass
     close_cancelled = False
-    # Before `iterator`, and awaited to completion: the keepalive pump can be parked
-    # at a yield with a live __anext__ on that iterator, and closing a running async
-    # generator raises "asynchronous generator is already running", which the
-    # swallow below would hide and leave the iterator open. Cancelling the pump's
-    # read is not enough on its own, because cancel() only requests it and the
-    # iterator stays ag_running until the pump's own finally has finished. #7617
+    # Before `iterator`, awaited out: cancelling the pump's read is not enough,
+    # the iterator stays ag_running until the pump's finally returns. #7617
     if items is not None:
         try:
             await items.aclose()
@@ -3020,16 +2995,13 @@ async def _aiter_llama_stream_items(
     ] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
     keepalive_interval_s: Optional[float] = None,
 ):
-    """Relay upstream stream items, waking every ``keepalive_interval_s`` to
-    yield ``_LLAMA_STREAM_KEEPALIVE`` while the socket is silent.
+    """Relay upstream items, waking every ``keepalive_interval_s`` to yield
+    ``_LLAMA_STREAM_KEEPALIVE`` while the socket is silent.
 
-    One ``__anext__`` is created per upstream item and awaited across as many
-    keepalive ticks as it takes; ``asyncio.wait`` never cancels it, so every
-    httpx/httpcore AnyIO scope opens and closes inside a single activation of
-    one task. That is what the old in-task block bought, and what
-    ``asyncio.wait_for`` would have broken. The read must not be restarted to
-    tick either: httpcore closes the body stream on any streaming exception, so
-    a ReadTimeout here is terminal, not something to retry.
+    One ``__anext__`` per item, awaited across as many ticks as it takes.
+    ``asyncio.wait`` is used because it does not cancel on timeout, and the read
+    must be neither cancelled nor restarted to tick: httpcore closes the body
+    stream on any streaming exception, so a ReadTimeout here is terminal.
     """
     if first_token_deadline is None:
         first_token_deadline = time.monotonic() + _first_token_timeout_s()
@@ -3052,11 +3024,8 @@ async def _aiter_llama_stream_items(
             waiting_first_item = last_item_at is None
             if item_task is None:
                 if response is not None:
-                    # The socket-level ceiling for this item. httpcore reads the
-                    # timeout once per response body, so only the call made
-                    # before the first __anext__ enters that body can take
-                    # effect; the deadlines below are what actually bound a
-                    # stall, on the wall clock, while we are blocked.
+                    # Socket ceiling only: httpcore latches this once per body,
+                    # so the wall-clock deadlines below are what bound a stall.
                     _set_stream_response_read_timeout(
                         response,
                         max(first_token_deadline - time.monotonic(), 0.0)
@@ -3090,8 +3059,7 @@ async def _aiter_llama_stream_items(
 
             done, _pending = await asyncio.wait({item_task}, timeout = wait_s)
             if not done:
-                # A keepalive is a client-liveness signal only: it must not
-                # advance last_item_at, or the stall guard could never fire.
+                # Must not advance last_item_at, or the stall guard never fires.
                 if keepalive_interval_s:
                     yield _LLAMA_STREAM_KEEPALIVE
                 continue
@@ -3104,21 +3072,14 @@ async def _aiter_llama_stream_items(
             finally:
                 item_task = None
             if last_item_at is None and response is not None:
-                # Re-arm before yielding, not before the next read: the consumer
-                # may sit on this item indefinitely, and until this runs the
-                # response still carries the first-token deadline. With the stall
-                # guard disabled the callable returns None, which clears it, so a
-                # long post-first-chunk gap cannot trip a deadline the operator
-                # turned off.
+                # Before yielding, not before the next read: the consumer may sit
+                # on this item while the first-token deadline is still armed.
                 _set_stream_response_read_timeout(response, _post_first_timeout_s())
             last_item_at = time.monotonic()
             yield item
     finally:
         if item_task is not None:
-            # Bounded, and abandoned rather than held: the done callback drains
-            # whatever the read produces after we stop waiting. Mirrors
-            # _aclose_send_task, and must happen before anything closes the
-            # response, or the next __anext__ raises "already running". #7617
+            # Bounded, then abandoned; the callback drains it. Cf _aclose_send_task. #7617
             if not item_task.done():
                 item_task.cancel()
             item_task.add_done_callback(_discard_task_outcome)
@@ -27576,8 +27537,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
                 bytes_iter = resp.aiter_bytes()
                 buffer = b""
-                # Bound, not inlined: teardown has to aclose() this pump before the
-                # iterator it is reading, or that close lands on a running generator.
+                # Bound, not inlined: teardown must aclose() this before bytes_iter.
                 items_iter = _aiter_llama_stream_items(
                     bytes_iter,
                     cancel_event = disconnect_event,
@@ -27587,8 +27547,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
                 )
                 async for chunk in items_iter:
-                    # Keep it out of `buffer`: it is not upstream SSE, and the
-                    # split below would hand the comment to the API monitor.
+                    # Out of `buffer`: the split below would hand it to the monitor.
                     if chunk is _LLAMA_STREAM_KEEPALIVE:
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
                         continue
@@ -33518,8 +33477,6 @@ async def _anthropic_passthrough_stream(
                 keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
             )
             async for raw_line in items_iter:
-                # Must not reach the emitter: this is transport liveness, not an
-                # Anthropic event. Their SSE reader drops ":" comments.
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
@@ -35147,9 +35104,6 @@ async def _openai_passthrough_stream_admitted(
                     keepalive_interval_s = _openai_passthrough_stream_keepalive_interval(),
                 )
                 async for raw_line in items_iter:
-                    # Before every other branch: a keepalive is not an upstream
-                    # item, so it must not set saw_stream_item, reach the healer
-                    # or the monitor, or touch the last-chunk id/model/created.
                     if raw_line is _LLAMA_STREAM_KEEPALIVE:
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
