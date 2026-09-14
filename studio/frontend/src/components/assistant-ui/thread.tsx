@@ -161,6 +161,7 @@ import {
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { create } from "zustand";
 import {
+  clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   modelCatalogVersion,
   subscribeModelCatalog,
@@ -5371,8 +5372,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
@@ -5386,7 +5393,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     }
     return "Extra High";
   };
-  const effortLabel = formatEffortLabel(reasoningEffort);
+  const effortLabel = formatEffortLabel(displayedEffort);
 
   // Only rendered for models that can reason.
   if (!effectiveSupportsReasoning) {
@@ -5422,7 +5429,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
-              reasoningEffort,
+              reasoningEffort: displayedEffort,
             })}
           >
             <ThinkIcon />
@@ -5486,7 +5493,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       "unsloth-tick size-4",
                       !(
                         effectiveReasoningVisualEnabled &&
-                        reasoningEffort === level
+                        displayedEffort === level
                       ) && "opacity-0",
                     )}
                   />

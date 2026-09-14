@@ -174,6 +174,7 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -758,8 +759,14 @@ export function SharedComposer({
   // one on flips the other off, so the visible state matches what the backend sends.
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
@@ -2560,7 +2567,7 @@ export function SharedComposer({
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
                       reasoningDisabled,
-                      reasoningEffort,
+                      reasoningEffort: displayedEffort,
                     })}
                   >
                     <BulbIcon className="size-[15.5px]" />
@@ -2568,7 +2575,7 @@ export function SharedComposer({
                       <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
-                              reasoningEffort,
+                              displayedEffort,
                               externalSelection?.modelId,
                             )}`
                           : "Thinking"}
@@ -2627,7 +2634,7 @@ export function SharedComposer({
                               "unsloth-tick size-4",
                               !(
                                 effectiveReasoningVisualEnabled &&
-                                reasoningEffort === level
+                                displayedEffort === level
                               ) && "opacity-0",
                             )}
                           />
