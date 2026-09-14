@@ -101,6 +101,154 @@ def test_parallel_search_respects_website_policy(monkeypatch):
     assert "blocked.example" not in text
 
 
+def test_parallel_search_overfetches_under_a_restricting_policy(monkeypatch):
+    """web_search takes no result-count argument, so a restricting policy deepens the pool by
+    fanning the one call out over the allowed domains instead."""
+    sent: dict = {}
+
+    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+        sent.update(arguments)
+        return {"content": [{"text": '{"results": []}'}]}
+
+    monkeypatch.setattr(ps, "_call_tool", fake_call)
+    ps.parallel_web_search("hello", timeout = 5)
+    assert sent["search_queries"] == ["hello"]
+
+    ps.parallel_web_search(
+        "hello",
+        timeout = 5,
+        website_policy = {"allowedDomains": ["a.example", "b.example", "c.example"]},
+    )
+    assert len(sent["search_queries"]) == ps._POLICY_OVERFETCH
+    assert sent["search_queries"][0] == "hello (site:a.example OR site:b.example OR site:c.example)"
+    assert sent["search_queries"][1:] == [
+        "hello site:a.example",
+        "hello site:b.example",
+        "hello site:c.example",
+    ]
+
+
+def test_parallel_search_drops_duplicates_from_the_fan_out(monkeypatch):
+    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+        return {
+            "content": [
+                {
+                    "text": (
+                        '{"results": ['
+                        '{"title": "A", "url": "https://a.example/x", "excerpts": ["one"]},'
+                        '{"title": "A again", "url": "https://a.example/x", "excerpts": ["dup"]},'
+                        '{"title": "B", "url": "https://b.example/y", "excerpts": ["two"]}]}'
+                    )
+                }
+            ]
+        }
+
+    monkeypatch.setattr(ps, "_call_tool", fake_call)
+    text = ps.parallel_web_search(
+        "hello",
+        max_results = 2,
+        timeout = 5,
+        website_policy = {"allowedDomains": ["a.example", "b.example"]},
+    )
+    assert text.count("https://a.example/x") == 1
+    assert "https://b.example/y" in text
+
+
+def test_parallel_fetch_refuses_a_blocked_redirect_target(monkeypatch):
+    """The policy gate runs on the URL we ask for; web_fetch follows redirects, so the URL that
+    actually answered has to clear it too."""
+
+    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+        return {
+            "content": [
+                {
+                    "text": (
+                        '{"results": [{"url": "https://blocked.example/secret",'
+                        ' "excerpts": ["leaked body"]}]}'
+                    )
+                }
+            ]
+        }
+
+    monkeypatch.setattr(ps, "_call_tool", fake_call)
+    policy = {"allowedDomains": ["allowed.example"], "blockedDomains": ["blocked.example"]}
+    out = ps.parallel_web_fetch("https://allowed.example/start", timeout = 5, website_policy = policy)
+    assert "leaked body" not in out
+    assert out == ps.parallel_web_fetch("https://blocked.example/x", timeout = 5, website_policy = policy)
+
+
+def test_parallel_fetch_keeps_an_allowed_redirect_target(monkeypatch):
+    def fake_call(tool, arguments, api_key, timeout, deadline = None):
+        return {
+            "content": [
+                {
+                    "text": (
+                        '{"results": [{"url": "https://allowed.example/moved",'
+                        ' "excerpts": ["real body"]}]}'
+                    )
+                }
+            ]
+        }
+
+    monkeypatch.setattr(ps, "_call_tool", fake_call)
+    out = ps.parallel_web_fetch(
+        "https://allowed.example/start",
+        timeout = 5,
+        website_policy = {"allowedDomains": ["allowed.example"]},
+    )
+    assert "real body" in out
+
+
+class _SetEvent:
+    def is_set(self) -> bool:
+        return True
+
+
+def test_cancel_returns_cancellation_instead_of_falling_back(monkeypatch):
+    """A disconnect must not start a second search on the fallback provider."""
+    from core.inference import tools
+
+    monkeypatch.setattr(ps, "web_search_provider", lambda: ps.PARALLEL_PROVIDER_ID)
+    monkeypatch.setattr(ps, "parallel_api_key", lambda: None)
+
+    def cancelled(*args, **kwargs):
+        raise TimeoutError("Search cancelled.")
+
+    monkeypatch.setattr(ps, "parallel_web_search", cancelled)
+    monkeypatch.setattr(ps, "parallel_web_fetch", cancelled)
+
+    def no_fallback(*args, **kwargs):  # pragma: no cover - the assertions below are the point
+        raise AssertionError("cancelled search fell back to another provider")
+
+    monkeypatch.setattr(tools, "_fetch_page_text", no_fallback)
+    monkeypatch.setattr(tools, "_search_failure_message", no_fallback)
+
+    assert tools._web_search("hello", timeout = 5, cancel_event = _SetEvent()) == "Search cancelled."
+    assert (
+        tools._web_search(
+            "",
+            url = "https://example.com/a",
+            timeout = 5,
+            cancel_event = _SetEvent(),
+        )
+        == "Search cancelled."
+    )
+
+
+def test_a_genuine_parallel_failure_still_falls_back(monkeypatch):
+    from core.inference import tools
+
+    monkeypatch.setattr(ps, "web_search_provider", lambda: ps.PARALLEL_PROVIDER_ID)
+    monkeypatch.setattr(ps, "parallel_api_key", lambda: None)
+
+    def failed(*args, **kwargs):
+        raise TimeoutError("Parallel search timed out")
+
+    monkeypatch.setattr(ps, "parallel_web_fetch", failed)
+    monkeypatch.setattr(tools, "_fetch_page_text", lambda *a, **k: "fallback body")
+    assert tools._web_search("", url = "https://example.com/a", timeout = 5) == "fallback body"
+
+
 def test_settings_payload_accepts_provider_and_cleans_key():
     payload = ChatSettingsPayload.model_validate(
         {"webSearchProvider": "parallel", "parallelSearchApiKey": "  k  "}
