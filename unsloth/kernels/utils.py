@@ -174,6 +174,10 @@ if DEVICE_COUNT > 1:
         torch_gpu_device = torch.cuda.device
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
+    elif DEVICE_TYPE == "npu":
+        # Without an arm here the name is never bound, and rope_embedding.py imports it
+        # at module scope, so a multi-NPU host fails `import unsloth` with an ImportError.
+        torch_gpu_device = torch.npu.device
 else:
     from contextlib import nullcontext
     def torch_gpu_device(device):
@@ -280,9 +284,14 @@ else:
         cgemm_4bit_inference_naive_bf16 = bnb_functional.lib.cgemm_4bit_inference_naive_bf16
 
 
-torch_device_stream = (
-    torch.xpu.current_stream if DEVICE_TYPE == "xpu" else torch.cuda.current_stream
-)
+if DEVICE_TYPE == "xpu":
+    torch_device_stream = torch.xpu.current_stream
+elif DEVICE_TYPE == "npu":
+    # RoPE calls torch_device_stream(Q.device).synchronize() on the first forward, which
+    # would otherwise reach the CUDA backend an Ascend build does not have.
+    torch_device_stream = torch.npu.current_stream
+else:
+    torch_device_stream = torch.cuda.current_stream
 
 torch_mm = torch.mm
 torch_mv = torch.mv
