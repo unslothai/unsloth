@@ -373,8 +373,8 @@ test("link references and definitions stay in one rendered document", () => {
   );
 });
 
-// Everything Marked stores must move the key as it arrives, or the reference
-// keeps the stale link. Every line ending: the key reads un-normalised text.
+// Everything Marked stores must move the key as it arrives, or the reference keeps
+// the stale link. Every line ending, because the key reads un-normalised text.
 test("a definition that spans lines still moves the render key", () => {
   const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
 
@@ -416,9 +416,9 @@ test("a definition that spans lines still moves the render key", () => {
 });
 
 // The other half of that contract: text the key captures that marked does NOT
-// store remounts the whole Streamdown subtree once per character of it. A
-// definition in a container keeps its continuation in the SAME block, so these
-// reach the key suffix where plain prose after a plain definition does not.
+// store remounts the whole subtree once per character of it. A definition in a
+// container keeps its continuation in the same block, so these reach the key
+// suffix where prose after a plain definition does not.
 test("prose after a definition does not move the render key", () => {
   const tails = [
     "ordinary prose that follows on the next line",
@@ -458,9 +458,8 @@ test("prose after a definition does not move the render key", () => {
   }
 });
 
-// marked stores the space in `[g]: <https://x.test/a b>` (16.4.2 and 17.0.6), so
-// the key must follow an angle destination to its `>` or it settles on the first
-// word and stops moving.
+// marked stores the space in `[g]: <https://x.test/a b>`, so the key must follow
+// an angle destination to its `>` or it settles on the first word and freezes.
 test("an angle-bracketed destination keeps moving the render key", () => {
   const usage = "See [guide][g].\n\n";
   const streamed = [
@@ -478,8 +477,7 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     previous = key;
   }
 
-  // `>` closes the ANGLE form only: marked keeps the `>` in
-  // `[g]: https://x.test/a>b`, so a bare destination stopping there froze.
+  // `>` closes the ANGLE form only: marked keeps it in `[g]: https://x.test/a>b`.
   let bareStep = markdownRenderKey(`${usage}[g]: `);
   for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
     const key = markdownRenderKey(`${usage}[g]: ${step}`);
@@ -487,8 +485,7 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     bareStep = key;
   }
 
-  // Padding after the destination does not stop Marked storing a next-line
-  // title, so a bare `\n` in the continuation lost it.
+  // Padding after the destination does not stop Marked storing a next-line title.
   for (const [container, indent] of [
     ["", "  "],
     ["> ", "> "],
@@ -509,12 +506,9 @@ test("an angle-bracketed destination keeps moving the render key", () => {
   );
 });
 
-// The probe scans a window back from each `]:` rather than the whole reply, so
-// the window has to be wide enough for the widest label: 999 repetitions of an
-// escape plus an astral code point. Sizing it in code points rather than UTF-16
-// units cuts the opening `[` off these and the definition stops being seen,
-// which is the false negative the whole probe exists to avoid. The padding is
-// what forces the window to be the thing under test.
+// The window back from each `]:` has to hold the widest label: 999 escapes each
+// followed by an astral code point. Sized in code points it cuts the opening `[`
+// off these. The padding is what forces the window to be the thing under test.
 test("the widest label is still found far into a reply", () => {
   const padding = "ordinary prose. ".repeat(400);
   for (const filler of ["z", "\u{1F600}", "\\z", "\\\u{1F600}"]) {
@@ -527,16 +521,11 @@ test("the widest label is still found far into a reply", () => {
   }
 });
 
-// A reply is scanned for a definition on every render, and every `[` used to be
-// a start position that ran to the bound before it could fail, so one long line
-// dense with `[` cost about half a second (1072ms on JavaScriptCore).
-//
-// A wall-clock budget rather than a ratio against a plain reply of the same
-// length: most of what is left is marked's own block split, which is genuinely
-// dearer over 100,000 `[` than over 100,000 `x` (0.2ms against 10.6ms here), so
-// a ratio measures marked and not this probe. Measured: 10.6ms with the window
-// scan, 435ms without it, so the budget sits an order of magnitude above the
-// first and well below the second.
+// Every `[` used to be a start position that ran to the bound before it could
+// fail, so one long line dense with `[` cost half a second per render. A wall-clock
+// budget, not a ratio against a plain reply of the same length: marked's own block
+// split is itself far dearer over 100,000 `[` than over 100,000 `x`, so a ratio
+// would measure marked rather than this probe.
 test("a bracket-dense reply does not stall the scan", () => {
   const reply = `See [guide][g].\n\n${"[".repeat(100_000)}\n\n[g]: /guide`;
   for (let run = 0; run < 3; run += 1) markdownRenderScope(reply);

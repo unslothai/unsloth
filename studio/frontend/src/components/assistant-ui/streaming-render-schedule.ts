@@ -68,32 +68,18 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const INLINE_LATEX_CONTEXT = "\\(\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-// Tracks Marked's `def` label, `[^\]]+`: line endings included, no length cap.
-// Err toward a FALSE POSITIVE, which costs only retention; a miss is committed
-// into its own block and Marked emits no token for a label it has already seen,
-// so it lexes apart from its still-live twin.
-// Hence `\n` in the class (Marked normalises label whitespace), `\\[\s\S]` over
-// `\\.` (`.` rejected a label whose line ends in a backslash), and `u` (without
-// it `{1,999}` counts UTF-16 units, so the real bound is 499 emoji).
-// The bound stays although Marked has none: every `[` is a start position, so
-// bound B costs O(n*B) and none costs O(n^2). 999 is CommonMark's limit, so only
-// an out-of-spec label stays mis-lexed.
+// Marked's `def` label, `[^\]]+`: a miss is committed away and Marked emits no
+// token for a label it has already seen, so err toward a false positive, which
+// only costs retention. `\n` is in the class because Marked normalises label
+// whitespace, `\\[\s\S]` because `.` rejected a label whose line ends in a
+// backslash, `u` because without it `{1,999}` bounds 499 emoji. 999 is
+// CommonMark's cap; unbounded would make every `[` an O(n) start position.
 const LINK_DEFINITION_RE = /\[(?:\\[\s\S]|[^\]\\]){1,999}\]:/u;
-// Widest a match can be in UTF-16 units: 999 repetitions of at most `\` plus an
-// astral code point, and the opening `[`. Sizing this to code points instead cut
-// the `[` off a 999-emoji label.
+// Widest match in UTF-16 units: 999 times `\` plus an astral code point, plus `[`.
 const LINK_DEFINITION_WINDOW = 999 * 3 + 2;
 
-// `hasLinkDefinition` over a whole reply, rather than the regex over a whole
-// reply. Same predicate: the pattern carries no anchor or lookaround, so a match
-// inside a window is a match in the reply, and a match in the reply ends at some
-// `]:` whose window holds it. Verified equal on 607 inputs.
-//
-// The saving is that `]:` is rare while `[` is not, and every `[` is a start
-// position that scans to the bound before it can fail. Median of 5 on one 100k
-// line dense with `[`: 571ms for the plain scan, 7.5ms here, and 0.001ms when
-// the reply holds no `]:` at all. That cost is what unslothai/unsloth#10529 is
-// about, and it is why admitting `\n` to the class above is affordable.
+// Same predicate as the regex over the whole reply, since the pattern has no
+// anchor or lookaround, but `]:` is rare where `[` is not (unslothai/unsloth#10529).
 function hasLinkDefinition(text: string): boolean {
   for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
     const start = end < LINK_DEFINITION_WINDOW ? 0 : end - LINK_DEFINITION_WINDOW;
@@ -110,22 +96,13 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
   `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
   `m${LINK_DEFINITION_RE.flags}`,
 );
-// The same probe plus what Marked stores after the label, since that is what has
-// to move the remount key. Derived from LINK_DEFINITION_LINE_RE so scope and key
-// stay on one grammar; continuations carry CONTAINER_PREFIX because Marked
-// strips the repeated `>` or list indent before storing; breaks are plain `\n`
-// because documentProse normalises first.
-//
-// Spelled as Marked spells it, never as "the rest of the line": this is a React
-// key, so anything captured that Marked does not store remounts the subtree once
-// per character of it (`> [g]:` + `> ordinary prose` churned that way).
-// Checked against both copies in the tree, 16.4.2 and 17.0.6: `<...>` runs to its
-// `>` and may hold spaces, a bare destination runs to whitespace and KEEPS a `>`
-// (`[g]: https://x.test/a>b`) -- stopping it at `>` froze the key one character
-// in. One title, closing on its line, on the destination's line or the one below
-// but never both; an unterminated opener is prose, and following it churned. The
-// line break tolerates padding after the destination: `[g]: /url  ` + `  "t"`
-// still stores the title, and requiring a bare `\n` lost it.
+// The probe plus exactly what Marked stores after the label, which is what has to
+// move the remount key. Must be spelled as Marked spells it, never as "the rest of
+// the line": this feeds a React key, so anything captured that Marked does not
+// store remounts the subtree once per character of it. Angle destinations run to
+// their `>` and may hold spaces; a bare one runs to whitespace and KEEPS a `>`
+// (`[g]: https://x.test/a>b`). At most one title, on the destination's line or the
+// one below but never both, and padding may precede the break.
 //
 // Residual: a wrapped title stops the key at its opening line, so the link keeps
 // its old title until the message settles.
@@ -191,11 +168,10 @@ function blocksOf(markdown: string): readonly string[] {
 // `document` when blocks would have done only costs that reply its per-code-block Copy and
 // Download controls -- which is what this path did for EVERY reply containing a `]:` substring
 // before. See tests/link-definition-oracle.test.ts, which pins the first case exhaustively.
-// Normalised where a line ending changes an answer: `\r` counts against `{1,999}`
-// and the `\n` it replaces does not, so the scope would follow the reply's line
-// ending. NOT for `blocksOf`, whose one slot is shared with
-// `parseMarkdownIntoRenderableBlocks`: a normalised copy misses it and costs a
-// CRLF reply two splits per render.
+// Normalised because `\r` counts against `{1,999}` and the `\n` it replaces does
+// not, so the scope would otherwise follow the reply's line ending. NOT for
+// `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
+// a normalised copy misses it and costs a CRLF reply two splits per render.
 function documentProse(markdown: string): string | null {
   const normalized = normalizeLineEndings(markdown);
   if (!LINK_REFERENCE_RE.test(normalized) || !hasLinkDefinition(normalized)) {
