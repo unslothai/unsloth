@@ -111,6 +111,7 @@ def get_device_type():
     # before Ascend was known about.
     elif npu_is_available():
         return "npu"
+    accelerator = None
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
@@ -124,8 +125,12 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
+    # Name the device that was actually found. torch.accelerator only exists from torch
+    # 2.6, so below that there is no name to report.
     raise NotImplementedError(
-        "Unsloth currently only works on NVIDIA, AMD, Intel and Ascend NPU GPUs."
+        f"Unsloth does not currently work on {accelerator}."
+        if accelerator else
+        "Unsloth does not currently work on this device."
     )
 
 

@@ -310,3 +310,23 @@ def test_npu_unavailable_is_not_selected(monkeypatch):
 
     with pytest.raises(NotImplementedError):
         _load_device_type(monkeypatch, torch)
+
+
+def test_unsupported_accelerator_is_named_in_the_error(monkeypatch):
+    # An unknown accelerator should say what was found, not just list what is supported.
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+    torch.accelerator = types.SimpleNamespace(
+        is_available = lambda: True,
+        current_accelerator = lambda: "mtia",
+    )
+
+    with pytest.raises(NotImplementedError, match = "does not currently work on mtia"):
+        _load_device_type(monkeypatch, torch)
+
+
+def test_error_without_torch_accelerator_has_no_device_name(monkeypatch):
+    # torch < 2.6 has no torch.accelerator, so there is no device name to report.
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+
+    with pytest.raises(NotImplementedError, match = "does not currently work on this device"):
+        _load_device_type(monkeypatch, torch)
