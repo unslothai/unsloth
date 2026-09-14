@@ -692,7 +692,6 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     """Whoever happens to trip the cap is mid tool call. The victim belongs to a
     different chat and nobody is waiting on it, so its teardown must not be
     charged to that caller's budget."""
-    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     tearing_down = threading.Event()
     release = threading.Event()
     closed = threading.Event()
@@ -714,17 +713,29 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
         "_client",
         lambda url, headers, use_oauth = False: HeldExit(url, headers, use_oauth),
     )
+    # The same call with the cap out of the way: a new scope, a connect and one tool call,
+    # differing from the measured call only in that nothing is evicted. Bounding against
+    # it rather than against a clock is what makes "did not pay for the eviction" the
+    # claim; a fixed budget loose enough for a slow runner also passes a caller that
+    # blocked for a second before handing the victim off.
     _call(HTTP_URL, scope = SCOPE)  # fills the cache
+    control_started = time.monotonic()
+    assert _call(HTTP_URL_2, scope = SCOPE) == "call-1"
+    control = time.monotonic() - control_started
+
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     started = time.monotonic()
     assert _call(HTTP_URL, scope = SCOPE_B) == "call-1"
     elapsed = time.monotonic() - started
     assert tearing_down.wait(10), "the eviction never started, so nothing was under test"
     assert not closed.is_set(), "the caller waited out an unrelated eviction"
-    # The one clock left, and derived rather than picked: a teardown held open costs a
-    # caller that waits on it the whole of _SESSION_CLOSE_TIMEOUT, which is exactly the
-    # budget this test says must not be charged to them. Half of it separates the two.
-    ceiling = mcp_client._SESSION_CLOSE_TIMEOUT / 2
-    assert elapsed < ceiling, f"the caller was charged the eviction: {elapsed:.2f}s"
+    # Generous at 20x over a floor, since the control is sub-millisecond here and small
+    # absolute jitter is a large ratio; still nowhere near the seconds a real stall costs.
+    ceiling = min(max(control * 20, 0.1), mcp_client._SESSION_CLOSE_TIMEOUT / 2)
+    assert elapsed < ceiling, (
+        f"the caller was charged the eviction: {elapsed * 1000:.1f}ms against "
+        f"{control * 1000:.1f}ms for the same call with nothing to evict"
+    )
     release.set()
     assert closed.wait(10), "the evicted session was never closed"
 
