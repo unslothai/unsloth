@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_SKIP_SYSTEMD, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -39,6 +39,9 @@ _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
 _ISOLATE_UV_CACHE=false
+_SKIP_SYSTEMD=false
+_INSTALL_SYSTEMD=false
+_SYSTEMD_STARTED=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -78,6 +81,8 @@ done
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
+case "${UNSLOTH_SKIP_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_SYSTEMD=true ;; esac
+case "${UNSLOTH_INSTALL_SYSTEMD:-}" in 1|true|TRUE|yes|YES|on|ON) _INSTALL_SYSTEMD=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -1309,6 +1314,84 @@ _can_read_tty() {
     ( : </dev/tty ) >/dev/null 2>&1
 }
 
+# ── Optional systemd user service (Linux headless / inference server; #9258) ──
+_resolve_systemd_install_script() {
+    if [ -n "${STUDIO_LOCAL_REPO:-}" ] && [ -f "$STUDIO_LOCAL_REPO/studio/systemd/install_user_service.sh" ]; then
+        printf '%s\n' "$STUDIO_LOCAL_REPO/studio/systemd/install_user_service.sh"
+        return 0
+    fi
+    if [ -n "${_REPO_ROOT:-}" ] && [ -f "$_REPO_ROOT/studio/systemd/install_user_service.sh" ]; then
+        printf '%s\n' "$_REPO_ROOT/studio/systemd/install_user_service.sh"
+        return 0
+    fi
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        "$VENV_DIR/bin/python" -c "
+import importlib.resources
+print(importlib.resources.files('studio') / 'systemd' / 'install_user_service.sh')
+" 2>/dev/null && return 0
+    fi
+    find "$VENV_DIR" -path '*/studio/systemd/install_user_service.sh' -print -quit 2>/dev/null
+}
+
+_systemd_user_session_available() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl --user show-environment >/dev/null 2>&1
+}
+
+_offer_systemd_user_service() {
+    [ "$OS" = "linux" ] || return 0
+    [ "$_SKIP_SYSTEMD" = true ] && return 0
+
+    _sd_script=$(_resolve_systemd_install_script)
+    [ -n "$_sd_script" ] && [ -f "$_sd_script" ] || return 0
+
+    # Non-systemd or headless boxes without a user bus should behave like pre-#9258:
+    # no extra question; the usual "Start Unsloth Studio now?" prompt follows unchanged.
+    if [ "$_INSTALL_SYSTEMD" != true ] && ! _systemd_user_session_available; then
+        return 0
+    fi
+
+    _sd_wants=false
+    if [ "$_INSTALL_SYSTEMD" = true ]; then
+        _sd_wants=true
+    elif [ -t 1 ] && _can_read_tty; then
+        echo ""
+        printf "  Install a systemd user service for auto-start on boot and crash recovery? [y/N] "
+        read -r _sd_reply </dev/tty || _sd_reply="n"
+        case "${_sd_reply:-n}" in
+            [Yy]*) _sd_wants=true ;;
+        esac
+    fi
+    [ "$_sd_wants" = true ] || return 0
+
+    # Same default bind as `unsloth studio` (localhost). Set UNSLOTH_SYSTEMD_HOST=0.0.0.0 for LAN.
+    _sd_host="${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}"
+    _sd_port="${UNSLOTH_SYSTEMD_PORT:-8888}"
+
+    _sd_ok=false
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
+        if bash "$_sd_script" --unsloth-exe "$VENV_DIR/bin/unsloth" --host "$_sd_host" --port "$_sd_port" \
+                --studio-home "$STUDIO_HOME" --enable --start >/dev/null; then
+            _sd_ok=true
+        fi
+    elif bash "$_sd_script" --unsloth-exe "$VENV_DIR/bin/unsloth" --host "$_sd_host" --port "$_sd_port" \
+            --enable --start >/dev/null; then
+        _sd_ok=true
+    fi
+
+    if [ "$_sd_ok" = true ]; then
+        _SYSTEMD_STARTED=true
+        step "systemd" "user service enabled (unsloth-studio.service)"
+        substep "status: systemctl --user status unsloth-studio.service"
+        substep "logs:   journalctl --user -u unsloth-studio.service -f"
+        substep "stop:   systemctl --user stop unsloth-studio.service"
+        substep "binds 127.0.0.1 by default; set UNSLOTH_SYSTEMD_HOST=0.0.0.0 before install for LAN"
+        substep "for boot without a login session, run once: loginctl enable-linger \"\$USER\""
+    else
+        step "systemd" "user service install skipped (systemd user session unavailable)" "$C_WARN"
+    fi
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -2506,6 +2589,8 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
     [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
     [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
+    [ "$_SKIP_SYSTEMD" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_SYSTEMD=1"
+    [ "$_INSTALL_SYSTEMD" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_INSTALL_SYSTEMD=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
@@ -5817,6 +5902,14 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+_offer_systemd_user_service
+if [ "$_SYSTEMD_STARTED" = true ]; then
+    _SKIP_AUTOSTART=true
+fi
+
+# In interactive terminals, ask the user before starting Unsloth unless the
+# caller explicitly disabled the post-install prompt.
+# In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes. Prompt only when something can answer: `test -r` passes on the unopenable /dev/tty found in containers, leaving a dangling question in the log.

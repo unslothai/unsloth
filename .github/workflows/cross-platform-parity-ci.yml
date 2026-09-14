@@ -67,6 +67,7 @@ on:
       - 'setup*.ps1'
       - 'setup*.bat'
       - 'studio/install_*.py'
+      - 'studio/systemd/install_user_service.sh'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       # This is the only lane that executes it, and the Windows smoke workflow it moved
@@ -144,6 +145,7 @@ on:
       - 'setup*.ps1'
       - 'setup*.bat'
       - 'studio/install_*.py'
+      - 'studio/systemd/install_user_service.sh'
       - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       # This is the only lane that executes it, and the Windows smoke workflow it moved
