@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_hf_token
 import json
 from pathlib import Path
 
@@ -23,7 +24,13 @@ class RecipeDatasetPublishError(ValueError):
 
 def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     root = recipe_datasets_root().expanduser().resolve()
-    candidate = resolve_dataset_path(artifact_path).expanduser()
+    try:
+        candidate = resolve_dataset_path(artifact_path).expanduser()
+    except ValueError as exc:
+        # Outside every dataset root, so it never reaches the check below: a 500, not a refusal.
+        raise RecipeDatasetPublishError(
+            "This execution artifact is outside the Recipe Studio dataset storage."
+        ) from exc
     resolved = candidate.resolve(strict = False)
 
     try:
@@ -49,6 +56,7 @@ def publish_recipe_dataset(
     hf_token: str | None = None,
     private: bool = False,
 ) -> str:
+    hf_token = account_hf_token(hf_token)
     dataset_path = _resolve_recipe_artifact_path(artifact_path)
 
     try:

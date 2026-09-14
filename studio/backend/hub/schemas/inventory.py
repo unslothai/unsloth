@@ -153,7 +153,7 @@ class LocalModelInfo(BaseModel):
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",
     )
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -229,6 +229,10 @@ class LocalModelListResponse(BaseModel):
     ollama_dirs: List[str] = Field(
         default_factory = list,
         description = "Ollama model directories that were scanned",
+    )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
     )
     models: List[LocalModelInfo] = Field(
         default_factory = list,

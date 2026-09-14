@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from tests.studio._js_source import assert_guard_holds
 
 WORKDIR = Path(__file__).resolve().parents[2]
 FRONTEND = WORKDIR / "studio" / "frontend" / "src"
@@ -489,11 +490,14 @@ def test_active_model_config_round_trips_gpu_fields():
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
-    # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
+    # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
     assert "gpuFieldsSignature(config)," in shared
     assert "export function modelConfigInstanceKey" in shared
+    assert "export function loadedConfigSignature" in shared
+    draft = _read("features/model-picker/model-config/model-config-draft.ts")
+    assert "export function primeModelConfigDraft" in draft
     sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
     assert "modelConfigInstanceKey(" in sidebar
     # apply-per-model-config re-exports it, so its own callers are unchanged.
@@ -2609,7 +2613,13 @@ def test_chat_autoload_records_every_validation_failure():
     # The preflight's own cancellation goes through the helper too, or it records without halting.
     assert "recordCandidateFailure(failureLabel, cancelled)" in autoload
     assert "noteLoadFailure(failureLabel, cancelled)" not in autoload
-    assert "if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS)" in autoload
+    assert_guard_holds(
+        autoload,
+        "if",
+        "||",
+        {"autoLoadCancelled", "loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 2,
+    )
 
 
 def test_auth_retries_tag_transport_failures_like_the_first_attempt():
@@ -2952,8 +2962,7 @@ def test_public_model_identity_matches_the_backend_for_path_loaded_models():
 
 
 def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
-    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds once per
-    mounted instance."""
+    """ModelConfigPage primes the shared draft when loadedConfigSignature changes."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
@@ -2972,7 +2981,36 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
         assert field in signature, field
 
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const [initial] = useState(resolveInitial);" in page, "the rule this mirrors"
+    assert "primeModelConfigDraft(" in page
+    assert "loadedConfigSignature(loadedConfig)" in page
+    # LAYOUT: a live change remounts under the same key, so only a layout cleanup runs first.
+    assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
+    # Marked by the DRAFT, never the candidate keys: the hosts build differently shaped lists.
+    assert "isExtraArgsHydratedForDraft(draftKey)" in page
+    # Retiring it on retain is how a fresh editor re-reads: the sidebar stays mounted for a
+    # model's whole residency and would never see another origin's save.
+    assert "!isModelConfigDraftEdited(draftKey) &&" in page
+    assert "markModelConfigDraftEdited(draftKey)" in page
+    # Only once the write landed, or the next read replaces values still on screen.
+    assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
+    # An unticked Remember is a pending Forget the read's own guard would pass and re-tick.
+    assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
+    # A peer that fixed the text lifts this editor's retained refusal.
+    assert "(!extraArgsLoadable && !sharedExtraArgsCleared) ||" in page
+    # Run reads the draft, not the render closure: the peer's input blurs during this click.
+    assert "const liveDraftConfig = readModelConfigDraft(draftKey)?.config;" in page
+    assert "const peerChanged = !perModelConfigsEqual(baseConfig, config);" in page
+    assert "markExtraArgsHydratedForDraft(draftKey)" in page
+    # DEFAULT_PER_MODEL_CONFIG names no GPU field, so a merge could not clear a manual pick.
+    assert 'typeof action === "function" ? action(current) : action' in page
+    # Only the row reads the raw text; an editor with Advanced collapsed judges the TOKENS.
+    # Only ever LOWERED by a row that has no catalogue: until the probe lands every flag reads
+    # as unknown, so a second row mounting would otherwise clear a refusal another row verified.
+    assert "if (catalog !== null || !loadable) {" in page
+    assert "setExtraArgsEditLoadableForDraft(draftKey, loadable)" in page
+    assert "sharedExtraArgsRefused" in page
+    assert "resetExtraArgsHydrationForDraft(" not in page
+    assert "extraArgsHydrationIdentityForDraft(" not in page
 
 
 def test_a_standalone_gguf_has_one_settings_identity_in_the_picker():
@@ -3085,7 +3123,10 @@ def test_clearing_the_log_keeps_a_request_that_is_still_running():
     """Dropping an own row mid-flight loses the request outright: active_count falls to
     zero and the finish or fail that follows has no entry left to land on."""
     monitor = " ".join(_read_backend("core/inference/api_monitor.py").split())
-    assert 'if entry.shared or entry.subject != subject or entry.status == "running"' in monitor
+    assert (
+        "if entry.shared or not self._attributed(entry, subject) or "
+        'entry.status == "running"' in monitor
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3419,7 +3460,13 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
     cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
-    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    assert_guard_holds(
+        cascade,
+        "while",
+        "&&",
+        {"!autoLoadCancelled", "loadAttempts < MAX_AUTO_LOAD_ATTEMPTS"},
+        expected = 1,
+    )
     assert "skippedAutoLoadCandidates.add(" in cascade
 
 

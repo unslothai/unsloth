@@ -37,6 +37,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+import time
 
 _classify = LlamaCppBackend._classify_llama_start_failure
 
@@ -1020,7 +1021,6 @@ class TestDiagnosticsDoNotLeak:
         # measures the runner instead, which is why this exact assertion goes red on
         # the Windows runner for main as well as for a branch. The stopwatch stays
         # only as a catastrophic guard, loose enough that no runner can trip it.
-        import time
 
         buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
@@ -1211,7 +1211,6 @@ class TestTheDyldReasonIsBounded:
     def test_a_pathological_reason_does_not_stall_the_classifier(self):
         # 100KB of "'a' (" drove the candidate scan quadratic: 6.3s measured
         # before the cap, against 0.0s on main, on the thread serving the load.
-        import time
 
         out = (
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
@@ -1487,8 +1486,6 @@ class TestAnEncodedSecretIsStillRedacted:
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
-        import time
-
         start = time.monotonic()
         _classify(blob, "/m.gguf", "u/x", 1)
         assert time.monotonic() - start < 2.0
@@ -1711,8 +1708,6 @@ class TestTheRedactionHolesCodexFound:
         ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
-        import time
-
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0

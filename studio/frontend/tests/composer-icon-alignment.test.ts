@@ -5,13 +5,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const componentSources = [
   "../src/components/assistant-ui/thread.tsx",
   "../src/components/assistant-ui/chat-dictation-bar.tsx",
   "../src/features/chat/shared-composer.tsx",
 ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
 
-const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+const css = readSrc("index.css");
 
 function tags(source: string, component: string): string[] {
   return source.match(new RegExp(`<${component}\\b[^>]*\\/>`, "g")) ?? [];

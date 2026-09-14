@@ -853,13 +853,12 @@ export function GgufDownloadCard({
   const updateTargetLabel = updateTargetVariant
     ? ggufVariantDisplayLabel(updateTargetVariant)
     : updateTarget;
-  // Confirm → close the dialog and run the re-download as a MANAGED download, so
-  // it surfaces in the "Downloading N items" panel with correct manifest-based
-  // progress and a working Cancel — the same UX as any other download — instead
-  // of a bespoke modal/toast. The worker re-resolves `main` and pulls only the
-  // changed blobs, so the cached version stays intact (and runnable) until the
-  // new revision lands. Completion refreshes the variant list, whose metadata
-  // carries the "Update available" cue.
+  // Confirm → close the dialog and run the re-download as a MANAGED download, so it surfaces in the
+  // "Downloading N items" panel with correct manifest-based progress and a working Cancel — the
+  // same UX as any other download — instead of a bespoke modal/toast. The worker re-resolves `main`
+  // and pulls only the changed blobs, so the cached version stays intact (and runnable) until the
+  // new revision lands. Completion refreshes the variant list, whose metadata carries the "Update
+  // available" cue.
   const handleConfirmUpdate = useCallback(() => {
     if (!updateTarget) return;
     const variant = updateTarget;

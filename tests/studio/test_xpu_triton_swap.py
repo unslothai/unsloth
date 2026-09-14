@@ -80,6 +80,7 @@ def _load(
 ):
     """Import the module with the world stubbed, and return (module, action log)."""
     log: list[str] = []
+    counted: list[int] = []
 
     mod = types.ModuleType("_stack_under_test")
     src = STACK.read_text(encoding = "utf-8")
@@ -192,7 +193,16 @@ def _load(
         ),
         "pip_install_try": fake_pip_install_try,
         "pip_install": fake_pip_install,
+        # The slice removes the generic triton itself, outside pip_install, and the final
+        # pip check only runs when something said it changed the environment.
+        "_count_install_action": lambda: counted.append(1),
         "_red": lambda s: s,
+        # _ensure_xpu_triton reads the setup-script handover through this helper rather
+        # than inline, so the slice needs it by name or the guard tests NameError at call
+        # time. Same semantics as the real one: the env var, lowercased.
+        "_handover_torch_flavor_tag": (
+            lambda: os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+        ),
         # _safe_print, not print: the slice calls it by name, so stubbing "print" would leave _safe_print undefined at
         # exec time.
         "_safe_print": (
@@ -201,6 +211,7 @@ def _load(
     }
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)
+    mod.__dict__["_test_counted"] = counted
     mod.__dict__["_test_index_urls"] = index_urls
     mod.__dict__["_test_download_envs"] = download_envs
     return mod, log
@@ -217,6 +228,14 @@ class TestXpuTritonSwap:
         # The whole point: the uninstall sits between the fetch and the install.
         log = _run(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
+
+    def test_the_uninstall_counts_as_an_environment_change(self, monkeypatch, tmp_path):
+        """It removes a distribution outside pip_install, and the pass's final pip check only
+        runs when something said the environment moved. Uncounted, dropping generic triton on
+        an XPU host would leave torch's dependency unmet with nothing left to report it."""
+        mod, _log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert mod.__dict__["_test_counted"], "the uninstall did not count as a change"
 
     def test_handles_the_triton_xpu_rename(self, monkeypatch, tmp_path):
         # torch 2.10 renamed the distribution; the spec is read from torch, never hardcoded.
