@@ -63,7 +63,9 @@ def openrouter_model_capabilities(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def provider_model_capabilities(provider_type: str, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def provider_model_capabilities(
+    provider_type: str, models: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     if provider_type != "openrouter":
         return []
     mapped = (openrouter_model_capabilities(m) for m in models if isinstance(m, dict))

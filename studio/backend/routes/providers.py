@@ -759,7 +759,11 @@ def _read_model_catalog_file() -> dict | None:
         data = json.loads(_model_catalog_cache_path().read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return None
-    if isinstance(data, dict) and isinstance(data.get("providers"), dict) and isinstance(data.get("fetched_at"), (int, float)):
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("providers"), dict)
+        and isinstance(data.get("fetched_at"), (int, float))
+    ):
         return data
     return None
 
@@ -795,7 +799,9 @@ async def get_model_catalog(_current_subject: str = Depends(get_current_subject)
         if cached is not None:
             _model_catalog_cache = cached
             return cached
-        raise HTTPException(status_code = 503, detail = "The model catalog is unavailable offline.") from None
+        raise HTTPException(
+            status_code = 503, detail = "The model catalog is unavailable offline."
+        ) from None
     _model_catalog_cache = fresh
     _write_model_catalog_file(fresh)
     return fresh

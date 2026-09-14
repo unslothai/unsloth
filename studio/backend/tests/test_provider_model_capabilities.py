@@ -105,7 +105,9 @@ def test_mandatory_only_reasoning_and_missing_fields():
 
 def test_only_openrouter_is_mapped():
     assert provider_model_capabilities("openai", [_RAW_GPT]) == []
-    assert [m["id"] for m in provider_model_capabilities("openrouter", [_RAW_GPT, "junk", _RAW_R1])] == [
+    assert [
+        m["id"] for m in provider_model_capabilities("openrouter", [_RAW_GPT, "junk", _RAW_R1])
+    ] == [
         "openai/gpt-5.5",
         "deepseek/deepseek-r1",
     ]
@@ -136,7 +138,9 @@ def capability_route(monkeypatch):
     _FakeClient.raw = [_RAW_GPT, _RAW_R1]
     _FakeClient.fail = False
     monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
-    monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
 
     def call(provider_type: str):
         return asyncio.run(
@@ -211,15 +215,21 @@ def _openrouter_body(model: str = "deepseek/deepseek-v4-pro", **kwargs) -> dict:
 
 @pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh", "max"])
 def test_every_effort_level_reaches_openrouter(effort):
-    assert _openrouter_body(reasoning_effort = effort, enable_thinking = True)["reasoning"] == {"effort": effort}
+    assert _openrouter_body(reasoning_effort = effort, enable_thinking = True)["reasoning"] == {
+        "effort": effort
+    }
 
 
 def test_none_effort_switches_reasoning_off():
-    assert _openrouter_body(reasoning_effort = "none", enable_thinking = False)["reasoning"] == {"enabled": False}
+    assert _openrouter_body(reasoning_effort = "none", enable_thinking = False)["reasoning"] == {
+        "enabled": False
+    }
 
 
 def test_none_effort_on_a_mandatory_route_sends_no_reasoning_field():
-    body = _openrouter_body(model = "deepseek/deepseek-r1", reasoning_effort = "none", enable_thinking = False)
+    body = _openrouter_body(
+        model = "deepseek/deepseek-r1", reasoning_effort = "none", enable_thinking = False
+    )
     assert "reasoning" not in body
 
 
@@ -230,15 +240,28 @@ def test_a_bare_toggle_still_maps_to_enabled():
 
 
 _RAW_MODELS_DEV = {
-    "openrouter": {"models": {
-        "DeepSeek/DeepSeek-V4-Pro": {
-            "reasoning": True,
-            "reasoning_options": [{"type": "toggle"}, {"type": "effort", "values": ["xhigh", "high", "turbo"]}],
-            "modalities": {"input": ["text"]},
-        },
-        "openai/gpt-4o": {"reasoning": False, "modalities": {"input": ["text", "image"]}},
-    }},
-    "google": {"models": {"gemini-9-flash": {"reasoning": True, "reasoning_options": [], "modalities": {"input": ["text", "image"]}}}},
+    "openrouter": {
+        "models": {
+            "DeepSeek/DeepSeek-V4-Pro": {
+                "reasoning": True,
+                "reasoning_options": [
+                    {"type": "toggle"},
+                    {"type": "effort", "values": ["xhigh", "high", "turbo"]},
+                ],
+                "modalities": {"input": ["text"]},
+            },
+            "openai/gpt-4o": {"reasoning": False, "modalities": {"input": ["text", "image"]}},
+        }
+    },
+    "google": {
+        "models": {
+            "gemini-9-flash": {
+                "reasoning": True,
+                "reasoning_options": [],
+                "modalities": {"input": ["text", "image"]},
+            }
+        }
+    },
     "unrelated": {"models": {"x": {"reasoning": True}}},
 }
 
@@ -262,7 +285,11 @@ class _FakeCatalogClient:
     calls = 0
     fail = False
 
-    async def get(self, url, timeout = None):
+    async def get(
+        self,
+        url,
+        timeout = None,
+    ):
         type(self).calls += 1
         if type(self).fail:
             raise RuntimeError("models.dev down")
@@ -294,9 +321,14 @@ def catalog_route(monkeypatch, tmp_path):
     providers_route._model_catalog_cache = None
 
 
-def test_model_catalog_route_fetches_once_and_persists_to_disk(capability_route, catalog_route, tmp_path):
+def test_model_catalog_route_fetches_once_and_persists_to_disk(
+    capability_route, catalog_route, tmp_path
+):
     first = catalog_route()
-    assert first["providers"]["openrouter"]["deepseek/deepseek-v4-pro"]["efforts"] == ["high", "xhigh"]
+    assert first["providers"]["openrouter"]["deepseek/deepseek-v4-pro"]["efforts"] == [
+        "high",
+        "xhigh",
+    ]
     assert (tmp_path / "model_catalog.json").exists()
     assert catalog_route() == first
     assert _FakeCatalogClient.calls == 1
