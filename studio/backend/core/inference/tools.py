@@ -2575,7 +2575,7 @@ def _studio_auth_dir_markers() -> tuple:
     # Boundary-aware: a plain startswith makes /home/u2/... look like it is under /home/u and mints
     # markers ("~2/...") that would refuse unrelated commands.
     if home and (resolved == home or resolved.startswith(home.rstrip(os.sep) + os.sep)):
-        tail = resolved[len(home.rstrip(os.sep)):]
+        tail = resolved[len(home.rstrip(os.sep)) :]
         markers.extend(("~" + tail, "$HOME" + tail))
     _studio_auth_markers_cache = tuple(m.lower() for m in markers if m)
     return _studio_auth_markers_cache

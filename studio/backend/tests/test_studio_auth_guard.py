@@ -50,6 +50,7 @@ _CREDENTIAL_CODE = (
 @pytest.fixture(autouse = True)
 def _no_subprocess(monkeypatch):
     """A refusal must happen before anything is spawned, so make a spawn an outright failure."""
+
     def _boom(*args, **kwargs):
         raise AssertionError("a blocked call reached the subprocess layer")
 
@@ -60,9 +61,7 @@ def _no_subprocess(monkeypatch):
 @pytest.mark.parametrize("command", _CREDENTIAL_COMMANDS)
 @pytest.mark.parametrize("disable_sandbox", [False, True])
 def test_terminal_refuses_studio_credentials(command, disable_sandbox):
-    result = tools._bash_exec(
-        command, None, 30, _SESSION, disable_sandbox = disable_sandbox
-    )
+    result = tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = disable_sandbox)
     assert result == tools._STUDIO_CREDENTIAL_BLOCKED
 
 
@@ -115,21 +114,25 @@ def test_mcp_call_at_the_auth_dir_is_refused():
     args = {"path": "~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742"}
     assert tools._mcp_arguments_reference_studio_credential(args) is True
     # Nested and list-shaped arguments reach the same answer.
-    assert tools._mcp_arguments_reference_studio_credential(
-        {"files": [{"path": "/home/u/.unsloth/studio/auth/.bootstrap_password"}]}
-    ) is True
+    assert (
+        tools._mcp_arguments_reference_studio_credential(
+            {"files": [{"path": "/home/u/.unsloth/studio/auth/.bootstrap_password"}]}
+        )
+        is True
+    )
     # Prose stays prose: an issue body that mentions the file is text, not a read.
-    assert tools._mcp_arguments_reference_studio_credential(
-        {"body": "the key is cached in .cli_api_key_cli_99bb88401742"}
-    ) is False
+    assert (
+        tools._mcp_arguments_reference_studio_credential(
+            {"body": "the key is cached in .cli_api_key_cli_99bb88401742"}
+        )
+        is False
+    )
     # And auto mode would have paused on it even before the refusal.
     assert is_high_risk_tool_call(name, args) is True
 
 
 def test_auto_mode_prompts_on_studio_credential_reads():
-    assert is_high_risk_tool_call(
-        "terminal", {"command": _CREDENTIAL_COMMANDS[0]}
-    ) is True
+    assert is_high_risk_tool_call("terminal", {"command": _CREDENTIAL_COMMANDS[0]}) is True
     assert is_high_risk_tool_call("python", {"code": _CREDENTIAL_CODE[0]}) is True
 
 

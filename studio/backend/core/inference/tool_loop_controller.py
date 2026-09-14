@@ -961,7 +961,10 @@ def redact_studio_credentials(text: str) -> str:
 
 
 def strip_result_for_model(
-    result: str, tool_name: "str | None" = None, *, redact: bool = True
+    result: str,
+    tool_name: "str | None" = None,
+    *,
+    redact: bool = True,
 ) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
     before feeding the result back to the model.
