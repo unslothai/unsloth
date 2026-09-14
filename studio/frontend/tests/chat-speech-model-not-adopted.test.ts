@@ -9,6 +9,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { adoptResidentModelStatus } from "../src/features/hub/lib/adopt-inference-status.ts";
+import { emptyStore, spies } from "./helpers/kit.ts";
 
 import {
   type SpeechOnlyStatusInput,
@@ -36,12 +38,11 @@ test("an ordinary chat model is not speech-only", () => {
   assert.equal(isSpeechOnlyStatus(status({ is_audio: false })), false);
 });
 
-// Whisper answers with transcripts rather than normal assistant text, so chat must not
-// adopt the Audio page's resident STT checkpoint.
-test("whisper is speech-only from text chat's perspective", () => {
+// Whisper has a dedicated audio-input path in chat completions.
+test("whisper remains eligible for chat transcription", () => {
   assert.equal(
     isSpeechOnlyStatus(status({ is_audio: true, audio_type: "whisper" })),
-    true,
+    false,
   );
 });
 
@@ -55,8 +56,14 @@ test("an audio-input chat model is not speech-only", () => {
 });
 
 test("only an armed idle unload preserves an empty resident slot", () => {
-  assert.equal(isIdleUnloadedStatus(status({ active_model: null }), true), true);
-  assert.equal(isIdleUnloadedStatus(status({ active_model: null }), false), false);
+  assert.equal(
+    isIdleUnloadedStatus(status({ active_model: null }), true),
+    true,
+  );
+  assert.equal(
+    isIdleUnloadedStatus(status({ active_model: null }), false),
+    false,
+  );
   assert.equal(
     isIdleUnloadedStatus(
       status({ active_model: "my-voice", is_audio: true, audio_type: "snac" }),
@@ -190,3 +197,36 @@ test("the auto-load sweep skips every task chat cannot answer", () => {
   // Both the cached-repo and the on-disk filter, or one inventory still offers them.
   assert.equal(adapter.match(/NON_CHAT_TASKS\.has\(/g)?.length, 2);
 });
+
+for (const checkpoint of ["", "unsloth/whisper-large-v3"]) {
+  test(`resident Whisper is adopted without clearing the chat pick: ${checkpoint || "empty"}`, () => {
+    const resident = {
+      active_model: "unsloth/whisper-large-v3",
+      is_audio: true,
+      audio_type: "whisper",
+    };
+    const { calls, actions } = spies();
+    adoptResidentModelStatus(
+      {
+        checkpointId: isSpeechOnlyStatus(resident)
+          ? null
+          : resident.active_model,
+        ggufVariant: null,
+        speechOnly: isSpeechOnlyStatus(resident),
+      },
+      emptyStore({ checkpoint }),
+      {
+        ...actions,
+        clearCheckpoint: () => {
+          calls.push("clearCheckpoint");
+        },
+      },
+    );
+    assert.deepEqual(
+      calls,
+      checkpoint
+        ? ["applyStatus"]
+        : ["setCheckpoint:unsloth/whisper-large-v3:", "applyStatus"],
+    );
+  });
+}
