@@ -128,6 +128,36 @@ def test_the_auth_dir_named_relative_to_a_cd_into_the_studio_root(monkeypatch, t
         assert not tools._references_studio_credential(f"grep -rn auth {home}/logs/studio.log")
         assert not tools._references_studio_credential(f"ls {home}/models && grep -c auth app.log")
         assert not tools._references_studio_credential(f"cd {home} && ls models")
+        # The root has to END where it matched, or continue into `auth`. A path that merely STARTS
+        # with it is a different directory: without the boundary both of these were refused in
+        # every permission mode.
+        assert not tools._references_studio_credential(f"cd {home}/models && grep auth README")
+        assert not tools._references_studio_credential(f"cd {home}-backup && ls auth")
+        # ...and the boundary must not cost the real thing.
+        assert tools._references_studio_credential(f"cd {home}/auth && ls")
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_equivalent_spellings_of_the_auth_path_are_all_covered(monkeypatch, tmp_path):
+    # The OS opens every one of these as the same file, so matching only the tidiest spelling left
+    # the others walking straight past the guard.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for spelling in (
+            f"{home}/auth/auth.db",
+            f"{home}/bin/../auth/auth.db",
+            f"{home}/./auth/auth.db",
+            f"{home}//auth//auth.db",
+            f"{home}/a/b/../../auth/auth.db",
+            str(home).replace("/", "\\") + "\\.\\auth\\auth.db",
+        ):
+            assert tools._references_studio_credential(f"cat {spelling}"), spelling
+        # Cancelling `..` must not invent a match that was never there.
+        assert not tools._references_studio_credential(f"cat {home}/auth-backup/../notes.txt")
     finally:
         tools._studio_auth_markers_cache = None
 

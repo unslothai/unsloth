@@ -2601,9 +2601,15 @@ def _studio_auth_dir_markers() -> tuple:
             tail = base[len(home.rstrip(os.sep)) :]
             target.extend(("~" + tail, "$HOME" + tail))
     roots = [m for m in root_markers if m and m not in ("/", "\\")]
+    # The root must END where it is matched, or continue into `auth` itself. Without a boundary the
+    # alternation also fires on any path merely STARTING with the root, so `cd <home>-backup && ls
+    # auth` and `cd <home>/models && grep auth README` were refused in every permission mode even
+    # though neither goes near the auth directory.
     cd_re = (
         re.compile(
-            r"cd\s+(?:/d\s+)?[\"']?(?:" + "|".join(re.escape(m) for m in roots) + r")",
+            r"cd\s+(?:/d\s+)?[\"']?(?:"
+            + "|".join(re.escape(m) for m in roots)
+            + r")(?:[\"']|\s|[;&|]|$|[/\\]auth(?![\w-]))",
             re.IGNORECASE,
         )
         if roots
@@ -2618,6 +2624,30 @@ _STUDIO_CREDENTIAL_BLOCKED = (
     "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
     "credentials and is not readable by tools."
 )
+
+
+def _canonical_path_text(text: str) -> str:
+    """Rewrite *text* into the one spelling the OS would resolve it to, lexically.
+
+    Separators are unified to "/", then `//` and `/./` collapse and `x/..` pairs cancel. The OS
+    opens `<home>/bin/../auth/auth.db` and `C:\\Studio\\.\\auth\\auth.db` as the protected database,
+    so without this the guard matched only the tidiest spelling of a path and every equivalent one
+    walked past it.
+
+    Lexical on purpose: no `realpath`, so no filesystem access and nothing to race. That makes it
+    wrong for a path whose parent is a symlink, which is the accepted limit here -- this is an extra
+    candidate spelling, never a replacement, so a match found in the raw text still counts.
+    """
+    unified = text.replace("\\", "/")
+    out: "list[str]" = []
+    for segment in unified.split("/"):
+        if segment == ".":
+            continue
+        if segment == ".." and out and out[-1] not in ("", ".."):
+            out.pop()
+            continue
+        out.append(segment)
+    return "/".join(out)
 
 
 def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
@@ -2649,10 +2679,14 @@ def _references_studio_credential(text: str) -> bool:
     # spellings first; matching the raw text alone let either one walk past the guard.
     normalized = _REDUNDANT_SLASH_RE.sub("", text)
     lowered_normalized = normalized.lower()
+    # `..` segments and Windows separators need the full lexical canonicalisation, which the slash
+    # collapse above does not do.
+    canonical = _canonical_path_text(text)
+    lowered_canonical = canonical.lower()
     if any(
         pattern.search(candidate)
         for pattern in (_STUDIO_CREDENTIAL_BASENAME_RE, _STUDIO_AUTH_DIR_RE)
-        for candidate in ({text, normalized})
+        for candidate in ({text, normalized, canonical})
     ):
         return True
     auth_markers, cd_into_root_re = _studio_auth_dir_markers()
@@ -2661,10 +2695,15 @@ def _references_studio_credential(text: str) -> bool:
     # A bare substring test also matches a path that merely STARTS with the directory name, so
     # `<home>/authors/notes.txt` and `<home>/auth-backup/` were refused in every permission mode. The
     # marker has to end at a separator or at the end of the path to be the auth directory itself.
+    # The markers are canonicalised alongside the text: on Windows they carry backslashes, which the
+    # canonical candidate no longer has, so comparing raw markers against it would never match.
     if any(
         _marker_is_a_path_segment(candidate, marker)
         for marker in auth_markers
         for candidate in (lowered, lowered_normalized)
+    ) or any(
+        _marker_is_a_path_segment(lowered_canonical, _canonical_path_text(marker))
+        for marker in auth_markers
     ):
         return True
     return bool(
