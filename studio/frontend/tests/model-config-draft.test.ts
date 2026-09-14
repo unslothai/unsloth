@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   extraArgsHydrationIdentityForDraft,
   markExtraArgsHydratedForDraft,
+  readExtraArgsEditForDraft,
+  setExtraArgsEditForDraft,
   modelConfigDraftKey,
   patchModelConfigDraft,
   primeModelConfigDraft,
@@ -139,4 +141,23 @@ test("a release that fires twice does not drop another host's draft", () => {
   assert.equal(readModelConfigDraft(key)?.config.nParallel, 3);
   sidebar();
   assert.equal(readModelConfigDraft(key), undefined);
+});
+
+test("the Extra Arguments box is shared, and an external replacement supersedes it", () => {
+  const key = modelConfigDraftKey("unsloth/Extra-Args-GGUF", VARIANT);
+  const release = retainModelConfigDraft(key);
+  // Half-typed: parseExtraArgs still yields tokens, so commit publishes them and the other
+  // editor would otherwise re-quote them into something it judges loadable.
+  setExtraArgsEditForDraft(key, {
+    text: '--chat-template "a b',
+    source: '--chat-template "a b"',
+  });
+  assert.equal(readExtraArgsEditForDraft(key)?.text, '--chat-template "a b');
+  // The second editor reads the same characters, so it reaches the same verdict.
+  assert.equal(
+    readExtraArgsEditForDraft(key)?.source,
+    '--chat-template "a b"',
+  );
+  release();
+  assert.equal(readExtraArgsEditForDraft(key), undefined);
 });

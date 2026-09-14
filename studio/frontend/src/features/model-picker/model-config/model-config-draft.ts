@@ -22,6 +22,13 @@ function draftStorageKey(
   ]);
 }
 
+export type ModelConfigExtraArgsEdit = {
+  /** Exactly what is in the textarea, half-typed quotes included. */
+  text: string;
+  /** `formatExtraArgs` of the tokens this edit published, to spot an external replacement. */
+  source: string;
+};
+
 export type ModelConfigDraftSnapshot = {
   config: PerModelConfig;
   remember: boolean;
@@ -38,6 +45,13 @@ const hostCounts = new Map<string, number>();
 // Per draft, not per editor: opening the second host must not re-run the read and write the
 // stored row back over what the first is showing.
 const extraArgsHydratedByDraftKey = new Map<string, string>();
+// What is TYPED into the Extra Arguments box, which is not what is stored: the config holds
+// argv tokens. Shared for the same reason the config is: the box publishes tokens on every
+// keystroke, valid or not, so a second editor re-quoted a half-typed line into balanced text,
+// judged it loadable and left its Run button live over an edit the first one was refusing.
+// `source` is what the config read when the edit was written, so a Reset or a hydration that
+// replaces llamaExtraArgs supersedes the edit in both editors instead of being re-quoted over.
+const extraArgsEditByDraftKey = new Map<string, ModelConfigExtraArgsEdit>();
 
 /** Stable React key: model + quant only. Live config sync goes through the draft store. */
 export function modelConfigEditorKey(
@@ -89,6 +103,7 @@ export function retainModelConfigDraft(key: string): () => void {
     }
     hostCounts.delete(key);
     extraArgsHydratedByDraftKey.delete(key);
+    extraArgsEditByDraftKey.delete(key);
     if (drafts.delete(key)) {
       notify();
     }
@@ -210,4 +225,22 @@ export function markExtraArgsHydratedForDraft(
   identity: string,
 ): void {
   extraArgsHydratedByDraftKey.set(key, identity);
+}
+
+export function readExtraArgsEditForDraft(
+  key: string,
+): ModelConfigExtraArgsEdit | undefined {
+  return extraArgsEditByDraftKey.get(key);
+}
+
+export function setExtraArgsEditForDraft(
+  key: string,
+  edit: ModelConfigExtraArgsEdit,
+): void {
+  const existing = extraArgsEditByDraftKey.get(key);
+  if (existing && existing.text === edit.text && existing.source === edit.source) {
+    return;
+  }
+  extraArgsEditByDraftKey.set(key, edit);
+  notify();
 }

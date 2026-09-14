@@ -108,9 +108,11 @@ import {
   modelConfigDraftKey,
   patchModelConfigDraft,
   primeModelConfigDraft,
+  readExtraArgsEditForDraft,
   readModelConfigDraft,
   replaceModelConfigDraft,
   retainModelConfigDraft,
+  setExtraArgsEditForDraft,
   setModelConfigDraftRemember,
   setModelConfigDraftSavedRemember,
   subscribeModelConfigDraft,
@@ -1091,6 +1093,7 @@ function GgufAdvancedSettings({
   gpuLayersInputRef,
   moeLayersInputRef,
   onExtraArgsLoadableChange,
+  draftKey,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1106,6 +1109,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
+  draftKey: string;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1567,6 +1571,7 @@ function GgufAdvancedSettings({
           config={config}
           update={update}
           onLoadableChange={onExtraArgsLoadableChange}
+          draftKey={draftKey}
         />
       )}
     </>
@@ -1581,30 +1586,28 @@ function ExtraArgsRow({
   config,
   update,
   onLoadableChange,
+  draftKey,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   onLoadableChange: (loadable: boolean) => void;
+  draftKey: string;
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
-  // What is typed, which is not what is stored: the stored value is argv tokens. Seeded from the
-  // config, then owned by the box, or a re-render would re-quote a half-typed line.
-  const [text, setText] = useState(() =>
-    formatExtraArgs(config.llamaExtraArgs),
-  );
   const adviceId = useId();
-  // What the box last put INTO the config, so an external change can be told from the echo of
-  // the user's own typing. Reset and hydration both replace llamaExtraArgs while this row is
-  // mounted, and re-seeding on every config change would re-quote on each keystroke.
-  const selfWritten = useRef(formatExtraArgs(config.llamaExtraArgs));
+  // What is typed, which is not what is stored: the stored value is argv tokens. It lives on
+  // the shared draft, not in this row, or the second editor re-quotes a half-typed line into
+  // balanced text and leaves its Run button live over an edit this one is refusing.
+  const edit = useSyncExternalStore(
+    subscribeModelConfigDraft,
+    () => readExtraArgsEditForDraft(draftKey),
+  );
   const external = formatExtraArgs(config.llamaExtraArgs);
-  useEffect(() => {
-    if (external === selfWritten.current) {
-      return;
-    }
-    selfWritten.current = external;
-    setText(external);
-  }, [external]);
+  // An edit stands until something replaces llamaExtraArgs from outside the box -- Reset and
+  // the panel's hydration both do, while this row stays mounted. Comparing against what the
+  // edit published, rather than re-seeding on every config change, is what stops a re-quote
+  // on each keystroke.
+  const text = edit && edit.source === external ? edit.text : external;
 
   // Re-read on invalidation, not only on mount: updating llama.cpp from the banner replaces the
   // binary while this panel stays open, and the old catalogue would judge arity against help
@@ -1672,11 +1675,13 @@ function ExtraArgsRow({
   }, [loadable, onLoadableChange]);
 
   const commit = (next: string) => {
-    setText(next);
     const { tokens } = parseExtraArgs(next);
-    // Recorded before the update, so the config change this causes reads as the box's own and does
-    // not bounce back through the effect above.
-    selfWritten.current = formatExtraArgs(tokens.length > 0 ? tokens : null);
+    // Written before the update, so the config change this causes still matches the edit's own
+    // source and does not read as an external replacement.
+    setExtraArgsEditForDraft(draftKey, {
+      text: next,
+      source: formatExtraArgs(tokens.length > 0 ? tokens : null),
+    });
     // null, not [], so the panel's own "no flags" reads the same as the stored one; toApiOverride
     // turns it into the explicit [] that clears the server's copy.
     update({ llamaExtraArgs: tokens.length > 0 ? tokens : null });
@@ -3074,6 +3079,7 @@ export function ModelConfigPage({
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
+                draftKey={draftKey}
                 onExtraArgsLoadableChange={setExtraArgsLoadable}
               />
             )}

@@ -707,8 +707,23 @@ test("the box follows a config change it did not make", () => {
   // Reset and the parent's hydration both replace llamaExtraArgs while this row is
   // mounted. Without this the textarea keeps its old text and disagrees with what
   // Load sends; with a plain re-seed on every change it re-quotes a half-typed line.
-  assert.match(body, /if \(external === selfWritten\.current\) \{ return; \}/);
-  assert.match(body, /selfWritten\.current = formatExtraArgs\(/);
+  // The edit lives on the shared draft, so both editors follow the same replacement.
+  assert.match(
+    body,
+    /const text = edit && edit\.source === external \? edit\.text : external;/,
+  );
+  assert.match(body, /source: formatExtraArgs\(tokens\.length > 0 \? tokens : null\),/);
+});
+
+test("the two editors type into one box", () => {
+  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
+  const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
+  // commit publishes tokens on every keystroke, valid or not. Held per row, an unclosed
+  // quote left the OTHER editor showing a re-quoted, balanced version of the same tokens,
+  // judging them loadable and keeping its Run button live over an edit this one refuses.
+  assert.match(body, /readExtraArgsEditForDraft\(draftKey\)/);
+  assert.match(body, /setExtraArgsEditForDraft\(draftKey, \{/);
+  assert.doesNotMatch(body, /useState\(\(\) => formatExtraArgs/);
 });
 
 test("load waits for the stored arguments to be read", () => {
