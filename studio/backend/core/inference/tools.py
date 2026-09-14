@@ -2569,6 +2569,25 @@ _STUDIO_CREDENTIAL_HINTS = (
 _STUDIO_HOME_ENV_VARS = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME")
 
 
+def _same_directory(left: str, right: str) -> bool:
+    """Whether two spellings name the same directory.
+
+    normcase because Windows paths are case-insensitive, and realpath because `studio_root()`
+    resolves aliases: a `STUDIO_HOME` that is a symlink or junction to the configured root is the
+    root, and reading it as somewhere else drops every spelling of the variable from the guard.
+    """
+
+    def tidy(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    if tidy(left) == tidy(right):
+        return True
+    try:
+        return tidy(os.path.realpath(left)) == tidy(os.path.realpath(right))
+    except OSError:
+        return False
+
+
 def _studio_home_variable_spellings(resolved: "str | None" = None) -> "list[str]":
     """`$VAR`, `${VAR}`, `%VAR%` and `$env:VAR` for each studio-home variable (sh, cmd, PowerShell).
 
@@ -2583,12 +2602,7 @@ def _studio_home_variable_spellings(resolved: "str | None" = None) -> "list[str]
         value = os.environ.get(var)
         if value and resolved:
             try:
-                # normcase as well as normpath: Windows paths are case-insensitive, so a value
-                # spelled with a different drive-letter case is the SAME directory, and comparing
-                # it exactly dropped every spelling of the variable from the guard.
-                points_here = os.path.normcase(
-                    os.path.normpath(os.path.expanduser(value))
-                ) == os.path.normcase(os.path.normpath(resolved))
+                points_here = _same_directory(os.path.expanduser(value), resolved)
             except Exception:  # noqa: BLE001 - an unreadable value must not break classification
                 points_here = True
             if not points_here:

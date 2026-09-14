@@ -950,3 +950,25 @@ def test_a_studio_home_variable_pointing_elsewhere_is_not_ours(monkeypatch, tmp_
         assert tools._references_studio_credential("cat $UNSLOTH_STUDIO_HOME/auth/auth.db")
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_symlinked_studio_home_is_still_ours(monkeypatch, tmp_path):
+    # `studio_root()` resolves aliases, so a STUDIO_HOME that is a symlink to the configured root
+    # compared unequal to it and every spelling of the variable was dropped from the guard.
+    real = tmp_path / "real-home"
+    (real / "auth").mkdir(parents = True)
+    alias = tmp_path / "alias-home"
+    try:
+        alias.symlink_to(real, target_is_directory = True)
+    except (OSError, NotImplementedError):  # no symlink privilege on this host
+        pytest.skip("symlinks unavailable")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(alias))
+    monkeypatch.setenv("STUDIO_HOME", str(alias))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert tools._references_studio_credential(
+            'sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" "select 1"'
+        )
+        assert tools._references_studio_credential("cat $STUDIO_HOME/auth/.desktop_secret")
+    finally:
+        tools._studio_auth_markers_cache = None
