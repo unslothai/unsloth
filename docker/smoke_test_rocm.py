@@ -93,7 +93,6 @@ def check_imports() -> None:
 
     if _bnb_expected():
         import bitsandbytes as bnb
-
         print(f"bnb         {bnb.__version__}")
     else:
         print("bnb         not part of a gfx906 build (no prebuilt kernels)")
@@ -189,7 +188,9 @@ def check_tiny_train() -> None:
         loss.backward()
         grads = [p.grad for p in trainable if p.grad is not None]
         assert grads, f"FAIL: no gradient reached the LoRA weights at step {step}"
-        assert all(torch.isfinite(g).all() for g in grads), f"FAIL: non-finite gradient at step {step}"
+        assert all(
+            torch.isfinite(g).all() for g in grads
+        ), f"FAIL: non-finite gradient at step {step}"
         optim.step()
         optim.zero_grad(set_to_none = True)
         losses.append(loss.item())
@@ -199,8 +200,12 @@ def check_tiny_train() -> None:
     assert changed, "FAIL: the optimizer steps left every LoRA weight unchanged"
     # the same batch five times over at lr 1e-3: the loss has to come down, or the
     # forward/backward is not computing what it claims
-    assert losses[-1] < losses[0], f"FAIL: loss did not decrease over 5 steps on one batch: {losses}"
-    print(f"OK: 5 LoRA steps completed, loss {losses[0]:.4f} -> {losses[-1]:.4f}, {changed}/{len(trainable)} LoRA tensors updated")
+    assert (
+        losses[-1] < losses[0]
+    ), f"FAIL: loss did not decrease over 5 steps on one batch: {losses}"
+    print(
+        f"OK: 5 LoRA steps completed, loss {losses[0]:.4f} -> {losses[-1]:.4f}, {changed}/{len(trainable)} LoRA tensors updated"
+    )
 
 
 def main() -> int:

@@ -41,7 +41,16 @@ def _stub(path, body):
 # ── run.sh --rocm ────────────────────────────────────────────────────────────
 
 
-def _run_sh(tmp_path, args, *, kfd = True, dri = True, nvidia = False, groups = "both", extra_env = None):
+def _run_sh(
+    tmp_path,
+    args,
+    *,
+    kfd = True,
+    dri = True,
+    nvidia = False,
+    groups = "both",
+    extra_env = None,
+):
     # a fresh sandbox per call: a test may drive run.sh twice
     tmp_path = tmp_path / f"run{len(os.listdir(tmp_path))}"
     tmp_path.mkdir()
@@ -79,14 +88,25 @@ def _run_sh(tmp_path, args, *, kfd = True, dri = True, nvidia = False, groups = 
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
     env["HOME"] = str(tmp_path / "home")
     env["UNSLOTH_WORKDIR"] = str(tmp_path)
-    for leak in ("HF_TOKEN", "WANDB_API_KEY", "UNSLOTH_GPUS", "UNSLOTH_ALLOW_CPU",
-                 "UNSLOTH_STUDIO_VOLUME", "UNSLOTH_IMAGE", "UNSLOTH_ROCM",
-                 "HSA_OVERRIDE_GFX_VERSION", "UNSLOTH_ROCM_GFX_ARCH"):
+    for leak in (
+        "HF_TOKEN",
+        "WANDB_API_KEY",
+        "UNSLOTH_GPUS",
+        "UNSLOTH_ALLOW_CPU",
+        "UNSLOTH_STUDIO_VOLUME",
+        "UNSLOTH_IMAGE",
+        "UNSLOTH_ROCM",
+        "HSA_OVERRIDE_GFX_VERSION",
+        "UNSLOTH_ROCM_GFX_ARCH",
+    ):
         env.pop(leak, None)
     env.update(extra_env or {})
     proc = subprocess.run(
         [shutil.which("bash") or "/bin/bash", _RUN_SH, *args],
-        env = env, capture_output = True, text = True, timeout = 120,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     assert proc.returncode == 0, f"run.sh failed: {proc.stderr}"
     argv = argv_log.read_text().splitlines()
@@ -107,7 +127,7 @@ def _image_and_cmd(argv):
         elif a.startswith("-"):
             i += 1
         else:
-            return argv[i], argv[i + 1:]
+            return argv[i], argv[i + 1 :]
     raise AssertionError(f"no image in {argv}")
 
 
@@ -158,8 +178,9 @@ class TestRunShRocm:
     def test_a_mixed_host_is_not_offered_the_nvidia_toolkit(self, tmp_path):
         """An NVIDIA + AMD box under --rocm runs the ROCm image through the AMD nodes;
         the toolkit prompt is for the --gpus path only."""
-        argv, stderr = _run_sh(tmp_path, ["--rocm", "true"], nvidia = True,
-                               extra_env = {"UNSLOTH_INSTALL_TOOLKIT": "0"})
+        argv, stderr = _run_sh(
+            tmp_path, ["--rocm", "true"], nvidia = True, extra_env = {"UNSLOTH_INSTALL_TOOLKIT": "0"}
+        )
         assert "--gpus" not in argv
         assert "/dev/kfd" in argv
         assert "Container Toolkit" not in stderr and "no NVIDIA GPU" not in stderr, stderr
@@ -171,8 +192,11 @@ class TestRunShRocm:
     def test_the_gfx_overrides_are_forwarded_only_when_set(self, tmp_path):
         argv, _ = _run_sh(tmp_path, ["--rocm", "true"])
         assert "HSA_OVERRIDE_GFX_VERSION" not in argv and "UNSLOTH_ROCM_GFX_ARCH" not in argv
-        argv, _ = _run_sh(tmp_path, ["--rocm", "true"], extra_env = {
-            "HSA_OVERRIDE_GFX_VERSION": "11.0.0", "UNSLOTH_ROCM_GFX_ARCH": "gfx1151"})
+        argv, _ = _run_sh(
+            tmp_path,
+            ["--rocm", "true"],
+            extra_env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0", "UNSLOTH_ROCM_GFX_ARCH": "gfx1151"},
+        )
         env_flags = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
         # the dash-only form: docker reads the value from the environment, so it
         # never lands in argv
@@ -192,7 +216,8 @@ class TestRunShRocm:
     def test_no_mapfile(self):
         """run.sh runs on the host, and macOS ships bash 3.2, which has no mapfile."""
         code = "\n".join(
-            ln for ln in open(_RUN_SH, encoding = "utf-8").read().splitlines()
+            ln
+            for ln in open(_RUN_SH, encoding = "utf-8").read().splitlines()
             if not ln.lstrip().startswith("#")
         )
         assert "mapfile" not in code and "readarray" not in code
@@ -210,28 +235,36 @@ _SHA_U = "a" * 40
 _SHA_Z = "b" * 40
 
 
-def _build_sh(tmp_path, args, extra_env = None, expect_rc = 0):
+def _build_sh(
+    tmp_path,
+    args,
+    extra_env = None,
+    expect_rc = 0,
+):
     tmp_path = tmp_path / f"build{len(os.listdir(tmp_path))}"
     tmp_path.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     args_file = tmp_path / "docker-args.txt"
     _stub(str(bindir / "docker"), f'printf "%s\\n" "$@" > {args_file}\n')
-    _stub(str(bindir / "git"),
-          'if [ "$1" = "ls-remote" ]; then\n'
-          '  case "$2" in\n'
-          f'    *unsloth-zoo*) echo -e "{_SHA_Z}\\tHEAD" ;;\n'
-          '    *notebooks*) echo "ls-remote notebooks should not run for --rocm" >&2; exit 3 ;;\n'
-          f'    *) echo -e "{_SHA_U}\\tHEAD" ;;\n'
-          '  esac\n  exit 0\nfi\nexit 0\n')
+    _stub(
+        str(bindir / "git"),
+        'if [ "$1" = "ls-remote" ]; then\n'
+        '  case "$2" in\n'
+        f'    *unsloth-zoo*) echo -e "{_SHA_Z}\\tHEAD" ;;\n'
+        '    *notebooks*) echo "ls-remote notebooks should not run for --rocm" >&2; exit 3 ;;\n'
+        f'    *) echo -e "{_SHA_U}\\tHEAD" ;;\n'
+        "  esac\n  exit 0\nfi\nexit 0\n",
+    )
     _stub(str(bindir / "curl"), 'echo "curl should not run for --rocm" >&2; exit 1\n')
     env = dict(os.environ)
     env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
     for leak in ("ROCM_GFX", "ROCM_VERSION", "TORCH_INDEX_URL", "TAG", "IMAGE_NAME"):
         env.pop(leak, None)
     env.update(extra_env or {})
-    proc = subprocess.run(["bash", _BUILD_SH, *args], env = env, capture_output = True,
-                          text = True, cwd = str(tmp_path))
+    proc = subprocess.run(
+        ["bash", _BUILD_SH, *args], env = env, capture_output = True, text = True, cwd = str(tmp_path)
+    )
     assert proc.returncode == expect_rc, proc.stdout + proc.stderr
     argv = args_file.read_text(encoding = "utf-8").splitlines() if args_file.exists() else []
     return proc, argv
@@ -273,20 +306,25 @@ class TestBuildShRocm:
         _, argv = _build_sh(tmp_path, ["--rocm"], extra_env = {"ROCM_VERSION": "6.3.4"})
         assert _build_arg(argv, "ROCM_VERSION") == "6.3.4"
         assert _build_arg(argv, "TORCH_INDEX_URL") == "https://download.pytorch.org/whl/rocm6.3"
-        _, argv = _build_sh(tmp_path, ["--rocm"], extra_env = {
-            "ROCM_VERSION": "6.3.4", "TORCH_INDEX_URL": "https://example/whl/custom"})
+        _, argv = _build_sh(
+            tmp_path,
+            ["--rocm"],
+            extra_env = {"ROCM_VERSION": "6.3.4", "TORCH_INDEX_URL": "https://example/whl/custom"},
+        )
         assert _build_arg(argv, "TORCH_INDEX_URL") == "https://example/whl/custom"
         body = open(_WORKFLOW, encoding = "utf-8").read()
-        assert 'https://download.pytorch.org/whl/rocm${ROCM%.*}' in body
+        assert "https://download.pytorch.org/whl/rocm${ROCM%.*}" in body
         local = open(os.path.join(_DOCKER, "test_locally-rocm.sh"), encoding = "utf-8").read()
-        assert 'rocm${ROCM_VERSION%.*}' in local
+        assert "rocm${ROCM_VERSION%.*}" in local
 
     def test_the_local_end_to_end_script_builds_through_build_sh(self):
         """A bare docker build there passed mutable main refs, so a rerun after main
         moved could reuse the install layer and validate stale code."""
         local = open(os.path.join(_DOCKER, "test_locally-rocm.sh"), encoding = "utf-8").read()
         code = "\n".join(ln for ln in local.splitlines() if not ln.lstrip().startswith("#"))
-        assert "docker buildx build" not in code and "docker build" not in code, "builds outside build.sh"
+        assert (
+            "docker buildx build" not in code and "docker build" not in code
+        ), "builds outside build.sh"
         assert 'bash "$BUILD_SH" --rocm' in code
 
     def test_gfx_without_rocm_is_refused(self, tmp_path):
@@ -325,8 +363,17 @@ class TestBuildShRocm:
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
 
 
-def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
-                python_body = None, env_extra = None, build_info_gfx = "", command = "echo ran"):
+def _entrypoint(
+    tmp_path,
+    *,
+    kfd = True,
+    readable = True,
+    smi_sees_gpu = True,
+    python_body = None,
+    env_extra = None,
+    build_info_gfx = "",
+    command = "echo ran",
+):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     dev_root = tmp_path / "root"
@@ -335,8 +382,10 @@ def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
         (dev_root / "dev" / "kfd").write_text("")
         if not readable:
             os.chmod(dev_root / "dev" / "kfd", 0)
-    _stub(str(bindir / "rocm-smi"),
-          'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n")
+    _stub(
+        str(bindir / "rocm-smi"),
+        'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
+    )
     # the two torch heredocs; stand in for torch on this host
     _stub(str(bindir / "python"), python_body or "cat > /dev/null\nexit 0\n")
     build_info = tmp_path / "build-info"
@@ -351,7 +400,10 @@ def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
     env.update(env_extra or {})
     proc = subprocess.run(
         [shutil.which("bash") or "/bin/bash", _ENTRYPOINT, "bash", "-c", f"{command} > {dump}"],
-        env = env, capture_output = True, text = True, timeout = 60,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
     )
     return proc.returncode, dump.exists(), proc.stderr
 
@@ -394,7 +446,7 @@ class TestRocmEntrypoint:
     def test_the_torch_check_asserts_a_hip_build_first(self):
         """A CUDA or CPU torch must be named as the image's fault, not the host's."""
         body = open(_ENTRYPOINT, encoding = "utf-8").read()
-        check3 = body[body.index("Check 3"):body.index("Check 4")]
+        check3 = body[body.index("Check 3") : body.index("Check 4")]
         assert "hip_ver is None" in check3 and "not a ROCm build" in check3
         assert "6.2" not in check3, "the ROCm version is read from the build, not hardcoded"
 
@@ -424,7 +476,10 @@ class TestRocmEntrypoint:
         assert "HSA_OVERRIDE_GFX_VERSION=10.3.0" not in err, err
         # the same fake torch on a supported arch runs the command
         (fake / "torch" / "cuda" / "__init__.py").write_text(
-            (fake / "torch" / "cuda" / "__init__.py").read_text().replace("gfx1033:xnack-", "gfx1100:sramecc+"))
+            (fake / "torch" / "cuda" / "__init__.py")
+            .read_text()
+            .replace("gfx1033:xnack-", "gfx1100:sramecc+")
+        )
         (tmp_path / "ok").mkdir()
         rc, ran, err = _entrypoint(tmp_path / "ok", python_body = python_body)
         assert rc == 0 and ran, err
@@ -434,12 +489,14 @@ class TestRocmEntrypoint:
         fake = tmp_path / "fake"
         (fake / "torch" / "cuda").mkdir(parents = True)
         (fake / "torch" / "__init__.py").write_text(
-            "__version__ = '2.12.1+rocm7.2'\nclass version:\n    hip = '7.2.53211'\nfrom . import cuda\n")
+            "__version__ = '2.12.1+rocm7.2'\nclass version:\n    hip = '7.2.53211'\nfrom . import cuda\n"
+        )
         (fake / "torch" / "cuda" / "__init__.py").write_text(
             f"class _P:\n    gcnArchName = '{arch}'\n"
             "def is_available(): return True\ndef device_count(): return 1\n"
             "def get_device_name(i): return 'AMD GPU'\ndef get_device_properties(i): return _P()\n"
-            "def is_bf16_supported(): return False\n")
+            "def is_bf16_supported(): return False\n"
+        )
         return f'PYTHONPATH="{fake}" exec python3 "$@"\n'
 
     def test_a_spoofed_gfx1033_is_caught_from_the_kernels_topology(self, tmp_path):
@@ -452,21 +509,37 @@ class TestRocmEntrypoint:
         (tmp_path / "topo" / "0").mkdir()
         (tmp_path / "topo" / "0" / "properties").write_text("vendor_id 0\ngfx_target_version 0\n")
         body = self._fake_torch(tmp_path, "gfx1030")
-        rc, ran, err = _entrypoint(tmp_path, python_body = body, env_extra = {
-            "UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"), "HSA_OVERRIDE_GFX_VERSION": "10.3.0"})
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            python_body = body,
+            env_extra = {
+                "UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"),
+                "HSA_OVERRIDE_GFX_VERSION": "10.3.0",
+            },
+        )
         assert rc == 1 and not ran, err
         assert "kernel reports a gfx1033" in err and "10.3.0" in err, err
         # the same topology without the spoof: torch already names gfx1033 and the plain refusal fires
         (tmp_path / "b").mkdir()
-        rc, ran, err = _entrypoint(tmp_path / "b", python_body = self._fake_torch(tmp_path / "b", "gfx1033"),
-                                   env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")})
+        rc, ran, err = _entrypoint(
+            tmp_path / "b",
+            python_body = self._fake_torch(tmp_path / "b", "gfx1033"),
+            env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")},
+        )
         assert rc == 1 and not ran and "refuses" in err, err
         # a real gfx1030 with the override set is not refused
         (tmp_path / "c").mkdir()
-        (tmp_path / "topo" / "1" / "properties").write_text("vendor_id 4098\ngfx_target_version 100300\n")
-        rc, ran, err = _entrypoint(tmp_path / "c", python_body = self._fake_torch(tmp_path / "c", "gfx1030"),
-                                   env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"),
-                                                "HSA_OVERRIDE_GFX_VERSION": "10.3.0"})
+        (tmp_path / "topo" / "1" / "properties").write_text(
+            "vendor_id 4098\ngfx_target_version 100300\n"
+        )
+        rc, ran, err = _entrypoint(
+            tmp_path / "c",
+            python_body = self._fake_torch(tmp_path / "c", "gfx1030"),
+            env_extra = {
+                "UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo"),
+                "HSA_OVERRIDE_GFX_VERSION": "10.3.0",
+            },
+        )
         assert rc == 0 and ran, err
         assert "KFD reports: gfx1030" in err, err
 
@@ -478,31 +551,45 @@ class TestRocmEntrypoint:
         assert rc == 0 and ran, err
         assert "no per-arch index" in err and "ROCM_GFX=gfx1100" not in err, err
         (tmp_path / "d").mkdir()
-        rc, ran, err = _entrypoint(tmp_path / "d", python_body = self._fake_torch(tmp_path / "d", "gfx1201"),
-                                   build_info_gfx = "gfx1151")
+        rc, ran, err = _entrypoint(
+            tmp_path / "d",
+            python_body = self._fake_torch(tmp_path / "d", "gfx1201"),
+            build_info_gfx = "gfx1151",
+        )
         assert rc == 0 and "ROCM_GFX=gfx1201 bash docker/build.sh --rocm" in err, err
 
     def test_a_per_arch_image_drops_a_stale_gfx_override_and_a_generic_one_keeps_it(self, tmp_path):
         """HSA_OVERRIDE_GFX_VERSION=11.0.0 is the generic-wheel workaround on Strix; a
         gfx1151 image has native kernels the override would hide (install.sh clears it)."""
         body = self._fake_torch(tmp_path, "gfx1151")
-        rc, ran, err = _entrypoint(tmp_path, python_body = body, build_info_gfx = "gfx1151",
-                                   env_extra = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
-                                   command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            python_body = body,
+            build_info_gfx = "gfx1151",
+            env_extra = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+            command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}",
+        )
         assert rc == 0 and ran, err
         assert (tmp_path / "ran").read_text().strip() == "unset"
         assert "ignoring HSA_OVERRIDE_GFX_VERSION=11.0.0" in err, err
         (tmp_path / "g").mkdir()
-        rc, ran, err = _entrypoint(tmp_path / "g", python_body = self._fake_torch(tmp_path / "g", "gfx1100"),
-                                   env_extra = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
-                                   command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
+        rc, ran, err = _entrypoint(
+            tmp_path / "g",
+            python_body = self._fake_torch(tmp_path / "g", "gfx1100"),
+            env_extra = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+            command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}",
+        )
         assert rc == 0 and (tmp_path / "g" / "ran").read_text().strip() == "11.0.0", err
 
     def test_the_skip_flag_still_drops_a_stale_override_on_a_per_arch_image(self, tmp_path):
         """UNSLOTH_SKIP_GPU_CHECK=1 skips the diagnostics, not the override cleanup."""
-        rc, ran, err = _entrypoint(tmp_path, kfd = False, build_info_gfx = "gfx1151",
-                                   env_extra = {"UNSLOTH_SKIP_GPU_CHECK": "1", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
-                                   command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
+        rc, ran, err = _entrypoint(
+            tmp_path,
+            kfd = False,
+            build_info_gfx = "gfx1151",
+            env_extra = {"UNSLOTH_SKIP_GPU_CHECK": "1", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+            command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}",
+        )
         assert rc == 0 and ran, err
         assert (tmp_path / "ran").read_text().strip() == "unset"
         assert "ignoring HSA_OVERRIDE_GFX_VERSION" in err and "/dev/kfd" not in err, err
@@ -511,6 +598,7 @@ class TestRocmEntrypoint:
     def _build_args(tmp_path, **inputs):
         """Run the prepare job's build_args step as the workflow would."""
         import yaml
+
         wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
         step = next(s for s in wf["jobs"]["prepare"]["steps"] if s.get("id") == "build_args")
         out = tmp_path / f"out{len(os.listdir(tmp_path))}"
@@ -519,7 +607,9 @@ class TestRocmEntrypoint:
         env.update({k: str(v) for k, v in wf["env"].items()})
         env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
         env.update(inputs)
-        proc = subprocess.run(["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True)
+        proc = subprocess.run(
+            ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
+        )
         got = dict(ln.split("=", 1) for ln in out.read_text().splitlines() if "=" in ln)
         return proc.returncode, got, proc.stdout + proc.stderr
 
@@ -534,7 +624,9 @@ class TestRocmEntrypoint:
         assert rc == 0 and got["gfx_tag"] == "true", (got, log)
         rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx906", IN_ROCM = "7.2.4")
         assert rc != 0 and "needs a ROCm 6.3 base" in log, log
-        rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx906", IN_ROCM = "6.3.4", IN_UNSLOTH = "feature")
+        rc, got, log = self._build_args(
+            tmp_path, IN_GFX = "gfx906", IN_ROCM = "6.3.4", IN_UNSLOTH = "feature"
+        )
         assert rc == 0 and got["gfx_tag"] == "false", got
         rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx1151")
         assert rc == 0 and got["rocm_version"] == "7.2.4" and got["gfx_tag"] == "true", got
@@ -547,7 +639,9 @@ class TestRocmEntrypoint:
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert '""|gfx906|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;' in body
         docker = open(_DOCKERFILE, encoding = "utf-8").read()
-        assert "--build-arg UNSLOTH_REF=<sha>" in docker, "the bare docker build line must not suggest mutable refs"
+        assert (
+            "--build-arg UNSLOTH_REF=<sha>" in docker
+        ), "the bare docker build line must not suggest mutable refs"
 
     def test_a_gfx906_build_ships_without_bitsandbytes(self):
         """No prebuilt bitsandbytes wheel has gfx906 kernels; install.sh skips it for
@@ -558,7 +652,7 @@ class TestRocmEntrypoint:
         assert "pip uninstall -y bitsandbytes" in docker
         assert 'WANT_BNB = BUILD_GFX != "gfx906"' in docker
         smoke = open(_SMOKE, encoding = "utf-8").read()
-        assert "load_in_4bit = four_bit" in smoke and 'ROCM_GFX=gfx906' in smoke
+        assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
 
@@ -567,8 +661,15 @@ class TestRocmEntrypoint:
         gfx1151 image: the gfx tag is gated like latest, minus the gfx itself."""
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert "gfx_tag=${GFX_TAG}" in body
-        assert 'GFX_TAG=false\n          [ "$DEFAULTS" = "true" ] && [ -n "$GFX" ] && GFX_TAG=true' in body
-        raw = [ln for ln in body.splitlines() if "type=raw,value=${{ needs.prepare.outputs.rocm_gfx }}" in ln]
+        assert (
+            'GFX_TAG=false\n          [ "$DEFAULTS" = "true" ] && [ -n "$GFX" ] && GFX_TAG=true'
+            in body
+        )
+        raw = [
+            ln
+            for ln in body.splitlines()
+            if "type=raw,value=${{ needs.prepare.outputs.rocm_gfx }}" in ln
+        ]
         assert len(raw) == 1 and "needs.prepare.outputs.gfx_tag == 'true'" in raw[0], raw
 
     def test_the_arch_table_carries_no_marketing_names(self):
@@ -576,5 +677,6 @@ class TestRocmEntrypoint:
         seventh copy here would drift. Families only."""
         body = open(_ENTRYPOINT, encoding = "utf-8").read()
         import re
+
         assert not re.search(r"RX\s*\d{4}", body), "marketing names in the entrypoint's arch table"
         assert "gfx906" in body and "6.3" in body, "gfx906 needs the version-aware note"
