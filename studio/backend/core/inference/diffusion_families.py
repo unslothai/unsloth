@@ -304,9 +304,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # int8 only: no fp8 DiT checkpoint is published for this family yet. fp8 is no longer denied for inference, so
-        # adding one here would now be live rather than dead.
-        prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
+        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor (LPIPS 0.044 against the bf16 render at
+        # 1024, seed 20260914), so an fp8 host seeds it instead of quantising the bf16 shards in memory.
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-FP8"),
+            ("fp8", "unsloth/Qwen-Image-FP8"),
+        ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",

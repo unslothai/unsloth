@@ -710,3 +710,21 @@ def test_an_explicit_scheme_with_no_artifact_falls_to_the_in_memory_path(fake_ru
             _pipeline_prequant_planned = None,
             _pipeline_prequant_skipped = (),
         )
+
+
+@pytest.mark.parametrize(
+    "family, repo",
+    [
+        ("z-image", "unsloth/Z-Image-Turbo-FP8"),
+        ("flux.1-schnell", "unsloth/FLUX.1-schnell-FP8"),
+        ("qwen-image", "unsloth/Qwen-Image-FP8"),
+    ],
+)
+def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
+    """The hosted repos carry an fp8 and an int8 denoiser file, so an fp8 host seeds instead of quantising in memory."""
+    from core.inference.diffusion_families import detect_family, family_prequant_repo
+
+    fam = detect_family(family)
+    assert fam is not None
+    for scheme in ("fp8", "int8"):
+        assert family_prequant_repo(fam, scheme) == repo
