@@ -6521,8 +6521,8 @@ if ($LocalLlamaCppLinked) {
             }
         } elseif ($prebuiltExit -eq 3) {
             # Windows reports an in-use file and an unreadable ACL alike as WinError 5, so
-            # exit 3 cannot name one cause. The helper prints takeown guidance only when
-            # access was denied, so do not reference that guidance for other busy errors.
+            # exit 3 cannot name one cause. Refer to repair lines only when the installer
+            # output actually carries them.
             step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {

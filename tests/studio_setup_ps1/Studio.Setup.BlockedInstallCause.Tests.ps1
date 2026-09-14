@@ -9,10 +9,9 @@
     moved aside. On Windows that is WinError 5, which the OS raises both for a
     file another process holds open and for a tree whose ACLs are unreadable --
     is_busy_lock_error (studio/prebuilt_core.py) classifies 5 as busy for that
-    reason, and _access_denied_recovery_lines prints repair commands for the ACL
-    case. Both setup.ps1 sites asserted the process cause anyway, so the ACL
-    commands from Write-LlamaFailureLog arrived bracketed by advice that
-    contradicted them (#9928).
+    reason. Both setup.ps1 sites asserted the process cause anyway (#9928), and
+    the prebuilt site now names ACL repair only when the installer output carries
+    takeown lines.
 
     Two sites, because the local-directory link path says in its own comment
     that it mirrors the prebuilt path, and that "Denied counts as surviving:
