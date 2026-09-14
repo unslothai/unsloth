@@ -313,8 +313,8 @@ def test_model_catalog_route_serves_the_disk_copy_when_models_dev_is_down(catalo
     assert served["fetched_at"] == stale["fetched_at"]
 
 
-def test_model_catalog_route_fails_loudly_with_nothing_cached(catalog_route):
+def test_model_catalog_route_answers_503_offline_with_nothing_cached(catalog_route):
     _FakeCatalogClient.fail = True
     with pytest.raises(Exception) as excinfo:
         catalog_route()
-    assert getattr(excinfo.value, "status_code", None) == 502
+    assert getattr(excinfo.value, "status_code", None) == 503

@@ -791,17 +791,11 @@ async def get_model_catalog(_current_subject: str = Depends(get_current_subject)
     try:
         fresh = await _fetch_models_dev_catalog()
     except Exception as exc:
+        logger.warning("providers.model_catalog_refresh_failed", error = str(exc))
         if cached is not None:
-            logger.warning("providers.model_catalog_refresh_failed", error = str(exc))
             _model_catalog_cache = cached
             return cached
-        raise log_and_http_error(
-            exc,
-            502,
-            "Failed to fetch the model catalog.",
-            event = "providers.model_catalog_fetch_failed",
-            log = logger,
-        )
+        raise HTTPException(status_code = 503, detail = "The model catalog is unavailable offline.") from None
     _model_catalog_cache = fresh
     _write_model_catalog_file(fresh)
     return fresh

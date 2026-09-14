@@ -169,7 +169,7 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
-  // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
+  // DeepSeek (deepseek-flash / deepseek-v4-pro).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
 ];
 
