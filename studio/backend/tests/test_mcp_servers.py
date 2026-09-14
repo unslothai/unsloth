@@ -85,6 +85,7 @@ def test_create_route_validates_and_round_trips_image_mapping(tmp_path, monkeypa
         ]
 
     monkeypatch.setattr(routes_mcp, "list_tools_async", fake_tools)
+    monkeypatch.setattr(routes_mcp, "_validate_private_image_endpoint", lambda *_: asyncio.sleep(0))
     created = asyncio.run(
         routes_mcp.create_mcp_server(
             McpServerCreate(
@@ -130,6 +131,18 @@ def test_image_mapping_rejects_unsupported_private_transport(url, use_oauth, det
                 use_oauth = use_oauth,
             )
         )
+
+
+def test_private_image_endpoint_rejects_redirect(monkeypatch):
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
+    def redirect(*_args, **_kwargs):
+        raise RuntimeError("redirect")
+
+    monkeypatch.setattr(routes_mcp, "prepare_mcp_image_recipient", redirect)
+    with pytest.raises(HTTPException, match = "non-redirecting"):
+        asyncio.run(routes_mcp._validate_private_image_endpoint("https://example.test/mcp", None))
 
 
 def test_disabling_image_permission_does_not_probe_offline_server(tmp_path, monkeypatch):
@@ -185,6 +198,7 @@ def test_mapping_only_updates_add_replace_and_clear(tmp_path, monkeypatch):
         }
     ]
     monkeypatch.setattr(routes_mcp, "get_cached_tools", lambda server_id: discovered)
+    monkeypatch.setattr(routes_mcp, "_validate_private_image_endpoint", lambda *_: asyncio.sleep(0))
     for revision, mappings in enumerate(
         (
             [{"tool": "inspect", "field": "picture", "encoding": "base64"}],

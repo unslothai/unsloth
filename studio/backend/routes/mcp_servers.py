@@ -24,6 +24,7 @@ from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     clear_oauth_tokens_async,
+    close_mcp_image_recipient,
     close_mcp_sessions,
     get_cached_tools,
     invalidate_tool_cache,
@@ -32,6 +33,7 @@ from core.inference.mcp_client import (
     list_tools_async,
     parse_server_headers,
     parse_stdio_command,
+    prepare_mcp_image_recipient,
     probe_timeout,
     record_probe_failure,
     serialize_mcp_server_mutation,
@@ -181,6 +183,27 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
     )
 
 
+async def _validate_private_image_endpoint(url: str, headers: dict[str, str] | None) -> None:
+    if is_stdio(url):
+        return
+    identity = None
+    try:
+        identity = await asyncio.to_thread(
+            prepare_mcp_image_recipient,
+            url,
+            headers,
+            timeout = probe_timeout(url, False),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Could not validate private image delivery. Use the final non-redirecting endpoint.",
+        ) from exc
+    finally:
+        if identity is not None:
+            close_mcp_image_recipient(identity)
+
+
 async def _validated_image_mappings(
     mappings,
     *,
@@ -216,9 +239,11 @@ async def _validated_image_mappings(
                 detail = "Could not validate image mappings against this server's tools.",
             ) from exc
     try:
-        return validate_image_input_mappings(mappings, tools)
+        validated = validate_image_input_mappings(mappings, tools)
     except McpImageDisclosureError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    await _validate_private_image_endpoint(url, headers)
+    return validated
 
 
 def _blender_row():
