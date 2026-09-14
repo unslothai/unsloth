@@ -67,10 +67,9 @@ if [ -z "$PY" ] && [ -L "$STUDIO_HOME/bin/unsloth" ]; then
 fi
 [ -n "$PY" ] || { echo "unsloth-studio-update: could not find the Studio venv under $STUDIO_HOME" >&2; exit 1; }
 
-# Where the editable source tree really is: the Studio home may present it as a symlink
-# into the image's copy, and replacing that link with a directory would take the tree
-# out of the image's hands. pip is still pointed at the home path (SRC_INSTALL), so the
-# recorded install keeps resolving through the link, whichever image serves it.
+# The editable tree may sit behind a symlink from the home into the image's copy: work
+# on the real path, but keep pip pointed at the home path (SRC_INSTALL) so the recorded
+# install resolves through the link whichever image serves it.
 SRC="$(readlink -f "$STUDIO_HOME/src" 2>/dev/null || true)"
 [ -n "$SRC" ] || SRC="$STUDIO_HOME/src"
 SRC_DIR="$(dirname "$SRC")"
@@ -84,16 +83,14 @@ version_of() { (cd / && "$PY" -c "from importlib.metadata import version; print(
 
 log() { echo "[studio-update] $*"; }
 
-# The package record and dependency snapshot of the install being replaced, kept beside
-# the source tree from the moment pip starts until the update is committed, so a run
-# that is killed outright leaves the next one enough to finish the restore.
+# Package record and dependency snapshot of the install being replaced, kept beside the
+# tree from the first pip call until the commit, so a killed run can be finished later.
 KEEP_ROLLBACK="$SRC_DIR/.src-update.rollback"
 KEEP_FREEZE="$SRC_DIR/.src-update.freeze"
 
-# Puts recorded packages back: the dependency snapshot as pinned, the packages by force
-# (pip takes a same-version editable tree as already satisfying `unsloth==<version>`
-# and would leave the new tree's metadata in place), and what the update added taken
-# out. Returns 1 when pip could not do all of it.
+# Puts recorded packages back: the snapshot as pinned, the packages by force (pip takes
+# a same-version editable tree as already satisfied), what the update added taken out.
+# Returns 1 when pip could not do all of it.
 reinstall_recorded() {
     local rollback="$1" freeze="$2" ok=0 _absent _added _now
     if [ -n "$freeze" ] && [ -s "$freeze" ]; then
@@ -140,10 +137,9 @@ find_supctl() {
 log "Studio venv: $PY"
 log "before: unsloth $(version_of)"
 
-# Two updaters at once would each take the other's staging and previous trees for
-# leftovers (below) and swap over each other's src. The lock is held on an open fd for
-# the whole run, so the kernel drops it however the run ends, SIGKILL included; the name
-# matches the linker's scratch pattern so it is never linked into the home.
+# One updater at a time: two would take each other's trees for leftovers. Held on an
+# open fd, so the kernel drops it however the run ends; the name matches the linker's
+# scratch pattern so it is never linked into the home.
 LOCK="$SRC_DIR/.src-update.lock"
 command -v flock >/dev/null 2>&1 || { echo "unsloth-studio-update: flock (util-linux) is missing; refusing to run unlocked." >&2; exit 1; }
 exec 9>>"$LOCK" || { echo "unsloth-studio-update: cannot open $LOCK" >&2; exit 1; }
@@ -152,14 +148,11 @@ if ! flock -n 9; then
     exit 1
 fi
 
-# A run that was killed outright (docker stop ends in SIGKILL, so no trap ran) can leave
-# its previous tree beside src as .src-prev.*, or its staging tree as .src-update.*.
-# Nothing else writes those names here, and the lock above makes this the only updater,
-# so at start they are always leftovers. The kept package record is the one marker of
-# an uncommitted update (commit_update unlinks it first, in one step): while it exists
-# a previous tree beside src goes back over the unverified tree and the recorded
-# packages are reinstalled; without it a previous tree is scratch. With no src at all
-# the kill landed between the two moves, and the lone previous tree goes back either way.
+# Leftovers of a run killed outright (no trap ran): .src-prev.* and .src-update.* beside
+# src. The kept package record is the one marker of an uncommitted update: with it, a
+# previous tree goes back over the unverified one and the packages are reinstalled;
+# without it a previous tree is scratch. No src at all means the kill landed between
+# the two moves, and the lone previous tree goes back either way.
 shopt -s nullglob
 _prev=("$SRC_DIR"/.src-prev.*)
 if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
@@ -220,9 +213,8 @@ if [ "$RECOVER_ONLY" = "1" ]; then
     exit 0
 fi
 
-# The tree Studio restarts into must import AND serve its UI: `unsloth studio` exits 1
-# when studio/frontend/dist is missing, and three quick exits leave it FATAL. From / so
-# a `studio` directory in the caller's cwd cannot stand in for the installed package.
+# The tree must import AND have studio/frontend/dist: without it `unsloth studio` exits
+# and supervisord parks it FATAL. From /, so a `studio` dir in the cwd cannot answer.
 studio_tree_ok() {
     (cd / && "$PY" -) <<'PY'
 import os, sys
@@ -318,9 +310,9 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# How each package is installed right now (editable tree, pinned commit or release), so
-# a failed update can put it back exactly. Every --packages target is recorded, and one
-# that is not installed yet is noted so a restore can take it out again.
+# How each package is installed now (editable tree, commit or release), so a failed
+# update can put it back exactly; a --packages target not installed yet is noted so a
+# restore can take it out again.
 ROLLBACK="$(mktemp)"
 _names="unsloth unsloth_zoo"
 for _p in $PACKAGES; do _names="$_names ${_p%%[<>=!~\[@ ]*}"; done
@@ -351,11 +343,9 @@ for name in dict.fromkeys(sys.argv[2:]):
 open(sys.argv[1], "w").write("\n".join(out) + "\n")
 PY
 
-# --with-deps lets pip move every dependency, and putting unsloth back alone would leave
-# that new dependency set under the old code. Snapshot it first (editable trees are
-# handled by ROLLBACK) so restore can pin it back. The torch/CUDA stack is pinned as
-# constraints for the install itself: the image links the venv's nvidia libraries into
-# the base venv, so a re-resolved torch would write over the base image's copy.
+# --with-deps moves dependencies too, so snapshot them for the restore (editable trees
+# are in ROLLBACK). The torch/CUDA stack is pinned as constraints: the image links the
+# venv's nvidia libraries into the base venv, and a re-resolved torch would overwrite them.
 if [ -z "$NO_DEPS" ]; then
     FREEZE="$(mktemp)"
     if ! "$PY" -m pip freeze --exclude-editable > "$FREEZE" 2>/dev/null; then
@@ -509,11 +499,9 @@ if ! studio_tree_ok; then
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
-# The previous tree stays beside src until the restarted service proves it can serve:
-# an import that passes says nothing about a backend that dies at startup. The record
-# goes first, in one unlink: a kill before it leaves a full recovery (tree and
-# packages) for the next run, a kill after it leaves scratch. Signals are held off so
-# the exit trap cannot restore old package pins on top of the committed tree.
+# The previous tree stays until the restarted service proves it can serve. The record
+# is unlinked first: a kill before that leaves a full recovery for the next run, after
+# it only scratch. Signals held off, so the exit trap cannot restore over the commit.
 commit_update() {
     trap '' INT TERM
     rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
