@@ -588,13 +588,10 @@ except:
     torch_compiler_set_stance = None
 
 
-# Image and video only. Audio is not in the overlay: get_block_sequence_ids_for_mask
-# blocks token types 1 and 2, and leaves audio causal.
+# Image and video only: get_block_sequence_ids_for_mask blocks token types 1 and 2.
 _MEDIA_GENERATE_KWARGS = ("pixel_values", "pixel_values_videos")
-# The token type values that form a block, same source.
 _MEDIA_TOKEN_TYPES = (1, 2)
-# Either name marks a bidirectional block overlay: the first exists from
-# transformers 5.10, the second from 5.17. Keep both or the guard goes inert.
+# Either name marks the overlay: the first from transformers 5.10, the second 5.17.
 _BIDIRECTIONAL_MASK_BUILDERS = (
     "get_block_sequence_ids_for_mask",
     "create_masks_for_vision_model",
@@ -604,13 +601,9 @@ _TOKEN_TYPE_KWARGS = ("mm_token_type_ids", "token_type_ids")
 
 
 def _overlay_is_configured(model):
-    """Mirror upstream's own condition for building the overlay.
-
-    The two families disagree: Gemma 4 only overlays when the text config says
-    `"vision"` (E2B / E4B leave it None and are causal), while Gemma 3 has no
-    such field, sets it False, and overlays anyway off `token_type_ids`. Tell
-    them apart by which token-type argument the model's own
-    `create_masks_for_generate` takes.
+    """Mirror upstream: Gemma 4 overlays only when the text config says "vision"
+    (E2B and E4B leave it None), while Gemma 3 sets it False and overlays anyway.
+    The token-type argument of create_masks_for_generate tells them apart.
     """
     builder = getattr(type(model), "create_masks_for_generate", None)
     if builder is None:
@@ -627,11 +620,9 @@ def _overlay_is_configured(model):
 
 
 def _has_media_token_types(kwargs):
-    """Media markers in the token-type ids, which is what upstream keys on.
-
-    Needed for `inputs_embeds` requests, where no raw media kwarg is present.
-    The tensor is emitted for text-only prompts too, so test the values: any
-    non-zero entry is a media token.
+    """Media markers in the token-type ids, the signal upstream keys on and the
+    only one an `inputs_embeds` request carries. Emitted for text-only prompts
+    too, so the values decide, not the presence.
     """
     for name in _TOKEN_TYPE_KWARGS:
         ids = kwargs.get(name)
@@ -926,13 +917,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 cache_implementation = "static"
     if do_bfloat16_mixed_precision:
         cache_implementation = None
-    # A static cache drops the media block mask at prefill (#6028); text-only
-    # is causal anyway and keeps the static path. Pin the literal "dynamic" like
-    # the FlashAttention path above: _prepare_generation_config refills a None
-    # from the model default, so None alone leaves the static cache in place.
-    # Not gated on the local value: a cleared local default does not mean the
-    # effective cache is dynamic, because an explicit kwarg or the caller's
-    # generation_config is applied afterwards and can still ask for static.
+    # A static cache drops the media block mask at prefill (#6028). Pin the
+    # literal: _prepare_generation_config refills a None from the model default.
+    # Not the local default: kwargs and the caller's config are applied after it.
     force_dynamic_cache = kwargs.get(
         "past_key_values"
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
@@ -943,8 +930,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         kwargs["generation_config"].cache_implementation = (
             "dynamic" if force_dynamic_cache else cache_implementation
         )
-        # Generation kwargs are applied after the config is merged, so an explicit
-        # cache_implementation would otherwise outlive the line above.
+        # kwargs are applied after the config merge, so an explicit value survives.
         if force_dynamic_cache:
             kwargs["cache_implementation"] = "dynamic"
         if cache_implementation is not None:
@@ -1799,8 +1785,7 @@ class FastBaseModel:
                     name.endswith(("norm", "norm1", "norm2", "norm3", "norm4"))
                     or "layernorm" in name
                     or "layer_norm" in name
-                    # Name alone splits a block: Gemma 4's embed_vision has
-                    # pos_norm matched beside patch_ln1 / patch_ln2 unmatched.
+                    # Name alone splits a block: pos_norm matches, patch_ln1 does not.
                     or isinstance(module, _NORM_MODULE_TYPES)
                 ) and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
