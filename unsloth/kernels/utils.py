@@ -239,7 +239,7 @@ if DEVICE_TYPE == "xpu":
         WEIGHT_BUFFERS = []
         ABSMAX_BUFFERS = []
 elif DEVICE_TYPE in ("mlx", "npu"):
-    # npu joins mlx: the else arm reads CUDA raw streams an Ascend build has no runtime for.
+    # npu joins mlx: the else arm reads CUDA raw streams a NPU build has no runtime for.
     CUDA_STREAMS = ()
     XPU_STREAMS = ()
     WEIGHT_BUFFERS = []
