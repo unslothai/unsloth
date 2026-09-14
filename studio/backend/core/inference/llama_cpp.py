@@ -22177,6 +22177,7 @@ class LlamaCppBackend:
                 # discount while its embeddings still cannot leave RAM.
                 _host_pinned_floor = 0
                 _draft_host_pinned_floor = 0
+                _tied_output_charge = 0
                 _draft_host_pinned_candidate = 0
                 _mtp_draft_weights_candidate = 0
                 _candidate_target_discount_applied = 0
@@ -22245,7 +22246,8 @@ class LlamaCppBackend:
                     # Charge the tied duplicate, then discount the host-pinned
                     # embeddings. Under-counting is the dangerous direction: the search
                     # promises VRAM the load takes. Shared memory gets no discount.
-                    weights_size = gguf_size + self._tied_output_bytes(model_path)
+                    _tied_output_charge = self._tied_output_bytes(model_path)
+                    weights_size = gguf_size + _tied_output_charge
                     from utils.hardware import is_apple_silicon
 
                     _vulkan_probe_rows = (
@@ -22291,7 +22293,22 @@ class LlamaCppBackend:
                         if self._override_moves_host_pinned(extra_args, os.environ)
                         else _host_pinned_candidate
                     )
-                    _host_pinned = 0 if _shared_memory else _host_pinned_candidate
+                    # The placement the child receives: gpu_ids strips main-device
+                    # flags and their env twins before launch.
+                    _placement_extras = extra_args
+                    _placement_env: Mapping[str, str] = os.environ
+                    if gpu_ids is not None:
+                        _placement_extras = self._strip_device_extra_args(extra_args)
+                        _placement_env = dict(os.environ)
+                        self._clear_device_placement_env(_placement_env)
+                    # A CPU device selection keeps the whole target in RAM, so no GPU
+                    # budget sheds its embeddings; the floor below still prices them.
+                    _target_device_is_cpu = _device_selection_is_cpu(
+                        _placement_extras, _placement_env
+                    )
+                    _host_pinned = (
+                        0 if (_shared_memory or _target_device_is_cpu) else _host_pinned_candidate
+                    )
                     _model_weight_vram_bytes = max(0, weights_size - _host_pinned)
                     model_size = _model_weight_vram_bytes + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
@@ -22424,8 +22441,10 @@ class LlamaCppBackend:
 
                     def _candidate_targets_proved_discrete(candidate_ids) -> bool:
                         _candidate_ids = {int(idx) for idx in (candidate_ids or ())}
-                        if not _candidate_ids or (
-                            _candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids)
+                        if (
+                            not _candidate_ids
+                            or _target_device_is_cpu
+                            or (_candidate_ids & (_shared_gpu_ids | _unclassified_gpu_ids))
                         ):
                             return False
                         # Advanced Arguments land after the generated pin, last-wins.
@@ -22728,18 +22747,11 @@ class LlamaCppBackend:
                     _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
-                    # The placement the child receives: gpu_ids strips main-device
-                    # flags and their env twins before launch, so a raw ``--device none``
-                    # cannot delete a GPU drafter here. Draft-specific pins still count.
-                    _draft_placement_extras = extra_args
-                    _draft_placement_env: Mapping[str, str] = os.environ
-                    if gpu_ids is not None:
-                        _draft_placement_extras = self._strip_device_extra_args(extra_args)
-                        _draft_placement_env = dict(os.environ)
-                        self._clear_device_placement_env(_draft_placement_env)
+                    # A raw ``--device none`` stripped by gpu_ids cannot delete a GPU
+                    # drafter here. Draft-specific pins still count.
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(
-                        _draft_placement_extras,
-                        env = _draft_placement_env,
+                        _placement_extras,
+                        env = _placement_env,
                     )
                     # Kept for the load-mode fit, which the nulling below would leave
                     # short a whole draft GGUF: dropping the drafter from the VRAM budget
@@ -26812,7 +26824,9 @@ class LlamaCppBackend:
                         engages = mtp_engages
                     if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
-                    need = int(model_size)
+                    # Back to the file: model_size spends any discrete discount and
+                    # charges the tied duplicate, which the token_embd kept below stands for.
+                    need = int(model_size) + int(_host_pinned) - int(_tied_output_charge)
                     if mmproj_size and not _argv_keeps_projector_on_gpu(run_argv, env):
                         need -= int(mmproj_size)
                     # dev_input is CPU-pinned even at full offload, so token_embd never
@@ -26821,26 +26835,15 @@ class LlamaCppBackend:
                     if layout is None or not getattr(layout, "complete", True):
                         return None
                     if int(getattr(layout, "lm_head_bytes", 0) or 0):
+                        # Every *token_embd* tensor, per_layer_token_embd included.
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
-                    # per_layer_token_embd is host-pinned for the same reason and,
-                    # unlike token_embd, UNCONDITIONALLY: both map to
-                    # LLM_TENSOR_LAYER_INPUT in llama.cpp's LLM_TENSOR_INFOS, but
-                    # nothing duplicates the per-layer table onto the device the way
-                    # a tied file re-creates the vocabulary matrix as the output, so
-                    # there is no branch on lm_head here.
-                    #
-                    # Leaving it in overstates what the carve-out must hold by the
-                    # whole PLE. Measured from the real tensor tables, that is
-                    # 26.8 GiB of a 103.7 GiB Qwen3.8-Flash-Next UD-Q4_K_XL -- so on
-                    # a 128 GB Strix Halo with the usual 64 GB carve-out, a quant
-                    # that fits reads as one that outgrows it, and #10351's decision
-                    # re-enables exactly the managed-memory path it measured faulting
-                    # in k_set_rows. Same model family that PR names.
-                    need -= sum(
-                        size
-                        for name, size in self._host_pinned_weight_items(model_path)
-                        if name.startswith("per_layer_token_embd")
-                    )
+                    else:
+                        # The per-layer table is input-layer too and never duplicated.
+                        need -= sum(
+                            size
+                            for name, size in self._host_pinned_weight_items(model_path)
+                            if name.startswith("per_layer_token_embd")
+                        )
                     if not engages and self._nextn_predict_layers:
                         need -= int(getattr(layout, "excluded_block_bytes", 0) or 0)
                     return need

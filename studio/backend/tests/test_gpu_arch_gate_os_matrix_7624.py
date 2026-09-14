@@ -3231,6 +3231,77 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         )[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
+    def _load_with_embeddings(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        tied,
+        model_bytes = 18 * GIB,
+    ):
+        """A file on a 16 GiB carve-out, with 1 GiB token_embd and 2.5 GiB PLE.
+
+        The layout counts every ``*token_embd*`` tensor in token_embd_bytes, as
+        offload_layout does, so a second PLE subtraction is visible here.
+        """
+        embd, ple = 1 * GIB, GIB * 5 // 2
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_host_pinned_weight_items",
+            staticmethod(
+                lambda _path: (
+                    ("token_embd.weight", embd),
+                    ("per_layer_token_embd.weight", ple),
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_host_pinned_weight_bytes", staticmethod(lambda _path: embd + ple)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: embd if tied else 0)
+        )
+        torch = self._apu(monkeypatch, 16 * GIB, 117_000)
+        backend = LlamaCppBackend()
+        backend._n_layers = 8
+        backend._tensor_spill_layout = lambda _path, **_kw: _priced_layout(
+            lm_head_bytes = 0 if tied else embd,
+            token_embd_bytes = embd + ple,
+        )
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = None,
+            model_bytes = model_bytes,
+            backend = backend,
+            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9},
+        )[0]
+
+    def test_an_untied_file_subtracts_its_per_layer_embeddings_once(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        # 18 - 1 - 2.5 = 14.5 GiB on the device, under the 16 GiB carve-out.
+        _cmd, env = self._load_with_embeddings(tmp_path, monkeypatch, tied = False)
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_an_untied_file_that_outgrows_the_carve_out_once_both_are_removed_gets_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        # 20.5 - 1 - 2.5 = 17 GiB outgrows the carve-out. Subtracting the PLE a second
+        # time reads 14.5 GiB and launches without the variable.
+        _cmd, env = self._load_with_embeddings(
+            tmp_path, monkeypatch, tied = False, model_bytes = GIB * 41 // 2
+        )
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_tied_file_charges_its_duplicate_once(self, tmp_path, monkeypatch, probe_env):
+        # Both embeddings stay on the host and the duplicate reaches the device:
+        # 18 - 1 - 2.5 + 1 = 15.5 GiB, under the carve-out.
+        _cmd, env = self._load_with_embeddings(tmp_path, monkeypatch, tied = True)
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
     def _apu_and_dgpu(self, monkeypatch, ram_mib):
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
@@ -3338,3 +3409,68 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             env_extra = {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
         )
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for _c, env in launches)
+
+
+class TestACpuDeviceSelectionEarnsNoHostPinnedDiscount:
+    """The host-pinned discount removes embeddings from a GPU budget, so a target the
+    device selection keeps on the CPU has nothing to remove them from."""
+
+    def _load(
+        self,
+        tmp_path,
+        monkeypatch,
+        *,
+        extra_args = (),
+        env_extra = None,
+        intent = None,
+    ):
+        _apply_os(monkeypatch, "linux")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_host_pinned_weight_bytes", staticmethod(lambda _path: 6 * GIB)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_host_pinned_weight_items",
+            staticmethod(lambda _path: (("token_embd.weight", 6 * GIB),)),
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: 0))
+        torch = _fake_torch(
+            [_device(free_mib = 12000, total_bytes = 12 * GIB, name = "NVIDIA GeForce RTX 4070")],
+            vendor = "nvidia",
+        )
+        # 12 GiB of file on a 12 GiB card: only the 6 GiB discount makes it fit.
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = None,
+            model_bytes = 12 * GIB,
+            env_extra = env_extra,
+            intent_kwargs = {"extra_args": tuple(extra_args), **(intent or {})},
+        )[0][0]
+
+    @staticmethod
+    def _fit(cmd):
+        return cmd[cmd.index("--fit") + 1]
+
+    def test_a_gpu_target_takes_the_discount(self, tmp_path, monkeypatch, probe_env):
+        assert self._fit(self._load(tmp_path, monkeypatch)) == "off"
+
+    @pytest.mark.parametrize("value", ["none", "cpu"])
+    def test_a_cpu_device_flag_does_not(self, tmp_path, monkeypatch, probe_env, value):
+        cmd = self._load(tmp_path, monkeypatch, extra_args = ("--device", value))
+        assert self._fit(cmd) == "on"
+
+    def test_the_inherited_device_env_does_not(self, tmp_path, monkeypatch, probe_env):
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "none")
+        cmd = self._load(tmp_path, monkeypatch, env_extra = {"LLAMA_ARG_DEVICE": "none"})
+        assert self._fit(cmd) == "on"
+
+    def test_a_gpu_pick_strips_the_cpu_flag_and_keeps_the_discount(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        cmd = self._load(
+            tmp_path, monkeypatch, extra_args = ("--device", "none"), intent = {"gpu_ids": (0,)}
+        )
+        assert self._fit(cmd) == "off"

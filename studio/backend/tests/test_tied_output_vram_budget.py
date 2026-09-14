@@ -489,7 +489,7 @@ def test_the_budget_sizes_from_what_lands_in_vram(backend, tied_gguf):
     assert "_host_pinned_vram_discount(" in src
     assert "env = os.environ" in src
     assert "shared_memory = False" in src
-    assert "_host_pinned = 0 if _shared_memory else _host_pinned_candidate" in src
+    assert "0 if (_shared_memory or _target_device_is_cpu) else _host_pinned_candidate" in src
     assert "_candidate_targets_proved_discrete" in src
     assert "_shared_gpu_ids | _unclassified_gpu_ids" in src
 
@@ -867,7 +867,8 @@ def test_every_site_that_prices_the_weights_carries_both_corrections(backend):
     import inspect
 
     src = inspect.getsource(backend.load_model)
-    assert "weights_size = gguf_size + self._tied_output_bytes(model_path)" in src
+    assert "_tied_output_charge = self._tied_output_bytes(model_path)" in src
+    assert "weights_size = gguf_size + _tied_output_charge" in src
     assert "_model_weight_vram_bytes = max(0, weights_size - _host_pinned)" in src
     assert "model_size = _model_weight_vram_bytes + mmproj_size" in src
     # The projector CPU pin removes only the projector, not either correction.
