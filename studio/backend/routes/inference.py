@@ -3067,8 +3067,8 @@ async def _aiter_llama_stream_items(
                 else "The model stopped producing tokens mid-response."
             )
 
-            remaining_s = None if hard_deadline is None else max(
-                hard_deadline - time.monotonic(), 0.0
+            remaining_s = (
+                None if hard_deadline is None else max(hard_deadline - time.monotonic(), 0.0)
             )
             if keepalive_interval_s:
                 wait_s = (

@@ -29,6 +29,7 @@ _TICK_S = 0.05
 
 _WANTED = {"_LlamaStreamKeepalive", "_LLAMA_STREAM_KEEPALIVE", "_aiter_llama_stream_items"}
 
+
 def _load_pump():
     """The real pump, cut from disk and exec'd against stubs: importing
     `routes.inference` would pull in the whole backend package."""
@@ -99,6 +100,7 @@ class _ScriptedIter:
         if self._after_gate:
             return self._after_gate.pop(0)
         raise StopAsyncIteration
+
 
 def test_keepalives_flow_during_prefill_without_restarting_the_read():
     pump_ns = _load_pump()
@@ -285,6 +287,7 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
     ordered = asyncio.run(_run(close_pump_first = True))
     assert ordered == [], f"closing the pump first must leave a clean close; got {ordered}"
 
+
 def _load_env_accessors():
     wanted = {
         "_positive_float_env",
@@ -352,6 +355,7 @@ def test_first_token_timeout_env_never_unbounded(monkeypatch, raw, expected):
         "the first-token deadline is unconditional downstream, so this accessor "
         f"must never return None or a non-positive value; got {got!r}"
     )
+
 
 _PUMP_LOCAL = "items_iter"
 
@@ -488,6 +492,7 @@ def test_sentinel_is_an_object_not_a_string():
     assert not isinstance(
         keepalive, (str, bytes)
     ), f"sentinel must not be a string; got {type(keepalive).__name__}"
+
 
 @pytest.mark.parametrize("module_name", ["openai", "anthropic"])
 def test_sdk_sse_readers_ignore_the_keepalive_comment(module_name):

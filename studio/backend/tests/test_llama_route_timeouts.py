@@ -187,6 +187,7 @@ def test_latched_read_ceiling_covers_the_stall_guard():
     stall timeout, a healthy mid-stream gap would then be cut at the smaller
     first-token value instead of the configured stall guard.
     """
+
     async def _run():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         armed = []
@@ -227,6 +228,7 @@ def test_closing_the_pump_under_cancellation_re_raises_it():
     happens, and the caller carries on down its completion path -- the Anthropic
     surface would emit `emitter.finish()` for a stream the client cancelled.
     """
+
     async def _run():
         class _Blocks:
             async def __anext__(self):
@@ -277,6 +279,7 @@ def test_a_callable_bound_latches_no_socket_ceiling():
     callable is not knowable here, so the socket is left unbounded and the
     wall-clock deadline -- authoritative either way -- does the enforcing.
     """
+
     async def _run():
         response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         armed = []
@@ -315,6 +318,7 @@ def test_deadline_does_not_discard_a_read_that_already_landed():
     and report a stall that did not happen, so the deadline is only allowed to
     fire on an empty `asyncio.wait`.
     """
+
     async def _run():
         gate = asyncio.Event()
 
