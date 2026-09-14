@@ -496,13 +496,7 @@ _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = None
 
 
 def _super_create_optimizer_takes_model():
-    """Whether the base Trainer.create_optimizer accepts a positional model.
-
-    transformers 5.x declares `create_optimizer(self, model=None)`; 4.x declares
-    `create_optimizer(self)`. Checked once, at first use, rather than against a version
-    string, because trl sits between us and transformers and could introduce its own
-    override.
-    """
+    """Asked of the signature, not a version: trl sits between us and transformers."""
     global _SUPER_CREATE_OPTIMIZER_TAKES_MODEL
     if _SUPER_CREATE_OPTIMIZER_TAKES_MODEL is None:
         try:
@@ -515,13 +509,7 @@ def _super_create_optimizer_takes_model():
 
 class UnslothTrainer(SFTTrainer):
     def create_optimizer(self, model = None):
-        # transformers 5.x calls `self.create_optimizer(model)` positionally on the delayed
-        # optimizer creation path (FSDP, SageMaker MP, FSDP-XLA), passing the
-        # accelerator-prepared model. transformers 4.x calls it with no argument. Accepting
-        # `model` optionally keeps both working; without it, 5.x raises
-        # "create_optimizer() takes 1 positional argument but 2 were given" before training
-        # starts. `model` is what we must build param groups from on that path, because the
-        # prepared model's parameters are the ones the optimizer has to own.
+        # The prepared model's parameters, not self.model's, are the ones to own under FSDP.
         target_model = model if model is not None else self.model
 
         q_galore_config = getattr(self.args, "q_galore_config", None)
@@ -555,11 +543,7 @@ class UnslothTrainer(SFTTrainer):
         embedding_lr = None,
         model = None,
     ):
-        """Build the Q-GaLore optimizer from a QGaloreConfig.
-
-        ``model`` defaults to ``self.model``; on the delayed optimizer creation path it is
-        the accelerator-prepared model that ``create_optimizer`` was handed.
-        """
+        """Build the Q-GaLore optimizer from a QGaloreConfig. ``model`` defaults to self.model."""
         if model is None:
             model = self.model
         from unsloth.optimizers.q_galore_adamw import (
