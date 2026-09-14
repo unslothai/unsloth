@@ -652,6 +652,12 @@ export function useHubModelSearch(
     };
   }, [query]);
 
+  // The configured endpoint can land after this page mounts (a /api/health that
+  // first failed, or a cold desktop start), and getHfEndpoint() is a plain module
+  // read that React cannot see change. Taking it from the store puts it in the
+  // iterator's identity, so a late-arriving mirror restarts the search instead of
+  // leaving the results that were fetched from the default.
+  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const createIter = useCallback(
     (signal: AbortSignal) => {
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.
@@ -773,6 +779,7 @@ export function useHubModelSearch(
       channelQuery,
       pinUnslothFirst,
       unslothOnly,
+      hfEndpoint,
     ],
   );
 

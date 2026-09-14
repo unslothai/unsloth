@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HF_ENDPOINT = "https://huggingface.co"
 _DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co"
 
+# The value to report when the configured one is not reportable to this client.
+DEFAULTS_BY_HEALTH_KEY = {
+    "hf_endpoint": _DEFAULT_HF_ENDPOINT,
+    "hf_datasets_server": _DEFAULT_DATASETS_SERVER,
+}
+
 _ds_mirror_warned = False
 # Values already reported as unusable, so a per-request caller (the CSP builder runs
 # on every response) logs each bad configuration once rather than per request.
@@ -47,7 +53,7 @@ def _split(candidate: str):
         return None
 
 
-def _is_loopback(hostname: str | None) -> bool:
+def is_loopback_host(hostname: str | None) -> bool:
     if not hostname:
         return False
     host = hostname.strip("[]").lower()
@@ -111,7 +117,7 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             # EVERY https origin -- the opposite of what the policy is for. A
             # wildcard is never a usable endpoint to send requests to either.
             reason = "contains a wildcard host"
-        elif parts.scheme == "http" and not _is_loopback(parts.hostname):
+        elif parts.scheme == "http" and not is_loopback_host(parts.hostname):
             # The frontend attaches the user's Hub token to these requests
             # (listModels is called with `credentials: { accessToken }`), so a
             # plain-HTTP mirror on the LAN puts a bearer token on the wire in

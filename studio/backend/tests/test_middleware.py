@@ -1317,3 +1317,27 @@ class TestCspHfEndpoints:
         assert not any(
             s.count("/") > 2 for s in sources if s.startswith(("http://", "https://"))
         ), sources
+
+    @pytest.mark.parametrize(
+        "endpoint, loopback_sees, remote_sees",
+        [
+            ("http://127.0.0.1:9700", "http://127.0.0.1:9700", "https://huggingface.co"),
+            ("http://localhost:8080", "http://localhost:8080", "https://huggingface.co"),
+            ("https://hf-mirror.com", "https://hf-mirror.com", "https://hf-mirror.com"),
+        ],
+    )
+    def test_a_loopback_endpoint_is_only_reported_to_a_loopback_client(
+        self, main_module, monkeypatch, endpoint, loopback_sees, remote_sees
+    ):
+        """A loopback endpoint names a proxy on the machine the BACKEND runs on.
+
+        Handing it to a browser on another machine makes that browser fetch its
+        OWN localhost: the calls either fail, or reach an unrelated local service
+        which, if it answers the CORS preflight, is handed the user's Hub bearer
+        token. https mirrors are the same host for everyone and pass through.
+        """
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        local = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
+        remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees

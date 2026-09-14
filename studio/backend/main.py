@@ -349,11 +349,15 @@ from utils.cache_cleanup import (
 )
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
+from urllib.parse import urlsplit
+
 from utils.hf_endpoint import (
+    DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
     csp_asset_sources,
     csp_connect_sources,
     get_hf_endpoint,
     get_hf_datasets_server,
+    is_loopback_host as _is_loopback_host,
 )
 from utils.update_status import (
     get_studio_install_source_status,
@@ -924,6 +928,34 @@ _IS_COLAB = os.path.isdir("/content") and (
     or bool(os.environ.get("COLAB_JUPYTER_IP"))
     or _importlib_util.find_spec("google.colab") is not None
 )
+
+
+def _request_is_loopback(request) -> bool:
+    """Is the CLIENT on this machine? Not the same question as the backend being."""
+    host = getattr(getattr(request, "client", None), "host", None)
+    return _is_loopback_host(host)
+
+
+def _reportable_hf_endpoints(request) -> dict:
+    """The endpoints to hand the browser, which are not always the ones we use.
+
+    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON. Handing
+    that to a browser on another machine makes it fetch its OWN localhost: the
+    calls either fail, or hit an unrelated local service that, if it answers the
+    CORS preflight, is handed the user's Hub bearer token. So a loopback endpoint
+    is reported only to a loopback client, where the two are the same machine.
+    The backend keeps using its own value either way.
+    """
+    reported = {}
+    for key, value in (
+        ("hf_endpoint", get_hf_endpoint()),
+        ("hf_datasets_server", get_hf_datasets_server()),
+    ):
+        if _is_loopback_host(urlsplit(value).hostname) and not _request_is_loopback(request):
+            reported[key] = _HF_ENDPOINT_DEFAULTS[key]
+        else:
+            reported[key] = value
+    return reported
 
 
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
@@ -1773,8 +1805,7 @@ async def health_check(request: Request):
         # env vars so the frontend can route its Hub calls to the same endpoint the
         # backend uses. Unauthenticated on purpose — an endpoint URL is not a host
         # fingerprint, and the frontend needs it before a token exists.
-        "hf_endpoint": get_hf_endpoint(),
-        "hf_datasets_server": get_hf_datasets_server(),
+        **_reportable_hf_endpoints(request),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
