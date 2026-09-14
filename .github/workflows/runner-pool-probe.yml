@@ -30,8 +30,13 @@ jobs:
           - ubuntu-24.04
           - ubuntu-22.04
           - ubuntu-24.04-arm
+          - windows-latest
+          - windows-2022
+          - macos-latest
+          - macos-15
+          - macos-26
+          - macos-15-intel
     steps:
       - name: Report
+        shell: bash
         run: echo "label=${{ matrix.label }} runner=$RUNNER_NAME arch=$(uname -m)"
-# sample 2
-# sample 3
