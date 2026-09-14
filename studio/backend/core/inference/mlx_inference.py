@@ -764,12 +764,8 @@ _VIDEO_PROBE_MESSAGES = [
 
 
 def _mlx_vlm_decodes_video() -> bool:
-    """mlx-vlm gained its clip decoder in 0.5.0; a release without it takes no video.
-
-    OpenCV is that decoder: ``load_video`` imports cv2 itself, and so does the frame budget. It
-    arrives with mlx-vlm, but a stack that lost it reads no clip either, and answering False here
-    refuses one by name instead of raising ModuleNotFoundError inside the generation stream.
-    """
+    """Both halves of the decoder, ``load_video`` (0.5.0+) and cv2, so a clip missing either is
+    refused by name rather than by a ModuleNotFoundError mid-stream."""
     try:
         from mlx_vlm import utils as vlm_utils
     except ImportError:
@@ -793,9 +789,8 @@ def _video_placeholder(processor):
 
 
 def _mlx_reads_video(processor) -> bool:
-    """Whether the processor carries a video component and the template places a video marker. A
-    bare difference from the text render is not enough on its own, matching the image probe: an
-    override can render the clip as ordinary prose."""
+    """Processor carries a video component AND the template places a video marker: a render that
+    merely differs from the text one can still be prose, as in the image probe."""
     if processor is None or getattr(processor, "video_processor", None) is None:
         return False
     if not _mlx_vlm_decodes_video():
@@ -833,19 +828,16 @@ def _write_video_clip(video_b64: str) -> str:
 _VIDEO_DECODE_BUDGET_BYTES = 2 << 30
 
 
-# load_video's own defaults, unchanged across 0.5.0 to 0.7.0. Only reached when a release leaves
-# a knob unnamed or unset, so the rate stays mlx-vlm's rather than becoming a TypeError on a clip.
+# load_video's own defaults, unchanged 0.5.0 to 0.7.0, for a release that settles a knob nowhere.
 _VIDEO_SAMPLING_FALLBACK = {"fps": 2.0, "min_frames": 4}
 
 
 def _sampled(name, value):
-    """*value*, or mlx-vlm's own default for *name* when the installed release settled nothing."""
     return _VIDEO_SAMPLING_FALLBACK[name] if value is None else value
 
 
 def _declared_video_sampling(processor) -> dict:
-    """The sampling a processor asks for, read the way mlx-vlm's own
-    ``processor_video_sampling`` reads it, so both branches below agree on one model."""
+    """Read the way mlx-vlm's ``processor_video_sampling`` reads it, so both branches agree."""
     component = getattr(processor, "video_processor", None)
     if component is None:
         return {}
@@ -866,18 +858,14 @@ def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
     resolve = getattr(vlm_utils, "resolve_video_sampling", None)
     if resolve is not None:
         sampling = resolve(processor, {})
-        # Its merge chain terminates in mlx-vlm's own defaults, so neither is unset today; naming
-        # them anyway keeps a rate the budget can divide by out of the hands of a future release.
+        # Unset is unreachable today; the fallback keeps the rate divisible for a future release.
         return (
             _sampled("fps", sampling.fps),
             _sampled("min_frames", sampling.min_frames),
             sampling.nframes,
         )
-    # Older releases resolve nothing: prepare_inputs forwards only ``fps`` and leaves
-    # load_video's defaults for the rest. So the model's own rate has to be applied here --
-    # nothing else on this path would apply it, and Studio pins mlx-vlm below 0.7.0, so this
-    # is the branch a real install takes. ``min_frames`` stays the decoder's, because that is
-    # the count it will really decode: nothing forwards a processor's.
+    # Below 0.7.0, where install_python_stack.py pins it, prepare_inputs forwards only ``fps``,
+    # so nothing else applies the model's rate. ``min_frames`` stays the count really decoded.
     defaults = inspect.signature(vlm_utils.load_video).parameters
 
     def _default(name):
@@ -912,8 +900,7 @@ def _video_frame_rate(clip_path: str, processor) -> Optional[float]:
     if min(width, height, total_frames) <= 0:
         return None
     if not native_fps or native_fps <= 0:
-        # An unreadable rate is the one measurement mlx-vlm substitutes instead of refusing, so
-        # the budget is computed against the same substitution rather than skipped.
+        # The one measurement mlx-vlm substitutes rather than refusing; match its substitution.
         native_fps = 1.0
     wanted_fps, min_frames, nframes = _video_sampling_target(processor)
     affordable = _VIDEO_DECODE_BUDGET_BYTES // (2 * 3 * width * height)
@@ -2237,9 +2224,8 @@ class MLXInferenceBackend:
             # Diffusion generation never consults the prefix hook.
             return None
         if has_video:
-            # A snapshot spanning the video rows is keyed by token ids the clip does not
-            # vary, so a later clip would resume the first one's vision rows and its mRoPE
-            # grid. Prefill every video turn instead.
+            # Keyed by token ids the clip does not vary: a later clip would resume the first
+            # one's mRoPE grid.
             return None
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         if images and not media_ids:
@@ -3463,9 +3449,8 @@ class MLXInferenceBackend:
         if max_new_tokens is None:
             max_new_tokens = self._unset_generation_budget(prompt)
             if image is not None or video is not None:
-                # Media expands past its one placeholder token, so the counted prompt is short of
-                # the real one: cap at the default, but stay under the rotating cache window. A
-                # clip expands furthest, carrying every sampled frame.
+                # Media expands past its placeholder (a clip by a frame each), so the counted
+                # prompt is short: cap at the default, under the cache window.
                 max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s, has_video=%s",
@@ -3561,8 +3546,7 @@ class MLXInferenceBackend:
             ):
                 if session is None and (images or video is not None):
                     # The vision pass gets the headroom, under the lock so nothing refills it.
-                    # A video turn never resumes a snapshot, so the retained ones are pure
-                    # occupancy against the frame budget it is about to allocate.
+                    # A video turn resumes no snapshot, so retained ones are pure occupancy.
                     self._release_vlm_snapshots()
                 final_response = None
                 clip_path = None

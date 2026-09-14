@@ -5094,13 +5094,8 @@ def _require_video_stack_module():
 
 
 def _require_video_stack():
-    """The clip path needs both halves of mlx-vlm's decoder: the library and OpenCV.
-
-    OpenCV installs as an mlx-vlm dependency, so a runner has both or neither -- but guarding on
-    one of them alone let a test that needs both run on a runner that had only the other. The
-    decoder itself lands in 0.5.0, and the install floor is 0.4.4, so the package being importable
-    is not the same question as the clip path existing.
-    """
+    """Both halves: guarding on one alone let a test needing both run on a runner with only the
+    other, and the decoder lands in 0.5.0 while the install floor is 0.4.4."""
     utils = pytest.importorskip("mlx_vlm.utils")
     if not callable(getattr(utils, "load_video", None)):
         pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
@@ -5153,8 +5148,7 @@ def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch)
     monkeypatch.setitem(sys.modules, "mlx_vlm.models", types.ModuleType("mlx_vlm.models"))
     monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", cache_module)
 
-    # The control: without a clip this same call builds a session, so the None below is the
-    # video rule rather than a store the fake backend could never reach.
+    # Control: without a clip the same call builds a session, so the None below is the video rule.
     assert backend._vlm_prompt_cache_session(False, None, "prompt") is not None
     assert backend._vlm_prompt_cache_session(False, None, "prompt", has_video = True) is None
 
@@ -5237,8 +5231,7 @@ def _tiny_clip(
     height = 24,
     frames = 12,
 ):
-    # importorskip, not a bare import: OpenCV arrives with mlx-vlm and is absent from the
-    # bare runners, and two of the three callers reach here before any other guard.
+    # importorskip: two of the three callers reach here before any other guard.
     cv2 = pytest.importorskip("cv2")
     np = pytest.importorskip("numpy")
 
