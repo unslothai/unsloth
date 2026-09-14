@@ -50,13 +50,55 @@ class _ResidentDouble:
         self.context_length = context_length
         self.is_embedding_gguf = is_embedding_gguf
         self.unloads = 0
+        self.loads = 0
+        self._audio_probed = True
+        self._audio_type = None
+        self._is_audio = False
+        self.holds_no_vram = False
+        self.adopt_matches = True
 
+    def adopt_load_intent_if_matched(self, _intent):
+        return self.adopt_matches
+
+    def matches_load_source(self, intent):
+        requested = getattr(intent, "model_identifier", None)
+        return isinstance(requested, str) and requested.casefold() == self.model_identifier.casefold()
+
+
+    def load_cancelled(self):
+        return False
+
+    def load_model(self, *, intent, load_cancel_event = None):
+        self.loads += 1
+        self.is_active = True
+        self.is_loaded = True
+        return True
+
+    def non_chat_gguf_refusal_for_intent(self, _intent):
+        return None
+
+    def host_offload_warning_for_intent(self, _intent):
+        return None
     def unload_model(self):
         self.unloads += 1
         self.is_loaded = False
         self.is_active = False
         self.model_identifier = None
         return True
+
+
+def test_loading_slot_is_busy_before_its_backend_spawns(residents, monkeypatch):
+    registry, load = residents
+    monkeypatch.setenv("UNSLOTH_RESIDENT_MODEL_SLOTS", "1")
+    slot, loading = load("org/B-GGUF")
+    loading.is_active = False
+    loading.is_loaded = False
+
+    registry.start_loading(slot.id)
+
+    assert registry.loading_slots() == [slot]
+    assert registry.any_slot_busy()
+    assert registry.at_capacity()
 
 
 @pytest.fixture()
@@ -182,6 +224,173 @@ def test_capacity_refusal_leaves_existing_residents_untouched(residents):
         assert b_ids(registry) == 2
     finally:
         monkeypatch.undo()
+
+
+@pytest.mark.parametrize("slot_cap", [2, 4])
+def test_runtime_changed_secondary_reuses_its_occupied_slot(residents, monkeypatch, slot_cap):
+    """A source match reserves B for replacement even when capacity is available."""
+    registry, load = residents
+    monkeypatch.setenv("UNSLOTH_RESIDENT_MODEL_SLOTS", str(slot_cap))
+    _, a = load("org/A-GGUF", make_active = True)
+    slot_b, b = load("org/B-GGUF")
+
+    replacement = inference_route._resident_slot_for_matching_gguf_source(
+        SimpleNamespace(model_identifier = "org/B-GGUF"), a
+    )
+
+    assert replacement is slot_b
+    assert registry.slot_for_backend(replacement.backend) is slot_b
+    assert len(registry.slots_for_sweep()) == 2
+    assert b.is_loaded and a.is_loaded
+
+
+def test_runtime_changed_secondary_bypasses_full_capacity_refusal(residents, monkeypatch):
+    registry, load = residents
+    monkeypatch.setenv("UNSLOTH_RESIDENT_MODEL_SLOTS", "2")
+    _, a = load("org/A-GGUF", make_active = True)
+    slot_b, _ = load("org/B-GGUF")
+
+    assert registry.at_capacity()
+    assert (
+        inference_route._resident_slot_for_matching_gguf_source(
+            SimpleNamespace(model_identifier = "org/B-GGUF"), a
+        )
+        is slot_b
+    )
+
+
+def test_identical_secondary_promotes_without_reloading(residents, monkeypatch):
+    """Same effective runtime reuses B; only a mismatch reaches replacement."""
+    registry, load = residents
+    _, a = load("org/A-GGUF", make_active = True)
+    _, b = load("org/B-GGUF")
+    response = object()
+
+    monkeypatch.setattr(
+        inference_route,
+        "_resolve_model_identifier_for_request",
+        lambda *_args, **_kwargs: ("org/B-GGUF", "org/B-GGUF", False),
+    )
+    monkeypatch.setattr(
+        inference_route, "resolve_effective_chat_template_override", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(inference_route, "_gguf_load_response", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(inference_route, "_loaded_is_local_model", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(inference_route, "_request_used_api_key", lambda _request: False)
+    monkeypatch.setattr(inference_route.api_monitor, "record_lifecycle", lambda **_kwargs: object())
+    monkeypatch.setattr(inference_route.api_monitor, "discard", lambda _event: None)
+    monkeypatch.setattr("core.inference.gpu_arbiter.acquire_for_request", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hub.services.models.account_access.join_resident", lambda *_args: None)
+    result = asyncio.run(
+        inference_route._load_model_impl(
+            LoadRequest(
+                model_path = "org/B-GGUF",
+                gguf_variant = "Q4_K_M",
+                keep_existing_loaded = True,
+            ),
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))),
+            "tester",
+        )
+    )
+
+    assert result is response
+    assert registry.active_backend() is b
+    assert b.unloads == 0 and a.unloads == 0
+
+
+@pytest.mark.parametrize("slot_cap", [2, 4])
+def test_runtime_changed_secondary_reloads_in_place_without_duplicate(
+    residents, monkeypatch, slot_cap
+):
+    """Reloading B uses B's slot; A survives and the resident count stays fixed."""
+    import contextlib
+
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    registry, load = residents
+    monkeypatch.setenv("UNSLOTH_RESIDENT_MODEL_SLOTS", str(slot_cap))
+    _, a = load("org/A-GGUF", make_active = True)
+    _, b = load("org/B-GGUF")
+    b.adopt_matches = False  # Same source, changed runtime settings.
+    response = object()
+    config = SimpleNamespace(
+        identifier = "org/B-GGUF",
+        display_name = "B",
+        is_gguf = True,
+        is_lora = False,
+        is_vision = False,
+        is_audio = False,
+        is_local = False,
+        gguf_hf_repo = None,
+        gguf_path = None,
+    )
+    intent = GgufLoadIntent(model_identifier = "org/B-GGUF", hf_variant = "Q4_K_M")
+
+    async def _placement(*_args, **_kwargs):
+        return inference_route._LoadPlacement(None, None, False, False)
+
+    async def _idle(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        inference_route,
+        "_resolve_model_identifier_for_request",
+        lambda *_args, **_kwargs: ("org/B-GGUF", "org/B-GGUF", False),
+    )
+    monkeypatch.setattr(
+        inference_route, "resolve_effective_chat_template_override", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(inference_route.ModelConfig, "from_identifier", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        inference_route, "_hf_offline_if_unreachable_for", lambda *_args: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(inference_route, "_resolve_inherited_extra_args", lambda *_args: None)
+    monkeypatch.setattr(inference_route, "_prepare_load_placement", _placement)
+    monkeypatch.setattr(inference_route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(
+        inference_route, "_guard_chat_load_against_training", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(inference_route, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    monkeypatch.setattr(inference_route, "_wait_for_model_switch_idle", _idle)
+    monkeypatch.setattr(inference_route, "_close_load_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(inference_route, "_gguf_load_response", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(inference_route, "_request_used_api_key", lambda _request: False)
+    monkeypatch.setattr(inference_route, "release_chat_gpu_claim", lambda: True)
+    monkeypatch.setattr(inference_route.api_monitor, "record_lifecycle", lambda **_kwargs: object())
+    monkeypatch.setattr(inference_route.api_monitor, "fail_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.zero_vram_chat_load", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.chat_load_in_flight", lambda: contextlib.nullcontext()
+    )
+    monkeypatch.setattr("core.inference.llama_keepwarm.note_model_loaded", lambda _backend: None)
+    monkeypatch.setattr("hub.services.models.account_access.publish_resident", lambda *_args: None)
+
+    result = asyncio.run(
+        inference_route._load_model_impl(
+            LoadRequest(
+                model_path = "org/B-GGUF",
+                gguf_variant = "Q4_K_M",
+                keep_existing_loaded = True,
+            ),
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))),
+            "tester",
+        )
+    )
+
+    assert result is response
+    assert b.loads == 1 and registry.active_backend() is b
+    assert a.is_loaded and a.unloads == 0
+    assert len(registry.slots_for_sweep()) == 2
 
 
 def test_concurrent_open_and_drop_keeps_slot_ids_unique(residents, monkeypatch):
@@ -525,9 +734,9 @@ def test_the_load_path_targets_fresh_slots_and_cleans_them_up():
     # The slot is opened after the intent resolves, and set active on success.
     assert "open_slot()" in gguf_branch
     assert "set_active(_resident_target_slot.id)" in gguf_branch
-    # Every failure exit after the open drops the empty slot: the exception
-    # path, the not-success path, and the GPU-owner 409 that unloads itself.
-    assert gguf_branch.count("_resident_registry.drop_slot") == 3
+    # Three failed-load cleanup exits plus one prior-active eviction after a
+    # successful in-place secondary replacement.
+    assert gguf_branch.count("_resident_registry.drop_slot") == 4
 
 
 def test_promote_and_replace_passes_the_point_of_no_return_before_moving_anything():
@@ -608,6 +817,46 @@ def test_unloading_a_named_secondary_leaves_the_active_model_serving(_unloadable
     assert registry.active_backend() is a
     assert inference_route.iter_resident_llama_backends() == [a]
     assert registry.slot_for_backend(b) is None and slot_b.id is not None
+
+
+def test_stop_loading_cancels_fresh_secondary_without_unloading_active(_unloadable_world):
+    from models.inference import UnloadRequest
+
+    registry, load = _unloadable_world
+    _, a = load("org/A-GGUF", make_active = True)
+    slot_b, b = load("org/B-GGUF")
+    b.is_loaded = False
+    registry.start_loading(slot_b.id)
+    assert inference_route._unload_may_evict("org/B-GGUF")
+
+    response = asyncio.run(
+        inference_route._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "tester")
+    )
+
+    assert response.status == "unloaded"
+    assert b.unloads == 1 and not b.is_active
+    assert a.unloads == 0 and a.is_loaded
+    assert registry.active_backend() is a
+    assert registry.slot_for_backend(b) is None
+    assert registry.loading_slots() == []
+
+
+def test_stop_loading_cancels_the_only_first_resident_slot(_unloadable_world):
+    from models.inference import UnloadRequest
+
+    registry, load = _unloadable_world
+    slot_b, b = load("org/B-GGUF")
+    b.is_loaded = False
+    registry.start_loading(slot_b.id)
+
+    response = asyncio.run(
+        inference_route._unload_model_impl(UnloadRequest(model_path = "stale-ui-model"), "tester")
+    )
+
+    assert response.status == "unloaded"
+    assert b.unloads == 1 and not b.is_active
+    assert registry.slot_for_backend(b) is None
+    assert registry.active_slot() is None
 
 
 def test_a_foreign_caller_cannot_unload_a_named_secondary(_unloadable_world, monkeypatch):

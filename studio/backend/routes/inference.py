@@ -7309,6 +7309,26 @@ def _resident_target_slot_needed(request: "LoadRequest", llama_backend) -> bool:
     )
 
 
+def _resident_slot_for_matching_gguf_source(intent, active_backend):
+    """A secondary holding the requested weights, irrespective of runtime settings.
+
+    Reuse requires a source *and* runtime match. A source-only match instead
+    reloads this slot, preventing a settings change from allocating a second
+    resident copy of the same public model.
+    """
+    if not residency_enabled():
+        return None
+    for slot in _resident_registry.slots_for_sweep():
+        if slot.backend is active_backend:
+            continue
+        try:
+            if slot.backend.matches_load_source(intent):
+                return slot
+        except Exception:  # noqa: BLE001 - an unstable slot must not block a real load
+            continue
+    return None
+
+
 def _resident_capacity_message() -> str:
     from core.inference.resident_models import _MAX_SLOTS_ENV, max_resident_slots
     return (
@@ -14185,6 +14205,25 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     return bool(resident) and model_id_matches(model_path, resident)
 
 
+def _loading_resident_slot(model_path: str):
+    """Find the slot an unscoped Stop may cancel without touching the active one.
+
+    The lifecycle gate serializes ordinary loads, so production has at most one
+    loading slot. If an exceptional caller creates several, only an unambiguous
+    name match may be cancelled; an otherwise-unscoped Stop does nothing rather
+    than guessing which resident to kill.
+    """
+    slots = _resident_registry.loading_slots()
+    matches = [
+        slot
+        for slot in slots
+        if _names_the_resident_model(getattr(slot.backend, "model_identifier", None), model_path)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return slots[0] if len(slots) == 1 else None
+
+
 def _named_secondary_slot(model_path: str):
     """The resident slot (other than the active backend) that ``model_path`` names.
 
@@ -14283,6 +14322,8 @@ def _unload_may_evict(model_path: str) -> bool:
         and hasattr(backend, "cancel_load")
         and _names_the_loading_model(loading, model_path)
     ):
+        return True
+    if _loading_resident_slot(model_path) is not None:
         return True
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_active and (
@@ -15187,6 +15228,7 @@ async def _load_model_impl(
                 ):
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
+        _resident_replacement_slot = None
         _tensor_intent_overall = False
         if config.is_gguf:
             gguf_intent = _resolve_gguf_load_intent(
@@ -15227,6 +15269,13 @@ async def _load_model_impl(
             )
             if reused is not None:
                 return reused
+            # The early secondary-reuse path above returns for an identical
+            # runtime. Reaching here with the same resolved source means only
+            # its runtime differs: reload that slot instead of allocating a
+            # second resident under the same public identity.
+            _resident_replacement_slot = _resident_slot_for_matching_gguf_source(
+                gguf_intent, llama_backend
+            )
 
         # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
         # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
@@ -15481,14 +15530,16 @@ async def _load_model_impl(
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = await asyncio.to_thread(get_inference_backend)
 
-            # Multi-residency slot targeting. Under residency a load never runs on the
-            # idle default backend -- a session's first GGUF load opens a slot like any
-            # other, which keeps "residents remain but nothing is active" representable
-            # after the active slot is unloaded. A keep-existing load with a different
-            # model active opens a NEW slot instead of evicting it; a normal load still
-            # swaps the active slot in place, replacing only the current model.
-            _resident_target_slot = None
-            if _resident_target_slot_needed(request, llama_backend):
+            # Multi-residency slot targeting. A source-matching secondary with
+            # different runtime settings is reloaded in place; only an unrelated
+            # keep-existing model receives a fresh slot.
+            _resident_target_slot = _resident_replacement_slot
+            _resident_prior_slot_to_replace = None
+            _needs_fresh_resident_slot = (
+                _resident_target_slot is None
+                and _resident_target_slot_needed(request, llama_backend)
+            )
+            if _needs_fresh_resident_slot:
                 # Before the drain and the point of no return: a capacity refusal
                 # must not cancel or wait out anyone's generations.
                 if _resident_registry.at_capacity():
@@ -15550,15 +15601,24 @@ async def _load_model_impl(
                 raise RuntimeError("GGUF load intent was not resolved")
             load_intent = gguf_intent
 
-            # Open the resident slot here, past every rejection: rebinding
-            # ``llama_backend`` redirects the load attempt, the cancel probe and
-            # all post-load bookkeeping below onto the new slot's backend in one
-            # place, while every other resident keeps its process untouched.
-            if _resident_target_slot_needed(request, llama_backend):
+            # Open a fresh resident slot only for an unrelated model. A
+            # source-matching secondary stays in its original logical slot, so
+            # replacement neither consumes capacity nor leaves duplicate routing.
+            if _needs_fresh_resident_slot:
                 try:
                     _resident_target_slot = _resident_registry.open_slot()
                 except ResidentCapacityError as exc:
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            if _resident_target_slot is not None:
+                _prior_active_slot = _resident_registry.active_slot()
+                if (
+                    not request.keep_existing_loaded
+                    and _prior_active_slot is not None
+                    and _prior_active_slot is not _resident_target_slot
+                    and _prior_active_slot.backend.is_loaded
+                ):
+                    _resident_prior_slot_to_replace = _prior_active_slot
+                _resident_registry.start_loading(_resident_target_slot.id)
                 llama_backend = _resident_target_slot.backend
 
             # Run a single load attempt with the given tensor flag + extras.
@@ -15596,9 +15656,8 @@ async def _load_model_impl(
                     cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
                 )
             except Exception:
-                # A failed load on a fresh resident slot leaves it empty: drop it so
-                # the capacity it reserved is freed and the next load can retry,
-                # with every other resident untouched.
+                # A failed load on a targeted resident leaves no usable process:
+                # drop it so capacity is freed while unrelated residents remain.
                 if _resident_target_slot is not None:
                     await asyncio.to_thread(_resident_registry.drop_slot, _resident_target_slot.id)
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
@@ -15648,7 +15707,11 @@ async def _load_model_impl(
             # The load owns the slot table's "current" from here: an omitted model
             # and every active-backend reader follow the freshly loaded backend.
             if _resident_target_slot is not None:
+                _resident_registry.finish_loading(_resident_target_slot.id)
                 _resident_registry.set_active(_resident_target_slot.id)
+                if _resident_prior_slot_to_replace is not None:
+                    await asyncio.to_thread(_resident_prior_slot_to_replace.backend.unload_model)
+                    _resident_registry.drop_slot(_resident_prior_slot_to_replace.id, unload = False)
 
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
@@ -17373,6 +17436,13 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     await asyncio.to_thread(llama_backend.unload_model)
                     note_model_unloaded()
                     logger.info("Cancelled scoped in-flight GGUF load: %s", request.model_path)
+                    return UnloadResponse(status = "unloaded", model = request.model_path)
+                _loading_slot = _loading_resident_slot(attempt.model_path)
+                if _loading_slot is not None:
+                    await asyncio.to_thread(_loading_slot.backend.unload_model)
+                    _resident_registry.drop_slot(_loading_slot.id, unload = False)
+                    note_model_unloaded()
+                    logger.info("Cancelled scoped in-flight resident GGUF load: %s", request.model_path)
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             finally:
                 attempt.cancel_complete.set()
@@ -17393,6 +17463,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 note_model_unloaded()
                 logger.info(f"Cancelled in-flight load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
+
+        _loading_slot = _loading_resident_slot(request.model_path)
+        if _loading_slot is not None:
+            await asyncio.to_thread(_loading_slot.backend.unload_model)
+            _resident_registry.drop_slot(_loading_slot.id, unload = False)
+            note_model_unloaded()
+            logger.info("Cancelled in-flight resident GGUF load: %s", request.model_path)
+            return UnloadResponse(status = "unloaded", model = request.model_path)
 
         # Same "stop loading" fast path for a still-loading GGUF (spawned, health check not passed).
         # unload_model() sets the cancel_event load_model polls and kills the child without a

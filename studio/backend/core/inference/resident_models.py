@@ -114,6 +114,10 @@ class ResidentLlamaRegistry:
         self._backend_factory = backend_factory
         self._lock = threading.RLock()
         self._slots: dict[int, ResidentSlot] = {}
+        # A resident slot is registered before its backend can spawn or download.
+        # Keep that in the registry rather than on the route: /unload must find
+        # and stop a fresh slot while the successful-load activation is pending.
+        self._loading_slot_ids: set[int] = set()
         self._next_slot_id = 1
         self._active_slot_id: Optional[int] = None
 
@@ -155,9 +159,15 @@ class ResidentLlamaRegistry:
 
         A slot whose backend lost its model (the idle auto-unload tears the
         active one down off the registry's books) still occupies the table but
-        no longer holds VRAM, so it must not consume capacity.
+        no longer holds VRAM, so it must not consume capacity. A newly opened
+        slot is busy from ``start_loading`` onward, before its backend has
+        published a process.
         """
-        return sum(1 for s in self._slots.values() if s.backend.is_active)
+        return sum(
+            1
+            for slot_id, slot in self._slots.items()
+            if slot_id in self._loading_slot_ids or slot.backend.is_active
+        )
 
     def at_capacity(self) -> bool:
         """Whether one more slot would exceed the configured maximum.
@@ -190,6 +200,17 @@ class ResidentLlamaRegistry:
             self._next_slot_id += 1
             return slot
 
+    def start_loading(self, slot_id: int) -> None:
+        """Mark a registered slot cancellable before its backend is active."""
+        with self._lock:
+            if slot_id in self._slots:
+                self._loading_slot_ids.add(slot_id)
+
+    def finish_loading(self, slot_id: int) -> None:
+        """Clear the transient load marker after success or a completed abort."""
+        with self._lock:
+            self._loading_slot_ids.discard(slot_id)
+
     def slot_for_backend(self, backend: "LlamaCppBackend") -> Optional[ResidentSlot]:
         with self._lock:
             for slot in self._slots.values():
@@ -212,6 +233,7 @@ class ResidentLlamaRegistry:
             slot = self._slots.pop(slot_id, None)
             if slot is None:
                 return None
+            self._loading_slot_ids.discard(slot_id)
             if self._active_slot_id == slot_id:
                 # No implicit promotion: another resident becomes active only by
                 # an explicit load naming it.
@@ -246,7 +268,24 @@ class ResidentLlamaRegistry:
         granting the device to a diffusion or video load.
         """
         with self._lock:
-            return any(s.backend.is_active for s in self._slots.values())
+            return bool(self._loading_slot_ids) or any(
+                s.backend.is_active for s in self._slots.values()
+            )
+
+    def loading_slots(self) -> "list[ResidentSlot]":
+        """Slots with a GGUF load in progress, in deterministic slot order.
+
+        Loads normally serialize on the route lifecycle gate, so there is one.
+        Including an observed starting backend keeps the registry correct for
+        callers that began before this marker existed.
+        """
+        with self._lock:
+            return [
+                slot
+                for slot_id, slot in self._slots.items()
+                if slot_id in self._loading_slot_ids
+                or (slot.backend.is_active and not slot.backend.is_loaded)
+            ]
 
     def slots_for_sweep(self) -> "list[ResidentSlot]":
         """A stable snapshot of the slot table for external sweeps (training
@@ -266,6 +305,7 @@ class ResidentLlamaRegistry:
         with self._lock:
             slots = list(self._slots.values())
             self._slots.clear()
+            self._loading_slot_ids.clear()
             self._active_slot_id = None
         for slot in slots:
             try:
