@@ -532,8 +532,7 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["server"] == "unsloth-studio"
 
     def test_mirror_endpoints_in_connect_src(self, main_module, monkeypatch):
-        # A mirrored hub must be allowed by connect-src or the browser blocks
-        # every Hub call the frontend routes there.
+        # A mirror must reach connect-src or the browser blocks the Hub calls.
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
         monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
         app = _make_csp_app(main_module)
@@ -1142,10 +1141,8 @@ class TestHealthAuthGate:
             assert field in body, f"missing: {field}"
 
 
-# Captured from origin/main (pre-PR) with HF_ENDPOINT and HF_DATASETS_SERVER unset,
-# nonce fixed. The mirror feature must be invisible to every default deployment, and
-# a substring assertion cannot show that -- directive order, spacing and every other
-# source have to survive byte for byte.
+# Captured from origin/main (pre-PR), both vars unset, nonce fixed. The feature must
+# be invisible to a default deployment, which a substring assertion cannot show.
 _MAIN_CSP_DEFAULT = (
     "default-src 'self'; img-src 'self' data: blob: https:; "
     "media-src 'self' data: blob: https:; "
@@ -1234,7 +1231,6 @@ class TestCspHfEndpoints:
             "https://hf-mirror.com",
             "https://ds.example.com",
         ]
-        # Nothing outside connect-src moved.
         baseline = dict(
             chunk.strip().split(" ", 1)
             for chunk in _MAIN_CSP_DEFAULT.split(";")
@@ -1280,7 +1276,6 @@ class TestCspHfEndpoints:
         monkeypatch.setenv("HF_ENDPOINT", hostile)
         policy = main_module._build_csp("NONCE")
         assert policy == _MAIN_CSP_DEFAULT
-        # No directive was added and script-src was not touched.
         assert policy.count(";") == _MAIN_CSP_DEFAULT.count(";")
 
     def test_the_header_on_a_real_response_carries_the_mirror(self, main_module, monkeypatch):
@@ -1313,7 +1308,6 @@ class TestCspHfEndpoints:
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         sources = _connect_src(main_module._build_csp("NONCE"))
         assert expected_source in sources
-        # And the path form is never emitted.
         assert not any(
             s.count("/") > 2 for s in sources if s.startswith(("http://", "https://"))
         ), sources
@@ -1329,13 +1323,8 @@ class TestCspHfEndpoints:
     def test_a_loopback_endpoint_is_only_reported_to_a_loopback_client(
         self, main_module, monkeypatch, endpoint, loopback_sees, remote_sees
     ):
-        """A loopback endpoint names a proxy on the machine the BACKEND runs on.
-
-        Handing it to a browser on another machine makes that browser fetch its
-        OWN localhost: the calls either fail, or reach an unrelated local service
-        which, if it answers the CORS preflight, is handed the user's Hub bearer
-        token. https mirrors are the same host for everyone and pass through.
-        """
+        """A loopback endpoint means the BROWSER's localhost anywhere else: dead,
+        or an unrelated service that would be handed the user's Hub token."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         local = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
@@ -1343,18 +1332,14 @@ class TestCspHfEndpoints:
         assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees
 
     def test_a_tunneled_client_is_not_mistaken_for_a_local_one(self, main_module, monkeypatch):
-        """Through the managed Cloudflare tunnel the socket peer IS loopback.
-
-        It is the local cloudflared process, not the visitor, so a peer-only check
-        would hand a remote browser the backend's own localhost mirror.
-        """
+        """Through the managed tunnel the socket peer IS loopback: it is the local
+        cloudflared process, not the visitor."""
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
         c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"})
         assert tunneled.json()["hf_endpoint"] == "https://huggingface.co"
-        # The same socket peer without the tunnel header really is local.
         assert c.get("/api/health").json()["hf_endpoint"] == "http://127.0.0.1:9700"
-        # A forged header from a NON-loopback peer is ignored (client_ip's rule).
+        # A forged header from a non-loopback peer is ignored (client_ip's rule).
         remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         forged = remote.get("/api/health", headers = {"CF-Connecting-IP": "127.0.0.1"})
         assert forged.json()["hf_endpoint"] == "https://huggingface.co"
@@ -1372,21 +1357,14 @@ class TestCspHfEndpoints:
     def test_a_private_network_endpoint_is_not_reported_to_a_remote_browser(
         self, main_module, monkeypatch, endpoint, remote_sees
     ):
-        """10.0.0.5 means the VISITOR's 10.0.0.5, one step out from localhost.
-
-        Through the tunnel, or from the internet, the browser resolves a private
-        address on its own network: dead, or an unrelated service that would be
-        offered the user's Hub token. A LAN client is on the backend's network, so
-        it still gets the real value; a public client does not.
-        """
+        """10.0.0.5 means the VISITOR's 10.0.0.5, one step out from localhost. A
+        LAN client is on the backend's network and still gets the real value."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         tunneled = TestClient(main_module.app, client = ("127.0.0.1", 40000))
         seen = tunneled.get(
             "/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"}
         ).json()["hf_endpoint"]
         assert seen == remote_sees
-        # A LAN browser reaches the backend's own network, so nothing is hidden
-        # from it except the backend's private-to-itself loopback.
         lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint
         assert lan.get("/api/health").json()["hf_endpoint"] == lan_expected

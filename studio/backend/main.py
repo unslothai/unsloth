@@ -219,8 +219,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
-# Rewrite it first so the library, Studio's own requests and the browser all use one
-# endpoint. Must precede anything that imports huggingface_hub.
+# Rewrite it first, before anything imports the library.
 from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
 
 _normalize_hf_endpoint_env()
@@ -964,8 +963,6 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
-# The same rule, for the one other place that hands an endpoint to the browser:
-# the publish dialog's repo link (utils.hf_endpoint.client_reachable_endpoint).
 
 
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
@@ -986,15 +983,10 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     # one level) and null-origin iframes; '*' is safe as Colab is a sandboxed single user.
     frame_ancestors = "*" if _IS_COLAB else "'none'"
 
-    # A mirrored HF_ENDPOINT / HF_DATASETS_SERVER has to appear in connect-src too,
-    # or the browser blocks every Hub call the frontend routes there. img/media carry
-    # a bare https:, so an https mirror needs nothing there; a loopback HTTP one does,
-    # or its avatars and README images are blocked while the API calls beside them
-    # succeed. dict.fromkeys keeps the default order and de-duplicates, so with no
-    # mirror configured the output is unchanged.
-    # csp_connect_sources() reduces each endpoint to its origin: a host-source
-    # carrying a path is matched exactly unless the path ends in "/", so a
-    # path-prefixed mirror listed verbatim would block every request under it.
+    # A mirror has to reach connect-src, or the browser blocks the Hub calls routed
+    # there. img/media carry a bare https:, so only a loopback HTTP one needs those.
+    # Origins only: a host-source with a path is matched exactly unless it ends
+    # in "/", so a path-prefixed mirror would block every request under it.
     hf_connect_src = " ".join(
         dict.fromkeys(
             (
@@ -1811,10 +1803,8 @@ async def health_check(request: Request):
         # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
-        # Non-sensitive routing info: mirrors the HF_ENDPOINT / HF_DATASETS_SERVER
-        # env vars so the frontend can route its Hub calls to the same endpoint the
-        # backend uses. Unauthenticated on purpose — an endpoint URL is not a host
-        # fingerprint, and the frontend needs it before a token exists.
+        # Unauthenticated on purpose: an endpoint URL is not a host fingerprint,
+        # and the frontend needs it before a token exists.
         **_reportable_hf_endpoints(request),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }

@@ -29,19 +29,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HF_ENDPOINT = "https://huggingface.co"
 _DEFAULT_DATASETS_SERVER = "https://datasets-server.huggingface.co"
 
-# The value to report when the configured one is not reportable to this client.
+# Reported when the configured value is not reachable by this client.
 DEFAULTS_BY_HEALTH_KEY = {
     "hf_endpoint": _DEFAULT_HF_ENDPOINT,
     "hf_datasets_server": _DEFAULT_DATASETS_SERVER,
 }
 
 _ds_mirror_warned = False
-# Values already reported as unusable, so a per-request caller (the CSP builder runs
-# on every response) logs each bad configuration once rather than per request.
+# The CSP builder runs on every response, so each bad value is logged once.
 _rejected_warned: set[str] = set()
 
-# A CSP source list is whitespace-separated and semicolon-delimited, so any of these
-# inside an endpoint would add sources or whole directives rather than one origin.
+# A source list is whitespace-separated and semicolon-delimited: any of these in an
+# endpoint would add sources or whole directives rather than one origin.
 _FORBIDDEN_CHARS = frozenset(" \t\r\n\f\v;,'\"\\")
 
 
@@ -91,16 +90,11 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
     ):
         reason = "contains whitespace, a separator or a control character"
     elif not candidate.isascii():
-        # A Unicode host reaches _build_csp, and Starlette encodes header values
-        # as latin-1, so one IDN mirror would turn EVERY response into a 500.
-        # The desktop CSP builder has no IDNA encoder available to it either, so
-        # rather than have the three disagree about one endpoint, all three take
-        # the punycode form (xn--...), which every URL parser produces anyway.
+        # Starlette headers are latin-1, so an IDN host in the CSP 500s every
+        # response, and the Tauri builder has no IDNA encoder either.
         reason = "contains non-ASCII characters; use the punycode (xn--) form of the host"
     elif (parts := _split(candidate)) is None:
-        # urlsplit RAISES on malformed bracketed-host syntax ("https://["), and
-        # _build_csp runs on every response, so letting that escape turns one
-        # mistyped env var into a 500 for every request the server handles.
+        # urlsplit RAISES on "https://[", and _build_csp runs on every response.
         reason = "is not a parseable URL"
     else:
         if parts.scheme not in ("http", "https"):
@@ -112,32 +106,19 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
         elif parts.query or parts.fragment:
             reason = "carries a query string or fragment"
         elif not _port_is_valid(parts):
-            # A scheme-less value keeps everything before the first ':' as the host,
-            # so "javascript:alert(1)" becomes "https://javascript:alert(1)" -- a
-            # syntactically fine URL whose port is nonsense.
+            # "javascript:alert(1)" becomes a fine URL with a nonsense port.
             reason = "has an invalid port"
         elif parts.netloc.endswith(":"):
-            # "host:" parses with port None, but is not a valid CSP host-source.
             reason = "has an empty port"
         elif "*" in parts.netloc:
-            # HF_ENDPOINT="*" becomes "https://*", which as a CSP source allows
-            # EVERY https origin -- the opposite of what the policy is for. A
-            # wildcard is never a usable endpoint to send requests to either.
             reason = "contains a wildcard host"
         elif parts.scheme == "http" and not is_loopback_host(parts.hostname):
-            # The frontend attaches the user's Hub token to these requests
-            # (listModels is called with `credentials: { accessToken }`), so a
-            # plain-HTTP mirror on the LAN puts a bearer token on the wire in
-            # cleartext for anyone on the path. Loopback stays allowed: it is
-            # the local-proxy case and never leaves the machine.
+            # Hub calls carry the user's token, so http off-box puts it on the wire.
             reason = (
                 "is plain HTTP to a non-loopback host, which would put the Hub token on the wire"
             )
         else:
-            # Schemes are case-insensitive (RFC 3986 3.1) and every parser here
-            # folds them, so return the folded form: the frontend keys its model
-            # cache on this string, and "HTTPS://mirror" and "https://mirror"
-            # would otherwise be two different mirrors to it.
+            # Folded: RFC 3986 3.1, and the frontend keys its cache on this string.
             return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :])
     if candidate not in _rejected_warned:
         _rejected_warned.add(candidate)
@@ -242,8 +223,7 @@ def normalize_hf_endpoint_env() -> None:
         return
     endpoint = get_hf_endpoint()
     if endpoint == _DEFAULT_HF_ENDPOINT:
-        # Rejected, or set to the official host: either way the library's own
-        # default is what we want, and an unset variable is how it asks for it.
+        # Rejected, or the official host: either way, unset asks for the default.
         os.environ.pop("HF_ENDPOINT", None)
     else:
         os.environ["HF_ENDPOINT"] = endpoint

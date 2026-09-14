@@ -607,9 +607,8 @@ def publish_job_dataset(
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
-            # client_ip, not the socket peer: through the managed Cloudflare tunnel
-            # the peer is the local cloudflared process, so the peer alone would
-            # aim the "Open repo" link at the visitor's own localhost.
+            # client_ip, not the socket peer: through the managed tunnel the peer
+            # is the local cloudflared process, not the visitor.
             link_endpoint = client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:

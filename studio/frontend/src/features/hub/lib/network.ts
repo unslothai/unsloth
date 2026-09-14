@@ -9,9 +9,8 @@ const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const noopUnsubscribe = () => undefined;
 
 /**
- * Origin the Hub traffic actually goes to. The backoff/failure maps key on the
- * request origin (fetchWithTimeout extracts it from the real URL), so the
- * default key has to follow HF_ENDPOINT too — keying a mirror deployment on
+ * Origin the Hub traffic actually goes to. The backoff maps key on the request
+ * origin, so this has to follow HF_ENDPOINT too: keying a mirror deployment on
  * huggingface.co would probe an origin nothing ever talks to.
  */
 function defaultHubOrigin(): string {

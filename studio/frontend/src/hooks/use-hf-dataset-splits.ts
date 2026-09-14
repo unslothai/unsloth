@@ -144,12 +144,9 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(datasetName !== null);
   const [error, setError] = useState<string | null>(null);
-  // The splits URL is built from getHfDatasetsServerBase(), a plain module read
-  // React cannot see change, so a server that arrives after this effect has run
-  // (a /api/health that first failed, or a cold desktop start) would leave the
-  // subset/split selector populated from the official server, or stuck in the
-  // failure state it reached against it. Reading it from the store puts it in
-  // the request identity, so a late-arriving mirror refetches.
+  // In the request identity: the URL comes from a plain module read React cannot
+  // see change, so a server arriving later would leave the selector on the
+  // official one, or on the failure it reached there.
   const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
   const requestKey = JSON.stringify([
     datasetName,

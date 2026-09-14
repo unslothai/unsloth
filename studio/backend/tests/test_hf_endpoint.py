@@ -119,10 +119,8 @@ class TestGetHfDatasetsServer:
         assert not [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
 
 
-# These values are interpolated into request URLs *and* into the CSP connect-src
-# directive built in main.py. A CSP source list is whitespace-separated and
-# semicolon-delimited, so anything carrying those characters would widen the
-# policy rather than name one origin.
+# These values reach the CSP connect-src built in main.py, and a source list is
+# whitespace-separated and semicolon-delimited.
 HOSTILE_ENDPOINTS = [
     "https://hf-mirror.com; script-src *",
     "https://hf-mirror.com *",
@@ -132,7 +130,7 @@ HOSTILE_ENDPOINTS = [
     "https://hf-mirror.com,https://evil.com",
     "https://hf-mirror.com'",
     'https://hf-mirror.com"',
-    # An embedded NUL is not listed: os.environ rejects it before we ever see it.
+    # No NUL case: os.environ rejects it before we see it.
 ]
 
 MALFORMED_ENDPOINTS = [
@@ -146,8 +144,7 @@ MALFORMED_ENDPOINTS = [
     "https://hf-mirror.com#frag",
     "https://hf-mirror.com:",
     "https://hf-mirror.com:not-a-port",
-    # "*" would reach the CSP connect-src as "https://*", which allows every
-    # https origin -- the opposite of what the policy exists for.
+    # "https://*" as a CSP source allows every https origin.
     "*",
     "https://*",
     "https://*.evil.com",
@@ -253,46 +250,31 @@ class TestAssetSources:
 
 
 def test_an_uppercase_scheme_is_accepted_and_folded(monkeypatch):
-    """RFC 3986 3.1: schemes are case-insensitive.
-
-    urlsplit and the browser URL parser both fold them, so HTTPS://mirror is a
-    real mirror; rejecting it here (or reporting it unfolded) would leave the
-    frontend routed to a host its own cache and CSP spelled differently.
-    """
+    """RFC 3986 3.1: HTTPS://mirror is a real mirror, and the frontend keys its
+    cache on the folded form."""
     monkeypatch.setenv("HF_ENDPOINT", "HTTPS://hf-mirror.com")
     assert get_hf_endpoint() == "https://hf-mirror.com"
     monkeypatch.setenv("HF_ENDPOINT", "HTTP://127.0.0.1:9700")
     assert get_hf_endpoint() == "http://127.0.0.1:9700"
-    # The loopback-only rule for http survives the case fold.
     monkeypatch.setenv("HF_ENDPOINT", "HTTP://hf-mirror.com")
     assert get_hf_endpoint() == "https://huggingface.co"
 
 
 def test_a_loopback_endpoint_is_not_handed_to_a_remote_browser(monkeypatch):
-    """Links and /api/health must agree: a loopback mirror is this machine only.
-
-    A remote browser handed http://127.0.0.1:9700 opens its OWN localhost, so the
-    publish dialog's repo link would be dead (or point at some unrelated local
-    service) where before the feature it was a working huggingface.co link.
-    """
+    """A remote browser handed http://127.0.0.1:9700 opens its OWN localhost, so
+    the publish link would be dead where before the feature it worked."""
     monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
     assert client_reachable_endpoint("127.0.0.1") == "http://127.0.0.1:9700"
     assert client_reachable_endpoint("::1") == "http://127.0.0.1:9700"
     assert client_reachable_endpoint("192.168.1.50") == "https://huggingface.co"
-    # An unknown client host is not known to be local, so it is treated as remote.
     assert client_reachable_endpoint(None) == "https://huggingface.co"
-    # A non-loopback mirror is the same host for every client and passes through.
     monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
     assert client_reachable_endpoint("192.168.1.50") == "https://hf-mirror.com"
 
 
 def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
-    """Every caller pairs this with client_ip(), never with the raw socket peer.
-
-    Through the managed Cloudflare tunnel the peer is the local cloudflared
-    process, so the pair is what decides correctly; the publish link and
-    /api/health both go through it.
-    """
+    """Every caller pairs this with client_ip(): through the managed tunnel the
+    socket peer is the local cloudflared process, not the visitor."""
     from types import SimpleNamespace
 
     from utils.client_ip import client_ip
@@ -313,13 +295,8 @@ def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
 
 
 def test_a_unicode_host_cannot_reach_the_csp_header(monkeypatch):
-    """Starlette encodes header values as latin-1.
-
-    A Unicode hostname in connect-src therefore raises UnicodeEncodeError inside
-    the security-headers middleware and turns EVERY response, /api/health
-    included, into a 500. The punycode form is what every URL parser produces
-    and is accepted here, by the frontend and by the desktop CSP builder alike.
-    """
+    """Starlette encodes header values as latin-1, so a Unicode host in connect-src
+    turns EVERY response into a 500. All three sides take the punycode form."""
     monkeypatch.setenv("HF_ENDPOINT", "https://例子.测试")
     assert get_hf_endpoint() == "https://huggingface.co"
     monkeypatch.setenv("HF_ENDPOINT", "https://xn--fsqu00a.xn--0zwm56d")
@@ -327,30 +304,21 @@ def test_a_unicode_host_cannot_reach_the_csp_header(monkeypatch):
 
 
 def test_an_ipv6_loopback_mirror_is_compressed_the_way_the_browser_sends_it(monkeypatch):
-    """A CSP host-source is matched as a string (CSP3 6.7.2.5).
-
-    The browser sends http://[::1]:9700 whichever spelling was configured, so an
-    uncompressed source would fail to match a request to the very host it names
-    and the policy would block the mirror it was added for.
-    """
+    """A host-source is matched as a string (CSP3 6.7.2.5) and the browser sends
+    http://[::1]:9700 whichever spelling was configured."""
     for raw in ("http://[0:0:0:0:0:0:0:1]:9700", "http://[::1]:9700"):
         monkeypatch.setenv("HF_ENDPOINT", raw)
         assert get_hf_endpoint() == "http://[::1]:9700", raw
     monkeypatch.setenv("HF_ENDPOINT", "http://[0:0:0:0:0:0:0:1]")
     assert get_hf_endpoint() == "http://[::1]"
-    # Loopback-only still holds for plain http: a routable IPv6 host is refused.
     monkeypatch.setenv("HF_ENDPOINT", "http://[2001:db8::1]:9700")
     assert get_hf_endpoint() == "https://huggingface.co"
 
 
 def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
-    """huggingface_hub reads HF_ENDPOINT itself, at import, unvalidated.
-
-    A scheme-less value reaches it verbatim and every HfApi call fails on the
-    missing scheme; a value this module rejects would still be handed the user's
-    Hub token by the library while Studio used huggingface.co. Both cases are
-    settled by rewriting the variable before the library is imported.
-    """
+    """huggingface_hub reads HF_ENDPOINT itself, at import, unvalidated: a
+    scheme-less value breaks every HfApi call and a rejected one would still be
+    handed the user's token. Rewriting the variable first settles both."""
     monkeypatch.setenv("HF_ENDPOINT", "hf-mirror.com")
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
@@ -359,8 +327,7 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
     hf_endpoint.normalize_hf_endpoint_env()
     assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
 
-    # Rejected values are removed, so the library falls back to its own default
-    # rather than sending the token to a host this module refused.
+    # Removed, so the library falls back rather than using a host we refused.
     for rejected in (
         "http://192.168.1.10:8080",
         "https://hf-mirror.com; script-src *",
@@ -371,29 +338,21 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
         hf_endpoint.normalize_hf_endpoint_env()
         assert "HF_ENDPOINT" not in os.environ, rejected
 
-    # An unset variable stays unset: the library's default is already correct.
     monkeypatch.delenv("HF_ENDPOINT", raising = False)
     hf_endpoint.normalize_hf_endpoint_env()
     assert "HF_ENDPOINT" not in os.environ
 
 
 def test_a_private_endpoint_reaches_only_a_client_on_a_local_network(monkeypatch):
-    """The publish link follows the same rule /api/health does.
-
-    A private address means the VISITOR's network when the visitor is elsewhere,
-    so it is handed out only to a client that is itself local. A public mirror is
-    the same host for everyone.
-    """
+    """A private address means the VISITOR's network when the visitor is
+    elsewhere, so it is handed out only to a client that is itself local."""
     monkeypatch.setenv("HF_ENDPOINT", "https://10.0.0.5:8443")
     assert client_reachable_endpoint("192.168.1.50") == "https://10.0.0.5:8443"
     assert client_reachable_endpoint("127.0.0.1") == "https://10.0.0.5:8443"
     assert client_reachable_endpoint("8.8.8.8") == "https://huggingface.co"
     assert client_reachable_endpoint(None) == "https://huggingface.co"
-    # A loopback endpoint stays stricter: a LAN client is not the same machine.
     monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
     assert client_reachable_endpoint("192.168.1.50") == "https://huggingface.co"
     assert client_reachable_endpoint("127.0.0.1") == "http://127.0.0.1:9700"
-    # A named mirror is left alone: nothing here can resolve it, and a name means
-    # the same thing at both ends when their DNS agrees.
     monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
     assert client_reachable_endpoint("8.8.8.8") == "https://hub.internal"

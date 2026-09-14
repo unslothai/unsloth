@@ -26,9 +26,8 @@ import {
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
-  // Keyed by server as well as repo: the configured one can arrive after the
-  // first fetch, and an empty result cached against the default would otherwise
-  // never be retried against the mirror.
+  // Keyed by server too: an empty result cached against the default would
+  // otherwise never be retried against a mirror that arrives later.
   const base = getHfDatasetsServerBase();
   const cacheKey = `${base}::${repo}`;
   const cached = _previewCache.get(cacheKey);
@@ -69,8 +68,7 @@ export function shortExampleLabel(label: string): string {
 
 function ExamplePreviews({ repo }: { repo: string }) {
   const [urls, setUrls] = useState<string[] | null>(null);
-  // In the effect identity: a server arriving after this mounts changes the
-  // cache key, and without this nothing would ask for the previews again.
+  // In the effect identity, or nothing asks for the previews again.
   const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
   useEffect(() => {
     let cancelled = false;

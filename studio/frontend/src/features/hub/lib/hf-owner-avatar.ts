@@ -60,9 +60,8 @@ function release(): void {
   waiting.shift()?.();
 }
 
-// Keyed by endpoint as well as owner: a successful avatar is held for 24 hours
-// and a 404 permanently, so an entry from the default host would otherwise mean
-// that owner is never looked up on a mirror that arrives later in the session.
+// Keyed by endpoint too: a hit is held 24 hours and a 404 permanently, so an
+// entry from the default host would outlive a mirror arriving later.
 function avatarKey(name: string): string {
   return `${getHfEndpoint()}::${name}`;
 }
@@ -168,8 +167,7 @@ export function useHfOwnerAvatar(
 ): string | null {
   const key = owner?.trim() ?? "";
   const online = useOnlineStatus();
-  // In the effect identity so an endpoint that lands after this mounts reruns
-  // the lookup against the mirror instead of keeping the default host's answer.
+  // In the effect identity, so a late endpoint reruns the lookup.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
     return { key, url: readCachedUrl(key) };

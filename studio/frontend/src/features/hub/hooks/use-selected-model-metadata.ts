@@ -28,11 +28,8 @@ export function useSelectedModelMetadata(
     error: boolean;
   }>(() => ({ repoId: "", result: null, error: false }));
 
-  // getHfEndpoint() is a plain module read React cannot see change, so an
-  // endpoint that lands after this effect has run (a /api/health that first
-  // failed, or a cold desktop start) would leave the pane showing the default
-  // hub's answer, or its error. Taking it from the store puts it in the effect's
-  // identity, so a late-arriving mirror refetches.
+  // In the effect identity, so a mirror arriving after it ran refetches rather
+  // than leaving the pane on the default hub's answer or its error.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
 
   useEffect(() => {

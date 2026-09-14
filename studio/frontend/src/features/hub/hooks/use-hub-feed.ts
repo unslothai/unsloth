@@ -62,9 +62,8 @@ export function useHubFeed(opts: {
   deviceType: string | null;
 }): UseHubFeedResult {
   const { accessToken, online, enabled, deviceType } = opts;
-  // Endpoint included: see feedIdentity. Everything downstream (the freshness
-  // check, clearForToken, this hook's effect deps) already keys off this value,
-  // so a late-arriving or changed endpoint invalidates and refetches.
+  // See feedIdentity. The freshness check, clearForToken and this hook's deps all
+  // key off this value, so a changed endpoint invalidates and refetches.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const tokenFingerprint = useMemo(
     () => feedIdentity(hfEndpoint, accessToken),

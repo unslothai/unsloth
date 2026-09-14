@@ -421,11 +421,8 @@ export function useHubDatasetSearch(
   } = options ?? {};
   const hasQuery = query.trim().length > 0;
   const useCuratedOnly = !hasQuery && !!modelType;
-  // The configured endpoint can land after this page mounts (a /api/health that
-  // first failed, or a cold desktop start), and getHfEndpoint() is a plain module
-  // read that React cannot see change. Taking it from the store puts it in the
-  // iterator's identity, so a late-arriving mirror restarts the search instead of
-  // leaving the results that were fetched from the default.
+  // getHfEndpoint() is a plain module read React cannot see change. From the
+  // store it joins the iterator's identity, so a late mirror restarts the search.
   const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
   const createIter = useCallback(
     (signal: AbortSignal) => {

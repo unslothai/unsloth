@@ -213,8 +213,7 @@ export function fetchDatasetSize(
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
   const resolvedSignal =
     signal ?? (typeof tokenOrSignal === "string" ? undefined : tokenOrSignal);
-  // The server is part of the key: a 404 cached against the official host would
-  // otherwise be reused for 24 hours after a mirror arrives from /api/health.
+  // Server in the key: a 404 here is cached for 24 hours.
   const cacheKey = `${getHfDatasetsServerBase()}::${repoId}::${fingerprintToken(resolvedToken)}`;
   return fetchCachedSize<DatasetSizeInfo>(
     cacheKey,
@@ -313,8 +312,7 @@ export function fetchModelSize(
   token?: string,
   signal?: AbortSignal,
 ): Promise<ModelSizeInfo | null> {
-  // Endpoint in the key: a model 404 is cached permanently for the session, and
-  // a hit carries a download size that differs between hosts.
+  // Endpoint in the key: a model 404 is cached for the whole session.
   const cacheKey = `${getHfEndpoint()}::${repoId}::${fingerprintToken(token)}`;
   return fetchCachedSize<ModelSizeInfo>(
     cacheKey,

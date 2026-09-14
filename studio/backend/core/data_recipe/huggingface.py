@@ -121,9 +121,9 @@ def publish_recipe_dataset(
 
         from utils.hf_endpoint import get_hf_endpoint
 
-        # The upload went to get_hf_endpoint(); this URL is for the browser, and a
-        # loopback mirror is not the same host there. The caller passes the endpoint
-        # its client can actually reach, which for a remote client is the public one.
+        # The upload went to get_hf_endpoint(); this URL is for the browser, where
+        # a loopback mirror is not the same host. The caller passes what its client
+        # can reach.
         return f"{link_endpoint or get_hf_endpoint()}/datasets/{repo_id}"
     except HuggingFaceHubClientUploadError as exc:
         raise RecipeDatasetPublishError(str(exc)) from exc

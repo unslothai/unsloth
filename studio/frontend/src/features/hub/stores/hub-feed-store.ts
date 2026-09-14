@@ -26,13 +26,10 @@ export interface HubFeedState {
 }
 
 /**
- * What a persisted feed entry belongs to: the endpoint AND the token.
- *
- * The entry carries this in its `tokenFingerprint` field, and freshness is an
- * equality check on it, so folding the endpoint in here is what stops a feed
- * fetched from huggingface.co being rendered for up to 30 minutes after Studio
- * restarts against a mirror. Entries persisted by an older build hold a bare
- * fingerprint, which no longer matches, so they are refetched once.
+ * What a persisted feed entry belongs to: the endpoint AND the token. Freshness
+ * is an equality check on this, so folding the endpoint in stops a huggingface.co
+ * feed being rendered after Studio restarts against a mirror. Entries from an
+ * older build hold a bare fingerprint and are refetched once.
  */
 export function feedIdentity(
   endpoint: string,

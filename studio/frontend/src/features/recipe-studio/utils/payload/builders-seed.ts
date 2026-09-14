@@ -34,11 +34,9 @@ export function buildSeedConfig(
   const seedSourceType = config.seed_source_type ?? "hf";
   const path = config.hf_path.trim();
 
-  // Only an endpoint the user actually set. The seed is fetched BY THE BACKEND,
-  // which resolves its own HF_ENDPOINT when this is absent; sending the browser's
-  // value would ship a remote client's browser-safe substitute for a loopback
-  // mirror (/api/health reports huggingface.co there) into a backend-side fetch
-  // and bypass the mirror on exactly the deployments that need it.
+  // Only an endpoint the user set. The seed is fetched BY THE BACKEND, which
+  // resolves its own HF_ENDPOINT when this is absent; sending the browser's value
+  // would ship a remote client's substitute into a backend-side fetch.
   const endpoint = config.hf_endpoint?.trim() || null;
   const token = config.hf_token?.trim() || null;
 

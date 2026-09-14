@@ -54,11 +54,9 @@ struct DesktopBackendMetadata {
     studio_root_id: String,
     started_at_ms: u64,
     updated_at_ms: u64,
-    // The HF endpoints this backend was launched with. A later desktop process
-    // that adopts this backend may have a different environment (shell launch,
-    // then an icon relaunch), and its webview CSP is built before it can ask
-    // /api/health, so the endpoint has to be recorded here to reach it.
-    // Absent in files written by older builds, hence the defaults.
+    // The endpoints this backend was launched with. A process that adopts it may
+    // have a different environment, and builds its CSP before it can ask
+    // /api/health. Absent in older files, hence the defaults.
     #[serde(default)]
     hf_endpoint: Option<String>,
     #[serde(default)]
@@ -486,10 +484,9 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// The HF endpoints recorded by whichever desktop process started the backend
-/// that is still running, so this process can allow them in its webview CSP
-/// even when its own environment does not name them. Best effort: a missing,
-/// unreadable or older metadata file simply yields nothing.
+/// The endpoints recorded by whichever process started the backend still
+/// running, so this one can allow them in its CSP. Best effort: a missing,
+/// unreadable or older file yields nothing.
 pub(crate) fn recorded_hf_endpoints() -> Vec<String> {
     let Some(path) = metadata_path() else {
         return Vec::new();

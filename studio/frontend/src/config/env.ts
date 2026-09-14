@@ -42,10 +42,8 @@ interface PlatformState {
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
-  // Hub endpoints the backend routes through (HF_ENDPOINT / HF_DATASETS_SERVER
-  // env vars), mirrored here so frontend Hub calls hit the same host the
-  // backend uses. Defaults until /api/health answers; the backend value wins
-  // on every page load.
+  // Mirrored from the backend's HF_ENDPOINT / HF_DATASETS_SERVER so frontend Hub
+  // calls hit the same host. Defaults until /api/health answers.
   hfEndpoint: string;
   hfDatasetsServer: string;
   fetched: boolean;
@@ -182,9 +180,9 @@ export async function fetchDeviceType(options?: {
       // request that resolved after a later forced refresh already picked up device_type and the
       // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
       // refreshes are explicit re-reads, so they still write.
-      // Endpoint routing is reported to unauthenticated callers and is idempotent, so it
-      // is applied before the authoritative-platform guard below. A mirror deployment whose
-      // first authoritative reply already landed would otherwise never route its Hub calls.
+      // Before the authoritative-platform guard below: this is unauthenticated and
+      // idempotent, and a mirror whose first authoritative reply already landed
+      // would otherwise never route its Hub calls.
       setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         usePlatformStore.setState({
@@ -224,8 +222,7 @@ export async function fetchDeviceType(options?: {
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
-        // Older backends carry neither field; keep whatever the store already
-        // holds instead of resetting a mirror to the default.
+        // Older backends carry neither field: keep what the store holds.
         hfEndpoint: data.hf_endpoint ?? previous.hfEndpoint,
         hfDatasetsServer: data.hf_datasets_server ?? previous.hfDatasetsServer,
         fetched: data.device_type !== undefined || keepPlatform,

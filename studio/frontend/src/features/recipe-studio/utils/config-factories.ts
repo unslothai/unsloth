@@ -407,10 +407,8 @@ export function makeSeedConfig(
     hf_path: "",
     hf_token: "",
     // Empty, not getHfEndpoint(): a seed created before /api/health reports the
-    // mirror (a failed first health call, or a cold desktop start) would pin the
-    // official host into the recipe, and the field is not user-editable, so the
-    // run would silently read the wrong dataset. buildSeedConfig resolves a
-    // blank one at build time.
+    // mirror would pin the official host into the recipe, and the field is not
+    // user-editable. buildSeedConfig resolves a blank one at build time.
     hf_endpoint: "",
     local_file_name: "",
     ...(seedSourceType === "unstructured"
