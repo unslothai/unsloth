@@ -142,36 +142,26 @@ test("the speed suffixes name the two H3 rows on an accelerated host", () => {
   assert.equal(h3PerfSuffix("unsloth/MiniMax-H3-GGUF", "accelerated"), "Slow");
 });
 
-// The scheme comes from the backend, so the qualifier states the precision that will run on THIS
-// host instead of a precision that happens to be true of some other one.
 test("the suffix names the scheme the host reported", () => {
   assert.equal(densePerfSuffix(["fp8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8"]), "Fast INT8");
-  // Reported best-first, so only the first entry is named.
   assert.equal(densePerfSuffix(["fp8", "int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8", "fp8"]), "Fast INT8");
-  // A scheme the frontend has never heard of is still the backend's answer, not ours to drop.
   assert.equal(densePerfSuffix(["nvfp4"]), "Fast NVFP4");
 });
 
-// A host that says it can run the path without naming a scheme is an older backend, which
-// reports only `dense_quant_supported`. It still earns the ordering, and claims no precision.
 test("a host that names no scheme keeps the bare qualifier", () => {
   assert.equal(densePerfSuffix([]), "Fast");
   assert.equal(densePerfSuffix(undefined), "Fast");
   assert.equal(densePerfSuffix(null), "Fast");
-  // Blanks are not a scheme name.
   assert.equal(densePerfSuffix(["", "   "]), "Fast");
   assert.equal(densePerfSuffix(["  fp8  "]), "Fast FP8");
 });
 
-// H3's pipeline row is the one this restores: it used to read "Fast FP8", was flattened to
-// "Fast", and now names whichever scheme the host actually runs.
 test("the H3 pipeline row names its precision from the same scheme list", () => {
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant", ["fp8"]), "Fast FP8");
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant", ["int8"]), "Fast INT8");
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "accelerated", ["fp8"]), "Fast FP8");
-  // The slow row is a GGUF pick and names no precision either way.
   for (const schemes of [["fp8"], ["int8"], []]) {
     assert.equal(
       h3PerfSuffix("unsloth/MiniMax-H3-GGUF", "dense-quant", schemes),
@@ -179,7 +169,6 @@ test("the H3 pipeline row names its precision from the same scheme list", () => 
       schemes.join(",") || "none",
     );
   }
-  // An absent field is the old backend's answer and must not become a guessed FP8.
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant"), "Fast");
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant", []), "Fast");
 });
@@ -194,17 +183,12 @@ test("no other model claims a speed it was never measured at", () => {
   }
 });
 
-// /api/system gained `dense_quant_schemes` beside the existing `dense_quant_supported`, so every
-// reader has to survive a backend that predates it.
 test("an absent or malformed scheme list reads as no schemes, never as a guess", () => {
   assert.deepEqual(normalizeDenseQuantSchemes(undefined), []);
   assert.deepEqual(normalizeDenseQuantSchemes(null), []);
-  // Not an array: an older backend answering the shape wrong is still not an fp8 host.
   assert.deepEqual(normalizeDenseQuantSchemes("fp8" as unknown as string[]), []);
   assert.deepEqual(normalizeDenseQuantSchemes([]), []);
-  // Case and padding come from the wire; the comparison downstream is lower-case.
   assert.deepEqual(normalizeDenseQuantSchemes([" FP8 ", "INT8"]), ["fp8", "int8"]);
-  // Order is the backend's preference and is preserved, since only the first entry is read.
   assert.deepEqual(normalizeDenseQuantSchemes(["int8", "fp8"]), ["int8", "fp8"]);
   assert.deepEqual(normalizeDenseQuantSchemes(["", "  ", 8, null, "fp8"]), ["fp8"]);
 });
@@ -213,7 +197,6 @@ test("a gguf-only or undiscovered host gets no suffix at all", () => {
   for (const host of ["gguf-only", "unknown"] as const) {
     assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", host), null, host);
     assert.equal(h3PerfSuffix("unsloth/MiniMax-H3-GGUF", host), null, host);
-    // A scheme list cannot promote a host that cannot place the pipeline at all.
     assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", host, ["fp8"]), null, host);
   }
 });

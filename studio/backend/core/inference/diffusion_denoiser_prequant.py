@@ -3,16 +3,9 @@
 
 """Seed an official image PIPELINE pick with its hosted pre-quantized denoiser.
 
-The image twin of ``video_denoiser_prequant``. A ``kind == "pipeline"`` pick assembles every
-component from one repo, so the only way to run a quantised denoiser without first downloading and
-materialising the released bf16 shards is to hand ``from_pretrained`` a ``transformer=`` that is
-already quantised. That is what this builds.
-
-Torch-free at import, so the download planner can ask what WOULD be seeded without paying for
-diffusers: the decision has to be settled before a byte moves, or the plan stages the dense shards
-the load never opens and fetches the replacement inline, outside the load's progress, cancel and
-disk preflight.
-"""
+A ``kind == "pipeline"`` pick assembles every component from one repo, so the only way to run a
+quantised denoiser without materialising the bf16 shards is an already-quantised ``transformer=``
+handed to ``from_pretrained``. Torch-free at import."""
 
 from __future__ import annotations
 
@@ -21,20 +14,14 @@ from typing import Any, Optional
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
 from .diffusion_krea2 import KREA2_FAMILY_NAME
 
-# The planner DECIDED against the seed, which is a different thing from never having asked: a load whose pull kept the
-# dense shards on this decline must not re-take the decision against post-eviction free memory and then fetch the
-# artifact inline. Same sentinel contract as the video loader's ``DENOISER_SEED_DECLINED``.
+# The planner DECIDED against the seed, not the same as never having asked: the pull kept the dense shards, so the
+# loader must not re-take the decision and fetch the artifact inline.
 PIPELINE_SEED_DECLINED = "__declined__"
 
-# The one component a seeded image pipeline covers. Single-valued rather than a tuple, unlike video's dual-expert MoE:
-# every seedable image family here has exactly one denoiser, and ``pipeline_seed_supported`` refuses the families that
-# do not.
 DENOISER_COMPONENT = "transformer"
 
-# Families whose pipeline is assembled PER COMPONENT rather than through ``pipeline_cls.from_pretrained(**pipe_kwargs)``
-# (krea ships transformers-5.x configs the 4.x line cannot parse, ideogram the same Qwen stack) plus, for ideogram, a
-# second denoiser this seed does not cover. Their assemblers never see ``pipe_kwargs``, so a seed offered to them would
-# be silently dropped AFTER the plan had already left their dense shards out of the pull.
+# Families assembled PER COMPONENT, plus ideogram's second denoiser: their assemblers never see ``pipe_kwargs``, so a
+# seed would be dropped after the plan had dropped their dense shards.
 _UNSEEDABLE_PIPELINE_FAMILIES = (KREA2_FAMILY_NAME, IDEOGRAM4_FAMILY_NAME)
 
 
@@ -52,12 +39,8 @@ def denoiser_prequant_source(
     path_override: Optional[str] = None,
 ) -> Optional[Any]:
     """The ``PrequantSource`` a pipeline pick would seed its denoiser from, or None.
-
-    ``usable_prequant_source`` rather than ``resolve_prequant_source``: a local override the loader
-    would refuse (outside the allowlist, absent, or baked for another scheme) must read as no source
-    here, or the plan drops the dense shards for a checkpoint that is then rejected after eviction.
-    Pure and never raises: it runs on the download-planning path.
-    """
+    ``usable_prequant_source``, not ``resolve_prequant_source``: an override the loader would refuse
+    must read as no source here. Never raises."""
     wanted = (scheme or "").strip().lower()
     if wanted in ("", "auto", "off", "none") or wanted == PIPELINE_SEED_DECLINED:
         return None
@@ -83,13 +66,8 @@ def denoiser_prequant_pipe_kwargs(
     cache_dir: Optional[str] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """``{"transformer": module}`` for pipeline assembly, or ``{}`` when it cannot be seeded.
-
-    ``{}`` is not a failure: assembly then builds the released bf16 denoiser and the caller's
-    in-memory ``quantize_transformer`` rewrites it in place. It IS a re-plan, though -- a memory plan
-    made against the artifact's size no longer describes the build -- and it is a download, since the
-    plan that chose this left the dense shards out of the pull.
-    """
+    """``{"transformer": module}`` for pipeline assembly, or ``{}`` when it cannot be seeded, which
+    obliges the caller to re-plan at bf16 and restore the dropped shards."""
     try:
         if not pipeline_seed_supported(fam):
             return {}
@@ -126,11 +104,7 @@ def denoiser_prequant_pipe_kwargs(
             dtype = dtype,
             hf_token = hf_token,
             scheme = scheme,
-            # Reject a checkpoint built with a different Linear filter, so a seeded denoiser and a runtime-quantised
-            # one cover the same layers.
             min_features = DEFAULT_MIN_LINEAR_FEATURES,
-            # Only enforced when the caller pinned fp8 fast-accum; a checkpoint that baked the other choice falls back
-            # to the dense build rather than running a kernel nobody asked for.
             fast_accum = fast_accum,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
@@ -159,12 +133,8 @@ def denoiser_prequant_pipe_kwargs(
 
 
 def prequant_artifact_label(source: Any) -> Optional[str]:
-    """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override.
-
-    What the resolved record reports so a user can tell WHICH checkpoint produced the pixels: the
-    scheme alone does not distinguish the hosted artifact from a runtime quantise of the released
-    weights, and the two do not render the same image.
-    """
+    """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override;
+    the scheme alone cannot tell one from a runtime quantise."""
     if source is None:
         return None
     kind = getattr(source, "kind", None)

@@ -36,15 +36,9 @@ export interface ModelArtifact {
   label: string;
   /** Whether this bf16 pipeline exposes a transformer eligible for dense quantisation. */
   denseQuantable?: boolean;
-  /** Hosted pre-quantised checkpoints for this pipeline's transformer ("unsloth/<Model>-FP8",
-   *  holding <Model>-FP8.pt and <Model>-INT8.pt). An auto load on a dense-quant host fetches the
-   *  checkpoint for the host's scheme instead of the dense bf16 shards, so the row's download plan
-   *  and fit verdict are about the artifact that will actually be downloaded. */
+  /** Hosted pre-quantised checkpoint an auto load fetches instead of the dense bf16 shards. */
   prequantRepo?: string;
-  /** Size (GB) of that checkpoint per scheme. The two schemes are not interchangeable: torchao
-   *  int8 stores scales the fp8 artifact does not, so FLUX.1-schnell is 11.09 at fp8 and 14.13 at
-   *  int8. TRANSFORMER ONLY -- the VAE and text encoders are unchanged, so a resident estimate
-   *  adds them back. */
+  /** Size (GB) per scheme; int8 stores scales fp8 does not. TRANSFORMER ONLY. */
   prequantSizeGb?: Readonly<Partial<Record<DenseQuantScheme, number>>>;
   /** Curated resident-size estimate for routing. Omitted = unknown: never auto-picked unless
    *  downloaded. GGUF omits it too, since its quant ladder self-fits via pickDefaultQuant. */
@@ -914,9 +908,7 @@ function artifactUsesDenseQuant(
   return hostRunsDenseQuant(host) && artifactTakesDenseQuant(group, artifact);
 }
 
-/** The artifact half of the rule above, with no host in it: a dense bf16 image pipeline whose
- *  transformer the quantiser can take. Split out because the fit rules reach the same question
- *  from a device budget rather than from a host class. */
+/** The artifact half of the rule above, asked from a device budget rather than a host class. */
 function artifactTakesDenseQuant(
   group: CatalogGroup,
   artifact: ModelArtifact,
@@ -929,9 +921,8 @@ function artifactTakesDenseQuant(
   );
 }
 
-/** Speed qualifier from the dense-quant path or an artifact-specific rule. Both name the scheme
- *  the host reported, so a row states the precision that will run rather than a bare promise of
- *  speed: "Fast FP8" on Ada and up, "Fast INT8" on Ampere, "Fast" where the backend named none. */
+/** Speed qualifier from the dense-quant path or an artifact-specific rule, naming the scheme the
+ *  host reported. */
 function curatedPerfSuffix(
   hit: { group: CatalogGroup; artifact: ModelArtifact },
   host: HostClass,
@@ -957,10 +948,8 @@ export function curatedRowLabelFor(
   // Only where the host can run both rows, so the qualifier compares things the user can pick
   // between rather than advertising a speed they cannot have.
   const perf = curatedPerfSuffix(hit, host, denseQuantSchemes);
-  // Avoid duplicating variant names such as "Fast (distilled)". Matched on the qualifier's first
-  // word rather than the whole string: the qualifier now carries a precision ("Fast FP8"), and
-  // testing for that in full would miss the "Fast" already in the name and read
-  // "HiDream I1 (Fast (distilled)) (Fast FP8)".
+  // Matched on the qualifier's first word: testing "Fast FP8" in full would miss the "Fast"
+  // already in the name and read "HiDream I1 (Fast (distilled)) (Fast FP8)".
   const perfWord = perf?.split(" ")[0];
   const qualify = (name: string) =>
     perf && perfWord && !new RegExp(`\\b${perfWord}\\b`, "i").test(name)
@@ -1077,10 +1066,7 @@ export interface DeviceBudget {
   budgetFraction?: number;
   /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. Absent means one. */
   gpuCount?: number;
-  /** Dense quant schemes this host runs, best first, straight from `/api/system`. Non-empty means
-   *  an auto load of an eligible official pipeline fetches the hosted pre-quantised checkpoint,
-   *  so the fit rules size the row by what will actually be resident. Absent / empty is every
-   *  caller that has no host answer, and keeps the plain bf16 rule. */
+  /** Dense quant schemes this host runs, best first; empty keeps the bf16 sizing rule. */
   denseQuantSchemes?: readonly string[];
 }
 
@@ -1174,16 +1160,10 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
   gguf: 3,
 };
 
-/** Bytes a bf16 parameter occupies, for backing the transformer out of a resident estimate. */
 const BF16_BYTES_PER_PARAM = 2;
 
-/** What a row is actually sized by on this host. On a dense-quant host an auto load of an eligible
- *  official pipeline pulls the hosted pre-quantised transformer instead of the bf16 shards, so the
- *  resident figure is that checkpoint plus the companions the quant does not touch (VAE, text
- *  encoders, scheduler). `approxSizeGb` is the dense estimate, and `totalParams` on these rows is
- *  the transformer's own count, so the companions are the estimate minus the bf16 transformer.
- *  Never larger than the dense figure: the quantised form cannot cost more than the form it
- *  replaces, and clamping keeps a stale size pair from inventing a worse verdict than today's. */
+/** What a row is sized by here: the pre-quantised transformer plus the companions, which are
+ *  `approxSizeGb` minus the bf16 transformer. Clamped to the dense figure. */
 function residentSizeGb(
   group: CatalogGroup,
   artifact: ModelArtifact,

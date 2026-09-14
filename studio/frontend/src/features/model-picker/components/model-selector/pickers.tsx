@@ -895,8 +895,7 @@ function artifactBudget(gpu: {
   return {
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
-    // Carried so a row an auto load would fetch pre-quantised is judged by that checkpoint's
-    // resident size rather than by the bf16 shards it replaces.
+    // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
     denseQuantSchemes: gpu.denseQuantSchemes,
   };
 }

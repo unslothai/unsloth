@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic tests for seeding an official image PIPELINE pick with its hosted pre-quantized denoiser.
-
-An official ``kind == "pipeline"`` pick with the precision left to us now defaults to the hosted
-FP8 / INT8 checkpoint the family table names, the way MiniMax-H3's video loader already does: the
-artifact REPLACES the released ``transformer/`` shards, so it is planned before a byte moves, the
-shards are dropped from the pull, and the quantised denoiser is handed to ``from_pretrained``
-instead of being built dense and rewritten in place.
-
-torch and diffusers are stubbed via ``sys.modules`` and the Hub is a fixture, so the plan, the pin
-and the load are all exercised without CUDA, torchao or a real download.
-"""
+"""Hermetic tests for seeding an image PIPELINE pick with its hosted pre-quantized denoiser, which
+REPLACES the released ``transformer/`` shards. torch, diffusers and the Hub are stubbed."""
 
 from __future__ import annotations
 
@@ -39,7 +30,6 @@ PREQUANT_REPO = "unsloth/Z-Image-Turbo-FP8"
 PREQUANT_FILE = "Z-Image-Turbo-FP8.pt"
 PREQUANT_BYTES = 6000 * MIB
 
-# Tongyi-MAI/Z-Image-Turbo's component layout; the denoiser is the two 11 GiB shards.
 Z_IMAGE_INDEX = {
     "_class_name": "ZImagePipeline",
     "transformer": ["diffusers", "ZImageTransformer2DModel"],
@@ -123,8 +113,6 @@ def hub(monkeypatch, tmp_path):
             )
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    # The mirror table maps this base onto unsloth/Z-Image-Turbo; the listing is the same either
-    # way and the swap is not what these tests are about.
     monkeypatch.setattr(dmod, "prefer_ungated_mirror", lambda base, *_a, **_k: base)
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download", lambda repo_id, filename, **kw: str(manifest)
@@ -144,11 +132,8 @@ def _estimate_bytes(**overrides):
     )
 
 
-# ── the download plan ────────────────────────────────────────────────────────────
 def test_the_plan_drops_the_released_denoiser_shards_and_keeps_its_config(hub):
-    """The hosted checkpoint replaces the weights, not the config: the seeding loader meta-inits
-    the denoiser from ``transformer/config.json``, so dropping it would send a fully staged load
-    back to the Hub."""
+    """The pull drops the denoiser shards but keeps the config the seeding loader meta-inits from."""
     skipped: list[str] = []
     resident: list = []
     total, files = _estimate_bytes(
@@ -160,7 +145,6 @@ def test_the_plan_drops_the_released_denoiser_shards_and_keeps_its_config(hub):
     assert not [f for f in files if f in DENOISER_SHARDS]
     assert skipped == DENOISER_SHARDS
     assert total == ALL_BYTES - DENOISER_BYTES
-    # Nothing the pipeline materialises from those shards is declared resident either.
     assert not [name for name, _size in resident if name.startswith("transformer/")]
 
 
@@ -189,7 +173,6 @@ def _plan_backend(
     monkeypatch.setattr(
         DiffusionBackend, "_pipeline_planned_denoiser_scheme", lambda *_a, **_k: planned
     )
-    # Nothing on this host is cached, so every planned file is a real entry.
     monkeypatch.setattr(
         DiffusionBackend, "_files_already_cached", staticmethod(lambda *_a, **_k: set())
     )
@@ -201,9 +184,7 @@ def _plan_backend(
 
 
 def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
-    """The shards are gone from the pull, so the artifact that replaces them is real footprint the
-    plan would otherwise never report, and a file the manager must stage rather than let the load
-    fetch inline."""
+    """The plan counts the hosted checkpoint's bytes and stages it as a companion entry."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
 
@@ -213,14 +194,12 @@ def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     assert not [f for f in entries[Z_IMAGE_REPO]["files"] if f in DENOISER_SHARDS]
     assert "transformer/config.json" in entries[Z_IMAGE_REPO]["files"]
     assert plan["required_bytes"] == ALL_BYTES - DENOISER_BYTES + PREQUANT_BYTES
-    # The pipeline repo is still the selected model; the checkpoint is its companion.
     assert entries[Z_IMAGE_REPO]["checkpoint"] is True
     assert entries[PREQUANT_REPO]["checkpoint"] is False
 
 
 def test_an_unplanned_pipeline_pick_plans_exactly_as_before(monkeypatch, hub):
-    """No hosted artifact for the resolved scheme: the released shards stay in the pull and the
-    loader quantises them in place, which is the behaviour this change falls through to."""
+    """With no hosted artifact the released shards stay in the pull and the plan is unchanged."""
     backend = _plan_backend(monkeypatch, planned = None)
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
 
@@ -240,8 +219,7 @@ def test_a_declined_plan_keeps_the_released_shards(monkeypatch, hub):
 
 
 def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(monkeypatch, hub):
-    """The shards are out of the declared set, so without the artifact bytes the refusal would
-    price this pipeline at its companions alone."""
+    """The unified-memory refusal prices the denoiser from the artifact, not the dropped shards."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
     seen: dict = {}
 
@@ -256,9 +234,7 @@ def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(m
 
 
 def test_a_gguf_pick_still_never_downloads_a_second_denoiser(monkeypatch):
-    """Unchanged: for a GGUF pick the hosted checkpoint is a SECOND denoiser beside one already on
-    disk, so an auto quant only ever uses a cached one. The pipeline rule is the opposite because
-    there the artifact REPLACES the download."""
+    """A GGUF pick never sizes an uncached hosted checkpoint: there it is a SECOND denoiser."""
     backend = DiffusionBackend()
     monkeypatch.setattr(backend, "_target_for_ordinal", lambda *_a, **_k: _target())
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *_a, **_k: PREQUANT_REPO)
@@ -301,7 +277,6 @@ def test_a_pipeline_pick_with_no_planned_scheme_sizes_nothing(monkeypatch, hub):
         )
 
 
-# ── the plan-time settle ─────────────────────────────────────────────────────────
 def _settle_backend(
     monkeypatch,
     *,
@@ -352,24 +327,23 @@ def test_an_unset_precision_defaults_to_the_hosted_checkpoint(monkeypatch):
 
 
 def test_an_ampere_host_defaults_to_the_hosted_int8_checkpoint(monkeypatch):
-    """Same family, same table: the ladder picks the scheme, and z-image hosts both."""
+    """An Ampere host settles on the hosted int8 checkpoint."""
     assert _settle(_settle_backend(monkeypatch, scheme = "int8")) == "int8"
 
 
 @pytest.mark.parametrize("quant", ["none", "off"])
 def test_precision_off_keeps_the_released_weights(monkeypatch, quant):
-    """The hosted checkpoint re-rolls the sample, so a request NOT to quantise is honoured."""
+    """An explicit precision of none/off keeps the released weights."""
     assert _settle(_settle_backend(monkeypatch), transformer_quant = quant) is None
 
 
 def test_speed_off_keeps_the_released_weights(monkeypatch):
-    """Speed=off is a bit-exact contract and a quantised denoiser is not bit-exact."""
+    """Speed=off keeps the released weights: it is a bit-exact contract."""
     assert _settle(_settle_backend(monkeypatch), speed_mode = "off") is None
 
 
 def test_a_baked_lora_keeps_the_dense_path(monkeypatch):
-    """Adapters attach to dense Linears before torchao converts them, so a bake needs the released
-    weights. An all-zero list bakes nothing and is unaffected."""
+    """A LoRA bake keeps the dense path; an all-zero list bakes nothing and is unaffected."""
     backend = _settle_backend(monkeypatch)
     assert _settle(backend, loras = [("adapter", 0.8)]) is None
     assert _settle(backend, loras = [("adapter", 0.0)]) == "fp8"
@@ -381,20 +355,18 @@ def test_a_definite_offload_request_keeps_the_released_weights(monkeypatch, mode
 
 
 def test_an_artifact_sized_plan_that_still_offloads_declines(monkeypatch):
-    """Offload hooks move modules with Module.to(), which torchao tensors reject, so the decline is
-    pinned rather than left for the loader to rediscover after the shards are gone."""
+    """An artifact-sized plan that still offloads pins a decline: torchao rejects offload hooks."""
     backend = _settle_backend(monkeypatch, offload = "sequential")
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 
 def test_a_family_with_no_hosted_artifact_falls_through(monkeypatch):
-    """nvfp4 has no hosted z-image checkpoint, so the loader's in-memory quantise handles it."""
+    """A scheme with no hosted artifact falls through to the in-memory quantise."""
     assert _settle(_settle_backend(monkeypatch, scheme = "nvfp4")) is None
 
 
 def test_a_base_with_no_hosted_artifact_falls_through(monkeypatch):
-    """Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled
-    base is in ``prequant_excluded_bases`` and must quantise its own weights."""
+    """An excluded base (the undistilled Z-Image) quantises its own weights."""
     assert _settle(_settle_backend(monkeypatch), base = "Tongyi-MAI/Z-Image") is None
 
 
@@ -404,8 +376,7 @@ def test_a_gguf_pick_is_never_settled_here(monkeypatch):
 
 @pytest.mark.parametrize("family", ["krea-2", "ideogram-4"])
 def test_a_per_component_assembler_is_never_seeded(monkeypatch, family):
-    """Their loaders never see ``pipe_kwargs``, so a seed would be dropped AFTER the plan had
-    already left their released shards out of the pull."""
+    """A per-component assembler is never seeded: it never sees ``pipe_kwargs``."""
     backend = _settle_backend(monkeypatch)
     fam = types.SimpleNamespace(name = family, base_repo = "x/y")
     assert (
@@ -421,9 +392,7 @@ def test_a_per_component_assembler_is_never_seeded(monkeypatch, family):
 
 
 def test_an_uncompilable_host_keeps_the_released_weights(monkeypatch):
-    """A torchao denoiser that is never compiled is ~30x slower than the bf16 it replaced, and the
-    loader declines such a pipeline anyway; planning around a seed it will refuse would drop shards
-    for nothing."""
+    """An uncompilable host keeps the released weights, since the loader would refuse the seed."""
     backend = _settle_backend(monkeypatch)
     monkeypatch.setattr(dmod, "_pipeline_quant_uncompilable_reason", lambda *_a, **_k: "no triton")
     assert _settle(backend) is None
@@ -439,7 +408,6 @@ def test_an_unanswerable_probe_keeps_the_released_weights(monkeypatch):
     assert _settle(backend) is None
 
 
-# ── the pin from plan to load ────────────────────────────────────────────────────
 def _run_load_backend(
     monkeypatch,
     *,
@@ -486,15 +454,12 @@ def test_the_load_is_pinned_to_the_plan_that_scoped_the_pull(monkeypatch, hub):
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen["_pipeline_prequant_planned"] == "fp8"
     assert seen["_pipeline_prequant_skipped"] == tuple(DENOISER_SHARDS)
-    # Staged under this load's cancel event rather than inline under the load lock.
     assert fetched == [(PREQUANT_REPO, PREQUANT_FILE, PREQUANT_BYTES)]
-    # ...and claimed, so a delete cannot yank it mid-fetch.
     assert PREQUANT_REPO in backend.loading_repo_ids() or backend._loading is None
 
 
 def test_an_artifact_that_does_not_resolve_keeps_the_released_shards(monkeypatch, hub):
-    """The skip flag is never re-checked, so a checkpoint that did not resolve on the Hub has to
-    leave the loader's bf16 fallback something to open."""
+    """An artifact that does not resolve on the Hub keeps the released shards in the pull."""
     backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8", verified = False)
     backend._run_load(repo_id = Z_IMAGE_REPO, model_kind = "pipeline", _load_token = 1)
 
@@ -504,8 +469,7 @@ def test_an_artifact_that_does_not_resolve_keeps_the_released_shards(monkeypatch
 
 
 def test_the_decline_is_pinned_across_plan_and_load(monkeypatch, hub):
-    """The pull kept the released shards on this decline, so the loader must not re-take the
-    decision against post-eviction free memory and fetch the artifact inline."""
+    """A decline is pinned from plan to load, so the loader never re-takes it and fetches inline."""
     backend, seen, _fetched = _run_load_backend(monkeypatch, planned = PIPELINE_SEED_DECLINED)
     backend._run_load(repo_id = Z_IMAGE_REPO, model_kind = "pipeline", _load_token = 1)
 
@@ -514,7 +478,7 @@ def test_the_decline_is_pinned_across_plan_and_load(monkeypatch, hub):
 
 
 def test_an_offline_load_never_probes_the_hub_for_an_artifact(monkeypatch):
-    """Nothing may be downloaded, so the settle and its ``model_info`` both stand down."""
+    """An offline load never settles a scheme, so it never probes the Hub."""
     backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8")
 
     def _never(*_a, **_k):
@@ -528,7 +492,6 @@ def test_an_offline_load_never_probes_the_hub_for_an_artifact(monkeypatch):
     assert fetched == []
 
 
-# ── the load ─────────────────────────────────────────────────────────────────────
 class _FakePipe:
     def __init__(self) -> None:
         self.transformer = object()
@@ -646,8 +609,7 @@ def _load(backend, **overrides):
 
 
 def test_a_seeded_denoiser_engages_the_quant_without_a_second_conversion(fake_runtime, monkeypatch):
-    """The pipeline is ASSEMBLED around the quantised denoiser, so the in-memory rewrite that
-    would otherwise build it dense first is a no-op for this load."""
+    """A seeded denoiser engages the quant with no second, in-memory conversion."""
     backend, spy = _load_backend(monkeypatch)
     status = _load(backend)
 
@@ -664,27 +626,24 @@ def test_a_seeded_denoiser_engages_the_quant_without_a_second_conversion(fake_ru
 
 
 def test_the_resolved_record_names_the_hosted_file(fake_runtime, monkeypatch):
-    """The scheme alone cannot tell the hosted artifact from a runtime quantise of the released
-    weights, and the two do not render the same image."""
+    """``resolved`` names the hosted FILE, which renders differently from a runtime quantise."""
     backend, _spy = _load_backend(monkeypatch)
     resolved = _load(backend)["resolved"]["transformer_quant"]
 
     assert resolved["value"] == "fp8"
     assert resolved["artifact"] == f"prequant:{PREQUANT_REPO}/{PREQUANT_FILE}"
     assert PREQUANT_FILE in resolved["reason"]
-    # `source` still says who chose the precision, which is what renders the "Auto: FP8" badge.
+    # `source` must stay "auto"/"explicit": the frontend branches on it.
     assert resolved["source"] == "auto"
 
 
 def test_a_seed_that_does_not_land_replans_and_tops_up_the_shards(fake_runtime, monkeypatch):
-    """Seeding is best-effort, the plan was priced on it landing, and from_pretrained cannot
-    re-fetch a dropped shard from a local snapshot dir."""
+    """A failed seed re-plans at bf16 and restores shards from_pretrained cannot re-fetch."""
     backend, spy = _load_backend(monkeypatch, seeded = False)
     status = _load(backend)
 
     assert "transformer" not in _FakePipeline.last
     assert spy.restored and set(DENOISER_SHARDS) <= set(spy.restored[0])
-    # ...and the released weights are quantised in place instead, which is the fallback.
     assert spy.quantised == ["auto"]
     assert status["transformer_quant"] == "fp8"
     assert status["resolved"]["transformer_quant"].get("artifact") is None
@@ -693,8 +652,7 @@ def test_a_seed_that_does_not_land_replans_and_tops_up_the_shards(fake_runtime, 
 def test_an_artifact_sized_plan_that_offloads_at_load_time_drops_the_seed(
     fake_runtime, monkeypatch
 ):
-    """The plan settled this against CAPACITY while the previous pipeline was resident; live free
-    memory can be smaller, and torchao tensors cannot ride an offload rotation."""
+    """A plan that offloads at load time drops the seed: torchao tensors reject offload hooks."""
     backend, spy = _load_backend(monkeypatch, offload = "sequential")
     _load(backend)
 
@@ -704,7 +662,6 @@ def test_an_artifact_sized_plan_that_offloads_at_load_time_drops_the_seed(
 
 def test_a_declined_plan_never_seeds_at_the_load(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
-    # A decline scopes the pull exactly as it was, so the loader is handed no skipped shards either.
     _load(
         backend,
         _pipeline_prequant_planned = PIPELINE_SEED_DECLINED,
@@ -717,8 +674,7 @@ def test_a_declined_plan_never_seeds_at_the_load(fake_runtime, monkeypatch):
 
 
 def test_a_direct_load_with_no_plan_phase_keeps_todays_behaviour(fake_runtime, monkeypatch):
-    """A direct call has no plan to be pinned to, so it may not take a decision the pull was never
-    scoped on: the released shards are on disk and the in-memory quantise is the right path."""
+    """A direct call with no plan phase never seeds a decision the pull was not scoped on."""
     backend, spy = _load_backend(monkeypatch)
     _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
 
@@ -727,14 +683,13 @@ def test_a_direct_load_with_no_plan_phase_keeps_todays_behaviour(fake_runtime, m
 
 
 def test_an_explicit_scheme_with_a_hosted_artifact_is_seeded_too(monkeypatch):
-    """The default is what changes; an explicit request was already honoured and still is."""
+    """An explicit scheme with a hosted artifact is seeded too."""
     backend = _settle_backend(monkeypatch)
     assert _settle(backend, transformer_quant = "fp8") == "fp8"
 
 
 def test_an_explicit_scheme_with_no_artifact_falls_to_the_in_memory_path(fake_runtime, monkeypatch):
-    """Nothing to seed, so the released weights are quantised in place and an explicit scheme that
-    cannot be honoured there still fails closed, exactly as before."""
+    """With nothing to seed, an explicit scheme quantises in place and still fails closed."""
     backend, spy = _load_backend(monkeypatch)
     status = _load(
         backend,

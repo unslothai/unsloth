@@ -25,9 +25,7 @@ export function useHostClass(): HostClass {
   );
 }
 
-/** The dense quant schemes this host can run, best first. Separate from `useHostClass` because
- *  the class answers "can it", and this answers "with what": a row that names the precision it
- *  will run needs the scheme, and only the backend knows whether that is fp8 or int8. */
+/** The dense quant schemes this host can run, best first. */
 export function useDenseQuantSchemes(): readonly string[] {
   return useGpuInfo().denseQuantSchemes;
 }

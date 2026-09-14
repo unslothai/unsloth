@@ -21,9 +21,8 @@ const hooks = loadWithStubs<typeof GpuHooks>(
       useMemo: (read: () => unknown) => read(),
     },
     "./use-system": { getCachedSystemInfo: () => snapshot },
-    // Aliased, so the passthrough above cannot resolve it. The real implementation, not a
-    // reimplementation: this test is about what the probe reads, and a hand-written normaliser
-    // here would answer for the source instead of from it.
+    // Aliased, so the passthrough above cannot resolve it. The real implementation, since a
+    // hand-written normaliser would answer for the source instead of from it.
     "@/lib/dense-quant-schemes": { normalizeDenseQuantSchemes },
   },
   { relativePassthrough: true },
@@ -58,8 +57,6 @@ test("GPU and RAM probes distinguish zero from missing or invalid readings", () 
   }
 });
 
-// The route reports `dense_quant_schemes` beside the older `dense_quant_supported`, and the
-// picker names a precision from it. An older backend sends neither, or only the boolean.
 test("the dense quant schemes are read off the route, and default to none", () => {
   const withSchemes = (schemes?: unknown) => {
     snapshot = {
@@ -78,11 +75,9 @@ test("the dense quant schemes are read off the route, and default to none", () =
   };
   assert.deepEqual(withSchemes(["fp8"]).denseQuantSchemes, ["fp8"]);
   assert.deepEqual(withSchemes(["INT8"]).denseQuantSchemes, ["int8"]);
-  // Absent on an older backend: the capability stands, the precision is simply unnamed.
   const older = withSchemes();
   assert.equal(older.denseQuantSupported, true);
   assert.deepEqual(older.denseQuantSchemes, []);
-  // Reported and empty is a host the path is unsupported on.
   assert.deepEqual(withSchemes([]).denseQuantSchemes, []);
 });
 

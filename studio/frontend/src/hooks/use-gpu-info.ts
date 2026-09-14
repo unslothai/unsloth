@@ -50,8 +50,7 @@ export interface GpuInfo {
   /** Backend-reported dense quant capability. False until system info arrives. */
   denseQuantSupported: boolean;
   /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8").
-   *  Empty until system info arrives, and empty on a backend too old to report the field, so a
-   *  reader naming a precision from it degrades to naming none rather than to guessing one. */
+   *  Empty until system info arrives and on a backend too old to report the field. */
   denseQuantSchemes: readonly string[];
   name: string;
   memoryTotalGb: number;

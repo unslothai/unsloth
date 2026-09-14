@@ -149,33 +149,22 @@ def test_the_probe_follows_the_smoke_cache_as_it_warms(monkeypatch):
 
 
 def test_the_scheme_ladder_is_published_beside_the_bit():
-    """The bit AND the ladder.
-
-    One bit cannot tell an Ampere host (int8) from an Ada one (fp8), and both have hosted
-    checkpoints an official pick now defaults to, so a row that names the precision it is offering
-    needs the list. It comes from ``auto_scheme_candidates``, the same ladder, deny list and smoke
-    probe the loader's own selector reads, so the row and the load cannot disagree about what auto
-    allows. What actually ran is still reported by ``resolved``.
-    """
+    """``/api/system`` publishes the scheme ladder beside the capability bit, from the same
+    ``auto_scheme_candidates`` the loader's selector reads."""
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert '"dense_quant_schemes": _dense_quant_schemes()' in src
     assert "auto_scheme_candidates" in _src("_probe_dense_quant_schemes")
 
 
 def test_the_ladder_is_read_off_the_same_refresh_as_the_bit():
-    """The published list must not walk the cards a second time on every poll.
-
-    ``/api/system`` resolves the bit first, and that refresh fills both, so the reader beside it is
-    a pure read. A reader that probed again would double the per-poll device walk and could publish
-    a ladder from a different pass than the bit next to it.
-    """
+    """The reader beside the bit is a pure read, so the polled route never probes (or imports
+    torch) a second time and both entries come from one pass."""
     reader = _src("_dense_quant_schemes")
     assert "_probe_dense_quant_schemes" not in reader
     assert "_refresh_dense_quant_capability" not in reader
     refresh = _src("_refresh_dense_quant_capability")
     assert "_probe_dense_quant_schemes()" in refresh
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-    # Order matters in the payload: the bit refreshes, then the list is read.
     assert src.index('"dense_quant_supported": _dense_quant_supported()') < src.index(
         '"dense_quant_schemes": _dense_quant_schemes()'
     )
@@ -232,7 +221,7 @@ def test_an_ampere_host_publishes_int8(monkeypatch):
 
 
 def test_a_mixed_host_publishes_only_what_every_card_runs(monkeypatch):
-    """The picker cannot see which card a load lands on, so a scheme one card lacks is not offered."""
+    """A mixed host publishes only the schemes every card runs."""
     result, scoped = _run_schemes(
         monkeypatch,
         device_count = 2,
@@ -257,7 +246,7 @@ def test_a_scheme_probe_failure_publishes_nothing(monkeypatch):
 
 
 def test_an_incapable_host_never_publishes_a_ladder():
-    """`[]` whenever the bit is False, so a client can read the list on its own."""
+    """The ladder is `[]` whenever the capability bit is False."""
     refresh = _src("_refresh_dense_quant_capability")
     assert "if _dense_quant_capability else []" in refresh
 
