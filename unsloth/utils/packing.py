@@ -590,7 +590,8 @@ def get_packed_info_from_kwargs(
     ):
         return entry["result"]
 
-    lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+    with torch.inference_mode(False):
+        lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
     cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
     torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
 

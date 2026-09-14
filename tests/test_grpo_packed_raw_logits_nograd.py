@@ -388,13 +388,15 @@ def test_packed_path_survives_a_forward_that_returns_real_logits():
     assert namespace["_pk_result"].shape == (2, KEEP + 2)
 
 
-def test_packed_inference_preserves_metadata_cache_hits():
+@pytest.mark.parametrize("length_dtype", [torch.int32, torch.int64])
+def test_packed_inference_preserves_metadata_cache_hits(length_dtype):
     import importlib.util
 
     namespace, model, _, _ = _run_packed_block(inference_mode = True)
     assert namespace["_pk_use"] is True
     lengths = next(call.packed_lengths for call in model.calls if call.packed)
     assert not torch.is_inference(lengths)
+    lengths = lengths.to(dtype = length_dtype)
 
     spec = importlib.util.spec_from_file_location(
         "packed_cache", _REPO / "unsloth/utils/packing.py"
