@@ -549,6 +549,9 @@ VLLM_SUPPORTED_VLM = [
     "mistral3",
     "qwen3_vl",
     "qwen3_vl_moe",
+    # Qwen3.5 ships as Qwen3_5ForConditionalGeneration with a vision_config, so it
+    # reaches this gate even for the text-only checkpoints.
+    "qwen3_5",
 ]
 VLLM_NON_LORA_VLM = [
     "mllama",
