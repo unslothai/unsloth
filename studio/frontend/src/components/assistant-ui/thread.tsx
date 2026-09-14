@@ -3387,6 +3387,12 @@ const Composer: FC<{
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    // Every path that empties the composer arrives here, including the three
+    // that queue instead of sending (handleSubmit returns before the send when
+    // a run is in flight, when a queue is already active, or on the
+    // Cmd/Ctrl+Enter chord). Collapsing here rather than beside send() is what
+    // keeps a queued prompt from leaving a tall empty box behind.
+    setIsWritingExpanded(false);
   }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
@@ -4256,7 +4262,6 @@ const Composer: FC<{
         createdAt: Date.now(),
       });
       aui.composer().send();
-      setIsWritingExpanded(false);
       // Empty texts are dropped, so an attachment-only send still clears.
       armJustSent(sentText, ...alsoGuard);
     } catch (error) {
@@ -4892,6 +4897,24 @@ const Composer: FC<{
                   "--composer-editor-height": `${composerText.length === 0 ? 40 : Math.max(40, editorHeight)}px`,
                 } as CSSProperties
               }
+              // Escape collapses, and it sits on the wrapper rather than on the
+              // input so the input's own capture slot stays the plain-paste
+              // chord's. React dispatches an ancestor's capture handler first,
+              // so this still runs before anything the input does.
+              //
+              // It cannot stop assistant-ui's cancelOnEscape: that listener is
+              // registered on the document with capture:true, so it has already
+              // run by the time any React handler sees the key. Escape during a
+              // run therefore cancels the run as it always did, and collapses.
+              onKeyDownCapture={(event) => {
+                if (
+                  event.key === "Escape" &&
+                  isWritingExpanded &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  setIsWritingExpanded(false);
+                }
+              }}
             >
               <ComposerPrimitive.Input
                 id={inputId}
@@ -4911,18 +4934,7 @@ const Composer: FC<{
                 dir="auto"
                 {...inputProps}
                 // Capture, so inputProps keeps the handlers it already owns.
-                onKeyDownCapture={(event) => {
-                  notePlainPasteChord(event);
-                  if (
-                    event.key === "Escape" &&
-                    isWritingExpanded &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setIsWritingExpanded(false);
-                  }
-                }}
+                onKeyDownCapture={notePlainPasteChord}
                 onKeyUpCapture={endPlainPasteChord}
                 onBlurCapture={endPlainPasteChord}
                 addAttachmentOnPaste={false}
