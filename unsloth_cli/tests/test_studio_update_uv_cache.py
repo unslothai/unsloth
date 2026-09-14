@@ -941,6 +941,27 @@ def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path
         studio_cache.chmod(0o755)
     assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
 
+
     # Writable again, and it is handed over as before.
     seen = _run_posix(monkeypatch, tmp_path)
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+def test_a_store_with_a_two_digit_version_is_probed(tmp_path):
+    """uv 0.12.1 names its registry store simple-v24, so the probe's `*-v[0-9]*` has to reach
+    two-digit versions as well as one-digit ones."""
+    if os.geteuid() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    (cache / "simple-v24").mkdir()
+    (cache / "simple-v24").chmod(0o555)
+    try:
+        assert studio._uv_cache_is_writable(cache) is False
+    finally:
+        (cache / "simple-v24").chmod(0o755)
+    assert studio._uv_cache_is_writable(cache) is True

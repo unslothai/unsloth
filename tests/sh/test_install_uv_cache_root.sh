@@ -566,6 +566,19 @@ ISOLATED
         chmod 0755 "$BUCKET_RO/archive-v0" 2>/dev/null || true
     fi
 
+    # Store versions are not single-digit: uv 0.12.1 ships simple-v24. `*-v[0-9]*` is "a digit
+    # then anything", so it covers both, and this case keeps a narrower glob from slipping in.
+    MULTI_RO="$CASE/multi-digit store/uv"
+    mkdir -p "$MULTI_RO/archive-v0/pkg" "$MULTI_RO/simple-v24"
+    : > "$MULTI_RO/archive-v0/pkg/payload.whl"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$MULTI_RO/simple-v24" 2>/dev/null; then
+        run_case "$shell" "an unwritable multi-digit store is not adopted" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$MULTI_RO" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $MULTI_RO holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 0755 "$MULTI_RO/simple-v24" 2>/dev/null || true
+    fi
+
     # ...and not only the package buckets. uv writes interpreter and index metadata under the
     # same root, and an empty unwritable interpreter-v4 aborts uv 0.10.7 BEFORE resolution:
     # "Failed to query Python interpreter ... failed to create directory ... Permission denied",

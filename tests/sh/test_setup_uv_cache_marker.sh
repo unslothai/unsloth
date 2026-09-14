@@ -160,6 +160,18 @@ for shell in sh bash; do
     assert_eq "$shell: the same cache is adopted once its bucket is writable again" \
         "$BLOCKED" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
+    # Store versions reach two digits (uv 0.12.1 ships simple-v24), and `*-v[0-9]*` is "a digit
+    # then anything", so it matches those too. This pins that against a narrower glob.
+    MULTI="$CASE/multi-digit store/uv"
+    warm "$MULTI"
+    mkdir -p "$MULTI/simple-v24"
+    record "$HOME_DIR" "$MULTI\\n"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$MULTI/simple-v24" 2>/dev/null; then
+        assert_eq "$shell: an unwritable multi-digit store falls back to Studio" \
+            "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0755 "$MULTI/simple-v24" 2>/dev/null || true
+    fi
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one
