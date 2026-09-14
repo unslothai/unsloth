@@ -2540,52 +2540,70 @@ class DiffusionBackend:
                 )
                 if scheme is None or scheme == TQ_AUTO:
                     return None
-                if (
-                    denoiser_prequant_source(
-                        fam,
-                        scheme,
-                        base_repo = base,
-                        path_override = transformer_prequant_path,
-                    )
-                    is None
-                ):
-                    return None
-                candidate = resolve_dense_quant_candidate(
-                    fam = fam,
-                    target = target,
-                    requested = scheme,
-                    base_repo = base,
-                    prequant_path = transformer_prequant_path,
-                    force_dense = False,
-                    logger = None,
-                )
-                if candidate is None or not candidate.prequant:
-                    return None
+                # Under auto the ladder is walked below the winner: a rung whose hosted artifact exists but whose
+                # artifact-sized plan still offloads (Qwen-Image's int8 file on a 32 GB card) yields to the next rung
+                # that both has an artifact and stays resident, instead of pinning a decline. An explicit scheme is
+                # honored or refused, never swapped.
+                rungs: list[str] = [scheme]
+                if auto:
+                    try:
+                        from .diffusion_transformer_quant import auto_scheme_candidates
+
+                        below = list(auto_scheme_candidates(target, getattr(fam, "name", None)))
+                        if scheme in below:
+                            rungs.extend(below[below.index(scheme) + 1 :])
+                    except Exception:  # noqa: BLE001 -- no lower rungs is just "no retry"
+                        pass
+                declined = False
                 memory = snapshot_device_memory(target)
-                planned = self._plan_memory(
-                    target,
-                    None,
-                    base or repo_id or "",
-                    fam,
-                    memory_mode,
-                    cpu_offload,
-                    kind = kind,
-                    repo_id = repo_id,
-                    fetch_base = fetch_base,
-                    transformer_resident_override_mib = candidate.steady_transformer_mib,
-                    companion_override_mib = candidate.companions_mib,
-                    text_encoder_override_mib = candidate.text_encoders_mib,
-                    device_memory_override = replace(memory, free_mib = memory.total_mib),
-                )
-                if planned.offload_policy != OFFLOAD_NONE:
-                    logger.info(
-                        "diffusion.denoiser_prequant: an artifact-sized plan for %s still offloads "
-                        "on this card, and offload moves the denoiser via Module.to(), so the "
-                        "released shards are kept",
-                        scheme,
+                for rung in rungs:
+                    if (
+                        denoiser_prequant_source(
+                            fam,
+                            rung,
+                            base_repo = base,
+                            path_override = transformer_prequant_path,
+                        )
+                        is None
+                    ):
+                        continue
+                    candidate = resolve_dense_quant_candidate(
+                        fam = fam,
+                        target = target,
+                        requested = rung,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
+                        force_dense = False,
+                        logger = None,
                     )
-                    return PIPELINE_SEED_DECLINED
-                return scheme
+                    if candidate is None or not candidate.prequant:
+                        continue
+                    planned = self._plan_memory(
+                        target,
+                        None,
+                        base or repo_id or "",
+                        fam,
+                        memory_mode,
+                        cpu_offload,
+                        kind = kind,
+                        repo_id = repo_id,
+                        fetch_base = fetch_base,
+                        transformer_resident_override_mib = candidate.steady_transformer_mib,
+                        companion_override_mib = candidate.companions_mib,
+                        text_encoder_override_mib = candidate.text_encoders_mib,
+                        device_memory_override = replace(memory, free_mib = memory.total_mib),
+                    )
+                    if planned.offload_policy != OFFLOAD_NONE:
+                        logger.info(
+                            "diffusion.denoiser_prequant: an artifact-sized plan for %s still offloads "
+                            "on this card, and offload moves the denoiser via Module.to(), so the "
+                            "released shards are kept",
+                            rung,
+                        )
+                        declined = True
+                        continue
+                    return rung
+                return PIPELINE_SEED_DECLINED if declined else None
         except Exception as exc:  # noqa: BLE001 -- an unanswerable probe keeps the released shards
             logger.warning("diffusion.denoiser_prequant_plan_failed: %s", exc)
             return None

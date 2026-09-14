@@ -360,6 +360,66 @@ def test_an_artifact_sized_plan_that_still_offloads_declines(monkeypatch):
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 
+def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple):
+    """A settle backend whose memory verdict depends on the rung: an int8-sized plan (31 GB) offloads, an fp8-sized
+    one (19 GB) stays resident; ``artifacts`` names the schemes with a hosted file, ``candidates`` the auto ladder."""
+    from core.inference import diffusion_transformer_quant as tq
+
+    backend = _settle_backend(monkeypatch, scheme = candidates[0])
+    monkeypatch.setattr(tq, "auto_scheme_candidates", lambda target, family = None: candidates)
+    monkeypatch.setattr(
+        dmod,
+        "denoiser_prequant_source",
+        lambda fam, scheme, **_k: ("unsloth/Qwen-Image-FP8", f"{scheme}.pt") if scheme in artifacts else None,
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **k: DenseQuantEstimate(
+            scheme = k["requested"],
+            steady_transformer_mib = 31_000 if k["requested"] == "int8" else 19_000,
+            transient_transformer_mib = 0,
+            companions_mib = 7_500,
+            prequant = True,
+            download_transformer_mib = 0,
+            text_encoders_mib = 7_320,
+        ),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "sequential" if k["transformer_resident_override_mib"] >= 31_000 else "none"
+        ),
+    )
+    return backend
+
+
+def test_an_artifact_too_large_for_the_card_yields_to_the_next_hosted_rung(monkeypatch):
+    """int8 leads the ladder, but Qwen-Image's int8 file is 12 GB larger than its fp8 file: on a card where the
+    int8-sized plan offloads, auto seeds the fp8 artifact instead of pinning a decline."""
+    backend = _settle_backend_walking(
+        monkeypatch, artifacts = ("int8", "fp8"), candidates = ("int8", "fp8")
+    )
+    assert _settle(backend) == "fp8"
+
+
+def test_a_walk_with_no_resident_rung_declines(monkeypatch):
+    """Every hosted rung offloads: the decline is pinned so plan and load agree."""
+    backend = _settle_backend_walking(
+        monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8")
+    )
+    assert _settle(backend) == PIPELINE_SEED_DECLINED
+
+
+def test_an_explicit_scheme_is_never_swapped_for_a_lower_rung(monkeypatch):
+    """An explicit int8 that offloads declines; auto's walk is not offered to an explicit request."""
+    backend = _settle_backend_walking(
+        monkeypatch, artifacts = ("int8", "fp8"), candidates = ("int8", "fp8")
+    )
+    assert _settle(backend, transformer_quant = "int8") == PIPELINE_SEED_DECLINED
+
+
 def test_a_family_with_no_hosted_artifact_falls_through(monkeypatch):
     """A scheme with no hosted artifact falls through to the in-memory quantise."""
     assert _settle(_settle_backend(monkeypatch, scheme = "nvfp4")) is None
