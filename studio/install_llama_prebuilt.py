@@ -2494,7 +2494,9 @@ def windows_intel_gpu_in_registry() -> bool:
     answers in microseconds. Matches the PCI vendor id in MatchingDeviceId
     (ven_8086) or an Intel DriverDesc.
     """
-    return _windows_display_adapter_in_registry((("MatchingDeviceId", "ven_8086"), ("DriverDesc", "intel")))
+    return _windows_display_adapter_in_registry(
+        (("MatchingDeviceId", "ven_8086"), ("DriverDesc", "intel"))
+    )
 
 
 def windows_amd_gpu_in_registry() -> bool:
@@ -2814,9 +2816,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                             _names = _result.stdout.lower()
                             if "intel" in _names:
                                 has_intel_gpu = True
-                            if not _amd_hidden_by_mask and (
-                                "amd" in _names or "radeon" in _names
-                            ):
+                            if not _amd_hidden_by_mask and ("amd" in _names or "radeon" in _names):
                                 has_amd_gpu_without_rocm = True
                     except Exception:
                         pass
@@ -3672,9 +3672,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             vendor = "Intel GPU" if host.has_intel_gpu else "AMD GPU without usable ROCm"
             vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
             if vulkan_name in upstream_assets:
-                log(
-                    f"{vendor} detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
-                )
+                log(f"{vendor} detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}")
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
