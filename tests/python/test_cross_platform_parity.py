@@ -1240,13 +1240,20 @@ class TestInstallUvCacheRootParity:
         # and the KIND has to be one uv creates, on BOTH sides with the same list: a
         # bucket-shaped `unused-v999` is not uv's to write, and condemning a warm cache for it
         # redownloaded what the cache already held. A list that drifts splits the two answers.
+        # Every CacheBucket in uv 0.12.1 (crates/uv-cache/src/lib.rs), plus built-wheels from
+        # before it was folded into archive. A kind missing here is a bucket never probed, so
+        # an unwritable python-v0 reads as usable and the managed-Python install fails.
         probe_kinds = {
-            "archive", "builds", "built-wheels", "environments", "flat-index",
-            "git", "interpreter", "sdists", "simple", "sources", "wheels",
+            "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
+            "git", "interpreter", "osv", "python", "sdists", "simple", "wheels",
         }
-        kinds_sh = set(
-            re.search(r'case "\$\{1%-v\*\}" in\n\s*([a-z|\-]+)\) ;;', bucket_sh).group(1).split("|")
-        )
+        # Tied to the pin: bumping uv without re-reading its bucket list fails here rather than
+        # silently leaving the new kind unprobed.
+        assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
+        case_body = re.search(
+            r'case "\$\{1%-v\*\}" in\n(.*?)\n\s*\*\) return 1', bucket_sh, re.S
+        ).group(1)
+        kinds_sh = set(re.findall(r"[a-z\-]+", case_body))
         assert kinds_sh == probe_kinds, sorted(kinds_sh ^ probe_kinds)
         kinds_ps1 = set(
             re.findall(r'"([a-z\-]+)"', ps1.split("-cin @(", 1)[1].split("))", 1)[0])

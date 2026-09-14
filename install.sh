@@ -599,10 +599,14 @@ _uv_is_bucket_name() {
     esac
     # And the KIND has to be one uv creates. A read-only `unused-v999` sitting beside a warm
     # cache is not uv's to write, but it condemned the whole cache, so the install redownloaded
-    # what it already had and an offline one failed outright. Missing a future kind here costs
-    # a visible uv error on the bucket we let through, which is the cheaper way to be wrong.
+    # what it already had and an offline one failed outright.
+    # Every CacheBucket in uv 0.12.1, the UV_PINNED_VERSION below, plus built-wheels from
+    # before it was folded into archive. Bumping that pin means re-reading uv-cache/src/lib.rs:
+    # a kind missing here is a bucket we never probe, so an unwritable python-v0 left by a sudo
+    # run reads as usable and the managed-Python install fails instead of falling back.
     case "${1%-v*}" in
-        archive|builds|built-wheels|environments|flat-index|git|interpreter|sdists|simple|sources|wheels) ;;
+        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        git|interpreter|osv|python|sdists|simple|wheels) ;;
         *) return 1 ;;
     esac
     return 0

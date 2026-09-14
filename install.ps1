@@ -1752,10 +1752,11 @@ exit 1
         if (-not ($suffix -match '\A[0-9]+\z')) { return $false }
         # And the KIND has to be one uv creates. A read-only `unused-v999` sitting beside a warm
         # cache is not uv's to write, but it condemned the whole cache, so the install
-        # redownloaded what it already had and an offline one failed outright.
+        # redownloaded what it already had and an offline one failed outright. Every CacheBucket
+        # in uv 0.12.1, $UvPinnedVersion below; keep in step with install.sh on a pin bump.
         return ($Name.Substring(0, $at) -cin @(
-            "archive", "builds", "built-wheels", "environments", "flat-index",
-            "git", "interpreter", "sdists", "simple", "sources", "wheels"))
+            "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
+            "git", "interpreter", "osv", "python", "sdists", "simple", "wheels"))
     }
 
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions

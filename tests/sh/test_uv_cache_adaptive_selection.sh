@@ -181,6 +181,13 @@ mkdir -p "$_alien_bucket/archive-v0/torch" "$_alien_bucket/unused-v999"
 : > "$_alien_bucket/archive-v0/torch/libtorch.so"
 : > "$_alien_bucket/CACHEDIR.TAG"
 chmod 000 "$_alien_bucket/unused-v999"
+# python-v0 IS uv's, since 0.8.16: the installer installs a managed CPython, so a bucket left
+# read-only by a privileged run has to condemn the cache rather than fail mid-install.
+_managed_python="$_TMP/uvpython"
+mkdir -p "$_managed_python/archive-v0/torch" "$_managed_python/python-v0"
+: > "$_managed_python/archive-v0/torch/libtorch.so"
+: > "$_managed_python/CACHEDIR.TAG"
+chmod a-w "$_managed_python/python-v0"
 # A bucket NAME needs the whole suffix to be the version: a backup copy or a tarball beside
 # the real bucket is not uv's to write, and must not condemn the cache.
 _lookalike="$_TMP/uvlookalike"
@@ -269,6 +276,8 @@ else
     assert_eq "lost+found does not condemn it" "shared" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/q2" '' "$_alien_bucket")
     assert_eq "an unknown KIND does not either" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/q3" '' "$_managed_python")
+    assert_eq "a read-only python-v0 still does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/v1" '' "$_empty_version")
     assert_eq "an empty -v suffix is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
@@ -297,6 +306,7 @@ for _nc in 0 false; do
 done
 chmod 700 "$_alien/lost+found"
 chmod 700 "$_alien_bucket/unused-v999"
+chmod u+w "$_managed_python/python-v0"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
     "$_denied_meta/interpreter-v4" "$_empty_version/archive-v1-v"
