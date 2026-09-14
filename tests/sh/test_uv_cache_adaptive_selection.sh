@@ -188,22 +188,30 @@ mkdir -p "$_managed_python/archive-v0/torch" "$_managed_python/python-v0"
 : > "$_managed_python/archive-v0/torch/libtorch.so"
 : > "$_managed_python/CACHEDIR.TAG"
 chmod a-w "$_managed_python/python-v0"
-# Default APFS is case-insensitive, where `Python-V0` IS uv's python-v0. Simulated the way the
-# probe actually detects it, by the lowercase spelling resolving to a directory, so this runs
-# the same on the case-sensitive filesystem CI gives us. The macOS staging legs run the real
-# thing.
+# On a case-SENSITIVE filesystem `Python-V0` and `python-v0` are two directories and only the
+# lowercase one is uv's, so a read-only uppercase one must NOT condemn the cache. Inferring the
+# fold from the pair existing would: that is why the probe makes its own directory instead.
 _cased_bucket="$_TMP/uvcased"
 mkdir -p "$_cased_bucket/archive-v0/torch" "$_cased_bucket/Python-V0" "$_cased_bucket/python-v0"
 : > "$_cased_bucket/archive-v0/torch/libtorch.so"
 : > "$_cased_bucket/CACHEDIR.TAG"
 chmod a-w "$_cased_bucket/Python-V0"
-# ...and on a case-SENSITIVE filesystem the same name is a directory uv never opens, so it must
-# NOT condemn the cache. Folding case blind would, which is the bug the allowlist exists to fix.
+# Same, with no lowercase sibling at all.
 _cased_only="$_TMP/uvcasedonly"
 mkdir -p "$_cased_only/archive-v0/torch" "$_cased_only/Python-V0"
 : > "$_cased_only/archive-v0/torch/libtorch.so"
 : > "$_cased_only/CACHEDIR.TAG"
 chmod a-w "$_cased_only/Python-V0"
+# Whether this filesystem folds case at all, asked the same way install.sh asks. True on a
+# default APFS runner, false on the ext4 CI gives us, so the fold assertions below run where
+# they mean something instead of being simulated into always-true.
+_cased_file="$_TMP/uvcasedfile"
+mkdir -p "$_cased_file/archive-v0/torch"
+: > "$_cased_file/archive-v0/torch/libtorch.so"
+: > "$_cased_file/CACHEDIR.TAG"
+: > "$_cased_file/Python-V0"
+_FOLDS=false
+mkdir -p "$_TMP/.foldcheck-A" && [ -d "$_TMP/.foldcheck-a" ] && _FOLDS=true
 # A bucket NAME needs the whole suffix to be the version: a backup copy or a tarball beside
 # the real bucket is not uv's to write, and must not condemn the cache.
 _lookalike="$_TMP/uvlookalike"
@@ -294,10 +302,25 @@ else
     assert_eq "an unknown KIND does not either" "shared" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/q3" '' "$_managed_python")
     assert_eq "a read-only python-v0 still does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
-    _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
-    assert_eq "a cased bucket the FS resolves does" "studio" "$(echo "$_out" | cut -d' ' -f1)"
-    _out=$(_run "$_TMP/q5" '' "$_cased_only")
-    assert_eq "one it does not resolve does not"   "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    if [ "$_FOLDS" = true ]; then
+        # One entry under two spellings, so uv writes it and it has to be probed.
+        _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
+        assert_eq "a cased bucket condemns when folded" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+        _out=$(_run "$_TMP/q5" '' "$_cased_only")
+        assert_eq "so does a lone cased bucket"         "studio" "$(echo "$_out" | cut -d' ' -f1)"
+        # A FILE under a cased bucket name still collides with uv's mkdir. Reached only if the
+        # name check hands it to the rejection branch rather than skipping it on -d.
+        _out=$(_run "$_TMP/q6" '' "$_cased_file")
+        assert_eq "and a cased FILE does too"           "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    else
+        # Two directories, only the lowercase one uv's, so the cache stays usable.
+        _out=$(_run "$_TMP/q4" '' "$_cased_bucket")
+        assert_eq "a cased sibling does not condemn" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+        _out=$(_run "$_TMP/q5" '' "$_cased_only")
+        assert_eq "nor a lone cased directory"       "shared" "$(echo "$_out" | cut -d' ' -f1)"
+        _out=$(_run "$_TMP/q6" '' "$_cased_file")
+        assert_eq "nor a cased file"                 "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    fi
     _out=$(_run "$_TMP/v1" '' "$_empty_version")
     assert_eq "an empty -v suffix is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
@@ -333,6 +356,7 @@ chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9
 # The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
 _run "$_TMP/g" '' "$_populated" >/dev/null
 assert_eq "write probe cleaned up" "" "$(ls -A "$_populated" | grep 'unsloth-write-probe' || true)"
+assert_eq "case probe cleaned up"  "" "$(ls -A "$_populated" | grep 'unsloth-case-probe' || true)"
 
 echo "=== a relative cache-dir resolves against UV_WORKING_DIR, not the installer's cwd ==="
 _out=$(_run "$_TMP/h" '' "relcache" false "$_TMP/work")

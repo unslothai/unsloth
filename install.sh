@@ -669,21 +669,32 @@ _uv_cache_root_is_writable() {
 _uv_cache_is_writable() {
     _uv_cache_root_is_writable "$1" || return 1
     _uv_w_bad=0
+    # Does THIS filesystem fold case? Default APFS does, ext4 does not, and either can turn up
+    # on either OS, so uname cannot answer it. Neither can an existing pair of names: on a
+    # case-sensitive volume `Python-V0` and `python-v0` are two directories and only the second
+    # is uv's, while on APFS they are one entry, and nothing about the pair says which. A
+    # directory we make ourselves is the only unambiguous answer. The root is writable here,
+    # since the check above already returned otherwise.
+    _uv_w_fold=0
+    _uv_w_probe="$1/.unsloth-case-probe.$$-A"
+    if mkdir "$_uv_w_probe" 2>/dev/null; then
+        [ -d "$1/.unsloth-case-probe.$$-a" ] && _uv_w_fold=1
+        rmdir "$_uv_w_probe" 2>/dev/null || true
+    fi
+    unset _uv_w_probe
     _uv_w_glob=on
     case $- in *f*) _uv_w_glob=off ;; esac
     set +f
     for _uv_w_dir in "$1"/*; do
         _uv_w_name="${_uv_w_dir##*/}"
         if ! _uv_is_bucket_name "$_uv_w_name"; then
-            # Default APFS is case-insensitive, so on macOS `Python-v0` IS uv's python-v0 and
-            # uv writes it. Asked of the filesystem rather than of uname, because that is the
-            # actual question and both answers exist on both platforms: the lowercase spelling
-            # resolving to a directory is what case-insensitive MEANS. On ext4 it does not
-            # resolve, and folding there would condemn a cache for a directory uv never opens,
-            # which is the bug this allowlist exists to fix.
+            # Where the filesystem folds, `Python-V0` IS uv's python-v0 and uv writes it. Only
+            # the NAME is decided here; whether it is a directory, a file or a dangling link is
+            # left to the rejection below, which is the branch that answers uv's mkdir.
+            [ "$_uv_w_fold" = 1 ] || continue
             case "$_uv_w_name" in *[[:upper:]]*) ;; *) continue ;; esac
             _uv_w_lower=$(printf '%s' "$_uv_w_name" | tr '[:upper:]' '[:lower:]')
-            { _uv_is_bucket_name "$_uv_w_lower" && [ -d "$1/$_uv_w_lower" ]; } || continue
+            _uv_is_bucket_name "$_uv_w_lower" || continue
         fi
         if [ ! -d "$_uv_w_dir" ]; then
             # A file, or a symlink dangling or not, is an existing path to mkdir(2).
@@ -695,7 +706,7 @@ _uv_cache_is_writable() {
         _uv_cache_root_is_writable "$_uv_w_dir" || _uv_w_bad=1
     done
     if [ "$_uv_w_glob" = off ]; then set -f; fi
-    unset _uv_w_dir _uv_w_glob _uv_w_name _uv_w_lower
+    unset _uv_w_dir _uv_w_glob _uv_w_name _uv_w_lower _uv_w_fold
     if [ "$_uv_w_bad" -ne 0 ]; then
         unset _uv_w_bad
         return 1

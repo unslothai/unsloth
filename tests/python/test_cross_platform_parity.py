@@ -1251,7 +1251,15 @@ class TestInstallUvCacheRootParity:
         assert "-cin" not in bucket_ps1, bucket_ps1
         writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
         assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
-        assert '[ -d "$1/$_uv_w_lower" ]' in writable_sh, writable_sh
+        # By a directory the probe MAKES, not by reading the names already there. An existing
+        # `Python-V0` beside `python-v0` is one entry when the volume folds and two when it
+        # does not, and the pair cannot say which, so inferring it condemned a cache on ext4
+        # for a directory uv never opens.
+        assert ".unsloth-case-probe." in writable_sh, writable_sh
+        assert "_uv_w_fold=1" in writable_sh, writable_sh
+        # and the fold decides only the NAME: a colliding file or dangling link has to reach
+        # the rejection below, which is the branch that answers uv's mkdir.
+        assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
         # and the KIND has to be one uv creates, on BOTH sides with the same list: a
         # bucket-shaped `unused-v999` is not uv's to write, and condemning a warm cache for it
         # redownloaded what the cache already held. A list that drifts splits the two answers.
