@@ -3500,10 +3500,52 @@ def test_document_citation_survives_backticks_in_the_filename(report, sources, e
     assert _validate_report_document_sources(report, sources) == expected
 
 
-def test_unknown_placeholder_shaped_text_survives_restoration():
+def test_restoration_never_leaves_a_nul_in_the_report():
+    """_mask_code normalizes NUL away, so a token with no entry cannot happen. Should a later
+    path restore text that skipped that step, the report must still not carry a NUL."""
     assert _restore_placeholders(
         "x \x00research-code-9\x00 y", {"\x00research-code-0\x00": "z"}
-    ) == ("x \x00research-code-9\x00 y")
+    ) == ("x \ufffdresearch-code-9\ufffd y")
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # remark-gfm reads these indented lines as footnote prose and renders a bare URL there as
+        # a live link, so they must be validated even though CommonMark calls them code.
+        (
+            "Body [^1].\n\n[^1]: note\n\n    https://nope.example/leak and [1].",
+            "Body [^1].\n\n[^1]: note\n\n     and [A](https://a.com).",
+        ),
+        (
+            "Body [^1].\n\n[^1]: a\n\n    - item https://nope.example/x [2]",
+            "Body [^1].\n\n[^1]: a\n\n    - item  [2]",
+        ),
+        (
+            "Body [^1].\n\n[^1]: a\n\n        https://nope.example/deep and [1].",
+            "Body [^1].\n\n[^1]: a\n\n         and [A](https://a.com).",
+        ),
+        # An indented fence under a definition is a fence to the renderer and an indented code
+        # block here, so it is validated rather than trusted. That keeps main's behaviour: code
+        # protection does not reach inside a footnote, which is the safe direction to miss in.
+        (
+            "Body [^1].\n\n[^1]: a\n\n    ```sh\n    curl https://nope.example/y\n    ```",
+            "Body [^1].\n\n[^1]: a\n\n    ```sh\n    curl \n    ```",
+        ),
+        # An unindented fence closes the definition, and is masked as usual.
+        (
+            "Body [^1].\n\n[^1]: a\n\n```sh\ncurl https://nope.example/y\n```",
+            "Body [^1].\n\n[^1]: a\n\n```sh\ncurl https://nope.example/y\n```",
+        ),
+        # Once the definition ends, an indented block is code again.
+        (
+            "Body [^1].\n\n[^1]: a\n\nProse.\n\n    curl https://nope.example/z",
+            "Body [^1].\n\n[^1]: a\n\nProse.\n\n    curl https://nope.example/z",
+        ),
+    ],
+)
+def test_footnote_content_is_validated_not_masked(report, expected):
+    assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected
 
 
 def test_restoring_many_code_spans_stays_linear():

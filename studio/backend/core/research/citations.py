@@ -35,7 +35,13 @@ _RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
 _PLACEHOLDER_KINDS = ("research-code", "research-citation")
 # Kept beside the kinds so a new one cannot be restored by a pass that does not know it, which
 # would leave the raw sentinel in the delivered report.
-_PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-\d+\x00")
+# [0-9] not \d: \d also matches other scripts' digits, which no token ever uses.
+_PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-[0-9]+\x00")
+# A GFM footnote definition. The chat renders reports with remark-gfm, which reads the indented
+# lines under one as footnote prose, while the CommonMark parser below reads them as an indented
+# code block. Masking on that reading would skip validation for text the reader sees as prose,
+# and a bare URL there renders as a live link, so those blocks are left for the validators.
+_FOOTNOTE_DEFINITION = re.compile(r" {0,3}\[\^[^\]\s]+\]:")
 
 
 def _citation_title(source: dict, fallback: str) -> str:
@@ -88,7 +94,10 @@ def _record_code_span(state, silent: bool) -> bool:
     if (
         matched
         and not silent
-        and state.src is state.env["code_source"]
+        # Only when parsing the block's own source: the image rule re-enters with the alt text,
+        # where these offsets would point into the wrong string. get() so re-enabling the
+        # "inline" core rule on this instance would record nothing rather than raise.
+        and state.src is state.env.get("code_source")
         and len(state.tokens) > count
         and state.tokens[-1].type == "code_inline"
     ):
@@ -102,6 +111,29 @@ _CODE_MARKDOWN = MarkdownIt("commonmark").disable("inline")
 _CODE_MARKDOWN.inline.ruler.at("backticks", _record_code_span)
 
 
+def _footnote_content_lines(lines: list[str]) -> set[int]:
+    """Line numbers the renderer reads as footnote content, whatever this parser calls them.
+
+    Over-collecting only costs a masked block, and errs towards validating text rather than
+    trusting it, so the scan is deliberately loose: a definition opens a region, blank and
+    indented lines continue it, and any other content closes it.
+    """
+    covered = set()
+    inside = False
+    for number, line in enumerate(lines):
+        if _FOOTNOTE_DEFINITION.match(line):
+            inside = True
+        elif not inside:
+            continue
+        elif not line.strip():
+            covered.add(number)
+        elif line.startswith(("    ", "\t")):
+            covered.add(number)
+        else:
+            inside = False
+    return covered
+
+
 def _mask_code(text: str, placeholders: dict[str, str]) -> str:
     # CommonMark replaces a literal NUL with U+FFFD, so the renderer already shows the report
     # that way. Doing it before anything is masked also means a report cannot spell a
@@ -111,9 +143,14 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
     offsets = [0, *(match.end() for match in re.finditer(r"\r\n?|\n", text))]
     if offsets[-1] != len(text):
         offsets.append(len(text))
+    lines = [text[offsets[number] : offsets[number + 1]] for number in range(len(offsets) - 1)]
+    footnote_content = _footnote_content_lines(lines)
     spans = []
     for token in _CODE_MARKDOWN.parse(text):
         if token.map is None:
+            continue
+        # An indented block is only code here if the renderer agrees; a fence is a fence in both.
+        if token.type == "code_block" and token.map[0] in footnote_content:
             continue
         start, end = (offsets[line] for line in token.map)
         if token.type in {"fence", "code_block"}:
@@ -147,7 +184,18 @@ def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
     """
     if not placeholders:
         return text
-    return _PLACEHOLDER.sub(lambda match: placeholders.get(match.group(0), match.group(0)), text)
+
+    def restore(match: re.Match) -> str:
+        token = match.group(0)
+        value = placeholders.get(token)
+        if value is not None:
+            return value
+        # Unreachable while _mask_code normalizes NUL away, since then every token here is one
+        # this module wrote. Drop the delimiters rather than deliver a NUL in the report if some
+        # later path ever restores text that was not normalized.
+        return token.replace("\x00", "\ufffd")
+
+    return _PLACEHOLDER.sub(restore, text)
 
 
 def _validate_masked_sources(report: str, sources: list[dict], placeholders: dict[str, str]) -> str:
