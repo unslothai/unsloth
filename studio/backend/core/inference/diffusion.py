@@ -1804,7 +1804,8 @@ class DiffusionBackend:
         local_files_only: bool = False,
     ) -> Optional[str]:
         """Stage the shards a seeded plan left out of the pull; returns the snapshot dir to assemble
-        from. ``from_pretrained`` treats a local dir as terminal, so a failed seed has nothing."""
+        from, or None for the hub id. ``from_pretrained`` treats a local dir as terminal, so a
+        failed seed has nothing."""
         files = [name for name in (skipped or ()) if name]
         if not files:
             return base_local_dir
@@ -1822,7 +1823,15 @@ class DiffusionBackend:
             fetch_base = fetch_base,
             local_files_only = local_files_only,
         )
-        return restored or base_local_dir
+        # Only the snapshot the top-up ITSELF vouched for, and only when the staging already vouched for the same one.
+        # ``_prefetch_files`` answers None when the manifest and the restored shards resolved through different cache
+        # roots, and then no local directory holds both: keeping the pre-restore snapshot hands from_pretrained a
+        # terminal tree that still has no transformer. A snapshot the staging did not hand back is incomplete the other
+        # way -- it has the shards but not the companions that landed under the other root. Either way the hub id,
+        # which resolves each file through its own root, is the only complete source.
+        if restored is None or base_local_dir is None or Path(restored) != Path(base_local_dir):
+            return None
+        return base_local_dir
 
     def _fetch_denoiser_prequant(
         self,

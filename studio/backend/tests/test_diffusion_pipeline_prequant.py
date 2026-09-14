@@ -770,6 +770,43 @@ def test_a_seed_that_does_not_land_replans_and_tops_up_the_shards(fake_runtime, 
     assert status["resolved"]["transformer_quant"].get("artifact") is None
 
 
+def test_a_top_up_that_spans_cache_roots_assembles_from_the_hub_id(fake_runtime, monkeypatch):
+    """A cache-folder change can leave the manifest in the old root and the restored shards in the
+    live one. No snapshot then holds both, so the assembly must fall back to the hub id instead of
+    the staged directory, which from_pretrained would treat as terminal with no transformer in it."""
+    backend, _spy = _load_backend(monkeypatch, seeded = False)
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", lambda *_a, **_k: None)
+    _load(backend, _base_local_dir = "/old/root/snapshots/abc")
+
+    assert _FakePipeline.last["base"] == Z_IMAGE_REPO
+
+
+def test_a_top_up_never_promotes_a_snapshot_the_staging_did_not_hand_back(
+    fake_runtime, monkeypatch
+):
+    """The top-up stages the shards only. A snapshot the staging never returned holds them without
+    the companions, so it must not become the directory the pipeline assembles from."""
+    backend, _spy = _load_backend(monkeypatch, seeded = False)
+    monkeypatch.setattr(
+        DiffusionBackend, "_prefetch_files", lambda *_a, **_k: "/live/root/snapshots/abc"
+    )
+    _load(backend, _base_local_dir = None)
+
+    assert _FakePipeline.last["base"] == Z_IMAGE_REPO
+
+
+def test_a_single_root_top_up_keeps_assembling_from_the_staged_snapshot(fake_runtime, monkeypatch):
+    """The ordinary case: the shards land in the staged snapshot, which keeps from_pretrained off
+    the hub."""
+    backend, _spy = _load_backend(monkeypatch, seeded = False)
+    monkeypatch.setattr(
+        DiffusionBackend, "_prefetch_files", lambda *_a, **_k: "/live/root/snapshots/abc"
+    )
+    _load(backend, _base_local_dir = "/live/root/snapshots/abc")
+
+    assert _FakePipeline.last["base"] == "/live/root/snapshots/abc"
+
+
 def test_an_artifact_sized_plan_that_offloads_at_load_time_drops_the_seed(
     fake_runtime, monkeypatch
 ):
