@@ -289,7 +289,7 @@ def get_device_stats() -> tuple[str, str, float]:
         name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
         snippet = f"Intel Toolkit: {torch.version.xpu}."
     elif DEVICE_TYPE == "npu":
-        name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
+        name = gpu_stats.name + ". " if gpu_stats.name else "NPU Device. "
         # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
         try:
             import torch_npu
