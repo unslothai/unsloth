@@ -21026,8 +21026,6 @@ async def _proxy_to_external_provider(
     # protocol (tool_start / tool_end and the approval handshake all ride the
     # stream), so a non-streaming request still cannot honour confirm_tool_calls
     # and must still be refused below rather than silently proxied without it.
-    # Fetched once so the hosted-tool check below does not rescan.
-    _loop_agent_skills = _enabled_agent_skills()
     studio_tool_loop = (
         # Model-aware: Gemini's image models drop the function catalog inside the
         # native translator, so entering the loop for them would advertise tools
@@ -21039,7 +21037,8 @@ async def _proxy_to_external_provider(
         # a request for this loop. Checked here rather than inside the loop so the
         # whole path (catalog selection, nudge, confirm gate) is skipped and the
         # request proxies through byte-for-byte as it did before the loop existed.
-        and not _selects_only_provider_hosted_tools(payload, provider_type, _loop_agent_skills)
+        # Last, so a request that never asked for tools never scans the skill roots.
+        and not _selects_only_provider_hosted_tools(payload, provider_type, _enabled_agent_skills())
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).

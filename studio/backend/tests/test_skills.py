@@ -918,3 +918,19 @@ def test_reserved_device_name_resource_gets_its_own_message(isolated_skills):
 
     with pytest.raises(skills.SkillError, match = "reserved device name"):
         skills.read_skill_resource("reserved", "con.md", home = home)
+
+
+def test_aliased_metadata_cannot_expand_past_the_manifest_limit(isolated_skills):
+    home, _ = isolated_skills
+    big = "x" * (100 * 1024)
+    aliases = "\n".join(f"  k{i}: *big" for i in range(20))
+    _write_skill(
+        home,
+        "agents",
+        "aliased",
+        frontmatter = f"big: &big {big}\nmetadata:\n{aliases}",
+    )
+
+    record = next(r for r in skills.list_skills(home = home) if r["name"] == "aliased")
+
+    assert record["valid"] is False and "512 KB" in record["error"]
