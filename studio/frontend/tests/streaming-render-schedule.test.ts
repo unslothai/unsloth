@@ -487,6 +487,20 @@ test("an angle-bracketed destination keeps moving the render key", () => {
     bareStep = key;
   }
 
+  // Padding after the destination does not stop Marked storing a next-line
+  // title, so a bare `\n` in the continuation lost it.
+  for (const [container, indent] of [
+    ["", "  "],
+    ["> ", "> "],
+  ] as const) {
+    const destined = `${usage}${container}[g]: /url  `;
+    assert.notEqual(
+      markdownRenderKey(destined),
+      markdownRenderKey(`${destined}\n${indent}"title"`),
+      `render key did not move for a padded title behind ${JSON.stringify(container)}`,
+    );
+  }
+
   // Bare still stops at whitespace, which is what keeps prose out of the key.
   const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
   assert.equal(

@@ -100,7 +100,9 @@ const LINK_DEFINITION_LINE_RE = new RegExp(
 // `>` and may hold spaces, a bare destination runs to whitespace and KEEPS a `>`
 // (`[g]: https://x.test/a>b`) -- stopping it at `>` froze the key one character
 // in. One title, closing on its line, on the destination's line or the one below
-// but never both; an unterminated opener is prose, and following it churned.
+// but never both; an unterminated opener is prose, and following it churned. The
+// line break tolerates padding after the destination: `[g]: /url  ` + `  "t"`
+// still stores the title, and requiring a bare `\n` lost it.
 //
 // Residual: a wrapped title stops the key at its opening line, so the link keeps
 // its old title until the message settles.
@@ -108,7 +110,7 @@ const LINK_DEFINITION_DESTINATION = "(?:<[^>\\n]*>?|[^\\s]*)";
 const LINK_DEFINITION_TITLE = "[\"'(][^\\n]*[\"')]";
 const LINK_DEFINITION_KEY_RE = new RegExp(
   `${LINK_DEFINITION_LINE_RE.source}[ \\t]*(?:\\n${CONTAINER_PREFIX})?${LINK_DEFINITION_DESTINATION}` +
-    `(?:[ \\t]+${LINK_DEFINITION_TITLE}|\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
+    `(?:[ \\t]+${LINK_DEFINITION_TITLE}|[ \\t]*\\n${CONTAINER_PREFIX}${LINK_DEFINITION_TITLE})?`,
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
 // The two block shapes whose body is literal code: an opening fence, and an indent that
