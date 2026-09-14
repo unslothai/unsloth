@@ -603,16 +603,16 @@ function StreamdownBlockContent(props: BlockProps) {
 
   /*
      * `isIncomplete` is Streamdown's unclosed-fence flag and `getCodeFence` needs the close, so a block that is only an
-     * open fence renders as the plain shell until `FenceBlock` highlights it once on close; re-rendering highlighted
-     * spans on every streamed chunk is what lagged (#10769). Everything else renders `Block` inside the renderer
-     * boundary, so a highlighter chunk that fails to load cannot latch the whole-block boundary.
+     * open fence renders as the plain shell until `FenceBlock` highlights it on close; re-rendering highlighted spans
+     * on every streamed chunk is what lagged (#10769). Everything else renders `Block` inside the renderer boundary,
+     * so a highlighter chunk that fails to load cannot latch the whole-block boundary.
      */
   if (props.isIncomplete) {
     const openFence = markdownBlockFallback(props.content);
     if (openFence.fenced) {
       return (
-        <DeferredFenceShell
-          language={openFence.language}
+        <StreamingFenceShell
+          languageToken={openFence.language}
           source={openFence.text}
         />
       );
@@ -625,6 +625,28 @@ function StreamdownBlockContent(props: BlockProps) {
       <Block {...blockProps} />
     </MarkdownRendererBoundary>
   );
+}
+
+// Still tokenized at the plugin's streaming cadence, only not rendered: otherwise the close tokenizes the whole
+// body in one task, which freezes WebKit for seconds on a large fence.
+function StreamingFenceShell({
+  languageToken,
+  source,
+}: {
+  languageToken: string | null;
+  source: string;
+}) {
+  useEffect(() => {
+    code.highlight(
+      {
+        code: trimTrailingNewlines(source),
+        language: (languageToken ?? "text") as never,
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      () => {},
+    );
+  }, [source, languageToken]);
+  return <DeferredFenceShell language={languageToken} source={source} />;
 }
 
 /*

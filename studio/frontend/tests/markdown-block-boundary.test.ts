@@ -466,9 +466,18 @@ test("a carriage return only closes a fence as the closing line's last character
 test("a streaming open fence renders as a plain shell, not through Block", () => {
   const markdownText = readFileSync(MARKDOWN_TEXT_PATH, "utf8");
   assert.ok(
-    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return \(\s*<DeferredFenceShell/m.test(
+    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return \(\s*<StreamingFenceShell/m.test(
       markdownText,
     ),
-    "an open fence that is still streaming must bypass Block and the highlighter until its closing delimiter arrives",
+    "an open fence that is still streaming must bypass Block until its closing delimiter arrives",
+  );
+  const shell = markdownText.slice(
+    markdownText.indexOf("function StreamingFenceShell("),
+    markdownText.indexOf("function FenceBlock("),
+  );
+  assert.ok(
+    /code\.highlight\(\s*\{\s*code: trimTrailingNewlines\(source\),/.test(shell) &&
+      shell.includes("<DeferredFenceShell"),
+    "the shell must keep the tokenizer cache warm, or closing a large fence tokenizes the whole body in one task",
   );
 });
