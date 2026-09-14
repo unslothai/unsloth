@@ -2775,7 +2775,15 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # GPU-isolation docs), so counting those would cost Vulkan to any host merely exporting
         # CUDA_VISIBLE_DEVICES. Windows reads all three: its probe is hipinfo, a HIP
         # application. Intel is unaffected by HIP masks.
-        _amd_hidden_by_mask = os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+        # Windows really does read all three, via _hip_visible_device_mask_set: the arch
+        # probe there is hipinfo, so HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias
+        # hide devices from it exactly as ROCR does, and Vulkan would then pick up a GPU the
+        # caller had hidden. On Linux the probe is a sysfs walk that no HIP mask touches.
+        _amd_hidden_by_mask = (
+            _hip_visible_device_mask_set()
+            if is_windows
+            else os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+        )
         if is_linux:
             # No early break: a laptop can pair an Intel iGPU with an AMD dGPU.
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
