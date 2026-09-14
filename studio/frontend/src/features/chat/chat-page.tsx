@@ -127,7 +127,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
@@ -192,7 +191,6 @@ import {
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceBackgrounded,
@@ -2516,10 +2514,6 @@ export function ChatPage({
     reasoningEffort,
     supportsReasoningOff,
   ]);
-  const modelCatalogChange = useSyncExternalStore(
-    subscribeModelCatalog,
-    modelCatalogVersion,
-  );
   useEffect(() => {
     const selection = parseExternalModelId(inferenceParams.checkpoint);
     if (!selection) return;
@@ -2664,12 +2658,7 @@ export function ChatPage({
     });
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
-  }, [
-    externalProvidersForChat,
-    inferenceParams.checkpoint,
-    settingsHydrated,
-    modelCatalogChange,
-  ]);
+  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);

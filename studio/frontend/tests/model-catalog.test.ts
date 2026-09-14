@@ -270,3 +270,10 @@ test("every catalog write notifies subscribers, so a composer already on screen 
   clearProviderModelCatalog("openrouter");
   assert.equal(notified, 3, "an unsubscribed listener is not called");
 });
+
+test("Gemini image models keep no reasoning control even though the catalog lists one", () => {
+  for (const model of ["gemini-3-pro-image", "gemini-2.5-flash-image"]) {
+    assert.equal(resolveModelCatalogEntry("gemini", model)?.reasoning, true, model);
+    assert.equal(getExternalReasoningCapabilities("gemini", model).supportsReasoning, false, model);
+  }
+});

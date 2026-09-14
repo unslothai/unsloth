@@ -1149,9 +1149,11 @@ export function getExternalReasoningCapabilities(
         return withEnableThinkingStyle();
       }
       const table = resolveGeminiReasoningCapabilities(modelForMatching);
-      return table.supportsReasoning
-        ? table
-        : (catalogCapabilities("gemini", normalizedModel) ?? table);
+      // Image models take no thinkingConfig (the backend strips it), so the table's "no control" is deliberate.
+      if (table.supportsReasoning || GEMINI_IMAGE_HINTS.some((hint) => normalizedModel.includes(hint))) {
+        return table;
+      }
+      return catalogCapabilities("gemini", normalizedModel) ?? table;
     }
     case "ollama":
     case "deepseek":
