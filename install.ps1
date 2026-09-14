@@ -1742,14 +1742,27 @@ exit 1
     # True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
     # is not uv's. Mirrors _uv_is_bucket_name, suffix from the LAST `-v` included.
     function Test-StudioUvBucketName {
-        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name)
-        $at = $Name.LastIndexOf("-v")
+        param(
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name,
+            # Off by default: warmth counting bytes under `Archive-V0` that uv looks for at
+            # `archive-v0` picks a cache that cannot serve them. Only the write probe folds.
+            [switch]$Fold
+        )
+        # Whole name, since the `-v` marker varies with the kind. Invariant: a Turkish
+        # locale dots the I in `flat-Index-v4`.
+        $lower = if ($Fold) { $Name.ToLowerInvariant() } else { $Name }
+        $at = $lower.LastIndexOf("-v")
         if ($at -lt 0) { return $false }
-        $suffix = $Name.Substring($at + 2)
+        $suffix = $lower.Substring($at + 2)
         if ([string]::IsNullOrEmpty($suffix)) { return $false }
         # \A and \z, not ^ and $: in .NET `$` also matches before a final newline, so
         # `archive-v1<LF>` passed here while the sh helper rejected it.
-        return ($suffix -match '\A[0-9]+\z')
+        if (-not ($suffix -match '\A[0-9]+\z')) { return $false }
+        # Every CacheBucket in uv 0.12.1 ($UvPinnedVersion) plus built-wheels; keep in step
+        # with install.sh on a pin bump.
+        return ($lower.Substring(0, $at) -in @(
+            "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
+            "git", "interpreter", "osv", "python", "sdists", "simple", "wheels"))
     }
 
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
@@ -1760,13 +1773,23 @@ exit 1
         param([Parameter(Mandatory = $true)][string]$Cache)
         $probeDirs = [System.Collections.Generic.List[string]]::new()
         $probeDirs.Add($Cache)
+        # Measured like _uv_cache_is_writable does: NTFS folds unless fsutil
+        # setCaseSensitiveInfo says otherwise, which is how a WSL-created tree behaves.
+        $fold = $false
+        $probeRoot = Join-Path $Cache (".unsloth-case-probe." +
+            [guid]::NewGuid().ToString("N").Substring(0, 8) + "-A")
+        try {
+            [System.IO.Directory]::CreateDirectory($probeRoot) | Out-Null
+            $fold = [System.IO.Directory]::Exists($probeRoot.Substring(0, $probeRoot.Length - 1) + "a")
+        } catch { }
+        Remove-Item -LiteralPath $probeRoot -Force -Recurse -ErrorAction SilentlyContinue
         try {
             foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($Cache)) {
                 $name = [System.IO.Path]::GetFileName($entry)
                 # Only where a BUCKET should be. Anything else up here is not uv's to write,
                 # and a cache-dir on a mount point has a root-owned lost+found that must not
                 # condemn it.
-                if (-not (Test-StudioUvBucketName -Name $name)) { continue }
+                if (-not (Test-StudioUvBucketName -Name $name -Fold:$fold)) { continue }
                 # A file, or a link dangling or not, is an existing path to uv's own create,
                 # which answers "already exists", so uv refuses it.
                 if (-not [System.IO.Directory]::Exists($entry)) { return $false }
@@ -1796,6 +1819,7 @@ exit 1
         try {
             $buckets = Get-ChildItem -LiteralPath $Cache -Directory -Force -ErrorAction Stop |
                 Where-Object {
+                    # No -Fold: warmth is exact-case, so every name here is lowercase.
                     (Test-StudioUvBucketName -Name $_.Name) -and
                     ($_.Name.Substring(0, $_.Name.LastIndexOf("-v")) -in
                         @("archive", "builds", "built-wheels", "wheels", "sdists"))
@@ -2973,6 +2997,13 @@ exit 1
             if ($PSScriptRoot -and $PSScriptRoot.Trim()) {
                 $bundledIcon = Join-Path $PSScriptRoot "studio\frontend\public\unsloth.ico"
             }
+            # The packaged .ico (studio\frontend\dist) serves irm|iex installs with no $PSScriptRoot.
+            $packagedIcon = $null
+            try {
+                $venvRoot = Split-Path -Parent (Split-Path -Parent $ManagedPythonPath)
+                $packagedIconCandidate = Join-Path $venvRoot "Lib\site-packages\studio\frontend\dist\unsloth.ico"
+                if (Test-Path -LiteralPath $packagedIconCandidate) { $packagedIcon = $packagedIconCandidate }
+            } catch {}
             $iconUrl = "https://raw.githubusercontent.com/unslothai/unsloth/main/studio/frontend/public/unsloth.ico"
 
             if (-not (Test-Path -LiteralPath $appDir)) {
@@ -3313,6 +3344,12 @@ exit 0
                     Copy-Item -LiteralPath $bundledIcon -Destination $iconPath -Force
                 } catch {
                     Write-StudioLine "[DEBUG] Error copying bundled icon: $($_.Exception.Message)" -ForegroundColor DarkGray
+                }
+            } elseif ($packagedIcon) {
+                try {
+                    Copy-Item -LiteralPath $packagedIcon -Destination $iconPath -Force
+                } catch {
+                    Write-StudioLine "[DEBUG] Error copying packaged icon: $($_.Exception.Message)" -ForegroundColor DarkGray
                 }
             } elseif (-not (Test-Path -LiteralPath $iconPath)) {
                 try {

@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import builtins
 import contextlib
 import copy
 import json
@@ -13,6 +14,116 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture(autouse = True)
+def mlx_inference_patches(monkeypatch):
+    module = types.ModuleType("unsloth_zoo.mlx.inference")
+    module.fused_moe_gate_up = contextlib.nullcontext
+    module.fused_decode_conv_silu = contextlib.nullcontext
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
+    return module
+
+
+@pytest.fixture
+def mlx_moe(mlx_inference_patches):
+    return mlx_inference_patches
+
+
+@pytest.fixture
+def mlx_decode(mlx_inference_patches):
+    return mlx_inference_patches
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModuleNotFoundError("injected", name = "unsloth_zoo.mlx.inference"),
+        # Zoo installed without the mlx extras its fusion module imports.
+        ModuleNotFoundError("injected", name = "mlx"),
+        ModuleNotFoundError("injected", name = "unsloth_zoo"),
+        # A skewed or partial install raises ImportError, not ModuleNotFoundError.
+        ImportError("cannot import name 'gather_qmm'"),
+        RuntimeError("zoo fusion module failed at import"),
+    ],
+    ids = ["feature", "mlx", "unsloth_zoo", "import-error", "raising-module"],
+)
+def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
+    """No Zoo state may fail a load or a generation: raising would take down a path that
+    worked before the optimization existed, so a transitive failure is logged instead."""
+    from core.inference import mlx_inference
+
+    module_name = "unsloth_zoo.mlx.inference"
+    helper = getattr(mlx_inference, f"_mlx_fused_{feature}")
+
+    original_import = mlx_inference.importlib.import_module
+
+    def fail(name, *args, **kwargs):
+        if name == module_name:
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(mlx_inference.importlib, "import_module", fail)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with helper(model) as active:
+        assert active is model
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_fusion_that_cannot_be_entered_keeps_native(
+    monkeypatch, mlx_inference_patches, feature
+):
+    """Packing can fail on the model in hand (headroom, an unsupported layout) after the
+    module imported cleanly. That must degrade to native, not fail the request."""
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("cannot pack this model")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_inference_patches, f"fused_{feature}", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    model = object()
+    with getattr(mlx_inference, f"_mlx_fused_{feature}")(model) as active:
+        assert active is model
+
+
+def test_mlx_fusion_failure_at_load_still_loads_the_model(monkeypatch, mlx_moe):
+    """The base-model scope is entered inside load_model, so a fusion that refuses there
+    must not turn a good load into a failed one."""
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+
+    @contextmanager
+    def refuse(_model):
+        raise RuntimeError("no headroom to pack")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", refuse)
+    monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config) is True
+    assert backend.active_model_name == "fake/text"
+    assert backend._model is not None
+    assert backend.unload_model("fake/text")
+
+
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
+    from core.inference import mlx_inference
+
+    name = f"fused_{feature}"
+    monkeypatch.delattr(mlx_inference_patches, name)
+    model = object()
+    helper = getattr(mlx_inference, f"_mlx_{name}")
+    with helper(model) as active:
+        assert active is model
 
 
 class _Resp:
@@ -221,6 +332,72 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     assert isinstance(backend._tokenizer, _DummyTokenizer)
     # Non-LoRA text model: no base_model on the record.
     assert backend.models["fake/text"]["base_model"] is None
+
+
+@pytest.mark.parametrize("is_lora", [False, True])
+def test_mlx_base_fusion_lifetime_and_lora_request_scope(monkeypatch, mlx_moe, is_lora):
+    backend = _install_fake_text_stack(monkeypatch, {"p": [1, 2], "generated": [7, 8]}, [])
+    tokenizer = backend._tokenizer
+    _install_fake_fast_mlx(monkeypatch, [])
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    events = []
+
+    class FusedModel(_DummyModel):
+        pass
+
+    @contextmanager
+    def fusion(model):
+        if type(model) is FusedModel:
+            yield model
+            return
+        original = type(model)
+        model.__class__ = FusedModel
+        events.append(("enter", model))
+        try:
+            yield model
+        finally:
+            assert backend._model is model
+            model.__class__ = original
+            events.append(("exit", model))
+
+    monkeypatch.setattr(mlx_moe, "fused_moe_gate_up", fusion)
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = is_lora)
+    assert backend.load_model(config)
+    first = backend._model
+    expected_class = _DummyModel if is_lora else FusedModel
+    assert type(first) is expected_class
+    backend._tokenizer = tokenizer
+    stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
+    assert next(stream) == "7"
+    assert type(first) is FusedModel
+    stream.close()
+    assert type(first) is expected_class
+    assert events == ([("enter", first), ("exit", first)] if is_lora else [("enter", first)])
+    backend.reset_generation_state()
+    assert type(first) is expected_class
+
+    assert backend.load_model(config)
+    second = backend._model
+    assert second is not first and type(first) is _DummyModel
+    assert type(second) is expected_class
+    backend.unload_model(config.identifier)
+    assert type(second) is _DummyModel and backend._model is None
+
+    assert backend.load_model(config)
+    third = backend._model
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("load failed")
+
+    loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
+    monkeypatch.setattr(loader, "from_pretrained", fail)
+    with pytest.raises(RuntimeError, match = "load failed"):
+        backend.load_model(config)
+    assert type(third) is _DummyModel
+    backend.unload_model(config.identifier)
+    assert sum(event == "enter" for event, _ in events) == sum(
+        event == "exit" for event, _ in events
+    )
 
 
 def test_mlx_text_lora_record_keeps_base_model_for_native_template(monkeypatch):
@@ -577,7 +754,10 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
         ), f"{name!r} must default to None so existing callers stay valid"
 
 
-def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
+    monkeypatch, mlx_moe, mlx_decode, feature
+):
     """A prefilled <think> block must be re-emitted as the first VLM snapshot,
     inside the adapter context (so unsupported requests still raise first), so
     the UI renders the thinking block during prefill and a pre-first-token
@@ -588,6 +768,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
     order = []
+    stream_state = {"fail": False}
 
     @contextmanager
     def _adapter_state(_model, state):
@@ -599,6 +780,21 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
             order.append("adapter_exit")
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model and backend._generation_lock.locked()
+        assert order[-1] == "snapshots_released"
+        order.append("fusion_enter")
+        try:
+            yield
+        finally:
+            assert backend._generation_lock.locked()
+            order.append("fusion_exit")
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.detect_think_prefill",
         lambda *_a, **_k: "<think>\n",
@@ -613,7 +809,9 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
 
     def _vlm_stream(*_a, **_k):
         # The prefill must have been emitted before any generated token.
-        assert order[-1] == "adapter_enter"
+        assert order[-1] == "fusion_enter"
+        if stream_state["fail"]:
+            raise RuntimeError("generation failed")
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _vlm_stream
@@ -626,16 +824,27 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    monkeypatch.setattr(
+        backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
+    )
     args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
     assert next(gen) == "<think>\n"
-    assert order == ["adapter_enter"]
+    entered = ["adapter_enter", "snapshots_released", "fusion_enter"]
+    assert order == entered
     # Subsequent snapshots are cumulative (prefill + generated text).
     assert next(gen) == "<think>\nok"
     gen.close()
-    assert order == ["adapter_enter", "adapter_exit"]
+    completed = entered + ["fusion_exit", "adapter_exit"]
+    assert order == completed
+    assert not backend._generation_lock.locked()
+    stream_state["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(backend._generate_vlm(*args, _adapter_state = False))
+    assert order == completed * 2
+    assert not backend._generation_lock.locked()
 
 
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
@@ -778,7 +987,10 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_generate_text_forwards_kwargs_into_template_helper(
+    monkeypatch, mlx_moe, mlx_decode, feature
+):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""
     from core.inference import mlx_inference
@@ -829,12 +1041,28 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
 
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model
+        assert adapter_active["value"] and backend._generation_lock.locked()
+        adapter_events.append(("fusion_enter", False))
+        try:
+            yield
+        finally:
+            assert adapter_active["value"] and backend._generation_lock.locked()
+            adapter_events.append(("fusion_exit", False))
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
+
     class _Resp:
         def __init__(self, tok):
             self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
         assert adapter_active["value"]
+        assert adapter_events[-1] == ("fusion_enter", False)
         if stream_state["fail"]:
             raise RuntimeError("generation failed")
         yield _Resp(1)
@@ -870,7 +1098,8 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert next(generator) == "hi"
     assert adapter_active["value"] and backend._generation_lock.locked()
     generator.close()
-    assert adapter_events == [("enter", False), ("exit", False)]
+    completed = [(name, False) for name in ("enter", "fusion_enter", "fusion_exit", "exit")]
+    assert adapter_events == completed
     stream_state["fail"] = True
     with pytest.raises(RuntimeError, match = "generation failed"):
         list(
@@ -880,7 +1109,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
                 max_new_tokens = 1,
             )
         )
-    assert adapter_events[-2:] == [("enter", False), ("exit", False)]
+    assert adapter_events == completed * 2
     assert not backend._generation_lock.locked()
 
     monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", real_adapter_state)
@@ -2294,7 +2523,8 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
+@pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
+def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 
     The audio stream has to enter _temporary_mlx_adapter_state like the text and
@@ -2304,16 +2534,41 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
     from core.inference.mlx_inference import MLXInferenceBackend
 
     seen = {}
+    order = []
 
     @contextlib.contextmanager
     def _fake_adapter_state(model, use_adapter):
         seen["use_adapter"] = use_adapter
         seen["entered"] = True
-        yield
-        seen["exited"] = True
+        seen["exited"] = False
+        order.append("adapter_enter")
+        try:
+            yield
+        finally:
+            seen["exited"] = True
+            order.append("adapter_exit")
+
+    @contextmanager
+    def _fusion(model):
+        assert model is backend._model and backend._generation_lock.locked()
+        assert seen["entered"] and not seen["exited"]
+        assert order[-1] == "snapshots_released"
+        order.append("fusion_enter")
+        try:
+            yield
+        finally:
+            assert not seen["exited"] and backend._generation_lock.locked()
+            order.append("fusion_exit")
+
+    monkeypatch.setattr(
+        mlx_moe if feature == "moe_gate_up" else mlx_decode, f"fused_{feature}", _fusion
+    )
 
     def _fake_stream(model, processor, prompt, **kwargs):
         seen["inside"] = seen.get("entered") and not seen.get("exited")
+        assert order[-1] == "fusion_enter"
+        if seen.get("fail"):
+            raise RuntimeError("generation failed")
         yield SimpleNamespace(
             text = "x",
             prompt_tokens = 1,
@@ -2338,19 +2593,39 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch):
     backend.active_model_name = "m"
     backend.last_generation_stats = None
     backend.models = {"m": {"audio_type": "audio_vlm"}}
-
-    list(
-        backend.generate_audio_input_response(
-            messages = [{"role": "user", "content": "hi"}],
-            system_prompt = "",
-            audio_array = [0.0],
-            max_new_tokens = 8,
-            use_adapter = False,
-        )
+    monkeypatch.setattr(
+        backend, "_release_vlm_snapshots", lambda: order.append("snapshots_released")
     )
+
+    args = dict(
+        messages = [{"role": "user", "content": "hi"}],
+        system_prompt = "",
+        audio_array = [0.0],
+        max_new_tokens = 8,
+        use_adapter = False,
+    )
+    list(backend.generate_audio_input_response(**args))
     assert seen["use_adapter"] is False
     # Held for the whole stream, and restored afterwards.
     assert seen["inside"] is True and seen["exited"] is True
+    completed = [
+        "adapter_enter",
+        "snapshots_released",
+        "fusion_enter",
+        "fusion_exit",
+        "adapter_exit",
+    ]
+    assert order == completed
+    stream = backend.generate_audio_input_response(**args)
+    assert next(stream) == "x"
+    stream.close()
+    assert order == completed * 2
+    assert not backend._generation_lock.locked()
+    seen["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(backend.generate_audio_input_response(**args))
+    assert order == completed * 3
+    assert not backend._generation_lock.locked()
 
 
 def test_worker_forwards_use_adapter_on_the_audio_command():
@@ -5080,3 +5355,561 @@ def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypat
     backend._tokenizer = None
 
     assert backend._unset_generation_budget("P") == UNSET_GENERATION_BUDGET
+
+
+_CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header, decoded byte-for-byte by the backend
+
+
+def _require_video_stack_module():
+    """`_require_video_stack`, returning the package so a test can restand its ``utils``."""
+    _require_video_stack()
+    import mlx_vlm
+
+    return mlx_vlm
+
+
+def _require_video_stack():
+    """Both halves: guarding on one alone let a test needing both run on a runner with only the
+    other, and the decoder lands in 0.5.0 while the install floor is 0.4.4."""
+    utils = pytest.importorskip("mlx_vlm.utils")
+    if not callable(getattr(utils, "load_video", None)):
+        pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
+    pytest.importorskip("cv2")
+    return utils
+
+
+def _video_vlm_backend(monkeypatch, streams):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {})
+
+    def _vlm_stream(*args, **kwargs):
+        paths = kwargs.get("video")
+        streams.append((args, kwargs, [Path(p).read_bytes() for p in paths] if paths else None))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    real_vlm_utils = _require_video_stack()
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", real_vlm_utils)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<video> marked",
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "qwen3_5"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._is_vlm = True
+    return backend
+
+
+def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch):
+    """A snapshot spans the video rows but is keyed by token ids the clip does not vary, so a
+    later clip would resume the earlier one's vision rows and its mRoPE grid."""
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    backend._vlm_is_diffusion_model = lambda _model: False
+    monkeypatch.setattr(type(backend), "_vlm_prompt_cache_store", lambda self: object())
+    monkeypatch.setattr(type(backend), "_vlm_media_token_ids", lambda self, _config: (7,))
+    monkeypatch.setattr(type(backend), "_vlm_media_block", lambda self, *_a: None)
+    cache_module = types.ModuleType("mlx_vlm.models.cache")
+    cache_module.make_prompt_cache = lambda _model, max_kv_size = None: []
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", types.ModuleType("mlx_vlm.models"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", cache_module)
+
+    # Control: without a clip the same call builds a session, so the None below is the video rule.
+    assert backend._vlm_prompt_cache_session(False, None, "prompt") is not None
+    assert backend._vlm_prompt_cache_session(False, None, "prompt", has_video = True) is None
+
+    # And the stream says so: a clip reaches mlx-vlm with no cache to resume from.
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    ((_, stream_kwargs, _),) = streams
+    assert "prompt_cache" not in stream_kwargs
+    assert "prompt_cache_state" not in stream_kwargs
+
+
+def test_mlx_vlm_a_video_turn_releases_retained_snapshots(monkeypatch):
+    """A video turn resumes nothing, so retained snapshots are pure occupancy against the
+    frame budget it is about to allocate."""
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    released = []
+    monkeypatch.setattr(type(backend), "_release_vlm_snapshots", lambda self: released.append(True))
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert released == [True]
+
+
+def test_mlx_vlm_an_unset_budget_is_capped_for_a_video_turn(monkeypatch):
+    """A clip expands furthest past its placeholder, so the counted prompt understates the real
+    one by more than an image does."""
+    from core.inference.runtime_context import UNSET_GENERATION_BUDGET
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    monkeypatch.setattr(
+        type(backend),
+        "_unset_generation_budget",
+        lambda self, *_args, **_kwargs: UNSET_GENERATION_BUDGET * 8,
+    )
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, None, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert streams[-1][1]["max_tokens"] == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_vlm_video_clip_lives_on_disk_only_for_the_stream(monkeypatch):
+    """The clip lives on disk only for the stream, including when the caller closes it early."""
+    import base64
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    ((stream_args, stream_kwargs, contents),) = streams
+    assert stream_args[3] is None, "no image was attached"
+    assert contents == [base64.b64decode(_CLIP_B64)]
+    assert not any(Path(p).exists() for p in stream_kwargs["video"])
+
+    gen = backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)
+    assert next(gen) == "ok"
+    (path,) = streams[-1][1]["video"]
+    assert Path(path).exists()
+    gen.close()
+    assert not Path(path).exists()
+
+
+def _tiny_clip(
+    path,
+    width = 32,
+    height = 24,
+    frames = 12,
+):
+    # importorskip: two of the three callers reach here before any other guard.
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 4.0, (width, height))
+    for index in range(frames):
+        frame = np.zeros((height, width, 3), np.uint8)
+        frame[:, index : index + 4] = 255
+        writer.write(frame)
+    writer.release()
+    return str(path)
+
+
+def test_mlx_vlm_the_decoded_frame_stack_is_bounded(monkeypatch, tmp_path):
+    """A small upload can decode to gigabytes; the rate is the one knob every release passes on."""
+    import base64
+
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    per_frame = 2 * 3 * 32 * 24
+    plain = SimpleNamespace()
+    slower = SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0))
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 6)
+    assert mlx_inference._video_frame_rate(clip, plain) == 2.0
+    assert mlx_inference._video_frame_rate(clip, slower) == 1.0
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 4)
+    assert mlx_inference._video_frame_rate(clip, plain) == pytest.approx(4 / 3)
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 3)
+    with pytest.raises(RuntimeError, match = "32x24 frames are too large"):
+        mlx_inference._video_frame_rate(clip, plain)
+
+    unopenable = tmp_path / "header"
+    unopenable.write_bytes(base64.b64decode(_CLIP_B64))
+    assert mlx_inference._video_frame_rate(str(unopenable), plain) is None
+
+
+def test_mlx_vlm_a_clip_with_an_unreadable_rate_is_still_bounded(monkeypatch):
+    """mlx-vlm decodes such a clip at an assumed rate instead of refusing it, so skipping the
+    budget here is the one path around it."""
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    cv2 = pytest.importorskip("cv2")
+    measurements = {
+        cv2.CAP_PROP_FRAME_WIDTH: 32.0,
+        cv2.CAP_PROP_FRAME_HEIGHT: 24.0,
+        cv2.CAP_PROP_FRAME_COUNT: 12.0,
+        cv2.CAP_PROP_FPS: 0.0,
+    }
+
+    class _RatelessCapture:
+        def __init__(self, _path):
+            pass
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return measurements[prop]
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", _RatelessCapture)
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 6)
+    assert mlx_inference._video_frame_rate("clip.mp4", SimpleNamespace()) == 0.5
+
+
+def test_mlx_vlm_the_frame_rate_follows_an_older_mlx_vlm_decoder(monkeypatch, tmp_path):
+    """Older releases hand load_video only ``fps``, so its signature is the sampling source."""
+    from core.inference import mlx_inference
+
+    mlx_vlm = _require_video_stack_module()
+
+    def load_video(
+        video_path,
+        fps = 1.5,
+        nframes = None,
+        min_frames = 8,
+        max_frames = 768,
+    ):
+        raise AssertionError("never decoded here")
+
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(load_video = load_video))
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    per_frame = 2 * 3 * 32 * 24
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 12)
+    assert mlx_inference._video_frame_rate(clip, SimpleNamespace()) == 1.5
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 7)
+    with pytest.raises(RuntimeError, match = "8 of them"):
+        mlx_inference._video_frame_rate(clip, SimpleNamespace())
+
+
+def test_mlx_vlm_the_frame_rate_rides_the_stream(monkeypatch, tmp_path):
+    import base64
+    import tempfile
+
+    from core.inference import mlx_inference
+
+    clip_b64 = base64.b64encode(Path(_tiny_clip(tmp_path / "clip.mp4")).read_bytes()).decode()
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 4)
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+
+    assert list(
+        backend._generate_vlm(
+            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+        )
+    ) == ["ok"]
+    assert streams[0][1]["fps"] == pytest.approx(4 / 3)
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 3)
+    gen = backend._generate_vlm(
+        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+    )
+    with pytest.raises(RuntimeError, match = "too large to decode"):
+        next(gen)
+    assert len(streams) == 1, "a refused clip never reaches mlx-vlm"
+    assert list(spool.glob("unsloth-video-*")) == []
+
+
+def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(monkeypatch):
+    """Registered renderers take image and audio counts only, so recovery would drop the clip."""
+    backend = _video_vlm_backend(monkeypatch, [])
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, messages, **_k: f"{messages[0]['content'][0]} serialized",
+    )
+    turn = [{"role": "user", "content": [{"type": "image"}, {"type": "video"}]}]
+    with pytest.raises(RuntimeError, match = "for a video turn"):
+        list(
+            backend._generate_vlm(
+                turn, object(), 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
+            )
+        )
+
+
+def test_mlx_vlm_an_undecodable_clip_leaves_no_file_behind(monkeypatch, tmp_path):
+    import binascii
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    backend = _video_vlm_backend(monkeypatch, [])
+    turn = [{"role": "user", "content": [{"type": "video"}]}]
+    with pytest.raises(binascii.Error):
+        list(
+            backend._generate_vlm(
+                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = "A"
+            )
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_mlx_vlm_structured_video_items_must_match_attached_clips(monkeypatch):
+    backend = _video_vlm_backend(monkeypatch, [])
+    args = (None, 0, 1, 0, 0, 1, 1, None)
+    without_part = [{"role": "user", "content": [{"type": "text", "text": "what moves"}]}]
+    with pytest.raises(RuntimeError, match = "0 structured video item.*1 attached video"):
+        list(backend._generate_vlm(without_part, *args, _adapter_state = False, video = _CLIP_B64))
+    with_part = [{"role": "user", "content": [{"type": "video"}]}]
+    with pytest.raises(RuntimeError, match = "1 structured video item.*0 attached video"):
+        list(backend._generate_vlm(with_part, *args, _adapter_state = False))
+
+
+def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_clip(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _require_video_stack()
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, *_args, **kwargs: (
+        captured.append((messages, kwargs)) or iter(())
+    )
+    list(
+        backend.generate_chat_response([{"role": "user", "content": "what moves"}], video = _CLIP_B64)
+    )
+    messages, kwargs = captured[0]
+    assert messages[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+    assert kwargs["video"] == _CLIP_B64
+
+    backend._is_vlm = False
+    with pytest.raises(RuntimeError, match = "loaded model does not read video"):
+        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+
+    backend._is_vlm = True
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
+    with pytest.raises(RuntimeError, match = "installed mlx-vlm does not read video"):
+        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+
+
+def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
+    """The declared mlx-vlm range starts before load_video existed."""
+    from core.inference import mlx_inference
+
+    mlx_vlm = _require_video_stack_module()
+
+    assert mlx_inference._mlx_vlm_decodes_video() is True
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(prepare_inputs = object()))
+    assert mlx_inference._mlx_vlm_decodes_video() is False
+
+
+def test_mlx_reads_video_asks_the_processor_and_the_template(monkeypatch):
+    """The processor must carry a video component and the template must place a marker."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
+
+    _require_video_stack()
+    renders = {}
+
+    def _render(_target, messages, **_kwargs):
+        if messages is _VIDEO_PROBE_MESSAGES:
+            outcome = renders["video"]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+    with_video = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
+    renders["video"] = "<|video_pad|> hi"
+    assert _mlx_reads_video(with_video) is True
+    assert _mlx_reads_video(SimpleNamespace(tokenizer = SimpleNamespace())) is False
+    assert _mlx_reads_video(None) is False
+    renders["video"] = "hi"
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = f"{_VIDEO_PROBE_MESSAGES[0]['content'][0]} hi"
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = ValueError("no video in this template")
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = "<|video_pad|> hi"
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
+    assert _mlx_reads_video(with_video) is False, "a release without the decoder"
+
+
+def test_mlx_reads_video_rejects_a_clip_rendered_as_prose(monkeypatch):
+    """An installed override can render the part as ordinary text, which differs from the text
+    render while marking nothing -- the model would then answer without the clip."""
+    from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
+
+    _require_video_stack()
+    renders = {}
+
+    def _render(_target, messages, **_kwargs):
+        return renders["video"] if messages is _VIDEO_PROBE_MESSAGES else "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+    named = SimpleNamespace(
+        video_processor = object(),
+        video_token = "<|video_pad|>",
+        tokenizer = SimpleNamespace(),
+    )
+
+    renders["video"] = "video hi"
+    assert _mlx_reads_video(named) is False
+    renders["video"] = "[part] hi"
+    assert _mlx_reads_video(named) is False
+    renders["video"] = "<|video_pad|> hi"
+    assert _mlx_reads_video(named) is True
+
+    # A model naming no placeholder keeps the render difference as the only evidence there is.
+    unnamed = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
+    renders["video"] = "video hi"
+    assert _mlx_reads_video(unnamed) is True
+
+
+def _sampling_release(monkeypatch, **utils_fields):
+    """Stand mlx_vlm.utils up in one release's shape, so one processor can be read on each."""
+    mlx_vlm = _require_video_stack_module()
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(**utils_fields))
+
+
+def _legacy_load_video(
+    video_path,
+    fps = 2.0,
+    nframes = None,
+    min_frames = 4,
+    max_frames = 768,
+):
+    raise AssertionError("never decoded here")
+
+
+def _resolving_utils():
+    """The 0.7.0 shape: a resolver that reads the processor, terminating in the library defaults."""
+
+    def resolve_video_sampling(processor, _overrides):
+        component = getattr(processor, "video_processor", None)
+        declared = {}
+        if component is not None:
+            hook = getattr(component, "video_sampling_defaults", None)
+            declared = (
+                hook()
+                if callable(hook)
+                else {n: getattr(component, n, None) for n in ("fps", "min_frames")}
+            )
+        return SimpleNamespace(
+            fps = declared.get("fps") or 2.0,
+            min_frames = declared.get("min_frames") or 4,
+            nframes = declared.get("nframes"),
+        )
+
+    return {"load_video": _legacy_load_video, "resolve_video_sampling": resolve_video_sampling}
+
+
+@pytest.mark.parametrize(
+    "processor, expected_fps",
+    [
+        (SimpleNamespace(), 2.0),
+        (SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0)), 1.0),
+        (SimpleNamespace(video_processor = SimpleNamespace(fps = 4.0)), 4.0),
+        (SimpleNamespace(video_processor = SimpleNamespace()), 2.0),
+        (
+            SimpleNamespace(
+                video_processor = SimpleNamespace(
+                    video_sampling_defaults = lambda: {"fps": 0.5, "min_frames": 4}
+                )
+            ),
+            0.5,
+        ),
+    ],
+)
+def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
+    monkeypatch, processor, expected_fps
+):
+    """A model's declared rate must not depend on which mlx-vlm is installed.
+
+    Studio pins ``mlx-vlm>=0.4.4,<0.7.0``, so the release without a resolver is the one a real
+    install runs; reading the rate only through the resolver left every shipped install sampling
+    at the library default instead of the rate the checkpoint asked for.
+    """
+    from core.inference import mlx_inference
+
+    seen = []
+    for utils_fields in (
+        {"load_video": _legacy_load_video},  # 0.5.0 and the whole 0.6 line
+        _resolving_utils(),  # 0.7.0
+    ):
+        with pytest.MonkeyPatch.context() as patch:
+            _sampling_release(patch, **utils_fields)
+            seen.append(mlx_inference._video_sampling_target(processor))
+
+    assert seen[0] == seen[1], "the installed mlx-vlm changed the sampling this model asked for"
+    assert seen[0] == (expected_fps, 4, None)
+
+
+def test_mlx_vlm_a_release_naming_no_fps_knob_still_bounds_a_clip(monkeypatch):
+    """Forward compatibility: an unknown load_video signature must not make a clip a KeyError."""
+    from core.inference import mlx_inference
+
+    def load_video(
+        video_path,
+        sampling = None,
+        **sampling_kwargs,
+    ):
+        raise AssertionError("never decoded here")
+
+    _sampling_release(monkeypatch, load_video = load_video)
+    assert mlx_inference._video_sampling_target(SimpleNamespace()) == (2.0, 4, None)
+    assert mlx_inference._video_sampling_target(
+        SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0))
+    ) == (1.0, 4, None)
+
+
+def test_mlx_vlm_without_opencv_refuses_a_clip_by_name(monkeypatch):
+    """The capability must not promise what the decoder cannot deliver.
+
+    mlx-vlm's ``load_video`` and the frame budget both import cv2. OpenCV ships as an mlx-vlm
+    dependency, but a stack that lost it used to still report ``has_video_input``, so the composer
+    offered video and the request died with ModuleNotFoundError mid-stream instead of being refused.
+    """
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    assert mlx_inference._mlx_vlm_decodes_video() is True
+
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    assert mlx_inference._mlx_vlm_decodes_video() is False
+    assert (
+        _mlx_reads_video_probe(monkeypatch) is False
+    ), "a model must not advertise video once the decoder is gone"
+
+
+def _mlx_reads_video_probe(monkeypatch):
+    from core.inference.mlx_inference import _mlx_reads_video
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<video> marked",
+    )
+    return _mlx_reads_video(SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace()))
