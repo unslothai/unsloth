@@ -464,7 +464,18 @@ _REASONING_FLAG = "--reasoning"
 _REASONING_ON = "on"
 _REASONING_OFF = "off"
 _REASONING_AUTO = "auto"
-_EXPLICIT_REASONING_ENV_VALUES = frozenset({_REASONING_ON, _REASONING_OFF})
+# llama-server parses LLAMA_ARG_REASONING itself and accepts more than on/off:
+# common/arg.cpp's is_truthy / is_falsey / is_autoy, verified against b10360.
+# Matching only "on"/"off" read LLAMA_ARG_REASONING=true as "no operator
+# override", so the launch appended its own --reasoning, and a CLI flag
+# overwrites the environment ("will be overwritten by command line argument").
+# Matched case-sensitively and unstripped, exactly as upstream compares them, so
+# a spelling it would reject ("ON", " on ") is never mistaken for a default the
+# server actually ran with. Such a value still counts as the operator's, since
+# appending our own flag cannot rescue a launch the environment already aborts.
+_REASONING_ON_ENV_VALUES = frozenset({_REASONING_ON, "enabled", "true", "1"})
+_REASONING_OFF_ENV_VALUES = frozenset({_REASONING_OFF, "disabled", "false", "0"})
+_REASONING_AUTO_ENV_VALUES = frozenset({_REASONING_AUTO, "-1"})
 _CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
 _LLAMA_REASONING_ENV = "LLAMA_ARG_REASONING"
 
@@ -7049,31 +7060,58 @@ class LlamaCppBackend:
         self, cmd: list[str], thinking_default: bool, server_caps: Mapping[str, object]
     ) -> None:
         """Append reasoning defaults, retaining kwargs for older llama-server builds."""
-        reasoning_kwargs = self._reasoning_kwargs(thinking_default)
-        env_reasoning = os.environ.get(_LLAMA_REASONING_ENV, "").strip().lower()
-        if env_reasoning == _REASONING_AUTO:
-            explicit_env_reasoning = None
+        env_reasoning = os.environ.get(_LLAMA_REASONING_ENV, "")
+        # Three states, not two: a value whose polarity we know, an override we
+        # must stand aside for without knowing its polarity, and no override at
+        # all. `auto` is the third: `unsloth start` writes it unconditionally to
+        # mean "follow the template", so it must not read as an operator choice.
+        if env_reasoning in _REASONING_ON_ENV_VALUES:
+            env_thinking = True
+        elif env_reasoning in _REASONING_OFF_ENV_VALUES:
+            env_thinking = False
         else:
-            explicit_env_reasoning = (
-                env_reasoning if env_reasoning in _EXPLICIT_REASONING_ENV_VALUES else None
-            )
-        if explicit_env_reasoning is not None:
-            self._reasoning_default = explicit_env_reasoning == _REASONING_ON
-        if (
-            server_caps.get(_SUPPORTS_REASONING_FLAG_CAPABILITY)
-            and _ENABLE_THINKING_KWARG in reasoning_kwargs
-        ):
-            enabled = reasoning_kwargs.pop(_ENABLE_THINKING_KWARG)
-            if explicit_env_reasoning is None:
-                cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
-        elif explicit_env_reasoning is not None and server_caps.get(
-            _MTP_PROBE_INCONCLUSIVE_CAPABILITY
-        ):
-            reasoning_kwargs.pop(_ENABLE_THINKING_KWARG, None)
+            env_thinking = None
+        env_overrides = bool(env_reasoning) and env_reasoning not in _REASONING_AUTO_ENV_VALUES
+        if env_thinking is not None:
+            self._reasoning_default = env_thinking
+        # Resolve the override BEFORE building the kwargs, not after. Deriving
+        # them from the model's own default and then recording the operator's
+        # left the two disagreeing on every launch this helper cannot express as
+        # --reasoning: a build without the flag ignores LLAMA_ARG_REASONING and
+        # ran on the model default, and a reasoning_effort template has no
+        # enable_thinking for the flag to carry, so gpt-oss kept its "high" ladder
+        # under LLAMA_ARG_REASONING=off while Studio reported thinking as off.
+        reasoning_kwargs = self._reasoning_kwargs(
+            thinking_default if env_thinking is None else env_thinking
+        )
+        supports_flag = bool(server_caps.get(_SUPPORTS_REASONING_FLAG_CAPABILITY))
+        probe_inconclusive = bool(server_caps.get(_MTP_PROBE_INCONCLUSIVE_CAPABILITY))
+        if _ENABLE_THINKING_KWARG in reasoning_kwargs:
+            if supports_flag:
+                enabled = reasoning_kwargs.pop(_ENABLE_THINKING_KWARG)
+                if not env_overrides:
+                    cmd.extend([_REASONING_FLAG, _REASONING_ON if enabled else _REASONING_OFF])
+            elif env_overrides and probe_inconclusive:
+                # The probe told us nothing. A build new enough to read the
+                # environment must not also be handed a kwarg contradicting it.
+                reasoning_kwargs.pop(_ENABLE_THINKING_KWARG, None)
         if self._supports_preserve_thinking:
             reasoning_kwargs[_PRESERVE_THINKING_KWARG] = self._preserve_thinking_default
         if reasoning_kwargs:
             cmd.extend([_CHAT_TEMPLATE_KWARGS_FLAG, json.dumps(reasoning_kwargs)])
+        # #7526 was diagnosed from this launch log, so keep saying which of the
+        # three channels carries the default: the native flag, the kwargs
+        # fallback, or an inherited LLAMA_ARG_REASONING we deferred to.
+        if env_overrides:
+            channel = _LLAMA_REASONING_ENV
+        elif supports_flag:
+            channel = _REASONING_FLAG
+        else:
+            channel = _CHAT_TEMPLATE_KWARGS_FLAG
+        logger.info(
+            f"Reasoning model: thinking {self._reasoning_default} by default via {channel}"
+            f"{f', kwargs {reasoning_kwargs}' if reasoning_kwargs else ''}"
+        )
 
     def _request_reasoning_kwargs(
         self,
