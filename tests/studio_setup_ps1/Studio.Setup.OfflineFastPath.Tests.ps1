@@ -74,7 +74,7 @@ Describe 'the offline skip' {
     }
 
     It 'asks the same question the incomplete-install guard asks' {
-        ([regex]::Matches($script:SetupText, [regex]::Escape('verify_install(deep = True)'))).Count |
+        ([regex]::Matches($script:SetupText, [regex]::Escape('verify_install(**deep)'))).Count |
             Should -Be 1
     }
 }
