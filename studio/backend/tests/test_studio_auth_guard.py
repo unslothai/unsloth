@@ -427,6 +427,20 @@ def test_a_key_is_masked_in_the_live_stream_however_it_is_chunked():
     assert _stream_chunks(["hello ", "sk-unslo"]) == "hello sk-unslo"
     assert _stream_chunks(["plain output\n"]) == "plain output\n"
 
+    # A terminator anywhere after the token ends it, so a chunk that carries on past a key is
+    # emitted at once. Read only at the ends, `<key> done` looked open and held this chunk and
+    # every chunk after it back until the tool finished, which starved the stream of output.
+    from core.inference.tool_stream_exec import _hold_back_partial_secret
+
+    for text in (
+        key + " done",
+        "out " + key + " more text here",
+        key + "\nnext line",
+    ):
+        assert _hold_back_partial_secret(text) == len(text), text
+    # A token still open at the end of the chunk is still held back.
+    assert _hold_back_partial_secret("out " + key) == 4
+
 
 def test_the_auth_path_assembled_through_a_shell_variable(monkeypatch, tmp_path):
     # Bypass Permissions keeps STUDIO_HOME in the child env, so the shell resolves

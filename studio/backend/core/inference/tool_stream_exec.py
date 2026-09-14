@@ -34,6 +34,8 @@ from loggers import get_logger
 _SECRET_PREFIXES = ("sk-unsloth-", "desktop-")
 # A prefix plus a generous token: bounds the reverse search on a multi-megabyte chunk.
 _SECRET_SCAN_TAIL = 128
+# What ends a credential token in tool output: whitespace, quoting and closing punctuation.
+_SECRET_TERMINATORS = frozenset(" \t\r\n\"'`,;)]}")
 
 
 def _hold_back_partial_secret(text: str) -> int:
@@ -51,10 +53,12 @@ def _hold_back_partial_secret(text: str) -> int:
         while index != -1:
             absolute = tail_start + index
             rest = text[absolute + len(prefix) :]
-            # A terminator means the token is complete here and the regex has had its chance.
-            if not rest or rest.strip(" \t\r\n\"'`,;)]}") == rest:
+            # A terminator ANYWHERE after the token ends it, so the regex has had its chance and
+            # the text is safe to emit. Read only at the ends, `sk-unsloth-<key> done` looked open
+            # and held the chunk (and every chunk after it) back until the tool finished.
+            if not rest or not _SECRET_TERMINATORS.intersection(rest):
                 best = min(best, absolute)
-                break
+            break
             index = tail.rfind(prefix, 0, index)
     # Also a tail that is a PREFIX of a prefix ("...sk-unslo"), which no rfind above can see.
     for prefix in _SECRET_PREFIXES:
