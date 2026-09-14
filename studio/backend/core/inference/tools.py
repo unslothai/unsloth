@@ -2704,6 +2704,651 @@ def _glob_hits_sensitive(command: str) -> bool:
     )
 
 
+# The tool child runs unconfined for the installation owner (account_confinement returns None there), so the session
+# sandbox is a working DIRECTORY, not a boundary: an absolute path in a tool call reaches the real filesystem with the
+# user's own permissions. A RELATIVE path resolves inside that workdir, so it stays silent and ordinary in-sandbox work
+# is untouched; an absolute path outside the roots below is the host's own data, and auto mode asks before it is read
+# or written.
+_SYSTEM_READ_SILENT_ROOTS = (
+    # Installed software and kernel interfaces. Reading these is how a tool learns about the machine; the credential
+    # checks run FIRST, so /etc/shadow and friends still ask despite /etc being here.
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/opt",
+    "/snap",
+    "/nix",
+    "/etc",
+    "/var/lib",
+    "/proc",
+    "/sys",
+    "/dev",
+    # Runtime state (pid files, sockets). /run/secrets and /run/credentials are covered by the credential check that
+    # runs first. Mirrors tool_confinement._SYSTEM_READ_ROOTS.
+    "/run",
+    # macOS
+    "/System",
+    "/Library",
+    "/Applications",
+    # Windows
+    "C:\\Windows",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
+    "C:\\ProgramData",
+)
+# Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
+# write-silent.
+_WRITE_SILENT_DEVICE_NODES = (
+    "/dev/null",
+    "/dev/zero",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/tty",
+    "/dev/full",
+)
+# Roots are resolved from settings and a sqlite table, so they are cached rather than rebuilt per token. A stale entry
+# only ever costs (or spares) one approval prompt, so a short TTL beats invalidation plumbing.
+_SILENT_ROOT_TTL_S = 60.0
+_silent_roots_cache = None
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]?")
+
+
+def _normalized_fs_text(text: str) -> str:
+    """Fold a path to the form root containment compares against: `~` expanded, separators
+    canonical, `.`/`..` collapsed, case-folded where the platform is case-insensitive."""
+    if os.sep != "/":
+        text = text.replace("/", os.sep)
+    if text[:1] == "~":
+        try:
+            text = os.path.expanduser(text)
+        except Exception:  # noqa: BLE001 - a broken HOME must not break classification
+            pass
+    return os.path.normcase(os.path.normpath(text)).rstrip(os.sep) or os.sep
+
+
+def _silent_root_list(producers) -> "tuple[str, ...]":
+    """Normalize each producer's paths, skipping any that raises: a root that cannot be resolved
+    (a retired account, an unset studio home) must narrow the allowlist, never crash the scan."""
+    roots: "list[str]" = []
+    for producer in producers:
+        try:
+            value = producer()
+        except Exception:  # noqa: BLE001 - every root is best effort
+            continue
+        if value is None:
+            continue
+        items = value if isinstance(value, (list, tuple, set)) else (value,)
+        for item in items:
+            if not item:
+                continue
+            try:
+                root = _normalized_fs_text(str(item))
+            except Exception:  # noqa: BLE001
+                continue
+            # "/" would make every path silent, so a root that folds to the filesystem root is dropped.
+            if root and root != os.sep and root not in roots:
+                roots.append(root)
+    return tuple(roots)
+
+
+def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
+    """(read-silent, write-silent) roots. Write-silent is the narrower set: where tool output
+    ordinarily lands. Read-silent adds installed software and the model libraries the user pointed
+    Studio at, which a tool reads all the time and which carry no user documents."""
+    from utils.paths.storage_roots import (
+        cache_root,
+        project_workspaces_root,
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+        tmp_root,
+        well_known_model_dirs,
+    )
+
+    write_roots = _silent_root_list(
+        (
+            sandbox_root,
+            shared_sandbox_root,
+            _legacy_sandbox_root,
+            tmp_root,
+            shared_tmp_root,
+            project_workspaces_root,
+            shared_project_workspaces_root,
+            cache_root,
+            studio_root,
+            # Studio downloads models into these itself, so a tool that fetches one must not need approval for the
+            # cache write. Credential files inside them (token, stored_tokens) are caught by the sensitive-path check.
+            lambda: _hf_cache_dirs(),
+            lambda: _WRITE_SILENT_DEVICE_NODES,
+        )
+    )
+    read_roots = write_roots + _silent_root_list(
+        (
+            lambda: _SYSTEM_READ_SILENT_ROOTS,
+            # The interpreter, its stdlib and site-packages: a tool reads these to introspect its own environment.
+            lambda: (
+                sys.prefix,
+                sys.base_prefix,
+                sys.exec_prefix,
+                getattr(sys, "base_exec_prefix", ""),
+                os.path.dirname(sys.executable),
+                os.environ.get("VIRTUAL_ENV", ""),
+                _SANDBOX_SITE_DIR,
+            ),
+            # Model folders the user registered with Studio, plus the well-known LM Studio / Ollama locations. These
+            # hold weights, not documents, and reading them is the point of the app.
+            _scan_folder_roots,
+            well_known_model_dirs,
+        )
+    )
+    return read_roots, write_roots
+
+
+def _hf_cache_dirs() -> "tuple[str, ...]":
+    from utils.hf_cache_settings import known_hf_cache_homes, known_hf_hub_caches
+    return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
+
+
+def _scan_folder_roots() -> "tuple[str, ...]":
+    """Model folders the owner added in the UI. Read from the same table the model browser uses."""
+    from storage.studio_db import list_scan_folders
+    return tuple(str(row.get("path") or "") for row in list_scan_folders())
+
+
+def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
+    global _silent_roots_cache
+    try:
+        account = current_account_id() or ""
+    except Exception:  # noqa: BLE001
+        account = ""
+    now = time.monotonic()
+    cached = _silent_roots_cache
+    if cached is not None and cached[1] == account and now - cached[0] < _SILENT_ROOT_TTL_S:
+        return cached[2], cached[3]
+    try:
+        read_roots, write_roots = _build_silent_roots()
+    except Exception:  # noqa: BLE001 - no allowlist is the fail-closed direction (more prompts)
+        read_roots, write_roots = (), ()
+    _silent_roots_cache = (now, account, read_roots, write_roots)
+    return read_roots, write_roots
+
+
+def _looks_absolute(text: str) -> bool:
+    """True for a path that reaches the real filesystem rather than the session workdir: POSIX
+    absolute, `~`-rooted, a Windows drive path, or a UNC share. Windows spellings count on every
+    platform, since misjudging one only costs a prompt."""
+    if not text:
+        return False
+    if text[0] in "/~":
+        return True
+    if text.startswith("\\\\"):
+        return True
+    return bool(_WIN_DRIVE_RE.match(text))
+
+
+def _path_needs_approval(text, *, writing: bool = False) -> bool:
+    """True when reading (or, with ``writing``, creating/overwriting) this path leaves the sandbox
+    for the user's own filesystem.
+
+    Order matters: the credential checks run first, so the allowlist below can never turn
+    ``/etc/shadow`` or ``~/.ssh/id_rsa`` into a silent read just because ``/etc`` is read-silent.
+    A relative path stays silent -- it resolves inside the per-session workdir.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return False
+    text = text.strip()
+    if len(text) > _MAX_PATH_SCAN_CHARS:
+        return True
+    # A dynamic segment the folder could not resolve (see _folded_path) is not a decidable path.
+    if "\x00" in text or "\x02" in text:
+        return False
+    if _references_sensitive_path(text) or _glob_token_sensitive(text):
+        return True
+    if not _looks_absolute(text):
+        return False
+    try:
+        candidate = _normalized_fs_text(text)
+    except Exception:  # noqa: BLE001
+        return True
+    read_roots, write_roots = _silent_roots()
+    for root in write_roots if writing else read_roots:
+        if candidate == root or candidate.startswith(root + os.sep):
+            return False
+    return True
+
+
+# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths, so a
+# command this scan does not model contributes nothing rather than a guess.
+_PATH_READ_COMMANDS = frozenset(
+    {
+        "cat",
+        "tac",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "wc",
+        "stat",
+        "file",
+        "od",
+        "xxd",
+        "hexdump",
+        "strings",
+        "base64",
+        "b64encode",
+        "md5",
+        "md5sum",
+        "sha1sum",
+        "sha224sum",
+        "sha256sum",
+        "sha384sum",
+        "sha512sum",
+        "shasum",
+        "cksum",
+        "sum",
+        "cut",
+        "sort",
+        "uniq",
+        "tr",
+        "nl",
+        "rev",
+        "column",
+        "paste",
+        "join",
+        "comm",
+        "expand",
+        "unexpand",
+        "fold",
+        "fmt",
+        "jq",
+        "yq",
+        "diff",
+        "cmp",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        "ack",
+        "ls",
+        "dir",
+        "du",
+        "tree",
+        "find",
+        "fd",
+        "readlink",
+        "realpath",
+        "basename",
+        "dirname",
+        "awk",
+        "gawk",
+        "mawk",
+        "sed",
+        "openssl",
+        "xmllint",
+        "csvlook",
+        "type",
+        "get-content",
+        "gc",
+    }
+)
+# Commands whose file operands are CREATED or OVERWRITTEN.
+_PATH_WRITE_COMMANDS = frozenset(
+    {"tee", "touch", "mkdir", "truncate", "shred", "unzip", "gunzip", "zip", "gzip", "bzip2", "xz"}
+)
+# Copy-like commands: the LAST operand is the destination (a write), the earlier ones are sources (reads).
+_PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
+# Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
+# `grep /usr/bin list.txt` must not read as absolute-path operands. The value is how many positionals to skip.
+_PATH_ARG_SKIP = {
+    "sed": 1,
+    "awk": 1,
+    "gawk": 1,
+    "mawk": 1,
+    "jq": 1,
+    "yq": 1,
+    "grep": 1,
+    "egrep": 1,
+    "fgrep": 1,
+    "rg": 1,
+    "ag": 1,
+    "ack": 1,
+    "tar": 1,
+    "openssl": 1,
+    "xargs": 1,
+}
+# `sed -i` rewrites its operands in place, unlike a plain sed.
+_SED_INPLACE_FLAGS = ("-i", "--in-place")
+_REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
+_REDIR_READ_RE = re.compile(r"^\d*<<?<?$")
+# A whole token that is a NAME=value prefix, as opposed to _SHELL_ASSIGN_RE which finds them inside a command string.
+_SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+
+def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
+    """Absolute file operands a command list touches, as ``(path, writing)``.
+
+    Only commands in the tables above contribute operands, and only tokens that look absolute are
+    returned -- a relative operand lands in the session workdir, and a flag value that is not a path
+    (``head -n 5``) cannot look absolute. Redirection targets are included whichever command owns
+    them, since ``> /abs/file`` truncates that file regardless.
+    """
+    operands: "list[tuple[str, bool]]" = []
+    segment: "list[str]" = []
+
+    def flush() -> None:
+        if segment:
+            operands.extend(_segment_path_operands(segment))
+            segment.clear()
+
+    pending_redirect = None
+    for token in tokens:
+        if pending_redirect is not None:
+            writing, pending_redirect = pending_redirect, None
+            if _looks_absolute(token):
+                operands.append((token, writing))
+            continue
+        if _looks_separator_for_paths(token):
+            flush()
+            continue
+        if _REDIR_WRITE_RE.match(token) or _REDIR_READ_RE.match(token):
+            pending_redirect = bool(_REDIR_WRITE_RE.match(token))
+            continue
+        prefix = _REDIR_PREFIX_RE.match(token)
+        if prefix:
+            target = token[prefix.end() :]
+            if target and _looks_absolute(target):
+                operands.append((target, ">" in prefix.group(0)))
+            continue
+        segment.append(token)
+    flush()
+    return operands
+
+
+def _looks_separator_for_paths(token: str) -> bool:
+    return bool(token) and all(ch in ";&|()" for ch in token)
+
+
+def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
+    """Operands of one simple command (no separators, redirections already removed)."""
+    index = 0
+    # Leading NAME=value assignments and safe wrappers (env, timeout, nice ...) precede the real command.
+    while index < len(segment):
+        token = segment[index]
+        base = os.path.basename(token).lower()
+        if _SHELL_ASSIGN_TOKEN_RE.match(token) or base in _AUTO_SAFE_WRAPPERS:
+            index += 1
+            continue
+        break
+    if index >= len(segment):
+        return []
+    command = os.path.basename(segment[index]).lower()
+    if command.endswith(".exe"):
+        command = command[: -len(".exe")]
+    args = segment[index + 1 :]
+    read_cmd = command in _PATH_READ_COMMANDS
+    write_cmd = command in _PATH_WRITE_COMMANDS
+    dest_last = command in _PATH_DEST_LAST_COMMANDS
+    if not (read_cmd or write_cmd or dest_last):
+        return []
+    inplace = command in ("sed", "perl") and any(
+        arg == flag
+        or (arg.startswith("-i") and not arg.startswith("--"))
+        or arg.startswith("--in-place")
+        for arg in args
+        for flag in _SED_INPLACE_FLAGS
+    )
+    skip = _PATH_ARG_SKIP.get(command, 0)
+    positionals: "list[str]" = []
+    for arg in args:
+        if arg.startswith("-") and arg != "-":
+            # A flag's value is only interesting when it is itself a path (grep -f /abs/patterns); those arrive as the
+            # next token and are handled as a positional below, and non-path values cannot look absolute.
+            continue
+        if skip > 0:
+            skip -= 1
+            continue
+        positionals.append(arg)
+    operands: "list[tuple[str, bool]]" = []
+    for position, arg in enumerate(positionals):
+        # `key=value` forms (dd if=..., --output=...) carry the path on the right.
+        if "=" in arg and not _looks_absolute(arg):
+            arg = arg.split("=", 1)[1]
+        if not _looks_absolute(arg):
+            continue
+        if dest_last:
+            writing = position == len(positionals) - 1 and len(positionals) > 1
+        else:
+            writing = write_cmd or inplace
+        operands.append((arg, writing))
+    return operands
+
+
+def _terminal_reaches_outside_sandbox(tokens) -> bool:
+    """True when a command list reads or writes an absolute path outside the silent roots."""
+    return any(
+        _path_needs_approval(path, writing = writing)
+        for path, writing in _terminal_path_operands(tokens)
+    )
+
+
+# Python callables whose first argument (or receiver, for a method) names a file being READ. Only names that take a
+# path are listed: `json.load(fh)` and `copy.copy(obj)` fold to nothing, so sharing a name with one of these costs
+# nothing.
+_PY_PATH_READ_CALLS = frozenset(
+    {
+        "read_text",
+        "read_bytes",
+        "getline",
+        "getlines",
+        "loadtxt",
+        "genfromtxt",
+        "fromfile",
+        "read_csv",
+        "read_table",
+        "read_fwf",
+        "read_parquet",
+        "read_json",
+        "read_excel",
+        "read_pickle",
+        "read_feather",
+        "read_hdf",
+        "read_stata",
+        "read_sas",
+        "read_orc",
+        "read_xml",
+        "read_html",
+        "read_sql_table",
+        "imread",
+        "connect",
+        "getsize",
+        "getmtime",
+        "getctime",
+        "getatime",
+        "listdir",
+        "scandir",
+        "walk",
+        "iterdir",
+        "glob",
+        "iglob",
+        "rglob",
+        "samefile",
+        "realpath",
+        "readlink",
+        "load_workbook",
+        "from_file",
+        "imageio",
+        "parse",
+        "iterparse",
+        "open_memmap",
+        "memmap",
+        "get_data",
+        "read_image",
+        "loadmat",
+    }
+)
+# Callables whose first argument (or receiver) names a file being CREATED, OVERWRITTEN or REMOVED.
+_PY_PATH_WRITE_CALLS = frozenset(
+    {
+        "write_text",
+        "write_bytes",
+        "touch",
+        "mkdir",
+        "makedirs",
+        "rename",
+        "renames",
+        "replace",
+        "remove",
+        "unlink",
+        "rmdir",
+        "removedirs",
+        "rmtree",
+        "chmod",
+        "chown",
+        "symlink",
+        "symlink_to",
+        "hardlink_to",
+        "link",
+        "truncate",
+        "mkfifo",
+        "mknod",
+        "utime",
+    }
+    | _AUTO_UNSAFE_PY_WRITE_METHODS
+)
+# Callables whose SECOND argument is the destination (shutil.copy(src, dst), os.rename(a, b)).
+_PY_PATH_DEST_SECOND_CALLS = frozenset(
+    {
+        "copy",
+        "copy2",
+        "copyfile",
+        "copytree",
+        "copymode",
+        "copystat",
+        "move",
+        "rename",
+        "renames",
+        "replace",
+        "link",
+        "symlink",
+    }
+)
+# Keyword arguments that carry a path on these callables.
+_PY_PATH_KWARGS = (
+    "path",
+    "file",
+    "filename",
+    "filepath",
+    "file_path",
+    "fname",
+    "name",
+    "src",
+    "source",
+    "dst",
+    "dest",
+    "destination",
+    "output",
+    "out",
+    "path_or_buf",
+    "filepath_or_buffer",
+    "save_directory",
+    "directory",
+    "folder",
+    "dirname",
+    "top",
+)
+
+
+def _python_path_bindings(tree) -> dict:
+    """Names bound to a foldable path (`p = '/media/x'`, `p = Path('/media') / 'x'`), so a read
+    through the variable folds to the same path a literal would."""
+    bindings: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            folded = _folded_path(node.value, bindings)
+        except Exception:  # noqa: BLE001 - folding is best effort
+            continue
+        if isinstance(folded, str) and folded and "\x00" not in folded:
+            bindings[target.id] = folded
+    return bindings
+
+
+def _python_path_operands(tree) -> "list[tuple[str, bool]]":
+    """Absolute path operands a python snippet reads or writes, as ``(path, writing)``.
+
+    Reuses ``_folded_path`` so a path assembled from literals, an f-string, ``os.path.join`` or a
+    ``Path`` chain resolves the same way the credential scan resolves it. A path the folder cannot
+    resolve yields nothing here; the dynamic-alias checks elsewhere cover those.
+    """
+    bindings = _python_path_bindings(tree)
+    operands: "list[tuple[str, bool]]" = []
+
+    def add(node, writing: bool) -> None:
+        if node is None:
+            return
+        try:
+            folded = _folded_path(node, bindings)
+        except Exception:  # noqa: BLE001
+            return
+        if isinstance(folded, str) and folded:
+            operands.append((folded, writing))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            name = func.attr
+        elif isinstance(func, ast.Name):
+            name = func.id
+        else:
+            continue
+        first = node.args[0] if node.args else None
+        second = node.args[1] if len(node.args) > 1 else None
+        if name in ("open", "fdopen"):
+            # The mode decides: `open(p)` reads, `open(p, 'w')` creates or truncates. os.open always creates when it
+            # is handed O_CREAT, and is treated as a write either way since it is the low-level create.
+            writing = _builtin_open_writes(node) or (
+                isinstance(func, ast.Attribute) and getattr(func.value, "id", "") in ("os", "posix")
+            )
+            add(first, writing)
+        elif name in _PY_PATH_DEST_SECOND_CALLS:
+            add(first, False)
+            add(second, True)
+        elif name in _PY_PATH_WRITE_CALLS:
+            add(first, True)
+            if isinstance(func, ast.Attribute):
+                add(func.value, True)
+        elif name in _PY_PATH_READ_CALLS:
+            add(first, False)
+            if isinstance(func, ast.Attribute):
+                add(func.value, False)
+        else:
+            continue
+        writing_kwargs = name in _PY_PATH_WRITE_CALLS
+        for keyword in node.keywords:
+            if keyword.arg in _PY_PATH_KWARGS:
+                add(keyword.value, writing_kwargs or keyword.arg in ("dst", "dest", "destination"))
+    return operands
+
+
+def _python_reaches_outside_sandbox(tree) -> bool:
+    """True when python code reads or writes an absolute path outside the silent roots."""
+    try:
+        operands = _python_path_operands(tree)
+    except Exception:  # noqa: BLE001 - an unexpected AST shape must not crash the classifier
+        return False
+    return any(_path_needs_approval(path, writing = writing) for path, writing in operands)
+
+
 def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
@@ -3179,6 +3824,12 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # A recursive reader rooted outside the sandbox reads host files, as do the always-recursive walkers (tree /home,
     # du /); ask. Bash expands ~/~user to a home dir after this decision, so a tilde root is a sandbox escape too.
     if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
+        # An absolute operand outside the silent roots reaches the user's own filesystem; the sandbox workdir only
+        # contains RELATIVE paths.
+        if _terminal_reaches_outside_sandbox(tokens) or _terminal_reaches_outside_sandbox(
+            scan_tokens
+        ):
+            return True
         token_bases = [os.path.basename(t.strip(";&|()`{}")).lower() for t in tokens]
         if any(b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS for b in token_bases):
             return True
@@ -3297,6 +3948,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         tree = ast.parse(code)
     except SyntaxError:
         return False  # runs into a normal traceback; nothing to guard
+    # An absolute read/write outside the silent roots leaves the session workdir, which only ever holds relative
+    # paths. Kept in step with the high-risk gate so the two classifiers agree on filesystem scope.
+    if _python_reaches_outside_sandbox(tree):
+        return True
     # Names bound to the builtin open (f = open; f, _ = (open, print)) so an aliased writer call is still checked
     # below. builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
@@ -5258,6 +5913,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             tokens = list(lexer)
         except ValueError:
             return True
+        # The sandbox directory is a working directory, not a boundary, so an absolute operand outside the silent
+        # roots reads or rewrites the user's own files. Runs per expansion pass, so a path assembled from a variable
+        # is judged on its resolved form too.
+        if _terminal_reaches_outside_sandbox(tokens):
+            return True
         recursive = any(
             t in ("-R", "--recursive")
             or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
@@ -5834,6 +6494,10 @@ def _python_is_high_risk(code: str) -> bool:
     except SyntaxError:
         # Unparsable code never runs, but scan the raw text anyway.
         return _references_sensitive_path(code)
+    # The session workdir confines RELATIVE paths only: an absolute path outside the silent roots reads or rewrites
+    # the user's own files, which is the same loss the terminal `rm` gate already asks about.
+    if _python_reaches_outside_sandbox(tree):
+        return True
     # A credential basename only names a file when it appears in a string, so match it there rather than across the
     # source: `credentials = {}` and `def load_credentials()` do no I/O and must not prompt.
     for _node in ast.walk(tree):
