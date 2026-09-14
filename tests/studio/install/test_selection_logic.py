@@ -2455,6 +2455,72 @@ class TestWindowsCudaAttemptCoversBlackwell:
 
 
 # ===========================================================================
+class TestDirectUpstreamWindowsAmdTakesVulkan:
+    """The direct/upstream planner is reached when the caller pins --published-repo, so the
+    Windows Vulkan gate there has to match the published one. Left Intel-only, a Windows AMD
+    host with no usable ROCm took the CPU attempt even with win-vulkan in the release."""
+
+    TAG = "b9365"
+
+    def _release(self):
+        names = [
+            f"llama-{self.TAG}-bin-win-vulkan-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+            ],
+        }
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def test_an_amd_host_without_rocm_gets_vulkan_first(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(has_amd_gpu_without_rocm = True), UPSTREAM_REPO, "latest"
+        )
+        kinds = [a.install_kind for a in plan.attempts]
+        assert kinds[0] == "windows-vulkan"
+        # The CPU attempt stays as the tail, exactly as it does for an Intel host.
+        assert "windows-cpu" in kinds
+
+    def test_an_intel_host_is_unchanged(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(has_intel_gpu = True), UPSTREAM_REPO, "latest"
+        )
+        assert [a.install_kind for a in plan.attempts][0] == "windows-vulkan"
+
+    def test_a_windows_host_with_no_gpu_still_takes_cpu(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert [a.install_kind for a in plan.attempts] == ["windows-cpu"]
+
+    def test_a_masked_nvidia_host_is_not_routed_to_vulkan(self):
+        # Vulkan ignores CUDA_VISIBLE_DEVICES, so it could enumerate the reserved card.
+        plan = direct_upstream_release_plan(
+            self._release(),
+            self._host(
+                has_amd_gpu_without_rocm = True,
+                has_physical_nvidia = True,
+                visible_cuda_devices = "",
+            ),
+            UPSTREAM_REPO,
+            "latest",
+        )
+        assert all(a.install_kind != "windows-vulkan" for a in plan.attempts)
+
+
 # N.1c. direct_upstream_release_plan -- Blackwell windows-cuda fallback ordering
 # ===========================================================================
 

@@ -1053,11 +1053,14 @@ def direct_upstream_release_plan(
                         install_kind = "windows-hip",
                     )
                 )
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. Gate
-        # on no PHYSICAL NVIDIA (not just no usable one): a host that hid NVIDIA
-        # via CUDA_VISIBLE_DEVICES must not reach Vulkan, which ignores that mask
-        # and could enumerate the reserved card. Falls through to CPU below.
-        elif host.has_intel_gpu and not host.has_physical_nvidia:
+        # Intel or AMD-without-usable-ROCm: use the Vulkan prebuilt, matching the published
+        # branch and the Linux x86_64 one here. Reached when the caller pins a non-default
+        # --published-repo, so leaving it Intel-only sent a Windows AMD host to the CPU
+        # attempt even when the release carries win-vulkan. Gate on no PHYSICAL NVIDIA (not
+        # just no usable one): a host that hid NVIDIA via CUDA_VISIBLE_DEVICES must not reach
+        # Vulkan, which ignores that mask and could enumerate the reserved card. Falls
+        # through to CPU below.
+        elif (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
             vulkan_url = assets.get(vulkan_asset)
             if vulkan_url:
