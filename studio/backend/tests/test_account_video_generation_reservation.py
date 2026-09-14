@@ -138,7 +138,6 @@ def test_ownership_holds_from_the_reservation_not_from_the_end_of_begin_generate
         assert backend.reserved.wait(20)
         with _client(ALICE) as client:
             assert client.post(cancel).json() == {"cancelled": False}
-            # The declared idle progress shape, with nothing of BOB's clip in it.
             hidden = client.get(progress).json()
             assert hidden["yours"] is False and hidden["active"] is False, hidden
             assert hidden.get("video") is None, hidden

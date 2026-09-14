@@ -212,13 +212,8 @@ def test_the_saved_adapter_still_loads_back(tmp_path):
     base = transformers.AutoModelForCausalLM.from_pretrained(
         "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
     )
-    # Say the device, do not let PEFT infer it. `load_adapter` falls back to
-    # `peft.utils.other.infer_device()`, which answers "cuda" off
-    # `torch.cuda.is_available()` -- and on a CPU-only runner that is True, because
-    # `tests/_zoo_aggressive_cuda_spoof.py` sets it so on purpose. The safetensors
-    # read then dispatches to a CUDA backend that is not there, and the test dies on
-    # `aten::empty_strided` with nothing in the message about a spoof. The adapter
-    # this test wrote is a handful of CPU tensors; where it loads is not the subject.
+    # Say the device: peft.utils.other.infer_device() answers "cuda" off
+    # torch.cuda.is_available(), which tests/_zoo_aggressive_cuda_spoof.py spoofs True.
     reloaded = peft.PeftModel.from_pretrained(
         base,
         str(directory),

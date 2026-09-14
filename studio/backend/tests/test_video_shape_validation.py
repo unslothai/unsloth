@@ -356,8 +356,7 @@ def test_generate_rejects_256x256_with_422_naming_the_presets(client, backend):
     assert "768x512" in detail and "1216x704" in detail
     # Rejected AT THE BOUNDARY: no job was started, so the backend is still idle.
     progress = client.get("/api/inference/video/generate-progress").json()
-    # Named, not subscripted: the one way this has gone wrong is the account gate firing
-    # off a leaked routes.video._generation_account, and a bare KeyError points at neither.
+    # Named, not subscripted: a bare KeyError names neither the gate nor the leaked global.
     assert "active" in progress, (
         f"generate-progress answered {progress}, which is not the declared shape -- the "
         "account gate hid the poll (see routes.video._generation_hidden)"

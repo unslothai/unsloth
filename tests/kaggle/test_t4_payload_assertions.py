@@ -399,10 +399,7 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
     assert failures, "the leg would have passed an adapter that reloads to the base model"
     assert "ignores them silently" in " ".join(failures)
 
-    # Explicit device: PEFT otherwise calls `infer_device()`, which reads
-    # `torch.cuda.is_available()` -- spoofed True process-wide on a CPU-only runner by
-    # tests/_zoo_aggressive_cuda_spoof.py. The base here is a tiny CPU GPT-2 and the
-    # question is which keys came back, so CPU is both correct and the only safe answer.
+    # Explicit: PEFT's infer_device() believes tests/_zoo_aggressive_cuda_spoof.py.
     reloaded = PeftModel.from_pretrained(_base(), str(tmp_path), torch_device = "cpu")
     b_matrices = [p for n, p in reloaded.named_parameters() if "lora_B" in n]
     assert b_matrices and all(float(p.abs().sum()) == 0.0 for p in b_matrices), (

@@ -122,8 +122,6 @@ def test_the_model_loader_cannot_see_or_cancel_another_accounts_generation(share
     try:
         with client_for(BOB) as client:
             hidden = client.get("/api/inference/images/generate-progress").json()
-            # The declared progress shape, idle: a foreign poller reads "nothing is
-            # running" and learns nothing about the generation that IS running.
             assert hidden["yours"] is False, hidden
             assert hidden["active"] is False and hidden["step"] == 0, hidden
             assert client.post("/api/inference/images/generate/cancel").json() == {
@@ -149,8 +147,6 @@ def test_residency_still_governs_progress_and_cancel_with_no_generation_in_fligh
     monkeypatch.setattr(gpu_arbiter, "_owner_account", BOB.account_id)
     with client_for(ALICE) as client:
         hidden = client.get("/api/inference/images/generate-progress").json()
-        # The declared progress shape, idle: a foreign poller reads "nothing is
-        # running" and learns nothing about the generation that IS running.
         assert hidden["yours"] is False, hidden
         assert hidden["active"] is False and hidden["step"] == 0, hidden
         assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": False}
@@ -186,8 +182,6 @@ def test_openai_image_generations_belong_to_the_account_that_started_them(shared
             assert progress["active"] is True and progress["step"] == 3
         with client_for(BOB) as client:
             hidden = client.get("/api/inference/images/generate-progress").json()
-            # The declared progress shape, idle: a foreign poller reads "nothing is
-            # running" and learns nothing about the generation that IS running.
             assert hidden["yours"] is False, hidden
             assert hidden["active"] is False and hidden["step"] == 0, hidden
             assert client.post("/api/inference/images/generate/cancel").json() == {

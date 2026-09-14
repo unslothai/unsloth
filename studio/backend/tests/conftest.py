@@ -304,10 +304,7 @@ def _no_leftover_generation_account(monkeypatch):
     covers the rest, and the six keep their explicit version because there it IS the
     thing under test.
     """
-    # Read out of sys.modules rather than importing. `routes.video` pulls in fastapi and
-    # the whole media stack; importing it here would put that on the first test of every
-    # xdist worker, including the many that never touch a route. And it is exactly the
-    # right condition anyway: a module nothing has imported has no global to leak.
+    # sys.modules, not an import: a module nothing imported has no global to leak.
     routes_video = sys.modules.get("routes.video")
     if routes_video is None:
         return

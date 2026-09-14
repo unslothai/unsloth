@@ -52,18 +52,9 @@ _SPOOFED_CALLS = {
     ("torch", "accelerator", "is_available"),
 }
 
-# The other half of the same hazard. A skip guard is where the spoof decides whether a
-# test RUNS; these are where it decides where a test's tensors LAND, because the library
-# resolves the device itself from the same probe. peft's `infer_device()` returns "cuda"
-# for anything `torch.cuda.is_available()` says yes to, so an unqualified adapter load on
-# a CPU-only runner dies in safetensors with
-#
-#     NotImplementedError: Could not run 'aten::empty_strided' with arguments from the
-#     'CUDA' backend
-#
-# naming neither peft nor the spoof. Suffix-matched on the call, mapped to the keyword
-# that settles it. Deliberately a short allow-list rather than a general lint: the point
-# is to catch another instance of exactly this, not to police every loader call.
+# The other half of the hazard above: a skip guard decides whether a test RUNS, these
+# decide where its tensors LAND, because the library reads the same spoofed probe itself.
+# An allow-list, not a general lint: catch another instance of this, not every loader call.
 _DEVICE_INFERRING_CALLS = {
     ("PeftModel", "from_pretrained"): "torch_device",
     ("PeftMixedModel", "from_pretrained"): "torch_device",

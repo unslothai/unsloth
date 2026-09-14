@@ -503,8 +503,7 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
             "loaded": True,
             "yours": False,
         }
-        # generate-progress keeps its declared shape when hidden, so a poller reading
-        # `active` gets "nothing is running" rather than a KeyError. Still no resident.
+        # Hidden, but still the declared shape: `active` reads false, not KeyError.
         hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
         assert hidden["yours"] is False and hidden["active"] is False, hidden
         response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})

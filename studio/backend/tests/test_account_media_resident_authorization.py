@@ -349,8 +349,6 @@ def test_the_gallery_persist_window_still_belongs_to_the_generating_account(monk
             assert progress["active"] is True
         with client_for(BOB) as client:
             hidden = client.get("/api/inference/images/generate-progress").json()
-            # The declared progress shape, idle: a foreign poller reads "nothing is
-            # running" and learns nothing about the generation that IS running.
             assert hidden["yours"] is False, hidden
             assert hidden["active"] is False and hidden["step"] == 0, hidden
     finally:
