@@ -306,6 +306,11 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 6700 XT", "gfx103X-all"),
     ("AMD Radeon RX 6600 XT", "gfx103X-all"),
     ("AMD Radeon RX 6500 XT", "gfx103X-all"),
+    # The RDNA 2 refresh parts, which hold their own number rather than the one already listed.
+    # All three matched nothing in all seven copies and took CPU torch (#10468).
+    ("AMD Radeon RX 6950 XT", "gfx103X-all"),
+    ("AMD Radeon RX 6850M XT", "gfx103X-all"),
+    ("AMD Radeon RX 6550M", "gfx103X-all"),
 ]
 
 # Exact gfx ids, transcribed from AMD's ROCm compatibility matrix (the "Radeon GPU" list at

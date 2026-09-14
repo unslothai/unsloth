@@ -1179,6 +1179,35 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
     assert hw._devices_that_can_establish_a_mismatch(others) == others
 
 
+def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
+    monkeypatch, tmp_path
+):
+    """A Windows driver that wrote no AdapterFamily leaves the name as the only arch source.
+
+    Silence here is the worst of both: the card is one the installers do ship a wheel for,
+    so leaving it out of the mismatch drops it from Settings > System entirely and the panel
+    says "No visible GPU" beside a card the OS is listing (#10468). The name table decides,
+    which is why a gap in it costs the message as well as the wheel.
+    """
+    _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
+
+    covered = [
+        {"vendor": "amd", "name": "AMD Radeon RX 6950 XT", "index": 0, "gfx_candidates": []},
+        {"vendor": "amd", "name": "AMD Radeon RX 6850M XT", "index": 0, "gfx_candidates": []},
+        {"vendor": "amd", "name": "AMD Radeon RX 6550M", "index": 0, "gfx_candidates": []},
+    ]
+    for device in covered:
+        assert hw._devices_that_can_establish_a_mismatch([device]) == [device], device["name"]
+
+    # The other direction still holds: RDNA 1 is declined on purpose, so it must stay quiet
+    # rather than offer a repair that reinstalls the same CPU wheel.
+    declined = [
+        {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
+    ]
+    assert hw._devices_that_can_establish_a_mismatch(declined) == []
+
+
 def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
     sys = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
