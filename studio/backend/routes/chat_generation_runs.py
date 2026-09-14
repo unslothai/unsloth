@@ -72,6 +72,48 @@ _ENVELOPE_MAX_NODES = 20_000
 _ENVELOPE_MAX_JSON_CHARS = 1_000_000
 
 
+def _rehydrate_media_fields(payload: dict[str, Any]) -> None:
+    """Restore top-level media fields from messages[].content before model validation.
+
+    _sanitize_request strips the redundant top-level echo to avoid storing the blob twice
+    in request_json. The data URI is still in the message content array; this extracts it
+    back so the inference path sees the same shape as a live request.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return
+    # Walk user messages in reverse: the newest attachment is the one the turn uses.
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "image_url" and not payload.get("image_base64"):
+                url = (part.get("image_url") or {}).get("url", "")
+                if url.startswith("data:image/"):
+                    # data:image/png;base64,<b64> -> <b64>
+                    comma = url.find(",")
+                    if comma != -1:
+                        payload["image_base64"] = url[comma + 1 :]
+            elif ptype == "input_audio" and not payload.get("audio_base64"):
+                data = (part.get("input_audio") or {}).get("data", "")
+                if data:
+                    payload["audio_base64"] = data
+            elif ptype == "video_url" and not payload.get("video_base64"):
+                url = (part.get("video_url") or {}).get("url", "")
+                if url.startswith("data:video/"):
+                    comma = url.find(",")
+                    if comma != -1:
+                        payload["video_base64"] = url[comma + 1 :]
+        # Only the newest user message with media counts; stop after the first hit.
+        break
+
+
 class CreateChatGenerationRun(BaseModel):
     model_config = ConfigDict(extra = "forbid")
     runId: str = Field(min_length = 1, max_length = 128, pattern = r"^[A-Za-z0-9_-]+$")
@@ -226,6 +268,11 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
     for field in _EXTERNAL_ROUTING_FIELDS:
+        sanitized.pop(field, None)
+    # The top-level media echo is redundant with the data URI already in messages[].content.
+    # Storing it here would triple the blob (thread copy + request_json messages + this echo).
+    # Rehydrated from the content array at replay time (_rehydrate_media_fields).
+    for field in _MEDIA_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True
     sanitized["thread_id"] = payload.threadId
