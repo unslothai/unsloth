@@ -12,6 +12,9 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -131,7 +134,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
         assert torch.equal(actual, expected)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "needs CUDA")
 @pytest.mark.parametrize(
     "attention_mask,past_length",
     [
