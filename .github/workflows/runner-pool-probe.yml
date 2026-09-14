@@ -1,14 +1,8 @@
 name: Runner pool probe
 
-# Measures one thing: whether the runner label changes how long a job waits in the
-# queue. The board says ubuntu-latest waits a median 44.9 min and ubuntu-22.04 waits
-# 1.1 min for the same work, which would make relabelling the single biggest CI win
-# available. But that number is observational -- it compares different workflows that
-# happen to use different labels, so it cannot separate the label from the job.
-#
-# These cells are identical no-op work submitted at the same instant from the same
-# workflow, so the only difference between them is the label. Whatever spread shows
-# up here is the label's effect and nothing else.
+# Does the runner label change how long a job waits? Identical no-op cells dispatched in
+# the same second from one matrix, so the label is the only variable. Re-run it after any
+# relabelling, to check the advantage did not just move with the crowd.
 on:
   pull_request:
     paths:
