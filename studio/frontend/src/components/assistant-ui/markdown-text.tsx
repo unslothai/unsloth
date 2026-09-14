@@ -231,7 +231,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         </span>
       )}
       {/* Kept from the replaced renderer: the hover tint over the image. */}
-      <div className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
+      <span className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
       {!failedNow && resolved ? (
         <button
           type="button"
