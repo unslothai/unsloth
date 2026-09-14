@@ -6787,12 +6787,8 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
             os.fsync(handle.fileno())
         if original is not None:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
-            # Owner AND group when the caller can (root refreshing another user's install), group
-            # alone when it cannot. chown is all-or-nothing, so a non-root member of a shared
-            # group has the combined call refused outright, and os.replace then installs the
-            # member's own uid and primary gid -- which is how the group was lost (e8d128d24).
-            # Group-only alone is not enough either: under root it leaves the marker owned by
-            # root, and a 0600 marker then stops being readable by the user who owns the install.
+            # Owner then group, as prebuilt_core.write_live_marker explains: neither call
+            # alone is right for both root and a non-root member of a shared group.
             try:
                 os.chown(tmp_path, original.st_uid, original.st_gid)
             except (OSError, AttributeError):

@@ -365,11 +365,9 @@ def test_a_swap_blocked_for_any_other_reason_raises_at_once(tmp_path, monkeypatc
     assert len(attempts) == 1, "a non-transient failure was retried"
 
 
-# An explicit release pin is not automatic selection
-# The macOS walk-back records why AUTOMATIC selection settled on an older release. Reusing that
-# record to satisfy a run that NAMED a release makes the fast path answer "already matches
-# selected release N" while N is not what is installed. The full path never did this: it turns
-# off older-release fallback as soon as published_release_tag is supplied.
+# The walk-back records why AUTOMATIC selection took an older release, so reusing it for a run
+# that NAMED one answers "already matches N" while N is not installed. The full path turns off
+# older-release fallback as soon as published_release_tag is supplied.
 def _mac(macos_version = (14, 7)):
     return LLAMA.HostInfo(
         system = "Darwin",
@@ -434,9 +432,8 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
         lambda marker, expected, host, *, pinned = False: seen.append(pinned) or False,
     )
     host = _mac()
-    # Everything the guards AHEAD of the release check demand, so the call actually gets
-    # there. A marker that fails an earlier guard would make this test pass vacuously with
-    # the pin never computed at all.
+    # Everything the guards AHEAD of the release check demand: failing an earlier one would
+    # make this pass vacuously, with the pin never computed at all.
     monkeypatch.setattr(
         LLAMA,
         "load_prebuilt_metadata",
@@ -472,12 +469,9 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
     assert seen == [True], f"the pin never reached the expectation check: {seen}"
 
 
-# A refused mode restore must not abort a FIRST Node marker write
-# The restore exists so a REFRESH does not publish NamedTemporaryFile's 0600 over a marker other
-# users already read. A first write has neither a mode to preserve nor another reader, and
-# raising there aborts a whole Node install over a cosmetic call -- on Windows, where a scanner
-# holding the freshly written temp file is the same sharing violation
-# atomic_replace_from_tempfile already retries for.
+# The mode restore protects a REFRESH, which has another reader. A first write has neither a
+# mode to preserve nor a reader, and raising there aborts a whole Node install over a cosmetic
+# call, reachable on Windows through the sharing violation the swap already retries.
 def _refuse_mode_change(monkeypatch, module):
     def refuse(path, mode):
         raise PermissionError(13, "Permission denied")

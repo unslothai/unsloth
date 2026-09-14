@@ -708,22 +708,14 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
         try:
             os.chmod(tmp_path, original_mode)
         except OSError:
-            # Only the REFRESH abandons here. Swapping a 0600 temp file over a marker other
-            # users already read is the exact failure the mode restore exists to prevent, so a
-            # refresh that cannot restore the mode leaves the good marker alone. A FIRST write
-            # has no mode to preserve and no other readers yet, and raising there would abort a
-            # whole Node install over a cosmetic chmod -- on Windows, where a scanner holding
-            # the freshly written temp file is the same sharing violation
-            # atomic_replace_from_tempfile already retries for.
+            # Only the REFRESH abandons: it is the one with another reader and a mode worth
+            # keeping. Raising on a FIRST write aborts a whole Node install over a cosmetic
+            # chmod, reachable on Windows through the sharing violation the swap already retries.
             if replacing_an_existing_marker:
                 raise
         if original is not None:
-            # Owner AND group when the caller can (root refreshing another user's install), group
-            # alone when it cannot. chown is all-or-nothing, so a non-root member of a shared
-            # group has the combined call refused outright, and os.replace then installs the
-            # member's own uid and primary gid -- which is how the group was lost (e8d128d24).
-            # Group-only alone is not enough either: under root it leaves the marker owned by
-            # root, and a 0600 marker then stops being readable by the user who owns the install.
+            # Owner then group, as prebuilt_core.write_live_marker explains: neither call
+            # alone is right for both root and a non-root member of a shared group.
             try:
                 os.chown(tmp_path, original.st_uid, original.st_gid)
             except (OSError, AttributeError):
