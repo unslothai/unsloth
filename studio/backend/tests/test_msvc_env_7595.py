@@ -12,6 +12,7 @@ _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 from core import _msvc_env
+import core._torchao_stub as torchao_stub
 
 
 def _fake_triton(
@@ -554,19 +555,66 @@ def test_gate_does_not_disable_where_triton_already_compiles(monkeypatch, tmp_pa
 
 
 def test_torch_is_rocm_build_reads_the_wheel_version(monkeypatch):
-    """TheRock ROCm wheels version like "2.11.0+rocm7.13.0"; the local version segment is the
-    only signal that does not require importing torch to learn it."""
+    """TheRock ROCm wheels version like "2.11.0+rocm7.13.0"; the tag answers without reading
+    version.py. A non-ROCm tag still consults the hip field, which is stubbed: left real, it
+    would read the test host's own torch and answer for the wrong machine."""
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "version", lambda dist: "2.11.0+rocm7.13.0")
     assert _msvc_env._torch_is_rocm_build() is True
     monkeypatch.setattr(md, "version", lambda dist: "2.11.0+cu128")
+    monkeypatch.setattr(torchao_stub, "_hip_field_is_set", lambda: False)
     assert _msvc_env._torch_is_rocm_build() is False
 
     def boom(dist):
         raise RuntimeError("metadata is unreadable")
 
     monkeypatch.setattr(md, "version", boom)
+    assert _msvc_env._torch_is_rocm_build() is False
+
+
+def _fake_torch_version_py(tmp_path, monkeypatch, version_text):
+    """A torch package on disk reduced to what the detector reads: __init__.py for the origin
+    and a generated version.py. find_spec is patched, not sys.path, so the real torch (if the
+    host has one) is never imported and every other module resolves as before."""
+    import importlib.util
+
+    pkg = tmp_path / "torch"
+    pkg.mkdir()
+    init = pkg / "__init__.py"
+    init.write_text("")
+    (pkg / "version.py").write_text(version_text)
+    spec = importlib.util.spec_from_file_location("torch", str(init))
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: spec if name == "torch" else real_find_spec(name, *a, **k),
+    )
+
+
+def test_torch_is_rocm_build_detects_amds_untagged_windows_build(tmp_path, monkeypatch):
+    """AMD's Windows torch 2.8 versions as 2.8.0a0+gitfc14c65: no rocm tag anywhere, so only
+    version.py's hip field identifies the build. Missing it skips the torch preload and hands
+    the WinError 126 (triton-windows#35) back to a supported ROCm install."""
+    import importlib.metadata as md
+
+    _fake_torch_version_py(
+        tmp_path, monkeypatch, '__version__ = "2.8.0a0+gitfc14c65"\nhip: Optional[str] = "6.2.4"\n'
+    )
+    monkeypatch.setattr(md, "version", lambda dist: "2.8.0a0+gitfc14c65")
+    assert _msvc_env._torch_is_rocm_build() is True
+
+
+def test_torch_is_rocm_build_stays_off_for_a_cuda_version_py(tmp_path, monkeypatch):
+    """The other half: a generated version.py always carries the hip field, ``= None`` off
+    ROCm, so the fallback must not turn every untagged wheel into a preload."""
+    import importlib.metadata as md
+
+    _fake_torch_version_py(
+        tmp_path, monkeypatch, '__version__ = "2.11.0+cu128"\nhip: Optional[str] = None\n'
+    )
+    monkeypatch.setattr(md, "version", lambda dist: "2.11.0+cu128")
     assert _msvc_env._torch_is_rocm_build() is False
 
 
