@@ -3432,7 +3432,8 @@ def test_an_advanced_argument_drafter_survives_the_unloadable_drop(tmp_path):
     good = _write_mtp_drafter(tmp_path / "user-draft.gguf", with_token_embd = True)
 
     cmd = _launch(
-        backend, gguf,
+        backend,
+        gguf,
         mtp_draft_path = str(bad),
         speculative_type = "mtp",
         extra_args = ["--model-draft", str(good)],

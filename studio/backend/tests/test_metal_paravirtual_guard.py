@@ -1572,15 +1572,14 @@ def test_every_successful_return_records_the_drafter_it_launched():
     path stands the drafter_not_found refetch down for a load that dropped nothing.
     """
     src = _load_model_source()
-    assert src.count("self._mtp_draft_suppressed_path = _suppressed_draft_path") == 2, (
-        "both successful returns must record the drafter they launched"
-    )
+    assert (
+        src.count("self._mtp_draft_suppressed_path = _suppressed_draft_path") == 2
+    ), "both successful returns must record the drafter they launched"
     # The replay writes its record before returning, not after.
     replay = src.index("loaded successfully on CPU after the")
     assert src.rindex("self._mtp_draft_path = launch_mtp_draft_path", 0, replay) < replay
     assert (
-        src.rindex("self._mtp_draft_suppressed_path = _suppressed_draft_path", 0, replay)
-        < replay
+        src.rindex("self._mtp_draft_suppressed_path = _suppressed_draft_path", 0, replay) < replay
     )
 
 

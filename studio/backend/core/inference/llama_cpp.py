@@ -3388,7 +3388,6 @@ def _mtp_drafter_loads_standalone(path: str) -> bool:
     callers, one parse per file version rather than a fresh mmap per keystroke.
     """
     from utils.models.gguf_metadata import mtp_drafter_loads_standalone
-
     return mtp_drafter_loads_standalone(path)
 
 
@@ -20913,9 +20912,7 @@ class LlamaCppBackend:
             if (
                 mtp_draft_path
                 and _spec_canon not in ("dspark", "dflash")
-                and not _extra_args_mtp_draft_path(
-                    extra_args, env = _child_spec_env(extra_args)
-                )
+                and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
                 and not _mtp_drafter_loads_standalone(mtp_draft_path)
             ):
                 logger.warning(
@@ -27922,10 +27919,7 @@ class LlamaCppBackend:
         _mtp_drafter_missing = (
             not mtp_draft_path
             and not self._nextn_predict_layers
-            and (
-                _is_gemma_mtp_name(model_identifier, model_path)
-                or mtp_drafter_unloadable
-            )
+            and (_is_gemma_mtp_name(model_identifier, model_path) or mtp_drafter_unloadable)
         )
         # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
         # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,

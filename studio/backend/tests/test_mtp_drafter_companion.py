@@ -2190,7 +2190,7 @@ def test_forced_dflash_without_a_sidecar_falls_back(monkeypatch):
 
 
 def test_a_dropped_unloadable_drafter_reports_its_own_reason(monkeypatch):
-    """"Present but unopenable" is not "not found", and the remedies differ.
+    """ "Present but unopenable" is not "not found", and the remedies differ.
 
     drafter_not_found tells a local load to place an mtp-*.gguf that is already on disk,
     and offers a remote load a refetch that returns the same file -- which this branch
@@ -4020,9 +4020,7 @@ _HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_pr
 )
 def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, expected):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
-    drafter = _write_drafter_gguf(
-        tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared
-    )
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared)
     assert _mtp_drafter_loads_standalone(str(drafter)) is expected
 
 
@@ -4036,9 +4034,7 @@ def test_a_lone_file_claiming_to_be_a_split_set_is_still_judged(tmp_path):
     """
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
 
-    drafter = _write_drafter_gguf(
-        tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT, split_count = 2
-    )
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT, split_count = 2)
     assert _mtp_drafter_loads_standalone(str(drafter)) is False
 
 
@@ -4055,9 +4051,7 @@ def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
         split_count = 2,
     )
     # The embeddings live in shard 2; judging shard 1 alone would drop a working set.
-    assert (
-        _mtp_drafter_loads_standalone(str(tmp_path / "mtp-model-00001-of-00002.gguf")) is True
-    )
+    assert _mtp_drafter_loads_standalone(str(tmp_path / "mtp-model-00001-of-00002.gguf")) is True
 
     # The same set with the embeddings nowhere in it: every shard is readable and none
     # carries them, so this one really cannot be opened as a draft.
@@ -4071,9 +4065,7 @@ def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
         tensors = ["blk.65.nextn.eh_proj.weight"],
         split_count = 2,
     )
-    assert (
-        _mtp_drafter_loads_standalone(str(headless / "mtp-model-00001-of-00002.gguf")) is False
-    )
+    assert _mtp_drafter_loads_standalone(str(headless / "mtp-model-00001-of-00002.gguf")) is False
 
 
 def test_an_incomplete_split_drafter_fails_open(tmp_path):
