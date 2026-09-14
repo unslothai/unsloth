@@ -1,0 +1,35 @@
+name: Runner pool probe
+
+# Measures one thing: whether the runner label changes how long a job waits in the
+# queue. The board says ubuntu-latest waits a median 44.9 min and ubuntu-22.04 waits
+# 1.1 min for the same work, which would make relabelling the single biggest CI win
+# available. But that number is observational -- it compares different workflows that
+# happen to use different labels, so it cannot separate the label from the job.
+#
+# These cells are identical no-op work submitted at the same instant from the same
+# workflow, so the only difference between them is the label. Whatever spread shows
+# up here is the label's effect and nothing else.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/runner-pool-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.label }})
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        label:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - ubuntu-24.04-arm
+    steps:
+      - name: Report
+        run: echo "label=${{ matrix.label }} runner=$RUNNER_NAME arch=$(uname -m)"
