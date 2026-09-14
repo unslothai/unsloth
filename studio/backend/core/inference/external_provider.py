@@ -1338,17 +1338,20 @@ class ExternalProviderClient:
             _apply_passthrough_reasoning_effort(body, enable_thinking, reasoning_effort)
         elif provider_info.get("supports_chat_template_kwargs"):
             # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway
-            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family. Both vLLM
-            # and llama-server also read a top-level reasoning_effort (none | low | medium | high).
-            if enable_thinking is not None:
+            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family. Off rides on
+            # that kwarg alone: vLLM through 0.16 types the top-level reasoning_effort as low | medium | high and 400s
+            # on "none".
+            effort = (reasoning_effort or "").strip().lower()
+            effort = _LOCAL_SERVER_EFFORT_ALIASES.get(effort, effort)
+            thinking = False if effort == "none" else enable_thinking
+            if thinking is not None:
                 tpl_kw = body.get("chat_template_kwargs")
                 if not isinstance(tpl_kw, dict):
                     tpl_kw = {}
-                tpl_kw["enable_thinking"] = bool(enable_thinking)
+                tpl_kw["enable_thinking"] = bool(thinking)
                 body["chat_template_kwargs"] = tpl_kw
-            _apply_passthrough_reasoning_effort(
-                body, enable_thinking, reasoning_effort, _LOCAL_SERVER_EFFORT_ALIASES
-            )
+            if effort in ("low", "medium", "high"):
+                body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
 
@@ -3798,7 +3801,15 @@ class ExternalProviderClient:
             model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
         effort_lc = (reasoning_effort or "").strip().lower()
-        if not is_image_model_strict and is_gemini3_thinking:
+        is_gemma_thinking = bool(re.match(r"^gemma-(?:[4-9]|\d{2,})(?:\.\d+)?-", model_lc))
+        if not is_image_model_strict and is_gemma_thinking:
+            # Gemma 4 on the Gemini API is on/off only, as thinkingLevel "high" or "minimal"; it takes no budget.
+            # https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
+            if effort_lc in ("none", "off") or enable_thinking is False:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+            elif effort_lc or enable_thinking is True:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "high"}
+        elif not is_image_model_strict and is_gemini3_thinking:
             # Gemini 3.x thinkingLevel matrix: 3.1+ Pro low/medium/high; 3 Pro low/high (deprecated 2026-03-09); 3.x
             # Flash* minimal/low/medium/high. Coerce minimal->low on Pro, medium->high on legacy 3-Pro.
             _G3_LEVELS = {"minimal", "low", "medium", "high"}

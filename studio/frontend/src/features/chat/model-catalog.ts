@@ -50,6 +50,26 @@ const MODELS_DEV_KEY = "unsloth_chat_models_dev_catalog";
 let modelsDev: ModelCatalogResponse | null = null;
 let modelsDevHydrated = false;
 
+const catalogListeners = new Set<() => void>();
+let catalogVersion = 0;
+
+function notifyCatalogChange(): void {
+  catalogVersion += 1;
+  for (const listener of catalogListeners) listener();
+}
+
+export function subscribeModelCatalog(listener: () => void): () => void {
+  catalogListeners.add(listener);
+  return () => {
+    catalogListeners.delete(listener);
+  };
+}
+
+/** `useSyncExternalStore` snapshot: changes whenever a catalog lands, so capability reads re-render. */
+export function modelCatalogVersion(): number {
+  return catalogVersion;
+}
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
@@ -132,6 +152,7 @@ export function setModelsDevCatalog(catalog: ModelCatalogResponse): void {
   modelsDev = catalog;
   nameIndex = null;
   familyIndex = null;
+  notifyCatalogChange();
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(MODELS_DEV_KEY, JSON.stringify(catalog));
@@ -197,11 +218,14 @@ export function setProviderModelCatalog(
   }
   LIVE_CATALOG.set(providerType, { fetchedAt, models: entries });
   persistLiveCatalog();
+  notifyCatalogChange();
 }
 
 export function clearProviderModelCatalog(providerType: string): void {
   hydrateLiveCatalog();
-  if (LIVE_CATALOG.delete(providerType)) persistLiveCatalog();
+  if (!LIVE_CATALOG.delete(providerType)) return;
+  persistLiveCatalog();
+  notifyCatalogChange();
 }
 
 export function providerModelCatalogFetchedAt(providerType: string): number | null {

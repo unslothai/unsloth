@@ -139,7 +139,11 @@ def test_local_servers_get_template_toggle_and_effort(provider_type):
     assert body["reasoning_effort"] == "high"
     body = _body(provider_type, "Qwen/Qwen3-14B", enable_thinking = False)
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
-    assert body["reasoning_effort"] == "none"
+    # vLLM through 0.16 types reasoning_effort as low | medium | high, so off never goes top-level.
+    assert "reasoning_effort" not in body
+    body = _body(provider_type, "Qwen/Qwen3-14B", reasoning_effort = "none")
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in body
     body = _body(provider_type, "Qwen/Qwen3-14B", reasoning_effort = "medium")
     assert body["reasoning_effort"] == "medium"
     assert "chat_template_kwargs" not in body
@@ -233,3 +237,13 @@ def test_anthropic_models_outside_the_spec_take_the_adaptive_shape():
         max_tokens = 4096,
     )
     assert "output_config" not in body and "thinking" not in body
+
+
+def test_gemma_on_gemini_toggles_with_thinking_level_not_budget():
+    sampling = {"temperature": 0.7, "top_p": 0.95, "max_tokens": 64}
+    body = _body("gemini", "gemma-4-31b-it", enable_thinking = True, **sampling)
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+    body = _body("gemini", "gemma-4-26b-a4b-it", enable_thinking = False, **sampling)
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
+    body = _body("gemini", "gemma-4-31b-it", **sampling)
+    assert "thinkingConfig" not in body.get("generationConfig", {})

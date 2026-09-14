@@ -343,13 +343,11 @@ export async function refreshProviderModelCatalogs(
       // Offline: the bundled snapshot answers until the next sync.
     }
   }
-  const refreshed = new Set<string>();
   for (const provider of providers) {
     const providerType = provider.providerType;
-    if (!MODEL_CATALOG_PROVIDER_TYPES.has(providerType) || refreshed.has(providerType)) {
-      continue;
-    }
-    refreshed.add(providerType);
+    if (!MODEL_CATALOG_PROVIDER_TYPES.has(providerType)) continue;
+    // A successful fetch makes the catalog fresh, so later connections of the same type skip;
+    // a failed one leaves it stale and the next connection gets a turn.
     const fetchedAt = providerModelCatalogFetchedAt(providerType);
     if (fetchedAt != null && Date.now() - fetchedAt < MODEL_CATALOG_TTL_MS) continue;
     try {

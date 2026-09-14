@@ -111,7 +111,8 @@ test("vision follows the model rather than the provider type", () => {
   assert.equal(providerModelSupportsVision("openrouter", "deepseek/deepseek-r1"), false);
   assert.equal(providerModelSupportsVision("openrouter", "openai/gpt-5.5"), true);
   assert.equal(providerModelSupportsVision("openrouter", "acme/never-heard-of-it"), true);
-  assert.equal(providerModelSupportsVision("deepseek", "deepseek-v4-flash"), true);
+  // The catalog lists image input for v4-flash, but the backend strips DeepSeek images before sending.
+  assert.equal(providerModelSupportsVision("deepseek", "deepseek-v4-flash"), false);
   assert.equal(providerModelSupportsVision("deepseek", "deepseek-v4-pro"), false);
   assert.equal(providerModelSupportsVision("deepseek", "deepseek-unknown"), false);
 });
@@ -241,4 +242,31 @@ test("a served models.dev catalog outranks the bundled snapshot and feeds the na
     setModelsDevCatalog({ fetched_at: 0, providers: {} });
   }
   assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-v9-ultra").supportsReasoning, false);
+});
+
+test("every catalog write notifies subscribers, so a composer already on screen re-renders", async () => {
+  const { modelCatalogVersion, setModelsDevCatalog, subscribeModelCatalog } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  let notified = 0;
+  const unsubscribe = subscribeModelCatalog(() => {
+    notified += 1;
+  });
+  const before = modelCatalogVersion();
+  try {
+    setProviderModelCatalog("openrouter", [{ id: "acme/late", reasoning: { supported_efforts: ["high"] } }], 1);
+    assert.equal(notified, 1);
+    clearProviderModelCatalog("openrouter");
+    assert.equal(notified, 2);
+    clearProviderModelCatalog("openrouter");
+    assert.equal(notified, 2, "clearing an absent catalog changes nothing");
+    setModelsDevCatalog({ fetched_at: 0, providers: {} });
+    assert.equal(notified, 3);
+  } finally {
+    unsubscribe();
+  }
+  assert.notEqual(modelCatalogVersion(), before);
+  setProviderModelCatalog("openrouter", [{ id: "acme/late" }], 1);
+  clearProviderModelCatalog("openrouter");
+  assert.equal(notified, 3, "an unsubscribed listener is not called");
 });

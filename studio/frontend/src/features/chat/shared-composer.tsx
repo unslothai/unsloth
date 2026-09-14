@@ -179,6 +179,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
+import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   type CompositionEvent,
   type ClipboardEvent,
@@ -194,6 +195,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 export type CompareMessagePart =
@@ -692,6 +694,7 @@ export function SharedComposer({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const externalSelection = parseExternalModelId(checkpoint);
   const isExternalModel = externalSelection !== null;
   const selectedExternalProvider =

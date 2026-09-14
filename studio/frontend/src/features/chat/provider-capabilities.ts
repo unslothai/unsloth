@@ -14,6 +14,8 @@ import {
   sortReasoningEfforts,
 } from "./model-catalog";
 
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
+
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
  *  Params a provider rejects are hidden; local models use a null capability, so all render. */
 
