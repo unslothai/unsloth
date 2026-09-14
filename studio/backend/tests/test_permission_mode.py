@@ -3417,6 +3417,14 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f"tar -cf{_OUTSIDE_DIR}/out.tar src",
     # The long spelling of create carries the same mode as -c.
     "tar --create --file=/usr/share/out.tar src",
+    # /proc is read-silent, but /proc/<pid>/root is a kernel symlink to the process root, so the
+    # kernel resolves it before the rest and this opens the very file the plain path does.
+    "cat /proc/self/root/home/alice/report.txt",
+    "head -n 5 /proc/1234/cwd/../../home/alice/report.txt",
+    # diff compares --from-file to every operand, so it reads a file nothing occupies an operand
+    # position for.
+    "diff --from-file=/home/alice/private.txt local.txt",
+    "diff --to-file /home/alice/private.txt local.txt",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3473,6 +3481,15 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
         + "\n".join(f"base = 'r{i}'" for i in range(9))
         + f"\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()"
     ),
+    # A plain assignment binds the same identity an import alias does.
+    f"reader = open\nprint(reader({_OUTSIDE_FILE!r}).read())",
+    "import pandas as pd\nrc = pd.read_csv\nrc('/media/kuser/MEDIA_SSD/report.csv')",
+    # /usr/share is read-silent and write-gated, so ranking the alternates as reads dropped it and
+    # the write that followed overwrote a system directory in silence.
+    (
+        "\n".join(f"base = 'sub{i}'" for i in range(9))
+        + "\nbase = '/usr/share'\np = base + '/out'\nopen(p, 'w').write('x')"
+    ),
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3481,6 +3498,10 @@ _INDIRECT_BENIGN_TERMINAL = (
     "cd /usr/lib && ls",
     "echo notes.txt | xargs cat",
     "tar czf out.tgz .",
+    "cat /proc/cpuinfo",
+    "cat /proc/self/status",
+    "diff -u a.txt b.txt",
+    "diff -W 80 --label /before a.txt b.txt",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
@@ -3488,6 +3509,10 @@ _INDIRECT_BENIGN_PYTHON = (
     "import subprocess\nsubprocess.run(['ls', '-la'])",
     "import subprocess\nsubprocess.run(['python', 'train.py'])",
     "import zipfile\nzipfile.ZipFile('out.zip', 'w')",
+    "reader = open\nprint(reader('notes.txt').read())",
+    "import pandas as pd\nrc = pd.read_csv\nrc('data.csv')",
+    # Bound twice, so which function it holds at the call is not answerable.
+    "reader = open\nreader = None\nprint(reader)",
 )
 
 

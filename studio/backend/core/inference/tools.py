@@ -3012,6 +3012,14 @@ def _looks_absolute(text: str) -> bool:
     return bool(_WIN_DRIVE_RE.match(text))
 
 
+# The kernel symlinks under /proc that reach outside /proc: `root` is the process's root directory,
+# `cwd` its working directory, `fd/<n>` an open file. The shell's own PID spellings resolve to a
+# number before the path is opened, so they name the same links a literal number does.
+_PROC_MAGIC_LINK_RE = re.compile(
+    r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/(?:root|cwd|fd)(?:/|$)"
+)
+
+
 def _path_needs_approval(text, *, writing: bool = False) -> bool:
     """True when reading (or, with ``writing``, creating/overwriting) this path leaves the sandbox
     for the user's own filesystem.
@@ -3038,6 +3046,12 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     try:
         candidate = _normalized_fs_text(text)
     except Exception:  # noqa: BLE001
+        return True
+    # `/proc/<pid>/root`, `/cwd` and `/fd/<n>` are kernel magic symlinks: the kernel resolves them
+    # before anything that follows, so `/proc/self/root/home/alice/report.txt` opens the very file
+    # `/home/alice/report.txt` does while reading, lexically, as an ordinary `/proc` path. `/proc` is
+    # read-silent, so containment on the text alone let the whole filesystem in through it.
+    if _PROC_MAGIC_LINK_RE.match(candidate.replace(os.sep, "/")):
         return True
     read_roots, write_roots = _silent_roots()
     inside = any(
@@ -3251,7 +3265,22 @@ _PY_MODULE_OPEN_RECEIVERS = frozenset(
 # where `Path(src).rename(dst)` moves the receiver. Reading the receiver as a path on the module
 # form folds the bare module name and loses the real destination.
 _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
-    {"shutil", "pathlib", "zipfile", "json", "pickle", "numpy", "np", "torch", "joblib", "cv2"}
+    # pandas belongs here for the same reason numpy does: `pd.read_csv(path)` carries its path in the
+    # arguments, never as the receiver.
+    {
+        "shutil",
+        "pathlib",
+        "zipfile",
+        "json",
+        "pickle",
+        "numpy",
+        "np",
+        "torch",
+        "joblib",
+        "cv2",
+        "pandas",
+        "pd",
+    }
 )
 # Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
 # from an operand position.
@@ -3316,6 +3345,31 @@ _PATH_FLAG_SPECS = {
         "-X": "read",
         "--exclude-from": "read",
         "--exclude": "skip",
+    },
+    # `diff --from-file=FILE1 local.txt` compares FILE1 to every operand, so the file it names is
+    # read even though nothing occupies an operand position. The value-taking options that are NOT
+    # paths are listed too, so a NUM or a pattern is stepped over rather than read as one.
+    "diff": {
+        "--from-file": "read",
+        "--to-file": "read",
+        "-X": "read",
+        "--exclude-from": "read",
+        "-S": "read",
+        "--starting-file": "read",
+        "-x": "skip",
+        "--exclude": "skip",
+        "-D": "skip",
+        "--ifdef": "skip",
+        "--label": "skip",
+        "-W": "skip",
+        "--width": "skip",
+        "--tabsize": "skip",
+        "--horizon-lines": "skip",
+        "--line-format": "skip",
+        "-C": "skip",
+        "--context": "skip",
+        "-U": "skip",
+        "--unified": "skip",
     },
     "zip": {"-x": "skip", "-i": "skip"},
     "cut": {
@@ -3899,21 +3953,53 @@ _PY_ALIASABLE_PATH_CALLS = (
 )
 
 
-def _python_function_aliases(tree) -> dict:
-    """Local name -> real function, for `from io import open as fopen`.
+def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict:
+    """Local name -> real function, for `from io import open as fopen` and `reader = open`.
 
     Every MODELED path call is covered, not only the open-like ones: `from pandas import read_csv as
     rc` leaves a plain `Name` under a name in no table, so the call is never dispatched and its path
     argument is never looked at. Restricting this to `open` left every other reader and writer in
     the tables reachable under an alias.
+
+    A plain assignment binds the same identity as an import does, so `reader = open` and
+    `rc = pandas.read_csv` are followed too. An attribute is only followed when its receiver is a
+    modelled module, so `sock.open` and `self.open` stay unmodelled rather than resolving to the
+    builtin. A name assigned more than once is dropped: which function it holds at the call is not
+    answerable here, and guessing either way would be wrong half the time.
     """
     aliases: dict = {}
+    assigned: dict = {}
+    seen_twice: "set[str]" = set()
     for node in _tree_nodes(tree):
-        if not isinstance(node, ast.ImportFrom):
+        if isinstance(node, ast.ImportFrom):
+            for entry in node.names:
+                if entry.asname and entry.name in _PY_ALIASABLE_PATH_CALLS:
+                    aliases[entry.asname] = entry.name
             continue
-        for entry in node.names:
-            if entry.asname and entry.name in _PY_ALIASABLE_PATH_CALLS:
-                aliases[entry.asname] = entry.name
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        if isinstance(value, ast.Name):
+            real = value.id
+        elif isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            receiver = value.value.id
+            receiver = (module_aliases or {}).get(receiver, receiver)
+            real = value.attr if receiver in _PY_MODULE_PATH_RECEIVERS else None
+        else:
+            real = None
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            # Counted whatever the right-hand side was: `reader = open` followed by `reader = None`
+            # leaves the name holding neither, so it must not resolve to the first binding.
+            if target.id in seen_twice:
+                assigned.pop(target.id, None)
+                continue
+            seen_twice.add(target.id)
+            if real and real in _PY_ALIASABLE_PATH_CALLS and real != target.id:
+                assigned[target.id] = real
+    for name, real in assigned.items():
+        aliases.setdefault(name, real)
     return aliases
 
 
@@ -4019,13 +4105,24 @@ def _capped_alternates(values) -> "list[str]":
     if len(values) <= _MAX_REBOUND_ALTERNATES:
         return values
     # Ranked by what the value would COST, not by whether it happens to be absolute: a path under a
-    # read-silent root needs no approval, so filling the cap with `/usr/...` rebindings would drop
-    # the one `/media/...` value that does. Ordering by need keeps the bound on work, not coverage.
-    gated = [v for v in values if _path_needs_approval(v)]
-    if len(gated) >= _MAX_REBOUND_ALTERNATES:
-        return gated[:_MAX_REBOUND_ALTERNATES]
-    rest = [v for v in values if not _path_needs_approval(v)]
-    return gated + rest[: _MAX_REBOUND_ALTERNATES - len(gated)]
+    # silent root needs no approval, so filling the cap with sandbox rebindings would drop the one
+    # `/media/...` value that does. Ordering by need keeps the bound on work, not coverage.
+    # The cap is spent here, before the access mode is known, so BOTH modes have to be represented
+    # or one of them starves. The write-silent roots are a subset of the read-silent ones, which
+    # gives a total order: a value gated for reading is gated for writing too, a value like
+    # `/usr/share` is gated only for writing, and a sandbox path is gated for neither. Ranking on
+    # read alone dropped `/usr/share` and let the `open(p, "w")` that followed overwrite it in
+    # silence; ranking on "either mode" let nine `/usr/...` rebindings crowd out the one `/media/...`
+    # value. Ordering by strength keeps both.
+    def rank(value: str) -> int:
+        if _path_needs_approval(value):
+            return 0
+        return 1 if _path_needs_approval(value, writing = True) else 2
+
+    ranked: "list[list[str]]" = [[], [], []]
+    for value in values:
+        ranked[rank(value)].append(value)
+    return (ranked[0] + ranked[1] + ranked[2])[:_MAX_REBOUND_ALTERNATES]
 
 
 def _python_path_operands(tree) -> "list[tuple[str, bool]]":
@@ -4038,7 +4135,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     bindings = _python_path_bindings(tree)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
-    function_aliases = _python_function_aliases(tree)
+    function_aliases = _python_function_aliases(tree, module_aliases)
     operands: "list[tuple[str, bool]]" = []
 
     def add_subprocess_operands(call) -> None:
