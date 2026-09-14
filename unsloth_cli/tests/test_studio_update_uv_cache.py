@@ -179,6 +179,61 @@ def test_the_windows_branch_gets_the_same_cache(monkeypatch, tmp_path, caches):
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
 
 
+def test_a_unicode_digit_version_is_not_a_bucket(monkeypatch, tmp_path, caches):
+    """str.isdigit() is true for Arabic-Indic and superscript digits; the sh `*[!0-9]*` case
+    and the PowerShell \\A[0-9]+\\z both reject them, and uv writes ASCII. Python was the
+    only one of the three that would have counted such a directory as warmth."""
+    studio = _studio()
+    assert studio._uv_is_bucket_name("archive-v0")
+    assert not studio._uv_is_bucket_name("archive-v\u0661")
+    assert not studio._uv_is_bucket_name("archive-v\u00b2")
+
+
+def test_a_bucket_lookalike_is_not_warmth_for_the_update_either(monkeypatch, tmp_path, caches):
+    """`archive-v0.backup` holds bytes uv cannot reuse, so a prefix match read a cache that is
+    cold in practice as warm. The installers check the whole `-v` suffix; this did not, and an
+    update could prefer the lookalike cache and redownload."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    default_cache.mkdir(parents = True, exist_ok = True)
+    (default_cache / "archive-v0.backup" / "pkg").mkdir(parents = True)
+    (default_cache / "archive-v0.backup" / "pkg" / "payload.so").write_text("x")
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_windows_keeps_uv_s_default_when_both_are_warm_and_unmarked(monkeypatch, tmp_path, caches):
+    """The same rule, asserted through the PowerShell spawn rather than the POSIX one."""
+    studio = _studio()
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        studio._studio_runtime_gate, "resolve_windows_powershell", lambda: "powershell.exe"
+    )
+    monkeypatch.setattr(studio, "_probe_profile_proxy_defaults", lambda hosts: None)
+    monkeypatch.setattr(studio, "_wait_for_windows_setup_process", lambda process: 0)
+    seen: dict = {}
+
+    class _Process:
+        pass
+
+    def _fake_popen(
+        argv,
+        env = None,
+        **kwargs,
+    ):
+        seen["env"] = env
+        return _Process()
+
+    monkeypatch.setattr(studio.subprocess, "Popen", _fake_popen)
+    studio._run_setup_script(repo_root = _setup_tree(tmp_path))
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
 def test_the_seeding_does_not_leak_into_this_process(monkeypatch, tmp_path, caches):
     """_ensure_studio_env_exported mutates os.environ on purpose; this must not, or a
     later `unsloth studio` in the same process would look like a caller override to
@@ -249,12 +304,53 @@ def test_a_studio_mode_install_wins_over_a_cold_default(monkeypatch, tmp_path, c
 
 
 def test_two_warm_caches_and_no_marker_keep_uv_s_default(monkeypatch, tmp_path, caches):
-    """An install that predates the marker cannot say which cache it used, and content
-    cannot tell either: one on-demand wheel warms the Studio cache (install.sh:705). uv's
-    default is what it has been updating from, and it cannot record its way out."""
+    """An install with no marker cannot say which cache it used, and content cannot either.
+
+    The marker arrived in b66d2a4c8 and the installer's early UV_CACHE_DIR block only in
+    e12963071 the day after, so an install old enough to have no marker is old enough that
+    `shared` was reachable, and there the launch repoint leaves backend wheels in the Studio
+    cache while Torch and CUDA sit in uv's default. So the default keeps its priority when both
+    are warm, and the installers order the same three candidates the same way.
+    """
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_warm_studio_cache_still_wins_when_the_default_is_cold(monkeypatch, tmp_path, caches):
+    """The other half: the pre-marker install this rule exists for, whose user never filled
+    uv's own cache. Nothing is lost by keeping the cache that has the bytes."""
+    studio_cache, _default_cache = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_stale_marker_is_no_more_evidence_than_no_marker(monkeypatch, tmp_path, caches):
+    """A marker naming a directory that is gone is a stale pointer, not a decision, so it gets
+    the same ordering as an absent one rather than promoting the Studio cache."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", tmp_path / "deleted-cache")
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_cold_recorded_cache_that_still_exists_keeps_losing(monkeypatch, tmp_path, caches):
+    """The other half: a marker naming a cache that EXISTS and has gone cold is still a
+    decision, so the machine that really moved on still reaches uv's default."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    cold = tmp_path / "coldrec"
+    cold.mkdir()
+    _record(tmp_path / "StudioHome", cold)
     seen = _run_posix(monkeypatch, tmp_path)
 
     assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")

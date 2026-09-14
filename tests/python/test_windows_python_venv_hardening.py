@@ -126,11 +126,19 @@ def _uv_cache_functions(source: str) -> str:
     return "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
-            # Set-StudioUvCacheForLaunch probes before repointing, so its helper comes too or
-            # the snippet dies on CommandNotFoundException rather than testing the handoff.
-            "Test-StudioDirectoryUsable",
             "Resolve-StudioUvCachePath",
             "Write-StudioUvCacheMarker",
+            # Every one of them must be listed. The selector's candidate loop treats any
+            # failure as an uninspectable cache, so a helper missing here does not raise: it
+            # turns every case in this file into "studio, could not be inspected", which reads
+            # as a product bug.
+            "Test-StudioUvNoCache",
+            "Test-StudioUvBucketName",
+            "Test-StudioUvCacheWritable",
+            "Test-StudioUvCachePopulated",
+            "Test-StudioUvCacheRootWritable",
+            "Test-StudioUvCacheUsable",
+            "Read-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",
             "Set-StudioUvCacheForLaunch",
             "Restore-StudioUvCacheEnvironment",
