@@ -4720,12 +4720,16 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         [ -z "$_gpu_disp_gfx_all" ] && \
             _gpu_disp_gfx_all=$(_run_bounded amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
+    _gpu_disp_mkt_all=""
     if [ -z "$_gpu_disp_mkt" ] && command -v amd-smi >/dev/null 2>&1; then
         # tolower(), because amd-smi spells the field MARKET_NAME in caps: the old
         # [Mm]arket.?[Nn]ame class matched neither that nor any other real casing,
         # so this probe never yielded a name.
-        _gpu_disp_mkt=$(_run_bounded amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            'tolower($0) ~ /market.?name/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        # Every device, not just the first: amd-smi lists all GPUs regardless of the
+        # masks, so the name has to be picked at the same index as the arch below or
+        # a masked multi-GPU host pairs GPU 0's name with the selected GPU's arch.
+        _gpu_disp_mkt_all=$(_run_bounded amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            'tolower($0) ~ /market.?name/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2) print $2}' || true)
     fi
     _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
     _gpu_vis_idx=0
@@ -4743,6 +4747,11 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         _gpu_disp_mkt_at_arch=$(printf '%s\n' "$_gpu_disp_agents" | awk -F'\t' -v gfx="$_gpu_disp_gfx" \
             '$1 == gfx { print $2; exit }')
         if [ -n "$_gpu_disp_mkt_at_arch" ]; then _gpu_disp_mkt="$_gpu_disp_mkt_at_arch"; fi
+    elif [ -n "${_gpu_disp_mkt_all:-}" ]; then
+        # amd-smi path: no agent pairing to key on, so take the name at the index the
+        # mask selected, the same one the arch came from.
+        _gpu_disp_mkt=$(printf '%s\n' "$_gpu_disp_mkt_all" | awk -v idx="$_gpu_vis_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then

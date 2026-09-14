@@ -2076,6 +2076,7 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
+_setup_mkt_all=""
 # Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
 # an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
 # label is read off disk first so a CPU-only host never pays for an `import torch`.
@@ -2169,8 +2170,12 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # tolower(), because amd-smi spells the field MARKET_NAME in caps: the old
         # [Mm]arket.?[Nn]ame class matched neither that nor any other real casing,
         # so this probe never yielded a name.
-        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            'tolower($0) ~ /market.?name/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        # Every device, not just the first: amd-smi lists all GPUs regardless of the
+        # masks, so the name has to be picked at the same index as the arch below or
+        # a masked multi-GPU host pairs GPU 0's name with the selected GPU's arch.
+        _setup_mkt_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            'tolower($0) ~ /market.?name/ {gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2) print $2}' || true)
+        _setup_mkt=$(printf '%s\n' "$_setup_mkt_all" | awk 'NF { print; exit }')
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
@@ -2213,6 +2218,11 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_mkt_at_arch=$(printf '%s\n' "$_setup_agents" | awk -F'\t' -v gfx="$_setup_gfx" \
             '$1 == gfx { print $2; exit }')
         if [ -n "$_setup_mkt_at_arch" ]; then _setup_mkt="$_setup_mkt_at_arch"; fi
+    elif [ -n "$_setup_mkt_all" ]; then
+        # amd-smi path: no agent pairing to key on, so take the name at the index the
+        # mask selected, the same one the arch came from.
+        _setup_mkt=$(printf '%s\n' "$_setup_mkt_all" | awk -v idx="$_setup_vis_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
