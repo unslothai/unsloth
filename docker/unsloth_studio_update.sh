@@ -110,9 +110,19 @@ for name in sys.argv[2:]:
 open(sys.argv[1], "w").write("\n".join(out) + "\n")
 PY
 
+# --with-deps lets pip move every dependency, and putting unsloth back alone would leave
+# that new dependency set under the old code. Snapshot it first (editable trees are
+# handled by ROLLBACK) so restore can pin it back.
+FREEZE=""
+if [ -z "$NO_DEPS" ]; then
+    FREEZE="$(mktemp)"
+    "$PY" -m pip freeze --exclude-editable > "$FREEZE" 2>/dev/null || : > "$FREEZE"
+fi
+
 STAGE=""
 PREV_SRC=""
 SWAPPED=0
+DONE=0
 restore() {
     log "restoring the previous install"
     if [ "$SWAPPED" = "1" ] && [ -d "$PREV_SRC" ]; then
@@ -120,14 +130,29 @@ restore() {
         mv "$PREV_SRC" "$SRC"
         SWAPPED=0
     fi
+    if [ -n "$FREEZE" ] && [ -s "$FREEZE" ]; then
+        "$PY" -m pip install --no-deps -r "$FREEZE" >/dev/null \
+            || log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"
+    fi
     "$PY" -m pip install --no-deps -r "$ROLLBACK" >/dev/null \
         || log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$ROLLBACK")"
 }
+# Runs on every exit. An interrupt (Ctrl-C, `docker stop`) after the swap would otherwise
+# leave the half-installed tree in place and the previous one beside it as .src-prev.*,
+# which the next container start links into the Studio home.
 cleanup() {
+    if [ "$DONE" != "1" ] && [ "$SWAPPED" = "1" ]; then
+        log "interrupted after the source tree was swapped; putting the previous one back"
+        restore
+    fi
     [ -n "$STAGE" ] && rm -rf "$STAGE"
     rm -f "$ROLLBACK"
+    [ -n "$FREEZE" ] && rm -f "$FREEZE"
+    return 0
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # --ref installs the same shape the image was built with: an editable source tree whose
 # frontend is built here with the bundled Node. A plain `pip install git+...` has no
@@ -135,18 +160,19 @@ trap cleanup EXIT
 build_source_tree() {
     local tree="$1" node_bin="$STUDIO_HOME/node/bin" oxc
     [ -x "$node_bin/npm" ] || { log "ERROR: no bundled Node at $node_bin; cannot build the frontend for --ref"; return 1; }
+    # errexit is ignored inside a `( ... ) || return` list, so each step fails explicitly
     (
         export PATH="$node_bin:$PATH"
-        cd "$tree/studio/frontend"
+        cd "$tree/studio/frontend" || exit 1
         log "installing frontend dependencies"
-        npm ci --no-fund --no-audit --loglevel=error || npm install --no-fund --no-audit --loglevel=error
+        npm ci --no-fund --no-audit --loglevel=error || npm install --no-fund --no-audit --loglevel=error || exit 1
         log "building the frontend"
-        npm run build
+        npm run build || { log "ERROR: npm run build failed"; exit 1; }
         oxc="$tree/studio/backend/core/data_recipe/oxc-validator"
         if [ -f "$oxc/package.json" ]; then
-            cd "$oxc"
+            cd "$oxc" || exit 1
             log "installing the oxc validator runtime"
-            npm install --no-fund --no-audit --loglevel=error
+            npm install --no-fund --no-audit --loglevel=error || exit 1
         fi
     ) || return 1
     rm -rf "$tree/studio/frontend/node_modules"
@@ -173,6 +199,10 @@ if [ -n "$REF" ]; then
             echo "unsloth-studio-update: retry, or pin it yourself with --zoo-ref <ref>." >&2
             exit 1
         fi
+    fi
+    if [ ! -d "$SRC" ]; then
+        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none); --ref needs the image's Studio checkout. Use a plain update instead; nothing was changed." >&2
+        exit 1
     fi
     log "installing from git: unsloth @${REF}, unsloth-zoo @${_zoo_ref}"
     # a sibling of the real src, so the swap below is a same-filesystem rename
@@ -232,6 +262,7 @@ fi
 if [ "$SWAPPED" = "1" ]; then
     rm -rf "$PREV_SRC"
 fi
+DONE=1
 
 if [ "$RESTART" = "1" ]; then
     SUPCTL="$(command -v supervisorctl || true)"
@@ -241,8 +272,16 @@ if [ "$RESTART" = "1" ]; then
     _st=0
     [ -x "$SUPCTL" ] && { "$SUPCTL" status studio >/dev/null 2>&1 || _st=$?; } || _st=4
     if [ "$_st" = "0" ] || [ "$_st" = "3" ]; then
-        log "restarting the studio service"
-        "$SUPCTL" restart studio || true
+        # a program that is not running gets `start`: `restart` first stops it, which
+        # supervisorctl reports as an error
+        _cmd=restart
+        [ "$_st" = "3" ] && _cmd=start
+        log "${_cmd}ing the studio service"
+        if ! "$SUPCTL" "$_cmd" studio; then
+            log "ERROR: supervisorctl $_cmd studio failed; the update is installed but Studio is not running"
+            "$SUPCTL" status studio || true
+            exit 1
+        fi
         _wait="${UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT:-180}"
         _deadline=$(( $(date +%s) + _wait ))
         _up=0
@@ -253,7 +292,9 @@ if [ "$RESTART" = "1" ]; then
         if [ "$_up" = "1" ]; then
             log "Studio is answering on port 8000"
         elif [ "$_wait" -gt 0 ]; then
-            log "WARNING: Studio did not answer on port 8000 within ${_wait}s; see docker logs"
+            log "ERROR: Studio did not answer on port 8000 within ${_wait}s; the update is installed but Studio is not serving (see docker logs)"
+            "$SUPCTL" status studio || true
+            exit 1
         fi
     else
         log "supervisor not managing 'studio' here; restart Studio yourself"

@@ -62,6 +62,7 @@ def _studio_env(
     git_ls_exit: int = 0,
     npm_build_ok: bool = True,
     src_link: bool = False,
+    restart_exit: int = 0,
 ) -> dict:
     """A Studio home whose venv python is the real interpreter over a fake `studio`
     package, so the script's own import and frontend checks run for real. pip,
@@ -92,6 +93,11 @@ def _studio_env(
         "python",
         'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
         '  echo "STUB-PIP $*" >> "$STUB_LOG"\n'
+        # a --with-deps run snapshots the dependency set first
+        '  if [ "$3" = "freeze" ]; then echo "transformers==4.0.0"; exit 0; fi\n'
+        # an interrupted install: the updater is waiting on this child, so the signal
+        # lands on it and its trap runs once we exit
+        '  case " $* " in *" -e "*) [ -n "${STUB_PIP_INTERRUPT:-}" ] && kill -INT "$PPID" ;; esac\n'
         # reinstalling the recorded previous install brings the working tree back
         '  case " $* " in *" -r "*)\n'
         f'    : > "{site}/studio/backend/main.py"\n'
@@ -118,7 +124,8 @@ def _studio_env(
         bin_dir,
         "supervisorctl",
         'echo "STUB-SUPERVISORCTL $*" >> "$STUB_LOG"\n'
-        f'if [ "$1" = "status" ]; then exit {status_exit}; fi\nexit 0\n',
+        f'if [ "$1" = "status" ]; then exit {status_exit}; fi\n'
+        f'if [ "$1" = "restart" ] || [ "$1" = "start" ]; then exit {restart_exit}; fi\nexit 0\n',
     )
     _stub(
         bin_dir,
@@ -126,8 +133,11 @@ def _studio_env(
         'dir=""; if [ "$1" = "-C" ]; then dir="$2"; shift 2; fi\n'
         'case "$1" in\n'
         f"  ls-remote) exit {git_ls_exit} ;;\n"
-        '  checkout) mkdir -p "$dir/studio/frontend/src" "$dir/.git";'
-        ' echo "{}" > "$dir/studio/frontend/package.json"; echo new > "$dir/NEW_TREE" ;;\n'
+        '  checkout) mkdir -p "$dir/studio/frontend/src" "$dir/.git"'
+        ' "$dir/studio/backend/core/data_recipe/oxc-validator";'
+        ' echo "{}" > "$dir/studio/frontend/package.json";'
+        ' echo "{}" > "$dir/studio/backend/core/data_recipe/oxc-validator/package.json";'
+        ' echo new > "$dir/NEW_TREE" ;;\n'
         "esac\nexit 0\n",
     )
     env = dict(os.environ)
@@ -175,15 +185,26 @@ def test_studio_update_does_not_restart_into_a_tree_without_a_built_frontend(tmp
     assert "install --no-deps -r" in calls, calls
 
 
-@pytest.mark.parametrize("status_exit", [0, 3])
-def test_studio_update_restarts_a_studio_that_is_not_running(tmp_path: Path, status_exit):
+@pytest.mark.parametrize("status_exit, verb", [(0, "restart"), (3, "start")])
+def test_studio_update_restarts_a_studio_that_is_not_running(tmp_path: Path, status_exit, verb):
     """`supervisorctl status` exits 3 for STOPPED/EXITED/FATAL. That is still a program
-    supervisord manages, and FATAL is what a failed earlier update left behind."""
+    supervisord manages, and FATAL is what a failed earlier update left behind. It gets
+    `start`: `restart` stops it first, which supervisorctl reports as an error."""
     env = _studio_env(tmp_path, status_exit = status_exit)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stderr + res.stdout
-    assert "STUB-SUPERVISORCTL restart studio" in _calls(env)
+    assert f"STUB-SUPERVISORCTL {verb} studio" in _calls(env), _calls(env)
     assert "not managing" not in res.stdout
+
+
+def test_studio_update_fails_when_supervisor_cannot_restart_studio(tmp_path: Path):
+    """The update is installed, but a restart that fails left Studio down while the
+    helper reported success."""
+    env = _studio_env(tmp_path, restart_exit = 1)
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode != 0, res.stdout
+    assert "ERROR: supervisorctl restart studio failed" in res.stdout, res.stdout
+    assert "STUB-SUPERVISORCTL status studio" in _calls(env).splitlines()[-1], _calls(env)
 
 
 def test_studio_update_reports_an_unmanaged_studio(tmp_path: Path):
@@ -228,10 +249,73 @@ def test_studio_update_ref_with_a_failed_frontend_build_changes_nothing(tmp_path
     env = _studio_env(tmp_path, npm_build_ok = False)
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
+    calls = _calls(env)
     assert res.returncode != 0
     assert (home / "src" / "OLD_TREE").exists(), "the running source tree was touched"
-    assert "STUB-PIP" not in _calls(env), _calls(env)
+    assert "STUB-PIP" not in calls, calls
     assert not list(home.glob(".src-update.*"))
+    # errexit is off inside `( ... ) || return`, so the build step has to stop by itself
+    assert "npm run build failed" in res.stdout, res.stdout
+    assert "oxc-validator" not in calls, (
+        "a failed build must not go on to the oxc install:\n" + calls
+    )
+
+
+def test_studio_update_ref_installs_the_oxc_runtime_after_a_good_build(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    oxc = [
+        l
+        for l in _calls(env).splitlines()
+        if "STUB-NPM install" in l and l.endswith("oxc-validator")
+    ]
+    assert oxc, _calls(env)
+
+
+def test_studio_update_ref_restores_the_tree_when_interrupted_after_the_swap(tmp_path: Path):
+    """Ctrl-C or `docker stop` between the swap and the checks left the half-installed
+    tree in place and the previous one beside it as .src-prev.*, which the next
+    container start links into the Studio home."""
+    env = _studio_env(tmp_path)
+    env["STUB_PIP_INTERRUPT"] = "1"
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode == 130, res.stderr + res.stdout
+    assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
+    assert not (home / "src" / "NEW_TREE").exists()
+    assert not list(home.glob(".src-prev.*")), "the previous tree was left beside src"
+    assert not list(home.glob(".src-update.*"))
+    assert "interrupted" in res.stdout, res.stdout
+
+
+def test_studio_update_ref_refuses_a_venv_without_a_source_tree(tmp_path: Path):
+    """A wheel-only install has no src; `mv` of a missing tree must not be the error."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    shutil.rmtree(home / "src")
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert res.returncode != 0
+    assert "no source tree" in res.stderr, res.stderr
+    assert "STUB-NPM" not in _calls(
+        env
+    ), "nothing should be built for a tree that cannot be swapped"
+
+
+def test_studio_update_with_deps_puts_the_dependency_set_back(tmp_path: Path):
+    """--with-deps lets pip move every dependency; restoring unsloth alone would leave
+    the new dependency set under the old code."""
+    env = _studio_env(tmp_path, import_ok = False)
+    res = _run(STUDIO_UPDATE, ["--with-deps"], env)
+    calls = _calls(env)
+    assert res.returncode != 0
+    assert "STUB-PIP -m pip freeze --exclude-editable" in calls, calls
+    assert calls.count("install --no-deps -r") == 2, (
+        "dependency snapshot and previous install:\n" + calls
+    )
+    env = _studio_env(tmp_path / "nodeps", import_ok = False)
+    res = _run(STUDIO_UPDATE, [], env)
+    assert "freeze" not in _calls(env), "a --no-deps update has nothing to snapshot"
 
 
 def test_studio_update_ref_puts_the_old_tree_back_when_the_new_one_cannot_start(tmp_path: Path):
