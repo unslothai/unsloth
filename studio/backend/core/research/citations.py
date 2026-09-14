@@ -41,6 +41,13 @@ _CODE_PLACEHOLDER = re.compile(r"\x00research-code-[0-9]+\x00")
 # remark-gfm renders the indented lines under a footnote definition as prose, where a bare URL
 # becomes a live link; the CommonMark parse below calls them code. Validate rather than mask.
 _FOOTNOTE_DEFINITION = re.compile(r" {0,3}\[\^[^\]\s]+\]:")
+# A mermaid fence is not shown as code, it is executed into a diagram, and mermaid's image shape
+# (`A@{ img: "..." }`, mermaid >= 11.3) puts its URL straight on an SVG image the browser then
+# fetches, outside the markdown image pipeline that would have vetted it. So the URLs inside one
+# stay subject to the catalog, exactly as before code was masked at all. Case-insensitive while
+# the renderer's own gate is not: over-matching costs a validated diagram, under-matching leaves
+# a report able to name any URL it likes.
+_MERMAID_FENCE = re.compile(r"mermaid\b", re.IGNORECASE)
 
 
 def _citation_title(source: dict, fallback: str) -> str:
@@ -176,8 +183,11 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
             in_table = False
         if token.map is None:
             continue
-        # An indented block is only code here if the renderer agrees; a fence is a fence in both.
+        # Mask only what the renderer shows as code: an indented block under a footnote
+        # definition is prose there, and a mermaid fence is an executed diagram.
         if token.type == "code_block" and token.map[0] in footnote_content:
+            continue
+        if token.type == "fence" and _MERMAID_FENCE.match((token.info or "").strip()):
             continue
         start, end = (offsets[line] for line in token.map)
         if token.type in {"fence", "code_block"}:

