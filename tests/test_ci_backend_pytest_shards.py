@@ -249,6 +249,27 @@ class TestEveryTestFileLandsInExactlyOneShard:
             f"{_CATCH_ALL!r} shard and only there; got {claiming}"
         )
 
+    def test_a_name_matching_both_discovery_patterns_falls_out_of_every_shard(self):
+        """`test_api_test.py` matches `test_*.py` AND `*_test.py`, and lands nowhere.
+
+        The ranged shards drop it for the `*_test.py` suffix, and the catch-all drops it for
+        the `test_[a-r]*` range. Measured against real pytest: all three collect it zero
+        times. A plain `tool_test.py` must keep going to the catch-all, since neither range
+        describes it and both ranged shards would otherwise claim it, so the suffix rule
+        would have to mean "ends in _test.py unless it starts with test_".
+
+        fnmatch cannot say that. Diverging at each character of the prefix fixes
+        `test_api_test.py` but over-consumes on `te_test.py`, which then lands in BOTH ranged
+        shards; that was tried, and this guard caught it. Completing the rule needs four more
+        literal patterns (`_test.py`, `t_test.py`, `te_test.py`, `tes_test.py`), nine globs
+        per shard, to admit a filename shape this repo does not use. Forbidden by name below
+        instead.
+        """
+        assert _claiming_shards("tests/test_api_test.py", _shards()) == [], (
+            "this is a known limitation; if it now lands in a shard the patterns have "
+            "changed and the naming rule below can be relaxed"
+        )
+
     def test_a_subdirectory_named_like_a_test_file_falls_out_of_every_shard(self):
         """The one shape the catch-all cannot absorb. Recorded, not hidden.
 
@@ -271,15 +292,25 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
     def test_no_test_subdirectory_is_named_like_a_test_file(self):
         """Enforces the invariant the split depends on, so the hole above stays unreachable."""
-        offenders = sorted(
+        dirs = sorted(
             path.name
             for path in _BACKEND_TESTS.iterdir()
             if path.is_dir() and path.name.startswith("test_")
         )
-        assert not offenders, (
-            f"{offenders} would be collected by no shard, because the catch-all's "
+        assert not dirs, (
+            f"{dirs} would be collected by no shard, because the catch-all's "
             "tests/test_[a-r]*.py excludes nested paths too (fnmatch * crosses /). Rename "
             "the directory, or give the catch-all an explicit root for it."
+        )
+        hybrids = sorted(
+            path.name
+            for path in _BACKEND_TESTS.iterdir()
+            if path.is_file() and path.name.startswith("test_") and path.name.endswith("_test.py")
+        )
+        assert not hybrids, (
+            f"{hybrids} match both default discovery patterns, so the ranged shards drop "
+            "them for the _test.py suffix and the catch-all drops them for the test_[a-r]* "
+            "range, leaving them in no shard. Drop one of the two markers from the name."
         )
 
 

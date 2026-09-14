@@ -192,6 +192,21 @@ jobs:
         # stops being true, and tests/studio/test_backend_ci_parallel_isolation.py fails if a
         # shard starts collecting one of the twelve.
         #
+        # Two name shapes the split cannot absorb, both measured against real pytest and
+        # both forbidden by name in tests/test_ci_backend_pytest_shards.py rather than left
+        # to be discovered: a subdirectory called test_*, and a file matching BOTH default
+        # discovery patterns such as test_api_test.py. Each lands in no shard, because
+        # fnmatch's * crosses / and the suffix rule cannot be told "unless it starts with
+        # test_" in one pattern.
+        #
+        # Expressing that exception was tried and reverted. Diverging at each character of
+        # the prefix (tests/[!t]*_test.py, tests/t[!e]*_test.py, ...) fixes test_api_test.py
+        # but silently over-consumes on te_test.py, which then lands in BOTH ranged shards;
+        # completing it needs four more literal patterns for _test.py, t_test.py, te_test.py
+        # and tes_test.py, i.e. nine globs per shard to admit a filename this repo does not
+        # use. The inventory guard turns either shape into a named failure, which is the
+        # property that actually matters.
+        #
         # Verified rather than argued, at the level of the test id and not of the count.
         # The unsharded selection and the three shards were run with --junitxml and the
         # reports diffed: 13,073 + 17,483 + 12,053 = 42,609 ids against the baseline's
