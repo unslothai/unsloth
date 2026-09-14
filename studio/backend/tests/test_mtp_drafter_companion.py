@@ -3691,21 +3691,113 @@ _HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_pr
 
 
 @pytest.mark.parametrize(
-    "tensors,shared,split_count,expected",
+    "tensors,shared,expected",
     [
-        # Published shapes: a head extract, unsloth's MTP/ head, a -shared- head, a shard.
-        (_HEAD_EXTRACT, False, 0, False),
-        (["token_embd.weight", "output_norm.weight", *_HEAD_EXTRACT], False, 0, True),
-        (_HEAD_EXTRACT, True, 0, True),
-        (_HEAD_EXTRACT, False, 2, True),
+        # Published shapes: a bare head extract, unsloth's MTP/ head, a -shared- head.
+        # Each verdict is the one llama-server b10909-mix-bea84f7 actually gives when the
+        # file is passed as --model-draft beside its target: the first ends the launch with
+        # "check_tensor_dims: tensor 'token_embd.weight' not found", the other two serve.
+        (_HEAD_EXTRACT, False, False),
+        (["token_embd.weight", "output_norm.weight", *_HEAD_EXTRACT], False, True),
+        (_HEAD_EXTRACT, True, True),
     ],
 )
-def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, split_count, expected):
+def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, expected):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
     drafter = _write_drafter_gguf(
-        tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared, split_count = split_count
+        tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared
     )
     assert _mtp_drafter_loads_standalone(str(drafter)) is expected
+
+
+def test_a_lone_file_claiming_to_be_a_split_set_is_still_judged(tmp_path):
+    """``split.count`` alone is not an excuse: llama-server opens shards by FILENAME.
+
+    Exempting anything whose header said ``split.count > 1`` let a head-only file
+    through untested, and llama-server then ended the launch on it anyway (measured).
+    The exemption belongs to a set whose shards cannot all be inspected, not to a
+    single file that merely declares one.
+    """
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    drafter = _write_drafter_gguf(
+        tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    assert _mtp_drafter_loads_standalone(str(drafter)) is False
+
+
+def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
+    """Shard 1 need not list every tensor, so the whole set answers, as for cls.*."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    _write_drafter_gguf(
+        tmp_path / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    _write_drafter_gguf(
+        tmp_path / "mtp-model-00002-of-00002.gguf",
+        tensors = ["token_embd.weight"],
+        split_count = 2,
+    )
+    # The embeddings live in shard 2; judging shard 1 alone would drop a working set.
+    assert (
+        _mtp_drafter_loads_standalone(str(tmp_path / "mtp-model-00001-of-00002.gguf")) is True
+    )
+
+    # The same set with the embeddings nowhere in it: every shard is readable and none
+    # carries them, so this one really cannot be opened as a draft.
+    headless = tmp_path / "headless"
+    headless.mkdir()
+    _write_drafter_gguf(
+        headless / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+    )
+    _write_drafter_gguf(
+        headless / "mtp-model-00002-of-00002.gguf",
+        tensors = ["blk.65.nextn.eh_proj.weight"],
+        split_count = 2,
+    )
+    assert (
+        _mtp_drafter_loads_standalone(str(headless / "mtp-model-00001-of-00002.gguf")) is False
+    )
+
+
+def test_an_incomplete_split_drafter_fails_open(tmp_path):
+    """A shard that is not here could hold the embeddings, so llama-server decides."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
+    lone = _write_drafter_gguf(
+        tmp_path / "mtp-model-00001-of-00003.gguf", tensors = _HEAD_EXTRACT, split_count = 3
+    )
+    assert _mtp_drafter_loads_standalone(str(lone)) is True
+
+
+def test_the_drafter_verdict_is_cached_per_file_version(tmp_path):
+    """The estimate route asks on every settings change; it must not reparse each time."""
+    from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+    from utils.models import gguf_metadata
+
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT)
+    calls: list[str] = []
+    real = gguf_metadata._parse_gguf_has_named_tensor
+
+    def counting(path, wanted_name):
+        calls.append(path)
+        return real(path, wanted_name)
+
+    gguf_metadata._parse_gguf_has_named_tensor = counting
+    try:
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert _mtp_drafter_loads_standalone(str(drafter)) is False
+        assert len(calls) == 1
+
+        # Rewritten in place with its embeddings: a new (mtime, size) is a new answer, so
+        # repairing a rejected sidecar is picked up rather than served from the cache.
+        _write_drafter_gguf(
+            tmp_path / "mtp-model.gguf", tensors = ["token_embd.weight", *_HEAD_EXTRACT]
+        )
+        assert _mtp_drafter_loads_standalone(str(drafter)) is True
+    finally:
+        gguf_metadata._parse_gguf_has_named_tensor = real
 
 
 def test_mtp_drafter_loads_standalone_fails_open_on_an_unreadable_header(tmp_path):

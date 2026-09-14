@@ -1546,6 +1546,30 @@ def test_a_launched_drafter_records_no_suppression(monkeypatch, tmp_path):
     assert "self._mtp_draft_suppressed_path = _suppressed_draft_path" in src
 
 
+def test_every_successful_return_records_the_drafter_it_launched():
+    """The CPU-fallback return commits the records too, or they describe the last load.
+
+    ``load_model`` has two returns that leave a server running: the ordinary commit
+    block, and the auto-Vulkan-crash replay that comes up on CPU and returns early.
+    Only the first wrote ``_mtp_draft_path`` / ``_mtp_draft_suppressed_path``, so the
+    replay kept the PREVIOUS load's pair. That was inert while a drafter could only be
+    suppressed on virtualised Metal, where an auto-Vulkan fallback cannot happen; an
+    unloadable sidecar can be suppressed on any platform, and a carried-over suppressed
+    path stands the drafter_not_found refetch down for a load that dropped nothing.
+    """
+    src = _load_model_source()
+    assert src.count("self._mtp_draft_suppressed_path = _suppressed_draft_path") == 2, (
+        "both successful returns must record the drafter they launched"
+    )
+    # The replay writes its record before returning, not after.
+    replay = src.index("loaded successfully on CPU after the")
+    assert src.rindex("self._mtp_draft_path = launch_mtp_draft_path", 0, replay) < replay
+    assert (
+        src.rindex("self._mtp_draft_suppressed_path = _suppressed_draft_path", 0, replay)
+        < replay
+    )
+
+
 # ── an inherited projector must not slip past the projector guard ────
 
 

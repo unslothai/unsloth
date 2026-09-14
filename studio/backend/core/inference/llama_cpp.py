@@ -3329,29 +3329,15 @@ def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
 def _mtp_drafter_loads_standalone(path: str) -> bool:
     """Does *path* have the embeddings a ``--model-draft`` file needs?
 
-    llama-server loads a draft model as a complete model, so a bare head extract makes it
-    exit with "tensor 'token_embd.weight' not found". Only that tensor is checked, the
-    rest of the set being per-architecture; split sets and bad headers fail open."""
-    try:
-        from gguf import GGUFReader
+    The rule itself lives with every other GGUF header read, in ``gguf_metadata``.
+    The memory-estimate route asks this question too, on a path the panel fires on
+    every settings change, so it has to come from the same ``(path, mtime, size)``
+    cache the projector capability read beside it already uses: one rule, two
+    callers, one parse per file version rather than a fresh mmap per keystroke.
+    """
+    from utils.models.gguf_metadata import mtp_drafter_loads_standalone
 
-        reader = GGUFReader(path)
-
-        def field(key: str):
-            entry = reader.fields.get(key)
-            return entry.contents() if entry is not None else None
-
-        if int(field("split.count") or 0) > 1:
-            return True
-        if any(t.name == "token_embd.weight" for t in reader.tensors):
-            return True
-        arch = field("general.architecture")
-        return bool(arch and field(f"{arch}.nextn_shared_target_tensors"))
-    except Exception as exc:
-        logger.debug(
-            "MTP drafter header unreadable, leaving it to llama-server: %s (%s)", path, exc
-        )
-        return True
+    return mtp_drafter_loads_standalone(path)
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -23658,6 +23644,16 @@ class LlamaCppBackend:
                         avail_mib = _preflight_avail_mib,
                         pageable_note = _cpu_pageable_note,
                     )
+                    # This return skips the commit block below, so the drafter records
+                    # are written here too. Left alone they still describe the PREVIOUS
+                    # load: the reload comparator would judge this child against another
+                    # model's drafter, and a suppressed path carried over would stand the
+                    # drafter_not_found refetch down for a load that dropped nothing of
+                    # its own. Inert while only virtualised Metal could suppress a
+                    # drafter, since an auto-Vulkan fallback cannot happen there; an
+                    # unloadable sidecar can be suppressed on any platform.
+                    self._mtp_draft_path = launch_mtp_draft_path
+                    self._mtp_draft_suppressed_path = _suppressed_draft_path
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
                         "auto-selected Vulkan backend crashed. GPU acceleration "
