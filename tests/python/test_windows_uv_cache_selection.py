@@ -458,15 +458,19 @@ def test_a_read_only_managed_python_bucket_still_condemns_the_cache(tmp_path):
 
 
 @requires_pwsh
-def test_a_differently_cased_bucket_is_still_uvs(tmp_path):
-    """Windows resolves uv's `archive-v0` to an existing `Archive-V0`, so it is the same
-    bucket and an unwritable one has to condemn the cache rather than go unprobed."""
+def test_a_differently_cased_bucket_follows_the_filesystem(tmp_path):
+    """Where the directory folds, `Python-V0` IS uv's python-v0 and an unwritable one has to
+    condemn the cache. Where it does not, as on a case-sensitive NTFS directory or the Linux
+    filesystem this runs on, it is a directory uv never opens and must not condemn anything.
+    Measured the same way the selector measures it rather than assumed from the platform."""
     default = _warm(tmp_path / "uvdefault")
     (default / "Python-V0").mkdir()
+    folds = (default / "python-v0").exists()
     if os.name != "nt":
         (default / "Python-V0").chmod(0o555)
     try:
-        assert _select(tmp_path / "studio", str(default))["mode"] == "studio"
+        expected = "studio" if folds else "shared"
+        assert _select(tmp_path / "studio", str(default))["mode"] == expected
     finally:
         if os.name != "nt":
             (default / "Python-V0").chmod(0o755)

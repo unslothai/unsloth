@@ -1241,14 +1241,19 @@ class TestInstallUvCacheRootParity:
             "function Test-StudioUvCacheWritable", 1
         )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
-        # Both sides resolve a casing variant to uv's bucket, by different means because the
-        # question is different. Windows is case-insensitive whenever it has not been told
-        # otherwise, so the helper folds unconditionally. A POSIX host can be either (default
-        # APFS is insensitive, ext4 is not), so install.sh asks the filesystem instead: the
-        # lowercase spelling resolving to a directory. Folding it blind would condemn a cache
-        # for a directory uv never opens, which is what the allowlist exists to prevent.
+        # Both sides resolve a casing variant to uv's bucket, and both MEASURE whether to.
+        # Neither platform answers it: default APFS folds and ext4 does not, NTFS folds unless
+        # fsutil setCaseSensitiveInfo says otherwise, which is how a WSL-created tree behaves.
+        # Folding blind condemns a cache for a directory uv never opens, which is what this
+        # allowlist exists to prevent, so the fold is off until a probe says so on both sides.
         assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
         assert "-cin" not in bucket_ps1, bucket_ps1
+        assert "[switch]$Fold" in bucket_ps1, bucket_ps1
+        writable_ps1 = ps1.split("function Test-StudioUvCacheWritable", 1)[1].split(
+            "function Test-StudioUvCachePopulated", 1
+        )[0]
+        assert ".unsloth-case-probe." in writable_ps1, writable_ps1
+        assert "-Fold:$fold" in writable_ps1, writable_ps1
         writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
         assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
         # By a directory the probe MAKES, not by reading the names already there. An existing
