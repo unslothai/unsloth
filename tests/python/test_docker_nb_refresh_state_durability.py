@@ -17,20 +17,42 @@ write is never reached.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 
-def _shared_setup_1(tmp_path):
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
+def _build_shared_setup_1(root: Path):
+    tpl, dest, up = _template(root), root / "dest", _upstream(root)
     dest.mkdir()
     _run(tpl, dest, up, refresh = False)
     _run(tpl, dest, up, refresh = True)
     return dest, tpl, up
+
+
+# Five tests start from the same two sync runs over 500 notebooks, which is
+# ~7.4s each and ~37s of the file. Build it once per process and copy it in,
+# which is ~0.04s: nothing it writes embeds its own absolute path, so the copy
+# is the same tree at a different place. Each test still gets a private
+# directory it is free to mutate, so the isolation is unchanged.
+_SHARED_1: Path | None = None
+
+
+def _shared_setup_1(tmp_path):
+    global _SHARED_1
+    if _SHARED_1 is None:
+        prototype = Path(tempfile.mkdtemp(prefix = "unsloth-nbsync-"))
+        atexit.register(shutil.rmtree, prototype, True)
+        _build_shared_setup_1(prototype)
+        _SHARED_1 = prototype
+    root = tmp_path / "s1"
+    shutil.copytree(_SHARED_1, root, symlinks = True)
+    return root / "dest", root / "tpl", root / "up"
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
