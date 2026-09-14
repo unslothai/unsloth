@@ -31523,9 +31523,19 @@ async def anthropic_count_tokens(
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
     if _count_client_tools:
-        from core.inference.chat_template_helpers import forced_tool_catalog
+        from core.inference.chat_template_helpers import (
+            forced_tool_catalog,
+            neutralize_tool_descriptions,
+        )
+
+        # Pick the forced tool from the sanitized catalog, as the passthrough body does (#7066).
+        _count_safe_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
         openai_tools = (
-            forced_tool_catalog(anthropic_tool_choice_to_openai(payload.tool_choice), openai_tools)
+            forced_tool_catalog(
+                anthropic_tool_choice_to_openai(payload.tool_choice), _count_safe_tools
+            )
             or openai_tools
         )
     else:
@@ -33468,7 +33478,22 @@ async def _anthropic_passthrough_stream(
         markup = getattr(llama_backend, "markup_profile", None),
     )
 
-    from core.inference.chat_template_helpers import forced_tool_catalog
+    from core.inference.chat_template_helpers import (
+        forced_tool_catalog,
+        neutralize_tool_descriptions,
+    )
+
+    # Pick the forced tool from the sanitized catalog, as the body does: a dropped forced tool
+    # leaves the rest of the catalog under "auto" (#7066).
+    _count_tools = (
+        forced_tool_catalog(
+            tool_choice,
+            neutralize_tool_descriptions(
+                openai_tools, None, getattr(llama_backend, "markup_profile", None)
+            ),
+        )
+        or openai_tools
+    )
 
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
@@ -33480,7 +33505,7 @@ async def _anthropic_passthrough_stream(
         lambda: llama_backend.count_chat_tokens(
             openai_messages,
             None,
-            forced_tool_catalog(tool_choice, openai_tools) or openai_tools,
+            _count_tools,
             chat_template_kwargs = _reasoning_template_kwargs(
                 llama_backend, enable_thinking, reasoning_effort, preserve_thinking
             ),
