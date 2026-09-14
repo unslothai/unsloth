@@ -31610,6 +31610,56 @@ class LlamaCppBackend:
                     continue
                 raise
 
+    @staticmethod
+    def decode_slot_from_chunk(chunk) -> Optional[int]:
+        """The llama-server slot a stream chunk was decoded on, None if it does not say.
+
+        Only the final result carries ``__verbose``, and only when asked for.
+        """
+        if not isinstance(chunk, dict):
+            return None
+        verbose = chunk.get("__verbose")
+        if not isinstance(verbose, dict):
+            return None
+        slot = verbose.get("id_slot")
+        if type(slot) is not int or slot < 0:
+            return None
+        return slot
+
+    def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
+        """Erase one completed round's cached context, True once the engine says so.
+
+        Declines unless the round decoded on this server, which a reload renumbers, and
+        unless --slot-save-path is in play, which the endpoint requires. An erase aimed at
+        a slot since handed to another request is deferred rather than dropped, so even a
+        timeout can cost that chat its prefix.
+        """
+        if (
+            not self._slot_save_dir
+            or base_url != self.base_url
+            or type(slot) is not int
+            or slot < 0
+        ):
+            return False
+        try:
+            response = httpx.post(
+                f"{base_url}/slots/{slot}",
+                params = {"action": "erase"},
+                headers = self._auth_headers,
+                timeout = 2.0,
+                trust_env = False,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return (
+                result.get("id_slot") == slot
+                and type(result.get("n_erased")) is int
+                and result["n_erased"] >= 0
+            )
+        except Exception:
+            logger.debug("Approval cache reclamation failed; retaining reservation", exc_info = True)
+            return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -32081,7 +32131,8 @@ class LlamaCppBackend:
         # Per request: the conversation as it stands and the catalogue it sends (None = no
         # `tools`). MAY BLOCK for cache room. An int back replaces the allowance below.
         on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
-        # Bounds the wire cap of every request the loop sends. Appended, like the hook.
+        on_decode_slot: Optional[Callable[[str, int], None]] = None,
+        # Bounds the wire cap of every request the loop sends. Appended after existing hooks.
         admission_output_allowance: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
@@ -32866,6 +32917,9 @@ class LlamaCppBackend:
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
+            if on_decode_slot is not None:
+                payload["verbose"] = True
+                payload["response_fields"] = ["id_slot"]
             if perf_callback is not None:
                 payload["timings_per_token"] = True
             if logit_bias:
@@ -33157,6 +33211,10 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+                                if on_decode_slot is not None:
+                                    slot = self.decode_slot_from_chunk(chunk_data)
+                                    if slot is not None:
+                                        on_decode_slot(self.base_url, slot)
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")

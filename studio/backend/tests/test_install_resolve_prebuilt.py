@@ -1161,6 +1161,7 @@ def _detect_windows_host(
     monkeypatch,
     winreg_fake,
     powershell_stdout = "",
+    env = None,
 ):
     """Drive the real detect_host() as a GPU-less Windows host with a fake
     registry, recording every run_capture invocation. Pins the wiring the
@@ -1176,6 +1177,9 @@ def _detect_windows_host(
         "ROCM_PATH",
     ):
         monkeypatch.delenv(_env, raising = False)
+    # After the wipe, or the wipe would undo the very mask a caller set.
+    for _name, _value in (env or {}).items():
+        monkeypatch.setenv(_name, _value)
     monkeypatch.setattr(
         ilp.shutil,
         "which",
@@ -1204,6 +1208,39 @@ def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
     host, captured = _detect_windows_host(monkeypatch, winreg)
     assert host.has_intel_gpu is True
     assert "powershell" not in captured
+
+
+def test_detect_host_registry_amd_skips_cim_probe(monkeypatch):
+    # A single-vendor AMD box has no Intel match, so an `and` gate is what earns this skip.
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_1002&DEV_1586"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(monkeypatch, winreg)
+    assert host.has_amd_gpu_without_rocm is True
+    assert host.has_intel_gpu is False
+    assert "powershell" not in captured
+
+
+@pytest.mark.parametrize(
+    "mask_var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
+def test_detect_host_windows_amd_honours_every_hip_mask(monkeypatch, mask_var):
+    # Windows probes the AMD arch with hipinfo, a HIP application, so all three vars hide
+    # devices from it. Vulkan honours none of them (it selects via GGML_VK_VISIBLE_DEVICES),
+    # so routing a masked host there would hand llama.cpp the GPU the caller hid.
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_1002&DEV_1586"}),
+            }
+        )
+    )
+    host, _captured = _detect_windows_host(monkeypatch, winreg, env = {mask_var: ""})
+    assert host.has_amd_gpu_without_rocm is False
 
 
 def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):

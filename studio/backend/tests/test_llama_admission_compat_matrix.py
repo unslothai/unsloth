@@ -184,6 +184,14 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
         assert queue._reparking == 0
 
 
+# In the order they were added, so older positional callers keep their meaning.
+_TOOL_LOOP_HOOKS = (
+    "on_conversation_grew",
+    "on_decode_slot",
+    "admission_output_allowance",
+)
+
+
 class TestOldCallers:
     """Everything added is keyword-with-default, so code written before this still runs."""
 
@@ -220,8 +228,8 @@ class TestOldCallers:
         from core.inference.llama_cpp import LlamaCppBackend
 
         signature = inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
-        parameter = signature.parameters["on_conversation_grew"]
-        assert parameter.default is None, "the hook must be optional for existing callers"
+        for name in _TOOL_LOOP_HOOKS:
+            assert signature.parameters[name].default is None, f"{name} must be optional"
 
     def test_admission_parameters_were_appended_rather_than_inserted(self):
         """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
@@ -233,10 +241,8 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert names[-2:] == [
-            "on_conversation_grew",
-            "admission_output_allowance",
-        ], f"a parameter was inserted rather than appended; signature ends {names[-4:]}"
+        tail = names[-len(_TOOL_LOOP_HOOKS) :]
+        assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
         plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
         assert plain[-2:] == [
             "admission_output_allowance",
@@ -250,8 +256,9 @@ class TestOldCallers:
 
         from core.inference.llama_admission import LlamaAdmissionLease
 
-        signature = inspect.signature(LlamaAdmissionLease.recost_waiting)
-        assert signature.parameters["timeout_s"].default == DEFAULT_RECOST_WAIT_TIMEOUT_S
+        for method in (LlamaAdmissionLease.recost_waiting, LlamaAdmissionLease.unpark_async):
+            signature = inspect.signature(method)
+            assert signature.parameters["timeout_s"].default == DEFAULT_RECOST_WAIT_TIMEOUT_S
 
 
 class TestNoPersistentStateChanged:
