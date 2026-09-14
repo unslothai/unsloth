@@ -49,6 +49,7 @@ from utils.account_context import (
     account_thread,
     current_account,
     current_account_id,
+    is_owner_context,
     run_as,
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
@@ -3843,7 +3844,11 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
-def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
+def _selects_only_provider_hosted_tools(
+    payload,
+    provider_type: str | None,
+    enabled_skills: list[dict] | None = None,
+) -> bool:
     """True when the request's tool selection is nothing but the provider's own
     hosted builtins, so the provider must execute them as it always has.
 
@@ -3875,6 +3880,15 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # reaches the loop anyway. Neither is a hosted-tool request.
     if not enabled or not isinstance(enabled, list):
         return False
+
+    # Skill tools named with no skill enabled select nothing.
+    if {"read_skill", "create_skill"} & set(enabled):
+        if enabled_skills is None:
+            enabled_skills = _enabled_agent_skills()
+        if not enabled_skills:
+            enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
+            if not enabled:
+                return True
     if not provider_hosted_tools(provider_type):
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
@@ -4848,6 +4862,69 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
+_AGENT_SKILLS_CACHE_TTL_S = 1.0
+_AGENT_SKILLS_CACHE_LOCK = threading.Lock()
+# One entry per acting account (None is the owner); catalogs never cross accounts.
+_AGENT_SKILLS_CACHE: dict[Optional[str], tuple[float, list[dict]]] = {}
+
+
+def _agent_skills_cache_key() -> Optional[str]:
+    return None if is_owner_context() else current_account_id()
+
+
+def _invalidate_agent_skills_cache() -> None:
+    with _AGENT_SKILLS_CACHE_LOCK:
+        _AGENT_SKILLS_CACHE.clear()
+
+
+def _enabled_agent_skills() -> list[dict]:
+    """The acting account's enabled skills, at most one filesystem scan per second.
+
+    Synchronous: the scan opens every SKILL.md under the roots, so async callers go through
+    ``asyncio.to_thread`` (which carries the account ContextVar) instead of calling this on
+    the event loop.
+    """
+    from core.inference.skills import SkillError, enabled_skills
+
+    key = _agent_skills_cache_key()
+    with _AGENT_SKILLS_CACHE_LOCK:
+        cached_at, cached = _AGENT_SKILLS_CACHE.get(key, (0.0, []))
+        if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
+            return cached
+        try:
+            current = enabled_skills()
+        except SkillError as exc:
+            logger.warning("Agent Skills unavailable: %s", exc)
+            current = []
+        _AGENT_SKILLS_CACHE[key] = (time.monotonic(), current)
+        return current
+
+
+def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
+    from core.inference.skills import (
+        LARGE_SKILL_CATALOG_BYTES,
+        MAX_SKILL_CATALOG_BYTES,
+        format_skill_catalog,
+    )
+
+    budget = MAX_SKILL_CATALOG_BYTES if compact else LARGE_SKILL_CATALOG_BYTES
+    catalog = format_skill_catalog(_enabled_agent_skills(), budget = budget)
+    if not catalog:
+        return ""
+    create_tip = (
+        " To create a skill, read skill-creator and then call create_skill." if can_create else ""
+    )
+    return (
+        "Enabled Agent Skills are listed below. Use their descriptions to select one when "
+        "helpful, then call read_skill before following its instructions. If the latest user "
+        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
+        "before answering."
+        + create_tip
+        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        + catalog
+    )
+
+
 def _build_tool_action_nudge(
     *,
     tools: list[dict],
@@ -4855,9 +4932,10 @@ def _build_tool_action_nudge(
     full_access: bool = False,
     full_access_only: bool = False,
 ) -> str:
-    """``full_access_only`` returns the Full access sentence alone, for a caller
-    that wants to state the environment without also introducing the general
-    tool guidance (and the date) to a path that has never carried it."""
+    """``full_access_only`` returns the Full access sentence and the Agent Skills
+    catalog alone, for a caller that wants to state the environment without also
+    introducing the general tool guidance (and the date) to a path that has never
+    carried it."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -4874,16 +4952,29 @@ def _build_tool_action_nudge(
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
-    if not (has_web or has_code or has_artifact or has_research):
+    has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    if not (has_web or has_code or has_artifact or has_research or has_skills):
         return ""
-    if full_access_only:
-        return _full_access_tip(code_tools) if (full_access and has_code) else ""
-    if not (has_web or has_code or has_artifact):
-        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
-        return _TOOL_RESEARCH_TIP
-
     model_size_b = _extract_model_size_b(model_name)
-    compact_web_tip = model_size_b is not None and model_size_b < 9
+    # Small models get the shorter web tip and the smaller skill catalog.
+    compact = model_size_b is not None and model_size_b < 9
+    skill_tip = _skill_tool_tip(can_create = "create_skill" in tool_names, compact = compact)
+    if full_access_only:
+        tips = []
+        if full_access and has_code:
+            tips.append(_full_access_tip(code_tools))
+        if has_skills:
+            tips.append(skill_tip)
+        return " ".join(tip for tip in tips if tip)
+    if not (has_web or has_code or has_artifact):
+        tips = []
+        if has_research:
+            tips.append(_TOOL_RESEARCH_TIP)
+        if has_skills:
+            tips.append(skill_tip)
+        return " ".join(tip for tip in tips if tip)
+
+    compact_web_tip = compact
     tool_tip_parts: list[str] = []
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
@@ -4897,6 +4988,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    if has_skills:
+        tool_tip_parts.append(skill_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -5227,6 +5320,22 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    tools = [
+        tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
+    ]
+    # Inline on purpose: an await here escapes the api_monitor cancel handling; the cache bounds it.
+    enabled_skills = _enabled_agent_skills() if tools_on else []
+    if enabled_skills:
+        from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
+
+        skill_tools = (READ_SKILL_TOOL,)
+        if any(skill["name"] == "skill-creator" for skill in enabled_skills):
+            skill_tools += (CREATE_SKILL_TOOL,)
+        if payload.enabled_tools is not None:
+            skill_tools = tuple(
+                tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
+            )
+        tools.extend(skill_tools)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -10624,6 +10733,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
             _mmproj_env_is_audio_only,
+            _mtp_drafter_loads_standalone,
             extra_args_disable_mmproj,
         )
 
@@ -10807,7 +10917,13 @@ def _estimate_gguf_required_gb(
                 ):
                     _sized_attrs.append("gguf_dflash_file")
             else:
-                _sized_attrs.append("gguf_mtp_file")
+                # The launch drops a drafter it cannot open, so charging one would refuse
+                # a load that fits.
+                _mtp = getattr(config, "gguf_mtp_file", None)
+                if not (
+                    _mtp and Path(_mtp).is_file() and not _mtp_drafter_loads_standalone(str(_mtp))
+                ):
+                    _sized_attrs.append("gguf_mtp_file")
 
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
@@ -20981,7 +21097,8 @@ async def _proxy_to_external_provider(
         # a request for this loop. Checked here rather than inside the loop so the
         # whole path (catalog selection, nudge, confirm gate) is skipped and the
         # request proxies through byte-for-byte as it did before the loop existed.
-        and not _selects_only_provider_hosted_tools(payload, provider_type)
+        # Last, so a request that never asked for tools never scans the skill roots.
+        and not _selects_only_provider_hosted_tools(payload, provider_type, _enabled_agent_skills())
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
@@ -21233,19 +21350,14 @@ async def _proxy_to_external_provider(
             tool_payloads = studio_tool_payloads
             # This path runs python/terminal locally too (disable_sandbox =
             # bypass_permissions), so it has the same false-isolation problem.
-            # Only the Full access sentence is added: the path has never carried
-            # the general tool nudge, and widening it would change every
-            # non-Full-access Codex run as a side effect.
-            if payload.bypass_permissions:
-                _codex_full_access_nudge = _build_tool_action_nudge(
-                    tools = studio_tool_payloads,
-                    model_name = model,
-                    full_access = True,
-                    full_access_only = True,
-                )
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_full_access_nudge
-                )
+            # Only the Full access sentence and the skill catalog; this path never carried the general nudge.
+            _codex_nudge = _build_tool_action_nudge(
+                tools = studio_tool_payloads,
+                model_name = model,
+                full_access = bool(payload.bypass_permissions),
+                full_access_only = True,
+            )
+            chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
@@ -21579,13 +21691,13 @@ async def _proxy_to_external_provider(
         )
     # Built before the date, because whether a nudge exists decides whether the Modelfile
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
-    # Full access disables the sandbox at execution time, so the schemas must say so too.
+    # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
     _external_nudge = ""
-    if run_studio_tool_loop and payload.bypass_permissions:
+    if run_studio_tool_loop:
         _external_nudge = _build_tool_action_nudge(
             tools = external_studio_tools,
             model_name = model,
-            full_access = True,
+            full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
     chat_messages = _prepend_current_date_to_messages(
@@ -26646,9 +26758,10 @@ def _openai_model_objects() -> list[dict]:
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
-    # Check Unsloth backend
-    backend = get_inference_backend()
-    if backend.active_model_name:
+    # Describing residency must not construct an unused orchestrator: its cold
+    # initialization runs device detection even when only llama.cpp is loaded.
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
             # The alias, or an LM Studio model switched to by repo id loses its publisher.
@@ -27244,8 +27357,8 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
-    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
+    # Off-loop: _openai_model_objects() is sync and its per-entry quant probe reads the
+    # resolver index. Inline, an early GET /v1/models held the loop for that work.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
     orchestrator = _peek_inference_backend()
@@ -27300,6 +27413,18 @@ async def _openai_catalog_objects() -> list[dict]:
     return list(by_id.values())
 
 
+@studio_router.get("/loaded-models")
+async def loaded_inference_models(current_subject: str = Depends(get_current_subject)):
+    """Loaded llama.cpp/orchestrator models for agent startup, without a disk catalog scan.
+
+    Keep the public ids and context fields shared with /v1/models. The full catalog
+    also discovers unloaded and media models, which an attaching coding agent does
+    not need and which can take longer than its HTTP deadline on slow scan folders.
+    """
+    models = await asyncio.to_thread(_openai_model_objects)
+    return {"object": "list", "data": [{**entry, "loaded": True} for entry in models]}
+
+
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
 # literally and do not follow FastAPI's automatic slash redirect. Register the
 # slash form directly so model discovery reaches authentication and returns the
@@ -27333,7 +27458,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
+    # Off-loop like the catalog helper, and for the same sync resolver-index work.
     _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
@@ -30552,6 +30677,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "web_fetch_20260209": "web_search",
     "python": "python",
     "terminal": "terminal",
+    "read_skill": "read_skill",
 }
 # Server tools that never need a confirmation prompt (read-only / non code-
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
@@ -30560,7 +30686,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation"}
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
 )
 
 
@@ -30627,14 +30753,18 @@ def _select_anthropic_server_tools(
     all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
+    available = list(all_tools)
+    if _enabled_agent_skills():
+        from core.inference.tools import READ_SKILL_TOOL
+        available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
-        return all_tools
+        return available
 
     selected_names = set(requested_studio_tools)
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
 
-    return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
+    return [tool for tool in available if tool["function"]["name"] in selected_names]
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
@@ -31405,6 +31535,27 @@ async def anthropic_count_tokens(
             request,
             include_api_key = _count_server_tools,
         )
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+
+        openai_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_full_access = bool(getattr(payload, "bypass_permissions", False))
+        if _count_full_access:
+            # Same schemas /messages renders under Full access, or the count prices a different prompt.
+            from core.inference.tools import apply_full_access_tool_descriptions
+            openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        _count_nudge = _build_tool_action_nudge(
+            tools = openai_tools,
+            model_name = _llama_public_model_id(llama_backend, payload.model),
+            full_access = _count_full_access,
+        )
+        openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the

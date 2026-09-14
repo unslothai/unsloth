@@ -436,6 +436,11 @@ function specFallbackMessage({
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+    case "drafter_unloadable":
+      // The file IS beside the model; it just cannot be opened as a draft. So no "place
+      // the sidecar" and no "check your network": both name a remedy that changes
+      // nothing, and the backend stands the refetch down for exactly this case.
+      return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
     case "drafter_not_found":
       if (drafter === "DSpark") {
         return isLocalGguf

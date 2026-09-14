@@ -132,9 +132,17 @@ type SettingCheck = {
 /** Fallback reasons the backend retries on an IDENTICAL next load, from the arms of
  *  `LlamaCppBackend._runtime_matches_intent` that return False to force a repair. The rest are
  *  excluded on purpose: "drafter_no_vram" and "mla_mtp_disabled" are Auto-mode policy, and
- *  "runtime_error" only reopens when the draft count changes, which the comparison sees. */
+ *  "runtime_error" only reopens when the draft count changes, which the comparison sees.
+ *
+ *  "drafter_unloadable" is here because the sheet's remedy is to replace the sidecar in place,
+ *  and `adoptable` in use-chat-model-runtime would otherwise skip `/load`, so the backend's
+ *  content re-check never runs. An unchanged file still dedupes through already_loaded. It
+ *  needs no `sendsGgufPath` exclusion, unlike "drafter_not_found", because the re-check lives
+ *  in `_runtime_matches_intent`'s drafter comparison rather than the refetch arm that requires
+ *  `intent.gguf_path is None`. */
 const RETRYABLE_SPEC_FALLBACKS = new Set([
   "drafter_not_found",
+  "drafter_unloadable",
   "binary_no_mtp",
   "binary_outdated",
 ]);
@@ -430,10 +438,27 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // The split is placement the config cannot carry: the applier clears splitRatio, so a remembered
     // config asks for the default distribution while a resident manual load may run a custom one.
+    //
+    // Judged on the mode the RESIDENT server ran, not the one this pick would send. Since
+    // unslothai/unsloth#10884 an auto tensor-parallel load reports a split of its own, chosen by
+    // the planner, and the store never holds one in auto -- applyInferenceStatusToStore nulls it
+    // unless the mode is manual. Comparing the two sides there compares a field the applier
+    // cleared against a server legitimately running the planner's ratio, and declines to adopt a
+    // resident model that is exactly what was asked for. A manual load's custom ratio is still a
+    // real disagreement, and a server too old to report its mode is still compared, so nothing
+    // that used to reload stops reloading.
+    //
+    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
+    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
+    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
+    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
+    // a placement change the user had made and the server would have applied.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) => sameList(standing.splitRatio, s.tensor_split),
+    agrees: (_c, s, standing) =>
+      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
+      sameList(standing.splitRatio, s.tensor_split),
   },
   {
     // A managed override the backend would reject outright. Folding it into "no override" here would
