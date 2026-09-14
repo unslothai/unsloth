@@ -630,9 +630,7 @@ def test_a_windows_shell_on_the_hyper_v_backend_is_told_to_switch(tmp_path: Path
     """Docker Desktop's GPU support is the WSL 2 backend only; the Hyper-V backend runs a
     LinuxKit VM no GPU reaches, so "nothing to install" there leaves --gpus failing at the
     daemon. The backends are told apart by the kernel `docker info` reports."""
-    _, log, env = _setup(
-        tmp_path, desktop = True, driver = False, desktop_kernel = "6.6.87.2-linuxkit"
-    )
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, desktop_kernel = "6.6.87.2-linuxkit")
     _stub(
         tmp_path / "bin" / "uname",
         'if [ "$1" = -s ]; then echo MINGW64_NT-10.0-22631; else echo x86_64; fi\n',
