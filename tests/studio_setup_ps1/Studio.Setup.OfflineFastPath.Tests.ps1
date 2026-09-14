@@ -398,3 +398,26 @@ Invoke-FastPathEscapes
         Invoke-FullDepsEscape -FullDeps '0' -StartSkipping $false | Should -Be 'False'
     }
 }
+
+Describe "Test-StudioInstallVerified returns a Boolean, not a collection" {
+    It "stays falsey when the verifier prints to stdout and then fails" {
+        # An unassigned native call leaves stdout in the function's success stream, so
+        # `return $false` came back as @("...", $false): truthy, and the offline keep
+        # was taken on a failed verify.
+        $body = (Get-Content -Raw (Join-Path $PSScriptRoot "../../studio/setup.ps1"))
+        $match = [regex]::Match($body, '(?ms)^function Test-StudioInstallVerified \{.*?^\}')
+        $match.Success | Should -BeTrue
+        $match.Value | Should -Match '\|\s*Out-Null'
+
+        function Probe {
+            try {
+                & python3 -c 'import sys; print("diagnostic"); sys.exit(1)' 2>$null | Out-Null
+                return ($LASTEXITCODE -eq 0)
+            } catch { return $false }
+        }
+        $result = Probe
+        @($result).Count | Should -Be 1
+        $result | Should -BeOfType [bool]
+        if ($result) { throw "a failed verify read as verified" }
+    }
+}

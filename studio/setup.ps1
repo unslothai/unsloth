@@ -4971,7 +4971,9 @@ import inspect
 # also swallowed one raised inside verify_install, and retried shallow on real damage.
 deep = {'deep': True} if 'deep' in inspect.signature(install_manifest.verify_install).parameters else {}
 sys.exit(0 if install_manifest.verify_install(**deep)['ok'] else 1)
-" "$PSScriptRoot" 2>$null
+" "$PSScriptRoot" 2>$null | Out-Null
+        # Out-Null, not just 2>$null: an unassigned native call leaves stdout in the function's
+        # success stream, so `return $false` came back as @("...", $false), which is truthy.
         return ($LASTEXITCODE -eq 0)
     } catch { return $false }
 }
