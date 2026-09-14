@@ -2672,7 +2672,7 @@ def get_statistics(local_files_only = False):
     if DEVICE_TYPE == "xpu":
         total_memory = torch.xpu.get_device_properties(0).total_memory
     elif DEVICE_TYPE == "npu":
-        # from_pretrained always calls this; an Ascend build cannot answer the else arm.
+        # from_pretrained always calls this; a NPU build cannot answer the else arm.
         total_memory = torch.npu.get_device_properties(0).total_memory
     else:
         total_memory = torch.cuda.get_device_properties(0).total_memory
