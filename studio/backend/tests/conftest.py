@@ -42,6 +42,15 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
+# a test module imports from it at collection, before any fixture runs.
+for _up in Path(__file__).resolve().parents:
+    _repo_shared = _up / "tests" / "_shared"
+    if (_repo_shared / "growth.py").is_file():
+        if str(_repo_shared) not in sys.path:
+            sys.path.insert(0, str(_repo_shared))
+        break
+
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
