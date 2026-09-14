@@ -3612,3 +3612,21 @@ def test_credentials_inside_a_silent_root_still_ask():
         assert tools._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
     for path in ("/etc/gshadow", "/etc/krb5.keytab", "/etc/security/opasswd"):
         assert tools._path_needs_approval(path) is True, path
+
+
+def test_studio_own_state_is_never_silent():
+    """The studio home holds studio.db (chat history, provider and MCP configuration) and auth/
+    next to the sandbox. Several root producers fall back to that directory when their own
+    subdirectory is unset, and one such fallback would grant a tool everything Studio owns."""
+    from core.inference import tools
+    from utils.paths.storage_roots import studio_root
+
+    home = str(studio_root())
+    for path in (os.path.join(home, "studio.db"), os.path.join(home, "auth", "auth.db")):
+        assert tools._path_needs_approval(path) is True, path
+        assert tools._path_needs_approval(path, writing = True) is True, path
+    assert is_high_risk_tool_call("terminal", {"command": f"cat {home}/studio.db"}) is True
+    assert is_high_risk_tool_call("terminal", {"command": f"echo x > {home}/studio.db"}) is True
+    # The output subdirectories under it stay silent, or ordinary tool work would prompt.
+    for path in (os.path.join(home, "sandbox", "out.txt"), os.path.join(home, "cache", "m.bin")):
+        assert tools._path_needs_approval(path, writing = True) is False, path

@@ -2875,6 +2875,21 @@ def _silent_root_list(producers) -> "tuple[str, ...]":
     return tuple(roots)
 
 
+def _excluding_ancestors_of_studio_home(roots) -> "tuple[str, ...]":
+    """Drop any root that is the studio home or contains it.
+
+    ``studio.db`` (chat history, provider and MCP configuration) and ``auth/`` live directly in that
+    directory, so a root reaching it hands a tool all of Studio's own state.
+    """
+    from utils.paths.storage_roots import studio_root
+
+    try:
+        home = _normalized_fs_text(str(studio_root()))
+    except Exception:  # noqa: BLE001 - an unresolvable home means nothing to protect against here
+        return tuple(roots)
+    return tuple(root for root in roots if not (home == root or home.startswith(root + os.sep)))
+
+
 def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
     """(read-silent, write-silent) roots. Write-silent is the narrower set: where tool output
     ordinarily lands. Read-silent adds installed software and the model libraries the user pointed
@@ -2884,45 +2899,53 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         project_workspaces_root,
         shared_project_workspaces_root,
         shared_tmp_root,
-        studio_root,
         tmp_root,
         well_known_model_dirs,
     )
 
+    # Only the OUTPUT subdirectories are silent, never the studio home itself. studio_root() holds studio.db (chat
+    # history, provider and MCP configuration) and auth/ alongside them, and in the default layout
+    # shared_sandbox_root() resolves to that same directory, so granting either one would hand a tool everything
+    # Studio owns -- which is the opposite of what this gate is for.
     write_roots = _silent_root_list(
         (
             sandbox_root,
-            shared_sandbox_root,
             _legacy_sandbox_root,
             tmp_root,
             shared_tmp_root,
             project_workspaces_root,
             shared_project_workspaces_root,
             cache_root,
-            studio_root,
             # Studio downloads models into these itself, so a tool that fetches one must not need approval for the
             # cache write. Credential files inside them (token, stored_tokens) are caught by the sensitive-path check.
             lambda: _hf_cache_dirs(),
             lambda: _WRITE_SILENT_DEVICE_NODES,
         )
     )
-    read_roots = write_roots + _silent_root_list(
-        (
-            lambda: _SYSTEM_READ_SILENT_ROOTS,
-            # The interpreter, its stdlib and site-packages: a tool reads these to introspect its own environment.
-            lambda: (
-                sys.prefix,
-                sys.base_prefix,
-                sys.exec_prefix,
-                getattr(sys, "base_exec_prefix", ""),
-                os.path.dirname(sys.executable),
-                os.environ.get("VIRTUAL_ENV", ""),
-                _SANDBOX_SITE_DIR,
-            ),
-            # Model folders the user registered with Studio, plus the well-known LM Studio / Ollama locations. These
-            # hold weights, not documents, and reading them is the point of the app.
-            _scan_folder_roots,
-            well_known_model_dirs,
+    # Several of those producers fall back to the studio home when their own subdirectory is not configured
+    # (tmp_root and shared_sandbox_root both do in the default layout), and one such fallback silently grants
+    # everything Studio owns. Drop any root that IS the studio home or an ancestor of it; the narrow
+    # subdirectories under it are kept, so this cannot be defeated by adding another producer later.
+    write_roots = _excluding_ancestors_of_studio_home(write_roots)
+    read_roots = write_roots + _excluding_ancestors_of_studio_home(
+        _silent_root_list(
+            (
+                lambda: _SYSTEM_READ_SILENT_ROOTS,
+                # The interpreter, its stdlib and site-packages: a tool reads these to introspect its own environment.
+                lambda: (
+                    sys.prefix,
+                    sys.base_prefix,
+                    sys.exec_prefix,
+                    getattr(sys, "base_exec_prefix", ""),
+                    os.path.dirname(sys.executable),
+                    os.environ.get("VIRTUAL_ENV", ""),
+                    _SANDBOX_SITE_DIR,
+                ),
+                # Model folders the user registered with Studio, plus the well-known LM Studio / Ollama locations. These
+                # hold weights, not documents, and reading them is the point of the app.
+                _scan_folder_roots,
+                well_known_model_dirs,
+            )
         )
     )
     return read_roots, write_roots
@@ -2939,12 +2962,27 @@ def _scan_folder_roots() -> "tuple[str, ...]":
     return tuple(str(row.get("path") or "") for row in list_scan_folders())
 
 
+# Environment that relocates a root. The cache key carries it, so repointing the studio home or a cache mid-process
+# takes effect at once instead of serving the previous install's roots for up to the TTL. Reading a few env vars is
+# nanoseconds; re-resolving the roots is milliseconds, which is why the TTL exists at all.
+_SILENT_ROOT_ENV_KEYS = (
+    "UNSLOTH_STUDIO_HOME",
+    "UNSLOTH_STUDIO_SANDBOX_HOME",
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGINGFACE_HUB_CACHE",
+    "XDG_CACHE_HOME",
+    "VIRTUAL_ENV",
+)
+
+
 def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
     global _silent_roots_cache
     try:
         account = current_account_id() or ""
     except Exception:  # noqa: BLE001
         account = ""
+    account = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS))
     now = time.monotonic()
     cached = _silent_roots_cache
     if cached is not None and cached[1] == account and now - cached[0] < _SILENT_ROOT_TTL_S:
