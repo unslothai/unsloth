@@ -29763,9 +29763,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             api_monitor.finish(monitor_id, "cancelled")
             reservation.cancel()
 
-        return _sse_streaming_response(
-            _stream(), unstarted_cleanup = _unstarted_admission_cleanup
-        )
+        return _sse_streaming_response(_stream(), unstarted_cleanup = _unstarted_admission_cleanup)
     else:
         # ``stream`` defaults to false, so this common shape registers with the swap gate like the
         # streaming branch: unregistered, a non-forced /unload counts zero generations and kills

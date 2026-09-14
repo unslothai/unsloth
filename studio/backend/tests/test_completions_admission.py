@@ -91,7 +91,6 @@ def _install_backend(monkeypatch, handler, *, backend_slots):
 
 def _sse_response(events):
     import httpx
-
     async def _chunks():
         for event in events:
             yield f"data: {json.dumps(event)}\n\n".encode()
