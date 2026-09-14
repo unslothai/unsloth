@@ -1380,27 +1380,14 @@ def patch_enable_input_require_grads():
 def fix_unsloth_zoo_fused_ce_nan():
     """Stop an older unsloth_zoo turning a fully masked microbatch into NaN.
 
-    unsloth_zoo's chunked fused cross entropy computes
+    Its fused CE divides by `n_items or (labels != ignore_index).sum()`, so a
+    microbatch with no trainable labels and no supplied count divides by zero and
+    NaNs the whole run. Fixed in unsloth-zoo PR #616; this is for version skew and
+    no-ops once zoo carries it.
 
-        divisor = n_items if n_items is not None else (labels != ignore_index).sum()
-
-    so a microbatch with NO trainable labels and no caller-supplied n_items divides
-    by zero: loss and every gradient come back NaN, the optimizer state is poisoned
-    and the rest of the run is lost. Both halves really co-occur -- unsloth_zoo's own
-    _unsloth_get_batch_samples clears num_items_in_batch when nothing downstream will
-    divide by it, and a sample truncated before its assistant turn is fully masked, so
-    a small per_device_train_batch_size can make it a whole microbatch.
-
-    Fixed in unsloth-zoo PR #616. This exists for version skew: a current unsloth
-    against an older pinned unsloth_zoo. It no-ops the moment zoo carries the fix.
-
-    Patches the autograd Function's forward, not the module level wrapper. Generated
-    forwards in unsloth_compiled_cache/ (and fused_losses/forward_adapter.py) do
-    `from unsloth_zoo.loss_utils import unsloth_fused_ce_loss`, binding the function
-    OBJECT, so rebinding that name would never reach them. That function resolves
-    UnslothFusedLoss from its own globals at call time and torch resolves cls.forward
-    at .apply() time, so a class level patch reaches already imported callers with no
-    cache invalidation.
+    Patches the autograd Function, not the wrapper: generated forwards bind
+    `unsloth_fused_ce_loss` by value, but it resolves UnslothFusedLoss from its own
+    globals at call time, so a class patch reaches them with no cache invalidation.
     """
     import inspect
 
@@ -1436,10 +1423,9 @@ def fix_unsloth_zoo_fused_ce_nan():
     def _unusable_divisor(n_items):
         """True when n_items cannot normalise, so forward would divide by zero.
 
-        An explicit ZERO is as unusable as None, and it is reachable: when
-        model_accepts_loss_kwargs is true, _unsloth_get_batch_samples keeps its
-        count instead of nulling it, and that count is 0 for a fully masked
-        gradient-accumulation window.
+        Zero is as unusable as None and is reachable: with
+        model_accepts_loss_kwargs true, _unsloth_get_batch_samples keeps a count
+        that is 0 for a fully masked accumulation window.
         """
         if n_items is None: return True
         try:
@@ -1479,9 +1465,8 @@ def fix_unsloth_zoo_fused_ce_nan():
             ignore_index = int(extra_kwargs.get("ignore_index", -100))
             device = lm_head_weight.device
 
-            # Decide emptiness on the EFFECTIVE labels, after the causal shift and
-            # after the attention mask is folded in, exactly as forward() does. A
-            # batch can be non-empty before shifting and empty after.
+            # Emptiness is decided post-shift and post-mask, as forward() does:
+            # a batch can be non-empty before shifting and empty after.
             with torch.no_grad():
                 if shift_labels:
                     effective = torch.empty_like(labels, device = device)
@@ -1495,9 +1480,8 @@ def fix_unsloth_zoo_fused_ce_nan():
                 if bool((effective != ignore_index).any().item()):
                     return original(*args, **kwargs)
 
-            # Nothing trainable: the loss is 0 and every gradient is 0. Mirror the
-            # original's backward contract exactly -- three saved tensors and
-            # ctx.scaling -- or backward fails or returns the wrong arity.
+            # Nothing trainable: loss and grads are 0. Save three tensors and
+            # ctx.scaling or backward fails or returns the wrong arity.
             grad_inputs = hidden_states if overwrite else torch.zeros_like(hidden_states)
             if overwrite:
                 grad_inputs.zero_()
@@ -1518,9 +1502,8 @@ def fix_unsloth_zoo_fused_ce_nan():
             # Never let the fix itself break a run.
             return original(*args, **kwargs)
 
-    # apply_autograd_function() builds .apply()'s POSITIONAL argument list from
-    # inspect.signature(cls.forward), so the replacement must present the original
-    # signature or the arguments land in the wrong slots.
+    # apply_autograd_function() derives .apply()'s positional args from
+    # inspect.signature(cls.forward), so the signature must be preserved.
     try:
         _forward.__signature__ = inspect.signature(original)
     except Exception:
