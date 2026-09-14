@@ -89,6 +89,7 @@ def test_customization_defaults():
     assert c.headingFont is None
     assert c.chatFont is None
     assert c.uiFontSize is None
+    assert c.chatWidth == "standard"
     assert [(i.id, i.visible) for i in c.sidebarMenu] == [
         ("api", True),
         ("darkMode", True),
@@ -102,6 +103,10 @@ def test_customization_defaults():
 
 
 def test_customization_invalid_values_rejected():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"chatWidth": "invalid"}}}
+        )
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"colors": {"light": {"accent": "red"}}}}}
@@ -447,6 +452,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "uiFont": "SF Pro Text",
                 "headingFont": "Avenir Next",
                 "chatFont": "Georgia",
+                "chatWidth": "full",
                 "codeFont": None,
                 "importedFonts": [
                     {"name": "SF Pro Text", "dataUrl": "data:font/woff2;base64,AAAA"}

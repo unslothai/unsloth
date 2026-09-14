@@ -1861,7 +1861,7 @@ export const Thread: FC<{
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
-          ["--thread-max-width" as string]: "48rem",
+          ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
         }}
@@ -2308,7 +2308,7 @@ const ComposerAnimated: FC<{
     // unsloth-composer-shell is the size container the tight (mobile) layout
     // in index.css queries. It sits outside the surface so those rules can
     // trim the surface's own padding.
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[46rem]">
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-max-width,46rem)]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}

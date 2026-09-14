@@ -802,7 +802,7 @@ function CompareShell({
           {children}
         </div>
         <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
+          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.

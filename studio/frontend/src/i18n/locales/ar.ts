@@ -1029,6 +1029,13 @@ export const ar = {
         minimal: "بسيطة",
       },
       custom: {
+        chatWidth: {
+          label: "عرض المحادثة",
+          description: "حدّد عرض الرسائل وحقل الكتابة. يستخدم العرض الكامل المساحة بين الشريطين الجانبيين.",
+          standard: "قياسي",
+          wide: "واسع",
+          full: "العرض الكامل",
+        },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
         preferencesTitle: "التفضيلات",

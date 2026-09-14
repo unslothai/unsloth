@@ -8,6 +8,7 @@ import { useT } from "@/i18n";
 import {
   ActiveColorControl,
   ChatFontRow,
+  ChatWidthSelect,
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
@@ -127,6 +128,12 @@ export function AppearanceTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}
           description={t(

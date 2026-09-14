@@ -1048,6 +1048,13 @@ export const es = {
         minimal: "Minimalista",
       },
       custom: {
+        chatWidth: {
+          label: "Ancho del chat",
+          description: "Ajusta el ancho de los mensajes y del cuadro de texto. El ancho completo usa el espacio entre las barras laterales.",
+          standard: "Estándar",
+          wide: "Amplio",
+          full: "Ancho completo",
+        },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
         preferencesTitle: "Preferencias",

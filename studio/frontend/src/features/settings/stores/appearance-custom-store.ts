@@ -37,6 +37,7 @@ const guardedLocalStorage: StateStorage = {
 };
 
 export type ReduceMotionSetting = "system" | "on" | "off";
+export type ChatWidthSetting = "standard" | "wide" | "full";
 
 export type CustomModeColors = {
   accent: string | null;
@@ -195,6 +196,7 @@ export type AppearanceCustomization = {
   uiFont: string | null;
   headingFont: string | null;
   chatFont: string | null;
+  chatWidth: ChatWidthSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
   /** UI font size in px. null = app default (15). */
@@ -224,6 +226,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFont: null,
   headingFont: null,
   chatFont: null,
+  chatWidth: "standard",
   codeFont: null,
   importedFonts: [],
   uiFontSize: null,
@@ -385,6 +388,10 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFont: sanitizeFont(source.uiFont),
     headingFont: sanitizeFont(source.headingFont),
     chatFont: sanitizeFont(source.chatFont),
+    chatWidth:
+      source.chatWidth === "wide" || source.chatWidth === "full"
+        ? source.chatWidth
+        : "standard",
     codeFont: sanitizeFont(source.codeFont),
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
@@ -781,6 +788,11 @@ export function applyCustomizationToDocument(
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
+  // Resolve against each pane so sidebars and compare mode stay responsive.
+  setVar(
+    "--custom-chat-max-width",
+    c.chatWidth === "full" ? "100%" : c.chatWidth === "wide" ? "72rem" : null,
+  );
 
   syncImportedFonts(c.importedFonts);
 

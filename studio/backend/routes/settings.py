@@ -3406,6 +3406,7 @@ class PersonalizationCustomization(BaseModel):
 
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    chatWidth: Literal["standard", "wide", "full"] = "standard"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
