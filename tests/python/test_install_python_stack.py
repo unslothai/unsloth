@@ -70,6 +70,7 @@ import install_python_stack as ips
 
 STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
 
+
 # The pinned scrub reads `pip config list` once per process and memoises it. A CI image
 # carrying its own /etc/pip.conf would otherwise leak into these assertions, and a test
 # that mocks subprocess could poison the cache for whatever runs next under -p randomly.
@@ -623,17 +624,19 @@ class TestHardenedPipConfigRelaxation:
     @pytest.mark.parametrize(
         "outcome",
         [
-            mock.Mock(returncode = 1, stdout = b""),                 # no pip in the venv yet
-            mock.Mock(returncode = 0, stdout = None),                # nothing captured
+            mock.Mock(returncode = 1, stdout = b""),  # no pip in the venv yet
+            mock.Mock(returncode = 0, stdout = None),  # nothing captured
             OSError("no pip"),
-            subprocess.TimeoutExpired("pip", 60),                    # a wedged pip
+            subprocess.TimeoutExpired("pip", 60),  # a wedged pip
         ],
     )
     def test_a_pip_that_cannot_answer_changes_nothing(self, outcome):
         """This sits on the path to every pinned install, including the final torch
         repair, so anything other than a clean listing has to degrade to no overrides."""
         kwargs = (
-            {"side_effect": outcome} if isinstance(outcome, Exception) else {"return_value": outcome}
+            {"side_effect": outcome}
+            if isinstance(outcome, Exception)
+            else {"return_value": outcome}
         )
         with mock.patch.object(ips.subprocess, "run", **kwargs):
             assert ips._pinned_pip_config_overrides() == {}
@@ -655,8 +658,14 @@ class TestHardenedPipConfigRelaxation:
             assert run.call_count == 0
 
     def test_garbage_in_the_listing_is_ignored_not_fatal(self):
-        for listing in (b"", b"not a config listing\n", b"global.cert\n", b"=\n",
-                        b"global.cert=<unparseable>\n", b"\xff\xfe binary \x00\n"):
+        for listing in (
+            b"",
+            b"not a config listing\n",
+            b"global.cert\n",
+            b"=\n",
+            b"global.cert=<unparseable>\n",
+            b"\xff\xfe binary \x00\n",
+        ):
             assert ips._parse_pinned_pip_config(listing) == {}
 
     def test_a_command_section_beats_global_for_the_same_option(self):
@@ -682,9 +691,14 @@ class TestHardenedPipConfigRelaxation:
         "listing, expected",
         [
             # One value, passed through: collapsing whitespace would break a real path.
-            (b"global.cert='C:\\Program  Files\\ca.pem'", {"PIP_CERT": "C:\\Program  Files\\ca.pem"}),
-            (b"global.proxy='http://user:pw@proxy.corp:3128'",
-             {"PIP_PROXY": "http://user:pw@proxy.corp:3128"}),
+            (
+                b"global.cert='C:\\Program  Files\\ca.pem'",
+                {"PIP_CERT": "C:\\Program  Files\\ca.pem"},
+            ),
+            (
+                b"global.proxy='http://user:pw@proxy.corp:3128'",
+                {"PIP_PROXY": "http://user:pw@proxy.corp:3128"},
+            ),
             # A list pip accumulates. Measured: `pip config list` renders it on ONE line
             # with an escaped \n inside the quotes, which is what ast.literal_eval undoes.
             (rb"global.trusted-host='a.corp\nb.corp'", {"PIP_TRUSTED_HOST": "a.corp b.corp"}),
@@ -717,9 +731,9 @@ class TestHardenedPipConfigRelaxation:
         that file enabled, so nothing here may pretend to carry it across; a pinned command
         installs wheels, so there is nothing for it to bite on either way."""
         src = STACK_SOURCE
-        assert "_uv_config_build_policy" not in src, (
-            "re-asserting UV_NO_BUILD would promise a guarantee uv does not honour"
-        )
+        assert (
+            "_uv_config_build_policy" not in src
+        ), "re-asserting UV_NO_BUILD would promise a guarantee uv does not honour"
         # A NON-pinned uv command still inherits everything, so a uv.toml no-build and a
         # UV_EXCLUDE_NEWER both apply where the source builds actually happen.
         with mock.patch.dict(os.environ, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"}):

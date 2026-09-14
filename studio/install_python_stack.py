@@ -7092,8 +7092,23 @@ def _is_pip_subcommand(cmd: "list[str]", subcommands: "tuple[str, ...]") -> bool
 # either, and the scan simply runs off the end.
 _PIP_SUBCOMMANDS = frozenset(
     (
-        "install", "download", "uninstall", "freeze", "inspect", "list", "show", "check",
-        "config", "search", "cache", "index", "wheel", "hash", "completion", "debug", "help",
+        "install",
+        "download",
+        "uninstall",
+        "freeze",
+        "inspect",
+        "list",
+        "show",
+        "check",
+        "config",
+        "search",
+        "cache",
+        "index",
+        "wheel",
+        "hash",
+        "completion",
+        "debug",
+        "help",
         "lock",
     )
 )
