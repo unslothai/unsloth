@@ -2545,7 +2545,10 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # already covered by the auth-directory patterns below.
     r"|[/\\]llama_api_key(?:$|[\s'\"])"
     # `unsloth start` keeps the coding-agent keys here, in the same directory and in the clear.
-    r"|(?:^|[/\\\s'\"=])agent_api_key\.json(?:$|[\s'\"])",
+    # Path form only, for the same reason: the bare name is an ordinary string, and matching it
+    # refused `print('agent_api_key.json')`. A relative read still needs a cd into the auth
+    # directory, which the patterns below catch.
+    r"|[/\\]agent_api_key\.json(?:$|[\s'\"])",
     re.IGNORECASE,
 )
 # The default install layout, for the common case where the path is spelled out rather than resolved.
@@ -2570,11 +2573,31 @@ _STUDIO_CREDENTIAL_HINTS = (
     "agent_api_key",
 )
 
+# The environment variables that name the studio home, in the spellings a shell leaves in the
+# command text. `cat $STUDIO_HOME/auth/auth.db` reaches the same file as the resolved path, and both
+# variables survive into the tool subprocess environment, so the variable form is not a rewrite of
+# the path, it IS the path as far as the shell is concerned.
+_STUDIO_HOME_ENV_VARS = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME")
+
+
+def _studio_home_variable_spellings() -> "list[str]":
+    """`$VAR`, `${VAR}`, `%VAR%` and `$env:VAR` for each studio-home variable (sh, cmd, PowerShell)."""
+    out: "list[str]" = []
+    for var in _STUDIO_HOME_ENV_VARS:
+        out.extend((f"${var}", f"${{{var}}}", f"%{var}%", f"$env:{var}"))
+    return out
+
+
 _studio_auth_markers_cache: "tuple | None" = None
 
 
 def _studio_auth_dir_markers() -> tuple:
-    """``(auth directory spellings, "cd into the studio root" pattern)`` for this install.
+    """``(plain spellings, variable spellings, "cd into the studio root" pattern)`` for this install.
+
+    Each spelling is a ``(marker, canonical marker)`` pair, both lowercased, so the per-call path
+    does no string building. The variable spellings (``$HOME/...``, ``$STUDIO_HOME/auth``, ``~/...``)
+    are kept apart because a text containing no ``$``, ``%`` or ``~`` cannot match one, and the
+    terminal classifier runs this once per candidate token of every command.
 
     Resolved once per process: STUDIO_HOME is fixed at startup, and a custom UNSLOTH_STUDIO_HOME is
     only covered by asking for the real root rather than assuming the default layout. A failure is
@@ -2587,19 +2610,25 @@ def _studio_auth_dir_markers() -> tuple:
         from utils.paths.storage_roots import auth_root
         resolved = str(auth_root())
     except Exception:  # noqa: BLE001 - an unresolvable root leaves the literal patterns above
-        return (), None
+        return (), (), None
     if not resolved:
-        return (), None
+        return (), (), None
     auth_markers = [resolved]
+    variable_markers: "list[str]" = []
     # dirname, not studio_root(): one resolution point, and the two cannot drift apart.
     root_markers = [os.path.dirname(resolved.rstrip("/\\"))]
     home = os.path.expanduser("~")
     # Boundary-aware: a plain startswith makes /home/u2/... look like it is under /home/u and mints
     # markers ("~2/...") that would refuse unrelated commands.
     if home and (resolved == home or resolved.startswith(home.rstrip(os.sep) + os.sep)):
-        for target, base in ((auth_markers, resolved), (root_markers, root_markers[0])):
+        for target, base in ((variable_markers, resolved), (root_markers, root_markers[0])):
             tail = base[len(home.rstrip(os.sep)) :]
-            target.extend(("~" + tail, "$HOME" + tail))
+            target.extend(("~" + tail, "$HOME" + tail, "${HOME}" + tail))
+    # The variable spellings of the studio home. Added whether or not the variable is set in this
+    # process: the text asks for whatever that variable points at, which is this directory.
+    for spelling in _studio_home_variable_spellings():
+        root_markers.append(spelling)
+        variable_markers.extend((spelling + "/auth", spelling + "\\auth"))
     roots = [m for m in root_markers if m and m not in ("/", "\\")]
     # The root must END where it is matched, or continue into `auth` itself. Without a boundary the
     # alternation also fires on any path merely STARTING with the root, so `cd <home>-backup && ls
@@ -2615,7 +2644,17 @@ def _studio_auth_dir_markers() -> tuple:
         if roots
         else None
     )
-    _studio_auth_markers_cache = (tuple(m.lower() for m in auth_markers if m), cd_re)
+
+    def pairs(names: "list[str]") -> tuple:
+        out = []
+        for name in names:
+            if not name:
+                continue
+            lowered = name.lower()
+            out.append((lowered, _canonical_path_text(lowered)))
+        return tuple(out)
+
+    _studio_auth_markers_cache = (pairs(auth_markers), pairs(variable_markers), cd_re)
     return _studio_auth_markers_cache
 
 
@@ -2659,7 +2698,7 @@ def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
     start = lowered.find(marker)
     while start != -1:
         end = start + len(marker)
-        if end == len(lowered) or lowered[end] in "/\\'\" \t;:&|)":
+        if end == len(lowered) or lowered[end] in "/\\'\" \t\r\n;:&|)":
             return True
         start = lowered.find(marker, start + 1)
     return False
@@ -2679,17 +2718,28 @@ def _references_studio_credential(text: str) -> bool:
     # spellings first; matching the raw text alone let either one walk past the guard.
     normalized = _REDUNDANT_SLASH_RE.sub("", text)
     lowered_normalized = normalized.lower()
+    # `cd /home/me/Studio\ Data/auth` is how a shell spells a home whose name contains a space. The
+    # backslash is an escape there, not a separator, so undo it before canonicalising, which would
+    # otherwise read it as one and split the directory name in half.
+    unescaped = text.replace("\\ ", " ") if "\\ " in text else text
     # `..` segments and Windows separators need the full lexical canonicalisation, which the slash
     # collapse above does not do.
     canonical = _canonical_path_text(text)
     lowered_canonical = canonical.lower()
+    canonical_candidates = {canonical}
+    if unescaped is not text:
+        canonical_candidates.add(_canonical_path_text(unescaped))
     if any(
         pattern.search(candidate)
         for pattern in (_STUDIO_CREDENTIAL_BASENAME_RE, _STUDIO_AUTH_DIR_RE)
-        for candidate in ({text, normalized, canonical})
+        for candidate in ({text, normalized} | canonical_candidates)
     ):
         return True
-    auth_markers, cd_into_root_re = _studio_auth_dir_markers()
+    auth_markers, variable_markers, cd_into_root_re = _studio_auth_dir_markers()
+    # A text with none of these characters cannot spell `~/...`, `$HOME/...` or `$STUDIO_HOME/auth`,
+    # so the variable markers are skipped for the ordinary command.
+    if variable_markers and ("$" in lowered or "%" in lowered or "~" in lowered):
+        auth_markers = auth_markers + variable_markers
     if not auth_markers:
         return False
     # A bare substring test also matches a path that merely STARTS with the directory name, so
@@ -2697,19 +2747,24 @@ def _references_studio_credential(text: str) -> bool:
     # marker has to end at a separator or at the end of the path to be the auth directory itself.
     # The markers are canonicalised alongside the text: on Windows they carry backslashes, which the
     # canonical candidate no longer has, so comparing raw markers against it would never match.
+    lowered_raw = {lowered, lowered_normalized}
+    lowered_canonicals = {lowered_canonical} | {c.lower() for c in canonical_candidates}
+    if unescaped is not text:
+        lowered_raw.add(unescaped.lower())
     if any(
         _marker_is_a_path_segment(candidate, marker)
-        for marker in auth_markers
-        for candidate in (lowered, lowered_normalized)
+        for marker, _ in auth_markers
+        for candidate in lowered_raw
     ) or any(
-        _marker_is_a_path_segment(lowered_canonical, _canonical_path_text(marker))
-        for marker in auth_markers
+        _marker_is_a_path_segment(candidate, canonical_marker)
+        for _, canonical_marker in auth_markers
+        for candidate in lowered_canonicals
     ):
         return True
     return bool(
         cd_into_root_re is not None
         and _BARE_AUTH_SEGMENT_RE.search(text)
-        and cd_into_root_re.search(text)
+        and any(cd_into_root_re.search(candidate) for candidate in (text, unescaped))
     )
 
 

@@ -40,7 +40,7 @@ _CREDENTIAL_COMMANDS = (
     "sqlite3 /home/u/.unsloth/studio/auth/auth.db .dump",
     # `unsloth start` caches the coding-agent keys here, in the same directory.
     "cat /home/u/.unsloth/studio/auth/agent_api_key.json",
-    "cat agent_api_key.json",
+    "cd ~/.unsloth/studio/auth && cat agent_api_key.json",
 )
 _CREDENTIAL_CODE = (
     "from pathlib import Path\n"
@@ -83,7 +83,15 @@ def test_refusal_names_no_path_and_no_value():
 
 @pytest.mark.parametrize(
     "command",
-    ["grep -rn auth src/", "cat src/auth.py", "ls -la", "python -m pytest tests/ -q"],
+    [
+        "grep -rn auth src/",
+        "cat src/auth.py",
+        "ls -la",
+        "python -m pytest tests/ -q",
+        # A bare filename is a string, not a read: `print('agent_api_key.json')` was refused.
+        "echo agent_api_key.json",
+        "grep -rn agent_api_key.json src/",
+    ],
 )
 def test_ordinary_commands_are_not_blocked(command):
     # Not asserting they run (the fixture forbids spawning); only that the credential guard, which
@@ -158,6 +166,48 @@ def test_equivalent_spellings_of_the_auth_path_are_all_covered(monkeypatch, tmp_
             assert tools._references_studio_credential(f"cat {spelling}"), spelling
         # Cancelling `..` must not invent a match that was never there.
         assert not tools._references_studio_credential(f"cat {home}/auth-backup/../notes.txt")
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_the_environment_variable_spelling_of_the_studio_home(monkeypatch, tmp_path):
+    # `cat $STUDIO_HOME/auth/auth.db` reaches the same file as the resolved path: both studio-home
+    # variables survive into the tool subprocess environment, so the shell expands this for real.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for spelling in (
+            'cat "$STUDIO_HOME/auth/auth.db"',
+            "cat ${UNSLOTH_STUDIO_HOME}/auth/auth.db",
+            "ls -a $UNSLOTH_STUDIO_HOME/auth",
+            r"type %UNSLOTH_STUDIO_HOME%\auth\.desktop_secret",
+            r"Get-Content $env:STUDIO_HOME\auth\auth.db",
+            'cd "$STUDIO_HOME" && ls auth',
+        ):
+            assert tools._references_studio_credential(spelling), spelling
+        # Naming the variable without going into the auth directory stays ordinary work.
+        assert not tools._references_studio_credential("export STUDIO_HOME=/tmp/studio")
+        assert not tools._references_studio_credential("ls $STUDIO_HOME/models")
+        assert not tools._references_studio_credential("grep -rn auth $STUDIO_HOME/logs/studio.log")
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_studio_home_whose_name_contains_a_space(monkeypatch, tmp_path):
+    # macOS installs under "Application Support" put a space in the path, and a shell spells that
+    # with a backslash escape. Read as a separator it split the directory name and slipped past.
+    home = tmp_path / "Studio Data"
+    (home / "auth").mkdir(parents = True)
+    escaped = str(home).replace(" ", "\\ ")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert tools._references_studio_credential(f"cat {escaped}/auth/auth.db")
+        assert tools._references_studio_credential(f"cd {escaped} && ls -a auth")
+        assert tools._references_studio_credential(f'cat "{home}/auth/auth.db"')
+        assert not tools._references_studio_credential(f"cat {escaped}/authors/notes.txt")
     finally:
         tools._studio_auth_markers_cache = None
 
