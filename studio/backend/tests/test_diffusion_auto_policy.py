@@ -110,7 +110,7 @@ def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
     )
     assert base_9b == nine_b
     assert base_9b is not None and default is not None and base_9b[0] > 2 * default[0]
-    # The unsloth mirror is what Studio actually loads, and canonical_base has to route it here too.
+    # The unsloth mirror is what Unsloth actually loads, and canonical_base has to route it here too.
     assert (
         family_bf16_components_gb(_fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B")
         == base_9b
@@ -272,7 +272,7 @@ def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
 def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
     """Unpinned, cached_checkpoint_path reads only huggingface_hub's import-time constant.
 
-    Studio's cache folder is a setting, so after it changes the retry proves the checkpoint cached
+    Unsloth's cache folder is a setting, so after it changes the retry proves the checkpoint cached
     in the LIVE root while an unpinned probe here still calls it uncached and re-applies the gate,
     defeating the moved-cache retry this excuse exists for. The retry and the loader both pin the
     active root; so must this.

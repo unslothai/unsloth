@@ -3,7 +3,7 @@
 
 """The vendored Swagger UI and ReDoc bundles stay byte-identical to the releases they came from.
 
-These files execute on the Studio origin, which is where session.ts keeps the access and
+These files execute on the Unsloth origin, which is where session.ts keeps the access and
 refresh tokens, so the point of shipping them rather than loading them from a CDN is that
 their bytes are fixed at review time. A silent edit here is a script change nobody read.
 """

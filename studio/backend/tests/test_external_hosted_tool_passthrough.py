@@ -9,7 +9,7 @@ this capability existed, and a third-party client can send the documented
 hosted-tool body forever:
 
 * ``enable_tools: true`` + ``enabled_tools: ["web_search", "code_execution"]``
-  has always meant "the provider runs its own server tools". Studio's loop must
+  has always meant "the provider runs its own server tools". Unsloth's loop must
   not read those same bytes as a request to run *its* web_search and drop
   ``code_execution`` on the floor (it has no local implementation of it).
 * an omitted ``permission_mode`` must resolve exactly as it does on the Codex
@@ -68,7 +68,8 @@ def _request():
         return False
 
     return SimpleNamespace(
-        headers = {},
+        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )
@@ -133,7 +134,7 @@ def _run(inf, payload):
 
 
 # The gate as it stood at merge base b3376300: only the Codex subscription ran
-# Studio's tools on an external provider. Every other provider took the plain
+# Unsloth's tools on an external provider. Every other provider took the plain
 # passthrough, whatever the request said about tools. Kept as executable code so
 # the expectations below are derived from the old behaviour, not restated.
 def _merge_base_takes_studio_loop(payload, provider_type: str) -> bool:
@@ -171,11 +172,148 @@ def test_a_hosted_tool_request_still_reaches_the_provider(monkeypatch, provider_
 
     chunks = _run(inf, payload)
     passthrough = FakeExternalClient.last["passthrough"]
-    assert passthrough is not None, "the Studio loop stole a hosted-tool request"
+    assert passthrough is not None, "the Unsloth loop stole a hosted-tool request"
     # Forwarded verbatim: dropping a name here is the provider losing a tool.
     assert passthrough["enabled_tools"] == selection
     assert passthrough["stream"] is True
     assert any("hi" in chunk for chunk in chunks)
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_a_studio_hosted_provider_receives_the_current_date(monkeypatch, provider_type):
+    inf = _install(monkeypatch, provider_type)
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(inf, _payload())
+
+    messages = FakeExternalClient.last["passthrough"]["messages"]
+    assert messages[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+    assert messages[1] == {"role": "user", "content": "what is 2+2?"}
+
+
+def test_an_api_request_without_resolved_server_tools_stays_undated(monkeypatch):
+    inf = _install(monkeypatch, "openai")
+    monkeypatch.setattr(inf, "_request_has_api_key", lambda _request: True)
+    monkeypatch.setattr(inf, "_request_is_internal_workflow", lambda _request: False)
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(
+        inf,
+        _payload(
+            enable_tools = True,
+            enabled_tools = ["unknown_tool"],
+            run_tools_locally = True,
+        ),
+    )
+
+    assert FakeExternalClient.last["passthrough"]["messages"] == [
+        {"role": "user", "content": "what is 2+2?"}
+    ]
+
+
+def test_an_ollama_connection_keeps_its_modelfile_prompt_when_studio_sends_no_system_turn(
+    monkeypatch,
+):
+    # A synthesized date-only turn at index 0 is what displaces the Modelfile SYSTEM (#10436).
+    inf = _install(monkeypatch, "ollama")
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(inf, _payload())
+
+    assert FakeExternalClient.last["passthrough"]["messages"] == [
+        {"role": "user", "content": "what is 2+2?"}
+    ]
+
+
+def test_an_ollama_connection_still_dates_a_studio_composed_system_prompt(monkeypatch):
+    """Over-firing would drop the date for every Ollama user, not just empty-prompt ones."""
+    inf = _install(monkeypatch, "ollama")
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(
+        inf,
+        _payload(
+            messages = [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "what is 2+2?"},
+            ]
+        ),
+    )
+
+    assert FakeExternalClient.last["passthrough"]["messages"] == [
+        {"role": "system", "content": "The current date is 2026-08-15.\n\nBe terse."},
+        {"role": "user", "content": "what is 2+2?"},
+    ]
+
+
+@pytest.mark.parametrize("provider_type", ("llama_cpp", "vllm", "custom"))
+def test_the_other_self_hosted_providers_still_get_the_synthesized_turn(monkeypatch, provider_type):
+    """These have no Modelfile SYSTEM to lose, so the exemption must not widen to them."""
+    inf = _install(monkeypatch, provider_type)
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    _run(inf, _payload())
+
+    assert FakeExternalClient.last["passthrough"]["messages"] == [
+        {"role": "system", "content": "The current date is 2026-08-15."},
+        {"role": "user", "content": "what is 2+2?"},
+    ]
+
+
+def test_full_access_on_ollama_keeps_the_date_the_nudge_costs_nothing_to_carry(monkeypatch):
+    """Full access synthesizes its own system turn, displacing the Modelfile SYSTEM regardless.
+
+    Withholding the date there gives it up for a prompt that is lost anyway, which is the one
+    way the exemption can leave a caller worse off than having no exemption at all.
+    """
+    inf = _install(monkeypatch, "ollama")
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+    seen = {}
+
+    def _capture(*_args, **kwargs):
+        seen["messages"] = list(kwargs["run"].messages)
+        raise LoopEntered(kwargs.get("policy"))
+
+    monkeypatch.setattr(inf, "stream_with_studio_tools", _capture)
+
+    with pytest.raises(LoopEntered):
+        _run(
+            inf,
+            _payload(
+                enable_tools = True,
+                enabled_tools = ["terminal"],
+                run_tools_locally = True,
+                bypass_permissions = True,
+            ),
+        )
+
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
+    assert "sandbox" in seen["messages"][0]["content"], "the Full access nudge is still delivered"
 
 
 def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
@@ -190,7 +328,7 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
 def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(monkeypatch):
     """`run_tools_locally` must not smuggle a hosted-only turn past the 400.
 
-    Studio has no `code_execution`, so the local catalog is empty whatever the
+    Unsloth has no `code_execution`, so the local catalog is empty whatever the
     flag says and the route falls back to the provider. The confirmation
     rejection keys on the request NOT having taken the loop, so a "local"
     reading here answers a confirm-me request with an unconfirmed sandbox run.
@@ -230,7 +368,7 @@ def test_a_code_execution_with_run_tools_locally_still_reaches_the_provider(monk
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, provider_type):
     """Shape 2, the PR's primary use case: a self-hosted server has no hosted
-    tools at all, so the same body can only mean Studio's local loop."""
+    tools at all, so the same body can only mean Unsloth's local loop."""
     assert provider_hosted_tools(provider_type) == frozenset()
     inf = _install(monkeypatch, provider_type)
     with pytest.raises(LoopEntered):
@@ -248,7 +386,7 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
     ],
 )
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
-    """Shape 3: one Studio-only name (or MCP) is unambiguous, so the feature
+    """Shape 3: one Unsloth-only name (or MCP) is unambiguous, so the feature
     works on hosted providers too."""
     # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
     # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
@@ -285,12 +423,101 @@ def test_a_malformed_enabled_tools_is_not_a_hosted_request(bad):
 
 
 def test_a_codex_declares_no_hosted_tools():
-    """Codex's `web_search` is Studio's own tool run by the Codex loop, so the
+    """Codex's `web_search` is Unsloth's own tool run by the Codex loop, so the
     hosted check must never fire there."""
     assert provider_hosted_tools("openai_codex") == frozenset()
 
 
 # ── Task 1: what an omitted permission_mode means ────────────────────
+
+
+def test_mcp_intent_with_no_tools_is_not_refused_for_a_prompt_it_can_never_show(monkeypatch):
+    """mcp_enabled arms the confirm gate on intent, but with no MCP tool enabled the
+    selection is empty and the loop is skipped, so a headerless stream has no prompt to
+    find a channel for. Refusing on intent would 400 a request that proxies straight
+    through, so the check waits for the selected catalog."""
+    monkeypatch.setattr(
+        "core.inference.tools.get_enabled_mcp_tools",
+        lambda: _noop_mcp(),
+    )
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(mcp_enabled = True)
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        return [chunk async for chunk in resp.body_iterator]
+
+    # No LoopEntered and no HTTPException: the request proxies through.
+    assert _drive(go())
+
+
+def test_tool_choice_none_is_not_refused_for_a_prompt_it_can_never_show(monkeypatch):
+    """The catalogue is non-empty here, but stream_with_studio_tools withdraws it every
+    turn under tool_choice "none", so no call and no approval prompt can happen. A
+    headerless stream must still get its clean text answer."""
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(enable_tools = True, enabled_tools = ["python"], tool_choice = "none")
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        return [chunk async for chunk in resp.body_iterator]
+
+    # Reaches the loop rather than being refused; the loop then withdraws the catalogue per
+    # turn (tools_available), so the request answers as plain text.
+    with pytest.raises(LoopEntered):
+        _drive(go())
+
+
+def test_a_refused_request_does_not_strand_a_running_monitor_entry(monkeypatch):
+    """The refusal lands after api_monitor.start and before the stream generator that
+    would finish it, and a running entry is exempt from trimming, so leaving it open
+    strands /api/inference/monitor in `generating` for good."""
+    from core.inference.api_monitor import ApiMonitor
+    from fastapi import HTTPException
+
+    inf = _install(monkeypatch, "openai")
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    payload = _payload(enable_tools = True, enabled_tools = ["python"])
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+        method = "POST",
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        return await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+
+    with pytest.raises(HTTPException) as exc:
+        _drive(go())
+    assert exc.value.status_code == 400
+    assert monitor.active_count() == 0
+    [entry] = monitor.snapshot()
+    assert entry["status"] == "error"
 
 
 def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
@@ -308,8 +535,30 @@ def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     assert policy.confirm_calls is True
 
 
+@pytest.mark.parametrize(
+    "nudge_tool_calls", [None, False, True], ids = ["omitted", "disabled", "enabled"]
+)
+def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudge_tool_calls):
+    """The external Unsloth loop must receive the request-level nudge policy."""
+    monkeypatch.setattr(
+        "core.inference.tools.get_enabled_mcp_tools",
+        lambda: _noop_mcp(),
+    )
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(
+        enable_tools = True,
+        enabled_tools = ["python"],
+        nudge_tool_calls = nudge_tool_calls,
+    )
+
+    with pytest.raises(LoopEntered) as excinfo:
+        _run(inf, payload)
+
+    assert excinfo.value.args[0].nudge_tool_calls is nudge_tool_calls
+
+
 def test_b_the_external_and_codex_paths_derive_the_gate_identically():
-    """Both policy constructions must read the same two expressions off the
+    """Both policy constructions must read the same policy expressions off the
     payload; a divergence would make one path quietly more permissive."""
     tree = ast.parse(_ROUTE_SOURCE.read_text(encoding = "utf-8"))
     modes: set[str] = set()
@@ -323,6 +572,19 @@ def test_b_the_external_and_codex_paths_derive_the_gate_identically():
             confirms.add(ast.unparse(node.value))
     assert modes == {"payload.permission_mode or 'auto'"}
     assert confirms == {"_permission_mode_confirm(payload)"}
+
+    nudge_values = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id not in {"CodexToolPolicy", "ToolLoopPolicy"}:
+            continue
+        nudge_values.extend(
+            ast.unparse(keyword.value)
+            for keyword in node.keywords
+            if keyword.arg == "nudge_tool_calls"
+        )
+    assert nudge_values == ["payload.nudge_tool_calls", "payload.nudge_tool_calls"]
 
 
 @pytest.mark.parametrize(

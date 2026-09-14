@@ -2,17 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  CPT_TARGET_MODULES,
+  CPT_LORA_HYPERPARAMS,
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_CPT,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
   TARGET_MODULES,
+  resolveCptTargetModules,
 } from "@/config/training";
 import { isAdapterMethod } from "@/types/training";
 import type { TrainingMethod } from "@/types/training";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
-import type { TrainingConfigState } from "../types/config";
+import type {
+  TrainingConfigState,
+  TrainingMethodProvenance,
+} from "../types/config";
 
 type TrainingMethodStatePatch = Partial<
   Pick<
@@ -29,30 +33,35 @@ type TrainingMethodStatePatch = Partial<
   >
 >;
 
-function getCptTrainingPatch(): TrainingMethodStatePatch {
+function getCptTrainingPatch(
+  currentTargetModules: readonly string[],
+): TrainingMethodStatePatch {
   return {
-    loraRank: 128,
-    loraAlpha: 32,
-    loraVariant: "rslora",
-    targetModules: CPT_TARGET_MODULES,
+    ...CPT_LORA_HYPERPARAMS,
+    targetModules: resolveCptTargetModules(currentTargetModules),
     datasetFormat: "raw",
     trainOnCompletions: false,
   };
 }
 
-export function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
+export function getCptModelDefaultsPatch(
+  currentTargetModules: readonly string[] = DEFAULT_HYPERPARAMS.targetModules,
+): TrainingMethodStatePatch {
   return {
-    ...getCptTrainingPatch(),
+    ...getCptTrainingPatch(currentTargetModules),
     learningRate: LR_DEFAULT_CPT,
   };
 }
 
-function getRestoreFromCptPatch(): TrainingMethodStatePatch {
+function getRestoreFromCptPatch(
+  provenance: TrainingMethodProvenance,
+): TrainingMethodStatePatch {
   return {
-    loraRank: DEFAULT_HYPERPARAMS.loraRank,
-    loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
-    loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
-    targetModules: TARGET_MODULES,
+    loraRank: provenance.loraRankBeforeCpt ?? DEFAULT_HYPERPARAMS.loraRank,
+    loraAlpha: provenance.loraAlphaBeforeCpt ?? DEFAULT_HYPERPARAMS.loraAlpha,
+    loraVariant:
+      provenance.loraVariantBeforeCpt ?? DEFAULT_HYPERPARAMS.loraVariant,
+    targetModules: provenance.targetModulesBeforeCpt ?? TARGET_MODULES,
   };
 }
 
@@ -87,7 +96,13 @@ function resolveTrainingMethodLearningRate(
 export function buildTrainingMethodPatch(
   state: Pick<
     TrainingConfigState,
-    "trainingMethod" | "trainingMethodProvenance" | "datasetFormat"
+    | "trainingMethod"
+    | "trainingMethodProvenance"
+    | "datasetFormat"
+    | "targetModules"
+    | "loraRank"
+    | "loraAlpha"
+    | "loraVariant"
   >,
   nextMethod: TrainingMethod,
 ): TrainingMethodStatePatch {
@@ -101,14 +116,22 @@ export function buildTrainingMethodPatch(
     )
       ? null
       : state.datasetFormat;
-    Object.assign(patch, getCptTrainingPatch());
+    provenance.targetModulesBeforeCpt = [...state.targetModules];
+    provenance.loraRankBeforeCpt = state.loraRank;
+    provenance.loraAlphaBeforeCpt = state.loraAlpha;
+    provenance.loraVariantBeforeCpt = state.loraVariant;
+    Object.assign(patch, getCptTrainingPatch(state.targetModules));
   }
   if (prevMethod === "cpt" && nextMethod !== "cpt") {
-    Object.assign(patch, getRestoreFromCptPatch());
+    Object.assign(patch, getRestoreFromCptPatch(provenance));
     if (provenance.datasetFormatBeforeCpt !== null) {
       patch.datasetFormat = provenance.datasetFormatBeforeCpt;
     }
     provenance.datasetFormatBeforeCpt = null;
+    provenance.targetModulesBeforeCpt = null;
+    provenance.loraRankBeforeCpt = null;
+    provenance.loraAlphaBeforeCpt = null;
+    provenance.loraVariantBeforeCpt = null;
   }
 
   const learningRate = resolveTrainingMethodLearningRate(

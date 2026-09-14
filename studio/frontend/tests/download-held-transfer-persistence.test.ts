@@ -105,6 +105,7 @@ test("the held marker is written out with the job", () => {
     expectedBytes: 500_000_000,
     fraction: 0.1,
     bytesPerSec: 0,
+    etaSeconds: 0,
     error: null,
     startedAt: 2,
     measuredTransfer: false,

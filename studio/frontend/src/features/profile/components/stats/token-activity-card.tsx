@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProfileStatsDay } from "../../api/profile-stats";
 import {
   type ActivityMode,
+  activitySummaryForMode,
   formatCompactNumber,
   formatProfileCount,
   heatLevel,
@@ -290,14 +291,9 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
           ),
     [grid, shaded],
   );
-  const visibleTotal = useMemo(
-    () =>
-      grid.reduce(
-        (sum, column) =>
-          column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
-        0,
-      ),
-    [grid],
+  const summaryTotal = useMemo(
+    () => activitySummaryForMode(grid, mode),
+    [grid, mode],
   );
 
   const dateFormatter = useMemo(
@@ -313,12 +309,12 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
   return (
     <StatsCard
       title={t("settings.profile.stats.activityTitle")}
-      description={t("settings.profile.stats.activityDescription", {
+      description={t(`settings.profile.stats.activityDescription.${mode}`, {
         total: formatProfileCount(
-          visibleTotal,
+          summaryTotal,
           "token",
           locale,
-          formatCompactNumber(visibleTotal, locale),
+          formatCompactNumber(summaryTotal, locale),
         ),
         weeks: formatProfileCount(grid.length, "week", locale),
       })}

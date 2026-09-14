@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { installAccountTransitionListener } from "@/lib/account-transition";
+import { getLoginMode } from "./login-client";
 
 import {
   AUTH_SESSION_CLEARED_EVENT,
@@ -13,7 +15,18 @@ export { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "./session
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
+/**
+ * The cross-document counterpart to `authSessionEpoch`, which is per-document memory and so
+ * says nothing to another tab. Written when a session begins, removed when it ends, never on
+ * a refresh, so a `storage` listener can tell an account switch from an hourly rotation. The
+ * value is opaque: it marks a session boundary, not the account.
+ */
+export const AUTH_SESSION_MARK_KEY = "unsloth_auth_session_mark";
 
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  installAccountTransitionListener();
+}
 
 let authSessionEpoch = 0;
 
@@ -61,7 +74,20 @@ export function storeAuthTokens(
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
   if (sessionStarted) {
     authSessionEpoch += 1;
+    localStorage.setItem(
+      AUTH_SESSION_MARK_KEY,
+      `${Date.now()}.${Math.random()}`,
+    );
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
+  } else if (!localStorage.getItem(AUTH_SESSION_MARK_KEY)) {
+    // A session signed in before this key existed. Written on its next refresh so a later
+    // sign-out has a key to remove, since removing an absent one raises no storage event and
+    // would leave the other tabs on a signed-out account's titles. Not a new session, so no
+    // epoch bump: the tokens here are a rotation.
+    localStorage.setItem(
+      AUTH_SESSION_MARK_KEY,
+      `${Date.now()}.${Math.random()}`,
+    );
   }
 }
 
@@ -71,6 +97,7 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  localStorage.removeItem(AUTH_SESSION_MARK_KEY);
   window.dispatchEvent(new Event(AUTH_SESSION_CLEARED_EVENT));
 }
 
@@ -94,7 +121,7 @@ export function setMustChangePassword(required: boolean): void {
 
 
 export function getPostAuthRoute(): PostAuthRoute {
-  if (isTauri) return "/chat";
+  if (isTauri && getLoginMode() === "single") return "/chat";
   if (mustChangePassword()) return "/change-password";
   return "/chat";
 }

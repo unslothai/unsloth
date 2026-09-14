@@ -6,7 +6,7 @@
 // The case that matters is the one that used to break the tab: /api/chat/settings
 // is extra="forbid" and rejects the whole body on one bad field, so requeueing a
 // permanently-rejected patch made every later save carry it and fail too. Verified
-// against a live Studio in Chromium, Firefox and WebKit before the fix.
+// against a live Unsloth in Chromium, Firefox and WebKit before the fix.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";

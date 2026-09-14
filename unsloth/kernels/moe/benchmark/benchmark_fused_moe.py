@@ -59,7 +59,6 @@ def run_benchmark_forward(
 
     X = torch.randn(bs, seqlen, hidden_size, dtype = dtype, device = device, requires_grad = True)
 
-    # Forward
     bench_forward_ref = lambda: ref_model(X)  # noqa: E731
     bench_forward_fused = lambda: tt_model(X)  # noqa: E731
 
@@ -100,7 +99,7 @@ def run_benchmark_backward(
 
     output, _ = ref_model(X)
 
-    # Prevent autotuning forward pass
+    # Prevent autotuning the forward pass.
     from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
 
     _autotuned_grouped_gemm_forward_kernel.configs = _autotuned_grouped_gemm_forward_kernel.configs[
@@ -108,7 +107,6 @@ def run_benchmark_backward(
     ]
     test_output, _ = tt_model(X_test)
 
-    # Bench
     grad_output = torch.randn_like(output)
     bench_backward_ref = lambda: output.backward(grad_output, retain_graph = True)  # noqa: E731
     bench_backward_fused = lambda: test_output.backward(grad_output, retain_graph = True)  # noqa: E731
@@ -140,7 +138,7 @@ def setup_model(
     if isinstance(config, Qwen3MoeConfig):
         ref_model = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
 
-        # Triton kernel grouped gemm version of MoE Block -- this is what we're testing
+        # Triton kernel grouped gemm version of the MoE block, the thing under test.
         tt_model = Qwen3MoeFusedGroupedGEMMBlock.from_hf(
             ref_model,
             permute_x = permute_x,
@@ -302,7 +300,6 @@ if __name__ == "__main__":
     mode = args.mode
 
     if args.autotune:
-        # logging.basicConfig(level=logging.INFO)
         print(
             f"Benchmarking {model_id} {mode}: seqlen={args.seqlen}, dtype={args.dtype}, permute_x={args.permute_x}, permute_y={args.permute_y}, autotune"
         )
@@ -321,9 +318,8 @@ if __name__ == "__main__":
         end_time = time.time()
         print(f"Total time: {end_time - start_time:.4f} seconds")
 
-    # NOTE: prefer the autotuner for now. The MoE block needs 2 forward
-    # configs (gate_up_proj, down_proj) and 4 backward (dW + dX each); this
-    # benchmark only supports 1 config at a time, so it's suboptimal here.
+    # Prefer the autotuner: the MoE block needs 2 forward configs (gate_up_proj, down_proj) and 4
+    # backward (dW + dX each), and this benchmark supports only 1 config at a time.
     else:
         assert False, "Use autotune for now"
         kernel_configs = create_kernel_configs(args, args.permute_x, args.permute_y)
