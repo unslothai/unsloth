@@ -68,6 +68,132 @@ sys.path.insert(0, str(STUDIO_DIR))
 import install_python_stack as ips
 
 
+_RESOLVE_ZOO_COMMIT = ips._resolve_unsloth_zoo_commit
+
+
+@pytest.fixture(autouse = True)
+def _no_zoo_commit_lookup(monkeypatch):
+    """Keep the overlay spec at its unresolved form for every test but the pinning ones.
+
+    The spec is otherwise resolved against github.com, so what the overlay tests assert
+    would depend on the network and on wherever unsloth-zoo main happened to point.
+    """
+    ips._ZOO_COMMIT_CACHE.clear()
+    monkeypatch.setattr(ips, "_resolve_unsloth_zoo_commit", lambda _ref: "")
+
+
+class TestUnslothZooGitSpec:
+    """The --local overlay pins unsloth-zoo to a commit, and never to anything else."""
+
+    @pytest.fixture(autouse = True)
+    def _allow_lookup(self, monkeypatch):
+        # Put the real resolver back over the module-wide stub: these tests drive it
+        # against a fake git rather than skipping it.
+        monkeypatch.setattr(ips, "_resolve_unsloth_zoo_commit", _RESOLVE_ZOO_COMMIT)
+        ips._ZOO_COMMIT_CACHE.clear()
+
+    def _fake_ls_remote(self, monkeypatch, stdout, returncode = 0):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return types.SimpleNamespace(returncode = returncode, stdout = stdout)
+
+        monkeypatch.setattr(ips.shutil, "which", lambda _name: "/usr/bin/git")
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        return calls
+
+    def test_branch_is_pinned_to_the_resolved_commit(self, monkeypatch):
+        sha = "a" * 40
+        calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/main\n".encode())
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
+        assert calls[0][1:] == ["ls-remote", ips._UNSLOTH_ZOO_GIT_REPO, "main"]
+
+    def test_the_commit_is_resolved_once_per_run(self, monkeypatch):
+        sha = "b" * 40
+        calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/main\n".encode())
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        first = ips._unsloth_zoo_git_spec()
+        assert ips._unsloth_zoo_git_spec() == first
+        assert len(calls) == 1   # staging and the install must not straddle a branch move
+
+    def test_an_explicit_ref_is_resolved_too(self, monkeypatch):
+        sha = "c" * 40
+        calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/tags/v1\n".encode())
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", "v1")
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
+        assert calls[0][-1] == "v1"
+
+    def test_a_full_commit_is_used_without_asking_git(self, monkeypatch):
+        sha = "d" * 40
+        calls = self._fake_ls_remote(monkeypatch, b"")
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", sha)
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "stdout, returncode",
+        [
+            (b"", 0),                                  # ls-remote matched no ref
+            (b"not-a-sha\trefs/heads/main\n", 0),      # unexpected output shape
+            (b"", 128),                                # remote unreachable
+        ],
+    )
+    def test_an_unresolvable_ref_falls_back_to_the_url_as_written(
+        self, monkeypatch, stdout, returncode
+    ):
+        self._fake_ls_remote(monkeypatch, stdout, returncode)
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        assert ips._unsloth_zoo_git_spec() == ips._UNSLOTH_ZOO_GIT_URL
+
+    def test_a_missing_git_falls_back_to_the_url_as_written(self, monkeypatch):
+        monkeypatch.setattr(ips.shutil, "which", lambda _name: None)
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        assert ips._unsloth_zoo_git_spec() == ips._UNSLOTH_ZOO_GIT_URL
+
+    def test_git_failing_outright_falls_back_to_the_url_as_written(self, monkeypatch):
+        def boom(*_a, **_k):
+            raise OSError("git exploded")
+
+        monkeypatch.setattr(ips.shutil, "which", lambda _name: "/usr/bin/git")
+        monkeypatch.setattr(ips.subprocess, "run", boom)
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        assert ips._unsloth_zoo_git_spec() == ips._UNSLOTH_ZOO_GIT_URL
+
+    @pytest.mark.parametrize(
+        "ref",
+        [
+            "main --index-url https://example.invalid/simple",
+            "main;curl evil",
+            "main#egg=unsloth-zoo",
+            "../../attacker/repo",
+            "-oProxyCommand=evil",
+            "main\nunsloth-zoo @ git+https://example.invalid/repo",
+        ],
+    )
+    def test_a_malformed_ref_never_reaches_the_requirement(self, monkeypatch, ref):
+        """UNSLOTH_ZOO_REF is pasted into a pip requirement, so only ref shapes pass."""
+        calls = self._fake_ls_remote(monkeypatch, b"")
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", ref)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+
+        spec = ips._unsloth_zoo_git_spec()
+
+        assert spec == ips._UNSLOTH_ZOO_GIT_URL
+        assert all(ref not in call for call in calls)
+
+    def test_the_repository_url_is_the_hardcoded_one(self):
+        assert ips._UNSLOTH_ZOO_GIT_URL.endswith("git+https://github.com/unslothai/unsloth-zoo")
+
+
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
 

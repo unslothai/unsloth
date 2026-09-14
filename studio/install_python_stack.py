@@ -6197,7 +6197,37 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
-_UNSLOTH_ZOO_GIT_URL = "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+_UNSLOTH_ZOO_GIT_REPO = "https://github.com/unslothai/unsloth-zoo"
+_UNSLOTH_ZOO_GIT_URL = f"unsloth-zoo @ git+{_UNSLOTH_ZOO_GIT_REPO}"
+
+# The ref is pasted into a pip direct-reference requirement, so it is only ever a
+# branch, tag or commit name. Anything else is not a ref pip could resolve anyway,
+# and refusing it keeps an environment variable from steering the requirement
+# somewhere the hard-coded repository URL above does not point.
+_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+_GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# Resolved once per process: the overlay spec is read again by the staging and
+# metadata-repair paths, and a branch that moved in between would install a
+# different commit than the one that was staged.
+_ZOO_COMMIT_CACHE: dict = {}
+_ZOO_REF_WARNED: set = set()
+
+
+def _is_valid_git_ref(ref: str) -> bool:
+    return bool(_GIT_REF_RE.match(ref)) and ".." not in ref
+
+
+def _requested_unsloth_zoo_ref() -> str:
+    """UNSLOTH_ZOO_REF, or "" when unset or not ref-shaped."""
+    ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip()
+    if ref and not _is_valid_git_ref(ref):
+        # Said once: the spec is read again by the staging and label paths.
+        if ref not in _ZOO_REF_WARNED:
+            _ZOO_REF_WARNED.add(ref)
+            _step(_LABEL, f"ignoring malformed UNSLOTH_ZOO_REF: {ref!r}", _dim)
+        return ""
+    return ref
 
 
 def _unsloth_zoo_ref() -> str:
@@ -6207,17 +6237,65 @@ def _unsloth_zoo_ref() -> str:
     always main, which is what the Docker build pins against and what
     install.sh reads into _ZOO_REF. Unset means main.
     """
-    return os.environ.get("UNSLOTH_ZOO_REF", "").strip() or "main"
+    return _requested_unsloth_zoo_ref() or "main"
+
+
+def _resolve_unsloth_zoo_commit(ref: str) -> str:
+    """The commit `ref` names on unslothai/unsloth-zoo right now, or "".
+
+    Installing a branch name leaves pip fetching whatever the branch points at
+    when it happens to run: nothing records what was installed, two machines
+    running the same command get different code, and there is no name in the log
+    to audit afterwards. Resolving the branch here first pins the very same code
+    to an immutable commit and prints it.
+
+    Returns "" when git is missing, the remote is unreachable or the ref does not
+    exist, because none of those are reasons to fail an install that already
+    works -- the caller falls back to the ref as written, exactly as before.
+    """
+    if _GIT_COMMIT_RE.match(ref):
+        return ref
+    if ref in _ZOO_COMMIT_CACHE:
+        return _ZOO_COMMIT_CACHE[ref]
+    commit = ""
+    git = shutil.which("git")
+    if git:
+        try:
+            # ls-remote exits 0 whether or not a ref matched, so an empty stdout is
+            # "no such ref" and has to be treated like a failure to resolve.
+            result = subprocess.run(
+                [git, "ls-remote", _UNSLOTH_ZOO_GIT_REPO, ref],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                timeout = 60,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode == 0 and result.stdout:
+                first = result.stdout.decode(errors = "replace").split("\n", 1)[0].split()
+                if first and _GIT_COMMIT_RE.match(first[0]):
+                    commit = first[0]
+        except (OSError, subprocess.SubprocessError):
+            commit = ""
+    _ZOO_COMMIT_CACHE[ref] = commit
+    return commit
 
 
 def _unsloth_zoo_git_spec() -> str:
     """The pip requirement string for the unsloth-zoo overlay.
 
-    An unset UNSLOTH_ZOO_REF leaves the URL bare rather than appending @main: a
-    bare git URL already clones the default branch, so the default install is
-    byte for byte the one every caller and the staging path already expect.
+    Pinned to the commit the requested ref resolves to, so the install is
+    reproducible and auditable rather than "whatever the branch holds at fetch
+    time". The code installed is the same code either way: the pin names the tip
+    the bare URL would have fetched.
+
+    When the commit cannot be resolved the URL is left as it was before -- bare
+    for an unset UNSLOTH_ZOO_REF, since a bare git URL already clones the default
+    branch, and every caller and the staging path expect that byte for byte.
     """
-    ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip()
+    ref = _requested_unsloth_zoo_ref()
+    commit = _resolve_unsloth_zoo_commit(ref or "main")
+    if commit:
+        return f"{_UNSLOTH_ZOO_GIT_URL}@{commit}"
     return _UNSLOTH_ZOO_GIT_URL + ("@" + ref if ref else "")
 
 
@@ -6240,9 +6318,15 @@ def _overlay_local_core_package(
         args = ("-e", local_repo)
     elif canonical == "unsloth-zoo":
         zoo_ref = _unsloth_zoo_ref()
+        spec = _unsloth_zoo_git_spec()
+        # Name the commit actually being installed, so the log says what was fetched
+        # rather than only which branch it came from.
+        commit = spec.rpartition("@")[2]
+        if _GIT_COMMIT_RE.match(commit) and commit != zoo_ref:
+            zoo_ref = f"{zoo_ref} ({commit[:12]})"
         step_label = f"overlaying unsloth-zoo from git {zoo_ref}"
         install_label = f"Overlaying unsloth-zoo from git {zoo_ref}"
-        args = ("--force-reinstall", _unsloth_zoo_git_spec())
+        args = ("--force-reinstall", spec)
     else:
         return False
     _step(_LABEL, step_label)

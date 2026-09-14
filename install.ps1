@@ -2410,6 +2410,35 @@ exit 1
         return $false
     }
 
+    # The --local overlay installs unsloth-zoo straight from git, which on a bare URL is
+    # "whatever the default branch holds at fetch time": nothing records what was
+    # installed and two machines running the same command can get different code.
+    # Resolving the branch to the commit it points at installs the identical code, but
+    # pins and names it. No git or no network keeps the bare URL, so an install that
+    # works today still works -- this buys auditability, it does not gate the install.
+    $script:ZooGitSpec = $null
+    $script:ZooGitLabel = $null
+    function Resolve-UnslothZooGitSpec {
+        if ($script:ZooGitSpec) { return }   # resolved once per run: the three call sites must agree
+        $zooUrl = 'unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo'
+        $script:ZooGitSpec = $zooUrl
+        $script:ZooGitLabel = 'main'
+        try {
+            $git = Get-Command git -ErrorAction SilentlyContinue
+            if (-not $git) { return }
+            # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
+            $lines = @(& $git.Source ls-remote https://github.com/unslothai/unsloth-zoo main 2>$null)
+            if ($lines.Count -eq 0) { return }
+            $sha = ("$($lines[0])".Trim() -split '\s+')[0]
+            if ($sha -match '^[0-9a-f]{40}$') {
+                $script:ZooGitSpec = "$zooUrl@$sha"
+                $script:ZooGitLabel = "main ($($sha.Substring(0, 12)))"
+            }
+        } catch {
+            # unreachable remote, killed git, anything else: keep the bare URL
+        }
+    }
+
     # Print guidance; returns the failure reason as its only pipeline output, matching
     # Write-PathAccessDenied. Never suggests turning a security policy off: the fix is
     # for whoever owns the policy, and Unsloth already stopped needing the blocked file.
@@ -6422,8 +6451,9 @@ exit 0
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
-            substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            Resolve-UnslothZooGitSpec
+            substep "overlaying unsloth-zoo from git $($script:ZooGitLabel)..."
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git $($script:ZooGitLabel))" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo $script:ZooGitSpec }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -6633,8 +6663,9 @@ exit 0
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
-            substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            Resolve-UnslothZooGitSpec
+            substep "overlaying unsloth-zoo from git $($script:ZooGitLabel)..."
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git $($script:ZooGitLabel))" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo $script:ZooGitSpec }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -6656,8 +6687,9 @@ exit 0
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
-            substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            Resolve-UnslothZooGitSpec
+            substep "overlaying unsloth-zoo from git $($script:ZooGitLabel)..."
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git $($script:ZooGitLabel))" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo $script:ZooGitSpec }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)

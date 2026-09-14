@@ -3016,9 +3016,42 @@ case "$0" in
         [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
 esac
 
-# Honor UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker publish workflow forwards one ref to both builds). Unset means main.
-_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
-_ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_REF}"
+# Sets _ZOO_REF / _ZOO_GIT_SPEC / _ZOO_REF_LABEL for the --local unsloth-zoo overlay.
+# Honors UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker publish
+# workflow forwards one ref to both builds); unset means main. The branch is then pinned
+# to the commit it points at right now, the same way docker/build.sh resolves its refs:
+# installing a branch name leaves pip fetching whatever it holds at fetch time, with
+# nothing recording what was installed and no name to reproduce or audit it by. The code
+# fetched is identical either way -- the pin names the tip the bare ref would have given.
+# Unresolvable (no git, offline, gone ref) falls back to the ref as written: this buys
+# auditability, it is not a gate on the install.
+_resolve_zoo_git_spec() {
+    _ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
+    # The ref is pasted into a pip requirement, so it is only ever a branch, tag or
+    # commit name; anything else cannot resolve anyway and is dropped rather than
+    # handed to uv.
+    case "$_ZOO_REF" in
+        -*|*..*|*[!A-Za-z0-9._/-]*)
+            _ZOO_REF="main" ;;
+    esac
+    _ZOO_PIN=""
+    if [ "$STUDIO_LOCAL_INSTALL" = true ] && command -v git >/dev/null 2>&1; then
+        # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
+        _ZOO_LS="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$_ZOO_REF" 2>/dev/null | head -n1 | cut -f1 || true)"
+        case "$_ZOO_LS" in
+            *[!0-9a-f]*) ;;
+            ????????????????????????????????????????) _ZOO_PIN="$_ZOO_LS" ;;
+        esac
+    fi
+    _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_PIN:-$_ZOO_REF}"
+    # What the progress lines show: the branch plus the commit it was pinned to.
+    if [ -n "$_ZOO_PIN" ]; then
+        _ZOO_REF_LABEL="$_ZOO_REF ($(printf '%.12s' "$_ZOO_PIN"))"
+    else
+        _ZOO_REF_LABEL="$_ZOO_REF"
+    fi
+}
+_resolve_zoo_git_spec
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
@@ -4906,8 +4939,8 @@ if [ "$_MIGRATED" = true ]; then
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
-        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
+        substep "overlaying unsloth-zoo from git ${_ZOO_REF_LABEL}..."
+        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF_LABEL})" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "$_ZOO_GIT_SPEC"
     fi
@@ -5103,8 +5136,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-            substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
-            run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
+            substep "overlaying unsloth-zoo from git ${_ZOO_REF_LABEL}..."
+            run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF_LABEL})" uv pip install --python "$_VENV_PY" \
                 --no-deps --reinstall-package unsloth-zoo \
                 "$_ZOO_GIT_SPEC"
         fi
@@ -5114,8 +5147,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.3"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
-        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
+        substep "overlaying unsloth-zoo from git ${_ZOO_REF_LABEL}..."
+        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF_LABEL})" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "$_ZOO_GIT_SPEC"
     else
@@ -5145,8 +5178,8 @@ else
         run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.3" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
-        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
+        substep "overlaying unsloth-zoo from git ${_ZOO_REF_LABEL}..."
+        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF_LABEL})" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "$_ZOO_GIT_SPEC"
     else
