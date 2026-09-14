@@ -1791,3 +1791,33 @@ test("a runtime_error resident does not claim its draft depth is the default", (
     );
   }
 });
+
+/**
+ * Auto tensor-parallel now reports a split (unslothai/unsloth#10884): the backend emits
+ * one whenever the planner sizes the load itself, and the /status echo carries it. The
+ * store never holds a split in auto mode -- applyInferenceStatusToStore nulls it unless
+ * the mode is manual -- so comparing the two sides here compares a cleared field against
+ * a server that is legitimately running a ratio, and declines to adopt a resident model
+ * that is exactly what was asked for. The split is a manual-mode opinion; in auto it is
+ * the planner's business.
+ */
+test("an auto tensor-parallel server that reports a split still adopts", () => {
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
+      { ...BLANK, tensorParallel: true },
+    ),
+    true,
+  );
+});
+
+test("a remembered manual split the resident load does not run is still a reload", () => {
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "manual", tensor_split: [0.5, 0.5] },
+      { ...BLANK, gpuMemoryMode: "manual" as const, gpuLayers: 99 },
+      { ...STANDING, splitRatio: [0.75, 0.25] },
+    ),
+    false,
+  );
+});
