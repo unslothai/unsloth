@@ -1361,9 +1361,9 @@ class TestCspHfEndpoints:
         LAN client is on the backend's network and still gets the real value."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         tunneled = TestClient(main_module.app, client = ("127.0.0.1", 40000))
-        seen = tunneled.get(
-            "/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"}
-        ).json()["hf_endpoint"]
+        seen = tunneled.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"}).json()[
+            "hf_endpoint"
+        ]
         assert seen == remote_sees
         lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint

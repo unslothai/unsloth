@@ -963,8 +963,6 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
-
-
 def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
     style_src = "style-src 'self' 'unsafe-inline'"
