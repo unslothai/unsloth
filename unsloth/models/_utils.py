@@ -2078,6 +2078,14 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "npu":
+    # Named rather than left to the else below, which would reach the same 2.4-only API
+    # without saying why it failed on a torch_npu built against 2.2 or 2.3.
+    if Version(torch_version) < Version("2.4.0"):
+        raise RuntimeError("torch.npu currently only supports torch.version >= 2.4.0")
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 else:
     # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)

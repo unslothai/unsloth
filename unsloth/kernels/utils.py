@@ -42,6 +42,12 @@ from unsloth_zoo.utils import Version
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
 
+# torch.amp.custom_fwd(device_type=...) only exists from 2.4, and the npu arm below is not
+# version-gated the way the cuda one is. Say so here rather than let it surface as an
+# AttributeError mid-import on a torch_npu built against 2.2 or 2.3.
+if DEVICE_TYPE == "npu" and Version(torch.__version__) < Version("2.4.0"):
+    raise RuntimeError("Ascend NPU currently supports unsloth with torch.version >= 2.4.0")
+
 if Version(torch.__version__) < Version("2.4.0"):
     torch_amp_custom_fwd = torch.cuda.amp.custom_fwd
     torch_amp_custom_bwd = torch.cuda.amp.custom_bwd
