@@ -2583,9 +2583,7 @@ def test_late_upload_after_unretire_is_the_live_projects(rag_home, monkeypatch):
     replacement = rag_home / "before-unretire"
     replacement.mkdir()
     with pytest.raises(ValueError, match = "no longer exists"):
-        folder_sync.create_folder(
-            scope_type = "project", scope_id = project_id, path = str(replacement)
-        )
+        folder_sync.create_folder(scope_type = "project", scope_id = project_id, path = str(replacement))
 
     studio_db.upsert_chat_project(
         {
