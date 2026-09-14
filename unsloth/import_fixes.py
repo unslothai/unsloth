@@ -1412,13 +1412,16 @@ def fix_unsloth_zoo_fused_ce_nan():
         return
 
     cls = getattr(ce, "UnslothFusedLoss", None)
-    if cls is None: return
-    if getattr(cls, "_unsloth_fused_ce_nan_patched", False): return
+    if cls is None:
+        return
+    if getattr(cls, "_unsloth_fused_ce_nan_patched", False):
+        return
 
     # Read the descriptor off __dict__ so the staticmethod wrapper is visible and can
     # be restored in the same form.
     current = cls.__dict__.get("forward")
-    if current is None: return
+    if current is None:
+        return
     original = getattr(current, "__func__", current)
 
     # Structural detection, not a version compare: the PR is not in a numbered release
@@ -1444,16 +1447,16 @@ def fix_unsloth_zoo_fused_ce_nan():
             if n_items is not None:
                 return original(*args, **kwargs)
 
-            ctx            = arguments["ctx"]
-            hidden_states  = arguments["hidden_states"]
+            ctx = arguments["ctx"]
+            hidden_states = arguments["hidden_states"]
             lm_head_weight = arguments["lm_head_weight"]
-            lm_head_bias   = arguments.get("lm_head_bias")
-            labels         = arguments["labels"]
-            mask           = arguments.get("mask")
-            scaling        = arguments.get("scaling")
-            shift_labels   = arguments.get("shift_labels", True)
-            overwrite      = arguments.get("overwrite", False)
-            extra_kwargs   = arguments.get("extra_kwargs") or {}
+            lm_head_bias = arguments.get("lm_head_bias")
+            labels = arguments["labels"]
+            mask = arguments.get("mask")
+            scaling = arguments.get("scaling")
+            shift_labels = arguments.get("shift_labels", True)
+            overwrite = arguments.get("overwrite", False)
+            extra_kwargs = arguments.get("extra_kwargs") or {}
 
             ignore_index = int(extra_kwargs.get("ignore_index", -100))
             device = lm_head_weight.device
@@ -1478,11 +1481,18 @@ def fix_unsloth_zoo_fused_ce_nan():
             # original's backward contract exactly -- three saved tensors and
             # ctx.scaling -- or backward fails or returns the wrong arity.
             grad_inputs = hidden_states if overwrite else torch.zeros_like(hidden_states)
-            if overwrite: grad_inputs.zero_()
-            grad_lm_head = torch.zeros_like(lm_head_weight) \
-                if (lm_head_weight is not None and lm_head_weight.requires_grad) else None
-            grad_lm_head_bias = torch.zeros_like(lm_head_bias) \
-                if (lm_head_bias is not None and lm_head_bias.requires_grad) else None
+            if overwrite:
+                grad_inputs.zero_()
+            grad_lm_head = (
+                torch.zeros_like(lm_head_weight)
+                if (lm_head_weight is not None and lm_head_weight.requires_grad)
+                else None
+            )
+            grad_lm_head_bias = (
+                torch.zeros_like(lm_head_bias)
+                if (lm_head_bias is not None and lm_head_bias.requires_grad)
+                else None
+            )
             ctx.save_for_backward(grad_inputs, grad_lm_head, grad_lm_head_bias)
             ctx.scaling = scaling
             return torch.zeros(1, device = device)[0]
