@@ -1,20 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Standalone speech-to-text (STT) sidecar for dictation.
+"""Standalone speech-to-text (STT) sidecar for dictation.
 
-Loads a Whisper model (via Transformers) in a spawn child of its own, separate
-from the chat model's inference subprocess, so dictation works with any chat
-model without evicting it. Curated defaults plus any Transformers-compatible
-Whisper repo; weights come through Unsloth's Model Hub and stay warm briefly
-between dictations. CUDA runs float16; MPS and CPU run float32.
+Loads a Whisper model (via Transformers) in a spawn child of its own, separate from the chat model's
+inference subprocess, so dictation works with any chat model without evicting it. Curated defaults
+plus any Transformers-compatible Whisper repo; weights come through Unsloth's Model Hub and stay
+warm briefly between dictations. CUDA runs float16; MPS and CPU run float32.
 
-Everything except the model itself stays here: device choice, the Hub cache,
-audio decoding, windowing and the idle timer. Only the load and the generate
-happen in core/inference/stt_transformers_worker.py, because an accelerator
-context is never returned while the process holding it lives and the backend
-must not be the process that takes one.
+Everything except the model itself stays here: device choice, the Hub cache, audio decoding,
+windowing and the idle timer. Only the load and the generate happen in
+core/inference/stt_transformers_worker.py, because an accelerator context is never returned while
+the process holding it lives and the backend must not be the process that takes one.
 """
 
 from __future__ import annotations
@@ -40,9 +37,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# stable API/UI id -> Hub repository; a request may instead pass a validated `owner/model` id
-# Multilingual Whisper defaults: stable API/UI id -> Hub repository. A request may instead pass a validated Hugging Face
-# `owner/model` id.
+# Multilingual Whisper defaults: stable API/UI id -> Hub repository. A request may instead pass a validated Hugging
+# Face `owner/model` id.
 STT_MODELS: dict[str, str] = {
     "tiny": "unsloth/whisper-tiny",
     "base": "unsloth/whisper-base",
@@ -255,7 +251,6 @@ _WHISPER_LANGUAGE_ALIASES = {
 
 
 def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
-    """Convert a BCP-47 locale into the short code Whisper expects."""
     if not language:
         return None
     normalized = language.strip().replace("_", "-").lower()
@@ -275,7 +270,6 @@ def _known_whisper_languages() -> Optional[frozenset[str]]:
 
 
 def ensure_stt_available() -> None:
-    """Raise when the complete local Whisper backend cannot be imported."""
     try:
         import av  # noqa: F401
         import torch  # noqa: F401
@@ -288,7 +282,6 @@ def ensure_stt_available() -> None:
 
 
 def is_available() -> bool:
-    """True when the complete local Whisper backend can be imported."""
     try:
         ensure_stt_available()
     except SttUnavailableError:
@@ -312,7 +305,6 @@ def resolve_model_id(model: Optional[str]) -> str:
 
 
 def resolve_model_repo(model_id: str) -> str:
-    """Return the Hub repository for a curated or custom model id."""
     resolved = resolve_model_id(model_id)
     return STT_MODELS.get(resolved, resolved)
 
@@ -545,10 +537,9 @@ def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
         shards = set(weight_map.values())
         if not all(isinstance(shard, str) and shard in siblings for shard in shards):
             raise SttModelCompatibilityError(f"Checkpoint index '{index_name}' has missing shards.")
-        # The index JSON is attacker-controlled and a safetensors index can name.bin shards The index JSON is
-        # attacker-controlled: a safetensors index can name pytorch_model-*.bin shards, which Transformers still loads
-        # through torch.load (pickle) since it dispatches per shard by file extension. Require every shard to be
-        # safetensors so no pickle file is selected.
+        # The index JSON is attacker-controlled: a safetensors index can name pytorch_model-*.bin shards, which
+        # Transformers still loads through torch.load (pickle) since it dispatches per shard by file extension.
+        # Require every shard to be safetensors so no pickle file is selected.
         if not all(shard.endswith(".safetensors") for shard in shards):
             raise SttModelCompatibilityError(
                 f"Checkpoint index '{index_name}' references non-safetensors shards."
@@ -588,8 +579,6 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
         raise SttModelCompatibilityError(
             f"Could not resolve an immutable revision for STT model '{model_id}'."
         )
-    # the download pins to the validated commit so the repo cannot be swapped between validation and snapshot_download
-    # (TOCTOU)
     # The commit that was validated; the download pins to it so the repo cannot be swapped between validation and
     # snapshot_download (TOCTOU).
     return {"model": model_id, "repo": repo, "revision": revision}
@@ -623,7 +612,6 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
     # repo shipping only pickle weights re-resolves and fails closed in _select_snapshot_files).
     index = snapshot / _STT_SAFETENSORS_INDEX
     if index.is_file():
-        # every shard must exist and be safetensors, since a safe index naming .bin shards would still pickle-load them
         # Sharded safetensors checkpoint: every shard must exist and be safetensors (a safe index naming .bin shards
         # would still pickle-load them, matching the _select_snapshot_files guard).
         weight_map = _read_json_object(index).get("weight_map")
@@ -635,7 +623,6 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
         has_weights = all((snapshot / shard).is_file() for shard in shards)
     else:
         has_weights = (snapshot / _STT_SAFETENSORS_WEIGHTS).is_file()
-    # WhisperProcessor needs either the fast tokenizer.json or the slow vocab.json + merges.txt pair
     # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or the slow vocab.json + merges.txt pair.
     has_tokenizer = (snapshot / "tokenizer.json").is_file() or (
         (snapshot / "vocab.json").is_file() and (snapshot / "merges.txt").is_file()
@@ -649,7 +636,6 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
 
 
 def is_model_downloaded(model: Optional[str]) -> bool:
-    """True when a usable Whisper snapshot exists in the local HF cache."""
     try:
         return _find_complete_cached_snapshot(model) is not None
     except Exception:
@@ -686,7 +672,6 @@ class _SnapshotDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # "model" goes None once the worker thread stops
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
                 # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
                 # download.
@@ -1044,17 +1029,15 @@ def _engine_survived_kill(engine) -> bool:
 def _close_engine(engine) -> bool:
     """End the worker behind an engine handle, if it has one.
 
-    Ending the worker is what returns its accelerator context; dropping the
-    handle and emptying the cache cannot. A plain object (tests, or a future
-    in-process engine) has no close and needs none.
+    Ending the worker is what returns its accelerator context; dropping the handle and emptying the
+    cache cannot. A plain object (tests, or a future in-process engine) has no close and needs none.
 
-    False when the engine says so itself, which WhisperWorker does for a child
-    that outlived terminate and kill and is therefore still holding the memory
-    this call was made to release, and False when close() raises out of a
-    process operation: nothing was confirmed dead, so the handle has to be kept
-    rather than the memory advertised as free. A close that raised over a child
-    already gone still counts as released, so bookkeeping that failed after the
-    death cannot wedge every later load.
+    False when the engine says so itself, which WhisperWorker does for a child that outlived
+    terminate and kill and is therefore still holding the memory this call was made to release, and
+    False when close() raises out of a process operation: nothing was confirmed dead, so the handle
+    has to be kept rather than the memory advertised as free. A close that raised over a child
+    already gone still counts as released, so bookkeeping that failed after the death cannot wedge
+    every later load.
     """
     close = getattr(engine, "close", None)
     if close is None:
@@ -1180,7 +1163,6 @@ class WhisperSttSidecar:
 
     @property
     def device(self) -> Optional[str]:
-        # torch's ROCm build keeps the "cuda" device name for HIP
         # Reported, so name the backend a user recognises. Torch's ROCm build keeps the "cuda" device name for HIP,
         # which made an AMD box report "Transformers - cuda".
         return _reported_device(self._device)
@@ -1272,20 +1254,16 @@ class WhisperSttSidecar:
     def _release_engine_locked(self) -> bool:
         """Release the resident engine. False if its child outlived the kill.
 
-        Such a child still holds its accelerator memory, so forgetting it here
-        would report the model unloaded and let training be admitted against
-        memory that is not free. Keep it resident instead and rearm the idle
-        timer, so the release is tried again rather than stranded.
+        Such a child still holds its accelerator memory, so forgetting it here would report the
+        model unloaded and let training be admitted against memory that is not free. Keep it
+        resident instead and rearm the idle timer, so the release is tried again rather than
+        stranded.
 
-        The fields are cleared only once the worker is confirmed dead. close()
-        can take the full shutdown wait, and loaded_model reads the fields
-        without this lock, so clearing them first would report nothing resident
-        for that whole window.
-
-        A worker kept this way is flagged a survivor: it was asked to shut down,
-        terminated and killed, so it is held for its memory and not for its
-        answers, and a later dictation must load one of its own rather than be
-        handed this one and wait out the command timeout on it.
+        The fields are cleared only once the worker is confirmed dead: close() can take the full
+        shutdown wait and loaded_model reads the fields without this lock, so clearing them first
+        would report nothing resident for that whole window. A worker kept this way is flagged a
+        survivor, held for its memory and not for its answers, so a later dictation loads one of its
+        own rather than waiting out the command timeout on it.
         """
         self._cancel_idle_unload_locked()
         engine = self._engine
@@ -1313,15 +1291,12 @@ class WhisperSttSidecar:
     ) -> None:
         """Hold an engine whose child outlived its close, so it stays accounted.
 
-        Its device is the one the child reports, which after a CPU retry is not
-        the one this load started on; a child that never finished its load
-        reports none, so the device the attempt was made on stands in. The idle
-        timer is rearmed, so the release is tried again rather than the survivor
-        being stranded here.
-
-        Held for its memory, not for its answers: it is flagged so a later
-        dictation loads a worker of its own instead of being handed one that is
-        wedged, which would cost the caller the whole command timeout.
+        Its device is the one the child reports, which after a CPU retry is not the one this load
+        started on; a child that never finished its load reports none, so the device the attempt was
+        made on stands in. The idle timer is rearmed so the release is tried again. Held for its
+        memory, not its answers: it is flagged so a later dictation loads a worker of its own
+        instead of being handed one that is wedged, which would cost the caller the whole command
+        timeout.
         """
         self._engine = engine
         self._model_id = model_id
@@ -1337,12 +1312,11 @@ class WhisperSttSidecar:
     def _is_survivor_locked(self) -> bool:
         """Whether the resident engine is held for its memory, not its answers.
 
-        Folds in the flag the handle raised on itself: a command that was
-        cancelled or timed out closes the worker from inside the handle, so
-        close()'s False never reaches the sidecar and this is the only way it
-        learns the child outlived both signals. Handing such a worker to the
-        next dictation would spend the whole command timeout on it under the
-        model lock; refusing lets the idle timer retry the kill instead.
+        Folds in the flag the handle raised on itself: a command that was cancelled or timed out
+        closes the worker from inside the handle, so close()'s False never reaches the sidecar and
+        this is the only way it learns the child outlived both signals. Handing such a worker to the
+        next dictation would spend the whole command timeout on it under the model lock; refusing
+        lets the idle timer retry the kill instead.
         """
         if self._survivor:
             return True
@@ -1360,22 +1334,18 @@ class WhisperSttSidecar:
     def _build_model(self, snapshot_path: str, device: str, dtype, cancel_event: threading.Event):
         """Start a worker process holding this model and return its handle.
 
-        Out of process because an accelerator context is never given back while
-        the process holding it lives, so an in-process load made the backend
-        permanently heavier even after unload.
+        Out of process because an accelerator context is never given back while the process holding
+        it lives, so an in-process load made the backend permanently heavier even after unload.
 
-        A host that cannot create a child at all (a sandbox, or a frozen POSIX
-        build) falls back to loading here instead, on the CPU: this move may
-        take work out of the backend, never take dictation away from someone
-        who had it. The fallback waits for the CPU attempt, so a spawn failure
-        on an accelerator still goes through the caller's own CPU retry rather
-        than downgrading the user here.
+        A host that cannot create a child at all (a sandbox, or a frozen POSIX build) falls back to
+        loading here instead, on the CPU: this move may take work out of the backend, never take
+        dictation away from someone who had it. The fallback waits for the CPU attempt, so a spawn
+        failure on an accelerator still goes through the caller's own CPU retry.
 
-        A child that outlived start()'s own kill is left in ``_start_survivor``
-        for the caller. start() ends its child on every failure, so a handle
-        still reporting a live process is one holding memory that nothing else
-        knows about: dropping it here is what would let this failed load read as
-        nothing resident.
+        A child that outlived start()'s own kill is left in ``_start_survivor`` for the caller.
+        start() ends its child on every failure, so a handle still reporting a live process is one
+        holding memory that nothing else knows about: dropping it here is what would let this failed
+        load read as nothing resident.
         """
         from core.inference.stt_transformers_worker import (
             InProcessWhisperEngine,
@@ -1409,21 +1379,18 @@ class WhisperSttSidecar:
         model_id: str,
         use_resident: bool = True,
     ) -> _CachedSttSnapshot:
-        """Validate the local snapshot before decode or model replacement.
+        """Validate the local snapshot before decode or model replacement. Returns the checkpoint's
+        multilingual flag when local metadata provides it; curated defaults are known multilingual.
 
-        Returns the checkpoint's multilingual flag when local metadata provides
-        it. Curated defaults are known multilingual.
+        ``use_resident = False`` skips the resident-model shortcut and resolves the path on disk.
+        The shortcut answers from the loaded model and returns no path, which is right when that
+        model is about to be reused and wrong when the caller is replacing it with one on another
+        device: the same model id is resident, but the load still needs somewhere to read the
+        weights from.
 
-        ``use_resident = False`` skips the resident-model shortcut and resolves the
-        path on disk. The shortcut answers from the loaded model and returns no
-        path, which is right when that model is about to be reused and wrong when
-        the caller is replacing it with one on another device: the same model id is
-        resident, but the load still needs somewhere to read the weights from.
-
-        A survivor is held for its memory alone, so it does not answer for the
-        model the way a resident one does: the snapshot is looked up on disk, or
-        the load it precedes would be turned away as a checkpoint that is not
-        downloaded.
+        A survivor is held for its memory alone, so it does not answer for the model the way a
+        resident one does: the snapshot is looked up on disk, or the load it precedes would be
+        turned away as a checkpoint that is not downloaded.
         """
         model_id = resolve_model_id(model_id)
         with self._lock:

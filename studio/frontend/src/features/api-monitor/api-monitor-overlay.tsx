@@ -245,19 +245,17 @@ export function ApiMonitorOverlay(): ReactElement | null {
   // that it stays where it was put, even if that is on top of the monitor.
   const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
   const [placedByUser, setPlacedByUser] = useState(false);
-  // Bumped when the panel has moved without its anchor changing: the entry
-  // animation is a transform, and the box the stack keeps clear of has to be
-  // the one on screen.
+  // Bumped when the panel has moved without its anchor changing: the entry animation is a
+  // transform, and the box the stack keeps clear of has to be the one on screen.
   const [settledAt, setSettledAt] = useState(0);
   const { anchor, covered, place } = usePanelAnchor(
     panelElement,
     placedByUser,
     settledAt,
   );
-  // The drag offset, owned here rather than left to motion, so it can be folded
-  // back into the anchor on release. Left as a transform it would be applied on
-  // top of every later clamp, and the published box would stay at the corner
-  // the panel was dragged away from.
+  // The drag offset, owned here rather than left to motion, so it can be folded back into the
+  // anchor on release. Left as a transform it would be applied on top of every later clamp, and the
+  // published box would stay at the corner the panel was dragged away from.
   const dragX = useMotionValue(0);
   const dragY = useMotionValue(0);
 
@@ -292,10 +290,9 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const visible = isOpen && !onFullPage;
   const serverStatus = data?.status ?? "idle";
 
-  // A panel that has just opened is the one the user is being shown, so it
-  // comes to the front. Touching either panel afterwards brings that one
-  // forward instead, which is the only way out of a resource monitor resized
-  // over the whole viewport.
+  // A panel that has just opened is the one the user is being shown, so it comes to the front.
+  // Touching either panel afterwards brings that one forward instead, which is the only way out of
+  // a resource monitor resized over the whole viewport.
   useEffect(() => {
     if (visible) {
       raisePanel("api-monitor");

@@ -29,6 +29,7 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
+  isServedByLlamaCpp,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -40,6 +41,7 @@ import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/ll
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
+  IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
@@ -261,6 +263,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -304,6 +307,12 @@ import {
   useResearchRunStore,
   watchResearchRun,
 } from "../stores/research-run-store";
+import {
+  documentCitationToSource,
+  isSafeNavigableSourceUrl,
+  parseSourcesFromResult,
+} from "../utils/document-citation-source";
+import { mergeGoogleNativeParts } from "../utils/google-native-parts";
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
@@ -665,118 +674,6 @@ async function updateStoredChatThreadEventually(
     if (updated) return;
     await wait(50);
   }
-}
-
-/** Return `raw` when it is a safe http(s) URL, else "": rejects CR/LF and javascript:/data:/
- *  vbscript: so provider strings cannot land in an <a href>. */
-function isSafeNavigableSourceUrl(raw: unknown): string {
-  if (typeof raw !== "string") return "";
-  const value = raw.trim();
-  if (!value || /[\r\n]/.test(value)) return "";
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return value;
-    }
-  } catch {
-  }
-  return "";
-}
-
-/** Convert an Anthropic document citation dict into a Sources-panel source. */
-function documentCitationToSource(
-  cit: Record<string, unknown>,
-  fallbackIdx: number,
-): {
-  type: "source";
-  sourceType: "url";
-  id: string;
-  url: string;
-  title: string;
-  metadata?: { description: string };
-} | null {
-  const source = typeof cit.source === "string" && cit.source ? cit.source : "";
-  const docTitle =
-    (typeof cit.document_title === "string" && cit.document_title) ||
-    (typeof cit.title === "string" && cit.title) ||
-    "";
-  const docIndex =
-    typeof cit.document_index === "number" ? cit.document_index : undefined;
-  // search_result_location `source` can be a free-form id or a hostile scheme; fall back to a
-  // doc anchor unless it is real http(s).
-  const url =
-    isSafeNavigableSourceUrl(source) ||
-    `#anthropic-doc-${docIndex ?? fallbackIdx}`;
-  const title = docTitle || source || `Document ${fallbackIdx + 1}`;
-  const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
-  const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
-  // Anthropic numbers inline [N] per citation, so fold citation type and position into the id.
-  const citationType = typeof cit.type === "string" ? String(cit.type) : "";
-  const positionParts = [
-    cit.search_result_index,
-    cit.start_char_index,
-    cit.end_char_index,
-    cit.start_page_number,
-    cit.end_page_number,
-    cit.start_block_index,
-    cit.end_block_index,
-  ]
-    .filter((v) => typeof v === "number")
-    .map((v) => String(v))
-    .join(":");
-  const idAnchor = positionParts
-    ? `${citationType}:${positionParts}`
-    : `${citationType}:${fallbackIdx}`;
-  const id = `${url}#${idAnchor}`;
-  return {
-    type: "source" as const,
-    sourceType: "url" as const,
-    id,
-    url,
-    title,
-    ...(description ? { metadata: { description } } : {}),
-  };
-}
-
-/** Parse "Title: ...\nURL: ...\nSnippet: ..." blocks into source content parts. */
-function parseSourcesFromResult(raw: string): {
-  type: "source";
-  sourceType: "url";
-  id: string;
-  url: string;
-  title: string;
-  metadata?: { description: string };
-}[] {
-  if (!raw) return [];
-  const blocks = raw.split(/\n---\n/).filter(Boolean);
-  const sources: {
-    type: "source";
-    sourceType: "url";
-    id: string;
-    url: string;
-    title: string;
-    metadata?: { description: string };
-  }[] = [];
-  for (const block of blocks) {
-    const titleMatch = block.match(/Title:\s*(.+)/);
-    const urlMatch = block.match(/URL:\s*(.+)/);
-    const snippetMatch = block.match(/Snippet:\s*(.+)/);
-    if (titleMatch && urlMatch) {
-      // Provider output is attacker-controllable: a non-http(s) URL must not reach the Sources panel <a href>.
-      const url = isSafeNavigableSourceUrl(urlMatch[1]);
-      if (!url) continue;
-      const snippet = snippetMatch?.[1]?.trim();
-      sources.push({
-        type: "source" as const,
-        sourceType: "url" as const,
-        id: url,
-        url,
-        title: titleMatch[1].trim(),
-        ...(snippet ? { metadata: { description: snippet } } : {}),
-      });
-    }
-  }
-  return sources;
 }
 
 function estimateTokenCount(text: string): number | undefined {
@@ -1435,7 +1332,10 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return serializeAssistantReplayMessages(message, includeReasoningContent);
+    return fillStoppedAssistantReplay(
+      message,
+      serializeAssistantReplayMessages(message, includeReasoningContent),
+    );
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1472,6 +1372,46 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
     message.status?.type === "incomplete" ||
     readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
   );
+}
+
+/** #10428: an empty Stop loses its prompt to the prune. Only `cancelled` in `status` is deliberate. */
+function stoppedAssistantReplayText(message: RunMessage): string {
+  const info = readIncompleteInfo(
+    (message as { metadata?: unknown }).metadata,
+  );
+  const status = message.status;
+  const fromStatus: IncompleteReason =
+    status?.type !== "incomplete" || status.reason === "cancelled"
+      ? "cancelled"
+      : status.reason === "length"
+        ? "length"
+        : "interrupted";
+  return incompleteLabel(info?.reason ?? fromStatus);
+}
+
+function fillStoppedAssistantReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  if (!assistantTurnEndedEarly(message)) {
+    return serialized;
+  }
+  if (serialized.length === 0) {
+    // Only a refusal serialises to nothing; filling it puts a stop label back on a dropped turn.
+    return serialized;
+  }
+  const [only, ...rest] = serialized;
+  if (rest.length !== 0 || only?.role !== "assistant") {
+    return serialized;
+  }
+  if (
+    hasReplayContent(only.content) ||
+    only.tool_calls ||
+    only.reasoning_content
+  ) {
+    return serialized;
+  }
+  return [{ ...only, content: stoppedAssistantReplayText(message) }];
 }
 
 /** A Stop before the turn produced anything serialises to a lone empty assistant message,
@@ -2073,7 +2013,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       if (abortSignal?.aborted) {
-        reject(new Error("Aborted"));
+        // Uncaught in the adapter, and a Stop that is not an AbortError files as a failure (#10428).
+        reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
         return;
       }
       if (!useChatRuntimeStore.getState().modelLoading) {
@@ -2175,6 +2116,7 @@ type QueuedResolvedModelRuntime = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   loadedContextLength: number | null;
+  loadedIsGguf: boolean | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2322,6 +2264,7 @@ function queuedResolvedModelFromStore(
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
+    loadedIsGguf: state.loadedIsGguf,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -3906,6 +3849,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
+            loadedIsGguf: loadedContextFields(status).loadedIsGguf,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4137,6 +4081,7 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
                 loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
+                loadedIsGguf: queuedEmptyModelRuntime.loadedIsGguf,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4531,6 +4476,10 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedContextLength
                   : liveRuntime.loadedContextLength,
+              loadedIsGguf:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.loadedIsGguf
+                  : liveRuntime.loadedIsGguf,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -4997,6 +4946,16 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
+      // The same owner the settings panel asks, so the body and the panel cannot disagree
+      // about the model they both describe. A catalog row would: /api/models/list can
+      // replace the row a load minted, and the variant / native path token still classify
+      // a GGUF the backend has not answered for yet.
+      const isGgufForCompaction = isServedByLlamaCpp({
+        loadedIsGguf: runtime.loadedIsGguf,
+        activeGgufVariant: runtime.activeGgufVariant,
+        activeNativePathToken: runtime.activeNativePathToken,
+        checkpoint: params.checkpoint,
+      });
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -5228,6 +5187,9 @@ export function createOpenAIStreamAdapter(
         [key: string]: unknown;
       };
       type PositionedToolCallPart = ToolCallMessagePart & {
+        backendToolCallId?: string;
+        generationToolCallId?: string;
+        toolApprovalId?: string;
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
@@ -5983,8 +5945,9 @@ export function createOpenAIStreamAdapter(
                     // Self-hosted models often write a call as text rather than emitting structured tool_calls, so
                     // the external loop heals like the local one; omitting this left the process default.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    // Keep the external server-side loop under the same user setting as the local paths.
-                    nudge_tool_calls: runtime.nudgeToolCalls,
+                    // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
+                    // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
+                    nudge_tool_calls: false,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
@@ -6124,7 +6087,7 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context bar and tok/s populate (backend gates it).
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
-              isGguf: activeModel?.isGguf === true,
+              isGguf: isGgufForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
@@ -6317,7 +6280,17 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    if (generationDecision === "durable") return;
+                    // Null when the Stop won the race AND when json() could not parse a 2xx body;
+                    // a bare return settles both "complete" (#10428).
+                    if (generationDecision === "durable") {
+                      if (runSignal.aborted) {
+                        throw runSignal.reason ??
+                          new DOMException("Aborted", "AbortError");
+                      }
+                      throw new Error(
+                        "The server accepted the request without starting a generation run",
+                      );
+                    }
                   } else {
                     generationRunId = generationRun.id;
                     // Normally the same id claimed above; claimed again in case the server echoes a different one.
@@ -6693,6 +6666,15 @@ export function createOpenAIStreamAdapter(
                     toolEvent.arguments_text,
                     toolArgs,
                   );
+                  const toolIdentity = {
+                    backendToolCallId,
+                    ...(generationRunId
+                      ? {
+                          generationToolCallId: `${generationRunId}:${generationSeq}`,
+                        }
+                      : {}),
+                    ...(approvalId ? { toolApprovalId: approvalId } : {}),
+                  };
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6702,6 +6684,7 @@ export function createOpenAIStreamAdapter(
                     ] as PositionedToolCallPart;
                     toolCallParts[idx] = {
                       ...existing,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6714,6 +6697,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts.push({
                       type: "tool-call" as const,
                       toolCallId: id,
+                      ...toolIdentity,
                       toolName: toolEvent.tool_name as string,
                       argsText: toolArgsText,
                       args: toolArgs,
@@ -6777,7 +6761,14 @@ export function createOpenAIStreamAdapter(
                         ? extractSearchImages(rawResult)
                         : { text: rawResult, images: [] as SearchImageEntry[] };
                     const imgMarker = "\n__IMAGES__:";
-                    const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    // Same rule again. The backend keeps this line for the model when the tool is not one that
+                    // emits the envelope, so the card keeps it too, rather than hiding it and fetching a
+                    // sandbox file that was never written.
+                    const imgIdx = IMAGE_SENTINEL_TOOLS.has(
+                      toolCallParts[idx].toolName ?? "",
+                    )
+                      ? rawResult.lastIndexOf(imgMarker)
+                      : -1;
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
                     const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
@@ -6876,86 +6867,12 @@ export function createOpenAIStreamAdapter(
                       typeof toolEvent.arguments === "object"
                         ? (toolEvent.arguments as ToolCallMessagePart["args"])
                         : undefined;
-                    const mergedArgs: ToolCallMessagePart["args"] = {
-                      ...(toolCallParts[idx].args ?? {}),
-                      ...(nextArgs ?? {}),
-                    } as ToolCallMessagePart["args"];
+                    const mergedArgs = mergeGoogleNativeParts(
+                      { ...(toolCallParts[idx].args ?? {}), ...(nextArgs ?? {}) },
+                      toolEvent.google,
+                    ) as ToolCallMessagePart["args"];
                     const overwrittenArgumentKeys =
                       nextArgs !== undefined ? Object.keys(nextArgs) : [];
-                    // Merge tool_end native_part into args.google so the
-                    // outbound translator replays both start (executableCode)
-                    // and end (result / inlineData) on the same turn.
-                    // Concatenate so each part keeps its own thoughtSignature.
-                    const endGoogle = (
-                      toolEvent as { google?: { native_part?: unknown } }
-                    ).google;
-                    if (
-                      endGoogle &&
-                      typeof endGoogle === "object" &&
-                      endGoogle.native_part &&
-                      typeof endGoogle.native_part === "object"
-                    ) {
-                      const argsObj = mergedArgs as Record<string, unknown>;
-                      const existingGoogle = (argsObj.google ?? {}) as Record<
-                        string,
-                        unknown
-                      >;
-                      const existingNative =
-                        (existingGoogle.native_part as Record<
-                          string,
-                          unknown
-                        >) ?? {};
-                      const endNative = endGoogle.native_part as Record<
-                        string,
-                        unknown
-                      >;
-                      // Extract part entries from parts:[...] or a legacy single-object native_part; a legacy
-                      // thoughtSignature always belongs on executableCode.
-                      const collectParts = (
-                        native: Record<string, unknown>,
-                      ): Record<string, unknown>[] => {
-                        if (Array.isArray(native.parts)) {
-                          return (native.parts as unknown[]).filter(
-                            (entry): entry is Record<string, unknown> =>
-                              Boolean(entry) &&
-                              typeof entry === "object" &&
-                              !Array.isArray(entry),
-                          );
-                        }
-                        const out: Record<string, unknown>[] = [];
-                        const legacySig =
-                          typeof native.thoughtSignature === "string"
-                            ? native.thoughtSignature
-                            : typeof native.thought_signature === "string"
-                              ? (native.thought_signature as string)
-                              : null;
-                        for (const key of [
-                          "executableCode",
-                          "codeExecutionResult",
-                          "inlineData",
-                        ] as const) {
-                          const sub = native[key];
-                          if (sub && typeof sub === "object") {
-                            const entry: Record<string, unknown> = {
-                              [key]: sub,
-                            };
-                            if (key === "executableCode" && legacySig) {
-                              entry.thoughtSignature = legacySig;
-                            }
-                            out.push(entry);
-                          }
-                        }
-                        return out;
-                      };
-                      const mergedParts = [
-                        ...collectParts(existingNative),
-                        ...collectParts(endNative),
-                      ];
-                      argsObj.google = {
-                        ...existingGoogle,
-                        native_part: { parts: mergedParts },
-                      };
-                    }
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
@@ -7998,41 +7915,39 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          if (partialContent.length > 0) {
-            const partialTiming = buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(partialText),
-              toolCallParts.length,
-            );
-            yield {
-              content: partialContent,
-              metadata: {
-                timing: partialTiming,
-                custom: {
-                  ...reasoningDurationTracker.metadata(),
-                  contextTruncation,
-                  // Unfinished too, so it also offers Continue -- unless the provider already
-                  // said why the model stopped.
-                  incomplete: {
-                    reason: resolveIncompleteReason(
-                      err instanceof GenerationLengthError
-                        ? ("length" as const)
-                        : err instanceof ChatGenerationTerminalError &&
-                            err.generationStatus === "cancelled"
-                          ? ("cancelled" as const)
-                          : ("interrupted" as const),
-                      contextWindowExceeded,
-                    ),
-                  },
-                  timing: partialTiming,
-                  ...generationCustom(),
+          const partialTiming = buildTiming(
+            streamStartTime,
+            totalChunks,
+            firstTokenTime,
+            Date.now() - streamStartTime,
+            estimateTokenCount(partialText),
+            toolCallParts.length,
+          );
+          yield {
+            content: partialContent,
+            metadata: {
+              timing: partialTiming,
+              custom: {
+                ...reasoningDurationTracker.metadata(),
+                contextTruncation,
+                // Unfinished too, so it also offers Continue -- unless the provider already
+                // said why the model stopped.
+                incomplete: {
+                  reason: resolveIncompleteReason(
+                    err instanceof GenerationLengthError
+                      ? ("length" as const)
+                      : err instanceof ChatGenerationTerminalError &&
+                          err.generationStatus === "cancelled"
+                        ? ("cancelled" as const)
+                        : ("interrupted" as const),
+                    contextWindowExceeded,
+                  ),
                 },
+                timing: partialTiming,
+                ...generationCustom(),
               },
-            };
-          }
+            },
+          };
         }
         throw err;
       } finally {

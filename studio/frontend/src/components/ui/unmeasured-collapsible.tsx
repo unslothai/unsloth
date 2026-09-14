@@ -2,12 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A collapsible that never measures its content.
-//
 // WHY THIS EXISTS, and why swapping the keyframes alone would not have worked.
-//
 // Radix's `CollapsibleContentImpl` runs this on every `open` change (react-collapsible 1.1.12,
 // dist/index.mjs, verbatim shape):
-//
 //     useLayoutEffect(() => {
 //       const node = ref.current;
 //       if (node) {
@@ -19,7 +16,6 @@
 //         ...                                       // write back
 //       }
 //     }, [context.open, present]);
-//
 // It publishes the result as `--radix-collapsible-content-height`, which the
 // `animate-collapsible-down` / `animate-collapsible-up` keyframes consume. The read is
 // UNCONDITIONAL: it does not check whether any stylesheet references the variable. So replacing the
@@ -27,13 +23,11 @@
 // measurement and leaves the measurement itself untouched. The forced layout stays, and with it the
 // full-document relayout that Blink charges for it, because Blink's layout is O(total layout
 // objects) and not O(dirty objects).
-//
 // Hence a local primitive. It keeps Radix's public shape -- `data-state`, `data-disabled`,
 // `aria-expanded`, `aria-controls`, the generated content id, `hidden` when closed, and children
 // unmounted while closed -- and drops only the measurement, because with `0fr -> 1fr` there is
 // nothing left to measure: `1fr` resolves against the content on its own, every frame, including
 // while the content is still streaming in.
-//
 // Two things the grid technique requires, and it silently does not collapse without them:
 //   * the animating child must be `min-height: 0`, or its automatic minimum size floors the row at
 //     the content's height and `0fr` never reaches zero;
