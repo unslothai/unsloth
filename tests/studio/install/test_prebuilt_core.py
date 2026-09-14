@@ -967,6 +967,47 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
     assert len(requests) == 1
 
 
+def test_a_settle_does_not_hold_a_finished_launch_for_the_install_timeout(tmp_path):
+    """The catch-up runs on the FIRST update after an upgrade, for every existing user, and
+    it writes fields whose only effect is to spare the next run some work. A box where
+    another installer is running must not wait five minutes for that: it asks briefly, gives
+    up, logs, and reports the install it already validated."""
+    install_dir = tmp_path / "component"
+    install_dir.mkdir()
+    server = install_dir / "server"
+    server.write_text("", encoding = "utf-8")
+    events = []
+    asked = []
+
+    @contextlib.contextmanager
+    def busy_lock(path, *, timeout = None):
+        asked.append(timeout)
+        raise core.BusyInstallConflict("held elsewhere")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    ops = SimpleNamespace(
+        COMPONENT = "test",
+        existing_install_matches = lambda d, h, s: True,
+        install_lock = busy_lock,
+        install_lock_path = lambda d: d / "lock",
+        kept_install_needs_settling = lambda d: True,
+        settle_kept_install = lambda d: events.append("settled"),
+        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
+        installed_server_path = lambda d, h: server,
+        log = lambda message: events.append(message),
+    )
+    bundle = SimpleNamespace(release_tag = "b1")
+    selection = SimpleNamespace(backend = "cpu")
+    rc = core.install_selected_prebuilt(
+        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+    )
+    assert rc == 0
+    assert "installed" not in events, "a kept install was reinstalled over a busy lock"
+    assert "settled" not in events
+    assert asked == [core.SETTLE_LOCK_TIMEOUT_SECONDS]
+    assert core.SETTLE_LOCK_TIMEOUT_SECONDS < core.INSTALL_LOCK_TIMEOUT_SECONDS
+
+
 def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
     """The pre-lock keep re-checks the install under the lock before settling its marker.
     A concurrent installer that swapped the tree in between makes that re-check fail, and
@@ -982,7 +1023,7 @@ def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
     ops = SimpleNamespace(
         COMPONENT = "test",
         existing_install_matches = lambda d, h, s: next(answers),
-        install_lock = lambda path: contextlib.nullcontext(),
+        install_lock = lambda path, **kwargs: contextlib.nullcontext(),
         install_lock_path = lambda d: d / "lock",
         kept_install_needs_settling = lambda d: True,
         settle_kept_install = lambda d: events.append("settled"),

@@ -2950,8 +2950,8 @@ def test_the_whisper_backfill_is_written_under_the_install_lock(tmp_path, monkey
     real_lock = M.install_lock
 
     @contextlib.contextmanager
-    def counting_lock(path):
-        with real_lock(path):
+    def counting_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
             held["depth"] += 1
             try:
                 yield

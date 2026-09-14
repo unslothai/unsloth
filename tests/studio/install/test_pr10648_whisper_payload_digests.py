@@ -421,8 +421,8 @@ def test_an_upgrade_does_not_re_download_and_settles_under_the_lock(tmp_path, mo
     import contextlib
 
     @contextlib.contextmanager
-    def counting_lock(path):
-        with real_lock(path):
+    def counting_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
             depth["now"] += 1
             try:
                 yield

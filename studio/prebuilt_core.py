@@ -110,6 +110,11 @@ HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 JSON_FETCH_ATTEMPTS = 3
 TTY_PROGRESS_START_DELAY_SECONDS = 0.5
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
+# The metadata catch-up over a kept install is an optimisation, and it runs on the FIRST update
+# after an upgrade, for every existing user. Waiting the full install timeout for it would hold
+# an otherwise finished launch for five minutes to write fields whose only effect is to spare
+# the next run some work, so it asks briefly and gives up.
+SETTLE_LOCK_TIMEOUT_SECONDS = 5
 INSTALL_STAGING_ROOT_NAME = ".staging"
 SCHEMA_VERSION = 1
 # Backend to retry when the preferred one has no covering asset; None disables it.
@@ -1175,14 +1180,15 @@ def restore_tar_exec_bits(archive_path: Path, destination: Path) -> None:
 
 # ── Install lock ──
 @contextmanager
-def install_lock(lock_path: Path) -> Iterator[None]:
+def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[None]:
+    seconds = INSTALL_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
     lock_path.parent.mkdir(parents = True, exist_ok = True)
 
     if FileLock is None:
         # Fallback lock: exclusive file creation, writing our PID so stale locks
         # from crashed processes can be detected.
         fd: int | None = None
-        deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
+        deadline = time.monotonic() + seconds
         while True:
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
@@ -1208,7 +1214,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     # Exists but PID not yet written; wait for the write to land.
                     if time.monotonic() >= deadline:
                         raise BusyInstallConflict(
-                            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
+                            f"timed out after {seconds}s waiting for concurrent install lock: {lock_path}"
                         )
                     time.sleep(0.1)
                     continue
@@ -1226,7 +1232,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     continue
                 if time.monotonic() >= deadline:
                     raise BusyInstallConflict(
-                        f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
+                        f"timed out after {seconds}s waiting for concurrent install lock: {lock_path}"
                     )
                 time.sleep(0.5)
         try:
@@ -1238,11 +1244,11 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         return
 
     try:
-        with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
+        with FileLock(lock_path, timeout = seconds):
             yield
     except FileLockTimeout as exc:
         raise BusyInstallConflict(
-            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
+            f"timed out after {seconds}s waiting for concurrent install lock: {lock_path}"
         ) from exc
 
 
@@ -2720,7 +2726,9 @@ def _settle_kept_install(
         )
         if not needs:
             return True
-        with ops.install_lock(ops.install_lock_path(install_dir)):
+        with ops.install_lock(
+            ops.install_lock_path(install_dir), timeout = SETTLE_LOCK_TIMEOUT_SECONDS
+        ):
             if ops.existing_install_matches(install_dir, host, selection):
                 _backfill_fingerprint_inputs(ops, install_dir, selection)
                 if settle is not None:
