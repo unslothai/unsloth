@@ -79,6 +79,17 @@ def _dir(path):
     return os.path.realpath(path)
 
 
+def _fake_wslpath(tmp_path, windows, mapped):
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok = True)
+    wslpath = bindir / "wslpath"
+    wslpath.write_text(
+        f'#!/usr/bin/env bash\n[[ "$1" == -u && "$2" == \'{windows}\' ]] || exit 1\n'
+        f"printf '%s\\n' '{mapped}'\n"
+    )
+    wslpath.chmod(wslpath.stat().st_mode | stat.S_IEXEC)
+
+
 def test_detected_model_folders_are_mounted_read_only(tmp_path):
     home = tmp_path / "home"
     lmstudio = _dir(home / ".lmstudio" / "models")
@@ -135,6 +146,17 @@ def test_lmstudio_downloads_folder_tilde_is_expanded(tmp_path):
     assert mounts["/root/.lmstudio/models"] == (custom, True)
 
 
+def test_lmstudio_downloads_folder_with_a_backslash_is_json_decoded(tmp_path):
+    home = tmp_path / "home"
+    _dir(home / ".lmstudio" / "models")
+    custom = _dir(tmp_path / "back\\slash models")
+    (home / ".lmstudio" / "settings.json").write_text(json.dumps({"downloadsFolder": custom}))
+
+    mounts, _ = _run(tmp_path)
+
+    assert mounts["/root/.lmstudio/models"] == (custom, True)
+
+
 def test_lmstudio_windows_downloads_folder_is_mapped_under_wsl(tmp_path):
     home = tmp_path / "home"
     _dir(home / ".lmstudio" / "models")
@@ -142,13 +164,7 @@ def test_lmstudio_windows_downloads_folder_is_mapped_under_wsl(tmp_path):
     (home / ".lmstudio" / "settings.json").write_text(
         json.dumps({"downloadsFolder": "C:\\Users\\u\\models"})
     )
-    (tmp_path / "bin").mkdir()
-    wslpath = tmp_path / "bin" / "wslpath"
-    wslpath.write_text(
-        '#!/usr/bin/env bash\n[[ "$1" == -u && "$2" == "C:\\\\Users\\\\u\\\\models" ]] || exit 1\n'
-        f"printf '%s\\n' {windows}\n"
-    )
-    wslpath.chmod(wslpath.stat().st_mode | stat.S_IEXEC)
+    _fake_wslpath(tmp_path, "C:\\Users\\u\\models", windows)
 
     mounts, _ = _run(tmp_path)
 
@@ -160,6 +176,24 @@ def test_custom_hermes_home_is_the_models_root(tmp_path):
     models = _dir(root / "models")
 
     mounts, _ = _run(tmp_path, HERMES_HOME = str(root))
+
+    assert mounts["/root/.hermes/models"] == (models, True)
+
+
+def test_hermes_home_tilde_is_expanded(tmp_path):
+    models = _dir(tmp_path / "home" / "hermes-root" / "models")
+
+    mounts, _ = _run(tmp_path, HERMES_HOME = "~/hermes-root")
+
+    assert mounts["/root/.hermes/models"] == (models, True)
+
+
+def test_windows_hermes_home_is_mapped_under_wsl(tmp_path):
+    root = _dir(tmp_path / "mnt" / "d" / "hermes")
+    models = _dir(tmp_path / "mnt" / "d" / "hermes" / "models")
+    _fake_wslpath(tmp_path, "D:\\hermes", root)
+
+    mounts, _ = _run(tmp_path, HERMES_HOME = "D:\\hermes")
 
     assert mounts["/root/.hermes/models"] == (models, True)
 
@@ -203,13 +237,7 @@ def test_ollama_models_env_wins(tmp_path):
 def test_windows_ollama_models_env_is_mapped_under_wsl(tmp_path):
     _dir(tmp_path / "home" / ".ollama" / "models")
     windows = _dir(tmp_path / "mnt" / "d" / "ollama")
-    (tmp_path / "bin").mkdir()
-    wslpath = tmp_path / "bin" / "wslpath"
-    wslpath.write_text(
-        '#!/usr/bin/env bash\n[[ "$1" == -u && "$2" == "D:\\\\ollama" ]] || exit 1\n'
-        f"printf '%s\\n' {windows}\n"
-    )
-    wslpath.chmod(wslpath.stat().st_mode | stat.S_IEXEC)
+    _fake_wslpath(tmp_path, "D:\\ollama", windows)
 
     mounts, _ = _run(tmp_path, OLLAMA_MODELS = "D:\\ollama")
 

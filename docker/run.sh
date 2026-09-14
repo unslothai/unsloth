@@ -148,11 +148,7 @@ host_path() {
     local path="$1"
     case "$path" in
         "~" | "~/"*) path="$HOME${path:1}" ;;
-        # settings.json doubles the backslashes, so undo that first
-        [A-Za-z]:\\* | [A-Za-z]:/*)
-            path="$(printf '%s' "$path" | sed 's/\\\\/\\/g')"
-            path="$(wslpath -u "$path" 2>/dev/null)" || path=""
-            ;;
+        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
     esac
     printf '%s' "$path"
 }
@@ -161,7 +157,8 @@ lmstudio_dir() {
     local settings="$HOME/.lmstudio/settings.json" custom=""
     local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
     if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
-        custom="${BASH_REMATCH[1]}"
+        # JSON doubles any backslash in the path
+        custom="$(printf '%s' "${BASH_REMATCH[1]}" | sed 's/\\\\/\\/g')"
         custom="$(host_path "$custom")"
     fi
     first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
@@ -170,7 +167,8 @@ lmstudio_dir() {
 # Mirrors Studio's _hermes_root: a HERMES_HOME outside ~/.hermes is the root, or
 # <root>/profiles/<name> for a profile; downloads land in <root>/models.
 hermes_dir() {
-    local native="$HOME/.hermes" root="${HERMES_HOME:-}"
+    local native="$HOME/.hermes" root
+    root="$(host_path "${HERMES_HOME:-}")"
     root="${root%/}"
     if [[ -z "$root" || "$root" == "$native" || "$root" == "$native"/* ]]; then
         root="$native"
