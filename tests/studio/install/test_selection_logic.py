@@ -2658,6 +2658,39 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
 
+    def test_a_masked_nvidia_host_gets_no_cpu_attempt(self):
+        """CUDA_VISIBLE_DEVICES="" hides the GPU without removing it.
+
+        has_usable_nvidia is `visible_device_tokens != []` on both probe paths, so
+        physical-without-usable means exactly an emptied mask. The mask is scoped to this
+        process; the install it would pick is not, and activate_install_tree replaces the
+        tree in place, so one masked run would leave a CUDA machine on the CPU bundle.
+        Measured on a 5x B200 host: before this gate the same call returned linux-cpu with
+        prebuilt_available true.
+        """
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert attempts == []
+
+    def test_a_masked_nvidia_host_is_not_rescued_onto_vulkan_either(self):
+        # An iGPU alongside the masked NVIDIA card must not become the route to a Vulkan or
+        # CPU install: the Vulkan branch is already gated on not has_physical_nvidia, and
+        # the new gate must not undo that.
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+            has_intel_gpu = True,
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert attempts == []
+
     def _vulkan_and_cpu_bundle(self):
         """What unslothai/llama.cpp publishes: app-<tag>-linux-x64-vulkan.tar.gz and -cpu.tar.gz."""
         return make_release(

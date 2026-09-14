@@ -6424,6 +6424,20 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
+        # A host whose NVIDIA GPU is merely HIDDEN reaches here, and must not take the CPU
+        # bundle either. has_usable_nvidia is `visible_device_tokens != []` on both probe
+        # paths, so has_physical_nvidia without it means exactly one thing: the GPU is there
+        # and CUDA_VISIBLE_DEVICES is empty. That mask is scoped to this process, but the
+        # install it would pick is persistent and activate_install_tree replaces the tree in
+        # place, so one masked run would leave a CUDA machine on the CPU bundle for good.
+        # Source-build instead, as the ROCm branch does. install_python_stack already refuses
+        # to conclude a torch flavor from an emptied mask for the same reason.
+        if host.has_physical_nvidia:
+            log(
+                "NVIDIA GPU present but hidden by CUDA_VISIBLE_DEVICES="
+                f"{host.visible_cuda_devices!r}; not installing the CPU bundle over it"
+            )
+            return attempts
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
         # source-builds with CUDA, not a CPU-only binary silently installed on a
