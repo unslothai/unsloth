@@ -2958,11 +2958,15 @@ class TestWindowsAmdWithoutRocmTakesVulkan:
         )
         assert result[0].install_kind == "windows-vulkan"
 
-    def test_a_host_with_usable_rocm_is_not_diverted_to_vulkan(self):
+    def test_a_host_with_usable_rocm_is_not_diverted_to_vulkan(self, monkeypatch):
         # has_amd_gpu_without_rocm is only set when ROCm is unusable, but assert the gate
         # too: the windows-rocm branch below must keep owning every host where ROCm runs.
         # This release carries no windows-rocm and no win-hip bundle, so that host walks
         # past the published pair entirely rather than being handed Vulkan.
+        # Stub the upstream fetch: resolve_asset_choice reaches it before it can raise, and
+        # unstubbed this test spends four real GitHub retries and then fails with URLError
+        # on an offline runner instead of the exception it is asserting.
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
         with pytest.raises(PrebuiltFallback):
             resolve_release_asset_choice(
                 self._host(has_rocm = True), self.TAG, self._release(), self._checksums()

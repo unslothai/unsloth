@@ -2798,7 +2798,11 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             has_intel_gpu = windows_intel_gpu_in_registry()
             if not _amd_hidden_by_mask:
                 has_amd_gpu_without_rocm = windows_amd_gpu_in_registry()
-            if not has_intel_gpu or not has_amd_gpu_without_rocm:
+            # Only when NEITHER was found. `or` here defeated the fast path on every
+            # single-vendor host (an Intel-only box has no AMD match and vice versa) and paid
+            # the CIM probe's full 15s timeout for nothing. Either flag alone already carries
+            # the Vulkan gate, so a hit on one makes the other irrelevant to the decision.
+            if not has_intel_gpu and not has_amd_gpu_without_rocm:
                 _ps = shutil.which("powershell") or shutil.which("pwsh")
                 if _ps:
                     try:

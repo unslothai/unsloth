@@ -1206,6 +1206,23 @@ def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
     assert "powershell" not in captured
 
 
+def test_detect_host_registry_amd_skips_cim_probe(monkeypatch):
+    # The AMD half of the registry fast path has to earn the same skip the Intel
+    # half does. A single-vendor AMD box has no Intel match at all, so gating the
+    # CIM probe on both vendors being found would pay its full timeout here.
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_1002&DEV_1586"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(monkeypatch, winreg)
+    assert host.has_amd_gpu_without_rocm is True
+    assert host.has_intel_gpu is False
+    assert "powershell" not in captured
+
+
 def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
     winreg = _FakeWinreg(
         _FakeRegKey(
