@@ -7339,9 +7339,7 @@ def _uv_is_offline() -> bool:
     `off` and `no` as offline, so a user disabling it that way had repairs declined by a
     message saying the opposite, while uv went on using the network.
     """
-    return os.environ.get("UV_OFFLINE", "").strip().lower() in (
-        "1", "t", "true", "y", "yes", "on"
-    )
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
 
 
 def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":

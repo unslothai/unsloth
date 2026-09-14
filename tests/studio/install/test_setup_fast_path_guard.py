@@ -377,7 +377,10 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     # list (a space in the Studio home would split it).
     assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
     assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
-    assert 'eval "_NEED_T5_$_ofp_key=false"' in block_sh and 'eval "_DEFER_T5_$_ofp_key=true"' in block_sh
+    assert (
+        'eval "_NEED_T5_$_ofp_key=false"' in block_sh
+        and 'eval "_DEFER_T5_$_ofp_key=true"' in block_sh
+    )
     offline_ps1 = ps1.index("if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {")
     assert (
         ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
@@ -485,16 +488,41 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
     namespace: dict = {"os": os}
     exec(compile(_ast.Module(body = [node], type_ignores = []), "<stack>", "exec"), namespace)
 
-    for value in ("1", "0", "t", "f", "true", "false", "y", "n", "yes", "no", "on", "off",
-                  "", "  ", "TRUE", "On", "T", "Y", "maybe", "2"):
+    for value in (
+        "1",
+        "0",
+        "t",
+        "f",
+        "true",
+        "false",
+        "y",
+        "n",
+        "yes",
+        "no",
+        "on",
+        "off",
+        "",
+        "  ",
+        "TRUE",
+        "On",
+        "T",
+        "Y",
+        "maybe",
+        "2",
+    ):
         env = {**os.environ, "UV_OFFLINE": value}
-        shell = subprocess.run(
-            ["bash", str(probe)], capture_output = True, text = True, env = env
-        ).stdout.strip() == "yes"
-        os.environ["UV_OFFLINE"] = value
-        assert shell == namespace["_uv_is_offline"](), (
-            f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"
+        shell = (
+            subprocess.run(
+                ["bash", str(probe)], capture_output = True, text = True, env = env
+            ).stdout.strip()
+            == "yes"
         )
+        os.environ["UV_OFFLINE"] = value
+        assert (
+            shell == namespace["_uv_is_offline"]()
+        ), f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"
+
+
 def test_the_installer_pins_come_from_the_audited_pin_list():
     """The list the audit demands and the list the install performs must be one variable: a
     pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale every
