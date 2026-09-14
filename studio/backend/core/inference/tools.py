@@ -2850,8 +2850,11 @@ _MAX_WALKED_CWDS = 2048
 _PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/cwd")
 
 
-def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
-    """Every working directory *text* walks into via `cd`, in order.
+def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, str]]":
+    """Every working directory *text* walks into via `cd`, as `(offset, directory)` in order.
+
+    The offset is where that `cd` ends, because a relative path written BEFORE it opens from the
+    old directory: `cat auth/auth.db; cd ../..` reads inside the sandbox and is ordinary work.
 
     `cd ../..` from the session sandbox lands on the Studio root, and the `auth/auth.db` that
     follows is then the protected database under a name that matches nothing on its own.
@@ -2861,7 +2864,7 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
     # studio root from the sandbox. Assuming every `cd` succeeds resolved the rest against a
     # directory the command was never in.
     states: "list[str]" = [workdir]
-    walked: "list[str]" = []
+    walked: "list[tuple[int, str]]" = []
     seen: "set[str]" = set()
     for match in _CD_TARGET_RE.finditer(text):
         target = match.group(1).strip("'\"")
@@ -2875,7 +2878,7 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
             # Deduplicated: `cd .` x8 spent the budget before the real ones.
             if nxt not in seen:
                 seen.add(nxt)
-                walked.append(nxt)
+                walked.append((match.end(), nxt))
         # Both outcomes stay live, capped so a long chain cannot grow the set without bound. The
         # starting directory is kept FIRST: it is where the shell is when every `cd` fails, which is
         # what a padded command relies on, and truncating the tail used to drop exactly that state.
@@ -2923,12 +2926,18 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
             return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
-        for cwd in _cwds_after_cd(workdir, text):
+        for offset, cwd in _cwds_after_cd(workdir, text):
             # The directory itself: `cd ../..; cd auth; sqlite3 auth.db` writes no separator at
             # all, so every token below reads as an ordinary filename.
             if _references_studio_credential(cwd):
                 return True
-            for token in _RELATIVE_PATH_TOKEN_RE.findall(text):
+            for match in _RELATIVE_PATH_TOKEN_RE.finditer(text):
+                # Only what comes AFTER that `cd`: a path written before it opens from the old
+                # directory, so resolving `cat auth/auth.db; cd ../..` against the root refused a
+                # read that never left the sandbox.
+                if match.start() < offset:
+                    continue
+                token = match.group(0)
                 if os.path.isabs(token) or token.startswith("~"):
                     continue
                 resolved = os.path.normpath(os.path.join(cwd, token.replace("\\", "/")))
@@ -3050,6 +3059,19 @@ def _studio_home_for_guard() -> "str | None":
     if not auth_markers:
         return None
     return os.path.dirname(auth_markers[0][0].rstrip("/\\")) or None
+
+
+def _needs_a_workdir(text: str) -> bool:
+    """Whether resolving *text* needs the cwd at all.
+
+    Traversal needs it, and so does anything that MOVES the directory: `pushd <studio home>;
+    sqlite3 auth/auth.db` carries no `..`, and without the workdir the walk that would have caught
+    it never ran.
+    """
+    if ".." in text:
+        return True
+    lowered = text.lower()
+    return "cd" in lowered or "pushd" in lowered or "chdir" in lowered
 
 
 def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":
@@ -15929,7 +15951,7 @@ def _python_exec(
         return "No code provided."
 
     # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
-    _guard_workdir = _tool_workdir_for_guard(session_id) if ".." in code else None
+    _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
     if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
         code, _guard_workdir
     ):
@@ -16107,7 +16129,7 @@ def _bash_exec(
     # Refused in every mode, unlike the blocklist below, which Bypass Permissions opts out of: this
     # install's live bearer would be replayed to whatever provider is serving the turn.
     if _references_studio_credential_here(
-        command, _tool_workdir_for_guard(session_id) if ".." in command else None
+        command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 

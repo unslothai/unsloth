@@ -1096,3 +1096,32 @@ def test_a_glob_is_read_per_token_not_per_command(monkeypatch, tmp_path):
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_pushd_to_an_absolute_home_and_paths_before_the_cd(monkeypatch, tmp_path):
+    # Two halves of the same walk: the workdir has to be resolved for a command that MOVES the
+    # directory even when it carries no `..`, and a relative path written BEFORE the move opens
+    # from the old directory, so it must not be resolved against the new one.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            f'pushd {home}; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
+            f"cd {home} && cat auth/.desktop_secret",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            "cat auth/auth.db; cd ../..",
+            "cat auth/auth.db",
+            f"pushd {home}/models; ls",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
