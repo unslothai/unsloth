@@ -143,19 +143,26 @@ first_dir() {
     done
 }
 
+# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
+host_path() {
+    local path="$1"
+    case "$path" in
+        "~" | "~/"*) path="$HOME${path:1}" ;;
+        # settings.json doubles the backslashes, so undo that first
+        [A-Za-z]:\\* | [A-Za-z]:/*)
+            path="$(printf '%s' "$path" | sed 's/\\\\/\\/g')"
+            path="$(wslpath -u "$path" 2>/dev/null)" || path=""
+            ;;
+    esac
+    printf '%s' "$path"
+}
+
 lmstudio_dir() {
     local settings="$HOME/.lmstudio/settings.json" custom=""
     local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
     if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
         custom="${BASH_REMATCH[1]}"
-        case "$custom" in
-            "~" | "~/"*) custom="$HOME${custom:1}" ;;
-            # a Windows path, seen from WSL; JSON doubles its backslashes
-            [A-Za-z]:\\* | [A-Za-z]:/*)
-                custom="$(printf '%s' "$custom" | sed 's/\\\\/\\/g')"
-                custom="$(wslpath -u "$custom" 2>/dev/null)" || custom=""
-                ;;
-        esac
+        custom="$(host_path "$custom")"
     fi
     first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
 }
@@ -174,7 +181,7 @@ hermes_dir() {
 }
 
 ollama_dir() {
-    first_dir "${OLLAMA_MODELS:-}" "$HOME/.ollama/models" \
+    first_dir "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
         /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
 }
 

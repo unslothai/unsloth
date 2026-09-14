@@ -200,6 +200,22 @@ def test_ollama_models_env_wins(tmp_path):
     assert mounts["/root/.ollama/models"] == (custom, True)
 
 
+def test_windows_ollama_models_env_is_mapped_under_wsl(tmp_path):
+    _dir(tmp_path / "home" / ".ollama" / "models")
+    windows = _dir(tmp_path / "mnt" / "d" / "ollama")
+    (tmp_path / "bin").mkdir()
+    wslpath = tmp_path / "bin" / "wslpath"
+    wslpath.write_text(
+        '#!/usr/bin/env bash\n[[ "$1" == -u && "$2" == "D:\\\\ollama" ]] || exit 1\n'
+        f"printf '%s\\n' {windows}\n"
+    )
+    wslpath.chmod(wslpath.stat().st_mode | stat.S_IEXEC)
+
+    mounts, _ = _run(tmp_path, OLLAMA_MODELS = "D:\\ollama")
+
+    assert mounts["/root/.ollama/models"] == (windows, True)
+
+
 def test_explicit_dirs_override_detection(tmp_path):
     _dir(tmp_path / "home" / ".lmstudio" / "models")
     lmstudio = _dir(tmp_path / "lmstudio")
