@@ -92,13 +92,19 @@ def _request_contains_new_model_image(payload):
             if part_type not in {"image_url", "input_image", "image"}:
                 continue
             has_image_part = True
-            value = part.get("image_url") if isinstance(part, dict) else getattr(part, "image_url", None)
+            value = (
+                part.get("image_url")
+                if isinstance(part, dict)
+                else getattr(part, "image_url", None)
+            )
             if isinstance(value, dict):
                 value = value.get("url")
             elif value is not None and not isinstance(value, str):
                 value = getattr(value, "url", None)
             if value is None and part_type == "image":
-                value = part.get("image") if isinstance(part, dict) else getattr(part, "image", None)
+                value = (
+                    part.get("image") if isinstance(part, dict) else getattr(part, "image", None)
+                )
             if isinstance(value, str) and value:
                 values.append(value.partition(",")[2] if value.startswith("data:") else value)
         if not latest_user_seen:

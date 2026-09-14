@@ -253,7 +253,9 @@ def test_policy_snapshot_allows_text_followup_with_historical_image(image_reques
 
 
 @pytest.mark.parametrize("location", ["message", "legacy"])
-def test_policy_snapshot_rejects_new_ordinary_image_without_private_selection(image_request, location):
+def test_policy_snapshot_rejects_new_ordinary_image_without_private_selection(
+    image_request, location
+):
     f = image_request
     f.payload.mcp_image_attachment = None
     if location == "message":

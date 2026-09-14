@@ -152,7 +152,11 @@ def test_private_tool_call_can_be_explicitly_unbounded(monkeypatch):
     class Response:
         status = 200
 
-        def getheader(self, name, default = None):
+        def getheader(
+            self,
+            name,
+            default = None,
+        ):
             return "application/json" if name == "Content-Type" else default
 
         def read(self, _limit):
