@@ -370,7 +370,9 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
     monkeypatch.setattr(
         dmod,
         "denoiser_prequant_source",
-        lambda fam, scheme, **_k: ("unsloth/Qwen-Image-FP8", f"{scheme}.pt") if scheme in artifacts else None,
+        lambda fam, scheme, **_k: ("unsloth/Qwen-Image-FP8", f"{scheme}.pt")
+        if scheme in artifacts
+        else None,
     )
     monkeypatch.setattr(
         dmod,
@@ -389,7 +391,9 @@ def _settle_backend_walking(monkeypatch, *, artifacts: tuple, candidates: tuple)
         DiffusionBackend,
         "_plan_memory",
         lambda *_a, **k: types.SimpleNamespace(
-            offload_policy = "sequential" if k["transformer_resident_override_mib"] >= 31_000 else "none"
+            offload_policy = "sequential"
+            if k["transformer_resident_override_mib"] >= 31_000
+            else "none"
         ),
     )
     return backend
@@ -406,9 +410,7 @@ def test_an_artifact_too_large_for_the_card_yields_to_the_next_hosted_rung(monke
 
 def test_a_walk_with_no_resident_rung_declines(monkeypatch):
     """Every hosted rung offloads: the decline is pinned so plan and load agree."""
-    backend = _settle_backend_walking(
-        monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8")
-    )
+    backend = _settle_backend_walking(monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8"))
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 

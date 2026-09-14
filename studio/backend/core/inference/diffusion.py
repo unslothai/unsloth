@@ -2548,7 +2548,6 @@ class DiffusionBackend:
                 if auto:
                     try:
                         from .diffusion_transformer_quant import auto_scheme_candidates
-
                         below = list(auto_scheme_candidates(target, getattr(fam, "name", None)))
                         if scheme in below:
                             rungs.extend(below[below.index(scheme) + 1 :])
