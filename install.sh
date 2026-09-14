@@ -650,6 +650,37 @@ _uv_cache_root_is_writable() {
     return 0
 }
 
+# The root AND every bucket uv would rename into. _uv_cache_root_is_writable answers only for
+# the directory itself, which is not enough once uv has made buckets in it: a `sudo` run leaves
+# one root-owned, and a dangling link is an existing path to mkdir(2), so uv aborts on a cache
+# whose root we can write perfectly well.
+_uv_cache_is_writable() {
+    _uv_cache_root_is_writable "$1" || return 1
+    _uv_w_bad=0
+    _uv_w_glob=on
+    case $- in *f*) _uv_w_glob=off ;; esac
+    set +f
+    for _uv_w_dir in "$1"/*; do
+        _uv_is_bucket_name "${_uv_w_dir##*/}" || continue
+        if [ ! -d "$_uv_w_dir" ]; then
+            # A file, or a symlink dangling or not, is an existing path to mkdir(2).
+            if [ -e "$_uv_w_dir" ] || [ -L "$_uv_w_dir" ]; then
+                _uv_w_bad=1
+            fi
+            continue
+        fi
+        _uv_cache_root_is_writable "$_uv_w_dir" || _uv_w_bad=1
+    done
+    if [ "$_uv_w_glob" = off ]; then set -f; fi
+    unset _uv_w_dir _uv_w_glob
+    if [ "$_uv_w_bad" -ne 0 ]; then
+        unset _uv_w_bad
+        return 1
+    fi
+    unset _uv_w_bad
+    return 0
+}
+
 _record_uv_cache_choice() {
     # In place, before anything reads it: every branch records, so this is the one point every phase of the install and the marker are made to agree on one directory.
     UV_CACHE_DIR=$(_absolutize_uv_cache_dir)
@@ -791,33 +822,9 @@ _configure_uv_cache() {
             case $- in *f*) _uv_glob=off ;; esac
             set +f
 
-            # EVERY existing bucket, not just the artifact families below: uv mutates
-            # interpreter-v4 too, and a curated list would miss the next kind it adds.
-            for _uv_probe_dir in "$_uv_candidate" "$_uv_candidate"/*; do
-                # The root, then only where a BUCKET should be. Anything else up here is not
-                # uv's to write, and a cache-dir on a mount point has a root-owned lost+found
-                # that must not condemn it.
-                if [ "$_uv_probe_dir" != "$_uv_candidate" ] \
-                   && ! _uv_is_bucket_name "${_uv_probe_dir##*/}"; then
-                    continue
-                fi
-                if [ ! -d "$_uv_probe_dir" ]; then
-                    # A file, or a symlink dangling or not, is an existing path to mkdir(2),
-                    # which answers EEXIST, so uv refuses it.
-                    if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
-                        _uv_cand_writable=false
-                    fi
-                    continue
-                fi
-                _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
-                    || _uv_cand_writable=false
-                # Creating is not enough: an ACL granting create but denying unlink (NFSv4,
-                # CIFS) leaves uv's renames to fail later. rm -f exits 0 on a missing file.
-                if [ -n "$_uv_probe" ] && ! rm -f "$_uv_probe" 2>/dev/null; then
-                    _uv_cand_writable=false
-                fi
-            done
-            unset _uv_probe _uv_probe_dir _uv_bucket_base
+            # Root and every bucket, through the one helper the fallback and the launch
+            # repoint also use, so a cache rejected here cannot be handed back later.
+            _uv_cache_is_writable "$_uv_candidate" || _uv_cand_writable=false
 
             # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
             # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
@@ -880,15 +887,23 @@ _configure_uv_cache() {
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
         # A fallback we cannot write is not a fallback. The early block has ALREADY given up
-        # on $STUDIO_HOME/cache/uv, which is the only reason the selection is running, so the
-        # certain failure and the merely suspect cache are both on the table. Landing on the
-        # certain one turns a working install into `failed to create cache directory`, so the
-        # populated cache that only failed the probe wins. The warning below still names it.
-        if [ -n "$_uv_warn_cache" ] \
-           && [ "$_uv_warn_cache" != "$_uv_studio_cache" ] \
-           && ! _uv_cache_root_is_writable "$_uv_studio_cache"; then
-            UV_CACHE_DIR="$_uv_warn_cache"
-            _UV_CACHE_MODE=shared
+        # on $STUDIO_HOME/cache/uv, which is the only reason the selection is running, and the
+        # root can be writable while a bucket uv renames into is not, which the probe rejected
+        # a candidate for. Landing there turns a working install into a uv error, so anything
+        # usable beats it: the populated cache that only failed the probe first, since the
+        # certain failure and the merely suspect cache are both on the table, then uv's own
+        # default, which at worst costs the downloads this cache was never going to save.
+        if ! _uv_cache_is_writable "$_uv_studio_cache"; then
+            if [ -n "$_uv_warn_cache" ] && [ "$_uv_warn_cache" != "$_uv_studio_cache" ]; then
+                UV_CACHE_DIR="$_uv_warn_cache"
+                _UV_CACHE_MODE=shared
+            elif [ -n "$_uv_default_cache" ] \
+                 && [ "$_uv_default_cache" != "$_uv_studio_cache" ] \
+                 && _uv_cache_is_writable "$_uv_default_cache"; then
+                UV_CACHE_DIR="$_uv_default_cache"
+                _UV_CACHE_MODE=shared
+                _uv_studio_unusable=true
+            fi
         fi
     fi
     export UV_CACHE_DIR
@@ -922,8 +937,10 @@ _prepare_studio_uv_cache_for_launch() {
     # failed its write probe on $STUDIO_HOME/cache/uv, so repointing unconditionally hands the
     # autostarted backend a cache uv aborts on, after an install that succeeded. Keeping the
     # shared one is honest: it is the cache this install just filled.
+    # Root AND buckets, the same rule the selection used: a root-only check repoints into the
+    # very cache the candidate probe rejected for a bucket uv cannot rename into.
     _uv_launch_cache="$STUDIO_HOME/cache/uv"
-    _uv_cache_root_is_writable "$_uv_launch_cache" || return 0
+    _uv_cache_is_writable "$_uv_launch_cache" || return 0
     UV_CACHE_DIR="$_uv_launch_cache"
     export UV_CACHE_DIR
 }

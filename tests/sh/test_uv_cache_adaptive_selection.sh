@@ -47,6 +47,7 @@ awk '/^_absolutize_uv_cache_dir\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_uv_is_bucket_name\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_uv_no_cache_requested\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
+awk '/^_uv_cache_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_EARLY"; then
     echo "FAIL: could not extract the early UV_CACHE_DIR block from install.sh"
@@ -433,6 +434,28 @@ for _alt in /bin/sh /bin/bash; do
     done
 done
 _SH="$_SH_SAVED"
+
+echo "=== a Studio cache with a bucket uv cannot use is not a fallback either ==="
+# A `sudo` run leaves a root-owned bucket and a dangling link is an existing path to mkdir(2),
+# so the ROOT can be writable while uv still aborts on the cache. Selecting it anyway, or
+# repointing the launch at it, turns an install that reported success into a uv error.
+_brokenstudio="$_TMP/brokenstudio"
+mkdir -p "$_brokenstudio/cache/uv"
+ln -s "$_TMP/no-such-target" "$_brokenstudio/cache/uv/archive-v0"
+_cold_default="$_TMP/colddefault"
+mkdir -p "$_cold_default"
+_out=$(_run "$_brokenstudio" '' "$_cold_default")
+assert_eq "broken Studio bucket -> not studio" "shared"        "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "and uv's default is used instead"   "$_cold_default" "$(echo "$_out" | cut -d' ' -f2)"
+assert_eq "and the launch does not repoint"    "$_cold_default" "$(echo "$_out" | cut -d' ' -f3)"
+# With a WARM default the selection already preferred it; the repoint is the part that used to
+# hand the backend the rejected cache anyway.
+_out=$(_run "$_brokenstudio" '' "$_populated")
+assert_eq "warm default beside a broken Studio" "shared"     "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "and the launch keeps it"             "$_populated" "$(echo "$_out" | cut -d' ' -f3)"
+# A Studio cache whose buckets are fine is still the ordinary answer.
+_out=$(_run "$_TMP/okstudio" '' "$_cold_default")
+assert_eq "an intact Studio cache still wins"   "studio"     "$(echo "$_out" | cut -d' ' -f1)"
 
 echo "=== a marker naming a directory that is gone is stale, not a decision ==="
 # The marker named a cache the user deleted. Treating that as a decision handed the install

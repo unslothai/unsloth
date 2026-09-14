@@ -283,6 +283,44 @@ def test_a_bucket_lookalike_is_not_warmth(tmp_path, name):
 
 
 @requires_pwsh
+def test_a_studio_cache_with_an_unusable_bucket_is_not_a_fallback(tmp_path):
+    """The root can be writable while a bucket uv renames into is not.
+
+    A file where a bucket belongs is an existing path to the create uv makes, so uv refuses it.
+    Selecting that cache anyway turns an install that reported success into a uv error.
+    """
+    root = tmp_path / "studio"
+    (root / "cache" / "uv").mkdir(parents = True)
+    (root / "cache" / "uv" / "archive-v0").write_text("not a directory")
+    cold = tmp_path / "colddefault"
+    cold.mkdir()
+    verdict = _select(root, str(cold))
+    assert verdict["mode"] == "shared", verdict
+    assert verdict["dir"] == str(cold), verdict
+
+
+@requires_pwsh
+def test_the_launch_does_not_repoint_into_a_rejected_studio_cache(tmp_path):
+    """Selection already preferred the warm cache here; the repoint used to hand the backend
+    the Studio cache regardless, because it only asked about the root."""
+    root = tmp_path / "studio"
+    (root / "cache" / "uv").mkdir(parents = True)
+    (root / "cache" / "uv" / "archive-v0").write_text("not a directory")
+    default = _warm(tmp_path / "uvdefault")
+    verdict = _select(root, str(default))
+    assert verdict["mode"] == "shared", verdict
+    assert verdict["launch"] == str(default), verdict
+
+
+@requires_pwsh
+def test_an_intact_studio_cache_is_still_the_ordinary_answer(tmp_path):
+    """So the two cases above are not simply switching the Studio cache off."""
+    cold = tmp_path / "colddefault"
+    cold.mkdir()
+    assert _select(tmp_path / "studio", str(cold))["mode"] == "studio"
+
+
+@requires_pwsh
 def test_a_marker_naming_a_deleted_cache_keeps_the_studio_cache(tmp_path):
     """A stale pointer is not a decision.
 

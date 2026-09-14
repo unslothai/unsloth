@@ -1844,6 +1844,15 @@ exit 1
         return $false
     }
 
+    # Creatable AND fillable: the root helper answers for a cache that may not exist yet, the
+    # bucket probe for one uv has already made buckets in. The fallback and the launch repoint
+    # both need both, or they hand back a cache the candidate probe just rejected.
+    function Test-StudioUvCacheUsable {
+        param([Parameter(Mandatory = $true)][string]$Cache)
+        if (-not (Test-StudioUvCacheRootWritable -Cache $Cache)) { return $false }
+        return (Test-StudioUvCacheWritable -Cache $Cache)
+    }
+
     # The cache THIS install last recorded, absolute, or "" when there is none. Read before the
     # selector writes its own. BOM and all: PowerShell 5.1 writes -Encoding utf8 WITH a BOM and
     # the update writes the same file BOM-less.
@@ -1980,10 +1989,19 @@ exit 1
             # A fallback we cannot write is not a fallback. The certain failure and the merely
             # suspect cache can both be on the table, and landing on the certain one turns a
             # working install into "failed to create cache directory".
-            if ($warnCache -and $warnCache -ne $studioCache -and
-                -not (Test-StudioUvCacheRootWritable -Cache $studioCache)) {
-                $selectedCache = $warnCache
-                $script:StudioUvCacheMode = "shared"
+            # Root AND buckets: the root can be writable while a bucket uv renames into is
+            # not, which is what the candidate probe rejected a cache for. Anything usable
+            # beats landing there: the populated cache that only failed the probe first, then
+            # uv's own default, which at worst costs the downloads this cache never saved.
+            if (-not (Test-StudioUvCacheUsable -Cache $studioCache)) {
+                if ($warnCache -and $warnCache -ne $studioCache) {
+                    $selectedCache = $warnCache
+                    $script:StudioUvCacheMode = "shared"
+                } elseif ($defaultCache -and $defaultCache -ne $studioCache -and
+                          (Test-StudioUvCacheUsable -Cache $defaultCache)) {
+                    $selectedCache = $defaultCache
+                    $script:StudioUvCacheMode = "shared"
+                }
             }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
@@ -2020,8 +2038,10 @@ exit 1
         # autostarted backend a cache uv aborts on, after an install that succeeded. Keeping the
         # shared one is honest, it is the cache this install just filled. Mirrors
         # _prepare_studio_uv_cache_for_launch.
+        # Root AND buckets, the same rule the selection used: a root-only check repoints into
+        # the very cache the candidate probe rejected for a bucket uv cannot rename into.
         $launchCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
-        if (-not (Test-StudioUvCacheRootWritable -Cache $launchCache)) { return }
+        if (-not (Test-StudioUvCacheUsable -Cache $launchCache)) { return }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $launchCache
     }
 

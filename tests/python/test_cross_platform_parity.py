@@ -1251,6 +1251,15 @@ class TestInstallUvCacheRootParity:
         #   5. and a fallback we cannot write is not a fallback, on both sides
         assert "_uv_cache_root_is_writable() {" in sh
         assert "function Test-StudioUvCacheRootWritable" in ps1
+        # Root AND buckets there, and at the launch repoint: the root can be writable while a
+        # bucket uv renames into is not, which is what the candidate probe rejects a cache for.
+        # A root-only question at either site hands back the cache the probe just refused.
+        assert "_uv_cache_is_writable() {" in sh
+        assert "function Test-StudioUvCacheUsable" in ps1
+        sh_launch = sh.split("_prepare_studio_uv_cache_for_launch() {", 1)[1].split("\n}", 1)[0]
+        assert "_uv_cache_is_writable" in sh_launch, sh_launch
+        ps1_launch = ps1.split("function Set-StudioUvCacheForLaunch", 1)[1].split("\n    }", 1)[0]
+        assert "Test-StudioUvCacheUsable" in ps1_launch, ps1_launch
         #   6. creating the probe is not enough: uv RENAMES into these directories, and NTFS
         # carries DELETE as its own ACE while an append-only directory does the same on ext4,
         # so a root can grant create and deny unlink.
