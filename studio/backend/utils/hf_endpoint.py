@@ -189,6 +189,29 @@ def _canonical(parts, folded: str) -> str:
     return urlunsplit((parts.scheme.lower(), netloc, parts.path, "", ""))
 
 
+def normalize_hf_endpoint_env() -> None:
+    """Make HF_ENDPOINT mean the same thing to huggingface_hub as it does here.
+
+    The library reads the variable itself, at import, with no normalisation and
+    no validation. A scheme-less ``hf-mirror.com`` therefore reaches it verbatim
+    and every ``HfApi`` / ``snapshot_download`` call fails on a missing scheme
+    while Studio's own requests work, and a value this module REJECTS -- a
+    plain-HTTP mirror off the machine, say -- would still be handed the user's
+    Hub token by the library while Studio itself fell back to huggingface.co.
+    Rewriting the variable before huggingface_hub is imported gives the whole
+    process, and the subprocesses that inherit this environment, one endpoint.
+    """
+    if not (os.environ.get("HF_ENDPOINT") or "").strip():
+        return
+    endpoint = get_hf_endpoint()
+    if endpoint == _DEFAULT_HF_ENDPOINT:
+        # Rejected, or set to the official host: either way the library's own
+        # default is what we want, and an unset variable is how it asks for it.
+        os.environ.pop("HF_ENDPOINT", None)
+    else:
+        os.environ["HF_ENDPOINT"] = endpoint
+
+
 def csp_connect_sources() -> tuple[str, str]:
     """The two endpoints as CSP ``connect-src`` sources, i.e. origins only.
 

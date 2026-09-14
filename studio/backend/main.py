@@ -218,6 +218,14 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
+# huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
+# Rewrite it first so the library, Studio's own requests and the browser all use one
+# endpoint. Must precede anything that imports huggingface_hub.
+from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
+
+_normalize_hf_endpoint_env()
+del _normalize_hf_endpoint_env
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")

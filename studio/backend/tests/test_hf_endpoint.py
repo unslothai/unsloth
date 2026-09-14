@@ -10,9 +10,11 @@ the tests just monkeypatch the environment and call them directly.
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
+from utils import hf_endpoint
 from utils.hf_endpoint import (
     client_reachable_endpoint,
     get_hf_datasets_server,
@@ -339,3 +341,37 @@ def test_an_ipv6_loopback_mirror_is_compressed_the_way_the_browser_sends_it(monk
     # Loopback-only still holds for plain http: a routable IPv6 host is refused.
     monkeypatch.setenv("HF_ENDPOINT", "http://[2001:db8::1]:9700")
     assert get_hf_endpoint() == "https://huggingface.co"
+
+
+def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
+    """huggingface_hub reads HF_ENDPOINT itself, at import, unvalidated.
+
+    A scheme-less value reaches it verbatim and every HfApi call fails on the
+    missing scheme; a value this module rejects would still be handed the user's
+    Hub token by the library while Studio used huggingface.co. Both cases are
+    settled by rewriting the variable before the library is imported.
+    """
+    monkeypatch.setenv("HF_ENDPOINT", "hf-mirror.com")
+    hf_endpoint.normalize_hf_endpoint_env()
+    assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
+
+    monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com/")
+    hf_endpoint.normalize_hf_endpoint_env()
+    assert os.environ["HF_ENDPOINT"] == "https://hf-mirror.com"
+
+    # Rejected values are removed, so the library falls back to its own default
+    # rather than sending the token to a host this module refused.
+    for rejected in (
+        "http://192.168.1.10:8080",
+        "https://hf-mirror.com; script-src *",
+        "https://例子.测试",
+        "*",
+    ):
+        monkeypatch.setenv("HF_ENDPOINT", rejected)
+        hf_endpoint.normalize_hf_endpoint_env()
+        assert "HF_ENDPOINT" not in os.environ, rejected
+
+    # An unset variable stays unset: the library's default is already correct.
+    monkeypatch.delenv("HF_ENDPOINT", raising = False)
+    hf_endpoint.normalize_hf_endpoint_env()
+    assert "HF_ENDPOINT" not in os.environ
