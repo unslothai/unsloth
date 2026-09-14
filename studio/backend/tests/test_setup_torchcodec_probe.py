@@ -123,6 +123,35 @@ def test_ffmpeg_advice_needs_ffmpeg_to_actually_be_missing():
     assert _probe(_ffmpeg(False) + same_error) == "ffmpeg"
 
 
+def test_a_partial_ffmpeg_is_not_reported_as_ffmpeg_being_present():
+    # Distros package avutil, avcodec and avformat separately, and torchcodec dlopens
+    # all three, so a host with only libavutil has an FFmpeg that cannot serve it.
+    # Reading that as "FFmpeg is already on the loader path" sends the user to debug a
+    # torch ABI mismatch when the fix is to install the rest of FFmpeg.
+    partial = textwrap.dedent(
+        """
+        import ctypes.util, os
+        ctypes.util.find_library = (
+            lambda n: "/usr/lib/libavutil.so" if n == "avutil" else None
+        )
+        os.environ['PATH'] = ''
+        """
+    )
+    same_error = _raising(
+        "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
+    )
+    assert _probe(partial + same_error) == "ffmpeg"
+
+
+@pytest.mark.parametrize("probe", [_shipped_sh_probe, _shipped_ps1_probe], ids = ["sh", "ps1"])
+def test_both_installers_require_every_ffmpeg_library(probe):
+    # The two copies drift silently otherwise: one installer would keep calling a
+    # partial FFmpeg present while the other stopped.
+    body = probe()
+    assert "for name in ('avutil', 'avcodec', 'avformat')" in body \
+        or 'for name in ("avutil", "avcodec", "avformat")' in body, body
+
+
 def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
     # torchcodec is installed and importing it raises the same class an absent one
     # would. Reporting that as absent leaves a damaged install with no warning.
@@ -179,13 +208,22 @@ def test_both_installers_report_the_loader_failure_that_is_not_ffmpeg(script):
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
 def test_the_probe_is_skipped_when_python_deps_were_skipped(script):
     # Nothing is installed to probe, and the venv may not even exist.
+    #
+    # The ENCLOSING condition, not "the name appears somewhere above". Both installers
+    # assign their skip variable hundreds of lines earlier, so a search backwards from
+    # the probe finds the assignment and passes even with the guard deleted -- the one
+    # regression this test exists to catch.
     text = script.read_text(encoding = "utf-8")
-    probe = text.index('step "torchcodec"')
-    guard = max(
-        text.rfind("_SKIP_PYTHON_DEPS", 0, probe),
-        text.rfind("$SkipPythonDeps", 0, probe),
+    opener, names = {
+        ".sh": ("_TORCHCODEC_PROBE=", ("_SKIP_PYTHON_DEPS",)),
+        ".ps1": ("$_torchcodecProbe = @", ("$SkipPythonDeps", "SkipPythonDeps")),
+    }[script.suffix]
+    probe = text.index(opener)
+    guard = text.rfind("if ", 0, probe)
+    line = text[guard : text.index("\n", guard)]
+    assert any(name in line for name in names), (
+        f"the probe's enclosing condition does not test the skip-python-deps flag: {line!r}"
     )
-    assert guard != -1, "the probe is not behind the skip-python-deps guard"
 
 
 def test_the_shell_probe_is_skipped_in_llama_only_mode():

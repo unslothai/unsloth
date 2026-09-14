@@ -3715,14 +3715,20 @@ if _alarm is not None:
 
 def _ffmpeg_on_loader_path():
     import ctypes.util, glob, os
-    if any(ctypes.util.find_library(n) for n in ("avutil", "avcodec", "avformat")):
-        return True
-    # find_library does not glob, and Windows ships these as avutil-59.dll and
-    # friends, so PATH is walked for the versioned names it would otherwise miss.
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        if d and glob.glob(os.path.join(d, "avutil-*.dll")):
-            return True
-    return False
+    # EVERY library, not any one of them. torchcodec dlopens avutil, avcodec and
+    # avformat, and distros package them separately, so a host carrying only
+    # libavutil has an FFmpeg that cannot serve it. Answering "present" there sends
+    # the user to debug a torch ABI mismatch when the fix is the rest of FFmpeg.
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    for name in ("avutil", "avcodec", "avformat"):
+        if ctypes.util.find_library(name):
+            continue
+        # find_library does not glob, and Windows ships these as avutil-59.dll and
+        # friends, so PATH is walked for the versioned names it would otherwise miss.
+        if any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
+            continue
+        return False
+    return True
 
 
 try:
