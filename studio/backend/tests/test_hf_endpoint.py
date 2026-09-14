@@ -145,6 +145,13 @@ MALFORMED_ENDPOINTS = [
     "https://hf-mirror.com#frag",
     "https://hf-mirror.com:",
     "https://hf-mirror.com:not-a-port",
+    # An IPv6 literal written without its brackets, and the other authorities that
+    # make SplitResult.port raise. The rejection has to come from this module, not
+    # from an exception out of main.py's startup call to normalize_hf_endpoint_env.
+    "https://::1",
+    "https://a:b:c",
+    "https://hf-mirror.com:99999",
+    "https://[::1",
     # "https://*" as a CSP source allows every https origin.
     "*",
     "https://*",
