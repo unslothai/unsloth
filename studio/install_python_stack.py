@@ -6313,8 +6313,13 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
             # ls-remote exits 0 whether or not a ref matched, so an empty stdout is
             # "no such ref" and has to be treated like a failure to resolve.
             result = subprocess.run(
-                [git, "-c", "credential.helper=", "ls-remote", _UNSLOTH_ZOO_GIT_REPO,
-                 *_zoo_ls_remote_patterns(ref)],
+                # http.lowSpeed*: git gives up on a transfer that stalls, which the wall
+                # timeout below cannot do early and which is the only bound install.sh
+                # has on a host with no `timeout` binary. Measured against a listener
+                # that accepts and then says nothing: indefinite without, 20.1s with.
+                [git, "-c", "credential.helper=",
+                 "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20",
+                 "ls-remote", _UNSLOTH_ZOO_GIT_REPO, *_zoo_ls_remote_patterns(ref)],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 # 20s, the same bound install.sh and install.ps1 use: a ref

@@ -63,9 +63,13 @@ echo "=== the probe cannot stop and ask a human, and cannot wait forever ==="
 # Nothing on this path needed credentials before the pin existed. A proxy answering
 # 401 must not send git to a credential helper and leave the installer behind a
 # prompt, and a network that accepts but never answers must not hang it either.
-assert_contains "credential helpers disabled" "$(cat "$STUB_LOG")" "-c credential.helper= ls-remote"
+assert_contains "credential helpers disabled" "$(cat "$STUB_LOG")" "-c credential.helper="
 assert_contains "GIT_TERMINAL_PROMPT=0"       "$(cat "$STUB_LOG")" "prompt=0"
 assert_contains "the probe is bounded"        "$(cat "$STUB_LOG")" "bounded by timeout 20"
+# The bound that survives on a host with no `timeout` binary, which is stock macOS:
+# git abandons a transfer that stalls. Measured, a silent remote hangs git without it.
+assert_contains "and bounded again by git itself" "$(cat "$STUB_LOG")" \
+    "-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20"
 # Compared against what the caller had, not against "unset": a CI runner is allowed
 # to export its own GIT_TERMINAL_PROMPT, and the point is that the probe changed nothing.
 assert_eq "and the variable is left exactly as the caller had it" \
@@ -109,6 +113,18 @@ echo "=== a ref a requirement cannot carry is refused out loud ==="
 _WARNING="$(UNSLOTH_ZOO_REF='release@2026' _resolve_zoo_git_spec 2>&1 >/dev/null)"
 assert_contains "the refusal names the variable and the value" "$_WARNING" \
     "UNSLOTH_ZOO_REF='release@2026'"
+
+echo "=== a fully qualified ref is asked for as given ==="
+# refs/heads/release must not become refs/heads/refs/heads/release, which matches
+# nothing and quietly drops the pin.
+UNSLOTH_ZOO_REF="refs/heads/release"
+export UNSLOTH_ZOO_REF
+STUB_OUT="$SHA	refs/heads/release"
+: > "$STUB_LOG"
+_resolve_zoo_git_spec
+assert_eq "a qualified ref still pins" "$URL@$SHA" "$_ZOO_GIT_SPEC"
+assert_contains "asked for as written" "$(cat "$STUB_LOG")" \
+    "refs/heads/release refs/heads/release^{}"
 
 echo "=== an explicit ref is honored and pinned ==="
 UNSLOTH_ZOO_REF="v2026.5.4"

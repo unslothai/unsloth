@@ -2438,7 +2438,9 @@ exit 1
             # The full ref name, never the bare one: an ls-remote pattern matches the
             # TAIL of a ref at slash boundaries, so `main` also matches
             # refs/heads/archive/main, which sorts first and would pin another history.
-            $psi.Arguments = '-c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main'
+            # http.lowSpeed*: git abandons a transfer that stalls, so a remote that
+            # accepts and then says nothing ends the probe before the 20s wait below.
+            $psi.Arguments = '-c credential.helper= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main'
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true

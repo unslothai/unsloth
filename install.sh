@@ -3052,18 +3052,32 @@ _resolve_zoo_git_spec() {
         # command literally named "timeout 20" for anyone who invokes this with zsh.
         # Full ref names, never the bare one: an ls-remote pattern matches the TAIL of a
         # ref at slash boundaries, so `main` also matches refs/heads/archive/main, which
-        # sorts first and would pin an unrelated history.
+        # sorts first and would pin an unrelated history. A ref that is already fully
+        # qualified is asked for as given, or it would become refs/heads/refs/heads/x
+        # and match nothing. Positional parameters rather than a space-joined string:
+        # `for w in $list` relies on word splitting, which zsh does not do.
+        case "$_ZOO_REF" in
+            refs/*) set -- "$_ZOO_REF" "$_ZOO_REF^{}" ;;
+            *)      set -- "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" ;;
+        esac
+        # http.lowSpeed*: the bound for hosts with no `timeout` binary, which is stock
+        # macOS. Measured against a listener that accepts and then says nothing, git
+        # waited indefinitely without these and gave up after 20.1s with them.
         if command -v timeout >/dev/null 2>&1; then
-            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" 2>/dev/null || true)"
+            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c credential.helper= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
         else
-            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" 2>/dev/null || true)"
+            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 ls-remote https://github.com/unslothai/unsloth-zoo "$@" 2>/dev/null || true)"
         fi
         # Branch first, then the commit an annotated tag points at, then the tag object:
         # the same order `git clone --branch` resolves a name in.
+        case "$_ZOO_REF" in
+            refs/*) set -- "$_ZOO_REF^{}" "$_ZOO_REF" ;;
+            *)      set -- "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" "refs/tags/$_ZOO_REF" ;;
+        esac
         # 2>/dev/null on the awk: a minimal image without it (the log filter at the top
         # of this file allows for the same) must cost the pin and nothing else, least of
         # all a "command not found" in the middle of the install output.
-        for _ZOO_WANT in "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" "refs/tags/$_ZOO_REF"; do
+        for _ZOO_WANT in "$@"; do
             _ZOO_LS="$(printf '%s\n' "$_ZOO_LS_OUT" | awk -F'\t' -v want="$_ZOO_WANT" '$2 == want { print $1; exit }' 2>/dev/null || true)"
             case "$_ZOO_LS" in
                 *[!0-9a-f]*) ;;

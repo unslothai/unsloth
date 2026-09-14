@@ -187,6 +187,10 @@ class TestUnslothZooGitSpec:
         ips._unsloth_zoo_git_spec()
 
         assert calls[0][1:3] == ["-c", "credential.helper="]
+        # A stalled transfer has to end on its own too: the wall timeout cannot fire
+        # early, and install.sh has only this bound on a host with no `timeout`.
+        assert "http.lowSpeedLimit=1000" in calls[0]
+        assert "http.lowSpeedTime=20" in calls[0]
         kwargs = self.kwargs[0]
         assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
         assert kwargs["env"]["SOME_UNRELATED_VAR"] == "kept"   # extended, not replaced
