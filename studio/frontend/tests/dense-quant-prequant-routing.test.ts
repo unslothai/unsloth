@@ -22,6 +22,7 @@ import {
 
 const Z_TURBO = "Tongyi-MAI/Z-Image-Turbo";
 const QWEN_IMAGE = "Qwen/Qwen-Image";
+const QWEN_2512 = "Qwen/Qwen-Image-2512";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 
@@ -79,6 +80,31 @@ test("the two schemes are sized apart, since they are different artifacts", () =
   assert.equal(
     curatedArtifactFitsDevice(QWEN_IMAGE, IMAGE_CATALOG, onCard(64, ["int8"])),
     false,
+  );
+});
+
+test("the 2512 pick is judged by the checkpoint the backend seeds for it, not by bf16", () => {
+  assert.equal(
+    curatedArtifactFitsDevice(QWEN_2512, IMAGE_CATALOG, onCard(64)),
+    false,
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(QWEN_2512, IMAGE_CATALOG, onCard(64, ["int8"])),
+    true,
+  );
+  const group = groupForRepoId(QWEN_2512, IMAGE_CATALOG);
+  assert.ok(group);
+  assert.equal(
+    pickDefaultArtifact(group, {
+      ...onCard(64, ["int8"]),
+      isDownloaded: notDownloaded,
+    }).repoId,
+    QWEN_2512,
+  );
+  assert.equal(
+    pickDefaultArtifact(group, { ...onCard(64), isDownloaded: notDownloaded })
+      .format,
+    "bnb-4bit",
   );
 });
 

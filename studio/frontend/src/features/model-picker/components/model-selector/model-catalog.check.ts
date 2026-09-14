@@ -1134,6 +1134,7 @@ assert.ok(groupMatchesQuery(ltx23, "lightricks/ltx-2.3"));
 const PREQUANT_ROWS = [
   ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo-FP8"],
   ["Qwen/Qwen-Image", "unsloth/Qwen-Image-FP8"],
+  ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512-FP8"],
   ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell-FP8"],
   ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
 ] as const;

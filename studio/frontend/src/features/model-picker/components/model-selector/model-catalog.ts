@@ -183,13 +183,17 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     // The prequant repo is real and public and the backend reaches its int8 half through
-    // prequant_repos. It has no artifact row here, so alias it to keep a pasted id finding it.
+    // prequant_variant_repos. It has no artifact row here, so alias it to keep a pasted id finding
+    // it.
     aliases: ["unsloth/Qwen-Image-2512-FP8"],
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-2512", 54, { totalParams: 20430401088 }),
+      bf16Pipeline("Qwen/Qwen-Image-2512", 54, {
+        totalParams: 20430401088,
+        prequantRepo: "unsloth/Qwen-Image-2512-FP8",
+        prequantSizeGb: { fp8: 19.06, int8: 25.4 },
+      }),
       // No FP8 row: unsloth/Qwen-Image-2512-FP8 holds torch prequant .pt checkpoints, not a single-file
-      // .safetensors, and fp8 is denied for this family anyway (_FAMILY_SCHEME_DENY: qwen-image
-      // renders every frame black under fp8).
+      // .safetensors; the backend seeds them through the row above.
       bnb4bit("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", 14, { totalParams: 10850871408 }),
       gguf("unsloth/Qwen-Image-2512-GGUF"),
     ],
