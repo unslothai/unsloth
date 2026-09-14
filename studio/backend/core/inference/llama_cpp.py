@@ -6410,6 +6410,10 @@ class LlamaCppBackend:
         # Relative model share per GPU (--tensor-split), in GPU order; None =
         # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
+        # Same ratio, but for auto tensor-parallel mode. The planner may emit a
+        # weighted split or fall back to a user-supplied ratio; recording it lets
+        # _runtime_matches_intent detect a changed ratio and reload.
+        self._auto_tensor_split: Optional[tuple[float, ...]] = None
         # Tokens the tensor-spill plan added to this argv, so a retry that re-places
         # the model can strip them with _without_subsequence. Empty when it abstained.
         self._spill_plan_flags: List[str] = []
@@ -7380,6 +7384,16 @@ class LlamaCppBackend:
                         )
                     )
                 )
+            ):
+                return False
+            # Auto tensor-parallel mode can still end up with a concrete ratio
+            # (planner output or validated user fallback). Two otherwise identical
+            # auto requests with different ratios must not reuse the same server.
+            if (
+                intent.gpu_memory_mode != "manual"
+                and self._tensor_parallel
+                and self._auto_tensor_split
+                != (tuple(intent.tensor_split) if intent.tensor_split else None)
             ):
                 return False
 
@@ -15066,6 +15080,7 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
+        self._auto_tensor_split = None
         self._spill_plan_flags = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
@@ -17860,6 +17875,90 @@ class LlamaCppBackend:
                 tensor_split = adj
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
 
+    def _tensor_split_fits_budget(
+        self,
+        split: list[float],
+        gpus: list[tuple[int, int]],
+        gpu_indices: list[int],
+        model_size: int,
+        effective_ctx: int,
+        cache_type_kv: Optional[str] = None,
+        n_parallel: int = 1,
+        n_ubatch: Optional[int] = None,
+        kv_unified: bool = True,
+        flash_attn: bool = True,
+        swa_full: bool = False,
+        mtp_engaged: bool = False,
+        mtp_overhead_fn: Optional[Callable[[int], int]] = None,
+        mtp_flat_reserve_bytes: int = 0,
+        total_by_idx: Optional[dict[int, int]] = None,
+        vram_fraction: Optional[float] = None,
+    ) -> bool:
+        """Check that a caller-supplied tensor split fits each selected GPU.
+
+        The auto planner returns ``None`` when an even share fits, but a user
+        ratio may still overshoot one card. Validate the ratio against the same
+        per-device budget the planner uses (usable VRAM minus the replicated
+        compute-graph reserve and context-linear buffer).
+        """
+        if not split or sum(split) <= 0 or len(split) != len(gpu_indices):
+            return False
+
+        _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
+
+        def _usable(idx: int, free_mib: int) -> float:
+            t = total_by_idx.get(idx, 0) if total_by_idx else 0
+            return max(0.0, _vram_usable_mib(free_mib, t, _tp_frac))
+
+        free_by_idx = {idx: free for idx, free in gpus}
+        usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
+
+        _reserve_bytes = self._estimate_compute_buffer_bytes(
+            n_ubatch=n_ubatch, n_parallel=n_parallel, per_device_tensor=True
+        )
+        reserve_mib = (
+            _reserve_bytes // (1024 * 1024)
+            if _reserve_bytes > 0
+            else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+        )
+
+        n_dev = len(gpu_indices)
+        flat_mtp = max(0, mtp_flat_reserve_bytes)
+        if mtp_engaged and mtp_overhead_fn is None:
+            flat_mtp = max(flat_mtp, 2 * 1024**3)
+
+        kv_bytes = (
+            self._estimate_kv_cache_bytes(
+                effective_ctx,
+                cache_type_kv,
+                n_parallel=n_parallel,
+                swa_full=swa_full,
+                kv_unified=kv_unified,
+                n_ubatch=n_ubatch,
+                flash_attn=flash_attn,
+            )
+            if self._can_estimate_kv() and effective_ctx > 0
+            else 0
+        )
+        mtp_bytes = (
+            mtp_overhead_fn(effective_ctx) if mtp_overhead_fn is not None else 0
+        ) + flat_mtp
+        cc_bytes = n_dev * self._compute_buffer_ctx_bytes(
+            effective_ctx, n_ubatch, cache_type_kv
+        )
+        total_bytes = model_size + kv_bytes + mtp_bytes + cc_bytes
+
+        cc_per_dev_mib = (cc_bytes // n_dev) // (1024 * 1024) if cc_bytes else 0
+        total_weight = sum(split)
+        for i, idx in enumerate(gpu_indices):
+            alloc_bytes = total_bytes * split[i] / total_weight
+            capacity_bytes = (
+                usable_by_idx[idx] - reserve_mib - cc_per_dev_mib
+            ) * 1024 * 1024
+            if alloc_bytes > capacity_bytes:
+                return False
+        return True
+
     @staticmethod
     def _with_mmproj_offload_disabled(
         cmd: Sequence[str], env: Optional[Mapping[str, str]] = None
@@ -20149,6 +20248,7 @@ class LlamaCppBackend:
                     self._gpu_layers = -1
                     self._n_cpu_moe = 0
                     self._tensor_split = None
+                    self._auto_tensor_split = None
                 self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -23184,21 +23284,58 @@ class LlamaCppBackend:
                 if tensor_parallel:
                     cmd.extend(["--split-mode", "tensor"])
                     _emitted_tensor_split: Optional[str] = None
+                    _emitted_split_values: Optional[list[float]] = None
                     if tp_tensor_split and len(tp_tensor_split) > 1:
                         _emitted_tensor_split = ",".join(str(int(x)) for x in tp_tensor_split)
+                        _emitted_split_values = [float(x) for x in tp_tensor_split]
                     elif gpu_memory_mode != "manual" and tensor_split:
                         # Auto tensor planning may decide an even split is safe and
                         # return None, but a user who set a per-GPU ratio still expects
-                        # it to reach llama-server. Fall back to the manual ratio only
-                        # when the planner emitted nothing.
+                        # it to reach llama-server. Fall back to the ratio only when
+                        # the planner emitted nothing and the ratio actually fits the
+                        # per-GPU budget the planner used.
                         _split_gpus = self._effective_gpu_count(gpu_indices)
                         _sanitized_split = self._sanitize_tensor_split(tensor_split)
-                        if len(_sanitized_split) == _split_gpus and sum(_sanitized_split) > 0:
-                            _emitted_tensor_split = ",".join(f"{x:g}" for x in _sanitized_split)
+                        if (
+                            len(_sanitized_split) == _split_gpus
+                            and sum(_sanitized_split) > 0
+                            and self._tensor_split_fits_budget(
+                                _sanitized_split,
+                                tp_gpus,
+                                gpu_indices,
+                                model_size,
+                                effective_ctx,
+                                cache_type_kv=cache_type_kv,
+                                n_parallel=n_parallel,
+                                n_ubatch=_effective_ubatch,
+                                kv_unified=planned_kv_unified,
+                                flash_attn=planned_flash_attn,
+                                swa_full=swa_full,
+                                mtp_engaged=_mtp_reserves_gpu,
+                                mtp_overhead_fn=mtp_overhead_fn,
+                                mtp_flat_reserve_bytes=(
+                                    2 * 1024**3
+                                    if (_mtp_reserves_gpu and _mtp_kv_unsized)
+                                    else 0
+                                ),
+                                total_by_idx=total_by_idx,
+                                vram_fraction=_vram_frac,
+                            )
+                        ):
+                            _emitted_tensor_split = ",".join(
+                                f"{x:g}" for x in _sanitized_split
+                            )
+                            _emitted_split_values = list(_sanitized_split)
                     if _emitted_tensor_split is not None:
                         cmd.extend(["--tensor-split", _emitted_tensor_split])
                     self._tensor_parallel = True
                     self._layer_preserves_tensor_intent = False
+                    # Record the ratio auto mode actually launched with, so a later
+                    # request with a different ratio is not incorrectly reused.
+                    if gpu_memory_mode != "manual":
+                        self._auto_tensor_split = (
+                            tuple(_emitted_split_values) if _emitted_split_values else None
+                        )
                     logger.info(
                         "Tensor parallelism: --split-mode tensor, --tensor-split %s",
                         _emitted_tensor_split,
@@ -27286,6 +27423,7 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
+            self._auto_tensor_split = None
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None

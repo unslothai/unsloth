@@ -1821,6 +1821,79 @@ def test_auto_tensor_parallel_honors_user_tensor_split_when_planner_returns_none
     assert cmd[cmd.index("--tensor-split") + 1] == "3,1"
 
 
+def test_auto_tensor_parallel_drops_user_split_when_it_exceeds_budget(tmp_path):
+    """A user ratio that overshoots a GPU's usable budget must not be forwarded
+    in auto mode just because an even split fits."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 25 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )["cmd"]
+
+    assert backend.tensor_parallel is True
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--tensor-split" not in cmd
+
+
+def test_auto_tensor_parallel_records_split_for_reload_matching(tmp_path):
+    """An auto tensor-parallel load with a concrete ratio must not be reused
+    when a later request asks for a different ratio."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )
+
+    assert backend._auto_tensor_split == (3.0, 1.0)
+
+    intent_same = GgufLoadIntent(
+        model_identifier = "test",
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = (3, 1),
+        gpu_ids = (0, 1),
+        n_ctx = 4096,
+    )
+    intent_changed = GgufLoadIntent(
+        model_identifier = "test",
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = (1, 3),
+        gpu_ids = (0, 1),
+        n_ctx = 4096,
+    )
+    assert backend._runtime_matches_intent(intent_same, None) is True
+    assert backend._runtime_matches_intent(intent_changed, None) is False
+
+
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
     """A 30 GiB GGUF on a host with 4 GiB of RAM left, full manual offload."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = memory)
