@@ -720,3 +720,53 @@ def test_a_python_path_rooted_in_the_studio_home_variable(monkeypatch, tmp_path)
             ), code
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_cmd_exe_spells_the_directory_change_in_any_case(monkeypatch, tmp_path):
+    # On a Windows host without a trusted bash the shell is `cmd /c`, whose built-ins are
+    # case-insensitive, so `CD ..\..` moves the working directory exactly as `cd ../..` does.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'CD ..\\.. & CD auth & sqlite3 auth.db "select jwt_secret from auth_user"',
+            "Cd ../..; cd auth; cat .cli_api_key_cli_1",
+            "CD ../.. && cat auth/auth.db",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in ("CD ../.. && ls models", "Cd src & type README.md"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_the_studio_home_variable_is_read_in_any_case(monkeypatch, tmp_path):
+    # `os.environ` upper-cases every key on Windows (`os._createenviron` sets `encodekey = str.upper`
+    # for `nt`), so a lower-case lookup returns the same studio root the upper-case spelling does.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for var in ("unsloth_studio_home", "Unsloth_Studio_Home", "studio_home"):
+            code = (
+                "import os, sqlite3\n"
+                'print(sqlite3.connect(os.environ["%s"] + "/auth/auth.db"))' % var
+            )
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), var
+        ordinary = 'import os\nprint(open(os.environ["data_dir"] + "/notes.txt").read())'
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None

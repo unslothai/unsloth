@@ -2779,8 +2779,11 @@ _TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|
 # Any path-shaped token carrying a separator. Used only once a `cd` has moved the working directory,
 # where a plain relative path like `auth/auth.db` stops being "somewhere inside the sandbox".
 _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
-# `cd DIR`, including the `cd /d DIR` spelling, at a command position.
-_CD_TARGET_RE = re.compile(r"(?:^|[;&|(]\s*|\s)cd\s+(?:/d\s+)?([^\s;&|)]+)")
+# `cd DIR`, including the `cd /d DIR` spelling, at a command position. Case-insensitive because
+# `cmd /c` is the shell on a Windows host without a trusted bash and its built-ins are, so `CD ..\..
+# & CD auth` is a working directory change there. The `cd into the studio root` pattern built above
+# has always been IGNORECASE for the same reason; this is the spelling that was still exact.
+_CD_TARGET_RE = re.compile(r"(?:^|[;&|(]\s*|\s)cd\s+(?:/d\s+)?([^\s;&|)]+)", re.IGNORECASE)
 # Ceiling on the directories walked. A command with many `cd`s gains no signal from the long tail.
 # Distinct directories, not `cd` commands: padding a command with repeats must not spend the budget.
 _MAX_TRACKED_CWDS = 64
@@ -2845,7 +2848,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
             return True
     # A `cd` earlier in the same command moves the directory every later relative path is opened
     # from, so those paths have to be re-resolved against where the command actually ended up.
-    if workdir and "cd" in text:
+    if workdir and "cd" in text.lower():
         for cwd in _cwds_after_cd(workdir, text):
             # The walked directory itself, not only what is opened from it: `cd ../..; cd auth;
             # sqlite3 auth.db` never writes a path with a separator in it, so every token below
@@ -2905,8 +2908,14 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
 
 
 def _code_reads_the_studio_home(code: str) -> bool:
-    """True when *code* mentions one of the environment variables that name the studio home."""
-    return any(var in code for var in _STUDIO_HOME_ENV_VARS)
+    """True when *code* mentions one of the environment variables that name the studio home.
+
+    Case-insensitive: on Windows `os.environ` upper-cases every key it is given (`os._createenviron`
+    sets `encodekey = str.upper` for `nt`), so `os.environ["unsloth_studio_home"]` returns the same
+    value the upper-case spelling does. The variable markers the text scan uses are already compared
+    lowercased, so this brings the python fold into line with them."""
+    lowered = code.lower()
+    return any(var.lower() in lowered for var in _STUDIO_HOME_ENV_VARS)
 
 
 def _studio_home_for_guard() -> "str | None":
