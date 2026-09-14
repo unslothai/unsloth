@@ -294,7 +294,13 @@ def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
         text = True,
     )
     assert out.returncode == 0, out.stderr
-    assert "TORCHCODEC=ffmpeg" in out.stdout, "the probe reached python but its body was cut short"
+    # Either loader answer proves the point: both come from the `except Exception` arm,
+    # which is what a body cut short at a double quote would have lost. Which of the two
+    # is reported depends on whether the MACHINE has FFmpeg on its loader path, so pinning
+    # this to "ffmpeg" fails on every developer box that has FFmpeg installed.
+    assert any(
+        f"TORCHCODEC={state}" in out.stdout for state in ("ffmpeg", "native")
+    ), f"the probe reached python but its body was cut short: {out.stdout!r}"
 
 
 def test_the_powershell_probe_runs_the_studio_interpreter():
