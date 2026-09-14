@@ -142,7 +142,7 @@ def _wsl_packaged_icon_block() -> str:
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "bash is unavailable")
 def test_wsl_shortcut_reads_the_packaged_ico_out_of_site_packages(tmp_path):
     """A WSL install that found the .ico in site-packages must hand the shortcut script a
-    Windows path, so the PowerShell side never reaches raw.githubusercontent.com."""
+    Windows path."""
     dist = (
         tmp_path / "venv" / "lib" / "python3.12" / "site-packages" / "studio" / "frontend" / "dist"
     )
@@ -203,8 +203,8 @@ def test_wsl_shortcut_falls_back_when_the_ico_cannot_be_translated(tmp_path, shi
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh is unavailable")
 def test_windows_shortcut_prefers_the_packaged_icon_over_the_download(tmp_path):
-    """An irm|iex install has no $PSScriptRoot and so no $bundledIcon. The packaged .ico
-    has to win there, or the icon still depends on GitHub being reachable."""
+    """An irm|iex install has no $PSScriptRoot and so no $bundledIcon, which is where the
+    packaged .ico has to win."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     start = source.index("            $hasValidIcon = $false")
     end = source.index("            if (Test-Path -LiteralPath $iconPath) {", start)
@@ -229,7 +229,6 @@ def test_windows_shortcut_prefers_the_packaged_icon_over_the_download(tmp_path):
         )
         # run_pwsh, not subprocess.run: a pwsh killed at startup never read $packagedIcon,
         # and check = True would report that as the precedence being wrong.
-        # See tests/_shared/unsloth_pwsh_runner.py.
         return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             check = True,
@@ -279,9 +278,9 @@ def test_windows_packaged_icon_is_found_next_to_the_managed_python(tmp_path):
     reason = "pwsh and bash are both required",
 )
 def test_wsl_shortcut_script_copies_the_packaged_ico_instead_of_downloading(tmp_path):
-    """The half of the WSL path that runs under Windows. install.sh writes this through an
-    unquoted heredoc, so bash expands it first here too: a `$` that lost its backslash
-    expands to nothing and strips the path off Copy-Item, which no later check would catch."""
+    """The half of the WSL path that runs under Windows, piped through bash because
+    install.sh writes it in an unquoted heredoc: a `$` that lost its backslash expands to
+    nothing and strips the path off Copy-Item, which no later check would catch."""
     source = INSTALL_SH.read_text(encoding = "utf-8")
     start = source.index("\\$packagedIcon = '$_css_wsl_ico_win_ps'")
     end = source.index("\\$hasIcon = \\$false", start)

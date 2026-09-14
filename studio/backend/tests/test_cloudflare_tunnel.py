@@ -1663,8 +1663,6 @@ def test_download_still_retries_a_5xx(monkeypatch, tmp_path):
 
 
 def test_download_retries_a_429(monkeypatch, tmp_path):
-    """A 429 from GitHub's CDN says to come back, not that the asset is missing, so it is
-    one of the two 4xx the loop is allowed to try again."""
     import io
     import urllib.error
     import urllib.request
@@ -1686,8 +1684,6 @@ def test_download_retries_a_429(monkeypatch, tmp_path):
 
 
 def test_download_does_not_retry_an_unresolvable_host(monkeypatch, tmp_path):
-    """A resolver that says the name does not exist says it again 1.5s later, and run.py
-    starts the launch tunnel inline, so the pauses would only delay the banner."""
     import socket
     import urllib.error
     import urllib.request
@@ -1709,8 +1705,6 @@ def test_download_does_not_retry_an_unresolvable_host(monkeypatch, tmp_path):
 
 
 def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
-    """EAI_AGAIN is the resolver reporting it could not answer yet, not that the name is
-    wrong: a resolver that comes back between attempts still produces a tunnel."""
     import io
     import socket
     import urllib.error
@@ -1735,8 +1729,8 @@ def test_download_retries_a_temporary_resolver_failure(monkeypatch, tmp_path):
 
 
 def test_download_does_not_retry_a_chain_it_cannot_verify(monkeypatch, tmp_path):
-    """A stale CA bundle, a wrong clock and a TLS-intercepting proxy all fail verification
-    the same way on every attempt, so the pauses would only delay the banner."""
+    """A stale CA bundle, a wrong clock and a TLS-intercepting proxy are configuration, not
+    a transfer that can go better."""
     import urllib.error
     import urllib.request
 
@@ -1759,8 +1753,8 @@ def test_download_does_not_retry_a_chain_it_cannot_verify(monkeypatch, tmp_path)
 
 
 def test_download_retries_a_tls_stream_that_broke_mid_body(monkeypatch, tmp_path):
-    """Only verification is terminal. A bad record after some bytes is a transfer that died
-    partway: the half it already wrote must not be published, and the retry must replace it."""
+    """A bad record after some bytes is a transfer that died partway, so the half already
+    written must not be published."""
     import io
     import urllib.request
 
@@ -1786,8 +1780,6 @@ def test_download_retries_a_tls_stream_that_broke_mid_body(monkeypatch, tmp_path
 
 
 def test_download_does_not_retry_an_unwritable_cache(monkeypatch, tmp_path):
-    """A cache directory the user cannot write to is not a transfer that can go better, and
-    run.py starts the launch tunnel inline: the pauses would delay the banner for nothing."""
     import tempfile
     import urllib.request
 
@@ -1808,10 +1800,8 @@ def test_download_does_not_retry_an_unwritable_cache(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("fails_on", ["write", "close", "publish"])
 def test_download_does_not_retry_a_disk_that_fills_mid_transfer(monkeypatch, tmp_path, fails_on):
-    """A volume that runs out of space does not gain any on the next attempt, and each retry
-    re-downloads the whole asset before hitting the same wall. Every step that touches the disk
-    counts: the temporary file is buffered, so a write can succeed and the space only run out
-    when the buffer reaches the disk on close, or later when the finished file is renamed."""
+    """The temporary file is buffered, so a full volume surfaces at the write, at the close
+    that flushes it, or at the rename. None of the three gains space on a retry."""
     import io
     import pathlib
     import urllib.request
@@ -1827,8 +1817,8 @@ def test_download_does_not_retry_a_disk_that_fills_mid_transfer(monkeypatch, tmp
         name = str(tmp_path / "cf.tmp-full")
 
         def __enter__(self):
-            # Written so a bypassed failure reaches a healthy stat() and a passing download
-            # rather than a FileNotFoundError that looks like the failure under test.
+            # Without it a bypassed failure hits FileNotFoundError in stat(), which passes
+            # the same assertions as the failure under test.
             pathlib.Path(self.name).write_bytes(b"cloudflared-bytes")
             return self
 
@@ -1862,8 +1852,6 @@ def test_download_does_not_retry_a_disk_that_fills_mid_transfer(monkeypatch, tmp
 
 
 def test_download_retries_an_empty_body(monkeypatch, tmp_path):
-    """An asset that arrives with no bytes is the transfer going wrong, not the disk, so it
-    keeps the attempt it had before the local failures were separated out."""
     import io
     import urllib.request
 
@@ -1882,9 +1870,8 @@ def test_download_retries_an_empty_body(monkeypatch, tmp_path):
 
 
 def test_download_does_not_retry_when_a_reset_unwinds_into_a_full_disk(monkeypatch, tmp_path):
-    """A reset on its own is worth another attempt, but if the buffered close then reports the
-    volume is full it is that error the caller sees, and the disk will be just as full next
-    time. The transfer error is compared by identity so the one that replaced it wins."""
+    """The caller sees the full disk the reset unwound into, and it is just as full next
+    time. Identity picks the error that replaced the transfer's."""
     import pathlib
     import tempfile
     import urllib.request

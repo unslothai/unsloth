@@ -110,8 +110,7 @@ jobs:
                 "no frontend public":    not any("studio/frontend/public/" in s for s in n),
                 "no frontend src":       not any("studio/frontend/src/"    in s for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
-                # The installers read these out of site-packages; without them a shortcut
-                # icon is back to needing raw.githubusercontent.com.
+                # The installers read these out of site-packages before falling back to GitHub.
                 "shortcut icons shipped": all(
                     any(s.endswith(f"studio/frontend/dist/{f}") for s in n)
                     for f in ("rounded-512.png", "unsloth.ico")

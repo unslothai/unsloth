@@ -168,11 +168,9 @@ def _download(
 ) -> bool:
     """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool.
 
-    Attempts share one budget instead of each getting `timeout`, so a failing download
-    still costs about what the single attempt before them did. A timeout, a 4xx other than
-    408/429, a name the resolver answers for, and a chain that will not verify are terminal:
-    they are answers about the request, not transfers that failed, and run.py starts the
-    launch tunnel inline, where a pause delays the banner.
+    Attempts share one budget rather than each getting `timeout`, so a failing download
+    costs about what the single attempt before it did, and the terminal cases below skip the
+    pauses: run.py starts the launch tunnel inline, where one of them delays the banner.
     """
     import socket
     import ssl
@@ -187,10 +185,9 @@ def _download(
         if remaining <= 0:
             break
         tmp_path: Optional[Path] = None
-        # Held from the two calls that touch the network, so everything else in the attempt
-        # is known to be the local filesystem. Nothing else can tell them apart: ENOSPC from
-        # a full disk and ENETUNREACH from a dropped link are both a bare OSError. Compared
-        # by identity, so a close that fails while a transfer error unwinds counts as local.
+        # Set where the failure is known to be the transfer, because nothing else separates
+        # it from the local filesystem: ENOSPC from a full disk and ENETUNREACH from a dropped
+        # link both arrive as a bare OSError. Identity, so a close mid-unwind stays local.
         transfer_exc: Optional[BaseException] = None
         try:
             dest.parent.mkdir(parents = True, exist_ok = True)
@@ -233,13 +230,11 @@ def _download(
                 exc is not transfer_exc
                 or isinstance(exc, TimeoutError)
                 or isinstance(reason, TimeoutError)
-                # Only this SSLError is a verdict on the peer rather than a transfer that
-                # failed; the siblings can go the other way on a second attempt.
+                # A verdict on the peer; its SSLError siblings are transfers that failed.
                 or isinstance(exc, ssl.SSLCertVerificationError)
                 or isinstance(reason, ssl.SSLCertVerificationError)
                 # EAI_AGAIN is the resolver asking to be tried again; the rest are answers.
                 or (isinstance(resolver, socket.gaierror) and resolver.errno != socket.EAI_AGAIN)
-                # 408 and 429 are the two 4xx a retry can change.
                 or (
                     isinstance(exc, urllib.error.HTTPError)
                     and 400 <= exc.code < 500
