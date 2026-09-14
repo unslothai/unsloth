@@ -4992,6 +4992,35 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     return _warn_wrong_flavor(expected, _now)
 
 
+def _missing_torch_needs_dependency_pass() -> bool:
+    """Check metadata for missing torch that the core dependency pass can reinstall.
+
+    Require an active core dependency to avoid repeated, ineffective repair passes.
+    """
+    if NO_TORCH or _installed_distribution_version("torch") is not None:
+        return False
+    try:
+        from importlib.metadata import PackageNotFoundError, requires
+        from packaging.requirements import Requirement
+    except ImportError:
+        return False
+    for package in _core_package_names(os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")):
+        try:
+            lines = requires(package) or []
+        except PackageNotFoundError:
+            continue
+        for line in lines:
+            try:
+                req = Requirement(line)
+            except Exception:  # noqa: BLE001 - ignore malformed requirements
+                continue
+            if req.name.lower() == "torch" and (
+                req.marker is None or req.marker.evaluate({"extra": ""})
+            ):
+                return True
+    return False
+
+
 def _amd_torch_needs_dependency_pass() -> bool:
     """Return True when setup must run the dependency pass to repair non-ROCm torch.
 
@@ -9884,6 +9913,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
     if any(_arg.startswith("-") for _arg in sys.argv[1:]):
         # Never let a malformed probe call fall through into a multi-gigabyte install.
         _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")

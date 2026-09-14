@@ -1927,6 +1927,12 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     fi
+    # Repair missing torch only when the metadata probe exits 0.
+    if "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --missing-torch-needs-dependency-pass >/dev/null 2>&1; then
+        substep "PyTorch is not installed -- forcing dependency pass to reinstall it..."
+        _SKIP_PYTHON_DEPS=false
+    fi
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
