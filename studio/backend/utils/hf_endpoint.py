@@ -38,6 +38,9 @@ DEFAULTS_BY_HEALTH_KEY = {
 _ds_mirror_warned = False
 # The CSP builder runs on every response, so each bad value is logged once.
 _rejected_warned: set[str] = set()
+# client_reachable_endpoint() runs per request too, so each configured endpoint
+# logs its per-client fallback once instead of on every /api/health call.
+_unreachable_warned: set[str] = set()
 
 # A source list is whitespace-separated and semicolon-delimited: any of these in an
 # endpoint would add sources or whole directives rather than one origin.
@@ -179,9 +182,24 @@ def client_reachable_endpoint(client_host: str | None) -> str:
 
     Everything the backend does itself keeps using ``get_hf_endpoint()``; this is
     only for values that leave for a browser (``/api/health``, the publish link).
+    A remote client that cannot reach the configured endpoint gets the official
+    one instead, and the fallback is logged once per configured endpoint so the
+    operator can see why a tunnelled browser is not using the mirror.
     """
     endpoint = get_hf_endpoint()
-    return endpoint if endpoint_is_reachable_by(endpoint, client_host) else _DEFAULT_HF_ENDPOINT
+    if endpoint_is_reachable_by(endpoint, client_host):
+        return endpoint
+    if endpoint not in _unreachable_warned:
+        _unreachable_warned.add(endpoint)
+        logger.warning(
+            "HF_ENDPOINT %s is not reachable from this client (%s); serving %s to "
+            "that browser instead. The backend itself keeps using the configured "
+            "endpoint.",
+            endpoint,
+            client_host or "client address unknown",
+            _DEFAULT_HF_ENDPOINT,
+        )
+    return _DEFAULT_HF_ENDPOINT
 
 
 def _canonical(parts, folded: str) -> str:
