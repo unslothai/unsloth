@@ -241,3 +241,50 @@ def test_loader_admits_block_fp8_below_sm89(monkeypatch, capability, quant, allo
     else:
         with pytest.raises(ValueError, match = "compute capability"):
             verify_fp8_support_if_applicable(_Cfg(**quant))
+
+
+def test_grouped_fp8_eval_is_guarded_in_source():
+    # The grouped layer only exists in newer transformers, so the runtime test below skips on
+    # most installs. Assert statically that eval does not bypass the guard, or admitting these
+    # checkpoints at load time just moves the failure to the first grouped forward.
+    import ast
+    import inspect
+
+    from unsloth.kernels import fp8
+
+    tree = ast.parse(inspect.getsource(fp8))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_fp8_grouped_forward")
+    guard = ast.dump(fn.body[0].test)
+    assert "_fp8_kernel_unsupported" in guard, "grouped eval no longer consults the guard"
+    assert "training" in guard, "grouped forward no longer distinguishes training from eval"
+
+
+def test_grouped_fp8_eval_uses_the_fallback_on_pre_sm89(monkeypatch):
+    from unsloth.kernels import fp8
+
+    if getattr(fp8, "FP8GroupedLinear", None) is None:
+        pytest.skip("this transformers has no FP8GroupedLinear")
+
+    calls = []
+    monkeypatch.setattr(
+        fp8, "_blockwise_weight_dequant_any_shape",
+        lambda w, s, b, d, _o = fp8._blockwise_weight_dequant_any_shape: (
+            calls.append(1) or _o(w, s, b, d)),
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+
+    n_groups, out_per, hidden, bs = 2, 256, 256, 128
+    layer = type("Stub", (), {})()
+    layer.weight = (torch.randn(n_groups * out_per, hidden, device = "cuda") * 0.3).to(
+        torch.float8_e4m3fn)
+    layer.weight_scale_inv = torch.rand(
+        n_groups * out_per // bs, hidden // bs, device = "cuda", dtype = torch.float32) + 0.5
+    layer.n_groups, layer.block_size, layer.has_bias = n_groups, [bs, bs], False
+    layer.bias, layer.training = None, False
+
+    out = fp8.FP8GroupedLinear.forward(layer, torch.randn(
+        4, n_groups, hidden, device = "cuda", dtype = torch.bfloat16))
+
+    assert calls, "grouped eval bypassed the guarded dequant on a pre-sm89 device"
+    assert torch.isfinite(out.float()).all()
