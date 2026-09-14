@@ -39,6 +39,7 @@ from core.inference.context_window import (
     truncate_oldest_messages,
 )
 from core.inference.instruction_pin import is_substantive
+from core.inference import self_note as self_note_module
 
 # "checkpoint" resets the epoch; "rolling" is the pre-existing window, byte for byte, and is both the A/B arm and the
 # escape hatch for a template family that misbehaves.
@@ -343,7 +344,9 @@ def _resolved(value):
     return value() if callable(value) else value
 
 
-def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
+def render_checkpoint(
+    items: list[str], *, searchable: bool = True, self_note: str = ""
+) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
         return ""
@@ -352,7 +355,33 @@ def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     # and reads back as just its heading.
     lines = "\n".join("- " + item.replace("\n", "\n" + _CONTINUATION) for item in items)
     tail = _SEARCHABLE if searchable else _NOT_SEARCHABLE
-    return f"{_OPEN}\n{_HEADER}{tail}\n\n{lines}\n{_CLOSE}"
+    # The note goes AFTER the user's bullets and in its own delimited section: merged, a
+    # model guess would be indistinguishable from the user's own words, which is the one
+    # thing the block's header promises it is not. An empty note renders nothing, so the
+    # disabled path is byte-identical to the block this function has always produced.
+    note = self_note_module.render_self_note(self_note)
+    body = f"{lines}\n\n{note}" if note else lines
+    return f"{_OPEN}\n{_HEADER}{tail}\n\n{body}\n{_CLOSE}"
+
+
+def latest_self_note(messages: list[dict]) -> str:
+    """The newest note carried on any assistant message, or "".
+
+    Newest wins: a note is the model's current working state, and an older one it has
+    already revised is exactly what should not outlive it.
+    """
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "self_note":
+                note = part.get("content")
+                if isinstance(note, str) and note.strip():
+                    return note.strip()
+    return ""
 
 
 # A capture group, so `findall` yields the BODY; without it the last item swallows the closing delimiter. The HEADER is
@@ -538,7 +567,9 @@ def fit_checkpoint_context(
             # re-capped away, so the recount stayed over budget and the request was refused or pushed back to rolling
             # even though the base system prompt plus the newest turn fits with room to spare.
             return _without_block(kept), ""
-        text = render_checkpoint(items, searchable = _resolved(searchable))
+        # Gated on the toggle, so a disabled install renders the block it always did.
+        note = latest_self_note(messages) if self_note_module.enabled() else ""
+        text = render_checkpoint(items, searchable = _resolved(searchable), self_note = note)
         return _append_to_system(kept, text), text
 
     # Phase one: replay the epoch already in force. Without it the client re-sending the whole transcript would trigger
