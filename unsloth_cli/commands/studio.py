@@ -1411,9 +1411,18 @@ def _enforce_password_change_before_exposure(
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
+            # The old raw-bind branch pointed at --password / the env var before it
+            # warned and continued; an abort needs that pointer more, not less, and
+            # the way off the network differs per launch.
             typer.echo(
                 "\nError: password change aborted; refusing to expose Unsloth "
-                "with the default admin password. Re-run and set a password.",
+                "with the default admin password. Re-run and set a password, or "
+                "pass one with --password / UNSLOTH_STUDIO_PASSWORD, or "
+                + (
+                    "launch without --secure/--cloudflare."
+                    if tunnel_will_start
+                    else "launch with -H 127.0.0.1 to stay off the network."
+                ),
                 err = True,
             )
             raise typer.Exit(1)

@@ -145,6 +145,13 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
 _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 
 
+# Whether this module reports the unattended deadline as None rather than folding
+# it into the False that also means "the operator refused". run.py reads it off
+# the module: an interrupted `studio update` can leave an OLDER terminal_prompt.py
+# next to a newer run.py, and there False means both things.
+UNATTENDED_RETURNS_NONE = True
+
+
 class PromptUnattended(Exception):
     """A terminal is attached but nobody answered before the deadline.
 
@@ -275,6 +282,7 @@ def prompt_for_password_change(
     out: "TextIO | None" = None,
     exposure: str = "on the public internet",
     first_key_timeout: "float | None" = None,
+    refusal_aborts: bool = True,
 ) -> "bool | None":
     """Force a new admin password before exposure.
 
@@ -291,7 +299,14 @@ def prompt_for_password_change(
     it: a detached pty (``tmux new -d``, ``docker run -dt``) looks exactly like
     an attended terminal, so undeadlined it waits forever and never binds its
     socket. Unset (the tunnel) blocks indefinitely.
+
+    ``refusal_aborts`` is accepted and ignored: a refusal now aborts every
+    exposed launch, so there is nothing left for it to select. Kept because an
+    interrupted ``studio update`` can leave an OLDER run.py next to this file,
+    and that caller passes it -- an unexpected-keyword TypeError there kills the
+    launch with a traceback instead of starting it.
     """
+    del refusal_aborts
     if out is None:
         out = sys.stderr
     out.write(

@@ -2150,6 +2150,47 @@ def test_a_raw_bind_ctrl_c_aborts_the_launch(monkeypatch, tmp_path):
     del events
 
 
+@pytest.mark.parametrize(
+    "args,present,absent",
+    [
+        # A raw bind passed neither flag, so "launch without --secure/--cloudflare"
+        # is a no-op for it; -H 127.0.0.1 is the way off the network.
+        (dict(cloudflare = None, host = "0.0.0.0", secure = False), "-H 127.0.0.1", "--cloudflare"),
+        (
+            dict(cloudflare = None, host = "127.0.0.1", secure = True),
+            "--secure/--cloudflare",
+            "-H 127.0.0.1",
+        ),
+    ],
+)
+def test_the_abort_names_a_remedy_this_launch_actually_has(
+    monkeypatch, tmp_path, capsys, args, present, absent
+):
+    """An abort that leaves no way forward just gets retried the same way.
+
+    Warning-and-continuing used to point at --password / the env var; failing
+    closed needs that pointer more, not less.
+    """
+    import typer
+
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(api_only = False, **args)
+
+    err = capsys.readouterr().err
+    assert "UNSLOTH_STUDIO_PASSWORD" in err, err
+    assert present in err, err
+    assert absent not in err, err
+
+
 def test_a_tunnel_ctrl_c_still_aborts(monkeypatch, tmp_path):
     studio_mod = _studio()
     _install_prompt_env(monkeypatch, tmp_path, interactive = True)

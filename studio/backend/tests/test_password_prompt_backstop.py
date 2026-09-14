@@ -482,6 +482,67 @@ def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
     )
 
 
+def test_an_older_prompt_modules_ambiguous_false_still_starts_a_raw_bind(monkeypatch):
+    """A torn tree must not turn the unattended fallback into a dead container.
+
+    An interrupted `studio update` can leave an OLDER terminal_prompt.py beside
+    this run.py. That version returns False for the unattended deadline as well
+    as for Ctrl+C, so reading False as a refusal would stop the detached-pty
+    launch (`docker run -dt`) the deadline exists to keep starting. The newer
+    module advertises the split with UNATTENDED_RETURNS_NONE.
+    """
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+
+
+def test_an_older_prompt_modules_false_still_aborts_a_tunnel(monkeypatch):
+    """The tunnel passes no deadline, so its False is unambiguous on any version."""
+    _patch_streams(monkeypatch, tty = True)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+
+    from auth import terminal_prompt
+
+    monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
+    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+
+
+def test_an_older_run_py_can_still_call_this_prompt(monkeypatch):
+    """The other half of a torn tree: an OLD run.py passes refusal_aborts.
+
+    It is ignored now, but an unexpected-keyword TypeError would propagate out of
+    a gate that is deliberately not wrapped in a broad try/except, killing the
+    launch with a traceback. The read itself is faked: the binding is the subject.
+    """
+
+    def _refuse(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(terminal_prompt, "_read_password", _refuse)
+
+    out = io.StringIO()
+    assert (
+        terminal_prompt.prompt_for_password_change(
+            min_length = 8,
+            is_current_password = lambda _c: False,
+            apply_change = lambda _p: None,
+            out = out,
+            exposure = "on the local network",
+            first_key_timeout = 0.01,
+            refusal_aborts = False,  # the old caller's keyword, now ignored
+        )
+        is False
+    )
+
+
 def test_refusing_the_prompt_on_a_tunnel_still_aborts(monkeypatch):
     """The tunnel case is unchanged: refusing to secure a public URL fails closed."""
     _patch_streams(monkeypatch, tty = True)
