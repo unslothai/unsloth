@@ -930,11 +930,12 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # is causal anyway and keeps the static path. Pin the literal "dynamic" like
     # the FlashAttention path above: _prepare_generation_config refills a None
     # from the model default, so None alone leaves the static cache in place.
-    force_dynamic_cache = (
-        cache_implementation is not None
-        and kwargs.get("past_key_values") is None
-        and _needs_bidirectional_multimodal_mask(self, kwargs)
-    )
+    # Not gated on the local value: a cleared local default does not mean the
+    # effective cache is dynamic, because an explicit kwarg or the caller's
+    # generation_config is applied afterwards and can still ask for static.
+    force_dynamic_cache = kwargs.get(
+        "past_key_values"
+    ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
     if force_dynamic_cache:
         cache_implementation = None
 
@@ -944,7 +945,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         )
         # Generation kwargs are applied after the config is merged, so an explicit
         # cache_implementation would otherwise outlive the line above.
-        if force_dynamic_cache and "cache_implementation" in kwargs:
+        if force_dynamic_cache:
             kwargs["cache_implementation"] = "dynamic"
         if cache_implementation is not None:
             kwargs["generation_config"].compile_config = _compile_config

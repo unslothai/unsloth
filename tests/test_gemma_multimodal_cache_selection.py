@@ -353,3 +353,33 @@ def test_blocked_token_types_match_upstream():
     for value in _MEDIA_TOKEN_TYPES:
         assert f"== {value}" in source
     assert "== 3" not in source  # audio is not blocked
+
+
+def _force_gate(local_cache_implementation, kwargs, is_media):
+    """The force decision from unsloth_base_fast_generate, isolated.
+
+    Deliberately independent of the local default: clearing it does not make the
+    effective cache dynamic, since kwargs and the caller's generation_config are
+    applied afterwards.
+    """
+    return kwargs.get("past_key_values") is None and is_media
+
+
+def test_mixed_precision_still_forces_dynamic_for_media():
+    """UNSLOTH_BFLOAT16_MIXED_PRECISION clears the local default to None. An
+    explicit static kwarg would otherwise survive and bring the bug back."""
+    kwargs = {"generation_config": _GenCfg(), "cache_implementation": "static"}
+    assert _force_gate(None, kwargs, is_media = True)
+    _resolve_cache_choice(True, None, kwargs)
+    kwargs["cache_implementation"] = "dynamic"
+    assert kwargs["generation_config"].cache_implementation == "dynamic"
+    assert kwargs["cache_implementation"] == "dynamic"
+
+
+def test_a_caller_supplied_cache_is_never_overridden():
+    kwargs = {"past_key_values": object()}
+    assert not _force_gate("static", kwargs, is_media = True)
+
+
+def test_text_only_never_forces_even_with_a_cleared_default():
+    assert not _force_gate(None, {}, is_media = False)
