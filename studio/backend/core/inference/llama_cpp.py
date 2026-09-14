@@ -18002,7 +18002,6 @@ class LlamaCppBackend:
             else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
         )
 
-        n_dev = len(gpu_indices)
         flat_mtp = max(0, mtp_flat_reserve_bytes)
         if mtp_engaged and mtp_overhead_fn is None:
             flat_mtp = max(flat_mtp, 2 * 1024**3)
@@ -18023,22 +18022,25 @@ class LlamaCppBackend:
         mtp_bytes = (
             mtp_overhead_fn(effective_ctx) if mtp_overhead_fn is not None else 0
         ) + flat_mtp
-        cc_bytes = n_dev * self._compute_buffer_ctx_bytes(
+        # REPLICATED, not split: every device allocates the whole
+        # context-linear buffer whatever its weight, which is why the planner
+        # subtracts one per-device slice from each card BEFORE weighting rather
+        # than distributing the aggregate. Weighting the aggregate is the same
+        # arithmetic only for an even ratio; away from even it charges a
+        # low-weight card less than the buffer it must allocate and a high-weight
+        # card more, so it both under-refuses and over-refuses. Mirror the
+        # planner: flat per device, alongside the compute-graph reserve.
+        cc_per_device_bytes = self._compute_buffer_ctx_bytes(
             effective_ctx, n_ubatch, scratch_cache_type_kv or cache_type_kv
         )
-        total_bytes = model_size + kv_bytes + mtp_bytes + cc_bytes + max(0, soft_overhead_bytes)
+        total_bytes = model_size + kv_bytes + mtp_bytes + max(0, soft_overhead_bytes)
 
-        # The planner's rule, generalised from an even share to a weighted one:
-        # distribute the whole priced footprint by the ratio and compare against
-        # usable-minus-reserve. ``cc_bytes`` is already inside ``total_bytes``,
-        # so subtracting a per-device slice of it from the capacity as well would
-        # charge the context buffer twice and decline ratios the planner itself
-        # would have accepted -- which, for a user who typed one, reads as the
-        # ratio being ignored all over again.
         total_weight = sum(split)
         for i, idx in enumerate(gpu_indices):
             alloc_bytes = total_bytes * split[i] / total_weight
-            capacity_bytes = (usable_by_idx[idx] - reserve_mib) * 1024 * 1024
+            capacity_bytes = (
+                (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
+            )
             if alloc_bytes > capacity_bytes:
                 return False
         return True

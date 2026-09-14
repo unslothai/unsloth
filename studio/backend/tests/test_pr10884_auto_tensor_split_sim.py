@@ -256,6 +256,42 @@ def test_the_budget_check_agrees_with_the_planner_on_an_even_share(tmp_path):
     )
 
 
+def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
+    """The context-linear compute buffer is REPLICATED on every device: each one
+    allocates the whole thing whatever weight it carries. Distributing the
+    aggregate by the ratio instead is the same arithmetic only at an even share,
+    and away from it the high-weight card is charged nearly twice the buffer --
+    so a ratio the planner's own rule accepts is refused, which for a user who
+    typed one is #10355 again. Sized to sit exactly in that gap: the planner
+    accepts 1:9 here, the aggregate form does not.
+    """
+    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    mib = 1024 * 1024
+    cc_per_device_mib = 6 * 1024
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: cc_per_device_mib * mib
+    model_mib = 14 * 1024
+
+    # usable - reserve = 23024 MiB a card, as in the even-share cell above.
+    ceiling_mib = 23_024
+    assert model_mib / 2 + cc_per_device_mib < ceiling_mib, "the planner would not have"
+    assert 0.9 * model_mib < ceiling_mib - cc_per_device_mib, "charged flat, 1:9 fits"
+    assert 0.9 * (model_mib + 2 * cc_per_device_mib) > ceiling_mib, "charged by ratio, it does not"
+
+    assert (
+        backend._tensor_split_fits_budget(
+            [1.0, 9.0],
+            [(0, 24_000), (1, 24_000)],
+            [0, 1],
+            model_mib * mib,
+            4096,
+            n_ubatch = 512,
+            total_by_idx = {0: 24_000, 1: 24_000},
+            vram_fraction = 0.97,
+        )
+        is True
+    )
+
+
 def test_the_budget_check_still_refuses_what_does_not_fit(tmp_path):
     """The other side of the rule above: relaxing the double charge must not
     turn the check into one that accepts anything."""
