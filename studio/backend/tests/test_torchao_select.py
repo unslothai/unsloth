@@ -368,6 +368,7 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
+    monkeypatch.setattr(mod, "_repair_bad_accelerate", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
     monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: None)
     # A Windows ROCm box has no usable NVIDIA GPU. Claiming one here described a

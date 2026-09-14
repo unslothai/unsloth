@@ -114,6 +114,18 @@ def _client(account):
     return TestClient(app)
 
 
+def _assert_reveals_no_clip(body):
+    """A foreign poller gets the declared idle progress shape and nothing of the job.
+
+    Spelled out rather than compared to a literal dict: the route answers the
+    generate-progress shape here, so a poller can still read ``active`` off it, and
+    what this test is actually about is that none of the clip comes back.
+    """
+    assert body["yours"] is False, body
+    assert body["active"] is False and body["phase"] is None, body
+    assert body.get("video") is None, body
+
+
 def test_the_starting_account_owns_its_clip_and_the_models_loader_does_not(backend):
     generate = "/api/inference/video/generate"
     progress = "/api/inference/video/generate-progress"
@@ -125,7 +137,7 @@ def test_the_starting_account_owns_its_clip_and_the_models_loader_does_not(backe
         assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]
 
     with _client(ALICE) as client:
-        assert client.get(progress).json() == {"loaded": True, "yours": False}
+        _assert_reveals_no_clip(client.get(progress).json())
         assert client.post(cancel).json() == {"cancelled": False}
     assert backend.cancelled == []
 
@@ -153,7 +165,7 @@ def test_a_clip_started_on_the_openai_route_belongs_to_that_account_too(backend)
         assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]
 
     with _client(ALICE) as client:
-        assert client.get(progress).json() == {"loaded": True, "yours": False}
+        _assert_reveals_no_clip(client.get(progress).json())
         assert client.post(cancel).json() == {"cancelled": False}
     assert backend.cancelled == []
 
@@ -171,6 +183,6 @@ def test_the_installation_owner_does_not_see_a_managed_accounts_clip(backend):
         assert client.get(progress).json()["video"]["prompt"] == CLIP["prompt"]
 
     with _client(OWNER) as client:
-        assert client.get(progress).json() == {"loaded": True, "yours": False}
+        _assert_reveals_no_clip(client.get(progress).json())
         assert client.post(cancel).json() == {"cancelled": False}
     assert backend.cancelled == []
