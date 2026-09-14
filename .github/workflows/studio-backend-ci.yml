@@ -16,6 +16,29 @@
 #   - pytest on 3.13 over studio/backend/tests, with the floor checked statically
 #   - repo-cpu-tests: auto-discovered tests/ + state-isolated spoof files
 #
+#
+# runs-on: why ubuntu-24.04 and not ubuntu-latest
+#
+# ubuntu-latest resolves to the ubuntu-24.04 image, so these two labels are the same
+# machine, the same tools and the same architecture. They are not the same queue.
+#
+# Measured with four identical no-op jobs in one matrix, dispatched in the same second,
+# differing only in the label (PR #10914, three runs):
+#
+#   ubuntu-24.04-arm    34s    78s     6s
+#   ubuntu-24.04        47s    83s    11s
+#   ubuntu-22.04        54s   117s     4s
+#   ubuntu-latest      >40m   >35m   >30m   (still queued when the others had finished)
+#
+# The org has ~871 queued runs and nearly all of them ask for ubuntu-latest, so a job
+# using that label queues behind all of them, while the same job on any other label
+# walks past. Across the whole board ubuntu-latest shows a 44.9 min median wait over
+# 741 executed jobs against 1.1 min for ubuntu-22.04.
+#
+# The cost of pinning is that the image stops tracking the fleet default and needs a
+# deliberate bump when 26.04 ships. That is the intended trade: this job is on the
+# critical path of most PRs, and it is worth more here than image drift costs.
+#
 # Whole-repo Python lint (syntax + ruff + debugger-leftover scan)
 # moved to the dedicated `Lint CI` workflow (.github/workflows/lint-ci.yml)
 # so it fires on every PR rather than only on studio/unsloth/tests
@@ -87,7 +110,7 @@ env:
 jobs:
   pytest:
     name: (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: see the comment at the top of this file
     # 45 guards against a hang; it is not a performance budget. The comment this replaces
     # claimed 14.1 to 15.0 minutes against a limit of 30, but this step now measures 22.5 to
     # 29.2 minutes across the matrix, and it has been cancelling at the limit: across the six
@@ -353,7 +376,7 @@ jobs:
     # mocked torch.cuda.is_available so the unsloth import chain
     # succeeds on CPU.
     name: Repo tests (CPU, ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: see the comment at the top of this file
     # Same reason as the matrix above, and now the same number. The comment this replaces
     # claimed 13.4 minutes. Across the last 40 runs of this job on main the pytest step
     # alone measured 852s to 1683s (14.2 to 28.1 minutes), and the install plus the four
@@ -638,7 +661,7 @@ jobs:
     # No pip install here at all -- the runner's own python3 and bash are what these scripts
     # use -- so the job is checkout plus the loop, and it finishes long before the shards do.
     name: Shell installer tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: see the comment at the top of this file
     # 165s measured, and a hung mock would otherwise sit here until the workflow's own limit.
     timeout-minutes: 15
     steps:

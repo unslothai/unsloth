@@ -30,6 +30,30 @@
 # things; if they regress we want a red cell, not a green-with-fail-prints
 # cell.
 
+#
+# runs-on: why ubuntu-24.04 and not ubuntu-latest
+#
+# ubuntu-latest resolves to the ubuntu-24.04 image, so these two labels are the same
+# machine, the same tools and the same architecture. They are not the same queue.
+#
+# Measured with four identical no-op jobs in one matrix, dispatched in the same second,
+# differing only in the label (PR #10914, three runs):
+#
+#   ubuntu-24.04-arm    34s    78s     6s
+#   ubuntu-24.04        47s    83s    11s
+#   ubuntu-22.04        54s   117s     4s
+#   ubuntu-latest      >40m   >35m   >30m   (still queued when the others had finished)
+#
+# The org has ~871 queued runs and nearly all of them ask for ubuntu-latest, so a job
+# using that label queues behind all of them, while the same job on any other label
+# walks past. Across the whole board ubuntu-latest shows a 44.9 min median wait over
+# 741 executed jobs against 1.1 min for ubuntu-22.04.
+#
+# The cost of pinning is that the image stops tracking the fleet default and needs a
+# deliberate bump when 26.04 ships. That is the intended trade: this job is on the
+# critical path of most PRs, and it is worth more here than image drift costs.
+#
+
 name: Core
 
 on:
@@ -104,7 +128,7 @@ jobs:
             transformers_spec: "__from_pyproject__"
             trl_spec: "__from_pyproject__"
     name: "Core (${{ matrix.combo.label }})"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: see the comment at the top of this file
     timeout-minutes: 35
     # No job-level or per-step `continue-on-error`. Earlier iterations
     # masked real test failures behind green check icons; that lie is
@@ -2356,7 +2380,7 @@ jobs:
     # builds the LLAMA_CPP_TARGETS list; the result is independent of the
     # HF stack version. Run once, gate the PR.
     name: llama.cpp build + smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # not ubuntu-latest: see the comment at the top of this file
     timeout-minutes: 25
     env:
       UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
