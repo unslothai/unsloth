@@ -8845,9 +8845,7 @@ async def _resident_model_is_loaded() -> bool:
     return bool(getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None))
 
 
-async def _resolve_last_local_model_for_cold_start(
-    current_subject: str,
-) -> Optional[tuple]:
+async def _resolve_last_local_model_for_cold_start(current_subject: str) -> Optional[tuple]:
     """Resolve the per-user last-local-model record for a cold API start.
 
     The Studio UI records every successful load via ``PUT /api/settings/last-local-model``
@@ -8885,10 +8883,7 @@ async def _resolve_last_local_model_for_cold_start(
 
 
 def _request_names_local_target(
-    requested_model: str,
-    target_id: str,
-    variant: Optional[str],
-    override_id: str,
+    requested_model: str, target_id: str, variant: Optional[str], override_id: str
 ) -> bool:
     """Whether *requested_model* names this resolved local target.
 
@@ -9166,8 +9161,7 @@ async def _maybe_auto_switch_model(
                 elif cold_start and keyless_caller:
                     last_local = await _resolve_last_local_model_for_cold_start(current_subject)
                     if last_local is not None and (
-                        reload_only
-                        or _request_names_local_target(requested_model, *last_local[:3])
+                        reload_only or _request_names_local_target(requested_model, *last_local[:3])
                     ):
                         resolved = last_local
                 if resolved is None:
