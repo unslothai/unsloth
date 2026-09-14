@@ -354,8 +354,9 @@ jobs:
     # succeeds on CPU.
     name: Repo tests (CPU)
     runs-on: ubuntu-latest
-    # Same reason as the matrix above: this one measured 13.4 minutes against the same 15.
-    timeout-minutes: 30
+    # 45, not 30: discovery now runs 34.9 minutes of pytest (28.4 on main) and the job was
+    # being killed at its bound with nothing failing. A hang still reads as one at 45.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

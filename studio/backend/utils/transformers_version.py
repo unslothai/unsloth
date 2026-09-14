@@ -3027,10 +3027,9 @@ def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> b
                 )
                 # Only absent is safe: a half-copied payload fails at tokenization.
                 if _remove_optional_remnants(venv_dir, pkg):
-                    # Recorded like the top-up path's failures. The sidecar reads as valid from
-                    # here on, so the very next activation would run the top-up, and every worker
-                    # a job spawns would sit through the same doomed install: the backoff exists
-                    # precisely for the outage that just caused this.
+                    # Recorded like the top-up path's failures: the sidecar reads as valid from
+                    # here on, so without it the next activation and every worker a job spawns
+                    # would sit through the same doomed install.
                     _record_top_up_outcome(venv_dir, pkg, False)
                     _OPTIONAL_TOP_UP_ATTEMPTED.add(
                         (os.path.normcase(os.path.abspath(venv_dir)), pkg)

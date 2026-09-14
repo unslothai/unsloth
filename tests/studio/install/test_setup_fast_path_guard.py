@@ -496,11 +496,9 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
             f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"
         )
 def test_the_installer_pins_come_from_the_audited_pin_list():
-    """The list the audit demands and the list the install performs must be one variable.
-
-    A pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale on
-    every run: all three tiers would be wiped and refetched on every update, silently, which
-    is the regression this whole change exists to remove.
+    """The list the audit demands and the list the install performs must be one variable: a
+    pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale every
+    run, silently wiping and refetching all three tiers on every update.
     """
     sh = SETUP_SH.read_text(encoding = "utf-8")
     start = sh.index("_install_sidecar() {")
@@ -543,12 +541,9 @@ def test_a_tree_without_the_shim_falls_back_to_the_version_grep():
 
 
 def test_the_sidecar_cleanups_cannot_abort_the_installer():
-    """setup.sh runs under `set -euo pipefail`, and these functions are called bare.
-
-    Every `rm` here is best effort by construction: the paths that reach them are the ones
-    where something is already undeletable (a held file, a read-only parent). An unguarded
-    `rm` turns "the sidecar is current, skip the rebuild" into a silent exit 1 on an install
-    that is otherwise healthy.
+    """setup.sh runs under `set -euo pipefail` and these functions are called bare. Every `rm`
+    here is best effort by construction, since the paths that reach them are already
+    undeletable, and an unguarded one turns a skipped rebuild into a silent exit 1.
     """
     sh = SETUP_SH.read_text(encoding = "utf-8")
     for fn in ("_sidecar_retire_after_failed_tiktoken() {", "_sidecar_top_up_tiktoken() {"):
