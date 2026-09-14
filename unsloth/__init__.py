@@ -1555,9 +1555,10 @@ else:
     from ._gpu_init import __version__
 
     def get_gpu_memory_stats():
-        """Return CUDA/ROCm/XPU device stats, peak memory, and total memory in GiB."""
+        """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:
             import torch
+
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 props = torch.xpu.get_device_properties(0)
                 peak = (
@@ -1572,19 +1573,32 @@ else:
                 peak = torch.cuda.max_memory_reserved()
                 total = getattr(props, "total_memory", 0)
                 return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
+            # Last, so no existing device changes which branch it takes. Without it an
+            # Ascend host fell through to "Unknown GPU" with a fabricated 1 GiB total.
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                props = torch.npu.get_device_properties(0)
+                peak = (
+                    torch.npu.max_memory_reserved()
+                    if hasattr(torch.npu, "max_memory_reserved")
+                    else torch.npu.max_memory_allocated()
+                )
+                total = getattr(props, "total_memory", 0)
+                return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
         except Exception:
             pass
         stats = _UnslothDeviceStats("Unknown GPU", 0)
         return stats, 0.0, 1.0
 
     def clear_gpu_memory():
-        """Clear cached GPU memory on CUDA, ROCm, or XPU when available."""
+        """Clear cached GPU memory on CUDA, ROCm, XPU, or NPU when available."""
         try:
             import torch
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 torch.xpu.empty_cache()
             elif hasattr(torch, "cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.empty_cache()
         except Exception:
             pass
 
