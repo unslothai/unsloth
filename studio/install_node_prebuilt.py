@@ -15,6 +15,8 @@ Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json
 Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
 Exit codes: 0 success, 1 error, 2 fallback, 3 busy. A re-run that already matches
 logs "already matches" and returns 0 without downloading (the scripts grep it).
+A failed update that keeps a usable install logs "keeping existing isolated Node" and
+also returns 0 (the scripts grep that too).
 """
 
 from __future__ import annotations
@@ -1190,11 +1192,6 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             # A policy refusal, not a transient failure: fail closed, never keep-existing.
             raise
         except Exception as exc:  # noqa: BLE001
-            # Exhausted access-denied renames already printed actionable ACL recovery.
-            # Do not turn them into a silent success: setup.ps1 only displays this
-            # installer's captured output when the exit code is non-zero.
-            if getattr(exc, "_unsloth_acl_recovery_reported", False):
-                raise
             # Transient download/verify failure: keep an existing usable Node, but never keep a same-version
             # install whose recorded digest is not the pin (the artifact the short-circuit above just
             # rejected). A different usable version is still kept for offline resilience.
@@ -1206,7 +1203,13 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 and meta.get("sha256") != pin
             )
             if not force and not pin_mismatch and existing_install_usable(install_dir, host):
-                log(f"Node download failed ({exc}); keeping existing isolated Node")
+                if getattr(exc, "_unsloth_acl_recovery_reported", False):
+                    # The rename failed, not the download; setup relays the repair lines above.
+                    log(
+                        f"existing Node could not be replaced ({exc}); keeping existing isolated Node"
+                    )
+                else:
+                    log(f"Node download failed ({exc}); keeping existing isolated Node")
                 return EXIT_SUCCESS
             raise
 

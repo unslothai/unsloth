@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 <#
-    Pester v5 unit tests for the "install blocked" (exit 3) reporting in
-    studio/setup.ps1.
+    Pester v5 unit tests for the "install blocked" reporting in studio/setup.ps1:
+    llama.cpp's exit 3, and a Node the installer kept because it could not be
+    replaced.
 
     install_llama_prebuilt.py exits 3 when the existing install could not be
     moved aside. On Windows that is WinError 5, which the OS raises both for a
@@ -17,6 +18,11 @@
     that it mirrors the prebuilt path, and that "Denied counts as surviving:
     unreadable is not gone" -- so it reaches the same message by the same route.
 
+    install_node_prebuilt.py keeps a Node that still runs when a denied rename
+    outlasts its retries, and exits 0. setup.ps1 prints the installer output only
+    on a non-zero exit, so the exit-0 arm is the one place those repair lines can
+    reach the user.
+
     Source scan rather than execution: setup.ps1 is a top-level installer and
     these branches only run after a genuinely blocked install.
 #>
@@ -29,6 +35,7 @@ BeforeAll {
     $script:SetupPs1 = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     $script:SetupText = Get-Content -Raw -LiteralPath $script:SetupPs1
+    $script:NodeInstaller = Get-Content -Raw -LiteralPath (Join-Path (Split-Path -Parent $script:SetupPs1) 'install_node_prebuilt.py')
 
     # These are inline installer flow, not functions, so Get-FunctionSource cannot
     # reach them; slice from the marker to the first close at the marker's depth.
@@ -60,6 +67,9 @@ BeforeAll {
         -Marker '$whisperExit -eq 3' -ClosePattern '^\s*\}\s*(elseif|else)\b'
     $script:LocalLinkBusy = Get-BlockSource -Path $script:SetupPs1 `
         -Marker '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' -ClosePattern '^\s*\}\s*$'
+    # The whole if/elseif chain on the Node installer's exit code, and nothing after it.
+    $script:NodeExit = Get-BlockSource -Path $script:SetupPs1 `
+        -Marker '$nodeExit = $LASTEXITCODE' -ClosePattern '^\s*\}\s*$'
 }
 
 Describe 'no llama.cpp blocked-install message names a cause setup cannot determine' {
@@ -136,5 +146,39 @@ Describe 'the whisper.cpp exit-3 branch remains the cause-neutral precedent' {
 
     It 'names no process and no scanner' {
         $script:WhisperBusy | Should -Not -Match '(?i)process|scanner'
+    }
+}
+
+Describe 'a Node the installer kept because it could not be replaced' {
+    BeforeAll {
+        $script:NodeKept = $null
+        if ($script:NodeExit) {
+            $at = $script:NodeExit.IndexOf('keeping existing isolated Node')
+            if ($at -ge 0) { $script:NodeKept = $script:NodeExit.Substring($at) }
+        }
+    }
+
+    It 'the Node exit handling is present in setup.ps1' {
+        $script:NodeExit | Should -Not -BeNullOrEmpty
+    }
+
+    It 'matches the line the Node installer logs when it keeps an install' {
+        $script:NodeInstaller | Should -Match 'keeping existing isolated Node'
+        $script:NodeExit | Should -Match '\$nodeOut -match [''"]keeping existing isolated Node[''"]'
+    }
+
+    It 'is reached only after both failure arms, so only on exit 0' {
+        $failure = $script:NodeExit.IndexOf('$nodeExit -ne 0')
+        $failure | Should -BeGreaterOrEqual 0
+        $script:NodeExit.IndexOf('keeping existing isolated Node') | Should -BeGreaterThan $failure
+    }
+
+    It 'warns and carries on rather than failing setup' {
+        $script:NodeKept | Should -Match 'step "node" "update not applied, existing isolated Node kept" "Yellow"'
+        $script:NodeKept | Should -Not -Match 'Exit-SetupFailure'
+    }
+
+    It 'relays the installer output only when it carries the takeown/icacls lines' {
+        $script:NodeKept | Should -Match '(?s)\$nodeOut -match [''"]takeown /F[''"]\)\s*\{\s*Write-StudioLine \$nodeOut'
     }
 }

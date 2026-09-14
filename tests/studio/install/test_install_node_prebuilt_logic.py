@@ -481,12 +481,14 @@ def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: P
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
 
 
-def test_install_prebuilt_does_not_hide_reported_acl_denial(tmp_path: Path, monkeypatch):
+def _swap_stays_denied(tmp_path: Path, monkeypatch, *, recorded: str, runs: bool) -> Path:
+    # An install on disk, a download that succeeds, and a swap whose rename stayed denied
+    # after the retries printed the ACL repair lines.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
-    M.write_metadata(install_dir, version = "24.9.0", asset = "old", sha256 = "old")
+    M.write_metadata(install_dir, version = recorded, asset = "old", sha256 = "old")
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
-    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: recorded if runs else None)
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
     monkeypatch.setattr(
         M, "download_file_verified", lambda url, path, **kw: path.write_bytes(b"zip")
@@ -503,12 +505,44 @@ def test_install_prebuilt_does_not_hide_reported_acl_denial(tmp_path: Path, monk
     monkeypatch.setattr(M, "extract_archive", fake_extract)
     monkeypatch.setattr(M, "_ensure_npm_floor", lambda d, h: None)
     monkeypatch.setattr(M, "_swap_into_place", reported_acl_denial)
+    return install_dir
+
+
+def test_install_prebuilt_keeps_existing_when_a_reported_denial_blocks_the_swap(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # A denial outlasting the retries must not fail setup over a Node that still runs: exit 0,
+    # on the line setup.ps1 and setup.sh match to relay the repair lines (#9928).
+    install_dir = _swap_stays_denied(tmp_path, monkeypatch, recorded = "24.9.0", runs = True)
+
+    rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
+
+    assert rc == M.EXIT_SUCCESS
+    output = "".join(capsys.readouterr())
+    assert "could not be replaced" in output
+    assert "keeping existing isolated Node" in output
+    assert "download failed" not in output
+
+
+@pytest.mark.parametrize(
+    "runs, force, recorded_is_pinned",
+    [
+        pytest.param(False, False, False, id = "node-does-not-run"),
+        pytest.param(True, True, False, id = "force"),
+        pytest.param(True, False, True, id = "recorded-digest-is-not-the-pin"),
+    ],
+)
+def test_install_prebuilt_reraises_a_reported_denial_it_cannot_keep_existing_through(
+    tmp_path: Path, monkeypatch, runs, force, recorded_is_pinned
+):
+    # Parity guard: a reported denial takes the same keep-existing check as any other failure.
+    recorded = M.pinned_default_version(M.load_pins()) if recorded_is_pinned else "24.9.0"
+    install_dir = _swap_stays_denied(tmp_path, monkeypatch, recorded = recorded, runs = runs)
 
     with pytest.raises(OSError) as excinfo:
-        M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
+        M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = force)
 
     assert excinfo.value.winerror == 5
-    assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is True
 
 
 # ── Isolation invariant: the installer only writes inside its own install_dir ──

@@ -3800,6 +3800,13 @@ if ($NeedNodeForSetup) {
             Write-StudioLine "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
             Write-StudioLine "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
             Exit-SetupFailure "Could not install an isolated Node runtime"
+        } elseif ($nodeOut -match "keeping existing isolated Node") {
+            # Exit 0 can also mean the installer kept a Node that still runs after a failed update.
+            # A denied rename's takeown/icacls lines reach the user only from here.
+            if ($nodeOut -match 'takeown /F') {
+                Write-StudioLine $nodeOut -ForegroundColor DarkGray
+            }
+            step "node" "update not applied, existing isolated Node kept" "Yellow"
         }
         if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
             New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
