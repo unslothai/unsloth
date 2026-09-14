@@ -125,11 +125,47 @@ jobs:
             # Retried like the clone in core-cpu-setup, and for the same reason: github.com
             # occasionally 500s. This job gates both Core halves, so an unretried blip here
             # would skip all six matrix jobs rather than fail one step.
+            # `git ls-remote` takes PATTERNS, not one ref, so a bare name can print more than
+            # one record: a name that is both a branch and a tag prints both, and an annotated
+            # tag prints the tag object and the commit it peels to. Taking every record puts a
+            # newline inside `sha`, and `sha=<a>\n<b>` makes the second line of $GITHUB_OUTPUT a
+            # bare value that GitHub rejects, failing this job and skipping all six Core cells.
+            # So ask for the exact refs and pick one, in git's own order: a branch beats a tag,
+            # and an annotated tag resolves to the commit rather than to the tag object.
+            resolve_ref() {
+              local ref="$1" out want line uniq found
+              out="$(git ls-remote https://github.com/unslothai/unsloth-zoo \
+                "refs/heads/$ref" "refs/tags/$ref^{}" "refs/tags/$ref" "$ref")" || return 1
+              for want in "refs/heads/$ref" "refs/tags/$ref^{}" "refs/tags/$ref"; do
+                line="$(printf '%s\n' "$out" | awk -v w="$want" '$2 == w { print $1; exit }')"
+                if [ -n "$line" ]; then
+                  printf '%s\n' "$line"
+                  return 0
+                fi
+              done
+              # Not a plain branch or tag name. The trailing pattern above still covers a fully
+              # qualified ref, but only one commit may answer to it.
+              uniq="$(printf '%s\n' "$out" | awk 'NF { print $1 }' | sort -u)"
+              found="$(printf '%s\n' "$uniq" | grep -c . || true)"
+              # No match is the same shape as a failed lookup and stays retryable; several
+              # matches is a statement about the remote that retrying cannot change.
+              if [ "$found" -eq 0 ]; then
+                return 1
+              fi
+              if [ "$found" -ne 1 ]; then
+                return 2
+              fi
+              printf '%s\n' "$uniq"
+            }
             sha=""
             for attempt in 1 2 3; do
-              if sha="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF" | cut -f1)" \
-                && [ -n "$sha" ]; then
-                break
+              if sha="$(resolve_ref "$REF")"; then
+                if [ -n "$sha" ]; then break; fi
+              elif [ "$?" -eq 2 ]; then
+                # Retrying cannot disambiguate a name several commits answer to, and warning
+                # about a network blip that did not happen would send the reader the wrong way.
+                echo "::error::unsloth_zoo ref '$REF' matches more than one commit on the remote"
+                exit 1
               fi
               if [ "$attempt" -eq 3 ]; then
                 break
