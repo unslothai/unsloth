@@ -92,11 +92,24 @@ def _follow_refs(schema: Any, root: dict) -> Any:
     return schema
 
 
-def _reorderable(schema: dict, root: dict) -> bool:
-    schema = _follow_refs(schema, root)
-    if _optional_key_count(schema) >= 2:
+def _reorderable(
+    schema: dict,
+    root: dict,
+    seen: frozenset = frozenset(),
+) -> bool:
+    target = _follow_refs(schema, root)
+    if _optional_key_count(target) >= 2:
         return True
-    parts = schema.get("allOf")
+    # A union reached only through a $ref is never walked as nested, so its branches decide.
+    if target is not schema and id(target) not in seen:
+        for keyword in ("anyOf", "oneOf"):
+            branches = target.get(keyword)
+            if isinstance(branches, list) and any(
+                isinstance(branch, dict) and _reorderable(branch, root, seen | {id(target)})
+                for branch in branches
+            ):
+                return True
+    parts = target.get("allOf")
     if not isinstance(parts, list):
         return False
     return sum(_optional_key_count(_follow_refs(part, root)) for part in parts) >= 2

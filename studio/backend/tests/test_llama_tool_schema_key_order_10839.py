@@ -252,6 +252,48 @@ def test_references_are_followed_to_the_object_llama_cpp_builds():
     assert relaxed["$defs"] is parameters["$defs"]
 
 
+def test_references_to_union_definitions_are_wrapped_at_the_use_site():
+    # pydantic emits these for a TypeAliasType union field (oneOf) and a RootModel union field (anyOf).
+    view = {
+        "type": "object",
+        "properties": {
+            "kind": {"const": "view"},
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+        },
+        "required": ["kind"],
+    }
+    sql = {
+        "type": "object",
+        "properties": {"kind": {"const": "sql"}, "query": {"type": "string"}},
+        "required": ["kind", "query"],
+    }
+    parameters = {
+        "type": "object",
+        "properties": {
+            "aliased": {"$ref": "#/$defs/ChoiceAlias"},
+            "rooted": {"$ref": "#/$defs/ChoiceRoot"},
+            "looped": {"$ref": "#/$defs/Loop"},
+        },
+        "$defs": {
+            "ChoiceAlias": {
+                "oneOf": [{"$ref": "#/$defs/View"}, {"$ref": "#/$defs/Sql"}],
+                "discriminator": {"propertyName": "kind"},
+            },
+            "ChoiceRoot": {"anyOf": [{"$ref": "#/$defs/View"}, {"$ref": "#/$defs/Sql"}]},
+            "Loop": {"anyOf": [{"$ref": "#/$defs/Loop"}, {"type": "string"}]},
+            "View": copy.deepcopy(view),
+            "Sql": copy.deepcopy(sql),
+        },
+    }
+    relaxed = relax_nested_object_key_order(parameters)
+
+    assert relaxed["properties"]["aliased"] == _relaxed({"$ref": "#/$defs/ChoiceAlias"})
+    assert relaxed["properties"]["rooted"] == _relaxed({"$ref": "#/$defs/ChoiceRoot"})
+    assert relaxed["properties"]["looped"] == {"$ref": "#/$defs/Loop"}
+    assert relaxed["$defs"] is parameters["$defs"]
+
+
 def test_a_caller_union_shaped_like_the_wrapper_is_read_as_written():
     from core.inference.tool_loop_controller import coerce_arguments_by_schema
 
