@@ -9985,21 +9985,14 @@ def execute_tool(
 
         # A private reference is a selector, never a grant. Direct callers must
         # not bypass the interactive disclosure gate or send it as raw input.
-        try:
-            image_mappings = json.loads(server.get("image_input_mappings_json") or "[]")
-        except (ValueError, TypeError):
-            image_mappings = []
-        image_mapping = (
-            next(
-                (
-                    mapping
-                    for mapping in image_mappings
-                    if isinstance(mapping, dict) and mapping.get("tool") == tool_name
-                ),
-                None,
-            )
-            if isinstance(image_mappings, list)
-            else None
+        from .mcp_image_disclosure import stored_image_input_mappings
+
+        image_mapping = next(
+            (
+                mapping for mapping in stored_image_input_mappings(server)
+                if isinstance(mapping, dict) and mapping.get("tool") == tool_name
+            ),
+            None,
         )
         mapped_image_tool = image_mapping is not None
         mapped_field = image_mapping.get("field") if mapped_image_tool else None

@@ -79,6 +79,19 @@ def _mapping_dict(mapping: Any) -> dict[str, str]:
     }
 
 
+def stored_image_input_mappings(server: dict) -> list:
+    """Read optional persisted mappings for display and policy discovery.
+
+    Approval validation uses the strict parser: corrupt configuration must not
+    silently become an unmapped tool at that boundary.
+    """
+    try:
+        mappings = json.loads(server.get("image_input_mappings_json") or "[]")
+    except (TypeError, ValueError):
+        return []
+    return mappings if isinstance(mappings, list) else []
+
+
 def _tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     schema = tool.get("inputSchema")
     if not isinstance(schema, dict):

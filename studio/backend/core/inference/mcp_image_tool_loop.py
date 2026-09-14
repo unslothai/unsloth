@@ -20,6 +20,7 @@ from core.inference.mcp_image_disclosure import (
     model_schema_for_mapping,
     resolve_mcp_image_reference,
     revoke_mcp_image_references,
+    stored_image_input_mappings,
     validate_image_input_mappings,
     resolve_tool_only_image,
 )
@@ -43,15 +44,10 @@ def _image_policy_revisions():
 
     current = []
     for server in mcp_servers_db.list_servers():
-        try:
-            mappings = json.loads(server.get("image_input_mappings_json") or "[]")
-        except (TypeError, ValueError):
-            mappings = []
         if (
             server.get("is_enabled")
             and server.get("allow_image_attachments")
-            and isinstance(mappings, list)
-            and mappings
+            and stored_image_input_mappings(server)
         ):
             current.append((server["id"], int(server.get("config_revision") or 0)))
     return sorted(current)
@@ -425,6 +421,23 @@ class McpImageApproval:
         abort_mcp_image_disclosure(self.slot, self.approval_id)
         self.context.close()
         close_mcp_image_recipient(self.binding.recipient)
+
+
+def begin_call_decision(
+    decision, image_approval, needs_confirm, session_id, ordinary_new, ordinary_begin,
+):
+    """Register consent before publishing the same tool-start event in every loop."""
+    if image_approval:
+        approval_id, slot = image_approval.approval_id, image_approval.slot
+    else:
+        approval_id = ordinary_new() if needs_confirm else ""
+        slot = ordinary_begin(session_id, approval_id) if needs_confirm else None
+    event = decision.tool_start_event()
+    event["approval_id"] = approval_id
+    event["awaiting_confirmation"] = needs_confirm
+    if image_approval is not None:
+        event["image_disclosure"] = image_approval.metadata
+    return approval_id, slot, event
 
 
 def wait_call_decision(

@@ -245,41 +245,26 @@ class _ImageEchoSanitizer:
     @staticmethod
     def _text_slots(value):
         """Return mutable fields whose values are rendered by ``_flatten_result``."""
-        slots = []
-        if isinstance(value, dict):
-            value_type = value.get("type")
-            if isinstance(value.get("text"), str) and value["text"]:
-                return [(value, "text", value["text"])]
-            resource = value.get("resource")
-            if (
-                isinstance(resource, dict)
-                and isinstance(resource.get("text"), str)
-                and resource["text"]
-            ):
-                return [(resource, "text", resource["text"])]
-            resource_text = getattr(resource, "text", None)
-            if isinstance(resource_text, str) and resource_text:
-                return [(resource, "text", resource_text)]
-            if value_type == "resource_link" and isinstance(value.get("uri"), str) and value["uri"]:
-                if isinstance(value.get("name"), str) and value["name"]:
-                    slots.append((value, "name", value["name"]))
-                slots.append((value, "uri", value["uri"]))
+        def get(owner, key):
+            return owner.get(key) if isinstance(owner, dict) else getattr(owner, key, None)
+
+        def text_slot(owner, key):
+            text = get(owner, key)
+            return [(owner, key, text)] if isinstance(text, str) and text else []
+
+        slots = text_slot(value, "text")
+        if slots:
             return slots
-        value_type = getattr(value, "type", None)
-        text = getattr(value, "text", None)
-        if isinstance(text, str) and text:
-            return [(value, "text", text)]
-        resource = getattr(value, "resource", None)
-        resource_text = getattr(resource, "text", None)
-        if isinstance(resource_text, str) and resource_text:
-            return [(resource, "text", resource_text)]
-        uri = getattr(value, "uri", None)
-        if value_type == "resource_link" and isinstance(uri, str) and uri:
-            name = getattr(value, "name", None)
-            if isinstance(name, str) and name:
-                slots.append((value, "name", name))
-            slots.append((value, "uri", uri))
-        return slots
+        resource = get(value, "resource")
+        # Attribute-backed protocol blocks historically read resource attributes;
+        # dictionary blocks also support an embedded resource dictionary.
+        if not isinstance(value, dict) and isinstance(resource, dict):
+            resource = None
+        slots = text_slot(resource, "text")
+        if slots:
+            return slots
+        uri = text_slot(value, "uri")
+        return text_slot(value, "name") + uri if get(value, "type") == "resource_link" and uri else []
 
     def _set_slot(self, slot, value):
         owner, key, _ = slot
@@ -289,6 +274,10 @@ class _ImageEchoSanitizer:
             setattr(owner, key, value)
         if value == REDACTED_IMAGE:
             self.found_echo = True
+
+    def _withhold_slots(self, slots):
+        for slot in slots:
+            self._set_slot(slot, REDACTED_IMAGE)
 
     def _redact_slots(
         self,
@@ -313,61 +302,16 @@ class _ImageEchoSanitizer:
                 start = end
             span = self._match_span(combined, span[1])
 
-        # A server can place payload chunks in separate fields with unrelated
-        # blocks between them. Track subsequences of slots against the exact
-        # image fingerprint. If a pathological result creates too many partial
-        # matches, fail closed by withholding every candidate slot.
-        work = 0
+        # Search every reversible encoding with a shared work budget. A result
+        # exceeding any search bound withholds all candidate slots.
         completed_paths = set()
+        work = [0]
         for fingerprint, fold_case in self.text_fingerprints:
-            scan_texts = [text.lower() for text in normalized] if fold_case else normalized
-            states = {0: ()}
-            for index, text in enumerate(scan_texts):
-                if not text or text == REDACTED_IMAGE:
-                    continue
-                advanced = dict(states)
-                for position, path in states.items():
-                    start = 0
-                    while position < len(fingerprint) and start < len(text):
-                        found = text.find(fingerprint[position], start)
-                        # Searches run in native code and material has its own
-                        # byte cap. Charge attempts plus Python-level matching so
-                        # a large unrelated field cannot trigger fail-closed.
-                        work += 1
-                        if work > MAX_REDACTION_NODES * 32:
-                            for slot in slots:
-                                self._set_slot(slot, REDACTED_IMAGE)
-                            return
-                        if found < 0:
-                            break
-                        length = 0
-                        limit = min(len(text) - found, len(fingerprint) - position)
-                        while (
-                            length < limit
-                            and text[found + length] == fingerprint[position + length]
-                        ):
-                            length += 1
-                            work += 1
-                            if work > MAX_REDACTION_NODES * 32:
-                                for slot in slots:
-                                    self._set_slot(slot, REDACTED_IMAGE)
-                                return
-                        end = position + length
-                        candidate = path + (index,)
-                        if end == len(fingerprint):
-                            completed_paths.add(candidate)
-                            if len(completed_paths) > MAX_REDACTION_PATHS:
-                                for slot in slots:
-                                    self._set_slot(slot, REDACTED_IMAGE)
-                                return
-                        elif length:
-                            advanced.setdefault(end, candidate)
-                        start = found + 1
-                if len(advanced) > 4096:
-                    for slot in slots:
-                        self._set_slot(slot, REDACTED_IMAGE)
-                    return
-                states = advanced
+            texts = [text.lower() for text in normalized] if fold_case else normalized
+            paths = self._fragment_paths(texts, fingerprint, work, completed_paths)
+            if paths is None:
+                self._withhold_slots(slots)
+                return
         path_sets = {path: frozenset(path) for path in completed_paths}
         minimal_paths = [
             path
@@ -407,8 +351,7 @@ class _ImageEchoSanitizer:
                 for right_index in range(left_index + 1, len(slots)):
                     comparisons += 1
                     if comparisons > MAX_REDACTION_NODES * 4:
-                        for slot in slots:
-                            self._set_slot(slot, REDACTED_IMAGE)
+                        self._withhold_slots(slots)
                         return
                     right = values[right_index]
                     if (
@@ -429,8 +372,7 @@ class _ImageEchoSanitizer:
                     seen.add(key)
                     candidates += 1
                     if candidates > 16:
-                        for slot in slots:
-                            self._set_slot(slot, REDACTED_IMAGE)
+                        self._withhold_slots(slots)
                         return
                     bridged_aliases = list(aliases)
                     bridged_aliases[left_index] += bridged_aliases[right_index]
@@ -455,52 +397,71 @@ class _ImageEchoSanitizer:
             return False
         return data in bytes(value)
 
-    def _redact_integer_fragments(self, slots):
-        """Redact byte arrays that reconstruct the image, allowing framing between fields."""
+    @staticmethod
+    def _fragment_paths(chunks, fingerprint, work, completed_paths):
+        """Find ordered payload fragments, allowing unrelated framing and fields.
+
+        Text searches share a budget across encodings and keep complete paths for
+        minimal-path selection. Byte searches retain their original successful-
+        match charging and collect every participating slot.
+        """
+        text_search = isinstance(fingerprint, str)
         states = {0: ()}
-        matched_slots = set()
-        work = 0
-        for index, (_, _, value) in enumerate(slots):
-            chunk = bytes(value)
+        for index, chunk in enumerate(chunks):
+            if text_search and (not chunk or chunk == REDACTED_IMAGE):
+                continue
             advanced = dict(states)
             for position, path in states.items():
                 start = 0
-                while position < len(self.data):
-                    start = chunk.find(self.data[position : position + 1], start)
-                    if start < 0:
+                while position < len(fingerprint) and (not text_search or start < len(chunk)):
+                    found = chunk.find(fingerprint[position : position + 1], start)
+                    if text_search:
+                        work[0] += 1
+                        if work[0] > MAX_REDACTION_NODES * 32:
+                            return None
+                    if found < 0:
                         break
                     length = 0
-                    limit = min(len(chunk) - start, len(self.data) - position)
-                    while length < limit and chunk[start + length] == self.data[position + length]:
+                    limit = min(len(chunk) - found, len(fingerprint) - position)
+                    while length < limit and chunk[found + length] == fingerprint[position + length]:
                         length += 1
-                    work += length + 1
-                    if work > MAX_REDACTION_NODES * 32:
-                        for slot in slots:
-                            self._set_slot(slot, REDACTED_IMAGE)
-                        return
-                    if length:
-                        end = position + length
-                        candidate = path + (index,)
-                        if end == len(self.data):
-                            matched_slots.update(candidate)
+                        if text_search:
+                            work[0] += 1
+                            if work[0] > MAX_REDACTION_NODES * 32:
+                                return None
+                    if not text_search:
+                        work[0] += length + 1
+                        if work[0] > MAX_REDACTION_NODES * 32:
+                            return None
+                    end = position + length
+                    candidate = path + (index,)
+                    if end == len(fingerprint):
+                        if text_search:
+                            completed_paths.add(candidate)
+                            if len(completed_paths) > MAX_REDACTION_PATHS:
+                                return None
                         else:
-                            advanced.setdefault(end, candidate)
-                    start += 1
+                            completed_paths.update(candidate)
+                    elif length:
+                        advanced.setdefault(end, candidate)
+                    start = found + 1
             if len(advanced) > 4096:
-                for slot in slots:
-                    self._set_slot(slot, REDACTED_IMAGE)
-                return
+                return None
             states = advanced
-        for matched in matched_slots:
-            self._set_slot(slots[matched], REDACTED_IMAGE)
+        return completed_paths
+
+    def _redact_integer_fragments(self, slots):
+        """Redact byte arrays that reconstruct the image, allowing framing between fields."""
+        chunks = (bytes(value) for _, _, value in slots)
+        matched = self._fragment_paths(chunks, self.data, [0], set())
+        self._withhold_slots(slots if matched is None else (slots[index] for index in matched))
 
     def _redact_percent_fragments(self, slots):
         if len(slots) < 2:
             return
         combined = self._normalized_text("".join(text for _, _, text in slots))
         if self._match_span(combined) is not None:
-            for slot in slots:
-                self._set_slot(slot, REDACTED_IMAGE)
+            self._withhold_slots(slots)
 
     def _redact_structured_fragments(self, value):
         """Check structured result fragments that are rendered through str()."""

@@ -28,7 +28,6 @@ import uuid
 from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Optional, get_type_hints
-from types import SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
@@ -276,11 +275,7 @@ class _PrivateMcpTransport:
                 # connect/TLS, payload validation and serialization precede the
                 # one-use commitment. No SDK queue, redirect, auth retry or
                 # resumption machinery exists between this guard and the write.
-                self._check(deadline, cancel_event)
-                if config_check is not None and config_check() is not True:
-                    raise _PrivateTransportUnavailable
-                if context is not None:
-                    context.commit_at_send(self.identity)
+                self._commit_send(deadline, cancel_event, config_check, context)
                 connection.request("POST", path, body = body, headers = headers)
                 response = connection.getresponse()
                 if not 200 <= response.status < 300:
@@ -301,11 +296,7 @@ class _PrivateMcpTransport:
                 if len(data) > _PRIVATE_RESPONSE_LIMIT:
                     raise _PrivateTransportUnavailable
                 return self._response(json.loads(data), request_id)
-            self._check(deadline, cancel_event)
-            if config_check is not None and config_check() is not True:
-                raise _PrivateTransportUnavailable
-            if context is not None:
-                context.commit_at_send(self.identity)
+            self._commit_send(deadline, cancel_event, config_check, context)
             # Unbuffered binary stdin writes to the approved live process.
             # A short write is not retried: delivery is unknown and consent spent.
             outbound = body + b"\n"
@@ -339,6 +330,13 @@ class _PrivateMcpTransport:
                 self.http = None
             if watcher is not None:
                 watcher.join(timeout = 0.2)
+
+    def _commit_send(self, deadline, cancel_event, config_check, context):
+        self._check(deadline, cancel_event)
+        if config_check is not None and config_check() is not True:
+            raise _PrivateTransportUnavailable
+        if context is not None:
+            context.commit_at_send(self.identity)
 
     def _response(self, item, request_id):
         if (
@@ -448,13 +446,10 @@ def prepare_mcp_image_recipient(
         transport.protocol = initialized["protocolVersion"]
         transport.exchange("notifications/initialized", {}, cancel_event = cancel_event, notify = True)
         with _private_recipients_lock:
-            expired = [
-                identity
-                for identity, item in _private_recipients.items()
-                if time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
+            stale = _pop_private_recipients(
+                lambda item: time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
                 or item.closed.is_set()
-            ]
-            stale = [_private_recipients.pop(identity) for identity in expired]
+            )
             if len(_private_recipients) >= _DEFAULT_MAX_SESSIONS:
                 raise _PrivateTransportUnavailable
             # Initialization may be slow. The disclosure lifetime begins only
@@ -478,41 +473,47 @@ def _private_recipient_reaper():
     while True:
         time.sleep(5)
         with _private_recipients_lock:
-            expired = [
-                identity
-                for identity, item in _private_recipients.items()
-                if time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
+            stale = _pop_private_recipients(
+                lambda item: time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
                 or item.closed.is_set()
-            ]
-            stale = [_private_recipients.pop(identity) for identity in expired]
+            )
         for item in stale:
             item.close()
 
 
-def mcp_image_recipient_location(identity):
+def _pop_private_recipients(matches):
+    """Remove matching recipients while the caller holds the registry lock."""
+    identities = [key for key, item in _private_recipients.items() if matches(item)]
+    return [_private_recipients.pop(key) for key in identities]
+
+
+def _private_recipient(identity, *, consume = False, required = True):
     with _private_recipients_lock:
         transport = _private_recipients.get(identity)
         if transport is None or transport.account != current_account_id():
-            raise _PrivateTransportUnavailable
-        return transport.location
+            if required:
+                raise _PrivateTransportUnavailable
+            return None
+        if consume:
+            # Claim atomically, including when separate contexts race to send.
+            _private_recipients.pop(identity)
+        return transport
+
+
+def mcp_image_recipient_location(identity):
+    return _private_recipient(identity).location
 
 
 def mcp_image_recipient_remaining_ms(identity):
-    with _private_recipients_lock:
-        transport = _private_recipients.get(identity)
-        if transport is None or transport.account != current_account_id():
-            raise _PrivateTransportUnavailable
-        remaining = _PRIVATE_RECIPIENT_TTL - (time.monotonic() - transport.created_at)
-        return max(0, int(remaining * 1000))
+    transport = _private_recipient(identity)
+    remaining = _PRIVATE_RECIPIENT_TTL - (time.monotonic() - transport.created_at)
+    return max(0, int(remaining * 1000))
 
 
 def close_mcp_image_recipient(identity):
-    with _private_recipients_lock:
-        transport = _private_recipients.get(identity)
-        if transport is None or transport.account != current_account_id():
-            return
-        _private_recipients.pop(identity)
-    transport.close()
+    transport = _private_recipient(identity, consume = True, required = False)
+    if transport is not None:
+        transport.close()
 
 
 def _call_private_tool(url, headers, name, args, context, config_check, cancel_event, timeout):
@@ -520,13 +521,7 @@ def _call_private_tool(url, headers, name, args, context, config_check, cancel_e
 
     if not isinstance(context, McpImageCallContext) or context.tool_name != name:
         raise _PrivateTransportUnavailable
-    with _private_recipients_lock:
-        transport = _private_recipients.get(context.recipient)
-        if transport is None or transport.account != current_account_id():
-            raise _PrivateTransportUnavailable
-        # Removing the exact initialized transport atomically prevents racing
-        # consumers, even if they were given two separate context objects.
-        _private_recipients.pop(context.recipient)
+    transport = _private_recipient(context.recipient, consume = True)
     settled = threading.Event()
     deadline = None if timeout is None else time.monotonic() + timeout
 
@@ -564,19 +559,14 @@ def _call_private_tool(url, headers, name, args, context, config_check, cancel_e
         if not isinstance(clean, dict):
             raise _PrivateTransportUnavailable
 
-        def block(value):
-            if not isinstance(value, dict):
+        # Preserve content validation without constructing an SDK-shaped result:
+        # private calls disclose only the fixed completion message.
+        for value in clean.get("content", []):
+            if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
                 raise _PrivateTransportUnavailable
-            value = dict(value)
-            if isinstance(value.get("resource"), dict):
-                value["resource"] = SimpleNamespace(**value["resource"])
-            return SimpleNamespace(**value)
-
-        return SimpleNamespace(
-            content = [block(value) for value in clean.get("content", [])],
-            structured_content = clean.get("structuredContent"),
-            is_error = clean.get("isError", False),
-        )
+            resource = value.get("resource")
+            if isinstance(resource, dict) and any(not isinstance(key, str) for key in resource):
+                raise _PrivateTransportUnavailable
     finally:
         settled.set()
         watcher.join(timeout = 5)
@@ -1786,14 +1776,11 @@ def close_mcp_sessions(
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
     account_id = current_account_id()
     with _private_recipients_lock:
-        private_keys = [
-            identity
-            for identity, item in _private_recipients.items()
-            if (url is None or item.url == url)
+        private_sessions = _pop_private_recipients(
+            lambda item: (url is None or item.url == url)
             and (hk is None or item._configuration[1] == hk)
             and (all_accounts or item.account == account_id)
-        ]
-        private_sessions = [_private_recipients.pop(identity) for identity in private_keys]
+        )
     with _mcp_sessions_lock:
         keys = [
             k
@@ -2498,23 +2485,11 @@ def call_tool_sync(
             # below).
             return await client.call_tool(name, args, raise_on_error = False)
 
+    if disclosure_context is not None:
+        return _call_private_tool_sync(
+            url, headers, name, args, disclosure_context, config_check, cancel_event, timeout, use_oauth
+        )
     try:
-        if disclosure_context is not None:
-            if use_oauth:
-                raise _PrivateTransportUnavailable
-            _call_private_tool(
-                url,
-                headers,
-                name,
-                args,
-                disclosure_context,
-                config_check,
-                cancel_event,
-                timeout,
-            )
-            from .mcp_image_redaction import PRIVATE_CALL_COMPLETE
-
-            return PRIVATE_CALL_COMPLETE
         if is_stdio(url) or (scope and not use_oauth):
             result = _call_session_tool(
                 url,
@@ -2531,38 +2506,44 @@ def call_tool_sync(
         else:
             result = asyncio.run(_race_tool_call(_one_shot(), timeout, cancel_event))
     except _MCPCancelled:
-        if disclosure_context is not None:
-            return _private_call_error()
         return f"Error: MCP tool '{name}' cancelled"
     except _ConnectTimeout as exc:
-        if disclosure_context is not None:
-            return _private_call_error()
         # Report the window that actually expired: for stdio that is the cold-start cap, not the (larger) caller
         # timeout.
         suffix = f" after {round(exc.window, 1):g}s" if exc.window is not None else ""
         return f"Error: MCP tool '{name}' timed out connecting{suffix}"
     except asyncio.TimeoutError:
-        if disclosure_context is not None:
-            return _private_call_error()
         suffix = f" after {timeout:g}s" if timeout is not None else ""
         return f"Error: MCP tool '{name}' timed out{suffix}"
     except _PrivateTransportUnavailable:
         from .mcp_image_redaction import PRIVATE_TRANSPORT_UNAVAILABLE
-        if disclosure_context is not None and getattr(disclosure_context, "spent", True):
-            return _private_call_error()
         return PRIVATE_TRANSPORT_UNAVAILABLE
     except Exception as exc:
-        if disclosure_context is not None:
-            return _private_call_error()
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
     return _flatten_result(result)
 
 
-def _private_call_error():
-    from .mcp_image_redaction import PRIVATE_CALL_ERROR
-    return PRIVATE_CALL_ERROR
+def _call_private_tool_sync(
+    url, headers, name, args, context, config_check, cancel_event, timeout, use_oauth
+):
+    from .mcp_image_redaction import (
+        PRIVATE_CALL_COMPLETE,
+        PRIVATE_CALL_ERROR,
+        PRIVATE_TRANSPORT_UNAVAILABLE,
+    )
+
+    try:
+        if use_oauth:
+            raise _PrivateTransportUnavailable
+        _call_private_tool(url, headers, name, args, context, config_check, cancel_event, timeout)
+        return PRIVATE_CALL_COMPLETE
+    except _PrivateTransportUnavailable:
+        return PRIVATE_CALL_ERROR if getattr(context, "spent", True) else PRIVATE_TRANSPORT_UNAVAILABLE
+    except Exception:
+        # Private exception details must never reach logs or model-visible output.
+        return PRIVATE_CALL_ERROR
 
 
 class _PrivateTransportUnavailable(Exception):

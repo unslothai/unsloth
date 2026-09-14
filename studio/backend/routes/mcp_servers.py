@@ -43,6 +43,7 @@ from core.inference.mcp_client import (
 from core.inference.mcp_config_import import parse_mcp_config
 from core.inference.mcp_image_disclosure import (
     McpImageDisclosureError,
+    stored_image_input_mappings,
     validate_image_input_mappings,
 )
 from models.mcp_servers import (
@@ -161,12 +162,6 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
 
 
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
-    try:
-        image_input_mappings = json.loads(row.get("image_input_mappings_json") or "[]")
-        if not isinstance(image_input_mappings, list):
-            image_input_mappings = []
-    except (TypeError, ValueError):
-        image_input_mappings = []
     return McpServerResponse(
         id = row["id"],
         builtin_id = row.get("builtin_id"),
@@ -176,7 +171,7 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         allow_image_attachments = bool(row.get("allow_image_attachments")),
-        image_input_mappings = image_input_mappings,
+        image_input_mappings = stored_image_input_mappings(row),
         config_revision = int(row.get("config_revision") or 1),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
@@ -489,21 +484,12 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
     if "headers" in sent:
         headers = _normalize_headers(payload.headers)
         changes["headers_json"] = json.dumps(headers) if headers else None
-    if "is_enabled" in sent:
-        if payload.is_enabled is None:
-            raise HTTPException(status_code = 400, detail = "is_enabled must be true or false")
-        changes["is_enabled"] = payload.is_enabled
-    if "use_oauth" in sent:
-        if payload.use_oauth is None:
-            raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
-        changes["use_oauth"] = payload.use_oauth
-    if "allow_image_attachments" in sent:
-        if payload.allow_image_attachments is None:
-            raise HTTPException(
-                status_code = 400,
-                detail = "allow_image_attachments must be true or false",
-            )
-        changes["allow_image_attachments"] = payload.allow_image_attachments
+    for field in ("is_enabled", "use_oauth", "allow_image_attachments"):
+        if field in sent:
+            value = getattr(payload, field)
+            if value is None:
+                raise HTTPException(status_code = 400, detail = f"{field} must be true or false")
+            changes[field] = value
     if "image_input_mappings" in sent and payload.image_input_mappings is None:
         raise HTTPException(
             status_code = 400, detail = "image_input_mappings must be a list; use [] to clear it"
@@ -560,13 +546,9 @@ async def update_mcp_server(
     proposed_image_permission = bool(
         changes.get("allow_image_attachments", old.get("allow_image_attachments"))
     )
-    try:
-        old_mappings = json.loads(old.get("image_input_mappings_json") or "[]")
-        if not isinstance(old_mappings, list):
-            old_mappings = []
-    except (TypeError, ValueError):
-        old_mappings = []
-    proposed_mappings = payload.image_input_mappings if mapping_sent else old_mappings
+    proposed_mappings = (
+        payload.image_input_mappings if mapping_sent else stored_image_input_mappings(old)
+    )
     mapping_transport_changed = any(
         key in changes and changes[key] != old.get(key)
         for key in ("url", "headers_json", "use_oauth")

@@ -72,6 +72,7 @@ from core.inference.tool_stream_exec import (
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from core.inference.mcp_image_tool_loop import (
     abort_call_decision,
+    begin_call_decision,
     mcp_image_run_lifetime,
     wait_call_decision,
 )
@@ -1639,22 +1640,10 @@ async def stream_with_studio_tools(
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
             needs_confirmation = needs_confirmation or image_approval is not None
-            approval_id = (
-                image_approval.approval_id
-                if image_approval
-                else (new_approval_id() if needs_confirmation else "")
+            approval_id, decision_slot, start_event = begin_call_decision(
+                decision, image_approval, needs_confirmation, session_id,
+                new_approval_id, begin_tool_decision,
             )
-            decision_slot = (
-                image_approval.slot
-                if image_approval
-                else (begin_tool_decision(session_id, approval_id) if needs_confirmation else None)
-            )
-
-            start_event = decision.tool_start_event()
-            start_event["approval_id"] = approval_id
-            start_event["awaiting_confirmation"] = needs_confirmation
-            if image_approval is not None:
-                start_event["image_disclosure"] = image_approval.metadata
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.

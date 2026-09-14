@@ -33776,6 +33776,7 @@ class LlamaCppBackend:
                         )
                     from core.inference.mcp_image_tool_loop import (
                         abort_call_decision,
+                        begin_call_decision,
                         wait_call_decision,
                     )
 
@@ -33787,23 +33788,10 @@ class LlamaCppBackend:
                         else None
                     )
                     needs_confirm = needs_confirm or image_approval is not None
-                    approval_id = (
-                        image_approval.approval_id
-                        if image_approval
-                        else (new_approval_id() if needs_confirm else "")
+                    approval_id, decision_slot, start_event = begin_call_decision(
+                        decision, image_approval, needs_confirm, session_id,
+                        new_approval_id, begin_tool_decision,
                     )
-                    decision_slot = (
-                        image_approval.slot
-                        if image_approval
-                        else (
-                            begin_tool_decision(session_id, approval_id) if needs_confirm else None
-                        )
-                    )
-                    start_event = decision.tool_start_event()
-                    start_event["approval_id"] = approval_id
-                    start_event["awaiting_confirmation"] = needs_confirm
-                    if image_approval is not None:
-                        start_event["image_disclosure"] = image_approval.metadata
 
                     try:
                         # Gated calls are not running yet; a "Running ..." badge
