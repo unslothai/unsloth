@@ -2227,6 +2227,7 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
+    cache_is_empty: bool = False,
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
@@ -2243,6 +2244,10 @@ def _openai_llama_admission_recost(
     Safe to wait here because it is between rounds and the slot is idle at llama-server.
     Idle is not reclaimed, though, so the yield is gated on
     ``_openai_llama_admission_can_yield``; where it is False this declines instead.
+
+    ``cache_is_empty`` overrides that gate for a round whose cells were explicitly erased.
+    The gate exists because an idle slot's KV stays resident, which an erased slot's does
+    not, so yielding there hands back room that really is free.
     """
     if reservation is None:
         return
@@ -2289,7 +2294,7 @@ def _openai_llama_admission_recost(
         lease.recost_waiting(
             want,
             cancel_event = cancel_event,
-            allow_yield = _openai_llama_admission_can_yield(llama_backend),
+            allow_yield = cache_is_empty or _openai_llama_admission_can_yield(llama_backend),
         )
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
@@ -23465,6 +23470,7 @@ async def produce_openai_chat_completions(
 
             def _gguf_recost(conversation) -> None:
                 with _gguf_decode_lock:
+                    erased = _gguf_decode["erased"]
                     # A new round re-fills the cache; the last erasure says nothing now.
                     _gguf_decode["slot"] = None
                     _gguf_decode["erased"] = False
@@ -23484,6 +23490,9 @@ async def produce_openai_chat_completions(
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
+                    # Reclamation erased this chat's cells, so the grown round may wait for
+                    # room instead of decoding over a budget it was refused.
+                    cache_is_empty = erased,
                 )
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.

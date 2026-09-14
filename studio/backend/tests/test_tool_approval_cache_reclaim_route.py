@@ -249,3 +249,152 @@ def test_an_unacknowledged_erasure_keeps_the_context_reserved(monkeypatch):
             await asyncio.gather(task, return_exceptions = True)
 
     asyncio.run(_drive())
+
+
+class _RecostLease:
+    def __init__(self):
+        self.allow_yield = None
+
+    def recost_waiting(
+        self,
+        tokens,
+        *,
+        cancel_event = None,
+        allow_yield = True,
+    ):
+        self.allow_yield = allow_yield
+        return False
+
+
+class _RecostReservation:
+    def __init__(self, lease):
+        self._lease = lease
+
+    def lease_nowait(self):
+        return self._lease
+
+
+class _NoIdleClearingBackend(FakeLlamaCppBackend):
+    """Windows full GPU offload: --cache-ram 0, so an idle slot keeps its cells."""
+
+    base_url = BASE_URL
+    effective_parallel_slots = 4
+    context_length = BUDGET
+    idle_slot_clearing_active = False
+
+
+@pytest.mark.parametrize(
+    ("cache_is_empty", "expected"),
+    [(False, False), (True, True)],
+)
+def test_a_recost_may_wait_for_room_once_the_cells_were_erased(cache_is_empty, expected):
+    lease = _RecostLease()
+
+    inference_route._openai_llama_admission_recost(
+        _RecostReservation(lease),
+        [{"role": "user", "content": "hi"}],
+        request = None,
+        llama_backend = _NoIdleClearingBackend(),
+        output_tokens = 256,
+        cache_is_empty = cache_is_empty,
+    )
+
+    assert lease.allow_yield is expected
+
+
+class _GrowsAfterApprovalBackend(_ApprovalGatedBackend):
+    """Runs the next round after the approval, which is where the grown cost is charged."""
+
+    def generate_chat_completion_with_tools(self, **kwargs):
+        kwargs["on_decode_slot"](BASE_URL, DECODE_SLOT)
+        yield {
+            "type": "tool_start",
+            "name": "python",
+            "awaiting_confirmation": True,
+            "approval_id": "a1",
+        }
+        self.answered.wait(10)
+        yield {"type": "tool_end", "name": "python", "result": "ok"}
+        kwargs["on_conversation_grew"](
+            [
+                {"role": "user", "content": "compute 17 * 23 " + "x " * 4000},
+                {"role": "tool", "content": "391 " + "y " * 4000},
+            ]
+        )
+        yield {
+            "type": "metadata",
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+            "timings": {"prompt_n": 4, "predicted_n": 1},
+            "finish_reason": "stop",
+        }
+
+
+def test_the_round_after_a_reclaim_is_told_its_cells_are_gone(monkeypatch):
+    """Erased cells make yielding honest, so the grown round may wait instead of decoding.
+
+    Without it the recost declines wherever idle slots are not cleared and the larger
+    prompt goes out anyway, over a budget the pool refused it.
+    """
+    backend = _GrowsAfterApprovalBackend()
+    app = _install(monkeypatch, backend)
+    recosts = []
+    real_recost = inference_route._openai_llama_admission_recost
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_llama_admission_recost",
+        lambda *a, **kw: recosts.append(kw.get("cache_is_empty")),
+    )
+    assert real_recost is not None
+
+    async def _drive():
+        body = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "compute 17 * 23 " + "x " * 4000}],
+                "stream": True,
+                "confirm_tool_calls": True,
+            }
+        ).encode()
+        done = asyncio.Event()
+
+        async def receive():
+            if not done.is_set():
+                return {"type": "http.request", "body": body, "more_body": False}
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message.get("type") == "http.response.body":
+                if message.get("body", b"").decode() == inference_route._SSE_DONE_CHUNK:
+                    done.set()
+
+        task = asyncio.create_task(app(_request_scope(app, body), receive, send))
+        rival = None
+        try:
+            await _until(
+                lambda: _queue().snapshot().active == 0 and _queue().snapshot().committed > 0,
+                "the approval to park while still holding its context",
+            )
+            held = _queue().snapshot().committed
+            rival = _queue().reserve(
+                capacity = 4,
+                config = llama_admission.LlamaAdmissionConfig(),
+                tokens = BUDGET - held + 1,
+                budget = BUDGET,
+            )
+            assert rival.lease_nowait() is None
+            await _until(lambda: bool(backend.erased), "the parked chat's cache to be erased")
+            await _until(lambda: rival.lease_nowait() is not None, "the rival to be admitted")
+
+            backend.answered.set()
+            rival.lease_nowait().release()
+            rival = None
+            await wait_for_frame(done, task, what = "the [DONE] frame")
+        finally:
+            if rival is not None:
+                rival.cancel()
+            backend.answered.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions = True)
+
+    asyncio.run(_drive())
+
+    assert recosts == [True], f"the round after the erasure was told {recosts}"
