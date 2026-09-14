@@ -95,41 +95,52 @@ class TestUvOnlyBinaryOnPinnedCommands:
 
     PINNED = ("torch", "--index-url", "https://pin.example/whl")
 
+    def _uv_cmd(self, args):
+        return ips._uv_cmd_and_env(ips._build_uv_cmd(args))[0]
+
     def test_a_pinned_uv_command_carries_only_binary_as_flags(self):
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
-            cmd = ips._build_uv_cmd(self.PINNED)
+            cmd = self._uv_cmd(self.PINNED)
         assert cmd[-2:] == ["--only-binary", ":all:"]
 
     def test_each_entry_becomes_its_own_flag(self):
         """uv takes the option repeatably, not comma joined the way pip spells it."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
-            cmd = ips._build_uv_cmd(self.PINNED)
+            cmd = self._uv_cmd(self.PINNED)
         assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
 
-    @pytest.mark.reads_real_pip_config
-    def test_the_flag_and_the_environment_can_never_disagree(self, monkeypatch):
-        """Both come from one read. Asking twice let a transient failure put the policy in
-        the environment while leaving it off the argv that actually decides."""
-        # Pre-seeded, so the read is the cached one and no subprocess is involved.
-        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", b"global.only-binary=':all:'\n")
-        with mock.patch.dict(
-            os.environ, {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}, clear = True
-        ):
-            cmd = ips._build_uv_cmd(self.PINNED)
-            env = ips._install_env_for_cmd(cmd)
+    @pytest.mark.reads_real_pip_config  # stubbed below with a read that fails once
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    def test_the_flag_and_the_environment_can_never_disagree(self, monkeypatch, installer):
+        """Both come from one read. A failed read is not memoised, so asking twice let a
+        transient miss leave the flag off the argv while the retry put the policy in the
+        environment, which uv never reads."""
+        answers = iter(({}, {"PIP_ONLY_BINARY": ":all:"}))
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: next(answers, {}))
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        runs = []
+        monkeypatch.setattr(
+            ips.subprocess,
+            "run",
+            lambda cmd, **kwargs: runs.append((cmd, kwargs.get("env")))
+            or subprocess.CompletedProcess(cmd, 0, b""),
+        )
+        getattr(ips, installer)("torch", *self.PINNED, constrain = False)
+        ((cmd, env),) = runs
         flagged = cmd[cmd.index("--only-binary") + 1] if "--only-binary" in cmd else None
-        assert flagged == env.get("PIP_ONLY_BINARY") == ":all:"
+        assert flagged == (env or {}).get("PIP_ONLY_BINARY")
 
     def test_a_non_pinned_command_is_left_alone(self):
         """It keeps its config file, so uv applies the operator's policy itself."""
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
-            cmd = ips._build_uv_cmd(("torch",))
+            cmd = self._uv_cmd(("torch",))
         assert "--only-binary" not in cmd
 
     def test_no_policy_adds_no_flag(self):
         env = {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}
         with mock.patch.dict(os.environ, env, clear = True):
-            assert "--only-binary" not in ips._build_uv_cmd(self.PINNED)
+            assert "--only-binary" not in self._uv_cmd(self.PINNED)
 
 
 class TestBuildUvCmdTorchBackend:

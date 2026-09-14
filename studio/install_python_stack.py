@@ -7297,11 +7297,20 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     _tb = os.environ.get("UV_TORCH_BACKEND", "")
     if _tb and not _is_pinned_index_cmd(cmd):
         cmd.append(f"--torch-backend={_tb}")
-    cmd.extend(_uv_only_binary_args(cmd))
     return cmd
 
 
-def _uv_only_binary_args(cmd: "list[str]") -> "list[str]":
+def _uv_cmd_and_env(cmd: "list[str]") -> "tuple[list[str], dict[str, str] | None]":
+    """A uv command with its only-binary flags, and the env it runs with, from ONE read.
+
+    A failed read is not memoised, so a second one can succeed: the policy would then reach
+    the environment, which uv ignores, but not the argv that decides.
+    """
+    env = _install_env_for_cmd(cmd)
+    return cmd + _uv_only_binary_args(cmd, env), env
+
+
+def _uv_only_binary_args(cmd: "list[str]", env: "dict[str, str] | None") -> "list[str]":
     """The operator's only-binary, as uv flags, for a pinned command.
 
     uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
@@ -7312,9 +7321,7 @@ def _uv_only_binary_args(cmd: "list[str]") -> "list[str]":
     """
     if not _is_pinned_index_cmd(cmd):
         return []
-    # Off the env this command will run with, not a second read: two reads can disagree,
-    # putting the policy in the environment but not on the argv that decides.
-    value = (_install_env_for_cmd(cmd) or {}).get("PIP_ONLY_BINARY", "")
+    value = (env or {}).get("PIP_ONLY_BINARY", "")
     args: list[str] = []
     # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
     for part in value.split(","):
@@ -7937,9 +7944,10 @@ def pip_install_try(
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
     if USE_UV and not force_pip:
-        cmd = _build_uv_cmd(args) + constraint_args_uv
+        cmd, env = _uv_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv)
     else:
         cmd = _build_pip_cmd(args) + constraint_args_pip
+        env = _install_env_for_cmd(cmd)
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
@@ -7947,7 +7955,7 @@ def pip_install_try(
         cmd,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
-        env = _install_env_for_cmd(cmd),
+        env = env,
     )
     if result.returncode == 0:
         # As pip_install below: `nobuild` only catches a build that reaches the log.
@@ -7992,14 +8000,14 @@ def pip_install(
 
     try:
         if USE_UV:
-            uv_cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+            uv_cmd, uv_env = _uv_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv + req_args_uv)
             if VERBOSE:
                 _safe_print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
-                env = _install_env_for_cmd(uv_cmd),
+                env = uv_env,
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
