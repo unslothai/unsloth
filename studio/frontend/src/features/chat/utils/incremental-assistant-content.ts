@@ -33,7 +33,11 @@ function heldBackLength(text: string, tag: string): number {
  *  part. */
 class ParsedRun {
   readonly parts: ContentPart[] = [];
-  private insideThink = false;
+  // Read by the caller that appends by KIND (text or reasoning) rather than by text: it has to know
+  // which tag the next chunk owes, and the run being written is the only honest answer. It is per-run
+  // on purpose -- a tool call in between starts a NEW run, which begins outside the block however the
+  // run before it ended.
+  insideThink = false;
   private held = "";
 
   append(delta: string): void {
@@ -96,6 +100,13 @@ class ParsedRun {
 export type SegmentedAssistantText = {
   /** Take the characters an arrival added to the reply. */
   appendText(delta: string): void;
+  /** Whether the run currently being written sits inside a `< think>` block. A caller appending by KIND
+   *  has to know which tag the next chunk owes, and it has to ask the run it is writing: a tool call in
+   *  between starts a NEW run, which begins outside the block the run before it ended inside. A caller
+   *  tracking that flag across the whole reply keeps closing a block the boundary already closed, and
+   *  the stray tag then lands in the next part as literal text -- an answer that renders `< /think>`
+   *  where its first word should be. */
+  insideThink(): boolean;
   /** Parsed parts for the run before each boundary, then the run after the last one, so the result
    *  always has `boundaries.length + 1` entries. `rawText` is only read when the retained state
    *  cannot be trusted for it; on the streaming path that is the boundaries changing, once per
@@ -157,6 +168,9 @@ export function createSegmentedAssistantText({
       }
       runs[runs.length - 1].append(delta);
       length += delta.length;
+    },
+    insideThink(): boolean {
+      return runs[runs.length - 1]!.insideThink;
     },
     runs(rawText: string, nextBoundaries: readonly number[]): ContentPart[][] {
       if (

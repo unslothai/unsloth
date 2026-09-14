@@ -98,7 +98,12 @@ import {
   ingestResearchUpdate,
   useResearchRunStore,
 } from "./stores/research-run-store";
-import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import {
+  ToolPaneScopeContext,
+  toolOutputKey,
+  toolPaneScope,
+  toolThreadScope,
+} from "./tool-output-scope";
 import { ChatProjectScopeContext } from "./chat-project-scope";
 import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
@@ -111,28 +116,25 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsCorroboratedLive,
+  createRecoveryCatchUpGate,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
-  restoreCarriedPartsFromRaw,
   isLiveGenerationRun,
-  generationRawContent,
   loadGenerationOverlaySnapshot,
   markServerActiveGenerationRunsUnknown,
   forgetServerActiveGenerationRun,
   syncServerActiveGenerationRuns,
   recoveredContentToImport,
-  recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
-import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
-import { mergeContextTruncation } from "./utils/context-truncation";
 import {
-  extractDeltaText,
-  parseAssistantContent,
-} from "./utils/parse-assistant-content";
+  createRecoveryReplay,
+  seededParkedApprovals,
+} from "./utils/chat-generation-replay";
+import { mergeContextTruncation } from "./utils/context-truncation";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
@@ -844,10 +846,15 @@ type GenerationRecovery = {
 
 const generationRecoveries = new Map<string, GenerationRecovery>();
 
+// What a follower folds for a call still RUNNING: the pane scope live keyed its tool-output map by --
+// exactly what `useToolPaneScope` hands the card (pane scope + thread), so the replay's frames and the
+// reader's read resolve to ONE key. Passed in rather than derived here because a follower has the run's
+// thread but not the pane rendering it: modelType/pairId are props of the runtime hook that owns it.
 function scheduleGenerationRecovery(
   threadId: string,
   storedMessage: MessageRecord,
   aui: ReturnType<typeof useAui>,
+  toolOutputScope: string,
 ): void {
   const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
   const runId = metadata.generationRunId;
@@ -865,10 +872,69 @@ function scheduleGenerationRecovery(
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
-    const stored = generationRawContent(storedMessage.content);
-    const carried = stored.carried;
-    const toolRecovery = createGenerationToolRecovery(carried, runId, cursor);
-    let { raw, reasoningOpen } = stored;
+    // The follower's own accumulator: the same PARTS the live stream built, extended one event at a
+    // time instead of re-parsed from character zero on every publish, and a tool call lands ON its
+    // card at the offset it ran at instead of being flattened out of the reply.
+    // The durations the tab that started the run already measured ride along: the frames before this
+    // cursor were never folded here, so what the closing tab timed is all anyone will ever know about
+    // those groups, and a group this reader DOES watch has to land in the next slot instead of
+    // overwriting one it inherited.
+    // Read lazily, at whichever frame needs it, so filling it in below still reaches every frame after
+    // this one. One holder for BOTH constructions: the accumulator is rebuilt mid-follow when storage
+    // holds nothing yet, and a fresh literal there would hand the new one back an option it has already
+    // been folding frames with -- a python card that loses WHICH session ran names a folder from the
+    // reader's current scope instead of the run's.
+    const replayOptions: {
+      sandboxSessionId?: string;
+      // A call parked on its approval must reopen parked in THIS tab too: live keyed the store's pending
+      // map with `${scopeId}:${approvalId}`, so the replay needs that same scope and a registration of its
+      // own to re-raise the card as awaiting. register/resolve are exactly what live calls at its tool_start.
+      toolConfirmations?: {
+        scopeId?: string;
+        register(id: string, approvalId: string): void;
+        resolve(id: string): void;
+      };
+      // A call still RUNNING when this tab attached has stdout in no part yet. Unlike the approvals above, the
+      // key needs no lazy fill: the pane scope is `toolOutputScope`, known before the first frame lands.
+      toolOutputs?: {
+        append(partId: string, text: string): void;
+        clear(partId: string): void;
+      };
+    } = {};
+    replayOptions.toolConfirmations = {
+      register: (id, approvalId) =>
+        useChatRuntimeStore.getState().setToolConfirmation(
+          id,
+          approvalId,
+          replayOptions.sandboxSessionId ?? "",
+          replayOptions.toolConfirmations?.scopeId ?? "",
+        ),
+      resolve: (id) =>
+        useChatRuntimeStore.getState().clearToolConfirmation(id),
+    };
+    // A call still RUNNING when this tab attached has stdout in no part yet, and this tab's live-output map is
+    // what the running card renders: folding frames into parts alone showed the reader nothing until tool_end.
+    // The SAME two store actions live calls, under the SAME key the card reads through (`toolOutputKey`), keyed
+    // by the PART id -- what the card renders, never the backend's `call_0`. No full-output promotion: the
+    // replay's part already carries the fuller of stream-vs-result, so a second copy of the body would only let
+    // raw stdout beat the shaped result on the finished card.
+    replayOptions.toolOutputs = {
+      append: (partId, text) =>
+        useChatRuntimeStore
+          .getState()
+          .appendToolLiveOutput(toolOutputKey(toolOutputScope, partId), text),
+      clear: (partId) =>
+        useChatRuntimeStore
+          .getState()
+          .clearToolLiveOutput(toolOutputKey(toolOutputScope, partId)),
+    };
+    let replay = createRecoveryReplay(
+      storedMessage.content,
+      Array.isArray(metadata.reasoningDurations)
+        ? (metadata.reasoningDurations as number[])
+        : undefined,
+      replayOptions,
+    );
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -900,14 +966,7 @@ function scheduleGenerationRecovery(
       owner: serverCancel,
     });
 
-    // Save and finalisation share ONE rebuild: derived apart, the names lag a publish or are empty.
-    const rebuild = () =>
-      toolRecovery.withSources(
-        restoreCarriedPartsFromRaw(
-          reasoningOpen ? `${raw}</think>` : raw,
-          carried,
-        ),
-      ) as MessageRecord["content"];
+    // Save and finalisation share ONE rebuilt content: derived apart, the names lag a publish or are empty.
     const toolNames = (content: MessageRecord["content"]): string[] =>
       (Array.isArray(content) ? content : []).flatMap((part) => {
         const card = part as { type?: string; toolName?: unknown };
@@ -924,7 +983,11 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      const content = rebuild();
+      // Parts, not a flattened string: the accumulator already cut the reply at each call's
+      // offset, and an open reasoning block is read back as one (ParsedRun closes what it holds).
+      // The cast through `unknown`: a `Record<string, unknown> & { type }` part does not
+      // structurally overlap the record's ToolCallMessagePart union member.
+      const content = replay.content() as unknown as MessageRecord["content"];
       await saveStoredChatMessage({
         id: storedMessage.id,
         threadId,
@@ -984,8 +1047,11 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
+      // Measured on the frames' own timestamps (see `createRecoveryReplay`) and published with every
+      // write: without it `resolveReasoningGroupDuration` has nothing to read and a restored card shows
+      // the renderer's `?? 0` fallback -- "Thought for 0 seconds" for a five second thought.
       let nextMetadata = generationRecoveryMetadata({
-        current: currentMetadata,
+        current: { ...currentMetadata, ...replay.durations() },
         runId,
         status,
         cursor,
@@ -1004,22 +1070,56 @@ function scheduleGenerationRecovery(
           timings: recoveryTimings,
           firstChunkAt,
           totalChunks,
-          toolCalls: toolNames(rebuild()),
+          toolCalls: toolNames(
+            replay.content() as unknown as MessageRecord["content"],
+          ),
         });
       }
       await commit(nextMetadata, generationNeedsRecovery(nextMetadata));
     };
 
     try {
-      let lastPublishedStatus = "";
+      // Frames written before this tab attached are history, not a stream: the gate folds them
+      // into `replay` without publishing, so a reopened tab opens on the reply as it stands and then
+      // streams from there instead of re-typing everything it missed. It also decides when a fold
+      // has caught up with the live edge and is worth one write.
+      const catchUp = createRecoveryCatchUpGate();
       let identityValidated = false;
       // The follower reports its no-progress deadline by throwing, and the settlement below is
       // exactly what must happen then; without this catch the message stays running forever.
       let followStalled = false;
       try {
         for await (const update of followChatGenerationRun(runId, {
-          replayFrom: toolRecovery.replayFrom,
+          replayFrom: cursor,
         })) {
+          // The run's own sandbox session, from the first frame that carries a run at all: a chart saved
+          // under the RUN's session id then opens as an image instead of a path in whatever scope this tab
+          // happens to be on.
+          replayOptions.sandboxSessionId ??=
+            update.run.requestPayload.session_id;
+          if (
+            replayOptions.toolConfirmations &&
+            replayOptions.toolConfirmations.scopeId === undefined
+          ) {
+            replayOptions.toolConfirmations.scopeId = `${update.run.requestPayload
+              .session_id || "_default"}:${threadId}`;
+            // A call still parked when the tab closed sits in storage as an unresolved scoped-id card, and its
+            // tool_start sits AT OR BELOW the cursor (the cursor equals the autosave's sequence): no frame here
+            // ever re-folds it, so the replay's own registration never fires for it. Re-raising each seeded one
+            // with the scope now known is what renders Approve/Deny in THIS tab; without it the store never
+            // hears the card is waiting and the run parks until its lease settles it. A call whose tool_start
+            // lands ABOVE the cursor registers itself as the frame folds -- setToolConfirmation is idempotent,
+            // so the seed restore and the fold register the same pair, once.
+            for (const parked of seededParkedApprovals(
+              storedMessage.content,
+              replayOptions.toolConfirmations.scopeId,
+            )) {
+              replayOptions.toolConfirmations.register(
+                parked.id,
+                parked.approvalId,
+              );
+            }
+          }
           if (!identityValidated) {
             if (
               update.run.threadId !== threadId ||
@@ -1027,7 +1127,7 @@ function scheduleGenerationRecovery(
             ) {
               return;
             }
-            if (cursor === 0 && raw.length === 0) {
+            if (cursor === 0 && replay.rawText().length === 0) {
               const requestMessages = update.run.requestPayload.messages;
               const lastRequestMessage = Array.isArray(requestMessages)
                 ? requestMessages.at(-1)
@@ -1039,23 +1139,17 @@ function scheduleGenerationRecovery(
                 // Continue sends the old partial as an assistant prefill. The server-owned placeholder is
                 // empty until the first client save, so a reload before that save seeds replay from the
                 // request instead.
-                raw = lastRequestMessage.content;
+                replay = createRecoveryReplay(
+                  lastRequestMessage.content,
+                  undefined,
+                  replayOptions,
+                );
               }
             }
             identityValidated = true;
           }
-          // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
-          let advanced = false;
-          if (update.event?.type === "chunk") {
-            toolRecovery.apply(
-              update.event.payload,
-              raw.length,
-              update.event.seq,
-              update.run.requestPayload.session_id,
-            );
-          }
+          let replayChanged = false;
           if (update.event && update.event.seq > cursor) {
-            advanced = true;
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
@@ -1078,12 +1172,21 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
               };
               if ("_reasoningDurationMs" in chunk) {
-                currentMetadata = recoveredReasoningSummaryMetadata(
-                  currentMetadata,
-                  chunk._reasoningDurationMs,
-                );
-                lastPublishedStatus = update.run.status;
-                await publish(update.run);
+                // Authoritative for the group that most recently opened, and it lands in THAT group's
+                // slot: appending would shift every group after it along by one.
+                replay.recordServerDuration(chunk._reasoningDurationMs);
+                if (
+                  catchUp.shouldPublish(
+                    {
+                      cursor,
+                      status: update.run.status,
+                      lastEventSeq: update.run.lastEventSeq,
+                    },
+                    true,
+                  )
+                ) {
+                  await publish(update.run);
+                }
                 continue;
               }
               if (generationChunkCountsTowardTiming(chunk)) {
@@ -1106,31 +1209,25 @@ function scheduleGenerationRecovery(
               if (typeof chunk.usage?.completion_tokens === "number") {
                 completionTokens = chunk.usage.completion_tokens;
               }
-              const deltaRecord = chunk.choices?.[0]?.delta;
-              const reasoning =
-                typeof deltaRecord?.reasoning_content === "string"
-                  ? deltaRecord.reasoning_content
-                  : "";
-              const delta = extractDeltaText(deltaRecord?.content).text;
-              if (reasoning) {
-                if (!reasoningOpen) raw += "<think>";
-                raw += reasoning;
-                reasoningOpen = true;
-              }
-              if (delta) {
-                if (reasoningOpen) raw += "</think>";
-                raw += delta;
-                reasoningOpen = false;
-              }
+              // Fold the frame exactly as the live stream built it: text and reasoning runs extend in
+              // place, and a tool frame lands on the card its id names instead of being dropped.
+              replayChanged =
+                replay.applyChunk(
+                  update.event.payload,
+                  update.event.createdAt,
+                ) || replayChanged;
             }
           }
-          const shouldPublish =
-            (update.event?.type === "chunk" && advanced) ||
-            update.run.status !== lastPublishedStatus ||
-            (["cancelled", "completed", "failed"].includes(update.run.status) &&
-              cursor >= update.run.lastEventSeq);
-          if (shouldPublish) {
-            lastPublishedStatus = update.run.status;
+          if (
+            catchUp.shouldPublish(
+              {
+                cursor,
+                status: update.run.status,
+                lastEventSeq: update.run.lastEventSeq,
+              },
+              replayChanged,
+            )
+          ) {
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
@@ -1663,7 +1760,13 @@ function useStudioRuntimeAdapters(
               typeof (message.metadata as Record<string, unknown> | undefined)
                 ?.generationRunId === "string"
             ) {
-              scheduleGenerationRecovery(remoteId, message, aui);
+              scheduleGenerationRecovery(
+                remoteId,
+                message,
+                aui,
+                // The scope the card this reply renders IN resolves its tool-output key against.
+                toolThreadScope(toolPaneScope(modelType, pairId), remoteId),
+              );
             }
           }
         })
@@ -2016,6 +2119,7 @@ function useStudioRuntimeAdapters(
                 metadata: { ...(message.metadata ?? {}) },
               },
               aui,
+              toolThreadScope(toolPaneScope(modelType, pairId), remoteId),
             );
           }
         }
