@@ -143,12 +143,14 @@ if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
         _drop="$(mktemp -d "$SRC_DIR/.src-update.XXXXXX")" && rmdir "$_drop"
         mv -T "$SRC" "$_drop"
         mv -T "${_prev[0]}" "$SRC"
+        rm -rf "$_drop"
     fi
 fi
 if [ -s "$KEEP_ROLLBACK" ]; then
     log "an interrupted update left its package record at $KEEP_ROLLBACK; putting the previous packages back first"
     if reinstall_recorded "$KEEP_ROLLBACK" "$KEEP_FREEZE"; then
         rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
+        log "the previous packages are back"
     else
         echo "unsloth-studio-update: could not put the previous packages back (see the CRITICAL lines above); fix the cause and run this again. Nothing else was changed." >&2
         exit 1
