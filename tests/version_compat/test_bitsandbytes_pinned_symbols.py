@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -11,6 +12,27 @@ import pytest
 
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
+
+
+
+def _super_init_call(source: str, class_name: str) -> ast.Call | None:
+    """The ``super().__init__(...)`` Call node inside ``class_name``'s __init__.
+
+    Parsed rather than grepped: a substring search over the class body also sees the
+    names quoted in the legacy_kwargs table, so it passes whether or not the real call
+    uses keywords.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.ClassDef) and node.name == class_name):
+            continue
+        for sub in ast.walk(node):
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "__init__"
+            ):
+                return sub
+    return None
 
 def first_match_signature(src: str, class_name: str) -> str | None:
     """The text of ``class_name``'s __init__ parameter list, or None."""
@@ -29,7 +51,6 @@ def first_match_signature(src: str, class_name: str) -> str | None:
             if depth == 0:
                 return src[src.index("(", at) : i + 1]
     return None
-
 
 # pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
@@ -268,15 +289,23 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
         Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "q_galore_adamw.py"
     ).read_text()
 
-    call = caller[caller.index("class QGaLoreAdamW8bit") :]
-    call = call[: call.index("@torch.no_grad()")]
-    assert "optim_bits = 8" in call, (
-        f"{tag}: QGaLoreAdamW8bit passes optim_bits positionally. bitsandbytes reorders "
-        f"this constructor between minors ({removed or 'nothing'} gone in this tag), so a "
-        f"positional call silently lands values in the wrong parameters."
+    call = _super_init_call(caller, "QGaLoreAdamW8bit")
+    assert call is not None, "could not find QGaLoreAdamW8bit's super().__init__ call"
+
+    # "adam" and params are positional on purpose; everything after them must be a keyword,
+    # because bitsandbytes reorders the tail of this signature between minors.
+    positional = [a for a in call.args if not isinstance(a, ast.Starred)]
+    extra = positional[2:]
+    assert not extra, (
+        f"{tag}: QGaLoreAdamW8bit passes {len(extra)} argument(s) after params positionally. "
+        f"{removed or 'Nothing'} was removed from Optimizer2State at this tag, so a positional "
+        f"call lands values in whichever parameters now occupy those slots."
     )
+    passed = {kw.arg for kw in call.keywords if kw.arg}
+    assert "optim_bits" in passed, f"{tag}: optim_bits must be passed by name"
     for name in ("percentile_clipping", "block_wise"):
-        if name in call:
-            assert (
-                f"{name} = " in call or f'"{name}"' in call
-            ), f"{tag}: QGaLoreAdamW8bit mentions {name} without passing it by keyword."
+        if name in signature:
+            continue
+        assert name not in passed, (
+            f"{tag}: Optimizer2State no longer accepts {name}, but it is still passed."
+        )
