@@ -214,7 +214,13 @@ NPU_PROPERTIES = types.SimpleNamespace(
 )
 
 
-def _npu_backend(*, available = True, device_count = 4, properties = NPU_PROPERTIES, calls = None):
+def _npu_backend(
+    *,
+    available = True,
+    device_count = 4,
+    properties = NPU_PROPERTIES,
+    calls = None,
+):
     def _is_available():
         if available == "raise":
             raise RuntimeError("npu driver not found")
@@ -280,11 +286,14 @@ def test_xpu_wins_over_npu(monkeypatch):
         empty_cache = lambda: None,
         current_device = lambda: 0,
         get_device_properties = lambda _index: types.SimpleNamespace(
-            name = "Intel Arc", total_memory = 8 * 1024**3,
+            name = "Intel Arc",
+            total_memory = 8 * 1024**3,
         ),
     )
     torch = _fake_torch(
-        properties = CUDA_PROPERTIES, xpu_backend = xpu_backend, cuda_available = False,
+        properties = CUDA_PROPERTIES,
+        xpu_backend = xpu_backend,
+        cuda_available = False,
     )
     torch.npu = _npu_backend()
 

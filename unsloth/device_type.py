@@ -129,8 +129,8 @@ def get_device_type():
     # 2.6, so below that there is no name to report.
     raise NotImplementedError(
         f"Unsloth does not currently work on {accelerator}."
-        if accelerator else
-        "Unsloth does not currently work on this device."
+        if accelerator
+        else "Unsloth does not currently work on this device."
     )
 
 
