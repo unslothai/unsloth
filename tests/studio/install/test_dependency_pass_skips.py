@@ -1947,6 +1947,27 @@ def test_an_unreadable_requires_dist_makes_the_whole_index_unreadable(monkeypatc
     assert stack.install_manifest.installed_dependency_index() is None
 
 
+def test_pip_backup_metadata_is_not_read_as_installed(tmp_path, monkeypatch) -> None:
+    """An interrupted pip upgrade leaves ~ame-1.0.dist-info with the payload gone. pip
+    ignores it, so the closure must too, or the step that would reinstall it skips."""
+    site = tmp_path / "site-packages"
+    backup = site / "~obble-0.1.dist-info"
+    backup.mkdir(parents = True)
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: cobble\nVersion: 0.1\n", encoding = "utf-8"
+    )
+    live = site / "mammoth-1.0.dist-info"
+    live.mkdir()
+    (live / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: mammoth\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(stack.install_manifest, "_metadata_scan_paths", lambda: [str(site)])
+    index = stack.install_manifest.installed_dependency_index()
+    assert index is not None
+    assert "mammoth" in index
+    assert "cobble" not in index, "the backup metadata was read as an installed package"
+
+
 def test_a_second_pass_in_one_process_starts_with_no_audited_steps() -> None:
     """The reset block clears what the previous pass registered, so a step this pass
     never reaches is not audited and recorded as known-unmet on its behalf."""

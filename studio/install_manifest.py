@@ -935,6 +935,11 @@ CLOSURE_SCAN_BUDGET_SECONDS = 10.0
 _CLOSURE_MAX_VISITS = 20000
 
 
+def _is_pip_backup(dist) -> bool:
+    """True for the ~ame-1.0.dist-info an interrupted pip upgrade leaves behind."""
+    return str(getattr(getattr(dist, "_path", None), "name", "")).startswith("~")
+
+
 def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
     """canonical name -> (version, raw Requires-Dist lines) for this interpreter.
 
@@ -947,6 +952,11 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
     try:
         index: Dict[str, Tuple[str, List[str]]] = {}
         for dist in distributions(path = _metadata_scan_paths()):
+            # An interrupted pip upgrade leaves the old metadata renamed to ~ame-1.0.dist-info
+            # with its payload gone. pip ignores those; so must this, or a closure reads an
+            # unimportable package as installed and its step skips the reinstall that repairs it.
+            if _is_pip_backup(dist):
+                continue
             try:
                 name = dist.metadata["Name"]
                 version = dist.version
