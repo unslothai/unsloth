@@ -2041,16 +2041,57 @@ def _probe_dense_quant_supported() -> bool:
         return False
 
 
+def _probe_dense_quant_schemes() -> list[str]:
+    """The auto ladder's schemes for this host, best first, or ``[]``.
+
+    One bit cannot tell an Ampere host (int8) from an Ada one (fp8), and both have hosted
+    checkpoints, so a picker row that wants to name the precision it is offering needs the list.
+    Same ladder, deny list and smoke probe the loader's selector reads, through
+    ``auto_scheme_candidates``, so the row and the load cannot disagree about what auto allows.
+
+    A mixed host answers with the INTERSECTION, in the best card's order: the picker cannot see
+    which card a load will land on, so a scheme only one of them runs is not something to advertise.
+
+    IMPORTS the ML stack, on the same terms as ``_probe_dense_quant_supported``: only
+    ``_refresh_dense_quant_capability`` calls it, and never from the polled route."""
+    try:
+        from core.inference.diffusion_device import (
+            diffusion_device_scope,
+            resolve_diffusion_device_target,
+        )
+        from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        if count <= 1:
+            return list(auto_scheme_candidates(resolve_diffusion_device_target()))
+        common: Optional[list[str]] = None
+        for ordinal in range(count):
+            with diffusion_device_scope(ordinal):
+                schemes = list(
+                    auto_scheme_candidates(resolve_diffusion_device_target(ordinal = ordinal))
+                )
+            common = schemes if common is None else [s for s in common if s in schemes]
+        return common or []
+    except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
+        return []
+
+
 # Resolved off the polled path: None until the post-warm worker or a request that already holds the
 # ML stack has answered.
 _dense_quant_capability: Optional[bool] = None
+# The ladder behind that bit, resolved in the same pass so the two can never describe different hosts.
+_dense_quant_scheme_ladder: list[str] = []
 
 
 def _refresh_dense_quant_capability() -> bool:
     """Resolve the dense-quant bit and cache it. Imports torch and torchao; never call from a route
     that has not already got them."""
-    global _dense_quant_capability
+    global _dense_quant_capability, _dense_quant_scheme_ladder
     _dense_quant_capability = _probe_dense_quant_supported()
+    # Empty whenever the host cannot run one at all, so a client can read the list alone.
+    _dense_quant_scheme_ladder = _probe_dense_quant_schemes() if _dense_quant_capability else []
     return _dense_quant_capability
 
 
@@ -2068,6 +2109,16 @@ def _dense_quant_supported() -> bool:
     if "torch" in sys.modules and "torchao" in sys.modules:
         return _refresh_dense_quant_capability()
     return bool(_dense_quant_capability)
+
+
+def _dense_quant_schemes() -> list[str]:
+    """The scheme ladder for ``/api/system``, from already-resolved state only.
+
+    A pure read, deliberately: the entry beside it in the payload calls ``_dense_quant_supported()``
+    first, which refreshes BOTH in one pass, so probing again here would walk every visible card a
+    second time on every poll. Empty until something off the polled path has answered, which is the
+    same honest "not known yet" the capability bit reports."""
+    return list(_dense_quant_scheme_ladder)
 
 
 @app.get("/api/system")
@@ -2166,8 +2217,10 @@ def get_system_info(
         # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
         **video_capability(),
         # Device backend alone cannot distinguish unsupported CUDA cards, and one bit cannot tell an
-        # Ampere host (int8 only) from an Ada one, so the picker gets the scheme list too.
+        # Ampere host (int8 only) from an Ada one, so the picker gets the scheme list too. Order
+        # matters: the bit is resolved first and the list is the pure read of that same pass.
         "dense_quant_supported": _dense_quant_supported(),
+        "dense_quant_schemes": _dense_quant_schemes(),
     }
 
 
