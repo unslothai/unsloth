@@ -889,3 +889,35 @@ def test_pushd_and_a_python_chdir_move_the_directory_too(monkeypatch, tmp_path):
             ), code
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_studio_home_variable_pointing_elsewhere_is_not_ours(monkeypatch, tmp_path):
+    # `STUDIO_HOME` is a generic name another application can own. With the spelling registered
+    # unconditionally, a command naming that application's directory was refused in every permission
+    # mode even though it never came near this install.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(tmp_path / "other-app"))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert not tools._references_studio_credential("cat $STUDIO_HOME/auth/auth.db")
+        assert tools._references_studio_credential("cat $UNSLOTH_STUDIO_HOME/auth/auth.db")
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_an_unset_studio_home_variable_stays_registered(monkeypatch, tmp_path):
+    # The child cannot expand it either, so the spelling reaches nothing and dropping it would only
+    # widen the guard for no gain.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert tools._references_studio_credential("cat $STUDIO_HOME/auth/auth.db")
+    finally:
+        tools._studio_auth_markers_cache = None

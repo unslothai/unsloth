@@ -2580,10 +2580,27 @@ _STUDIO_CREDENTIAL_HINTS = (
 _STUDIO_HOME_ENV_VARS = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME")
 
 
-def _studio_home_variable_spellings() -> "list[str]":
-    """`$VAR`, `${VAR}`, `%VAR%` and `$env:VAR` for each studio-home variable (sh, cmd, PowerShell)."""
+def _studio_home_variable_spellings(resolved: "str | None" = None) -> "list[str]":
+    """`$VAR`, `${VAR}`, `%VAR%` and `$env:VAR` for each studio-home variable (sh, cmd, PowerShell).
+
+    A variable that is SET to some other directory is skipped. `STUDIO_HOME` is a generic name, and
+    another application can own it; with the spelling registered unconditionally, a command naming
+    that application's directory was refused in every permission mode even though it never came near
+    this install. A variable that is unset stays registered: the child cannot expand it either, so
+    the spelling reaches nothing, and dropping it would only widen the guard for no gain.
+    """
     out: "list[str]" = []
     for var in _STUDIO_HOME_ENV_VARS:
+        value = os.environ.get(var)
+        if value and resolved:
+            try:
+                points_here = os.path.normpath(os.path.expanduser(value)) == os.path.normpath(
+                    resolved
+                )
+            except Exception:  # noqa: BLE001 - an unreadable value must not break classification
+                points_here = True
+            if not points_here:
+                continue
         out.extend((f"${var}", f"${{{var}}}", f"%{var}%", f"$env:{var}"))
     return out
 
@@ -2624,9 +2641,8 @@ def _studio_auth_dir_markers() -> tuple:
         for target, base in ((variable_markers, resolved), (root_markers, root_markers[0])):
             tail = base[len(home.rstrip(os.sep)) :]
             target.extend(("~" + tail, "$HOME" + tail, "${HOME}" + tail))
-    # The variable spellings of the studio home. Added whether or not the variable is set in this
-    # process: the text asks for whatever that variable points at, which is this directory.
-    for spelling in _studio_home_variable_spellings():
+    # The variable spellings of the studio home, minus any variable that is set to somewhere else.
+    for spelling in _studio_home_variable_spellings(os.path.dirname(resolved.rstrip("/\\"))):
         root_markers.append(spelling)
         variable_markers.extend((spelling + "/auth", spelling + "\\auth"))
     roots = [m for m in root_markers if m and m not in ("/", "\\")]
