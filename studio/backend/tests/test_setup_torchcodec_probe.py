@@ -124,10 +124,11 @@ def test_ffmpeg_advice_needs_ffmpeg_to_actually_be_missing():
 
 
 def test_a_partial_ffmpeg_is_not_reported_as_ffmpeg_being_present():
-    # Distros package avutil, avcodec and avformat separately, and torchcodec dlopens
-    # all three, so a host with only libavutil has an FFmpeg that cannot serve it.
-    # Reading that as "FFmpeg is already on the loader path" sends the user to debug a
-    # torch ABI mismatch when the fix is to install the rest of FFmpeg.
+    # torchcodec links seven FFmpeg libraries (avutil, avcodec, avformat, avdevice,
+    # avfilter, swscale, swresample) and distros package them separately, so a host with
+    # only libavutil has an FFmpeg that cannot load it. Reading that as "FFmpeg is already
+    # on the loader path" sends the user to debug a torch ABI mismatch when the fix is to
+    # install the rest of FFmpeg.
     partial = textwrap.dedent(
         """
         import ctypes.util, os
@@ -148,8 +149,11 @@ def test_both_installers_require_every_ffmpeg_library(probe):
     # The two copies drift silently otherwise: one installer would keep calling a
     # partial FFmpeg present while the other stopped.
     body = probe()
-    assert "for name in ('avutil', 'avcodec', 'avformat')" in body \
-        or 'for name in ("avutil", "avcodec", "avformat")' in body, body
+    # All seven, read from the shipped libtorchcodec_core*.so NEEDED entries. A subset
+    # reports a partial FFmpeg as present and sends the user at the wrong fix.
+    for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter",
+                "swscale", "swresample"):
+        assert f"'{lib}'" in body or f'"{lib}"' in body, (lib, body)
 
 
 def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
