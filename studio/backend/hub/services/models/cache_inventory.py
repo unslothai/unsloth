@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+
 import json
 import asyncio
 import threading
@@ -79,6 +80,12 @@ _last_confirmed_inventory: dict[str, list[dict]] = {}
 
 # Identity for a cached file with no HF blob: on Windows without Developer Mode hf moves the blob into snapshots/ and leaves blobs/ empty.
 _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
+
+
+def _account_access():
+    """Imported on use: the CLI reads this inventory without FastAPI, which account_access needs."""
+    from hub.services.models import account_access
+    return account_access
 
 
 def get_repo_snapshot_metadata_cached(
@@ -667,7 +674,12 @@ async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         scan = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
-        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
+        rows = (
+            await asyncio.to_thread(_account_access().filter_model_rows, scan.rows)
+            if _account_access().managed_account()
+            else scan.rows
+        )
+        return {"cached": rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(
@@ -1142,7 +1154,12 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         scan = await _shared_cached_inventory_scan("models", _scan_cached_models)
-        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
+        rows = (
+            await asyncio.to_thread(_account_access().filter_model_rows, scan.rows)
+            if _account_access().managed_account()
+            else scan.rows
+        )
+        return {"cached": rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(

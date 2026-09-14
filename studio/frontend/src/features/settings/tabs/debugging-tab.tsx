@@ -4,14 +4,20 @@
 import { Button } from "@/components/ui/button";
 import { useCopyFeedback } from "@/features/hub/hooks/use-copy-feedback";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { stripAnsi } from "@/lib/strip-ansi";
+import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type DebugLogSource,
+  LogExportError,
+  exportAllLogs,
   loadDebugLog,
   loadDebugLogSources,
+  openLogsFolder,
+  revealSavedArchive,
 } from "../api/debug-logs";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -56,6 +62,9 @@ export function DebuggingTab() {
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
+  // Where the backend says the logs live, for the folder button when no source
+  // is selected yet, which is exactly the custom-home case that has no log.
+  const [logRoot, setLogRoot] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
   // A burst larger than one response continues on the next poll, which in
@@ -64,6 +73,10 @@ export function DebuggingTab() {
   // File logging is off and an older session's log is still on disk, so the pane shows real content
   // that will never grow. Unsaid, a stale log is indistinguishable from a live one.
   const [staleSession, setStaleSession] = useState(false);
+  // Each button tracks only its own request: the export takes seconds and must
+  // not lock out "Show in folder", which is how the user reaches the result.
+  const [exporting, setExporting] = useState(false);
+  const [revealing, setRevealing] = useState(false);
   const { copied, copy } = useCopyFeedback();
 
   // In a ref as well as state: the poll loop must not restart per line arrived.
@@ -97,6 +110,7 @@ export function DebuggingTab() {
           options.signal,
         );
         setSources(result.sources);
+        setLogRoot(result.logRoot);
         setSourceId((current) =>
           options.reselect
             ? result.defaultSourceId
@@ -270,6 +284,65 @@ export function DebuggingTab() {
       pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
   }, []);
 
+  const revealLogsFolder = useCallback(async () => {
+    setRevealing(true);
+    try {
+      // The selected log's own path, else the root the backend reported. Either
+      // resolves a custom UNSLOTH_STUDIO_HOME; open_logs_dir hard-codes
+      // ~/.unsloth/studio and cannot.
+      await openLogsFolder(realpath, logRoot);
+    } catch (error) {
+      toast.error(t("settings.debugging.openLogsFolderFailed"), {
+        description: (error as Error).message,
+      });
+    } finally {
+      setRevealing(false);
+    }
+  }, [t, realpath, logRoot]);
+
+  const downloadAllLogs = useCallback(async () => {
+    setExporting(true);
+    try {
+      const savedPath = await exportAllLogs();
+      // A path only comes back on desktop. In a browser the file is wherever
+      // that browser puts downloads, which we cannot name.
+      if (savedPath) {
+        toast.success(
+          t("settings.debugging.downloadedTo", { path: savedPath }),
+          {
+            action: {
+              label: t("settings.debugging.showInFolder"),
+              // The folder the archive went to, not the one the logs came from.
+              onClick: () => {
+                void revealSavedArchive(savedPath).catch((error: unknown) => {
+                  toast.error(t("settings.debugging.openLogsFolderFailed"), {
+                    description: (error as Error).message,
+                  });
+                });
+              },
+            },
+          },
+        );
+      } else {
+        toast.success(t("settings.debugging.downloadedToBrowser"));
+      }
+    } catch (error) {
+      const failure =
+        error instanceof LogExportError ? error.failure : "failed";
+      if (failure === "outdated") {
+        toast.error(t("settings.debugging.exportTooOld"));
+      } else if (failure === "forbidden") {
+        toast.error(t("settings.debugging.exportForbidden"));
+      } else {
+        toast.error(t("settings.debugging.exportFailed"), {
+          description: (error as Error).message,
+        });
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [t]);
+
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection
@@ -388,15 +461,47 @@ export function DebuggingTab() {
           <p className="text-xs text-muted-foreground">
             {t("settings.debugging.privacyNote")}
           </p>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => copy(text)}
-            disabled={!text}
-          >
-            {t("settings.debugging.copyVisible")}
-          </Button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => copy(text)}
+              disabled={!text}
+            >
+              {t("settings.debugging.copyVisible")}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              data-testid="debug-log-download-all"
+              aria-busy={exporting}
+              disabled={exporting}
+              onClick={() => void downloadAllLogs()}
+            >
+              {exporting
+                ? t("settings.debugging.downloadingAllLogs")
+                : t("settings.debugging.downloadAllLogs")}
+            </Button>
+            {isTauri ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                data-testid="debug-log-open-folder"
+                aria-busy={revealing}
+                disabled={revealing}
+                onClick={() => void revealLogsFolder()}
+              >
+                {t("settings.debugging.openLogsFolder")}
+              </Button>
+            ) : null}
+          </div>
         </div>
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="debug-log-export-note"
+        >
+          {t("settings.debugging.exportMaskedNote")}
+        </p>
       </div>
     </div>
   );

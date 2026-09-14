@@ -80,7 +80,8 @@ import {
 import {
   BUILTIN_PRESETS,
   BUILTIN_PRESET_NAMES,
-  applyPresetParams,
+  type Preset,
+  applyPresetForProvider,
   getBuiltinVariantName,
   getOrderedPresets,
   getPresetSaveState,
@@ -113,6 +114,8 @@ import {
   modelReadsSamplingSeed,
   type InferenceParams,
 } from "./types/runtime";
+
+import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -387,7 +390,10 @@ interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
   params: InferenceParams;
-  onParamsChange: (params: InferenceParams) => void;
+  onParamsChange: (
+    params: InferenceParams,
+    options?: { minPChoiceEdited?: boolean },
+  ) => void;
   modelConfig?: ReactNode;
   isExternalModel?: boolean;
   /** Sampling-param capabilities for the active external provider, or `null` for local models
@@ -478,6 +484,7 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.temperature);
   const showTopP = !isExternalModel || Boolean(providerCapabilities?.topP);
   const showTopK = !isExternalModel || Boolean(providerCapabilities?.topK);
+  const isVllm = isExternalModel && externalProviderType === "vllm";
   const showMinP = !isExternalModel || Boolean(providerCapabilities?.minP);
   const showRepetitionPenalty =
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
@@ -805,12 +812,18 @@ export function ChatSettingsPanel({
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
-      const nextParams = { ...params, [key]: v };
+      const nextParams = {
+        ...params,
+        [key]: v,
+        ...(key === "minP" ? { minPMode: "custom" as const } : {}),
+      };
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
       setActivePresetSource(nextSource);
-      onParamsChange(nextParams);
+      onParamsChange(nextParams, {
+        minPChoiceEdited: key === "minP" || key === "minPMode",
+      });
     };
   }
 
@@ -849,9 +862,9 @@ export function ChatSettingsPanel({
   ]);
 
   function applyPresetParamsWithinCurrentLimits(
-    presetParams: Parameters<typeof applyPresetParams>[1],
+    preset: Preset,
   ): InferenceParams {
-    const nextParams = applyPresetParams(params, presetParams);
+    const nextParams = applyPresetForProvider(params, preset, isVllm ? "vllm" : null);
     // Same reason the effect waits for a provider: without one `maxTokensMax` is the fallback, so
     // applying a preset here would lower the value for good.
     if (!isExternalModel || activeExternalProvider == null) return nextParams;
@@ -867,7 +880,9 @@ export function ChatSettingsPanel({
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange(applyPresetParamsWithinCurrentLimits(p.params));
+      onParamsChange(applyPresetParamsWithinCurrentLimits(p), {
+        minPChoiceEdited: true,
+      });
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
       }
@@ -928,7 +943,8 @@ export function ChatSettingsPanel({
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange(
-          applyPresetParamsWithinCurrentLimits(fallbackPreset.params),
+          applyPresetParamsWithinCurrentLimits(fallbackPreset),
+          { minPChoiceEdited: true },
         );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
@@ -1467,15 +1483,45 @@ export function ChatSettingsPanel({
               />
             ) : null}
             {showMinP ? (
-              <ParamSlider
-                label="Min P"
-                value={params.minP}
-                min={0}
-                max={1}
-                step={0.01}
-                onChange={set("minP")}
-                info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
-              />
+              <div className="space-y-3">
+                {isVllm ? (
+                  <div className="space-y-2">
+                    <Select
+                      value={effectiveMinPMode(params)}
+                      onValueChange={(value) => {
+                        if (isMinPMode(value)) set("minPMode")(value);
+                      }}
+                    >
+                      <SelectTrigger aria-label="Min P mode" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="server-default">
+                          Server default
+                        </SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {effectiveMinPMode(params) === "server-default" ? (
+                      <p className="text-xs text-muted-foreground">
+                        Uses the server’s sampling settings.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <ParamSlider
+                  label="Min P"
+                  value={params.minP}
+                  disabled={
+                    isVllm && effectiveMinPMode(params) === "server-default"
+                  }
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  onChange={set("minP")}
+                  info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
+                />
+              </div>
             ) : null}
             {showRepetitionPenalty ? (
               <ParamSlider
