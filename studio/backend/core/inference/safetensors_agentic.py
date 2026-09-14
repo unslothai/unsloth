@@ -468,9 +468,7 @@ def _first_detected_tool_name(content: str) -> Optional[str]:
     ifm = _first_outside(0, lambda i: content.find(_IFM_TOOL_CALLS_OPEN, i))
     ifm_calls = parse_tool_calls_from_text(content[ifm:]) if ifm >= 0 else []
     if ifm_calls:
-        candidates.append(
-            (ifm, (ifm_calls[0].get("function") or {}).get("name") or "")
-        )
+        candidates.append((ifm, (ifm_calls[0].get("function") or {}).get("name") or ""))
     for rm in _REHEARSAL_RENDER_NAME_RE.finditer(content):
         if not _in_think(rm.start(1)):
             candidates.append((rm.start(1), rm.group(1)))
@@ -1180,9 +1178,7 @@ def run_safetensors_tool_loop(
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
                 buffer_in_display = True
-                partial_signal_pos = _partial_tool_signal_start(
-                    content_buffer, tool_xml_signals
-                )
+                partial_signal_pos = _partial_tool_signal_start(content_buffer, tool_xml_signals)
                 cleaned = _strip_streaming_display(
                     content_buffer[:partial_signal_pos]
                     if partial_signal_pos >= 0

@@ -1276,7 +1276,10 @@ def _mask_blocked_bodies(
             spans = [
                 (start, end)
                 for start, end in spans
-                if not any(outer_start <= start and end <= outer_end for outer_start, outer_end in _ifm_spans)
+                if not any(
+                    outer_start <= start and end <= outer_end
+                    for outer_start, outer_end in _ifm_spans
+                )
             ]
     if not spans:
         return text, []
@@ -1598,9 +1601,7 @@ def strip_tool_markup(
     # must not be stripped from display either); a literal think marker inside a real call's arguments is that call's
     # data and is stripped with the call.
     # A blocked call's body is quoted prose: hide it from the passes, then put it back.
-    masked, bodies = _mask_blocked_bodies(
-        text, enabled_tool_names, ifm_present = ifm_present
-    )
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, ifm_present = ifm_present)
     result = _tool_healing.strip_outside_think(masked, _strip_segment)
     if bodies:
         restored = _unmask_blocked_bodies(result, bodies)
@@ -2488,9 +2489,7 @@ def parse_tool_calls_from_text(
     # IFM has a complete outer envelope and owns any other protocol-looking text inside its
     # argument values. Dispatch it before the shared parsers, but only when its envelope opens
     # first; an IFM example quoted by an existing call must remain that call's data.
-    calls = _parse_ifm_tool_calls(
-        content, id_offset = id_offset, allow_incomplete = allow_incomplete
-    )
+    calls = _parse_ifm_tool_calls(content, id_offset = id_offset, allow_incomplete = allow_incomplete)
     if calls:
         return calls
 
@@ -4408,16 +4407,14 @@ def _ifm_reasoning_spans(text: str) -> list[tuple[int, int]]:
         if not candidates:
             break
         start, opening, closers = min(candidates, key = lambda item: item[0])
-        close_candidates = [
-            text.find(closer, start + len(opening)) for closer in closers
-        ]
+        close_candidates = [text.find(closer, start + len(opening)) for closer in closers]
         close_candidates = [found for found in close_candidates if found >= 0]
         if close_candidates:
             end = min(close_candidates)
-            end += len(closers[0]) if text.startswith(closers[0], end) else next(
-                len(closer)
-                for closer in closers
-                if text.startswith(closer, end)
+            end += (
+                len(closers[0])
+                if text.startswith(closers[0], end)
+                else next(len(closer) for closer in closers if text.startswith(closer, end))
             )
             spans.append((start, end))
             cursor = end
@@ -4451,9 +4448,7 @@ def _ifm_protected_end(pos: int, spans: list[tuple[int, int]]) -> Optional[int]:
 
 
 def _ifm_value_literal_spill_end(
-    value_start: int,
-    value_close: int,
-    spans: list[tuple[int, int]],
+    value_start: int, value_close: int, spans: list[tuple[int, int]]
 ) -> int:
     """End of a lexical span that began inside one XML arg value and spills past it.
 
@@ -4471,9 +4466,7 @@ def _ifm_value_literal_spill_end(
 
 
 def _ifm_first_unprotected_foreign_signal(
-    text: str,
-    stop: int,
-    protected: list[tuple[int, int]],
+    text: str, stop: int, protected: list[tuple[int, int]]
 ) -> Optional[int]:
     """Find another protocol opener before an IFM envelope.
 
@@ -4572,6 +4565,7 @@ def _ifm_find_envelope_close(
 
     return None
 
+
 def _ifm_find_call_close(
     text: str,
     start: int,
@@ -4634,6 +4628,7 @@ def _ifm_find_call_close(
 
     return None
 
+
 def _ifm_find_value_close(
     text: str,
     start: int,
@@ -4648,9 +4643,7 @@ def _ifm_find_value_close(
     """
     cursor = start
     outer_close = (
-        envelope_close
-        if envelope_close is not None
-        else text.find(_IFM_TOOL_CALLS_CLOSE, start)
+        envelope_close if envelope_close is not None else text.find(_IFM_TOOL_CALLS_CLOSE, start)
     )
     limit = call_close if call_close is not None else outer_close
     if limit is None or limit < 0:
@@ -4858,9 +4851,7 @@ def _ifm_parse_envelope_at(
     calls: list[dict] = []
     pos = start + len(_IFM_TOOL_CALLS_OPEN)
     literal_spans = (
-        literal_spans
-        if literal_spans is not None
-        else _ifm_literal_and_fence_spans(text)
+        literal_spans if literal_spans is not None else _ifm_literal_and_fence_spans(text)
     )
     envelope_close = _ifm_find_envelope_close(text, start, literal_spans)
     if envelope_close is None:
@@ -4889,9 +4880,7 @@ def _ifm_parse_envelope_at(
 
 
 def _parse_ifm_tool_calls_with_spans(
-    content: str,
-    *,
-    id_offset: int,
+    content: str, *, id_offset: int
 ) -> tuple[list[dict], list[tuple[int, int]]]:
     """Return complete IFM calls and their removable outer-envelope spans.
 
@@ -4907,8 +4896,7 @@ def _parse_ifm_tool_calls_with_spans(
     def protected_from(origin: int) -> list[tuple[int, int]]:
         """Protected spans whose lexical state begins at ``origin``."""
         return [
-            (origin + start, origin + end)
-            for start, end in _ifm_protected_spans(content[origin:])
+            (origin + start, origin + end) for start, end in _ifm_protected_spans(content[origin:])
         ]
 
     protected = protected_from(lexical_origin)
@@ -4965,6 +4953,7 @@ def _parse_ifm_tool_calls_with_spans(
         protected = protected_from(lexical_origin)
 
     return calls, spans
+
 
 def _parse_ifm_tool_calls(
     content: str,

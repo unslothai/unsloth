@@ -66,9 +66,7 @@ def test_ifm_im_end_from_template_is_added_to_eos_ids():
 
 
 def test_ifm_im_end_in_vocab_but_not_in_template_is_ignored():
-    tok = _FakeTokenizer(
-        1, chat_template = "{{ messages }}", token_ids = {"<|ifm|im_end|>": 250019}
-    )
+    tok = _FakeTokenizer(1, chat_template = "{{ messages }}", token_ids = {"<|ifm|im_end|>": 250019})
     assert resolve_chat_turn_end_eos_ids(tok) == [1]
 
 

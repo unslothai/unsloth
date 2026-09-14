@@ -52,7 +52,7 @@ def _tool(name):
     return {"type": "function", "function": {"name": name}}
 
 
-def _turn_generator(turns, captured=None):
+def _turn_generator(turns, captured = None):
     turn_iter = iter(turns)
 
     def generate(messages, **_kwargs):
@@ -68,7 +68,7 @@ def _turn_generator(turns, captured=None):
 
 
 class _Executor:
-    def __init__(self, results=None):
+    def __init__(self, results = None):
         self.calls = []
         self._results = iter(results or ())
 
@@ -77,7 +77,14 @@ class _Executor:
         return next(self._results, f"result:{name}")
 
 
-def _run(turns, *, tools=None, captured=None, results=None, **kwargs):
+def _run(
+    turns,
+    *,
+    tools = None,
+    captured = None,
+    results = None,
+    **kwargs,
+):
     executor = _Executor(results)
     events = list(
         run_safetensors_tool_loop(
@@ -122,9 +129,9 @@ def test_ifm_xml_multiple_arguments_preserve_plain_text_values():
         "<ifm|arg_key>null_value</ifm|arg_key>"
         "<ifm|arg_value>null</ifm|arg_value>"
         "<ifm|arg_key>array</ifm|arg_key>"
-        "<ifm|arg_value>[1, \"two\"]</ifm|arg_value>"
+        '<ifm|arg_value>[1, "two"]</ifm|arg_value>'
         "<ifm|arg_key>object</ifm|arg_key>"
-        "<ifm|arg_value>{\"nested\": {\"ok\": true}}</ifm|arg_value>"
+        '<ifm|arg_value>{"nested": {"ok": true}}</ifm|arg_value>'
         "</ifm|tool_call></ifm|tool_calls>"
     )
 
@@ -157,7 +164,7 @@ def test_ifm_typed_xml_decodes_declared_argument_types():
         "<ifm|arg_key>items</ifm|arg_key><ifm|arg_type>array</ifm|arg_type>"
         "<ifm|arg_value>[1, 2]</ifm|arg_value>"
         "<ifm|arg_key>config</ifm|arg_key><ifm|arg_type>object</ifm|arg_type>"
-        "<ifm|arg_value>{\"mode\": \"safe\"}</ifm|arg_value>"
+        '<ifm|arg_value>{"mode": "safe"}</ifm|arg_value>'
         "<ifm|arg_key>literal</ifm|arg_key><ifm|arg_type>string</ifm|arg_type>"
         "<ifm|arg_value>007</ifm|arg_value>"
         "<ifm|arg_key>score</ifm|arg_key><ifm|arg_type>number</ifm|arg_type>"
@@ -186,9 +193,7 @@ def test_ifm_typed_xml_decodes_declared_argument_types():
 def test_ifm_json_non_finite_values_are_rejected_without_execution(literal):
     text = (
         "<ifm|tool_calls><ifm|tool_call>"
-        '{"name":"python","arguments":{"value":'
-        + literal
-        + "}}</ifm|tool_call></ifm|tool_calls>"
+        '{"name":"python","arguments":{"value":' + literal + "}}</ifm|tool_call></ifm|tool_calls>"
     )
 
     assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
@@ -203,9 +208,7 @@ def test_ifm_typed_xml_non_finite_structured_values_are_rejected_without_executi
     text = (
         "<ifm|tool_calls><ifm|tool_call>python"
         "<ifm|arg_key>config</ifm|arg_key><ifm|arg_type>object</ifm|arg_type>"
-        '<ifm|arg_value>{"value":'
-        + literal
-        + "}</ifm|arg_value></ifm|tool_call></ifm|tool_calls>"
+        '<ifm|arg_value>{"value":' + literal + "}</ifm|arg_value></ifm|tool_call></ifm|tool_calls>"
     )
 
     assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
@@ -436,7 +439,7 @@ def test_ifm_reserved_markers_inside_xml_value_fail_closed(marker):
     [
         "The docs say '\n" + IFM_XML + "\n'.",
         'The docs say "\n' + IFM_XML + '\n".',
-        r'The docs say \'escaped \' quote ' + IFM_XML + r"'.",
+        r"The docs say \'escaped \' quote " + IFM_XML + r"'.",
         r'The docs say "escaped \" quote ' + IFM_XML + r'".',
         f"```xml\n{IFM_XML}\n```",
     ],
@@ -511,9 +514,7 @@ def test_ifm_lookalikes_in_quotes_fences_reasoning_and_payloads_are_not_promoted
         "</ifm|tool_call></ifm|tool_calls>"
     )
     nested_in_existing_call = (
-        '<tool_call>{"name":"python","arguments":{"code":'
-        + json.dumps(IFM_XML)
-        + "}}</tool_call>"
+        '<tool_call>{"name":"python","arguments":{"code":' + json.dumps(IFM_XML) + "}}</tool_call>"
     )
 
     assert parse_tool_calls_from_text(quoted) == []
@@ -547,14 +548,9 @@ def test_ifm_one_character_stream_executes_once_without_protocol_leak():
     assert len([event for event in events if event["type"] == "tool_start"]) == 1
     assert len([event for event in events if event["type"] == "tool_end"]) == 1
     assert not any(
-        "<ifm|" in event.get("text", "")
-        for event in events
-        if event["type"] == "content"
+        "<ifm|" in event.get("text", "") for event in events if event["type"] == "content"
     )
-    assert any(
-        event["type"] == "content" and event["text"] == "final answer"
-        for event in events
-    )
+    assert any(event["type"] == "content" and event["text"] == "final answer" for event in events)
     assert len(captured) == 2
     assert any(message.get("role") == "tool" for message in captured[1])
 
@@ -567,9 +563,7 @@ def test_ifm_partial_outer_marker_after_visible_text_stays_buffered():
     )
 
     assert executor.calls == [("python", {"code": "print(1234567 * 891011)"})]
-    content = "".join(
-        event.get("text", "") for event in events if event["type"] == "content"
-    )
+    content = "".join(event.get("text", "") for event in events if event["type"] == "content")
     assert prefix in content
     assert "<ifm|" not in content
 
@@ -609,10 +603,7 @@ def test_ifm_buffer_without_tool_signal_streams_ordinary_text():
     events, executor = _run([[text]])
 
     assert executor.calls == []
-    assert any(
-        event["type"] == "content" and text in event["text"]
-        for event in events
-    )
+    assert any(event["type"] == "content" and text in event["text"] for event in events)
 
 
 def test_ifm_multiple_calls_execute_once_in_order():
@@ -648,8 +639,7 @@ def test_ifm_malformed_stream_is_visible_at_eos_but_never_executes():
     assert executor.calls == []
     assert len(captured) == 1
     assert any(
-        event["type"] == "content" and event["text"] == malformed.strip()
-        for event in events
+        event["type"] == "content" and event["text"] == malformed.strip() for event in events
     )
     assert not any(event["type"] == "tool_start" for event in events)
 
@@ -726,9 +716,7 @@ class _StrictIfmTokenizer:
         ("reasoning", 7),
     ],
 )
-def test_ifm_tool_history_repair_replaces_invalid_reasoning_field(
-    field, invalid_value
-):
+def test_ifm_tool_history_repair_replaces_invalid_reasoning_field(field, invalid_value):
     messages = [
         {"role": "user", "content": "calculate"},
         {
@@ -826,10 +814,8 @@ def test_ifm_tool_result_replay_repairs_generic_assistant_history_for_second_gen
     assert "IFM_TOOL_RESULT=123" in rendered_prompts[1]
     assert "<think>planning</think>" not in rendered_prompts[1]
     assert any(
-        event["type"] == "content" and event["text"] == "final after tool"
-        for event in events
+        event["type"] == "content" and event["text"] == "final after tool" for event in events
     )
-
 
 
 def test_ifm_xml_value_unmatched_quote_is_payload():
@@ -846,9 +832,7 @@ def test_ifm_xml_value_unmatched_quote_is_payload():
 
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "web_search"
-    assert json.loads(calls[0]["function"]["arguments"]) == {
-        "query": 'find "unfinished'
-    }
+    assert json.loads(calls[0]["function"]["arguments"]) == {"query": 'find "unfinished'}
 
 
 def test_ifm_xml_value_unclosed_code_fence_is_payload():
@@ -865,10 +849,7 @@ def test_ifm_xml_value_unclosed_code_fence_is_payload():
 
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "web_search"
-    assert json.loads(calls[0]["function"]["arguments"]) == {
-        "query": "find ```python\\nunfinished"
-    }
-
+    assert json.loads(calls[0]["function"]["arguments"]) == {"query": "find ```python\\nunfinished"}
 
 
 def test_ifm_value_literal_spill_does_not_hide_later_envelope():
@@ -889,12 +870,8 @@ def test_ifm_value_literal_spill_does_not_hide_later_envelope():
     calls = parse_tool_calls_from_text(text, allow_incomplete = False)
 
     assert [call["function"]["name"] for call in calls] == ["first", "second"]
-    assert json.loads(calls[0]["function"]["arguments"]) == {
-        "q": 'find "unfinished'
-    }
-    assert json.loads(calls[1]["function"]["arguments"]) == {
-        "q": "normal"
-    }
+    assert json.loads(calls[0]["function"]["arguments"]) == {"q": 'find "unfinished'}
+    assert json.loads(calls[1]["function"]["arguments"]) == {"q": "normal"}
 
 
 def test_ifm_value_literal_spill_reset_keeps_later_quoted_example_protected():

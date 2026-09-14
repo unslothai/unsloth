@@ -2021,8 +2021,7 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
 
 
 def _detect_reasoning_channel_markers_from_templates(
-    templates: tuple[str, ...],
-    prompt: Optional[str] = None,
+    templates: tuple[str, ...], prompt: Optional[str] = None
 ) -> Optional[tuple[str, ...]]:
     """Return native reasoning markers only when a template emits them."""
     if any(opener in template for template in templates for opener in _GEMMA_TEMPLATE_OPENERS):
@@ -2157,9 +2156,7 @@ def _find_earliest_marker(text: str, markers: tuple[str, ...]) -> tuple[int, str
     for marker in markers:
         found = text.find(marker)
         if found >= 0 and (
-            index < 0
-            or found < index
-            or (found == index and len(marker) > len(selected))
+            index < 0 or found < index or (found == index and len(marker) > len(selected))
         ):
             index, selected = found, marker
     return index, selected
@@ -2786,9 +2783,7 @@ _IFM_REASONING_HISTORY_FIELDS = (
     "reasoning_content",
     "reasoning",
 )
-_IFM_CANONICAL_THINK_PREFIX = re.compile(
-    r"\A\s*<think>(?P<thought>.*?)</think>", re.DOTALL
-)
+_IFM_CANONICAL_THINK_PREFIX = re.compile(r"\A\s*<think>(?P<thought>.*?)</think>", re.DOTALL)
 
 
 def _ifm_template_has_tool_history(tokenizer, tools) -> bool:
@@ -2839,12 +2834,8 @@ def _repair_ifm_tool_history(messages: list, tokenizer, tools) -> list:
             out.append(message)
             continue
 
-        present_fields = [
-            field for field in _IFM_REASONING_HISTORY_FIELDS if field in message
-        ]
-        valid_fields = [
-            field for field in present_fields if isinstance(message.get(field), str)
-        ]
+        present_fields = [field for field in _IFM_REASONING_HISTORY_FIELDS if field in message]
+        valid_fields = [field for field in present_fields if isinstance(message.get(field), str)]
         invalid_fields = [field for field in present_fields if field not in valid_fields]
         content = message.get("content")
         thought = ""
