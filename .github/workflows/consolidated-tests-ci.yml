@@ -39,6 +39,13 @@
 # things; if they regress we want a red cell, not a green-with-fail-prints
 # cell.
 
+#
+# runs-on: ubuntu-24.04, not ubuntu-latest. Same image, so the jobs are unchanged; different
+# queue, because nearly all of the org's ~871 queued runs ask for ubuntu-latest. Identical
+# no-op jobs in one matrix: ubuntu-latest still queued past 40 min, every other label under
+# 2 min (#10914). Cost: the image no longer tracks the fleet default, so bump it for 26.04.
+#
+
 name: Core
 
 on:
@@ -113,7 +120,7 @@ jobs:
             transformers_spec: "__from_pyproject__"
             trl_spec: "__from_pyproject__"
     name: "Core (${{ matrix.combo.label }})"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     # No job-level or per-step `continue-on-error`. Earlier iterations
     # masked real test failures behind green check icons; that lie is
@@ -2368,7 +2375,7 @@ jobs:
     # builds the LLAMA_CPP_TARGETS list; the result is independent of the
     # HF stack version. Run once, gate the PR.
     name: llama.cpp build + smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       UNSLOTH_ZOO_REF: ${{ inputs.unsloth_zoo_ref || 'main' }}
