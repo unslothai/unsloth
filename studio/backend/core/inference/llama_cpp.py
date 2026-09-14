@@ -17914,7 +17914,7 @@ class LlamaCppBackend:
         usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
 
         _reserve_bytes = self._estimate_compute_buffer_bytes(
-            n_ubatch=n_ubatch, n_parallel=n_parallel, per_device_tensor=True
+            n_ubatch = n_ubatch, n_parallel = n_parallel, per_device_tensor = True
         )
         reserve_mib = (
             _reserve_bytes // (1024 * 1024)
@@ -17931,11 +17931,11 @@ class LlamaCppBackend:
             self._estimate_kv_cache_bytes(
                 effective_ctx,
                 cache_type_kv,
-                n_parallel=n_parallel,
-                swa_full=swa_full,
-                kv_unified=kv_unified,
-                n_ubatch=n_ubatch,
-                flash_attn=flash_attn,
+                n_parallel = n_parallel,
+                swa_full = swa_full,
+                kv_unified = kv_unified,
+                n_ubatch = n_ubatch,
+                flash_attn = flash_attn,
             )
             if self._can_estimate_kv() and effective_ctx > 0
             else 0
@@ -17943,18 +17943,14 @@ class LlamaCppBackend:
         mtp_bytes = (
             mtp_overhead_fn(effective_ctx) if mtp_overhead_fn is not None else 0
         ) + flat_mtp
-        cc_bytes = n_dev * self._compute_buffer_ctx_bytes(
-            effective_ctx, n_ubatch, cache_type_kv
-        )
+        cc_bytes = n_dev * self._compute_buffer_ctx_bytes(effective_ctx, n_ubatch, cache_type_kv)
         total_bytes = model_size + kv_bytes + mtp_bytes + cc_bytes
 
         cc_per_dev_mib = (cc_bytes // n_dev) // (1024 * 1024) if cc_bytes else 0
         total_weight = sum(split)
         for i, idx in enumerate(gpu_indices):
             alloc_bytes = total_bytes * split[i] / total_weight
-            capacity_bytes = (
-                usable_by_idx[idx] - reserve_mib - cc_per_dev_mib
-            ) * 1024 * 1024
+            capacity_bytes = (usable_by_idx[idx] - reserve_mib - cc_per_dev_mib) * 1024 * 1024
             if alloc_bytes > capacity_bytes:
                 return False
         return True
@@ -23305,26 +23301,22 @@ class LlamaCppBackend:
                                 gpu_indices,
                                 model_size,
                                 effective_ctx,
-                                cache_type_kv=cache_type_kv,
-                                n_parallel=n_parallel,
-                                n_ubatch=_effective_ubatch,
-                                kv_unified=planned_kv_unified,
-                                flash_attn=planned_flash_attn,
-                                swa_full=swa_full,
-                                mtp_engaged=_mtp_reserves_gpu,
-                                mtp_overhead_fn=mtp_overhead_fn,
-                                mtp_flat_reserve_bytes=(
-                                    2 * 1024**3
-                                    if (_mtp_reserves_gpu and _mtp_kv_unsized)
-                                    else 0
+                                cache_type_kv = cache_type_kv,
+                                n_parallel = n_parallel,
+                                n_ubatch = _effective_ubatch,
+                                kv_unified = planned_kv_unified,
+                                flash_attn = planned_flash_attn,
+                                swa_full = swa_full,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                mtp_flat_reserve_bytes = (
+                                    2 * 1024**3 if (_mtp_reserves_gpu and _mtp_kv_unsized) else 0
                                 ),
-                                total_by_idx=total_by_idx,
-                                vram_fraction=_vram_frac,
+                                total_by_idx = total_by_idx,
+                                vram_fraction = _vram_frac,
                             )
                         ):
-                            _emitted_tensor_split = ",".join(
-                                f"{x:g}" for x in _sanitized_split
-                            )
+                            _emitted_tensor_split = ",".join(f"{x:g}" for x in _sanitized_split)
                             _emitted_split_values = list(_sanitized_split)
                     if _emitted_tensor_split is not None:
                         cmd.extend(["--tensor-split", _emitted_tensor_split])
