@@ -101,9 +101,7 @@ def test_a_blank_cell_in_a_numeric_column_still_converts_to_chatml(tmp_path):
 def test_every_cell_reaches_a_chat_template_as_text():
     # The chat template renders content directly, so a non-string there is a
     # crash or a stray repr rather than something the model can learn.
-    dataset = Dataset.from_dict(
-        {"instruction": ["a"], "input": [True], "output": [7]}
-    )
+    dataset = Dataset.from_dict({"instruction": ["a"], "input": [True], "output": [7]})
 
     conversations = convert_alpaca_to_chatml(dataset, batch_size = 1, num_proc = 1)["conversations"]
 
