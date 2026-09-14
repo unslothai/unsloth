@@ -59,9 +59,10 @@ ARG TARGETARCH
 USER root
 # UNSLOTH_IMAGE_ALLOW_CPU=1 lets THIS image (:latest) start without a GPU. The entrypoint turns it into
 # UNSLOTH_ALLOW_CPU=1 only when no GPU is visible, since that one disables the TRL patches. :core never opts in.
-# UV_CACHE_DIR: install.sh and setup.sh default the uv cache to $UNSLOTH_STUDIO_HOME/cache/uv (9 GB, the
-# venv hardlinks into it) only when unset. Pointing it into the app dir keeps the install's cache with the
-# install, so cache/ in the home stays runtime data (download-resume manifests, llama slots, dataset caches).
+# UV_CACHE_DIR: install.sh, setup.sh and Studio default the uv cache to $UNSLOTH_STUDIO_HOME/cache/uv only
+# when unset. Pointing it into the app dir keeps uv's cache (the install's, and whatever runtime installs
+# add later) out of the Studio home, so cache/ there stays runtime data (download-resume manifests, llama
+# slots, dataset caches) and a volume on the home never fills with wheels.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
@@ -176,12 +177,12 @@ RUN set -eux \
     # image's version. Everything the install created is code, except cache/: with
     # UV_CACHE_DIR in the app dir (ENV above) it holds only install.sh's uv-cache-dir marker
     # here and Studio's runtime caches later, so it stays a real directory in the home.
+    # (The uv cache itself is not asserted: a build may drop it once the install is done.)
     # Move the rest to the app dir in this same layer (a later RUN would store it twice)
     # and leave symlinks, so the home holds only what Studio writes at runtime.
  && mkdir -p "${UNSLOTH_STUDIO_APP}" \
  && find "${UNSLOTH_STUDIO_HOME}" -mindepth 1 -maxdepth 1 ! -name cache -exec mv -t "${UNSLOTH_STUDIO_APP}" {} + \
  && test ! -e "${UNSLOTH_STUDIO_HOME}/cache/uv" \
- && test -d "${UV_CACHE_DIR}" \
     # through bash: the exec bit is set further down, with the other bin scripts
  && bash /usr/local/bin/unsloth-studio-home \
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__" \
