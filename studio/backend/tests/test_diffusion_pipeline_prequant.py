@@ -537,6 +537,39 @@ def test_an_artifact_that_does_not_resolve_keeps_the_released_shards(monkeypatch
     assert fetched == []
 
 
+def test_a_local_checkpoint_is_still_seeded_on_an_online_load(monkeypatch, hub):
+    """An operator's own checkpoint has no Hub entry, so the plan drops no shards for it; the seed
+    still has to survive the pull, or the load quantises the released bf16 shards in memory and the
+    file it was pointed at goes unused."""
+    backend, seen, fetched = _run_load_backend(monkeypatch, planned = "fp8", verified = False)
+    monkeypatch.setattr(dmod, "denoiser_prequant_cached", lambda *_a, **_k: True)
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO,
+        model_kind = "pipeline",
+        transformer_prequant_path = "/models/z-image-fp8.pt",
+        _load_token = 1,
+    )
+
+    assert seen["_pipeline_prequant_planned"] == "fp8"
+    assert seen["_pipeline_prequant_skipped"] == ()
+    assert fetched == []
+
+
+def test_a_local_path_the_loader_would_refuse_keeps_the_released_shards(monkeypatch, hub):
+    """The seed rides on the artifact being there: a path that does not resolve keeps the bf16
+    shards rather than pinning a seed the load cannot take."""
+    backend, seen, _fetched = _run_load_backend(monkeypatch, planned = "fp8", verified = False)
+    monkeypatch.setattr(dmod, "denoiser_prequant_cached", lambda *_a, **_k: False)
+    backend._run_load(
+        repo_id = Z_IMAGE_REPO,
+        model_kind = "pipeline",
+        transformer_prequant_path = "/models/missing.pt",
+        _load_token = 1,
+    )
+
+    assert seen["_pipeline_prequant_planned"] is None
+
+
 def test_the_decline_is_pinned_across_plan_and_load(monkeypatch, hub):
     """A decline is pinned from plan to load, so the loader never re-takes it and fetches inline."""
     backend, seen, _fetched = _run_load_backend(monkeypatch, planned = PIPELINE_SEED_DECLINED)

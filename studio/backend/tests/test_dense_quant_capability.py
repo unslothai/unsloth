@@ -196,7 +196,7 @@ def _run_schemes(monkeypatch, *, device_count, schemes_by_ordinal):
     fake_device.diffusion_device_scope = _Scope
     fake_device.resolve_diffusion_device_target = lambda ordinal = None: ordinal
     fake_quant = types.ModuleType("core.inference.diffusion_transformer_quant")
-    fake_quant.auto_scheme_candidates = lambda target: schemes_by_ordinal[target]
+    fake_quant.auto_scheme_candidates_cached = lambda target: schemes_by_ordinal[target]
 
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_device", fake_device)
@@ -264,3 +264,27 @@ def test_the_warm_refresh_honours_the_torch_kill_switch():
     assert guard != -1
     # The guard must not swallow the rest of the worker.
     assert "_start_linked_folder_auto_sync" in body[refresh:]
+
+
+def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
+    """The ladder on the polled route reads ``_SMOKE_CACHE`` and nothing else.
+
+    ``_scheme_supported`` spawns the up-to-180s child smoke probe and allocates in this process when
+    the spawn is unavailable, and an allocator failure is deliberately not cached, so reaching it
+    from ``/api/system`` would repeat the work on every poll.
+    """
+    from core.inference import diffusion_transformer_quant as tq
+
+    def _never(*_a, **_k):
+        raise AssertionError("the polled ladder ran the smoke probe")
+
+    monkeypatch.setattr(tq, "_scheme_supported", _never)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda _target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (8, 9))
+    monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda _device: "cuda:0")
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {("fp8", "cuda:0"): False})
+    # An unprobed scheme counts as usable; a probed failure does not.
+    assert tq.auto_scheme_candidates_cached(object()) == ("int8",)
+    monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
+    assert tq.auto_scheme_candidates_cached(object()) == ("int8", "fp8")
+    assert "auto_scheme_candidates_cached" in _src("_probe_dense_quant_schemes")

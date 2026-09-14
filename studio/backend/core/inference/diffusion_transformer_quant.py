@@ -744,6 +744,30 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
     return ()
 
 
+def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
+    """``auto_scheme_candidates`` answered from ``_SMOKE_CACHE`` alone, for a polled status route.
+
+    Same ladder and same deny list, but no probe: ``_scheme_supported`` can spawn the child smoke
+    probe or allocate in this process, and neither belongs on a route the frontend polls every few
+    seconds. An unprobed scheme counts as usable and a probed failure does not, the rule
+    ``dense_quant_host_capable`` already follows, so the published ladder sharpens as loads record
+    verdicts instead of paying for them here."""
+    if not dense_transformer_supported(target):
+        return ()
+    cap = _capability()
+    if cap is None:
+        return ()
+    card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return tuple(
+                scheme
+                for scheme in schemes
+                if not _family_denied(family, scheme) and _SMOKE_CACHE.get((scheme, card), True)
+            )
+    return ()
+
+
 def _capability() -> Optional[tuple[int, int]]:
     try:
         import torch

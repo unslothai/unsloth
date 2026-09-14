@@ -2270,11 +2270,31 @@ class DiffusionBackend:
                 resident_file_sizes_out = resident_sizes,
                 fetch_repos_out = fetch_repos,
             )
+            # An OPERATOR'S OWN checkpoint has no Hub entry, so ``_dit_prequant_plan_source`` answers None for it and
+            # the plan drops no shards: the seed costs no bytes and is scoped by nothing. Suppressing it below would
+            # ignore the file the load was asked to use and quantise the released bf16 shards in memory instead, which
+            # is the load this whole path exists to avoid. Cache only, never a request, the same answer the offline
+            # branch above reads.
+            local_seed = (
+                bool(kwargs.get("transformer_prequant_path"))
+                and pipeline_planned not in (None, PIPELINE_SEED_DECLINED)
+                and denoiser_prequant_cached(
+                    fam,
+                    pipeline_planned,
+                    base_repo = base,
+                    path_override = kwargs.get("transformer_prequant_path"),
+                    cache_dir = hub_cache_dir(),
+                )
+            )
             # Pinned into the load, decline included: the pull was scoped on this answer.
             kwargs["_pipeline_prequant_planned"] = (
                 PIPELINE_SEED_DECLINED
                 if pipeline_planned == PIPELINE_SEED_DECLINED
-                else (pipeline_planned if skip_transformer_weights or local_files_only else None)
+                else (
+                    pipeline_planned
+                    if skip_transformer_weights or local_files_only or local_seed
+                    else None
+                )
             )
             kwargs["_pipeline_prequant_skipped"] = tuple(skipped_transformer_files)
             if dit_prequant is not None:

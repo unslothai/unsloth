@@ -2085,25 +2085,31 @@ def _probe_dense_quant_supported() -> bool:
 
 
 def _probe_dense_quant_schemes() -> list[str]:
-    """The auto ladder's schemes for this host, best first, from the same ``auto_scheme_candidates``
-    the loader reads; a mixed host answers with the INTERSECTION. IMPORTS the ML stack."""
+    """The auto ladder's schemes for this host, best first, on the same ladder and deny list the
+    loader's ``auto_scheme_candidates`` reads; a mixed host answers with the INTERSECTION. IMPORTS
+    the ML stack.
+
+    The CACHED variant, because a request that already holds torch reaches this from the polled
+    ``/api/system``: the load-time helper runs ``_scheme_supported``, which spawns the smoke probe
+    or allocates in this process, and the poll must do neither. Like the capability bit, the answer
+    sharpens as loads record verdicts in ``_SMOKE_CACHE``."""
     try:
         from core.inference.diffusion_device import (
             diffusion_device_scope,
             resolve_diffusion_device_target,
         )
-        from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+        from core.inference.diffusion_transformer_quant import auto_scheme_candidates_cached
 
         import torch
 
         count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         if count <= 1:
-            return list(auto_scheme_candidates(resolve_diffusion_device_target()))
+            return list(auto_scheme_candidates_cached(resolve_diffusion_device_target()))
         common: Optional[list[str]] = None
         for ordinal in range(count):
             with diffusion_device_scope(ordinal):
                 schemes = list(
-                    auto_scheme_candidates(resolve_diffusion_device_target(ordinal = ordinal))
+                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
                 )
             common = schemes if common is None else [s for s in common if s in schemes]
         return common or []
