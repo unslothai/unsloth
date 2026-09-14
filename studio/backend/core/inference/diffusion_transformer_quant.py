@@ -205,18 +205,10 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# Per-arch preference for ``auto``, best first. int8 (W8A8, per-row dynamic) leads on every tier: it is the scheme
-# every hosted checkpoint repo ships, the rung MiniMax H3 already settles on, the full-rate path on consumer and
-# workstation cards (they halve fp8 FP32 accumulate) and, on B200 at 1024px, within 3 percent of fp8 either way
-# (z-image graphed 0.522 s int8 against 0.539 s fp8; qwen-image 1.10x bf16 against 1.21x). The 28-pair prequant gate
-# splits by family (LPIPS mean, int8 / fp8): qwen-image 0.057 / 0.154, flux.1-schnell 0.151 / 0.157, flux1-dev
-# 0.125 / 0.134, z-image 0.181 / 0.129, krea-2 0.223 / 0.172, lumina2 0.146 / 0.116; both clear the bar everywhere
-# they are listed, and an explicit ``fp8`` request still gets fp8. mxfp8 block scaling only adds overhead on B200.
-# nvfp4's FP4 GEMM is real with torch>=2.11 but wins only on very large GEMMs (0.81x on Z-Image 1024px, LPIPS 0.166
-# vs fp8 0.044), so it is kept OUT of the ladder below and stays an explicit opt-in (transformer_quant="nvfp4"):
-# auto must never silently drop to a scheme that is both slower and less accurate. Restore the commented Blackwell
-# tier to re-enable it once the FP4 tensor-core GEMM wins at the DiT's real shapes (hidden ~3072, MLP ~12288,
-# M ~4096) and its accuracy is validated by the prequant gate.
+# Per-arch preference for ``auto``, best first. int8 leads every tier: it runs full-rate on consumer and workstation
+# cards (which halve fp8 FP32 accumulate) and is within a few percent of fp8 on data-center parts.
+# nvfp4 is an explicit opt-in kept OUT of the ladder: it is both slower and less accurate at DiT shapes, and auto
+# must never silently drop to such a scheme. Uncomment the Blackwell tier below to re-enable it under auto.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((10, 0), (TQ_INT8, TQ_FP8, TQ_MXFP8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
     # ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),  # restore to re-enable nvfp4 under auto
