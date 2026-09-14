@@ -377,8 +377,7 @@ class HostInfo:
     has_usable_nvidia: bool
     has_rocm: bool = False
     has_intel_gpu: bool = False
-    # AMD GPU present but ROCm unusable. Linux only, probed only when there is no usable
-    # NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
+    # AMD present, ROCm unusable. Probed only when neither NVIDIA nor ROCm is usable.
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
@@ -1056,11 +1055,14 @@ def direct_upstream_release_plan(
                         install_kind = "windows-hip",
                     )
                 )
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. Gate
-        # on no PHYSICAL NVIDIA (not just no usable one): a host that hid NVIDIA
-        # via CUDA_VISIBLE_DEVICES must not reach Vulkan, which ignores that mask
-        # and could enumerate the reserved card. Falls through to CPU below.
-        elif host.has_intel_gpu and not host.has_physical_nvidia:
+        # Intel or AMD-without-usable-ROCm: use the Vulkan prebuilt, matching the published
+        # branch and the Linux x86_64 one here. Reached when the caller pins a non-default
+        # --published-repo, so leaving it Intel-only sent a Windows AMD host to the CPU
+        # attempt even when the release carries win-vulkan. Gate on no PHYSICAL NVIDIA (not
+        # just no usable one): a host that hid NVIDIA via CUDA_VISIBLE_DEVICES must not reach
+        # Vulkan, which ignores that mask and could enumerate the reserved card. Falls
+        # through to CPU below.
+        elif (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
             vulkan_url = assets.get(vulkan_asset)
             if vulkan_url:
@@ -2496,6 +2498,27 @@ def windows_intel_gpu_in_registry() -> bool:
     answers in microseconds. Matches the PCI vendor id in MatchingDeviceId
     (ven_8086) or an Intel DriverDesc.
     """
+    return _windows_display_adapter_in_registry(
+        (("MatchingDeviceId", "ven_8086"), ("DriverDesc", "intel"))
+    )
+
+
+def windows_amd_gpu_in_registry() -> bool:
+    """Whether the Windows registry lists an AMD display adapter.
+
+    Same probe and same caveats as windows_intel_gpu_in_registry, against PCI
+    vendor id 0x1002. Two DriverDesc needles because AMD ships adapters named
+    "AMD Radeon(TM) 8060S Graphics" and others named only "Radeon (TM) ...".
+    Only consulted with no usable NVIDIA and no usable ROCm, so a host reaching
+    it is one the ROCm branch has already declined.
+    """
+    return _windows_display_adapter_in_registry(
+        (("MatchingDeviceId", "ven_1002"), ("DriverDesc", "amd"), ("DriverDesc", "radeon"))
+    )
+
+
+def _windows_display_adapter_in_registry(needles: tuple[tuple[str, str], ...]) -> bool:
+    """Whether any display-adapter class key matches one of (value_name, needle)."""
     try:
         import winreg
     except ImportError:
@@ -2509,10 +2532,7 @@ def windows_intel_gpu_in_registry() -> bool:
                         # "Properties" is ACL-restricted and not an adapter.
                         continue
                     with winreg.OpenKey(class_key, name) as adapter_key:
-                        for value_name, needle in (
-                            ("MatchingDeviceId", "ven_8086"),
-                            ("DriverDesc", "intel"),
-                        ):
+                        for value_name, needle in needles:
                             try:
                                 value, _ = winreg.QueryValueEx(adapter_key, value_name)
                             except OSError:
@@ -2760,7 +2780,15 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # GPU-isolation docs), so counting those would cost Vulkan to any host merely exporting
         # CUDA_VISIBLE_DEVICES. Windows reads all three: its probe is hipinfo, a HIP
         # application. Intel is unaffected by HIP masks.
-        _amd_hidden_by_mask = os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+        # Windows really does read all three, via _hip_visible_device_mask_set: the arch
+        # probe there is hipinfo, so HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias
+        # hide devices from it exactly as ROCR does, and Vulkan would then pick up a GPU the
+        # caller had hidden. On Linux the probe is a sysfs walk that no HIP mask touches.
+        _amd_hidden_by_mask = (
+            _hip_visible_device_mask_set()
+            if is_windows
+            else os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+        )
         if is_linux:
             # No early break: a laptop can pair an Intel iGPU with an AMD dGPU.
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
@@ -2775,10 +2803,13 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     has_amd_gpu_without_rocm = True
         elif is_windows:
             # Registry first (in-process; see windows_intel_gpu_in_registry).
-            # The CIM query stays as the fallback when the registry shows no
-            # Intel adapter.
+            # CIM stays the fallback for a registry that names neither adapter.
             has_intel_gpu = windows_intel_gpu_in_registry()
-            if not has_intel_gpu:
+            if not _amd_hidden_by_mask:
+                has_amd_gpu_without_rocm = windows_amd_gpu_in_registry()
+            # `and`, not `or`: either flag alone settles the Vulkan gate, and `or` made every
+            # single-vendor host pay the CIM probe's 15s timeout after the registry answered.
+            if not has_intel_gpu and not has_amd_gpu_without_rocm:
                 _ps = shutil.which("powershell") or shutil.which("pwsh")
                 if _ps:
                     try:
@@ -2792,8 +2823,12 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                             ],
                             timeout = 15,
                         )
-                        if _result.returncode == 0 and "intel" in _result.stdout.lower():
-                            has_intel_gpu = True
+                        if _result.returncode == 0:
+                            _names = _result.stdout.lower()
+                            if "intel" in _names:
+                                has_intel_gpu = True
+                            if not _amd_hidden_by_mask and ("amd" in _names or "radeon" in _names):
+                                has_amd_gpu_without_rocm = True
                     except Exception:
                         pass
 
@@ -3636,14 +3671,17 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
-        # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan. No
-        # physical NVIDIA so a CUDA-hidden card isn't reached through Vulkan.
-        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+        # Mirrors the Linux branch: without the AMD half a Strix Halo box with no ROCm
+        # tooling took windows-cpu, where the same silicon takes Vulkan on Linux.
+        if (
+            (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
+            and not host.has_physical_nvidia
+            and not host.has_rocm
+        ):
+            vendor = "Intel GPU" if host.has_intel_gpu else "AMD GPU without usable ROCm"
             vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
             if vulkan_name in upstream_assets:
-                log(
-                    f"Intel GPU detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
-                )
+                log(f"{vendor} detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}")
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -3652,7 +3690,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-vulkan",
                 )
-            log("Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
+            log(f"{vendor} detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -3735,7 +3773,12 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+        # Intel OR AMD-without-usable-ROCm, mirroring the Linux branch.
+        if (
+            (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
+            and not host.has_physical_nvidia
+            and not host.has_rocm
+        ):
             choices = [
                 choice
                 for choice in (
