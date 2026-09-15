@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+export type MinPMode = "server-default" | "custom";
+
 export interface InferenceParams {
   temperature: number;
   topP: number;
   topK: number;
   minP: number;
+  minPMode?: MinPMode;
   repetitionPenalty: number;
   presencePenalty: number;
   maxSeqLength: number;
@@ -61,6 +64,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   topP: 0.95,
   topK: 20,
   minP: 0.01,
+  minPMode: "server-default",
   repetitionPenalty: 1.0,
   presencePenalty: 0.0,
   maxSeqLength: 4096,

@@ -127,6 +127,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
@@ -184,12 +185,15 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  reasoningFieldsAfterCatalogRefresh,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -801,8 +805,10 @@ function CompareShell({
         >
           {children}
         </div>
-        <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
+        {/* Symmetric: the extra right inset mirrored the viewport's one-sided
+            scrollbar gutter, which is now reserved on both edges. */}
+        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[30px] pb-2 pt-1">
+          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -2549,14 +2555,20 @@ export function ChatPage({
       : effortLevels.includes("medium")
         ? "medium"
         : clampedEffort;
+    const catalogDefaultEffort =
+      reasoningCaps.defaultEffort &&
+      effortLevels.includes(reasoningCaps.defaultEffort)
+        ? reasoningCaps.defaultEffort
+        : null;
     const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? isAnthropic
-        ? anthropicTopEffort
-        : isOpenAI
-          ? openaiDefaultEffort
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort
+      ? (catalogDefaultEffort ??
+        (isAnthropic
+          ? anthropicTopEffort
+          : isOpenAI
+            ? openaiDefaultEffort
+            : effortLevels.includes("medium")
+              ? "medium"
+              : clampedEffort))
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
@@ -2653,6 +2665,34 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
+  // never the selection defaults above, so a chosen effort and the pills survive the refresh.
+  const modelCatalogChange = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
+  const appliedCatalogChange = useRef(modelCatalogChange);
+  useEffect(() => {
+    if (appliedCatalogChange.current === modelCatalogChange) return;
+    appliedCatalogChange.current = modelCatalogChange;
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const { providers, connectionsEnabled: enabled } = useExternalProvidersStore.getState();
+    const provider = enabled
+      ? providers.find((p) => p.id === selection.providerId)
+      : undefined;
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
+    );
+    useChatRuntimeStore.setState(
+      reasoningFieldsAfterCatalogRefresh(useChatRuntimeStore.getState(), caps),
+    );
+  }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -2856,6 +2896,7 @@ export function ChatPage({
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
+            presentation: selection.downloadPresentation,
             // Handed over, not raised here, so one start makes one toast.
             callerToast: {
               title: "Downloading in the background",
@@ -2982,6 +3023,7 @@ export function ChatPage({
         repoId: pending.selection.id,
         variant: pending.selection.ggufVariant ?? null,
         expectedBytes: pending.selection.expectedBytes ?? 0,
+        presentation: pending.selection.downloadPresentation,
         // Notice-only: #9663 removed this surface's own toast, so it must not return on an HTTP start or
         // once the three notices are spent.
         callerToast: {
@@ -3165,14 +3207,20 @@ export function ChatPage({
           : effortLevels.includes("medium")
             ? "medium"
             : clampedEffort;
+        const catalogDefaultEffort =
+          reasoningCaps.defaultEffort &&
+          effortLevels.includes(reasoningCaps.defaultEffort)
+            ? reasoningCaps.defaultEffort
+            : null;
         const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? isAnthropic
-            ? anthropicTopEffort
-            : isOpenAI
-              ? openaiDefaultEffort
-              : effortLevels.includes("medium")
-                ? "medium"
-                : clampedEffort
+          ? (catalogDefaultEffort ??
+            (isAnthropic
+              ? anthropicTopEffort
+              : isOpenAI
+                ? openaiDefaultEffort
+                : effortLevels.includes("medium")
+                  ? "medium"
+                  : clampedEffort))
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
@@ -3318,6 +3366,7 @@ export function ChatPage({
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
+          downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
