@@ -2153,6 +2153,21 @@ def test_windows_spellings_of_the_root_are_read_as_paths(monkeypatch, tmp_path):
     ]
 
 
+def test_an_escaped_space_in_the_root_still_matches(monkeypatch):
+    # The default root has a space in it, so `cp -a /tmp/Studio\\ Home .` is the ordinary POSIX
+    # spelling of the root itself and has to fold to the same directory as the quoted form.
+    root = "/tmp/unsloth/studio home"
+    monkeypatch.setattr(tools, "_studio_root_spellings", lambda: [root])
+    for named in (
+        "cp -a /tmp/unsloth/studio\\ home ./leak",
+        'cp -a "/tmp/unsloth/studio home" ./leak',
+    ):
+        assert tools._names_the_studio_root_itself(named), named
+    assert not tools._names_the_studio_root_itself(
+        "cp -a /tmp/unsloth/studio\\ home/projects/p ./d"
+    )
+
+
 def test_a_windows_root_is_matched_through_the_same_fold(monkeypatch):
     # `_folded_word` turns a backslash root into forward slashes, so the spellings it is compared
     # against have to be folded the same way. This shape only occurs on Windows, so it is driven
@@ -2238,6 +2253,9 @@ def test_a_recursive_python_copy_of_the_studio_root_is_refused(studio_home):
     # the copy is then an ordinary file nothing guards.
     for refused in (
         'import shutil, os\nshutil.copytree(os.environ["UNSLOTH_STUDIO_HOME"], "./leak")',
+        # The constructor wraps the name of the source rather than replacing it.
+        "import shutil, os\nfrom pathlib import Path\n"
+        'shutil.copytree(Path(os.environ["UNSLOTH_STUDIO_HOME"]), "./leak")',
         # A recursive WALK of the root reaches the same files a copy of it does.
         "import os\nfrom pathlib import Path\n"
         'for p in Path(os.environ["UNSLOTH_STUDIO_HOME"]).rglob("*"):\n    print(p.read_text())',

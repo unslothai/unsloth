@@ -3026,7 +3026,12 @@ def _studio_root_spellings() -> "list[str]":
 def _text_names_the_studio_root(text: str) -> bool:
     """True when *text* names the Studio root directory, literally or by one of its variables."""
     lowered = text.lower()
-    return any(spelling in lowered for spelling in _studio_root_spellings())
+    spellings = _studio_root_spellings()
+    if any(spelling in lowered for spelling in spellings):
+        return True
+    # The escaped spelling of a root with a space in it names the same directory.
+    unescaped = lowered.replace("\\ ", " ")
+    return unescaped != lowered and any(spelling in unescaped for spelling in spellings)
 
 
 def _quoted_words(text: str) -> "list[str]":
@@ -3046,7 +3051,9 @@ def _quoted_words(text: str) -> "list[str]":
 
 def _folded_word(word: str) -> str:
     """A word reduced to the directory it names: `"<root>"/.` and `<root>//` are both `<root>`."""
-    folded = word.lower().replace("\\", "/")
+    # `cp -a /tmp/Studio\\ Home .` names a root WITH a space; the backslash is the shell's escape,
+    # not a separator, so it is removed before the separators are normalised.
+    folded = word.lower().replace("\\ ", " ").replace("\\", "/")
     while folded.endswith(("/.", "/")):
         folded = folded[:-2] if folded.endswith("/.") else folded[:-1]
     return folded
@@ -3066,7 +3073,14 @@ def _names_the_studio_root_itself(text: str) -> bool:
     spellings = [_folded_word(spelling) for spelling in _studio_root_spellings()]
     if not spellings:
         return False
-    return any(_folded_word(word) in spellings for word in _quoted_words(text))
+    words = _quoted_words(text)
+    if "\\ " in text:
+        # Escapes are disabled in the lexer so Windows paths survive, which splits
+        # `Studio\\ Home` in two. The escaped spelling is re-joined before folding.
+        words = words + [
+            word.replace("\x00", " ") for word in _quoted_words(text.replace("\\ ", "\x00"))
+        ]
+    return any(_folded_word(word) in spellings for word in words)
 
 
 # Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
@@ -3841,6 +3855,12 @@ def _python_copies_the_studio_root(tree) -> bool:
             if k.arg in ("src", "root_dir", "base_dir", "top", "path")
         )
         for argument in sources:
+            if isinstance(argument, ast.Name):
+                argument = aliases.get(argument.id)
+            # `copytree(Path(os.environ["UNSLOTH_STUDIO_HOME"]), ...)`: the constructor WRAPS the
+            # name of the source, and the fold reduces the call itself to a dynamic marker.
+            if isinstance(argument, ast.Call) and getattr(argument, "args", None):
+                argument = argument.args[0]
             if isinstance(argument, ast.Name):
                 argument = aliases.get(argument.id)
             if argument is None:
