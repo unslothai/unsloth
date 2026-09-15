@@ -119,9 +119,13 @@ class TestTheMemoryProbeFallsBackToNvml:
             ("GPU-aaaa", [(0, 8000, 24576)]),
             ("GPU-bbbb,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
             ("1,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
-            # A MIG slice or an entry the rows cannot name hides every GPU rather than exposing all.
+            # An entry naming no single device ends the mask there, as CUDA documents
+            # for "0,2,-1,1": the devices before it stay visible, nothing after it does.
             ("nope", []),
             ("GPU-", []),
+            ("1,-1,0", [(1, 20000, 24576)]),
+            ("0,GPU-,1", [(0, 8000, 24576)]),
+            ("0,7,1", [(0, 8000, 24576)]),
         ):
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
             assert LlamaCppBackend._get_gpu_memory() == expected, mask
@@ -334,9 +338,14 @@ class TestAGpuCapableBuildIsPreferred:
         nodes.discard("/dev/nvidiactl")
         assert ps.host_gpu_vendors() == {"amd"}
         nodes.add("/dev/nvidiactl")
+        # HIP reads CUDA_VISIBLE_DEVICES when neither HIP_ nor ROCR_ is set, so an empty one
+        # hides both vendors: detected but nothing reachable is an empty set, not unknown,
+        # and only Vulkan fits then. A set HIP_ mask outranks it.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        assert ps.host_gpu_vendors() == set()
+        assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         assert ps.host_gpu_vendors() == {"amd"}
-        # Detected but nothing reachable is an empty set, not unknown: only Vulkan fits then.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
         assert ps.host_gpu_vendors() == set()
         assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True
@@ -380,6 +389,29 @@ class TestAGpuCapableBuildIsPreferred:
         monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
         monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
+        assert LlamaCppBackend._find_llama_server_binary() == str(made["build-cuda"])
+
+    def test_the_legacy_in_tree_build_prefers_the_gpu_build_too(self, tmp_path, monkeypatch):
+        """No managed or custom runtime configured: the project_root/llama.cpp fallback."""
+        from utils import llama_cpp_path_settings as ps
+
+        made = self._tree(
+            tmp_path / "llama.cpp",
+            "linux",
+            {"build": ["libggml-cpu.so", "libggml-base.so"], "build-cuda": ["libggml-cuda.so"]},
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", _REAL_FINDER)
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(mod, "__file__", str(tmp_path / "s" / "b" / "c" / "i" / "llama_cpp.py"))
+        for var in ("LLAMA_SERVER_PATH", "UNSLOTH_LLAMA_CPP_PATH", "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setattr(ps, "get_stored_custom_llama_cpp_path", lambda: None)
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_resolved_studio_root_and_is_legacy",
+            staticmethod(lambda: (tmp_path / "no-such-studio", False)),
+        )
+        monkeypatch.setattr(mod.shutil, "which", lambda name: None)
         assert LlamaCppBackend._find_llama_server_binary() == str(made["build-cuda"])
 
 

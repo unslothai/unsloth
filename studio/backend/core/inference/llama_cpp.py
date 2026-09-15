@@ -8222,7 +8222,9 @@ class LlamaCppBackend:
         # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1). A fallback,
         # so a denied candidate here just continues (no no-fallback halt).
         project_root = Path(__file__).resolve().parents[4]
-        for p in _layout_candidates(project_root / "llama.cpp"):
+        from utils.llama_cpp_path_settings import prefer_gpu_capable
+
+        for p in prefer_gpu_capable(_layout_candidates(project_root / "llama.cpp"), _is_file):
             if _is_file(p):
                 return str(p)
 
@@ -11671,7 +11673,8 @@ class LlamaCppBackend:
     @staticmethod
     def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
-        uuid prefix per entry, as the CUDA runtime reads it; any other entry hides every GPU."""
+        uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
+        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         gpus = [r for r in rows if not r.get("mig")]
         LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {}
@@ -11685,10 +11688,10 @@ class LlamaCppBackend:
                 # A MIG- entry names a slice row the probe lists under its parent.
                 pool = [r for r in rows if bool(r.get("mig")) == token.startswith("MIG-")]
                 hits = [r for r in pool if str(r.get("uuid", "")).startswith(token)]
-                if len(hits) > 1:
-                    return []  # an abbreviation must name one device, or CUDA sees none
             else:
-                return []
+                hits = []
+            if len(hits) != 1:
+                break
             picked.extend(r for r in hits if r not in picked)
         if any(not t.strip().isdigit() for t in raw.split(",") if t.strip()):
             # The launch re-emits a selection as indices; a slice has only its parent's, so
