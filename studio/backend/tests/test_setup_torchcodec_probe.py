@@ -368,7 +368,18 @@ def test_the_shell_probe_carries_no_apostrophe():
     assert span.count("'") == 1, "the probe body has an apostrophe that closes its own quote"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "bash unavailable")
+def _bash_runs() -> bool:
+    # On Windows `bash` on PATH may be the WSL stub, which prints a banner and exits 1.
+    if shutil.which("bash") is None:
+        return False
+    try:
+        out = subprocess.run(["bash", "-c", "echo ok"], capture_output = True, timeout = 30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == b"ok"
+
+
+@pytest.mark.skipif(not _bash_runs(), reason = "no working bash")
 def test_the_shell_script_is_syntactically_valid():
     # Through stdin, since a Windows bash translates a path argument and cannot find the
     # file. Bytes, not text: a text pipe on Windows re-encodes setup.sh box characters and
