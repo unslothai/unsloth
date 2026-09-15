@@ -34,7 +34,7 @@ from core.inference.runtime_context import (
     generation_budget_within_context,
     runtime_context_length,
 )
-from core.inference.message_content import content_to_text
+from core.inference.message_content import content_to_text, named_turn
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -1849,6 +1849,11 @@ class InferenceBackend:
                 if msg["role"] == "user" and msg.get("content"):
                     user_text = content_to_text(msg["content"])
                     break
+        # Not the caption scan above: that one falls back past a media-only turn.
+        last_user = next(
+            (m for m in reversed(messages or []) if m.get("role") == "user"),
+            None,
+        )
 
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
@@ -1856,13 +1861,16 @@ class InferenceBackend:
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "audio", "audio": audio_array},
-                    {"type": "text", "text": user_text},
-                ],
-            },
+            named_turn(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio", "audio": audio_array},
+                        {"type": "text", "text": user_text},
+                    ],
+                },
+                last_user,
+            ),
         ]
 
         # Direct processor render like the vision path, so neutralize here too, with
@@ -2705,10 +2713,12 @@ class InferenceBackend:
                     import re
                     clean_content = re.sub(r"<[^>]+>", "", content).strip()
                     if clean_content:
-                        chat_messages.append({"role": role, "content": clean_content})
+                        chat_messages.append(
+                            named_turn({"role": role, "content": clean_content}, msg)
+                        )
                         last_role = role
                 elif role == "assistant":
-                    assistant_message = {"role": role, "content": content}
+                    assistant_message = named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:
                         assistant_message["reasoning_content"] = reasoning_content
                     chat_messages.append(assistant_message)

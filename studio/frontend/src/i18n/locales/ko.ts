@@ -1025,6 +1025,13 @@ export const ko = {
         minimal: "미니멀",
       },
       custom: {
+        chatWidth: {
+          label: "채팅 너비",
+          description: "메시지와 입력창의 너비를 설정합니다. 전체 너비는 사이드바 사이의 공간을 사용합니다.",
+          standard: "표준",
+          wide: "넓게",
+          full: "전체 너비",
+        },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
         preferencesTitle: "환경설정",

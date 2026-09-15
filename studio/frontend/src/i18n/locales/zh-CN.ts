@@ -1013,6 +1013,13 @@ export const zhCN = {
         minimal: "极简",
       },
       custom: {
+        chatWidth: {
+          label: "聊天宽度",
+          description: "设置消息和输入框的宽度。全宽会使用侧边栏之间的可用空间。",
+          standard: "标准",
+          wide: "宽",
+          full: "全宽",
+        },
         reset: "重置",
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",

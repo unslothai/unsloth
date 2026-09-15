@@ -1017,6 +1017,13 @@ export const it = {
         minimal: "Minimale",
       },
       custom: {
+        chatWidth: {
+          label: "Larghezza chat",
+          description: "Imposta la larghezza dei messaggi e del campo di testo. La larghezza piena usa lo spazio tra le barre laterali.",
+          standard: "Standard",
+          wide: "Ampia",
+          full: "Larghezza piena",
+        },
         reset: "Ripristina",
         resetAll: "Ripristina la personalizzazione",
         preferencesTitle: "Preferenze",
