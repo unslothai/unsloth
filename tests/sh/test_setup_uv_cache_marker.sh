@@ -313,6 +313,31 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: and is used again once its store is writable" \
         "$SICK" "$(run "$shell" unset "" unset "" "$CASE/sick studio")"
 
+    # Only the stores `uv pip install` writes, since that is the one uv command this file runs.
+    # Measured on uv 0.10.7 at 0555: binaries-v0, environments-v2, flat-index-v2, git-v0, osv-v0
+    # and python-v0 all install fine, so probing them only threw the warm cache away.
+    OFFSCOPE="$CASE/unrelated store/uv"
+    warm "$OFFSCOPE"
+    record "$HOME_DIR" "$OFFSCOPE\\n"
+    for store in binaries-v0 osv-v0 environments-v2 python-v0; do
+        mkdir -p "$OFFSCOPE/$store"
+        if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$OFFSCOPE/$store" 2>/dev/null; then
+            assert_eq "$shell: a read-only $store does not condemn the cache" \
+                "$OFFSCOPE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+            chmod 0755 "$OFFSCOPE/$store" 2>/dev/null || true
+        fi
+    done
+    # ...while a store pip install DOES write still does. git-v0 counts: a `git+` requirement
+    # writes it (measured: a git install creates git-v0 and builds-v0).
+    for store in archive-v0 git-v0 builds-v0; do
+        mkdir -p "$OFFSCOPE/$store"
+        if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$OFFSCOPE/$store" 2>/dev/null; then
+            assert_eq "$shell: a read-only $store still does" \
+                "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+            chmod 0755 "$OFFSCOPE/$store" 2>/dev/null || true
+        fi
+    done
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one

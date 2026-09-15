@@ -1061,6 +1061,14 @@ _uv_cache_usable() {
     _uv_cache_folds_case "$1" && _uvu_fold=1 || _uvu_fold=0
     for _uvu_bucket in "$1"/*; do
         _uvu_name=$(_uv_store_key "${_uvu_bucket##*/}" "$_uvu_fold") || continue
+        # Only the stores `uv pip install` writes, which is the one uv command this file runs
+        # (line 2053). Measured on uv 0.10.7 at 0555: binaries-v0, environments-v2, flat-index-v2,
+        # git-v0, osv-v0 and python-v0 all install fine, so rejecting for them threw away a warm
+        # cache. git-v0 and builds-v0 ARE written for a `git+` requirement, so they stay in.
+        case "${_uvu_name%-v*}" in
+            archive|builds|built-wheels|flat-index|git|interpreter|sdists|simple|wheels) ;;
+            *) continue ;;
+        esac
         if [ ! -d "$_uvu_bucket" ]; then
             # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
             # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of

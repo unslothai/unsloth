@@ -3172,21 +3172,13 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 
 
 _UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
-# Every CacheBucket in uv 0.12.1 (UV_PINNED_VERSION) plus built-wheels, as install.sh lists them.
-_UV_CACHE_STORES = (
-    "archive",
-    "binaries",
-    "builds",
-    "built-wheels",
-    "environments",
-    "flat-index",
-    "git",
-    "interpreter",
-    "osv",
-    "python",
-    "sdists",
-    "simple",
-    "wheels",
+# The subset `uv pip install` writes, which is the only uv command studio/setup.sh runs.
+# Measured on uv 0.10.7 at 0555: binaries-v0, environments-v2, flat-index-v2, git-v0, osv-v0 and
+# python-v0 all install fine, so probing them only threw warm caches away. git and builds are in
+# because a `git+` requirement does write them.
+_UV_PIP_STORES = (
+    "archive", "builds", "built-wheels", "flat-index", "git",
+    "interpreter", "sdists", "simple", "wheels",
 )
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
 
@@ -3334,11 +3326,11 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
 
 
 def _uv_is_store_name(name: str) -> bool:
-    """Every kind uv writes, not just the ones holding package bytes: _uv_is_bucket_name answers
-    warmth, this answers what a write probe has to cover. Same list as install.sh's
-    _uv_is_bucket_name; re-read uv-cache/src/lib.rs on a pin bump."""
+    """The kinds `uv pip install` writes: _uv_is_bucket_name answers warmth, this answers what a
+    write probe has to cover. Narrower than install.sh's list on purpose, since install.sh also
+    runs uv venv and uv python; re-read uv-cache/src/lib.rs on a pin bump."""
     kind, marker, version = name.rpartition("-v")
-    return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_STORES
+    return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_PIP_STORES
 
 
 def _uv_cache_folds_case(cache_dir: Path) -> bool:
