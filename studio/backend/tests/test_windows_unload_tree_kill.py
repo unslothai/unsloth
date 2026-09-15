@@ -407,3 +407,50 @@ def test_owner_verified_still_leaves_a_recycled_pid_alone(monkeypatch):
     pl.terminate_pid(4242, timeout = 0.01, owner_verified = True)
     assert signalled == []
     assert 4242 not in pl._tracked_pids, "a provably recycled pid must not stay recorded"
+
+
+def test_a_stand_in_process_with_a_pid_is_never_signalled(monkeypatch):
+    """The waiver is spent only on a pid we hold the spawning handle for.
+
+    `_process` is a real Popen in the server, but several sibling tests stand in a plain
+    object carrying a pid to mean "a server is loaded", and one of them uses this very
+    process's pid. Such an object has no `poll`, so the unload reads it as "still
+    running" and used to hand the number to a reaper that had been told the owner was
+    verified, which waives the "cannot prove this is ours" refusal: the number's current
+    holder was terminated. Nothing is signalled here, and the pidfile still goes, which
+    is what the unload did before the tree kill existed.
+    """
+    b = _make_backend()
+    b._process = type("P", (), {"pid": 4242})()
+    cleared, killed = _instrument(monkeypatch, gone = False)
+    b._kill_process()
+    assert killed == [], "signalled a pid this backend never spawned"
+    assert cleared == [1], "kept the pidfile for a stand-in that can never confirm an exit"
+
+
+def test_a_stand_in_with_a_pid_leaves_a_real_bystander_running():
+    """The same rule against a live process, with nothing about the kill faked.
+
+    A stand-in's pid belongs to whoever holds the number now. Terminating it is the
+    failure, so the assertion is on a process that has to survive the unload.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        for _ in range(50):
+            if bystander.poll() is None:
+                break
+            time.sleep(0.05)
+        assert bystander.poll() is None, "the bystander never started"
+        b = _make_backend()
+        b._process = type("P", (), {"pid": bystander.pid})()
+        b._clear_server_pid = lambda: None
+        b._kill_process()
+        time.sleep(1.0)
+        assert bystander.poll() is None, (
+            f"the unload terminated an unrelated process (rc {bystander.poll()})"
+        )
+    finally:
+        bystander.kill()
+        bystander.wait(timeout = 10)
