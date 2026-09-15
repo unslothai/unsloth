@@ -140,6 +140,12 @@ test("Ollama models resolve by tag then by base name", () => {
   assert.equal(getExternalReasoningCapabilities("ollama", "mystery:7b").supportsReasoning, false);
 });
 
+test("an Ollama instruct-only tag never inherits thinking from a sibling or another provider", () => {
+  for (const id of ["qwen3-vl:8b-instruct", "qwen3:4b-instruct-2507"]) {
+    assert.equal(getExternalReasoningCapabilities("ollama", id).supportsReasoning, false, id);
+  }
+});
+
 test("OpenAI ids missing from the prefix tables fall back to the snapshot without an off switch", () => {
   const caps = getExternalReasoningCapabilities("openai", "o4-mini");
   assert.equal(caps.reasoningStyle, "reasoning_effort");

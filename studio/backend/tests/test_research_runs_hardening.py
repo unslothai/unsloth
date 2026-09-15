@@ -3246,3 +3246,14 @@ def test_note_server_address_defers_to_run_server_published_state():
     supervisor.note_server_address(("127.0.0.1", 9999))
     assert getattr(state, "research_request_host", None) is None
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+def test_sanitize_config_keeps_the_reasoning_support_flags():
+    request = {"model": "m", "supportsReasoning": True, "supportsReasoningOff": False}
+    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
+    assert config["inferenceRequest"] == request
+    with pytest.raises(Exception):
+        _sanitize_config(
+            _make_payload(inferenceRequest = {"model": "m", "supportsReasoningOff": "no"}),
+            {"modelId": "m"},
+        )

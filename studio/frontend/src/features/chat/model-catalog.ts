@@ -284,6 +284,8 @@ export function resolveModelCatalogEntry(
     if (entry) return fromSnapshotEntry(entry);
   }
   if (normalizedProvider === "ollama") {
+    // An instruct-only tag has no thinking even when a sibling does, and Ollama 400s a thinking request on it.
+    if (modelId.toLowerCase().includes("instruct")) return null;
     const match = findByBaseName(snapshot, candidates[candidates.length - 1]);
     if (match) return fromSnapshotEntry(snapshot[match]);
     return resolveModelCatalogEntryByName(modelId);
