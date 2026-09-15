@@ -171,9 +171,9 @@ def test_an_h3_gguf_named_only_by_its_filename_pays_nothing(warm, monkeypatch):
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["custom-video"]})
     sys.modules["core.inference.media_model_index"].resolve_local_media_model = (
         lambda model_id, task: types.SimpleNamespace(
-            model_id = "custom-video",                    # names no family
-            model_path = "/models/custom",                # nor does the directory
-            gguf_filename = "minimax_h3_fl2va-Q4.gguf",   # only the checkpoint does
+            model_id = "custom-video",  # names no family
+            model_path = "/models/custom",  # nor does the directory
+            gguf_filename = "minimax_h3_fl2va-Q4.gguf",  # only the checkpoint does
             model_kind = "gguf",
             ambiguous = False,
         )
@@ -316,7 +316,12 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch):
         def find_module(self, *a, **k):
             return None
 
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "diffusers":
                 raise ImportError("simulated half-built diffusers")
             return None
@@ -324,9 +329,9 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch):
     monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
-    assert "diffusers.pipelines" not in sys.modules, (
-        "a failed prewarm left submodules behind for the load path to trip over"
-    )
+    assert (
+        "diffusers.pipelines" not in sys.modules
+    ), "a failed prewarm left submodules behind for the load path to trip over"
 
 
 def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monkeypatch):
@@ -358,7 +363,12 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monk
     monkeypatch.setattr(warm, "purge_partial_import", _checking_purge)
 
     class _Boom:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "diffusers":
                 raise ImportError("simulated half-built diffusers")
             return None
@@ -386,13 +396,19 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm,
     parent = types.ModuleType("diffusers")
     monkeypatch.setitem(sys.modules, "diffusers", parent)
     monkeypatch.setitem(
-        sys.modules, "diffusers.hooks.group_offloading",
+        sys.modules,
+        "diffusers.hooks.group_offloading",
         types.ModuleType("diffusers.hooks.group_offloading"),
     )
     monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
 
     class _Boom:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "diffusers.hooks":
                 raise ImportError("simulated half-built diffusers.hooks")
             return None
@@ -400,12 +416,12 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm,
     monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
-    assert "diffusers.hooks.group_offloading" not in sys.modules, (
-        "the executed hook submodules survived, so the load path can rebuild a partial package"
-    )
-    assert sys.modules.get("diffusers") is parent, (
-        "the healthy parent was evicted; only the failed subtree should go"
-    )
+    assert (
+        "diffusers.hooks.group_offloading" not in sys.modules
+    ), "the executed hook submodules survived, so the load path can rebuild a partial package"
+    assert (
+        sys.modules.get("diffusers") is parent
+    ), "the healthy parent was evicted; only the failed subtree should go"
 
 
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
