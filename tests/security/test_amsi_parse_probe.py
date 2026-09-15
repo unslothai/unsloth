@@ -724,6 +724,6 @@ def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
     )
     assert exclude_at < amsi_at, "the exclusion is added after the copies are opened"
     # A non-terminating Add-MpPreference that was refused looks identical to one that worked.
-    assert "Get-MpPreference" in runs[exclude_at], (
-        "the exclusion is never read back, so a refusal is silent"
-    )
+    assert (
+        "Get-MpPreference" in runs[exclude_at]
+    ), "the exclusion is never read back, so a refusal is silent"
