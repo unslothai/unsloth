@@ -53,9 +53,12 @@ def test_the_probe_parses() -> None:
         "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }"
     )
     import os
+
     result = subprocess.run(
         [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
-        capture_output = True, text = True, timeout = 120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
         env = {**os.environ, "UNSLOTH_TARGET": str(PROBE)},
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -65,11 +68,18 @@ def test_the_probe_compiles_but_never_invokes() -> None:
     """It is handed the real installer. Running it would install, from a commit nobody reviewed."""
     text = _probe_text()
     code = "\n".join(
-        line for line in text.splitlines()
+        line
+        for line in text.splitlines()
         if not line.strip().startswith("#") and not line.strip().startswith(".")
     )
-    for banned in ("Invoke-Expression", ".Invoke()", "InvokeReturnAsIs", "Start-Process",
-                   "& $sb", "iex "):
+    for banned in (
+        "Invoke-Expression",
+        ".Invoke()",
+        "InvokeReturnAsIs",
+        "Start-Process",
+        "& $sb",
+        "iex ",
+    ):
         assert banned not in code, (
             f"the probe contains {banned!r}. It must submit text to the compiler and stop there: "
             f"it is handed install.ps1, so invoking would run a full install inside a measurement."
@@ -126,6 +136,7 @@ def test_the_probe_never_exits_non_zero_on_a_detection() -> None:
 # The workflow around it
 # ---------------------------------------------------------------------------
 
+
 def test_the_workflow_exists_and_is_valid_yaml() -> None:
     assert WORKFLOW.is_file()
     data = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -154,9 +165,9 @@ def test_an_absent_scanner_warns_and_never_reports_clean() -> None:
     ):
         assert needle in body, f"{why}: {needle!r} is gone"
     # The EICAR literal must be split here too, for the same reason as the AMSI sample.
-    assert "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*" not in body, (
-        "EICAR appears as one literal in the workflow; assemble it from fragments"
-    )
+    assert (
+        "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*" not in body
+    ), "EICAR appears as one literal in the workflow; assemble it from fragments"
 
 
 def test_the_probe_runs_under_windows_powershell_five_one() -> None:
@@ -164,12 +175,12 @@ def test_the_probe_runs_under_windows_powershell_five_one() -> None:
     transfer, and 5.1 is what install.rs spawns and what the #10805 reporter ran."""
     body = WORKFLOW.read_text(encoding = "utf-8")
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in body
-    assert "-ExecutionPolicy RemoteSigned" in body, (
-        "the lane that exists to remove relaxed execution policies must not use one itself"
-    )
-    assert "Bypass" not in body.replace("ScriptHasAdminBlockedContent", ""), (
-        "the workflow relaxes an execution policy somewhere"
-    )
+    assert (
+        "-ExecutionPolicy RemoteSigned" in body
+    ), "the lane that exists to remove relaxed execution policies must not use one itself"
+    assert "Bypass" not in body.replace(
+        "ScriptHasAdminBlockedContent", ""
+    ), "the workflow relaxes an execution policy somewhere"
 
 
 def test_the_probe_reports_on_a_host_without_amsi_rather_than_crashing() -> None:
@@ -187,9 +198,20 @@ def test_the_probe_reports_on_a_host_without_amsi_rather_than_crashing() -> None
         target = Path(tmp) / "sample.ps1"
         target.write_text("Write-Output 'hello'\n", encoding = "utf-8")
         result = subprocess.run(
-            [pwsh, "-NoProfile", "-File", str(PROBE), "-Control",
-             "-Path", str(target), "-OutFile", str(out)],
-            capture_output = True, text = True, timeout = 180,
+            [
+                pwsh,
+                "-NoProfile",
+                "-File",
+                str(PROBE),
+                "-Control",
+                "-Path",
+                str(target),
+                "-OutFile",
+                str(out),
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 180,
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert out.is_file(), f"the probe wrote no result file:\n{result.stdout}{result.stderr}"
