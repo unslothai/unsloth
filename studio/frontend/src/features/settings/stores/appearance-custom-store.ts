@@ -789,9 +789,20 @@ export function applyCustomizationToDocument(
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
   // Resolve against each pane so sidebars and compare mode stay responsive.
+  // Full keeps a 3rem breathing gap either side rather than running to the edge.
   setVar(
     "--custom-chat-max-width",
-    c.chatWidth === "full" ? "100%" : c.chatWidth === "wide" ? "72rem" : null,
+    c.chatWidth === "full"
+      ? "calc(100% - 6rem)"
+      : c.chatWidth === "wide"
+        ? "72rem"
+        : null,
+  );
+  // The composer shell fills whatever its parent was capped to, so the cap is
+  // never applied twice. Same result as before at every width.
+  setVar(
+    "--custom-chat-shell-max-width",
+    c.chatWidth === "standard" ? null : "100%",
   );
 
   syncImportedFonts(c.importedFonts);
