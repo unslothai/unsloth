@@ -2980,8 +2980,7 @@ def _is_junction(path: Path) -> bool:
 
 
 def _is_directory_link(path: Path) -> bool:
-    # A Windows directory symlink carries FILE_ATTRIBUTE_DIRECTORY on the link itself.
-    # lstat reads the link, so a dangling one still answers, unlike is_dir().
+    # lstat reads the link, so FILE_ATTRIBUTE_DIRECTORY answers even when dangling.
     try:
         return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x10)
     except OSError:
@@ -2992,8 +2991,7 @@ def _remove_overlay_entry(path: Path) -> None:
     if _is_junction(path):
         path.rmdir()
     elif os.name == "nt" and path.is_symlink() and _is_directory_link(path):
-        # A Windows directory symlink is a directory entry, so DeleteFileW (what
-        # unlink maps to) refuses it with WinError 5. rmdir drops the link only.
+        # DeleteFileW, which unlink maps to, refuses a directory entry; rmdir drops the link.
         path.rmdir()
     elif path.is_symlink() or path.is_file():
         path.unlink()
@@ -4652,8 +4650,8 @@ def _pi_local_entry(
         target = os.path.join(source, value)
     target = os.path.normpath(target)
     if agents_skills is not None:
-        # Pi reads ~/.agents/skills through HOME, which moved, so paths naming the
-        # user's copy must follow it or an entry disabling a skill stops matching.
+        # Pi reads ~/.agents/skills through HOME, which moved, so a rule naming the
+        # user's copy must follow it or it stops matching.
         user_root, session_root = agents_skills
         try:
             inside = os.path.relpath(target, user_root)
@@ -4667,9 +4665,8 @@ def _pi_local_entry(
         relative = os.path.relpath(target, source)
     except ValueError:  # on another Windows drive
         return target
-    # Keep paths session-relative only where the link really landed; a real
-    # session directory blocks the link, and a relative entry would then point
-    # into that empty directory instead of at the user's resource.
+    # Session-relative only where the link landed: a real session directory blocks
+    # the link, and the entry would then point into it instead of at the user's.
     if relative.split(os.sep)[0] in linked:
         return relative
     return target
@@ -4736,8 +4733,7 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
     for key, copied in previous.items():
         own = settings.get(key)
         if key in _PI_USER_VERBATIM_SETTINGS:
-            # An argument vector, not a set of entries: subtracting it element by
-            # element would leave a command missing whatever the two share.
+            # An argument vector, not entries: subtracting drops whatever the two share.
             if own == copied:
                 settings.pop(key, None)
         elif isinstance(copied, list) and isinstance(own, list):
@@ -4756,9 +4752,8 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
 def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
     """Expose selected user Pi resources inside an isolated session."""
     if _wsl_windows_executable(["pi"]):
-        # Windows Pi cannot reliably follow WSL links into mounted drives. A persisted
-        # session set up by an earlier Linux pi still holds them, so drop those rather
-        # than hand Windows Pi the very resources this branch exists to withhold.
+        # Windows Pi cannot reliably follow WSL links into mounted drives, and a session
+        # an earlier Linux pi prepared still holds them, so drop those before returning.
         _clear_pi_user_resources(agent_dir, home)
         return
     user_home = Path.home()
@@ -4780,7 +4775,6 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
             "no Pi extensions or packages will load in this session.",
             err = True,
         )
-    # Only entries under a directory that really got linked may stay session-relative.
     linked = frozenset(
         name for name in _PI_USER_RESOURCE_DIRS if _link_user_dir(source / name, agent_dir / name)
     )
@@ -4835,8 +4829,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         stale = previous.get(key) if isinstance(previous.get(key), list) else []
         own = settings.get(key)
         if own is not None and not isinstance(own, list):
-            # Pi types every one of these keys as an array. Leave a shape we do not
-            # understand alone rather than deleting whatever the session put there.
+            # Pi types these as arrays; leave a shape we do not understand alone.
             typer.echo(
                 f"Warning: {settings_path} has a non-list {key!r}; "
                 "leaving it as is, so your Pi entries for it won't load in this session.",
@@ -4845,18 +4838,16 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
             continue
         own = [item for item in own or [] if item not in stale and item not in entries]
         if entries or own:
-            # Pi de-dupes packages by identity and keeps the FIRST entry, so anything
-            # the session configured for a package has to come before the user's copy
-            # of it. Patterns are applied in order instead, so those stay user-first.
+            # Pi de-dupes packages by identity keeping the FIRST, so session entries
+            # lead. Patterns apply in order instead, so those stay user-first.
             settings[key] = own + entries if key == "packages" else entries + own
         else:
             settings.pop(key, None)
         if entries:
             copied[key] = entries
     for key in _PI_USER_VERBATIM_SETTINGS:
-        # Copied whole: Pi runs every package lookup and install through npmCommand,
-        # so a session that inherits the package list without it falls back to plain
-        # npm and cannot find, or reinstall, what the user already has.
+        # Pi runs every package lookup and install through npmCommand, so inheriting
+        # the package list without it falls back to an npm that cannot find them.
         value = user_settings.get(key)
         own = settings.get(key)
         if own is not None and own != previous.get(key):
