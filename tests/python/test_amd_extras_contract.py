@@ -67,6 +67,20 @@ def _is_optional_dependencies_lookup(node: ast.AST) -> bool:
     )
 
 
+def _contains_node(root: ast.AST, target: ast.AST) -> bool:
+    return any(n is target for n in ast.walk(root))
+
+
+def _catches_key_error(handler: ast.ExceptHandler) -> bool:
+    """A bare `except`, or one naming KeyError or a superclass of it."""
+    names = {"KeyError", "LookupError", "Exception", "BaseException"}
+    t = handler.type
+    if t is None:
+        return True
+    parts = t.elts if isinstance(t, ast.Tuple) else [t]
+    return any(isinstance(p, ast.Name) and p.id in names for p in parts)
+
+
 def _inline_python_blocks() -> list[str]:
     """Every `python ... <<PY` or `<<'PY'` heredoc in security-audit.yml, dedented."""
     source = SECURITY_AUDIT.read_text(encoding = "utf-8")
@@ -113,9 +127,11 @@ class TestAmdBitsandbytesFloor:
         for spec in specs:
             requirement = spec.split(";", 1)[0].strip()
             allowed = SpecifierSet(requirement[len("bitsandbytes") :].strip())
-            assert not allowed.contains(
-                Version("0.49.2")
-            ), f"{requirement} still admits bnb 0.49.2, which predates the ROCm 4-bit fixes"
+            # The whole broken range, not one release: `>=0.49.3` or `!=0.49.2` must fail too.
+            floors = [Version(sp.version) for sp in allowed if sp.operator in (">=", ">", "==", "~=")]
+            assert floors and min(floors) >= BNB_MIN, f"{requirement} has no lower bound at or above {BNB_MIN}"
+            for old in ("0.45.0", "0.49.2", "0.49.3", "0.49.99"):
+                assert not allowed.contains(Version(old)), f"{requirement} still admits bnb {old}"
             assert allowed.contains(BNB_MIN), f"{requirement} excludes the fixed release {BNB_MIN}"
 
 
@@ -157,12 +173,14 @@ class TestSecurityAuditWorkflowStaysInSync:
             for node in ast.walk(tree):
                 if not _is_optional_dependencies_lookup(node):
                     continue
-                guarded, parent = False, getattr(node, "parent", None)
+                # Guarded means inside the try BODY (not else/finally) of a try whose handler catches KeyError.
+                guarded, child, parent = False, node, getattr(node, "parent", None)
                 while parent is not None:
-                    if isinstance(parent, ast.Try):
-                        guarded = True
+                    if isinstance(parent, ast.Try) and any(_contains_node(stmt, child) for stmt in parent.body):
+                        if any(_catches_key_error(h) for h in parent.handlers):
+                            guarded = True
                         break
-                    parent = getattr(parent, "parent", None)
+                    child, parent = parent, getattr(parent, "parent", None)
                 if not guarded:
                     bare.append(ast.get_source_segment(block, node))
         assert not bare, f"unguarded optional-dependencies lookups in security-audit.yml: {bare}"
