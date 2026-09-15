@@ -404,8 +404,9 @@ def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
     _probe_with_import_raising(AttributeError("module 'torchvision' has no attribute 'extension'"))
 
 
+@pytest.mark.parametrize("kind", ["module", "package"])
 def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, kind
 ):
     """A stray `torchvision.py` raises the same words a half-loaded extension does.
 
@@ -419,17 +420,26 @@ def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
     the import failing removes the module from sys.modules again, which is why the resolution
     is by find_spec.
     """
-    (tmp_path / "torchvision.py").write_text("import torchvision\ntorchvision.extension\n")
+    body = "import torchvision\ntorchvision.extension\n"
+    if kind == "module":
+        shadow = tmp_path / "torchvision.py"
+        shadow.write_text(body)
+    else:
+        # A DIRECTORY shadows just as well, and it is a package like the real one, so nothing
+        # about the spec's shape separates the two. Only identity does.
+        (tmp_path / "torchvision").mkdir()
+        shadow = tmp_path / "torchvision" / "__init__.py"
+        shadow.write_text(body)
     with mock.patch.dict(sys.modules):
         for name in [n for n in sys.modules if n.startswith("torchvision")]:
             sys.modules.pop(name, None)
         monkeypatch.syspath_prepend(str(tmp_path))
-        assert import_fixes._shadowing_torchvision_path() == str(tmp_path / "torchvision.py")
+        assert import_fixes._shadowing_torchvision_path() == str(shadow)
         with pytest.raises(ImportError) as excinfo:
             import_fixes._probe_torchvision_binary("2.11.0", "0.26.0", (0, 26))
         text = str(excinfo.value)
 
-    assert str(tmp_path / "torchvision.py") in text, text
+    assert str(shadow) in text, text
     assert "reinstalling torchvision will not change which one wins" in text, text
     # The repair advice the binary branch would have given, and must not give here.
     assert "force-reinstall" not in text, text

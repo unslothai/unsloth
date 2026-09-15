@@ -19,6 +19,7 @@ import importlib.abc
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+from importlib.metadata import distribution as importlib_distribution
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
@@ -1489,20 +1490,11 @@ _TORCHVISION_ABI_MARKERS = (
 # unrelated reason must keep importing unsloth, not get "reinstall torchvision".
 _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
-# A torchvision whose extension failed to load does not always surface as a loader error.
-# When transformers imports it lazily the same break arrives as "partially initialized
-# module 'torchvision' has no attribute 'extension'". Both halves are required.
-# "partially initialized" is what separates the break from a plain typo on a healthy
-# torchvision ("module 'torchvision' has no attribute 'nms'"), which must never be
-# answered with "reinstall torchvision"; CPython only words it that way while the module
-# is still executing, which is exactly the window the import in
-# _probe_torchvision_binary runs in. The name must be torchvision itself or one of its
-# submodules, so an unrelated circular import elsewhere does not match either.
-# The `from '<file>'` clause is CPython 3.13 and newer; 3.12 and older word the same failure
-# without it (measured: 3.12.3 says "...module 'tvpkg' has no attribute...", 3.13.12 says
-# "...module 'tvpkg' from '/.../__init__.py' has no attribute..."). Optional, not assumed
-# either way: requiring it would miss every older interpreter and omitting it missed 3.13,
-# where a real torchvision always has a __file__ for the clause to carry.
+# A lazily-imported torchvision with a dead extension surfaces as this, not a loader error.
+# "partially initialized" is load-bearing: without it a typo on a healthy torchvision
+# ("module 'torchvision' has no attribute 'nms'") would be answered with "reinstall".
+# The `from '<file>'` clause is 3.13+ only (3.12.3 omits it), so it must be optional: a real
+# torchvision always has a __file__, so requiring either wording misses half the interpreters.
 _TORCHVISION_ATTRIBUTE_RE = re.compile(
     r"partially initialized module 'torchvision(?:\.[\w.]+)?'"
     r"(?: from '[^']*')? has no attribute"
@@ -1510,38 +1502,41 @@ _TORCHVISION_ATTRIBUTE_RE = re.compile(
 
 
 def _shadowing_torchvision_path():
-    """The stray file standing in for torchvision, if one is, else None.
+    """What is standing in for torchvision, if something is, else None.
 
-    A `torchvision.py` sitting on sys.path ahead of site-packages is imported instead of the
-    real package, and the moment it touches its own half-built module object CPython words
-    the failure exactly as a half-loaded extension: "partially initialized module
-    'torchvision' has no attribute ...". The metadata table upstream still reports the
-    installed distribution, so without this the check would answer a shadowing bug with
-    "reinstall torchvision", which cannot ever fix it.
+    A local `torchvision` earlier on sys.path raises the same "partially initialized" words
+    while the metadata still describes the installed distribution, so the binary check would
+    answer it with "reinstall", which cannot change which sys.path entry is searched first.
 
-    Told apart by SHAPE, not by path prefix: a real torchvision is a package, so its spec
-    carries submodule_search_locations and its origin is an __init__.py. A single-file shadow
-    has neither. Editable installs, conda prefixes and vendored trees all keep that shape,
-    which a site-packages prefix test would not.
+    Identity, not shape: a `torchvision/` directory is a package exactly like the real one, so
+    only asking whether the resolved file is the one the metadata installed separates them.
 
-    Resolved with find_spec rather than read off sys.modules, because the caller is inside the
-    `except` of the import that just failed and CPython has already removed the half-built
-    module from sys.modules by then. find_spec re-runs the finders over sys.path and answers
-    which file WOULD be imported, without executing it, which is the question being asked.
+    find_spec, not sys.modules: the caller is in the `except` of the import that failed, and
+    CPython has already removed the half-built module by then.
     """
     try:
         spec = importlib.util.find_spec("torchvision")
     except Exception:
-        # A shadow can break find_spec itself (a package whose __init__ raises while its
-        # parent is searched). No answer is not evidence of shadowing.
+        # A shadow can break find_spec itself. No answer is not evidence of shadowing.
         return None
-    if spec is None or spec.submodule_search_locations is not None:
+    origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin:
         return None
-    origin = getattr(spec, "origin", None)
-    if not origin or os.path.basename(origin) == "__init__.py":
-        # Nothing to name (namespace package, frozen, or built in) means no evidence of
-        # shadowing, and guessing a file would be worse than the message this guards.
+    try:
+        installed = os.fspath(
+            importlib_distribution("torchvision").locate_file("torchvision/__init__.py")
+        )
+    except Exception:
         return None
+    if not os.path.exists(installed):
+        # Editable install, usually. Cannot tell, so do not send anyone hunting a file.
+        return None
+    try:
+        if os.path.samefile(origin, installed):
+            return None
+    except OSError:
+        if os.path.realpath(origin) == os.path.realpath(installed):
+            return None
     return origin
 
 
@@ -1672,9 +1667,8 @@ def _probe_torchvision_binary(
     except Exception as error:
         shadow = _shadowing_torchvision_path()
         if shadow is not None and _TORCHVISION_ATTRIBUTE_RE.search(str(error)):
-            # Named rather than left to the raw traceback: the metadata says torchvision is
-            # installed and it is, so the user reinstalls it and nothing changes. The file is
-            # the whole fix.
+            # Named, because the metadata says torchvision is installed and it is: the user
+            # reinstalls forever and nothing changes. The file is the whole fix.
             raise ImportError(
                 f"Unsloth: {shadow} is being imported as `torchvision`, ahead of the "
                 f"installed package ({type(error).__name__}: {error}). Rename or move that "

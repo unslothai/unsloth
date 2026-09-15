@@ -85,13 +85,39 @@ def test_a_resumed_session_does_not_lose_the_cells_it_added():
     assert built["ab_plan"]["treatment_ref"] == "bbb"
 
 
-def test_one_unbalanced_session_makes_the_experiment_unbalanced():
-    """ANDed, not taken from the first plan.
+def test_one_live_unbalanced_session_makes_the_experiment_unbalanced():
+    """ANDed over the surviving plans, not taken from the first.
 
-    An odd `--reps` on the resume charges linear drift to whichever side ran second, and the
-    run says so out loud. Reading `balanced` off a balanced first plan would silently take
-    that back for the combined ladder.
+    An odd `--reps` charges linear drift to whichever side ran second, and the run says so out
+    loud. Reading `balanced` off a balanced neighbour would silently take that back for the
+    combined ladder. Here the second plan adds rungs of its own, so both still speak.
     """
     rows = [*ROWS, {**RESUMED_ROWS[-1], "balanced": False}]
     assert _assemble(rows)["ab_plan"]["balanced"] is False
     assert _assemble(RESUMED_ROWS)["ab_plan"]["balanced"] is True
+
+    # The same from the other end: an unbalanced FIRST session whose rungs the resume did not
+    # re-run is still live, so it still makes the combined ladder unbalanced.
+    added_rungs_only = {**ROWS[1], "order": ["base_10k", "treatment_10k"], "balanced": True}
+    rows = [ROWS[0], {**ROWS[1], "balanced": False}, ROWS[2], added_rungs_only]
+    assert _assemble(rows)["ab_plan"]["balanced"] is False
+
+
+def test_a_plan_whose_cells_were_all_re_run_no_longer_speaks_for_balance():
+    """An A/B with any work left re-runs EVERY pair of that session's work.
+
+    `runtime/ab.py` `skippable_cells` says so, and `latest_attempt_rows` keeps the last
+    attempt at a `cell_id`. So an unbalanced `--reps 1` session that a `--reps 2` resume
+    re-ran in full contributes no scored cell, and reporting its imbalance would describe
+    cells the payload no longer contains.
+    """
+    superseded = {**ROWS[1], "order": ["base", "treatment"], "balanced": False}
+    replacement = {
+        **ROWS[1],
+        "order": ["base", "treatment", "base_rep1", "treatment_rep1"],
+        "balanced": True,
+    }
+    built = _assemble([ROWS[0], superseded, ROWS[2], replacement])
+    assert built["ab_plan"]["balanced"] is True
+    # The order is still the union: nothing is dropped, only the balance claim is scoped.
+    assert built["ab_plan"]["order"] == ["base", "treatment", "base_rep1", "treatment_rep1"]

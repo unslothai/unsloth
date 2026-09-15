@@ -249,12 +249,14 @@ def merged_ab_plan(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     exist, which is the same silent loss that moving this row out of `header` was for, one
     layer down.
 
-    `order` is concatenated in session order, skipping ids an earlier plan already names, so
-    a resume that re-declares a completed rung does not double it. `balanced` is ANDed: one
-    unbalanced session is an unbalanced experiment, and letting a balanced first plan speak
-    for it would hide the drift warning the run printed. Everything else comes from the first
-    plan, which is where the refs are; a resume whose refs disagree is refused upstream, so
-    there is nothing to reconcile here.
+    `order` is the union, so nothing a later session added is dropped. The refs come from the
+    first plan; a resume whose refs disagree is refused upstream.
+
+    `balanced` is ANDed only over plans that still speak for a cell. An A/B with work left
+    re-runs every pair (`runtime/ab.py` `skippable_cells`) and `latest_attempt_rows` keeps the
+    last attempt, so a plan whose every id a later plan names is superseded: an unbalanced
+    `--reps 1` run redone at `--reps 2` is a balanced experiment. A plan with a surviving id is
+    still ANDed, or a balanced neighbour would hide the drift warning the run printed.
     """
 
     if not rows:
@@ -266,7 +268,14 @@ def merged_ab_plan(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             if cell_id not in order:
                 order.append(cell_id)
     plan["order"] = order
-    plan["balanced"] = all(bool(row.get("balanced")) for row in rows)
+    live = []
+    for index, row in enumerate(rows):
+        superseded = {cell_id for later in rows[index + 1 :] for cell_id in later.get("order", [])}
+        # The last plan is always live, including when it declares no cells, which is what a
+        # resume of a finished run writes.
+        if index == len(rows) - 1 or set(row.get("order", [])) - superseded:
+            live.append(row)
+    plan["balanced"] = all(bool(row.get("balanced")) for row in live)
     return plan
 
 
