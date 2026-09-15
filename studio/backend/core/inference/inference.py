@@ -1594,7 +1594,6 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                # The collapse speaks for the turn user_message came from, so it keeps its name.
                 last_user = next(
                     (
                         m
@@ -1890,13 +1889,16 @@ class InferenceBackend:
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
         user_text = "Please transcribe this audio."
-        user_turn = None
         if messages:
             for msg in reversed(messages):
                 if msg["role"] == "user" and msg.get("content"):
                     user_text = content_to_text(msg["content"])
-                    user_turn = msg
                     break
+        # Not the caption scan above: that one falls back past a media-only turn.
+        last_user = next(
+            (m for m in reversed(messages or []) if m.get("role") == "user"),
+            None,
+        )
 
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
@@ -1912,7 +1914,7 @@ class InferenceBackend:
                         {"type": "text", "text": user_text},
                     ],
                 },
-                user_turn,
+                last_user,
             ),
         ]
 
