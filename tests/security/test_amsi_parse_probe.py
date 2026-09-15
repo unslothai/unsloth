@@ -740,13 +740,13 @@ def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
     assert "manifest.json" in body, "the layout step no longer records what it laid out"
-    assert body.count("Get-UnslothExpected") >= 3, (
-        "not every measurement loop reads the expected set"
-    )
+    assert (
+        body.count("Get-UnslothExpected") >= 3
+    ), "not every measurement loop reads the expected set"
     # The bare enumeration must be gone from the measurement loops.
-    assert "foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side)" not in body, (
-        "a measurement loop still enumerates whatever survived on disk"
-    )
+    assert (
+        "foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side)" not in body
+    ), "a measurement loop still enumerates whatever survived on disk"
     # And a vanished file has to reach both verdicts, not just be printed.
-    assert "$noResult += \"$v" in body, "a vanished copy never reaches the AMSI verdict"
-    assert "$unscanned += \"$v" in body, "a vanished copy never reaches the Defender verdict"
+    assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
+    assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
