@@ -2617,6 +2617,12 @@ def test_unload_cancels_pipeline_construction(
     from core.inference import diffusion_eager_patches as ep
 
     (tmp_path / "model.gguf").write_bytes(b"weights")
+    # ep.is_installed() is process-global, and other tests in this file leave the eager patches
+    # installed (test_generate_other_family_never_passes_cfg_trunc_ratio is one). Without this clean
+    # slate the assertion below reads THEIR leftovers and fails for 16 of the 46 cases whenever the
+    # file runs whole, while passing when this test is selected alone. Same idiom as
+    # test_failed_load_rolls_back_eager_patches.
+    ep.uninstall_patches()
     backend = DiffusionBackend()
     entered, release = threading.Event(), threading.Event()
     outcome = {}
@@ -3196,19 +3202,35 @@ def test_replacement_load_waits_for_every_unload(fake_runtime, tmp_path, monkeyp
             family_override = "z-image",
         )
 
+    # The replacement WAITS for every pending eject; it is not refused. A load arriving after an
+    # eject started was never cancelled -- the eject bumped the epoch before this request existed --
+    # so failing it reported a cancellation that never happened, and turned an ordinary model switch
+    # during a generation into a 409 for the whole length of the denoise. Queue, then run.
+    replacement = {}
+
+    def replacement_load():
+        try:
+            load()
+            replacement["ok"] = True
+        except BaseException as exc:  # noqa: BLE001
+            replacement["error"] = repr(exc)
+
     ejectors = [threading.Thread(target = eject, name = f"eject-{i}", daemon = True) for i in range(2)]
     for thread in ejectors:
         thread.start()
+    waiter = None
     try:
         assert all(event.wait(5) for event in parked)
-        with pytest.raises(RuntimeError, match = "unload|cancelled"):
-            load()
+        waiter = threading.Thread(target = replacement_load, name = "replacement", daemon = True)
+        waiter.start()
+        # Still queued behind BOTH ejects, including the one whose teardown has not been released.
+        waiter.join(0.5)
+        assert waiter.is_alive() and not replacement and not dispatched.is_set()
         release[0].set()
         ejectors[0].join(5)
         assert not ejectors[0].is_alive()
-        with pytest.raises(RuntimeError, match = "unload|cancelled"):
-            load()
-        assert not dispatched.is_set()
+        waiter.join(0.5)
+        assert waiter.is_alive() and not replacement, "one eject left, the load must still wait"
     finally:
         for event in release:
             event.set()
@@ -3216,10 +3238,15 @@ def test_replacement_load_waits_for_every_unload(fake_runtime, tmp_path, monkeyp
             thread.join(5)
 
     assert not errors and all(not thread.is_alive() for thread in ejectors)
+    # Once the last eject is done the queued replacement runs on its own, with no retry from the caller.
+    waiter.join(5)
+    assert not waiter.is_alive()
+    assert replacement.get("ok"), replacement
     assert backend._teardown_waiters == 0
-    load()
+    assert backend._unload_waiters == 0
     if load_method == "begin_load":
         assert dispatched.wait(5)
+        backend._loading = None  # the worker is stubbed out, so retire its marker by hand
         _load_into(backend, tmp_path)
     assert backend.generate(prompt = "after eject", steps = 2)["images"]
     backend.unload()

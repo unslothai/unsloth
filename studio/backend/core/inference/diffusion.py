@@ -896,6 +896,10 @@ def _account_owned_load(method):
     @functools.wraps(method)
     def wrapped(self, *args, **kwargs):
         request = object()
+        if kwargs.get("_load_token") is None:
+            # A fresh request: wait out the ejects already in flight rather than failing, then take
+            # the epoch they leave behind. A worker inherits its epoch instead and skips this.
+            self._wait_for_pending_unloads()
         with self._load_cancel_lock:
             token = kwargs.get("_load_token")
             if token is None:
@@ -1255,8 +1259,37 @@ class DiffusionBackend:
         return target.torch_device, target.dtype
 
     def _raise_if_load_cancelled(self, token: int) -> None:
-        if token != self._load_token or self._unload_waiters:
+        # The epoch alone decides this. unload() bumps _load_token under _load_cancel_lock before any
+        # teardown work, so every load that was in flight when the eject arrived is already caught
+        # here; a request that starts afterwards carries the CURRENT token and was never cancelled.
+        # Refusing that one too (on a bare _unload_waiters count) turned an ordinary model switch
+        # during a generation into a 409 for the whole length of the denoise. Such a request waits
+        # instead, in _wait_for_pending_unloads.
+        if token != self._load_token:
             raise RuntimeError("Diffusion load was cancelled.")
+
+    def _wait_for_pending_unloads(self, timeout: float = 900.0) -> None:
+        """Queue a FRESH load behind every eject that is already tearing down.
+
+        Replacement loads stay fenced until each pending eject finishes, including a failed teardown:
+        the eject frees the very pipeline this load is about to replace. Waiting is the whole point --
+        raising here would report a cancellation that never happened. Only requests entering with no
+        epoch of their own wait; a worker that already holds one is governed by the epoch instead, so
+        a cancelled load never sits here waiting for the eject that cancelled it.
+
+        Nothing is held while waiting (this is called before ``_lock``), so it cannot deadlock against
+        an eject that is itself waiting for ``_lock`` or for the active denoise.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._load_cancel_lock:
+                if not self._unload_waiters:
+                    return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Timed out waiting for a diffusion unload to finish.")
+            # The event is a sleep with an early wake, not the condition: it tracks teardown
+            # reservations, which are taken and released inside the window this counter spans.
+            self._teardown_drained.wait(timeout = 0.1)
 
     def _reserve_teardown_locked(self) -> None:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
@@ -2294,7 +2327,10 @@ class DiffusionBackend:
         target repo (or its companion base) would yank blobs and snapshot files from under the
         download/assembly. Includes the mirror when one was swapped in: that is where the
         companion bytes land."""
-        with self._lock, self._load_cancel_lock:
+        # _load_cancel_lock alone: _loading lives under it, and this predicate runs inside the GPU
+        # arbiter's lock (release_if), so taking _lock here let a multi-minute build stall every
+        # other modality's acquire.
+        with self._load_cancel_lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
@@ -6357,39 +6393,48 @@ class DiffusionBackend:
             return True
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
-        with self._generation_cancel_lock, self._load_cancel_lock:
-            if expected_account is not None:
-                from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
-                from hub.services.models.account_access import require_resident_control
-
-                # Authorize before changing either cancellation event.
-                if (
-                    self._active_generate_cancel is not None
-                    and self._active_generate_account != expected_account
-                ):
-                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
-                require_resident_control(DIFFUSION, getattr(self._state, "repo_id", None))
-                # Prefer admitted loads and authorized residents over pending callers.
-                loading = self._loading
-                if loading is not None and loading.error is None:
-                    foreign_load = loading.account_id != expected_account
-                elif self._state is not None:
-                    foreign_load = False
-                else:
-                    foreign_load = any(
-                        token == self._load_token and account != expected_account
-                        for token, account in self._load_accounts.values()
-                    )
-                if foreign_load:
-                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
-            # Fence loads and generations before waiting for construction.
-            self._unload_waiters += 1
-            self._cancel_event.set()
-            self._load_token += 1
-            self._loading = None
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
+        # fenced, and the try that owns it, start BEFORE the counter moves: a leaked _unload_waiters
+        # would make _wait_for_pending_unloads block every later load for the life of the process,
+        # and the flag keeps the finally honest when authorization refuses before the fence is raised.
+        fenced = False
         try:
+            with self._generation_cancel_lock, self._load_cancel_lock:
+                if expected_account is not None:
+                    from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
+                    from hub.services.models.account_access import require_resident_control
+
+                    # Authorize before changing either cancellation event.
+                    if (
+                        self._active_generate_cancel is not None
+                        and self._active_generate_account != expected_account
+                    ):
+                        raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                    require_resident_control(DIFFUSION, getattr(self._state, "repo_id", None))
+                    # A published resident outranks a pending load: require_resident_control above has
+                    # already authorized this caller against the model that is actually loaded, and a
+                    # newcomer queueing a replacement over it must not cost the owner the right to
+                    # eject its own model. Only with no resident to speak for does pending ownership
+                    # decide, which is the window the CPU-load advisory was about.
+                    loading = self._loading
+                    if self._state is not None:
+                        foreign_load = False
+                    elif loading is not None and loading.error is None:
+                        foreign_load = loading.account_id != expected_account
+                    else:
+                        foreign_load = any(
+                            token == self._load_token and account != expected_account
+                            for token, account in self._load_accounts.values()
+                        )
+                    if foreign_load:
+                        raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                # Fence loads and generations before waiting for construction.
+                self._unload_waiters += 1
+                fenced = True
+                self._cancel_event.set()
+                self._load_token += 1
+                self._loading = None
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
             with self._lock:
                 # Fence queued generations too: they are intentionally not cancelled by model lifecycle changes, so they
                 # must wait and observe the post-teardown state.
@@ -6406,8 +6451,9 @@ class DiffusionBackend:
                         # the life of the process.
                         self._release_teardown_locked()
         finally:
-            with self._load_cancel_lock:
-                self._unload_waiters -= 1
+            if fenced:
+                with self._load_cancel_lock:
+                    self._unload_waiters -= 1
         return self.status()
 
     def _unload_locked(self) -> None:
