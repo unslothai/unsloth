@@ -3527,16 +3527,17 @@ def _torch_family_for_cuda_version(major: int, minor: int) -> str:
     return "cpu"  # ancient driver: no usable CUDA wheels
 
 
-def _detect_cuda_torch_index_url() -> str:
+def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:
     """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
 
     Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update` repairs
     to the same wheel family a fresh install would pick. Honours the explicit
     overrides first (UNSLOTH_TORCH_INDEX_URL / _FAMILY) so a headless / CI install
     never lets the host GPU decide. Otherwise probes nvidia-smi (parsing both "CUDA
-    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable. The
-    driver version is only an upper bound, so the GPU architectures can cap the
-    result at cu126 (see _cap_cuda_family_for_pre_turing).
+    Version:" and "CUDA UMD Version:"), then the driver library, defaulting to cu126
+    when neither answers, or to None with known_only. The driver version is only an
+    upper bound, so the GPU architectures can cap the result at cu126 (see
+    _cap_cuda_family_for_pre_turing).
     """
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
@@ -3544,7 +3545,6 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    tag = "cu126"  # default when the driver CUDA version cannot be read
     # Every candidate until one ANSWERS, the way _has_usable_nvidia_gpu does. Taking the
     # first that merely exists loses to a stale nvidia-smi on PATH: the presence probe
     # walks past it to the working Program Files copy and confirms the GPU, while this one
@@ -3578,14 +3578,14 @@ def _detect_cuda_torch_index_url() -> str:
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
     # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
     # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
-    # default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
+    # caller's default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
     inventory = _nvidia_library_inventory()
     if inventory is not None and inventory.cuda_driver_version:
         sms = _inventory_compute_sms(inventory)
         if sms:
             family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
             return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
-    return f"{_PYTORCH_WHL_BASE}/{tag}"
+    return None if known_only else f"{_PYTORCH_WHL_BASE}/cu126"
 
 
 def _inventory_compute_sms(inventory) -> "list[int]":
@@ -3933,9 +3933,10 @@ def _ensure_cuda_torch() -> None:
     elif (
         _marker == "cpu"
         and not _deliberate_cpu_torch()
-        and _is_cuda_family_leaf(_torch_index_leaf(_detect_cuda_torch_index_url()))
+        and _is_cuda_family_leaf(_torch_index_leaf(_detect_cuda_torch_index_url(known_only = True) or ""))
     ):
-        # A CPU wheel nobody asked for on an NVIDIA host whose driver runs a CUDA wheel: a
+        # A CPU wheel nobody asked for on an NVIDIA host whose driver is known to run a CUDA
+        # wheel (the selector's cu126 default for an unreadable driver is not evidence): a
         # dependency step resolved torch from PyPI, or the GPU was not detected at install
         # time. The Windows flavour invariant catches this; Linux only recorded it.
         _recorded = _RECORDED_TORCH_TAG or ""

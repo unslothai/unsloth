@@ -777,6 +777,18 @@ class TestACpuWheelTheInstallRecordedAsCudaIsRepaired:
         with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
             _run_cuda_repair(torch_state = "cpu", cuda_version = "10.2").assert_not_called()
 
+    def test_an_unreadable_driver_is_not_evidence_for_a_cuda_wheel(self):
+        # Neither nvidia-smi nor the library names the driver's CUDA version: the selector's
+        # cu126 default must not replace a CPU wheel a driver older than that could not run.
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"),
+            patch.object(stack_mod, "_nvidia_library_inventory", return_value = None),
+        ):
+            _run_cuda_repair(torch_state = "cpu", cuda_version = "").assert_not_called()
+            with patch.object(stack_mod, "_nvidia_smi_usable_candidates", return_value = []):
+                assert stack_mod._detect_cuda_torch_index_url(known_only = True) is None
+                assert stack_mod._detect_cuda_torch_index_url().endswith("/cu126")
+
     def test_a_named_cpu_choice_or_an_explicit_cpu_pin_is_respected(self):
         with (
             patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
