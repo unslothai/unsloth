@@ -4475,7 +4475,11 @@ def _ifm_first_unprotected_foreign_signal(
     """
     first: Optional[int] = None
     for signal in TOOL_XML_SIGNALS:
-        if signal == _IFM_TOOL_CALLS_OPEN:
+        if signal in (_IFM_TOOL_CALLS_OPEN, _MISTRAL_ARGS_MARKER):
+            # A bare ``[ARGS]`` is only meaningful as part of the rehearsal form
+            # ``name[ARGS]{...}``, which is checked by the dedicated regex below.
+            # Treating the marker alone as a foreign opener lets explanatory prose
+            # suppress a real IFM envelope that follows it.
             continue
         cursor = 0
         while True:
@@ -4658,11 +4662,6 @@ def _ifm_find_value_close(
     return None
 
 
-def _reject_ifm_json_constant(name: str) -> Any:
-    """Reject JSON constants that the JSON standard and the frontend do not accept."""
-    raise ValueError(f"{name} is not JSON")
-
-
 def _parse_ifm_finite_float(value: str) -> float:
     """Parse a JSON float without allowing overflow to produce infinity."""
     parsed = float(value)
@@ -4673,9 +4672,13 @@ def _parse_ifm_finite_float(value: str) -> float:
 
 def _ifm_json_loads(text: str) -> Any:
     """Decode IFM JSON with the same strict constant policy as the tool loop."""
+
+    def reject_constant(name: str) -> Any:
+        raise ValueError(f"{name} is not JSON")
+
     return json.loads(
         text,
-        parse_constant = _reject_ifm_json_constant,
+        parse_constant = reject_constant,
         parse_float = _parse_ifm_finite_float,
     )
 

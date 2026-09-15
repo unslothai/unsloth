@@ -501,6 +501,29 @@ def test_ifm_structural_strip_removes_only_complete_envelopes():
     assert "<ifm|tool_calls>" in TOOL_XML_SIGNALS
 
 
+def test_bare_args_prose_does_not_block_following_ifm_call():
+    text = "The [ARGS] marker denotes arguments. " + IFM_XML
+
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+
+    assert [_function(call) for call in calls] == [
+        ("python", {"code": "print(1234567 * 891011)"}),
+    ]
+
+
+def test_enabled_rehearsal_retains_precedence_over_following_ifm_call():
+    rehearsal = 'get_weather[ARGS]{"city": "Paris"}'
+    text = rehearsal + " " + IFM_XML
+
+    calls = parse_tool_calls_from_text(
+        text,
+        allow_incomplete = False,
+        enabled_tool_names = {"get_weather", "python"},
+    )
+
+    assert [_function(call) for call in calls] == [("get_weather", {"city": "Paris"})]
+
+
 def test_ifm_lookalikes_in_quotes_fences_reasoning_and_payloads_are_not_promoted():
     quoted = f'The protocol example is "{IFM_XML}".'
     single_quoted = f"The protocol example is '{IFM_XML}'."
