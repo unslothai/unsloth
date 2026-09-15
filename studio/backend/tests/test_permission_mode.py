@@ -3455,6 +3455,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "rg --ignore-file=/media/kuser/MEDIA_SSD/private.rules needle .",
     # `install -d DIR...` CREATES every operand, so the destination-last rule does not apply.
     "install -d /dev/shm/tool-output",
+    # `git archive --add-file` reads an untracked file into the archive; `--output` writes it.
+    "git archive --add-file=/media/kuser/MEDIA_SSD/private.txt -o out.tar HEAD",
+    "git archive --output=/media/kuser/MEDIA_SSD/out.tar HEAD",
     # `--output-dir` is where `-O` puts the download, and `-O` itself contributes no operand.
     "curl --output-dir=/media/kuser/MEDIA_SSD/private -O https://example.com/payload",
     "wget --directory-prefix=/media/kuser/MEDIA_SSD/private https://example.com/payload",
@@ -3551,6 +3554,10 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # A reader reached through an INSTANCE: the constructor is what identifies it.
     "import configparser\nc = configparser.ConfigParser()\nc.read('/media/kuser/MEDIA_SSD/p.ini')",
     "import configparser\nconfigparser.ConfigParser().read('/media/kuser/MEDIA_SSD/p.ini')",
+    # The keyword spelling of fileinput's argument, and its sequence form.
+    "import fileinput\nfor line in fileinput.input(files = '/media/kuser/MEDIA_SSD/p.txt'):\n    print(line)",
+    # An annotated binding is the same binding.
+    "reader: object = open\nreader('/media/kuser/MEDIA_SSD/private.txt').read()"
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3583,6 +3590,7 @@ _INDIRECT_BENIGN_TERMINAL = (
     "wget https://example.com/x",
     "install -d out",
     "install a.txt b.txt",
+    "git archive -o out.tar HEAD",
     "curl --output-dir=out -O https://example.com/payload",
     "wget --directory-prefix=downloads https://example.com/payload",
     "tar -cf out.tar /usr/share/doc",
@@ -3618,6 +3626,8 @@ _INDIRECT_BENIGN_PYTHON = (
     "import io\nstream = io\nstream.open('notes.txt').read()",
     "import configparser\nc = configparser.ConfigParser()\nc.read('app.ini')",
     "f = open('x')\nf.read()",
+    "import fileinput\nfor line in fileinput.input(files = 'notes.txt'):\n    print(line)",
+    "reader: object = open\nreader('notes.txt').read()",
     "Foo().read('/media/kuser/MEDIA_SSD/x')",
     "stream = something\nstream.open('/media/kuser/MEDIA_SSD/x')",
     "from numpy import load\nload('data.npy')",

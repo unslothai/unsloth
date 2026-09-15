@@ -798,6 +798,12 @@ _PATH_FLAG_SPECS = {
         "-C": "read",
         "--git-dir": "read",
         "--work-tree": "read",
+        # `git archive --add-file <file>` reads an untracked file into the archive and `--output`
+        # writes the archive itself (`git archive -h`). Both are subcommand options rather than
+        # global ones, but the spec is per command, and no other git subcommand takes either name.
+        "--add-file": "read",
+        "--output": "write",
+        "-o": "write",
         "-c": "skip",
         "--exec-path": "skip",
         "--namespace": "skip",
@@ -1578,6 +1584,11 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
                 if entry.asname and entry.name in _PY_ALIASABLE_PATH_CALLS:
                     aliases[entry.asname] = entry.name
             continue
+        # `reader: object = open` binds exactly what the unannotated form does.
+        if isinstance(node, ast.AnnAssign):
+            if node.value is None or not isinstance(node.target, ast.Name):
+                continue
+            node = ast.Assign(targets = [node.target], value = node.value)
         if not isinstance(node, ast.Assign):
             continue
         value = node.value
@@ -2030,7 +2041,12 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             add(first, False)
         elif name == "input" and is_method and getattr(func.value, "id", "") == "fileinput":
             # Qualified so the builtin input("/data directory: ") prompt is not read as a file.
-            add(first, False)
+            # `files = ` is the keyword spelling of the same argument, and takes a sequence too.
+            given = first
+            if given is None:
+                given = next((kw.value for kw in node.keywords if kw.arg == "files"), None)
+            for element in (given.elts if isinstance(given, (ast.List, ast.Tuple)) else [given]):
+                add(element, False)
         elif name in _PY_PATH_READ_CALLS:
             add(first, False)
             if is_method:
