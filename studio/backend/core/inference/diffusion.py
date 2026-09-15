@@ -930,17 +930,12 @@ def _account_owned_load(method):
         inherited = kwargs.get("_load_token")
         while True:
             if inherited is None:
-                # A fresh request: wait out the ejects already in flight rather than failing, then take
-                # the epoch they leave behind. A worker inherits its epoch instead and skips this.
+                # Wait the in-flight ejects out and take the epoch they leave; a worker inherits one.
                 self._wait_for_pending_unloads()
             with self._load_cancel_lock:
                 token = self._load_token if inherited is None else inherited
-                # The wait above and this lock are two steps, and an eject can arrive between them. It
-                # bumps the epoch as well, so a fresh request would adopt the NEW token, pass the check
-                # below, win _lock ahead of the eject (acquisition is not FIFO), publish a pipeline and
-                # have the teardown it walked into destroy it -- after the request was accepted. So the
-                # fence is read under the same lock that registers, and a load that finds one goes back
-                # and waits it out.
+                # Read under the lock that registers: an eject arriving in the gap above bumps the
+                # epoch too, so re-reading it would admit this load into the teardown it walked into.
                 if inherited is None and self._unload_waiters:
                     continue
                 self._raise_if_load_cancelled(token)
@@ -1276,15 +1271,10 @@ class DiffusionBackend:
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
-        # Repos a CANCELLED load is still reading, per load epoch. Held from the moment the eject
-        # drops _loading until that load's own thread unwinds. NOT until the teardown takes _lock:
-        # _prefetch_files deliberately runs without it, so its downloader outlives the eject and the
-        # degraded path only checks the cancel event either side of the blocking Hub call.
+        # Repos a cancelled load is still reading, per epoch; see draining_repo_ids().
         self._draining_repos: dict[int, set[str]] = {}
-        # Set when no eject holds the load fence. Its own event, not _teardown_drained: the fence goes
-        # up as soon as the eject is accepted, and the teardown is only RESERVED once construction
-        # releases _lock, which can be minutes later. Waiting on the teardown event through that gap
-        # returned immediately every time and burned a core per waiter.
+        # Set when no eject holds the load fence. Its own event: _teardown_drained stays SET from the
+        # eject being accepted until construction releases _lock, so waiting on that spun a core.
         self._unload_fence_clear = threading.Event()
         self._unload_fence_clear.set()
         # Written by the callback, read lock-free by generate_progress().
@@ -1310,12 +1300,10 @@ class DiffusionBackend:
         return target.torch_device, target.dtype
 
     def _raise_if_load_cancelled(self, token: int) -> None:
-        # The epoch alone decides this. unload() bumps _load_token under _load_cancel_lock before any
-        # teardown work, so every load that was in flight when the eject arrived is already caught
-        # here; a request that starts afterwards carries the CURRENT token and was never cancelled.
-        # Refusing that one too (on a bare _unload_waiters count) turned an ordinary model switch
-        # during a generation into a 409 for the whole length of the denoise. Such a request waits
-        # instead, in _wait_for_pending_unloads.
+        # The epoch alone: unload() bumps _load_token before any teardown, so a load that started
+        # after the eject carries the current token and was never cancelled.
+        # Refusing on a bare _unload_waiters count 409'd an ordinary model switch for the length of
+        # the denoise; such a request waits in _wait_for_pending_unloads instead.
         if token != self._load_token:
             raise RuntimeError("Diffusion load was cancelled.")
 
@@ -1416,10 +1404,8 @@ class DiffusionBackend:
                 while True:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    # Whichever fence actually turned this request away. _teardown_drained stays SET
-                    # between an eject being accepted and its teardown reservation, so waiting on it
-                    # through that window returned instantly and spun a core against the very _lock
-                    # the eject is trying to take.
+                    # Whichever fence turned it away: _teardown_drained is still SET before the
+                    # teardown is reserved, so waiting on that spun against the eject's own _lock.
                     with self._load_cancel_lock:
                         fenced_by_unload = bool(self._unload_waiters)
                     gate = self._unload_fence_clear if fenced_by_unload else self._teardown_drained
@@ -2354,8 +2340,7 @@ class DiffusionBackend:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
         finally:
-            # This thread has stopped reading, so a cancelled load's files are safe to delete. The
-            # only owner of that entry: nothing else knows when a prefetch actually returned.
+            # Nothing else knows when the prefetch returned, so this is the drain's only owner.
             with self._load_cancel_lock:
                 self._draining_repos.pop(token, None)
 
@@ -2405,16 +2390,13 @@ class DiffusionBackend:
             return tuple(dict.fromkeys(r for r in ids if r))
 
     def draining_repo_ids(self) -> tuple[str, ...]:
-        """Repo ids a CANCELLED load is still reading, for the delete-cached guard only.
+        """Repo ids a cancelled load is still reading, for the delete-cached guard only.
 
-        An eject drops ``_loading`` the moment it is accepted so the load can be cancelled promptly,
-        but that load's thread keeps reading those files until it unwinds -- through ``_prefetch_files``
-        it does not even hold ``_lock``. Deleting them in that window pulls blobs out from under a
-        live Hub call, or lets the cancelled download recreate what was just deleted.
+        The eject drops ``_loading`` at once so the load cancels promptly, but its thread reads on
+        until it unwinds, holding no lock at all inside ``_prefetch_files``.
 
-        Deliberately NOT part of ``loading_repo_ids()``: that answers "is a load in flight", and the
-        GPU arbiter's ``release_if``, the keep-warm loop and the media auto-switch all read it as
-        that. Folding a drain into it left the arbiter owned by DIFFUSION with nothing loaded.
+        NOT part of ``loading_repo_ids()``: that answers "is a load in flight", which the arbiter's
+        ``release_if``, keep-warm and the media auto-switch read as ownership.
         """
         with self._load_cancel_lock:
             return tuple(dict.fromkeys(r for repos in self._draining_repos.values() for r in repos))
@@ -6560,16 +6542,12 @@ class DiffusionBackend:
                 self._unload_waiters += 1
                 self._unload_fence_clear.clear()
                 fenced = True
-                # This epoch is the one the load being cancelled carries; _load_token is bumped just
-                # below. Only worth holding while a worker of that epoch is still registered: with
-                # none, there is nothing reading and a leaked entry would block deletes forever.
+                # The cancelled load's own epoch; _load_token is bumped just below.
                 cancelled_token = self._load_token
                 loading = self._loading
                 if loading is not None and loading.error is None:
-                    # Its thread is _run_load, which may be blocked in _prefetch_files with nothing
-                    # registered in _load_accounts yet: begin_load's record is gone and
-                    # load_pipeline's is not taken until prefetch returns. _run_load's own finally
-                    # drops this, so it covers the whole thread either way.
+                    # _run_load's finally drops this, so it spans the prefetch too, where nothing
+                    # is registered in _load_accounts.
                     self._draining_repos.setdefault(cancelled_token, set()).update(
                         r for r in (loading.repo_id, loading.base_repo, loading.fetch_repo) if r
                     )

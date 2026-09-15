@@ -139,11 +139,8 @@ def test_a_preflight_caller_cannot_block_the_resident_owner(backend):
 
 
 def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, monkeypatch):
-    """_wait_for_pending_unloads() and the registration lock are two steps. An eject landing in
-    between bumps the epoch too, so a naive re-read of _load_token adopts the eject's OWN token,
-    passes the cancellation check, and can then win _lock ahead of the eject, publish a pipeline and
-    have the teardown destroy it -- all after the request was accepted. The fence has to be read
-    under the lock that registers."""
+    """An eject landing between the wait and the registration lock bumps the epoch too, so a
+    re-read adopts the eject's OWN token and the load is admitted into its teardown."""
     from core.inference.diffusion import _account_owned_load
 
     calls = {"waits": 0}
@@ -187,9 +184,8 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
 
 
 def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
-    """The fence goes up when the eject is ACCEPTED; the teardown is only reserved once construction
-    releases _lock, which can be minutes later. Waiting on the teardown event across that gap found
-    it still set, returned instantly and burned a core per waiter. The wait has its own event."""
+    """_teardown_drained is still SET between the eject being accepted and the teardown being
+    reserved, so waiting on it there returned instantly and burned a core per waiter."""
     with backend._load_cancel_lock:
         backend._unload_waiters += 1
         backend._unload_fence_clear.clear()
@@ -243,10 +239,8 @@ def test_stop_still_reports_nothing_to_cancel_on_an_idle_backend(backend):
 
 
 def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
-    """An eject drops _loading the moment it is accepted so the load can be cancelled promptly, but
-    that load's thread keeps reading those files until it unwinds. Through _prefetch_files it holds
-    no lock at all and only checks the cancel event either side of the blocking Hub call, so the
-    delete-cached guard has to keep refusing them until the thread is actually done."""
+    """The eject drops _loading at once, but that load's thread reads on until it unwinds, holding
+    no lock inside _prefetch_files. The delete guard must keep refusing until it is done."""
     backend._loading = _LoadingState(
         repo_id = "org/model-GGUF",
         base_repo = "org/base",
@@ -260,9 +254,7 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
 
     assert backend._loading is None
     assert set(backend.draining_repo_ids()) == everything, "deletable while still being read"
-    # NOT through loading_repo_ids: the GPU arbiter's release_if, the keep-warm loop and the media
-    # auto-switch all read that as "a load is in flight", and a drain there left the arbiter owned
-    # by DIFFUSION with nothing loaded.
+    # Not loading_repo_ids: release_if, keep-warm and the auto-switch read that as ownership.
     assert backend.loading_repo_ids() == ()
 
     # What _run_load's finally does when the load thread returns.
@@ -272,8 +264,7 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
 
 
 def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
-    """_run_load's finally is the only owner: nothing else knows when a prefetch actually returned,
-    and during one there is no _load_accounts record to key on either."""
+    """Nothing else knows when a prefetch returned, and during one there is no record to key on."""
     backend._loading = _LoadingState(
         repo_id = "org/model-GGUF", base_repo = "org/base", account_id = ALICE
     )
@@ -300,9 +291,8 @@ def test_an_eject_with_no_load_in_flight_holds_nothing(backend):
 
 
 def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):
-    """The retry waited on _teardown_drained, which is still SET between an eject being accepted
-    and its teardown reservation. It returned instantly, so the request spun a core against the
-    very _lock the eject was waiting for."""
+    """The retry waited on _teardown_drained, still SET in that window, so it spun against the
+    very _lock the eject needed."""
     with backend._load_cancel_lock:
         backend._unload_waiters += 1
         backend._unload_fence_clear.clear()
