@@ -2209,3 +2209,107 @@ def test_only_an_installed_stub_counts_as_stubbing():
     ):
         assert not _stubs_before(_parse(source), 1), source
         assert _is_offender(source, heavy), source
+
+
+# --- The `loggers` stub's shape (#10995) ---------------------------------------------
+#
+# The guard above keeps heavy imports stubbed. This one keeps a stub from being SO light
+# that it breaks the thing it replaces: 84 files in this tree register
+# `ModuleType("loggers")`, which has no `__path__` and is therefore a module, not a
+# package. Whichever landed first won, so `from loggers.media_progress import ...` in
+# `routes/inference.py` and `routes/video.py` raised "'loggers' is not a package" and took
+# the whole session down at COLLECTION -- and which one landed first depended on the
+# working directory and the collection order.
+#
+# conftest.py now registers it with a real `__path__` before collection. These tests pin
+# that, because the failure mode is invisible until a specific pair of files is collected
+# in a specific order from a specific directory.
+
+
+def test_the_loggers_module_in_sys_modules_is_a_package():
+    """Without `__path__`, every `loggers.<submodule>` import raises at collection."""
+    import sys
+
+    loggers = sys.modules.get("loggers")
+    assert loggers is not None, "conftest should have settled `loggers` before collection"
+    assert hasattr(loggers, "__path__"), (
+        "`loggers` is in sys.modules as a non-package, so `from loggers.media_progress "
+        "import ...` (routes/inference.py, routes/video.py) will fail at collection"
+    )
+
+
+def test_the_loggers_submodules_the_routes_import_actually_resolve():
+    """The four names `routes/inference.py` imports, plus `byte_fraction` for video.py.
+
+    Imported here rather than asserted on a stand-in: `test_media_generation_progress_logs.py`
+    monkeypatches the REAL module's `logger`, so pre-binding a no-op submodule would trade
+    this bug for a quieter one.
+    """
+    from loggers.media_progress import (  # noqa: F401
+        byte_fraction,
+        log_media_generation_progress,
+        log_media_load_progress,
+        reset_media_generation_progress,
+        reset_media_load_progress,
+    )
+
+
+def test_settling_loggers_does_not_drag_in_the_handlers():
+    """The point of the 84 stubs. `loggers/__init__` imports `.handlers`, which pulls
+    structlog and `utils`: measured at 269 modules against 19 for `media_progress` alone.
+
+    Asserted on what conftest itself registers, not on `sys.modules`: `main.py` imports
+    `loggers.handlers` for LoggingMiddleware and `test_logging_middleware.py` exercises it,
+    so in a session that collected either the module is legitimately loaded. The invariant
+    is that SETTLING `loggers` does not require it -- i.e. the registered module is the
+    stand-in, not the real package re-exporting the real handler factory.
+    """
+    import sys
+
+    assert sys.modules["loggers"].__name__ == "loggers"
+    # The stand-in is a plain ModuleType, not the real package: the real one is a package
+    # whose __file__ is loggers/__init__.py and whose get_logger comes from .handlers.
+    assert getattr(sys.modules["loggers"], "__file__", None) is None, (
+        "the real `loggers/__init__` was imported to settle it, which costs the handlers "
+        "the 86 stubs exist to avoid; conftest should register the stand-in instead"
+    )
+
+
+def test_the_stand_in_get_logger_takes_structured_kwargs():
+    """It must match `loggers.handlers.get_logger`, which returns a structlog logger.
+
+    A stdlib `logging.Logger` is not a drop-in: the backend logs
+    `logger.error(msg, error = exc)`, and `Logger._log` raises TypeError on those. Caught
+    in CI rather than locally, where the modules that log that way were not reached.
+    """
+    import sys
+
+    logger = sys.modules["loggers"].get_logger("probe-for-the-stub-shape")
+    # Must not raise: this is the exact call shape the backend uses.
+    logger.error("probe", error = "structured-value", detail = 1)
+
+
+def test_the_structlog_in_sys_modules_can_make_a_logger():
+    """The same defect one module over, unmasked by fixing `loggers` (#10995).
+
+    64 files register a bare `ModuleType("structlog")`. `external_provider.py:51` calls
+    `structlog.get_logger(__name__)` at module scope, reached from `routes/inference.py`,
+    so an empty stub raises AttributeError at collection. It was invisible only because
+    the `loggers` failure killed the session a few lines earlier.
+    """
+    import structlog
+
+    assert hasattr(structlog, "get_logger"), (
+        "`structlog` in sys.modules cannot make a logger, so importing "
+        "core.inference.external_provider (via routes.inference) fails at collection"
+    )
+    # Callable, not merely present: the attribute check alone passes for a sentinel.
+    assert structlog.get_logger("probe") is not None
+
+
+def test_routes_inference_imports_under_the_settled_stubs():
+    """The end-to-end property #10995 is about: the module whose two module-scope imports
+    (`loggers.media_progress`, and `structlog` via external_provider) were the two walls.
+    """
+    import importlib
+    assert importlib.import_module("routes.inference") is not None

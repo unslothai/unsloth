@@ -30,9 +30,11 @@ for _up in _iso.parents:
 import contextlib
 import errno
 import itertools
+import logging
 import os
 import shutil
 import sys
+import types as _types
 from pathlib import Path
 
 import pytest
@@ -41,6 +43,77 @@ import pytest
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
+
+# Settle `loggers` before any test module is imported (#10995).
+#
+# 84 test files register a stub for it at import time, to avoid the real package's heavy
+# handlers (`loggers/__init__` imports `.handlers`, which pulls structlog and `utils`:
+# measured at 269 modules and ~220ms):
+#
+#     sys.modules.setdefault("loggers", _types.ModuleType("loggers"))
+#
+# `ModuleType` has no `__path__`, so it is a module and not a package. Once it lands
+# first, every later `from loggers.<submodule> import ...` raises "'loggers' is not a
+# package" -- `routes/inference.py` imports `loggers.media_progress`, so any test module
+# reaching `routes.inference` afterwards errors at COLLECTION, taking the session with it.
+#
+# Whether the stub or the real package lands first depends on import order, which depends
+# on the working directory and on which files pytest collects first, so the suite was
+# quietly order- and cwd-dependent.
+#
+# Registered here, at module scope so it precedes collection, with the one thing the stub
+# was missing: a `__path__`. That is what makes it a PACKAGE, so `loggers.media_progress`
+# and any other submodule resolve from disk on demand, while `get_logger` stays the
+# lightweight stand-in and `loggers.handlers` is still never imported.
+#
+# Deliberately not pre-binding `media_progress` to a no-op: `test_media_generation_progress_logs.py`
+# imports the real one and asserts on its behaviour, so a stand-in there would trade this
+# bug for a quieter one. Loading it from disk costs 19 modules and ~15ms, against 269 and
+# ~220ms for the real `loggers/__init__` -- the handlers the 84 stubs exist to avoid.
+#
+# The 84 `setdefault` calls then stay the no-ops they already are under the repo's own CI.
+_real_loggers = _backend_root / "loggers"
+if _real_loggers.is_dir() and "loggers" not in sys.modules:
+    _loggers_pkg = _types.ModuleType("loggers")
+    _loggers_pkg.__path__ = [str(_real_loggers)]
+    # Matches `loggers.handlers.get_logger`, which returns `structlog.get_logger(name)`.
+    # A stdlib logger is NOT a drop-in: the backend logs structured kwargs
+    # (`logger.error(msg, error = exc)`), and `logging.Logger._log` rejects those with
+    # TypeError. The 86 in-file stubs use the stdlib lambda and got away with it only
+    # because they applied to far fewer modules; settling `loggers` once for the session
+    # makes the shape universal, so it has to be the real one.
+    def _get_logger(name):
+        try:
+            import structlog
+
+            return structlog.get_logger(name)
+        except ImportError:  # pragma: no cover - minimal env without structlog
+            return logging.getLogger(name)
+
+    _loggers_pkg.get_logger = _get_logger
+    # `main.py` and the app factory call this at import; a no-op keeps them importable
+    # without the real handlers module.
+    _loggers_pkg.install_uvicorn_duplicate_exception_filter = lambda *a, **k: None
+    sys.modules["loggers"] = _loggers_pkg
+
+# The same defect, one module over: 64 files register a bare `ModuleType("structlog")`,
+# which has no `get_logger`. `core/inference/external_provider.py:51` calls
+# `structlog.get_logger(__name__)` at module scope, reached from `routes/inference.py`, so
+# whenever an empty stub wins the race that import raises AttributeError at COLLECTION.
+#
+# It was invisible only because the `loggers` failure above killed the session first --
+# fixing that one alone just moves the wall a few lines down. Verified independently: with
+# an empty structlog stub installed, `import core.inference.external_provider` raises on a
+# clean `main` too.
+#
+# structlog is a real dependency of the backend (loggers/handlers.py imports it) and is
+# installed in the pytest matrix, so preferring the real module is both cheap and closer
+# to production. The `setdefault` calls in those 64 files stay no-ops.
+if "structlog" not in sys.modules:
+    try:
+        import structlog as _structlog  # noqa: F401
+    except ImportError:  # pragma: no cover - keep the stub path for a minimal env
+        pass
 
 # tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
 # a test module imports from it at collection, before any fixture runs.
