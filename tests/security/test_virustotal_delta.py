@@ -485,3 +485,38 @@ def test_an_unranked_bucket_never_overrides_the_ordered_tradeoff() -> None:
     payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 0, "low": 8, "informational": 2}
     delta = vtd.compare(_snap(base_payload, "baseline", "a" * 64), _snap(payload))
     assert delta.exit_code() == 0, (delta.worse, delta.better)
+
+
+def test_engines_that_answered_in_a_newer_bucket_still_count() -> None:
+    """`ScanStats.total` sums five buckets, and `parse_stats` documents more than five.
+
+    `type-unsupported` and `failure` are named in that parser's own docstring as categories
+    VirusTotal has added, but the dataclass has no field for them, so the engine count this report
+    prints was short by however many engines answered that way. Worse, a response made up entirely
+    of those buckets summed to zero, which this tool treats as a file nothing has scanned and voids.
+    """
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    stats = payload["data"]["attributes"]["last_analysis_stats"]
+    before = vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines
+    stats["type-unsupported"] = 5
+    stats["failure"] = 2
+    after = vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines
+    assert after == before + 7, (
+        f"engines that answered in a newer bucket were not counted: {before} -> {after}"
+    )
+
+    # The bucket-only case, which used to read as unanalysed and void the run.
+    only_new = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    only_new["data"]["attributes"]["last_analysis_stats"] = {"type-unsupported": 3}
+    snap = vtd.snapshot_from_payload("candidate", "b" * 64, only_new)
+    assert snap.total_engines == 3, snap.total_engines
+    assert "no engine verdicts" not in snap.note, snap.note
+
+
+def test_a_non_numeric_bucket_cannot_inflate_the_engine_count() -> None:
+    """VirusTotal sends counts; a bool or a string in that position must not add one each."""
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    clean = vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines
+    payload["data"]["attributes"]["last_analysis_stats"]["weird"] = True
+    payload["data"]["attributes"]["last_analysis_stats"]["odd"] = "12"
+    assert vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines == clean

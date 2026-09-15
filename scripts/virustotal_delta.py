@@ -105,6 +105,27 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def count_all_verdicts(raw: object, stats) -> int:
+    """How many engines answered, counting buckets `ScanStats` has no field for.
+
+    `parse_stats` names `type-unsupported` and `failure` as categories VirusTotal has added, but
+    `ScanStats` carries fields only for malicious, suspicious, undetected, harmless and timeout, so
+    its `total` undercounts the denominator this report prints, and a response made up entirely of
+    the omitted buckets looks like a file nothing has scanned. Summing every numeric bucket in the
+    raw dict keeps the shared dataclass untouched, which matters because the release scanner uses
+    it too, while still counting what actually came back.
+    """
+    if not isinstance(raw, dict):
+        return stats.total
+    total = 0
+    for value in raw.values():
+        # Booleans are ints in Python and would each add one; VirusTotal sends counts, not flags.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        total += int(value)
+    return total
+
+
 def parse_sigma(raw: object) -> dict[str, int]:
     """Sigma counts by severity.
 
@@ -165,7 +186,7 @@ def snapshot_from_payload(label: str, sha256: str, payload: object) -> Snapshot:
     stats = parse_stats(attributes.get("last_analysis_stats"))
     snap.malicious = stats.malicious
     snap.suspicious = stats.suspicious
-    snap.total_engines = stats.total
+    snap.total_engines = count_all_verdicts(attributes.get("last_analysis_stats"), stats)
     snap.engines = parse_detections(attributes.get("last_analysis_results"))
     snap.sigma = parse_sigma(attributes.get("sigma_analysis_stats"))
     snap.yara = parse_yara(attributes.get("crowdsourced_yara_results"))
