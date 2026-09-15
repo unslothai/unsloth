@@ -16,6 +16,7 @@ No model bytes are downloaded and no GPU is required.
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -360,14 +361,16 @@ def main() -> None:
                 page.locator("[data-eject-hit]:visible").click()
             expect(page.get_by_role("button", name = "Select image model")).to_be_visible()
             page.get_by_test_id("nav-row-hub").click()
-            expect(page).to_have_url(f"{BASE_URL}/hub")
+            # The path, not the whole URL: the Hub appends its own ?tab= once it has mounted, and an
+            # exact-URL assertion loses that race on every CI runner.
+            expect(page).to_have_url(re.compile(r"/hub(\?|$)"))
             assert held_plans, "No pending plan to exercise"
             hold_plan = False
             for route in held_plans:
                 _json(route, download_plan())
             held_plans.clear()
             page.get_by_test_id("nav-row-images").click()
-            expect(page).to_have_url(f"{BASE_URL}/images")
+            expect(page).to_have_url(re.compile(r"/images(\?|$)"))
         if EXPECT == "before":
             deadline = time.monotonic() + 20
             while int(state["load_calls"]) < 1 and time.monotonic() < deadline:
