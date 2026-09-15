@@ -1724,3 +1724,51 @@ def test_a_shell_variable_supplying_the_cd_target(monkeypatch, tmp_path):
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_snippets_own_run_is_not_a_child_process(monkeypatch, tmp_path):
+    # `run`, `call` and `check_output` are ordinary function names. Treating a snippet's own
+    # definition as a process launch refused ordinary code in every permission mode.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = 'def run(*args, **kwargs):\n    pass\nrun(["auth/config.json"], cwd = "../..")'
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        imported = 'from subprocess import run\nrun(["cat", "auth/auth.db"], cwd = "../..")'
+        assert tools._python_exec(imported, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_command_substitution_inside_double_quotes_is_a_subshell(monkeypatch, tmp_path):
+    # Substitution stays ACTIVE inside double quotes, so `"$(cd ../..; pwd)"` opens a real subshell
+    # whose move dies with it. Skipping both brackets made the inner `cd` look like it lasted
+    # through the rest of the command, and the project's own auth/config.json was refused.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = 'echo "$(cd ../..; pwd)"; cat auth/config.json'
+        assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        # Inside the substitution the move is real, and a literal bracket in single quotes is not
+        # syntax at all, so neither loses the credential read.
+        for blocked in (
+            'echo "$(cd ../..; cat auth/auth.db)"',
+            "echo '('; cd ../..; echo ')'; cat auth/auth.db",
+        ):
+            assert tools._bash_exec(blocked, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), blocked
+    finally:
+        tools._studio_auth_markers_cache = None

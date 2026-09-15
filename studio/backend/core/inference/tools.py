@@ -2988,6 +2988,11 @@ def _unquoted_parens(text: str):
     """
     quote = ""
     escaped = False
+    # Quotes suspended by a `$(` inside them. A command substitution stays ACTIVE within double
+    # quotes, so `echo "$(cd ../..; pwd)"` opens a real subshell: skipping both of its brackets made
+    # the inner `cd` look like it lasted through the rest of the command. Single quotes suppress
+    # substitution entirely, so only a double quote is ever suspended here.
+    suspended: "list[str]" = []
     for index, char in enumerate(text):
         if escaped:
             escaped = False
@@ -2996,6 +3001,11 @@ def _unquoted_parens(text: str):
             escaped = True
             continue
         if quote:
+            if quote == '"' and char == "(" and index and text[index - 1] == "$":
+                suspended.append(quote)
+                quote = ""
+                yield index, char
+                continue
             if char == quote:
                 quote = ""
             continue
@@ -3004,6 +3014,8 @@ def _unquoted_parens(text: str):
             continue
         if char in "()":
             yield index, char
+            if char == ")" and suspended:
+                quote = suspended.pop()
 
 
 def _subshell_end(text: str, start: int) -> int:
@@ -3432,7 +3444,10 @@ def _process_module_aliases(tree) -> "tuple[dict, set]":
     the function, and both leave the call spelled under a name the fixed tables do not hold.
     """
     aliases: dict = {}
-    bare: "set[str]" = set(_CHILD_PROCESS_BARE_NAMES)
+    # NOT pre-seeded with the generic names. `run`, `call` and `check_output` are ordinary function
+    # names, and treating a snippet's own `def run(...)` as a process launch refused ordinary code in
+    # every permission mode. Only a name an import actually binds from a process module counts.
+    bare: "set[str]" = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             root = (node.module or "").split(".")[0]
