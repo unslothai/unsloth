@@ -145,7 +145,15 @@ class TestTheMemoryProbeFallsBackToNvml:
     def test_a_uuid_mask_is_handed_to_the_child_as_uuids(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
         slice_row = dict(_row(0, 9000, 20480, uuid = "MIG-cccc3333-0"), mig = "1")
-        probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), _row(1, 20000, uuid = "GPU-bbbb2222-1"), slice_row]))
+        probe_script(
+            _payload(
+                [
+                    _row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"),
+                    _row(1, 20000, uuid = "GPU-bbbb2222-1"),
+                    slice_row,
+                ]
+            )
+        )
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-cccc")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
         # The launch must not turn the slice into its parent's index.
