@@ -243,13 +243,35 @@ jobs:
             exit 0
           }
 
-          foreach ($b in $headBlocked) { Write-Host "::error::AMSI refused $b" }
-          if ($baseBlocked.Count) {
-            # Pre-existing, so it is not this change's fault -- and still worth failing on, because
-            # it means a live provider is refusing a shipped script right now.
-            Write-Host "::error::the merge base is refused too ($($baseBlocked -join ', ')), so this is pre-existing rather than introduced. It is still a shipped script that will not compile for these users."
-          } else {
-            Write-Host '::error::the merge base compiled and the candidate did not. This change introduced it.'
+          # Causality is per SCRIPT, not per side. Comparing counts said "pre-existing" whenever the
+          # base had any block at all, even a block on a different file, and said "introduced"
+          # whenever it had none -- including when the corresponding base row was never validly
+          # measured, where the honest answer is that we do not know.
+          $baseState = @{}
+          foreach ($row in $rows | Where-Object { $_.side -eq 'base' }) {
+            $state = 'compiled'
+            if (-not $row.controlFired) { $state = 'unmeasured' }
+            else {
+              foreach ($r in $row.data.results) {
+                if ($r.label -like 'control*') { continue }
+                if ($r.blocked) { $state = 'blocked' }
+                elseif ($r.missing -or $r.unreadable) { $state = 'unmeasured' }
+                elseif ($r.errorId) { $state = 'unmeasured' }
+              }
+            }
+            $baseState[$row.name] = $state
+          }
+
+          foreach ($b in $headBlocked) {
+            Write-Host "::error::AMSI refused $b"
+            # "head/install.ps1 [id]" -> "install.ps1"
+            $script = ($b -replace '^head/', '') -replace ' \[.*$', ''
+            switch ($baseState[$script]) {
+              'blocked'    { Write-Host "::error::  the merge base is refused for $script too, so this is pre-existing rather than introduced. It is still a shipped script that will not compile for these users." }
+              'compiled'   { Write-Host "::error::  the merge base compiled $script and the candidate did not. This change introduced it." }
+              'unmeasured' { Write-Host "::error::  the merge base measurement for $script is not valid, so whether this is introduced or pre-existing cannot be said from this run." }
+              default      { Write-Host "::error::  there is no merge base row for $script at all, so causality cannot be assigned." }
+            }
           }
           "verdict=blocked" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           exit 1
@@ -401,7 +423,12 @@ jobs:
           switch ($env:AMSI_VERDICT) {
             'clean'      { Write-Host '  AMSI: a live provider accepted the candidate at compile time under Windows PowerShell 5.1.' }
             'blocked'    { Write-Host '  AMSI: a live provider REFUSED a script. See the errors above.' }
-            'unmeasured' { Write-Host '  AMSI: not measured. No provider was live in the probe process.' }
+            # Distinct from "did not complete". The probe ran and answered; the answer is that a
+            # candidate does not compile, so AMSI never got to judge it and neither verdict applies.
+            'broken'     { Write-Host '  AMSI: not measured, because a candidate did not COMPILE. That is a defect in the script, not a scanner verdict.' }
+            # Several reasons reach here now, not just a dead provider: a per-row control that stayed
+            # silent, a file the probe could not read or find, or an invocation that wrote no result.
+            'unmeasured' { Write-Host '  AMSI: not measured. Either no provider was live in the probe process, or a candidate was never actually put to one. See the warnings above.' }
             default      { Write-Host '  AMSI: the probe did not complete.' }
           }
           if ($env:IDENTICAL -eq '1') {

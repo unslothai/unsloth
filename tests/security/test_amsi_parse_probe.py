@@ -416,3 +416,52 @@ def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Pa
     assert code == 0
     assert "verdict=unmeasured" in text, text
     assert "verdict=clean" not in text, text
+
+
+@pytest.mark.parametrize(
+    ("label", "base_result", "base_control", "expect"),
+    [
+        ("base compiled the same file", _COMPILED, True, "This change introduced it"),
+        ("base was refused for the same file", _BLOCKED, True, "pre-existing rather than introduced"),
+        ("base row is not validly measured", _COMPILED, False, "cannot be said from this run"),
+        ("base did not compile the same file", _SYNTAX, True, "cannot be said from this run"),
+    ],
+)
+def test_causality_is_decided_per_script_and_only_against_a_valid_base(
+    tmp_path: Path, label: str, base_result: str, base_control: bool, expect: str
+) -> None:
+    """Whether a block is introduced or pre-existing is a statement about ONE script.
+
+    Comparing counts across sides said "pre-existing" whenever the base had any block at all, even
+    on a different file, and said "introduced" whenever it had none -- including when the base row
+    for that script was never validly measured, where the only honest answer is that this run
+    cannot tell. Both mistakes point a reader at the wrong commit.
+    """
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control=base_control, result=base_result)
+        + ", "
+        + _row("head", "install.ps1", control=True, result=_BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, f"{label}: a refused head script must fail the job\n{text}"
+    assert expect in text, f"{label}: expected {expect!r}\n{text}"
+
+
+def test_a_block_on_a_different_base_script_is_not_called_pre_existing(tmp_path: Path) -> None:
+    """The count-based version's exact failure: base blocked on setup.ps1, head blocked on
+    install.ps1, and the run announced the install.ps1 block as pre-existing."""
+    rows = (
+        "@("
+        + _row("base", "setup.ps1", control=True, result=_BLOCKED)
+        + ", "
+        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control=True, result=_BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1
+    assert "This change introduced it" in text, text
+    assert "pre-existing" not in text.split("install.ps1")[-1], text
