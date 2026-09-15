@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # tmpfs the user's own processes own: their contents are user data, not machine state.
+    "cat /dev/shm/private",
+    "cat /run/user/1000/app/session.json",
     # `mv --help`: "Rename SOURCE to DEST", so the source is gone afterwards; `cp` leaves it.
     f"mv {_OUTSIDE_FILE} ./local.md",
     # `tar --help`: `-r` appends to the archive and `-u` updates it, both writes of the `-f` file.
@@ -3499,6 +3502,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # Existence, size, ownership and timestamps of a path outside the sandbox.
+    f"import os\nprint(os.stat({_OUTSIDE_FILE!r}))",
+    f"import os\nprint(os.lstat({_OUTSIDE_FILE!r}))",
+    f"import pathlib\nprint(pathlib.Path({_OUTSIDE_FILE!r}).stat())",
     # A move REMOVES its source, so the source side is a write wherever it sits.
     f"import os\nos.rename({_OUTSIDE_FILE!r}, 'stolen.txt')",
     f"import pathlib\npathlib.Path({_OUTSIDE_FILE!r}).rename('stolen.txt')",
@@ -3628,6 +3635,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "cat /dev/urandom",
+    "cat /run/systemd/resolve/resolv.conf",
     "cp /usr/share/doc/x.txt ./local.txt",
     "mv build/a.txt build/b.txt",
     "tar -xf /usr/share/doc/archive.tar",
@@ -3694,6 +3703,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import os\nprint(os.stat('notes.txt'))",
+    "import pathlib\nprint(pathlib.Path('notes.txt').stat())",
     "import shutil\nshutil.copy('/usr/share/doc/x.txt', 'copy.txt')",
     "import os\nos.rename('a.txt', 'b.txt')",
     "import configparser\ncfg = configparser.ConfigParser()\npaths = ['a.ini']\ncfg.read(paths)",

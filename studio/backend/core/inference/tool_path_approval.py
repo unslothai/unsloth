@@ -115,6 +115,14 @@ _SYSTEM_READ_SILENT_ROOTS = (
 )
 
 
+# Carved OUT of the system roots above: these are tmpfs the user's own processes own, so their
+# contents are user data rather than machine state, and `/dev` and `/run` being read-silent must not
+# reach them. Normalized at module level because the roots they sit under are literals too.
+_WRITABLE_RUNTIME_SUBTREES = tuple(
+    os.path.normcase(part) for part in ("/dev/shm", "/dev/mqueue", "/run/user", "/run/lock")
+)
+
+
 # Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
 # write-silent.
 _WRITE_SILENT_DEVICE_NODES = (
@@ -393,6 +401,14 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # `/home/alice/report.txt` does while reading, lexically, as an ordinary `/proc` path. `/proc` is
     # read-silent, so containment on the text alone let the whole filesystem in through it.
     if _PROC_MAGIC_LINK_RE.match(candidate.replace(os.sep, "/")):
+        return True
+    # A writable subtree of an otherwise system root. `/dev/shm` and `/run/user/<uid>` are tmpfs the
+    # user's own processes write into, so a read there is a read of somebody's data, not of the
+    # machine's configuration. Checked before containment, so the enclosing root cannot cover them.
+    if any(
+        candidate == root or candidate.startswith(root + os.sep)
+        for root in _WRITABLE_RUNTIME_SUBTREES
+    ):
         return True
     read_roots, write_roots = _silent_roots()
     inside = any(
@@ -1576,6 +1592,10 @@ _PY_PATH_READ_CALLS = frozenset(
         "read_sql_table",
         "imread",
         "connect",
+        # The stat family alongside the `os.path.get*` helpers that wrap it: they answer existence,
+        # size, ownership and timestamps for a path outside the sandbox.
+        "stat",
+        "lstat",
         "getsize",
         "getmtime",
         "getctime",
