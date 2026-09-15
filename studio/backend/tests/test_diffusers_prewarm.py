@@ -316,7 +316,9 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
     assert "import" in order and order.index("import") > 2
 
 
-def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch, restore_diffusers_modules):
+def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
+    warm, monkeypatch, restore_diffusers_modules
+):
     """The failure this prewarm adds that the loader did not have.
 
     When ``diffusers/__init__.py`` raises, CPython evicts only the parent and keeps every
@@ -352,7 +354,9 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch, r
     ), "a failed prewarm left submodules behind for the load path to trip over"
 
 
-def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monkeypatch, restore_diffusers_modules):
+def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
+    warm, monkeypatch, restore_diffusers_modules
+):
     """Releasing between the failed import and the purge is the whole bug.
 
     CPython drops the ``diffusers`` module lock the moment ``__init__`` raises. A request already
@@ -402,7 +406,9 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monk
     )
 
 
-def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm, monkeypatch, restore_diffusers_modules):
+def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
+    warm, monkeypatch, restore_diffusers_modules
+):
     """The half of the failure the parent purge cannot reach.
 
     ``import diffusers`` and ``import diffusers.hooks`` are two imports and either can fail. When
@@ -450,9 +456,9 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm,
     # The subpackage has its own lock and the same gap: `import diffusers.hooks` drops it when it
     # raises, and with the healthy parent already published a waiting request could rebuild the
     # hooks package from these stale submodules before the purge reacquires it.
-    assert held and all(ok for _, ok in held), (
-        f"a purge ran without holding that package's own import lock (observed: {held})"
-    )
+    assert held and all(
+        ok for _, ok in held
+    ), f"a purge ran without holding that package's own import lock (observed: {held})"
     assert (
         "diffusers.hooks.group_offloading" not in sys.modules
     ), "the executed hook submodules survived, so the load path can rebuild a partial package"
