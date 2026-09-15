@@ -5476,7 +5476,12 @@ exit 0
                 } finally { $null = $T::nvmlShutdown() }
             }
             function Read-Cuda {
-                if ($T::cuInit([uint32]0) -ne 0) { return "" }
+                # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
+                # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
+                $saved = $env:CUDA_VISIBLE_DEVICES
+                Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+                try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
+                if ($init -ne 0) { return "" }
                 [int]$count = 0
                 if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
                 [int]$ver = 0

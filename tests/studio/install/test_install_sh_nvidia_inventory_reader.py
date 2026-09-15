@@ -7,6 +7,7 @@ CUDA driver API from answering."""
 from __future__ import annotations
 
 import io
+import os
 import re
 import sys
 import types
@@ -99,6 +100,20 @@ def test_a_reader_that_raises_yields_to_the_next(monkeypatch):
             raise AttributeError(name)
 
     code, out = _run(monkeypatch, {"libnvidia-ml.so.1": _Broken(), "libcuda.so.1": _cuda_lib()})
+    assert (code, out) == (0, "13.1 8.9")
+
+
+def test_the_cuda_reader_sees_the_physical_cards(monkeypatch):
+    """The driver API honours CUDA_VISIBLE_DEVICES; the inventory must not."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    lib = _cuda_lib()
+
+    def cu_init(flags):
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+        return 0
+
+    lib.cuInit = cu_init
+    code, out = _run(monkeypatch, {"libcuda.so.1": lib})
     assert (code, out) == (0, "13.1 8.9")
 
 

@@ -127,6 +127,7 @@ Check "a zero driver version is no inventory" ($null -eq (Probe-Raw "nvml;0;0;8.
 Check "no capabilities is no inventory" ($null -eq (Probe-Raw "nvml;13;0;"))
 Check "an unreadable capability voids the inventory" ($null -eq (Probe-Raw "nvml;13;0;N/A,8.9"))
 Check "one unreadable GPU voids the reader's source too" ($readBlock -notmatch '\bcontinue\b')
+Check "the CUDA driver API is read with the mask lifted" ($readBlock -match 'Remove-Item Env:CUDA_VISIBLE_DEVICES' -and $readBlock -match '\$env:CUDA_VISIBLE_DEVICES = \$saved')
 Check "setup.ps1 initialises the cache with its other script state" (
     (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaLibraryInventoryProbed = \$false')
 Check "the answer is cached" ($null -eq (Get-NvidiaLibraryInventory))

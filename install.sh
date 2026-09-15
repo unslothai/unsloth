@@ -2447,7 +2447,7 @@ _nvidia_library_inventory() {
     fi
     _NVIDIA_LIBRARY_INVENTORY_STATE="none"
     _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded "$_nli_py" -I - 2>/dev/null <<'PY'
-import ctypes, sys
+import ctypes, os, sys
 
 def load(*names):
     for name in names:
@@ -2481,6 +2481,9 @@ def nvml():
         lib.nvmlShutdown()
 
 def cuda():
+    # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one, so a
+    # hidden pre-Turing card still caps the family (studio/nvidia_probe.py does the same).
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     lib = load("libcuda.so.1", "libcuda.so")
     if lib is None or lib.cuInit(0) != 0:
         return None
