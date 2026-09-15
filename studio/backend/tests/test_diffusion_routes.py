@@ -1713,7 +1713,10 @@ def test_download_plan_suppresses_only_the_verdict_while_training_runs(client, m
         assert "allow_device_probe" not in seen, training
 
 
-def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
+@pytest.mark.parametrize("plan_failed", [False, True])
+def test_download_plan_response_keeps_the_planners_checkpoint_marker(
+    client, monkeypatch, plan_failed
+):
     # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
     # a field the planner sets but the model does not declare is dropped silently on serialization.
     # That is exactly how the checkpoint marker was lost, leaving a mirrored pipeline mislabelled.
@@ -1741,6 +1744,7 @@ def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, mon
                     "checkpoint": False,
                 },
             ],
+            "plan_failed": plan_failed,
             "total_bytes": 30,
             "required_bytes": 30,
             "checkpoint_bytes": 10,
@@ -1756,6 +1760,7 @@ def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, mon
     )
 
     assert resp.status_code == 200
+    assert resp.json()["plan_failed"] is plan_failed
     assert [e["checkpoint"] for e in resp.json()["entries"]] == [True, False]
 
 
@@ -1785,6 +1790,7 @@ def test_download_plan_defaults_the_checkpoint_marker_for_an_older_planner(clien
     )
 
     assert resp.status_code == 200
+    assert resp.json()["plan_failed"] is False
     assert resp.json()["entries"][0]["checkpoint"] is False
 
 
@@ -2409,3 +2415,18 @@ def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(cl
     resp = client.post("/api/inference/images/download-plan", json = {**body, "gpu_ids": [7]})
     assert resp.status_code == 400
     assert "visible to this process" in resp.json()["detail"]
+
+
+def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
+    """The route validates exactly as /images/load does, on purpose: an unloadable pick has to fail
+    HERE rather than after a multi-GB download. So an unrecognised repo never reaches the planner,
+    and Download only surfaces the reason instead of fetching a model nothing can open."""
+    resp = _post_download_plan(
+        client,
+        model_path = "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "Could not infer a diffusion family" in resp.json()["detail"]
