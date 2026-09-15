@@ -27,6 +27,7 @@ export function normalizeLlamaCppConfig(
   if (
     source.mode !== "custom" ||
     typeof source.ini !== "string" ||
+    source.ini.trim().length === 0 ||
     (source.section !== null && typeof source.section !== "string") ||
     new TextEncoder().encode(source.ini).length > MAX_LLAMA_CPP_CONFIG_BYTES
   )

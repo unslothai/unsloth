@@ -59,6 +59,8 @@ HELP = """----- common params -----
 --host HOST                             binding
                                         (env: LLAMA_ARG_HOST)
 --port PORT                             port
+--rpc SERVERS                           remote RPC servers
+                                        (env: LLAMA_ARG_RPC)
 --api-key KEY                           API key
                                         (env: LLAMA_API_KEY)
 -ag,   --agent, -no-ag, --no-agent       tools
@@ -71,6 +73,10 @@ HELP = """----- common params -----
                                         control vector layers
 --old-option N                          option removed; use --fit
 --json-schema STRING                    arbitrary supported one-value option
+--override-tensor <tensor name pattern>=<buffer type>,...
+                                        override tensor buffers
+--override-tensor-draft <tensor name pattern>=<buffer type>,...
+                                        override draft tensor buffers
 """
 
 
@@ -316,6 +322,46 @@ def test_selection_required_even_for_one_named_section(catalog):
     with pytest.raises(CustomConfigError, match = "does not exist"):
         compile_ini("[only]\nc=1", catalog, "missing")
     assert compile_ini("[only]\nc=1", catalog, "only").summary()["tuning"]["n_ctx"] == 1
+
+
+def test_top_level_version_is_metadata_not_a_named_section(catalog):
+    result = compile_ini("version=1\n[*]\nnp=1\nc=32", catalog)
+    assert result.n_parallel == 1
+    assert result.summary()["tuning"]["n_ctx"] == 32
+    with pytest.raises(CustomConfigError, match = "explicit named"):
+        compile_ini("[default]\nc=32", catalog)
+
+
+def test_top_level_entries_are_bounded_to_supported_metadata(catalog):
+    with pytest.raises(CustomConfigError, match = "only preset metadata"):
+        compile_ini("ctx-size=32\n[*]\nnp=1", catalog)
+    with pytest.raises(CustomConfigError, match = "version 1"):
+        compile_ini("version=2\n[*]\nnp=1", catalog)
+
+
+def test_composite_override_tensor_metavars_are_one_value(catalog):
+    result = compile_ini(
+        "\n".join(
+            (
+                "[*]",
+                "np=1",
+                r"override-tensor=blk\..*=CPU",
+                r"override-tensor-draft=draft\..*=CUDA0",
+            )
+        ),
+        catalog,
+    )
+    assert result.argv == (
+        "--override-tensor",
+        r"blk\..*=CPU",
+        "--override-tensor-draft",
+        r"draft\..*=CUDA0",
+    )
+
+
+def test_rpc_endpoint_is_managed_in_custom_config(catalog):
+    with pytest.raises(CustomConfigError, match = "managed by Studio"):
+        compile_ini("[*]\nnp=1\nrpc=worker.example:50052", catalog)
 
 
 def test_native_duplicate_key_and_section_replacement(catalog):

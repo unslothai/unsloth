@@ -192,6 +192,28 @@ def test_custom_dispatch_precedes_managed_mutation_and_preserves_tuning(launch, 
     assert backend._mtp_runtime_fallback_active is False
 
 
+def test_custom_launch_publishes_effective_memory_state_before_health_wait(launch, monkeypatch):
+    observed = {}
+
+    def wait(**_kwargs):
+        cmd, env = launch.captured[0]
+        observed["pending"] = launch.backend._custom_launch_pending
+        observed["state"] = launch.backend._memory_state
+        observed["direct_io"] = launch.backend._memory_direct_io
+        observed["expected"] = llama.resolve_effective_load_state(cmd, env)
+        return True
+
+    monkeypatch.setattr(launch.backend, "_wait_for_health", wait)
+    assert launch.backend.load_model(launch.intent)
+    expected_mlock, expected_reserves, expected_direct_io = observed["expected"]
+    assert observed == {
+        "pending": True,
+        "state": (expected_mlock, expected_reserves),
+        "direct_io": expected_direct_io,
+        "expected": observed["expected"],
+    }
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -269,6 +291,9 @@ def test_start_failure_is_terminal_and_does_not_commit_intent(launch, monkeypatc
     assert len(launch.captured) == 1
     assert launch.backend._process is None
     assert launch.backend.last_load_intent is old_intent
+    assert launch.backend._memory_state is None
+    assert launch.backend._memory_direct_io is None
+    assert launch.backend._custom_launch_pending is False
 
 
 def test_cancel_before_validation_does_not_replace(launch):
@@ -289,6 +314,8 @@ def test_cancel_during_health_cleans_child_and_does_not_retry(launch, monkeypatc
     assert launch.backend.load_model(launch.intent, load_cancel_event = cancel) is False
     assert len(launch.captured) == 1 and launch.backend._process is None
     assert launch.backend.last_load_intent is None
+    assert launch.backend._memory_state is None
+    assert launch.backend._custom_launch_pending is False
 
 
 def test_props_accounting_mismatch_is_terminal(launch, monkeypatch):
@@ -300,6 +327,19 @@ def test_props_accounting_mismatch_is_terminal(launch, monkeypatch):
     with pytest.raises(CustomConfigError, match = "confirm.*accounting"):
         launch.backend.load_model(launch.intent)
     assert len(launch.captured) == 1 and launch.backend.last_load_intent is None
+    assert launch.backend._process is None
+    assert launch.backend._memory_state is None
+    assert launch.backend._custom_launch_pending is False
+
+
+def test_audio_finalization_failure_clears_published_memory_state(launch, monkeypatch):
+    monkeypatch.setattr(launch.backend, "_apply_detected_audio", lambda *a: False)
+    assert launch.backend.load_model(launch.intent) is False
+    assert launch.backend._process is None
+    assert launch.backend._memory_state is None
+    assert launch.backend._memory_direct_io is None
+    assert launch.backend._custom_launch_pending is False
+    assert launch.backend.last_load_intent is None
 
 
 def test_comment_only_change_dedupes_but_tuning_change_relaunches(launch):
@@ -341,6 +381,8 @@ def test_managed_intent_cannot_dedupe_against_custom_and_unload_clears(launch):
     assert launch.backend.unload_model()
     assert launch.backend.llama_cpp_config_summary is None
     assert launch.backend.requested_llama_cpp_config is None
+    assert launch.backend._memory_state is None
+    assert launch.backend._custom_launch_pending is False
 
 
 def test_jinja_conflict_and_virtual_metal_refused_before_kill(launch, monkeypatch):

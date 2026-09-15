@@ -21,6 +21,7 @@ export {
   REMEMBERED_INFERENCE_PARAM_KEYS,
   type PersistedInferenceParamKey,
 } from "./persisted-inference-param-keys.ts";
+import { normalizeSavedMinP } from "./min-p-policy.ts";
 
 export function setInferenceParam(
   params: InferenceParams,
@@ -104,7 +105,8 @@ export function getReplayedParams(
   if (!(enabled && checkpointChanged)) {
     return capped(current);
   }
-  const remembered = paramsByModel[modelId];
+  const saved = paramsByModel[modelId];
+  const remembered = saved ? normalizeSavedMinP(saved) : undefined;
   if (!remembered) {
     return capped(current);
   }

@@ -61,14 +61,18 @@ function resetHttp(settings: Record<string, unknown>): void {
 
 /** The store as it stands with the legacy Qwen3.8 snapshot loaded and active. */
 function seedActiveQwen(overrides: Record<string, unknown> = {}): void {
+  const hydratedSnapshot = {
+    ...LEGACY_SNAPSHOT,
+    minPMode: "custom" as const,
+  };
   useChatRuntimeStore.setState((state) => ({
     params: {
       ...state.params,
-      ...LEGACY_SNAPSHOT,
+      ...hydratedSnapshot,
       checkpoint: QWEN38,
       samplingFieldsExplicit: LEGACY_EXPLICIT_FIELDS,
     },
-    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    paramsByModel: { [QWEN38]: hydratedSnapshot },
     activePreset: "Default",
     activePresetSource: "builtin-default",
     rememberParamsPerModel: true,

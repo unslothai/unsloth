@@ -183,6 +183,41 @@ test("UTF-8 cap rejects an oversized edit without erasing its saved predecessor"
   );
 });
 
+test("blank custom source is rejected without erasing its saved predecessor", () => {
+  store.clear();
+  savePerModelConfig("org/model", "Q4", {
+    ...DEFAULT_PER_MODEL_CONFIG,
+    llamaCppConfig: custom,
+  });
+  const blank = { ...custom, ini: " \n\t " };
+  assert.equal(normalizeLlamaCppConfig(blank), undefined);
+  assert.equal(
+    savePerModelConfig("org/model", "Q4", {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      llamaCppConfig: blank,
+    }),
+    false,
+  );
+  assert.deepEqual(
+    resolveInitialConfig("org/model", "Q4").config.llamaCppConfig,
+    custom,
+  );
+});
+
+test("custom configuration is rendered under the advanced GGUF arguments", () => {
+  const page = readSrc("features/model-picker/components/model-config-page.tsx");
+  const settings = page.slice(
+    page.indexOf("<fieldset"),
+    page.indexOf("<div\n        className={", page.indexOf("</fieldset>")),
+  );
+  const fieldsetEnd = settings.indexOf("</fieldset>");
+  const editor = settings.indexOf("<CustomLlamaConfigEditor");
+  assert.ok(settings.indexOf("<GgufAdvancedSettings") < fieldsetEnd);
+  assert.ok(fieldsetEnd < editor);
+  assert.ok(editor < settings.indexOf("<AdvancedSettingsToggle", editor));
+  assert.match(page, /configState\.llamaCppConfig\?\.mode === "custom" \|\|/);
+});
+
 test("selector suggestions never implicitly select a sole named section", () => {
   assert.deepEqual(customConfigSections("[*]\n[only]\nctx-size=56000"), [
     "only",

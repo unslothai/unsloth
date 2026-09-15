@@ -31,7 +31,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -85,6 +85,7 @@ import {
 } from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
+import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
@@ -230,16 +231,19 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         </span>
       )}
       {/* Kept from the replaced renderer: the hover tint over the image. */}
-      <div className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
+      <span className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
       {!failedNow && resolved ? (
         <button
           type="button"
           title="Download image"
           className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
-            // By now the src is always blob:/data:, so a plain fetch carries it.
+            // Reuse fetched bytes under the desktop CSP.
             try {
-              const blob = await (await fetch(resolved)).blob();
+              const blob =
+                file !== null && sandbox.state.status === "loaded"
+                  ? sandbox.state.blob
+                  : await urlToBlob(resolved);
               await downloadFile(blob, downloadName(blob.type), blob.type);
             } catch (error) {
               if (!isDownloadCancelled(error)) toast.error("Could not save file.");
@@ -282,9 +286,6 @@ const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
 
-// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
-// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
-const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -813,50 +814,49 @@ function useCoalescedStreamingText(
 /** False inside the reasoning block, which renders through this same component. */
 export const SearchImagesEnabledContext = createContext(true);
 
-const MarkdownTextImpl = () => {
-  const allowSearchImages = useContext(SearchImagesEnabledContext);
-  const aui = useAui();
-  const { text, status } = useMessagePartText();
-  const partIndex =
-    aui.part.source === "message" && aui.part.query.type === "index"
-      ? aui.part.query.index
-      : 0;
-  // Parts are keyed by index, so switching conversations hands this instance a different message, and Streamdown
-  // only extends its parsed blocks: key it per message. The cache generation joins the key for the case the
-  // Markdown string cannot express, an edit that drops retained blocks without changing the tail.
-  const messageId = useAuiState(({ message }) => message.id);
-  // Read once here for every block below: see RenderHtmlToolPresenceContext.
-  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
-  );
-  // A string, not the Map: selector results are compared by identity.
-  const searchImagesKey = useAuiState(({ message }) =>
-    allowSearchImages ? searchImagesSignature(message.parts) : "",
+type MarkdownTextRendererProps = {
+  isStreaming: boolean;
+  messageHasRenderableRenderHtmlTool: boolean;
+  messageId: string;
+  messageTextKey: string;
+  precedingText: string;
+  searchImagesKey: string;
+  statusType: string;
+  text: string;
+};
+
+function MarkdownTextRenderer({
+  isStreaming,
+  messageHasRenderableRenderHtmlTool,
+  messageId,
+  messageTextKey,
+  precedingText,
+  searchImagesKey,
+  statusType,
+  text,
+}: MarkdownTextRendererProps) {
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const threadId = remoteId ?? activeThreadId ?? undefined;
+  // Streamdown's memo comparator ignores rehypePlugins.
+  const sandboxScopeKey = JSON.stringify([threadId, projectId]);
+  const rehypePlugins = useMemo(
+    () =>
+      // Streamdown caches processors by plugin name and serialized options.
+      withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
+        [rehypeSandboxImages, { threadId, projectId }],
+      ]),
+    [threadId, projectId],
   );
   const searchImages = useMemo(
     () => parseSearchImagesSignature(searchImagesKey),
     [searchImagesKey],
   );
-  // What earlier text parts said, so a subject named in two of them gets one card.
-  const precedingText = useAuiState(({ message }) =>
-    allowSearchImages
-      ? precedingTextForMessagePart(message.parts, partIndex)
-      : "",
-  );
-  const messageTextKey = useAuiState(({ message }) =>
-    allowSearchImages
-      ? JSON.stringify(
-          message.parts
-            .filter((part) => part.type === "text")
-            .map((part) => part.text),
-        )
-      : "[]",
-  );
   const messageTexts = useMemo(
     () => JSON.parse(messageTextKey) as string[],
     [messageTextKey],
   );
-  const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
     () =>
@@ -909,9 +909,9 @@ const MarkdownTextImpl = () => {
       value={messageHasRenderableRenderHtmlTool}
     >
       <SearchImagesContext.Provider value={searchImages}>
-        <div data-status={status.type} className="min-w-0 max-w-full">
+        <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
             parseMarkdownIntoBlocksFn={
@@ -923,7 +923,7 @@ const MarkdownTextImpl = () => {
             plugins={STREAMDOWN_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
-            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
+            rehypePlugins={rehypePlugins}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
@@ -935,6 +935,86 @@ const MarkdownTextImpl = () => {
       </SearchImagesContext.Provider>
     </RenderHtmlToolPresenceContext.Provider>
   );
+}
+
+const MarkdownTextImpl = () => {
+  const allowSearchImages = useContext(SearchImagesEnabledContext);
+  const aui = useAui();
+  const { text, status } = useMessagePartText();
+  const partIndex =
+    aui.part.source === "message" && aui.part.query.type === "index"
+      ? aui.part.query.index
+      : 0;
+  // Parts are keyed by index, so switching conversations hands this instance a
+  // different message, and Streamdown only extends its parsed blocks: key it per
+  // message. The cache generation joins the key for the case the Markdown string
+  // cannot express, an edit that drops retained blocks without changing the tail.
+  const messageId = useAuiState(({ message }) => message.id);
+  // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
+  // A string, not the Map: selector results are compared by identity.
+  const searchImagesKey = useAuiState(({ message }) =>
+    allowSearchImages ? searchImagesSignature(message.parts) : "",
+  );
+  // What earlier text parts said, so a subject named in two of them gets one card.
+  const precedingText = useAuiState(({ message }) =>
+    allowSearchImages
+      ? precedingTextForMessagePart(message.parts, partIndex)
+      : "",
+  );
+  const messageTextKey = useAuiState(({ message }) =>
+    allowSearchImages
+      ? JSON.stringify(
+          message.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text),
+        )
+      : "[]",
+  );
+
+  return (
+    <MarkdownTextRenderer
+      isStreaming={status.type === "running"}
+      messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+      messageId={messageId}
+      messageTextKey={messageTextKey}
+      precedingText={precedingText}
+      searchImagesKey={searchImagesKey}
+      statusType={status.type}
+      text={text}
+    />
+  );
 };
 
+type MarkdownTextSourceProps = {
+  messageHasRenderableRenderHtmlTool: boolean;
+  messageId: string;
+  sourceText: string;
+  streaming: boolean;
+};
+
+const MarkdownTextSourceImpl = ({
+  messageHasRenderableRenderHtmlTool,
+  messageId,
+  sourceText,
+  streaming,
+}: MarkdownTextSourceProps) => (
+  <MarkdownTextRenderer
+    isStreaming={streaming}
+    messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+    messageId={messageId}
+    messageTextKey="[]"
+    precedingText=""
+    searchImagesKey=""
+    statusType={streaming ? "running" : "complete"}
+    text={sourceText}
+  />
+);
+
 export const MarkdownText = withSmoothContextProvider(MarkdownTextImpl);
+// Reasoning pages render at message-group scope, where assistant-ui deliberately
+// exposes no `part`. Its smooth wrapper reads that property, so the source-fed
+// renderer must stay independent of both the part adapter and that wrapper.
+export const MarkdownTextSource = MarkdownTextSourceImpl;

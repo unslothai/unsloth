@@ -12,6 +12,7 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "topP",
   "topK",
   "minP",
+  "minPMode",
   "repetitionPenalty",
   "presencePenalty",
   "maxSeqLength",

@@ -124,7 +124,14 @@ def parse_option_catalog(help_text: str) -> tuple[dict, ...]:
         description = " ".join([description, *continuation]).strip()
         if re.search(r"\b(?:removed|no longer supported|no longer available)\b", description, re.I):
             continue
-        hints = re.findall(r"\[[^]]*\]|\{[^}]*\}|<[^>]*>|\S+", hint)
+        # llama.cpp documents override-tensor as one shell argument even though
+        # its metavar contains two angle-bracket groups and a comma suffix.
+        # Keep that composite metavar intact so it cannot be mistaken for an
+        # unsupported multi-value option.
+        if re.fullmatch(r"<[^>]+>=<[^>]+>(?:,\.\.\.)?", hint):
+            hints = [hint]
+        else:
+            hints = re.findall(r"\[[^]]*\]|\{[^}]*\}|<[^>]*>|\S+", hint)
         arity = len(hints) if len(hints) <= 2 else -1
         # Native emits every positive alias before its negative aliases.
         negatives = []
@@ -220,7 +227,9 @@ def _error(section: str, key: str, message: str) -> CustomConfigError:
 
 def _sections(ini: str) -> dict[str, dict[str, tuple[str, int]]]:
     sections: dict[str, dict[str, tuple[str, int]]] = {}
-    section = "default"
+    # Top-level entries are preset metadata. An explicit [default] remains a
+    # normal named preset that must be selected like any other named section.
+    section = ""
     headers = entries = 0
     for number, raw in enumerate(re.split(r"\r\n|\r|\n", ini), 1):
         header = re.fullmatch(r"\[[ \t]*([^]]+)\][ \t]*(?:[;#].*)?", raw)
@@ -417,7 +426,13 @@ def compile_custom_config(
             "Executable help probe is incomplete: model and parallel declarations are required"
         )
     sections = _sections(source.ini)
-    named = set(sections) - {"*"}
+    metadata = sections.get("", {})
+    for key, (value, _line) in metadata.items():
+        if key != "version":
+            raise _error("metadata", key, "only preset metadata is allowed before a section")
+        if value != "1":
+            raise _error("metadata", key, "only preset metadata version 1 is supported")
+    named = set(sections) - {"", "*"}
     if source.section is None and named:
         raise CustomConfigError("Select an explicit named INI section")
     if source.section is not None and (source.section == "*" or source.section not in named):
