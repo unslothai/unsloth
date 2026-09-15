@@ -1040,6 +1040,13 @@ export const ptBR = {
         minimal: "Minimalista",
       },
       custom: {
+        chatWidth: {
+          label: "Largura do chat",
+          description: "Defina a largura das mensagens e do campo de texto. A largura total usa o espaço entre as barras laterais.",
+          standard: "Padrão",
+          wide: "Ampla",
+          full: "Largura total",
+        },
         reset: "Redefinir",
         resetAll: "Redefinir personalização",
         preferencesTitle: "Preferências",

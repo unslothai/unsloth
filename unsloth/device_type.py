@@ -285,13 +285,16 @@ def get_device_stats() -> tuple[str, str, float]:
         name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
         snippet = f"Intel Toolkit: {torch.version.xpu}."
     elif DEVICE_TYPE == "npu":
-        name = gpu_stats.name + ". " if gpu_stats.name else "NPU Device. "
+        # Named for the vendor, like the arms either side of it: torch.npu and torch_npu are
+        # Ascend's, so an unnamed one is an Ascend NPU the driver declined to name, not some
+        # generic NPU. #10686 added the tests that say so and the code that did not.
+        name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
         # Report the toolkit like the cuda/xpu arms, not the name already in `name`.
         try:
             import torch_npu
-            snippet = f"NPU. torch_npu: {torch_npu.__version__}."
+            snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."
         except Exception:
-            snippet = "NPU."
+            snippet = "Ascend NPU."
     else:
         name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
         snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."
