@@ -607,7 +607,8 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     param([string]$InstallDir)
     if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1" -or $LlamaPr -or $explicitLlamaSourceBackend) { return "" }
     if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { return "" }
-    if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest", "master")) { return "" }
+    # "master" is a branch, never a release: it asks for a source build, so nothing is kept.
+    if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest")) { return "" }
     $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
     if (-not $backend) { return "" }
     $nvidia = $HasNvidiaSmi

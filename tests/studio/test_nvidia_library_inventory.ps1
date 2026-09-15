@@ -177,6 +177,8 @@ $env:UNSLOTH_LLAMA_TAG = "latest"
 Check "the default tag spelling still keeps" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "cuda")
 $env:UNSLOTH_LLAMA_TAG = "b7000"
 Check "a version pin asked for that version, so nothing is kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+$env:UNSLOTH_LLAMA_TAG = "master"
+Check "master asks for a source build, so nothing is kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
 Remove-Item Env:UNSLOTH_LLAMA_TAG
 $env:UNSLOTH_LLAMA_FORCE_COMPILE = "1"
 Check "a forced compile is not kept over" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
