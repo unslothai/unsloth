@@ -42,10 +42,8 @@ test("before /api/health answers, both endpoints are the official ones", () => {
 });
 
 test("the hooks React subscribes to are the same state the getters read", () => {
-  // The point of holding this in a store: a component cannot be left on the host
-  // that was configured when it last rendered. The hooks are thin useStore
-  // wrappers, so what matters here is that they read the one store the setter
-  // writes, rather than a second copy that has to be kept in sync by hand.
+  // The hooks are thin useStore wrappers, so what matters is that they read the
+  // one store the setter writes, not a second copy kept in sync by hand.
   resetHfEndpoints();
   assert.equal(typeof useHfEndpoint, "function");
   assert.equal(typeof useHfDatasetsServer, "function");

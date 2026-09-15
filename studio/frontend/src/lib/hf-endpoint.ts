@@ -5,11 +5,9 @@
  * The frontend's HuggingFace endpoints, held in one place. `config/env.ts` pushes
  * the values in when `/api/health` answers.
  *
- * A store rather than plain module state so React sees it change: a component that
- * read a module variable would keep whichever host was configured when it last
- * rendered. Imports only zustand, deliberately: `network.ts` imports this and the
- * unit tests import that under bare node, which cannot evaluate the
- * `import.meta.env` and platform store `config/env.ts` would bring.
+ * A store, not plain module state, so React sees it change. Imports only zustand,
+ * deliberately: `network.ts` imports this and the unit tests import that under bare
+ * node, which cannot evaluate what `config/env.ts` would bring.
  */
 
 import { useStore } from "zustand";
