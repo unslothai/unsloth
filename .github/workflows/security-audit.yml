@@ -10,7 +10,7 @@
 #     when no PR opens,
 #   - workflow_dispatch for ad-hoc invocations.
 #
-# Six jobs:
+# Eight jobs (changes + six + the gate):
 #   - advisory-audit:    one runner that runs pip-audit + npm audit +
 #                        cargo audit back-to-back. All three are
 #                        advisory-DB lookups -- fast, lockfile-driven,
@@ -65,28 +65,11 @@ on:
   # deliberately left unfiltered, as is every push to main. So the worst case a filter
   # introduces is that a newly published malicious version is caught by the nightly run or at
   # merge instead of on the PR that did not touch dependencies.
+  # Deliberately unfiltered. The scans still only run when something they read has changed
+  # -- the `changes` job below decides that now, carrying the same list -- but the workflow
+  # itself has to start on every PR, because a filtered workflow reports no check at all
+  # when it is skipped, and a check that never reports can never be a required one.
   pull_request:
-    paths:
-      - 'pyproject.toml'
-      - 'studio/backend/requirements/**'
-      - 'studio/frontend/package.json'
-      - 'studio/frontend/package-lock.json'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'studio/src-tauri/Cargo.toml'
-      - 'scripts/scan_packages.py'
-      - 'scripts/scan_packages_baseline.json'
-      - 'tests/security/**'
-      # The production code the security suites protect. Without these, a PR touching
-      # only `loader_utils.py` skipped this job entirely - the always-running light
-      # workflow ignores those three suites - so the tests ran for the first time on
-      # the push event, after the regression had already merged.
-      - 'unsloth/models/loader_utils.py'
-      - 'unsloth/models/mapper.py'
-      - 'unsloth/models/_custom_dtype.py'
-      - 'unsloth/models/loader.py'
-      - 'unsloth/models/vision.py'
-      - 'unsloth/models/_utils.py'
-      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
   schedule:
@@ -134,12 +117,71 @@ env:
   NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "60000"
 
 jobs:
+  # What the paths filter used to decide, as a job, so the workflow still starts and can
+  # still report. The list below is the one the filter held, moved rather than copied, so
+  # the two cannot drift.
+  changes:
+    name: scanned paths changed?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.detect.outputs.relevant }}
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide whether anything the scans read has changed
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          PATTERNS: |
+            pyproject.toml
+            studio/backend/requirements/**
+            studio/frontend/package.json
+            studio/frontend/package-lock.json
+            studio/src-tauri/Cargo.lock
+            studio/src-tauri/Cargo.toml
+            scripts/scan_packages.py
+            scripts/scan_packages_baseline.json
+            tests/security/**
+            unsloth/models/loader_utils.py
+            unsloth/models/mapper.py
+            unsloth/models/_custom_dtype.py
+            unsloth/models/loader.py
+            unsloth/models/vision.py
+            unsloth/models/_utils.py
+            .github/workflows/security-audit.yml
+        run: |
+          set -euo pipefail
+          # push, schedule and workflow_dispatch scan unconditionally, as they always have.
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request ($EVENT): scanning everything"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' > changed.txt
+          echo "changed files:"; sed 's/^/  /' changed.txt
+          python3 scripts/ci_paths_changed.py changed.txt
   # ─────────────────────────────────────────────────────────────────────
   # Combined advisory-DB audit: pip-audit + npm audit + cargo audit
   # all on one runner. Each step is continue-on-error so a finding in
   # one toolchain does not suppress the others.
   # ─────────────────────────────────────────────────────────────────────
   advisory-audit:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     name: advisory audit (pip + npm + cargo)
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -782,6 +824,8 @@ jobs:
   # Python: pre-install package scan (no install, no execution)
   # ─────────────────────────────────────────────────────────────────────
   pip-scan-packages:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     # Downloads each declared dep WITHOUT installing it and inspects
     # the archive contents for known malicious patterns: weaponized
     # .pth files, credential stealers, obfuscated payloads,
@@ -1024,6 +1068,8 @@ jobs:
   # npm: pre-install tarball content scan.
   # ─────────────────────────────────────────────────────────────────────
   npm-scan-packages:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     # Counterpart to pip-scan-packages for the npm side. Reads
     # studio/frontend/package-lock.json, downloads each resolved
     # tarball DIRECTLY from registry.npmjs.org (never via `npm
@@ -1052,7 +1098,6 @@ jobs:
     name: npm scan-packages (Unsloth frontend tarballs)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: []
     steps:
       # Per-job allowlist: npm-scan-packages only fetches tarballs from
       # registry.npmjs.org. GitHub endpoints retained for checkout +
@@ -1139,6 +1184,8 @@ jobs:
   #      blocking new ones at PR time is a small, high-signal gate.
   # ─────────────────────────────────────────────────────────────────────
   npm-provenance-and-install-scripts:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     name: npm provenance + new install-script diff
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1241,3 +1288,44 @@ jobs:
           path: studio/frontend/logs-audit-signatures.txt
           if-no-files-found: ignore
           retention-days: 30
+
+
+  # The context to require. Always runs, so it always reports, which is the whole point:
+  # a skipped scan is the detector saying this PR cannot affect it, and that is a pass.
+  # A failed or cancelled one is not.
+  security-audit:
+    name: security audit
+    needs: [changes, advisory-audit, pip-scan-packages, npm-scan-packages, npm-provenance-and-install-scripts]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Verdict
+        env:
+          RELEVANT: ${{ needs.changes.outputs.relevant }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$RESULTS"
+          bad=0
+          for job in changes advisory-audit pip-scan-packages npm-scan-packages npm-provenance-and-install-scripts; do
+            r=$(printf '%s' "$RESULTS" | python3 -c "import json,sys; print(json.load(sys.stdin)['$job']['result'])")
+            case "$r" in
+              success|skipped) echo "ok       $job: $r" ;;
+              *)               echo "::error::$job: $r"; bad=1 ;;
+            esac
+          done
+          if [ "$bad" != "0" ]; then
+            echo "::error::the security audit did not pass"
+            exit 1
+          fi
+          if [ "$RELEVANT" = "true" ]; then
+            echo "security audit passed"
+          else
+            echo "nothing the security audit reads changed in this PR"
+          fi
