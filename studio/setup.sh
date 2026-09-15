@@ -3240,6 +3240,7 @@ import sys
 
 spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
 installer = importlib.util.module_from_spec(spec)
+sys.modules["installer"] = installer  # the module's dataclasses resolve through sys.modules
 spec.loader.exec_module(installer)
 try:
     marker = json.load(open(sys.argv[2], encoding="utf-8"))
