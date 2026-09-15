@@ -964,17 +964,19 @@ class ExportBackend:
                     repo_id = getattr(repo_url, "repo_id", repo_id)
                     if private:
                         _ensure_hub_repo_private(hf_api, repo_id)
-                    base_model = getattr(self.current_model.config, "_name_or_path", "unknown")
-                    content = MODEL_CARD.format(
-                        username = repo_id.split("/")[0],
-                        base_model = repo_id if os.path.isdir(base_model) else base_model,
-                        model_type = getattr(self.current_model.config, "model_type", "llm"),
-                        method = compressed_alias or format_type,
-                        extra = "unsloth",
-                    )
-                    ModelCard(content).push_to_hub(
-                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                    )
+                    # Keep an existing repo's card, as push_to_hub_merged does.
+                    if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown")
+                        content = MODEL_CARD.format(
+                            username = repo_id.split("/")[0],
+                            base_model = repo_id if os.path.isdir(base_model) else base_model,
+                            model_type = getattr(self.current_model.config, "model_type", "llm"),
+                            method = compressed_alias or format_type,
+                            extra = "unsloth",
+                        )
+                        ModelCard(content).push_to_hub(
+                            repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                        )
                     hf_api.upload_folder(
                         folder_path = output_path,
                         repo_id = repo_id,
