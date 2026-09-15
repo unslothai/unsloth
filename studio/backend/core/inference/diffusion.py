@@ -118,6 +118,7 @@ from .diffusion_speed import (
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
+    vae_decode_compile_allowed,
 )
 from .diffusion_attention import (
     apply_attention_backend,
@@ -4423,6 +4424,9 @@ class DiffusionBackend:
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
+                                # The VAE decode compiles lazily at the first decode, so its artifacts reach the
+                                # bundle only through a key that moves when the decision does.
+                                "vae_decode": vae_decode_compile_allowed(pipe),
                             },
                             logger = logger,
                         )
@@ -5695,6 +5699,7 @@ class DiffusionBackend:
                     and state.offload_policy == OFFLOAD_NONE,
                     "dynamic": True,
                     "mode": "default",
+                    "vae_decode": vae_decode_compile_allowed(state.pipe),
                 },
                 logger = logger,
             )

@@ -26,6 +26,10 @@ bigger warm speedup. The compiled dequant is skipped under ``max`` (the regional
 it; a separate compiled dequant would break that graph). ``supports_torch_compile`` + bf16/CUDA
 checks gate regional compile.
 
+  ``UNSLOTH_DIFFUSION_COMPILE_VAE=auto|0|1``  whether a compiled load also compiles the VAE decode.
+                                        ``auto`` (default) covers U-Nets plus ``_VAE_COMPILE_ALLOW``
+                                        minus ``_VAE_COMPILE_DENY``; ``0`` is U-Net only, ``1`` forces it.
+
 Kernel-level switches for the NVFP4 flashinfer backend live with their own modules and are listed
 here because this is where an operator looks for a speed knob. All are safe to leave unset.
 
@@ -328,10 +332,10 @@ def apply_speed_optims(
             offload_active = offload_active,
         )
 
-    # A compiled U-Net family also compiles the VAE decode (4.98 to 4.25 s over 4 images, LPIPS unchanged). DiTs skip
-    # it. dynamic=True keeps it resolution-robust.
-    if applied["compiled"] and _denoiser_unet(pipe) is not None:
-        applied["compiled_vae_decode"] = _compile_vae_decode(pipe, logger)
+    if applied["compiled"] and _vae_decode_compile_allowed(pipe):
+        applied["compiled_vae_decode"] = _compile_vae_decode(
+            pipe, logger, max_autotune = mode == SPEED_MAX
+        )
 
     if mode == SPEED_MAX:
         if on_cuda:
@@ -563,16 +567,65 @@ def _compile_repeated_blocks(
     return engaged
 
 
-def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
-    """torch.compile the VAE ``decode`` bound method in place (U-Net families; caller gates).
-    Instance-level assignment: the pipe owns it and the module object is untouched."""
+COMPILE_VAE_ENV = "UNSLOTH_DIFFUSION_COMPILE_VAE"
+
+_VAE_TRUE_TOKENS = ("1", "true", "yes", "on")
+_VAE_FALSE_TOKENS = ("0", "false", "no", "off")
+
+# Not a correctness list: AutoencoderKLQwenImage decodes fine compiled, it just measured SLOWER than eager. So does
+# AutoencoderKLWan (wan2.2-ti2v-5b, the Wan 14B families): its decode is a Python loop over spatial tiles x latent
+# frames carrying a mutated feat_cache, so compile trims 572k kernel launches to 493k without fusing the decode, and
+# a 1280x704x121 clip on a B200 goes 35.76 -> 37.41 s p50 (decode 11.29 -> 11.64 s of GPU, denoise unmoved at
+# 18.10 s) for a 193 s cold compile. Denied although nothing about it is wrong: no NaN, max-abs 0.0099 and LPIPS
+# 8.1e-05 against its own eager decode on the same latent.
+_VAE_COMPILE_DENY: frozenset[str] = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
+
+# ``auto`` compiles only these: the video backend runs apply_speed_optims for every video DiT view, unmeasured.
+_VAE_COMPILE_ALLOW: frozenset[str] = frozenset({"AutoencoderKL"})
+
+
+def vae_decode_compile_allowed(pipe: Any) -> bool:
+    """Public form for the compile-cache key: a bundle saved without the VAE decode artifacts must
+    not read as a hit once this pipe compiles it, or the decode recompiles on every load."""
+    return _vae_decode_compile_allowed(pipe)
+
+
+def _vae_decode_compile_allowed(pipe: Any) -> bool:
+    """Whether the VAE decode compile covers this pipe; U-Nets always do and ignore the env."""
+    if _denoiser_unet(pipe) is not None:
+        return True
+    raw = os.environ.get(COMPILE_VAE_ENV, "").strip().lower()
+    if raw in _VAE_FALSE_TOKENS:
+        return False
+    if raw in _VAE_TRUE_TOKENS:
+        return True
+    name = type(getattr(pipe, "vae", None)).__name__
+    return name in _VAE_COMPILE_ALLOW and name not in _VAE_COMPILE_DENY
+
+
+def _compile_vae_decode(
+    pipe: Any,
+    logger: Any,
+    max_autotune: bool = False,
+) -> bool:
+    """torch.compile the VAE ``decode`` bound method in place; caller gates the family.
+
+    No cudagraphs under ``max_autotune``: the decode runs once per image and capture would pin its activations."""
     vae = getattr(pipe, "vae", None)
     decode = getattr(vae, "decode", None) if vae is not None else None
     if not callable(decode):
         return False
+    # A dual-DiT family calls apply_speed_optims twice over the same pipe, so guard against compiling twice.
+    if getattr(vae, "_unsloth_compiled_decode", False):
+        return True
     try:
         import torch
-        vae.decode = torch.compile(decode, fullgraph = False, dynamic = True)
+
+        kwargs: dict[str, Any] = {"fullgraph": False, "dynamic": True}
+        if max_autotune:
+            kwargs["mode"] = "max-autotune-no-cudagraphs"
+        vae.decode = torch.compile(decode, **kwargs)
+        vae._unsloth_compiled_decode = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "vae decode compile", exc)
