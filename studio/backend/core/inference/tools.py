@@ -2913,18 +2913,23 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
     directory, so the ordering is what decides it.
     """
     lowered = text.lower()
+    assignments: "dict[str, int]" = {}
     for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
-        name = match.group(1).lower()
+        # The LAST assignment of a name is the one the expansion applies, so that is the position
+        # the first use has to come after: `H=$H; cat "$H/auth/auth.db"; H=/tmp` reads the real
+        # database and then rebinds, and rewriting every use to `/tmp` erased the marker.
+        assignments[match.group(1).lower()] = match.end()
+    for name, position in assignments.items():
         uses = [
-            position
-            for position in (
+            found
+            for found in (
                 lowered.find(f"${name}"),
                 lowered.find(f"${{{name}}}"),
                 lowered.find(f"%{name}%"),
             )
-            if position != -1
+            if found != -1
         ]
-        if not uses or min(uses) >= match.end():
+        if not uses or min(uses) >= position:
             return True
     return False
 
