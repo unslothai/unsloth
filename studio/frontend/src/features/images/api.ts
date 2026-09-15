@@ -287,6 +287,8 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
 }
 
 export interface DiffusionDownloadPlan {
+  /** Metadata discovery failed, so the file list may be incomplete. */
+  plan_failed?: boolean;
   entries: {
     repo_id: string;
     files: string[];

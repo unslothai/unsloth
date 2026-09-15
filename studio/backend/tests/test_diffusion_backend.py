@@ -7379,7 +7379,9 @@ def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkey
 def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypatch):
     # A neutral repo whose id AND filename match no family resolves no companions, and the family
     # fallback used to raise on None. The picker asks for a plan on every hub pick, so that 500s
-    # the route; planning no work is the honest answer and the load still handles its own fetch.
+    # the route; planning no work is the honest answer. /images/download-plan refuses this pick
+    # outright before the planner is reached (see test_diffusion_routes.py), so nothing downstream
+    # depends on the shape of this answer.
     _fake_hf_api(monkeypatch, {})
 
     plan = DiffusionBackend().download_plan(
@@ -10066,6 +10068,8 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
 
 
 def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
     import core.inference.diffusion as diffusion_mod
 
     backend = _loaded_backend(tmp_path)
@@ -10097,3 +10101,44 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
     )
     assert diffusion_mod.generation_in_flight() is False
+
+
+def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypatch):
+    """The repo answers and holds NEITHER the primary nor the fallback name. That is not "no
+    prequant is used": this pick is configured to use one and the dense shards are already excluded
+    for it, so the plan would name no transformer source at all while calling itself complete."""
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as diffusion_mod
+
+    source = SimpleNamespace(
+        kind = "repo",
+        location = "unsloth/some-prequant",
+        filename = "transformer_fp8.safetensors",
+        fallback_filename = "transformer.fp8.safetensors",
+    )
+    monkeypatch.setattr(diffusion_mod, "usable_prequant_source", lambda *a, **k: source)
+    monkeypatch.setattr(diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    monkeypatch.setattr(
+        DiffusionBackend, "_target_for_ordinal", lambda self, fam, ordinal: SimpleNamespace()
+    )
+    # A repo that exists but carries something else entirely.
+    _fake_hf_api(
+        monkeypatch,
+        {"unsloth/some-prequant": [_FakeSibling("README.md", 10)]},
+    )
+
+    failures: list = []
+    got = DiffusionBackend()._dit_prequant_plan_source(
+        SimpleNamespace(name = "flux.2-klein"),
+        "gguf",
+        None,
+        {"transformer_quant": "fp8"},
+        failures,
+    )
+
+    assert got is None
+    assert (
+        failures
+    ), "a configured prequant that is not in its repo left the plan calling itself complete"
+    assert "prequant artifact missing" in str(failures[0])
