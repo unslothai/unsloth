@@ -6661,7 +6661,6 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
       onRemove={removePromptQueueItem}
       onMove={movePromptQueueItem}
       onSteer={steerPromptQueueItem}
-      onPause={() => pausePromptQueueRun(queueThreadIds)}
       onResume={() => resumePromptQueueRun(queueThreadIds)}
     />
   );

@@ -10,6 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   type PromptQueueUIItem,
   reorderPromptQueueItems,
+  useChatPreferencesStore,
 } from "@/features/chat";
 import "./src/index.css";
 
@@ -35,6 +36,7 @@ const initialItems: PromptQueueUIItem[] = Array.from(
 );
 
 function App() {
+  const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
   const [items, setItems] = useState(initialItems);
   const [paused, setPaused] = useState(false);
   const [rejectMoves, setRejectMoves] = useState(false);
@@ -51,12 +53,16 @@ function App() {
             setRejectMoves(false);
             setSteered("");
             setMoveAttempts(0);
+            useChatPreferencesStore.getState().setFollowUpBehavior("queue");
           }}
         >
           Reset fixture
         </button>
         <button type="button" onClick={() => setRejectMoves(true)}>
           Simulate dispatch race
+        </button>
+        <button type="button" onClick={() => setPaused(true)}>
+          Simulate paused queue
         </button>
         <button type="button" onClick={() => setItems((old) => old.slice(1))}>
           Dispatch first
@@ -93,6 +99,7 @@ function App() {
           Lock prompts
         </button>
         <output aria-label="Steered prompt">{steered}</output>
+        <output aria-label="Follow-up behavior">{followUpBehavior}</output>
         <output aria-label="Move attempts">{moveAttempts}</output>
       </div>
       <main style={{ maxWidth: 850, margin: "180px auto 0" }}>
@@ -140,7 +147,6 @@ function App() {
             setPaused(false);
             return true;
           }}
-          onPause={() => setPaused(true)}
           onResume={() => setPaused(false)}
         />
       </main>

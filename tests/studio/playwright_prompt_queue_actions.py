@@ -39,15 +39,32 @@ def check_actions(page):
         expect(page.get_by_role("menu")).to_have_count(0)
 
     order(["q0", "q1", "q2"])
+    behavior = page.get_by_label("Follow-up behavior", exact = True)
+    expect(behavior).to_have_text("queue")
     expect(page.get_by_role("button", name = re.compile(r"^Steer with queued prompt"))).to_have_count(
         3
     )
     menu(3)
     expect(page.get_by_role("menuitem")).to_have_text(
-        ["Edit message", "Copy message", "Stop and pause queue"]
+        ["Edit message", "Copy message", "Turn off queueing"]
     )
     expect(page.get_by_role("menuitem", name = re.compile(r"^Move"))).to_have_count(0)
     page.keyboard.press("Escape")
+
+    menu(1)
+    action("Turn off queueing")
+    expect(behavior).to_have_text("steer")
+    order(["q0", "q1", "q2"])
+    expect(page.get_by_text("Paused", exact = True)).to_have_count(0)
+    expect(page.get_by_label("Steered prompt", exact = True)).to_be_empty()
+    page.reload()
+    expect(behavior).to_have_text("steer")
+    menu(2)
+    action("Turn on queueing")
+    expect(behavior).to_have_text("queue")
+    order(["q0", "q1", "q2"])
+    expect(page.get_by_text("Paused", exact = True)).to_have_count(0)
+    expect(page.get_by_label("Steered prompt", exact = True)).to_be_empty()
 
     menu(2)
     action("Edit message")
@@ -96,12 +113,17 @@ def check_actions(page):
       return !event.defaultPrevented;
     }""")
 
-    menu(1)
-    action("Stop and pause queue")
+    page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
     expect(page.get_by_text("Paused", exact = True)).to_be_visible()
+    menu(1)
+    action("Turn off queueing")
+    expect(behavior).to_have_text("steer")
+    expect(page.get_by_text("Paused", exact = True)).to_be_visible()
+    order(["q2", "q0", "q1"])
     menu(1)
     action("Resume queue")
     expect(page.get_by_text("Paused", exact = True)).to_have_count(0)
+    expect(behavior).to_have_text("steer")
     page.get_by_role("button", name = "Simulate dispatch race").click()
     page.get_by_role("button", name = "Reorder queued prompt 3 of 3", exact = True).focus()
     page.keyboard.press("Home")
@@ -124,8 +146,7 @@ def check_actions(page):
         page.get_by_role("button", name = "More options for queued prompt 1", exact = True)
     ).to_be_focused()
     page.get_by_role("button", name = "Reset fixture", exact = True).click()
-    menu(1)
-    action("Stop and pause queue")
+    page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
     page.get_by_role("button", name = "Steer with queued prompt 2", exact = True).click()
     order(["q0", "q2"])
     expect(page.get_by_label("Steered prompt", exact = True)).to_have_text("Second prompt")
@@ -138,7 +159,7 @@ def check_actions(page):
         page.get_by_role("button", name = "Steer with queued prompt 2", exact = True)
     ).to_be_disabled()
     print(
-        "PASS: compact menu, steer, edit, keyboard, mouse drag, file drop, pause/resume, races and locked states",
+        "PASS: compact menu, persistent queueing preference, steer, edit, keyboard, mouse drag, file drop, resume, races and locked states",
         flush = True,
     )
 

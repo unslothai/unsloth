@@ -7,7 +7,6 @@ import {
   GripVerticalIcon,
   ListEndIcon,
   MoreHorizontalIcon,
-  PauseIcon,
   PlayIcon,
 } from "lucide-react";
 import {
@@ -27,6 +26,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import {
   type PromptQueueUIEntry,
   type PromptQueueUIItem,
+  useChatPreferencesStore,
 } from "@/features/chat";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
@@ -38,7 +38,6 @@ type PromptQueueListProps = {
   onRemove: (id: string) => boolean;
   onMove: (id: string, targetId: string) => boolean;
   onSteer: (id: string) => boolean;
-  onPause: () => void;
   onResume: () => void;
 };
 
@@ -50,9 +49,10 @@ export function PromptQueueList({
   onRemove,
   onMove,
   onSteer,
-  onPause,
   onResume,
 }: PromptQueueListProps) {
+  const followUpBehavior = useChatPreferencesStore((s) => s.followUpBehavior);
+  const setFollowUpBehavior = useChatPreferencesStore((s) => s.setFollowUpBehavior);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [announcement, setAnnouncement] = useState("");
@@ -326,11 +326,24 @@ export function PromptQueueList({
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
-                      onSelect={entry.paused ? onResume : onPause}
+                      onSelect={() => {
+                        const behavior = followUpBehavior === "queue" ? "steer" : "queue";
+                        setFollowUpBehavior(behavior);
+                        setAnnouncement(
+                          behavior === "queue"
+                            ? "New follow-ups will queue after the current response."
+                            : "New follow-ups will steer the current response.",
+                        );
+                      }}
                     >
-                      {entry.paused ? <PlayIcon /> : <PauseIcon />}
-                      {entry.paused ? "Resume queue" : "Stop and pause queue"}
+                      <ListEndIcon />
+                      {followUpBehavior === "queue" ? "Turn off queueing" : "Turn on queueing"}
                     </DropdownMenuItem>
+                    {entry.paused && (
+                      <DropdownMenuItem onSelect={onResume}>
+                        <PlayIcon /> Resume queue
+                      </DropdownMenuItem>
+                    )}
                   </NonModalDropdownMenu>
                 </div>
               )}
