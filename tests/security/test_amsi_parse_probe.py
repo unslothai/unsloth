@@ -883,15 +883,17 @@ def test_the_defender_verdict_assigns_causality_per_script() -> None:
     produce -- was reported as a plain clean head.
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
-    defender = body[body.index("Ask Defender's file scanner"):]
-    defender = defender[:defender.index("Upload the measurements")]
-    assert "$defState" in defender, "the Defender half records no per-script state to compare against"
+    defender = body[body.index("Ask Defender's file scanner") :]
+    defender = defender[: defender.index("Upload the measurements")]
+    assert (
+        "$defState" in defender
+    ), "the Defender half records no per-script state to compare against"
     assert '$defState["base|$name"]' in defender, (
         "the Defender verdict does not look up the matching base script, so it cannot tell an "
         "introduced detection from a pre-existing one"
     )
     for phrase in ("pre-existing rather than introduced", "This change introduced it"):
         assert phrase in defender, f"the Defender verdict never says {phrase!r}"
-    assert "is flagged on the merge base and clean on the candidate" in defender, (
-        "a base-only detection is still reported as a neutral clean head"
-    )
+    assert (
+        "is flagged on the merge base and clean on the candidate" in defender
+    ), "a base-only detection is still reported as a neutral clean head"
