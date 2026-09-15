@@ -2832,7 +2832,6 @@ def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()
 
 def _graceful_shutdown_on_sigterm() -> None:
     import signal as _signal
-
     def _handler(signum, frame):
         _signal.signal(_signal.SIGTERM, _signal.SIG_DFL)
         raise KeyboardInterrupt

@@ -34,9 +34,7 @@ def _program(name: str) -> str:
 
 def _launch(**env: str) -> subprocess.CompletedProcess:
     e = dict(os.environ, UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "1", JUPYTER_PORT = "8888", **env)
-    return subprocess.run(
-        ["bash", str(LAUNCH)], capture_output = True, text = True, env = e, timeout = 120
-    )
+    return subprocess.run(["bash", str(LAUNCH)], capture_output = True, text = True, env = e, timeout = 120)
 
 
 def test_supervisord_waits_for_the_save_and_then_kills_the_whole_tree():
@@ -55,8 +53,12 @@ def test_the_image_defaults_resolve_the_placeholder_without_the_launcher():
 
 def test_the_launcher_derives_supervisords_wait_from_the_budget():
     body = LAUNCH.read_text(encoding = "utf-8")
-    assert "UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S + 30 ))" in body
-    assert body.index("UNSLOTH_STUDIO_STOP_WAIT_S=") < body.index("UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-")
+    assert (
+        "UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S + 30 ))" in body
+    )
+    assert body.index("UNSLOTH_STUDIO_STOP_WAIT_S=") < body.index(
+        "UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-"
+    )
 
 
 @pytest.mark.parametrize("value", ["soon", "-1", "1.5", ""])
@@ -77,7 +79,7 @@ def test_a_number_of_seconds_passes(value: str):
 
 def test_run_sh_gives_docker_stop_the_same_budget():
     body = (DOCKER / "run.sh").read_text(encoding = "utf-8")
-    assert 'STOP_TIMEOUT=$(( ${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120} + 30 ))' in body
+    assert "STOP_TIMEOUT=$(( ${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120} + 30 ))" in body
     assert '--stop-timeout "$STOP_TIMEOUT"' in body
     assert "ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)" in body
 

@@ -36,8 +36,12 @@ def test_sigterm_becomes_a_keyboard_interrupt_once(restore_sigterm):
 
 
 def test_both_server_wait_loops_install_the_handler():
-    loops = [m.start() for m in re.finditer(r"run_mod\._shutdown_event\.wait\(timeout = 1\)", STUDIO_SRC)]
+    loops = [
+        m.start() for m in re.finditer(r"run_mod\._shutdown_event\.wait\(timeout = 1\)", STUDIO_SRC)
+    ]
     assert len(loops) == 2, loops
     for loop in loops:
         before = STUDIO_SRC[:loop]
-        assert "_graceful_shutdown_on_sigterm()" in before[before.rindex("run_server(**run_kwargs)") :]
+        assert (
+            "_graceful_shutdown_on_sigterm()" in before[before.rindex("run_server(**run_kwargs)") :]
+        )

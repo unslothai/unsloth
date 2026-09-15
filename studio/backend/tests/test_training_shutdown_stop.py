@@ -23,7 +23,6 @@ class _FakeProc:
 @pytest.fixture
 def backend():
     from core.training.training import TrainingBackend
-
     return TrainingBackend()
 
 
@@ -33,7 +32,12 @@ def _running(backend, job_id = "job_1"):
     return backend._proc
 
 
-def _record_stop(monkeypatch, backend, result = True, on_stop = None):
+def _record_stop(
+    monkeypatch,
+    backend,
+    result = True,
+    on_stop = None,
+):
     calls = []
 
     def stop_training(**kw):

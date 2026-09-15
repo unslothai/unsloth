@@ -2353,7 +2353,9 @@ class TrainingBackend:
             if not proc.is_alive() or self.is_run_finished():
                 return True
             time.sleep(0.25)
-        logger.warning("Shutdown: training run %s did not finish saving within %.0fs", job_id, timeout)
+        logger.warning(
+            "Shutdown: training run %s did not finish saving within %.0fs", job_id, timeout
+        )
         return False
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
