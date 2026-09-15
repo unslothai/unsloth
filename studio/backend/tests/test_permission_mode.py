@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `gcc -o FILE` truncates that file; `make -C DIR` runs recipes that write there;
+    # `git init DIR` creates the repository in it.
+    "gcc -E input.c -o /media/alice/private.txt",
+    "make -C /usr/share/doc clean",
+    "git init /usr/share/doc/repo",
     # A permission change modifies the file it names; the mode or owner is not a path.
     "chmod 000 /media/alice/report.txt",
     "chown alice /media/alice/report.txt",
@@ -3786,6 +3791,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "gcc -o out main.c",
+    "make -C ./sub all",
+    "git init ./repo",
     "chmod 644 notes.txt",
     "cp --targ=./staged payload",
     "cp --preserve=mode notes.txt copy.txt",

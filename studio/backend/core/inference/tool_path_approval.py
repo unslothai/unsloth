@@ -703,7 +703,7 @@ _PATH_SCRIPT_COMMANDS = frozenset(
 # below; listing it here would read a subcommand name as a path.
 # jq is here rather than among the readers because its POSITIONAL is a filter, not a path: only the
 # values of its flags name files.
-_PATH_FLAG_ONLY_COMMANDS = frozenset({"git", "make", "jq"})
+_PATH_FLAG_ONLY_COMMANDS = frozenset("git make jq gcc g++ cc c++ clang clang++".split())
 
 
 # Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
@@ -891,12 +891,21 @@ _PATH_FLAG_SPECS = {
         "-f": "read",
         "--file": "read",
         "--makefile": "read",
-        "-C": "read",
-        "--directory": "read",
+        # `-C DIR` is where make RUNS, and a recipe writes there (`make -C /models clean`).
+        "-C": "write",
+        "--directory": "write",
         "-j": "skip",
         "--jobs": "skip",
         "-l": "skip",
     },
+    # `gcc --help`: `-o <file>` places the output there, truncating it. The positionals are source
+    # files, which the flag-only treatment leaves alone.
+    "gcc": {"-o": "write"},
+    "g++": {"-o": "write"},
+    "cc": {"-o": "write"},
+    "c++": {"-o": "write"},
+    "clang": {"-o": "write"},
+    "clang++": {"-o": "write"},
     "install": {
         "-t": "write",
         "--target-directory": "write",
@@ -1595,6 +1604,12 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     # `tar --help`: `-r` appends to the archive and `-u` updates it, so both MUTATE the file `-f`
     # names, exactly as `-c` does. Only `c` was read here, and an append to a read-silent root asked
     # for nothing.
+    if command == "git" and "init" in args:
+        # `git init <directory>` CREATES the repository there (`git init -h`); every other git
+        # subcommand takes its paths through the flags the spec already lists.
+        after = args[args.index("init") + 1 :]
+        target = next((arg for arg in after if not arg.startswith("-")), None)
+        return [(target, True)] if target else []
     if command in ("7z", "7za", "7zr"):
         # `7z a out.7z src`: the archive is the first positional after the command word.
         creating = bool(args) and args[0].lower() in _SEVENZIP_WRITE_COMMANDS
