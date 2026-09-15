@@ -274,6 +274,39 @@ OUT=$(run_block)
 assert_eq "trailing blanks are trimmed after the quotes come off" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
 rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
+# %TEMP% redirected onto a share. A script written there is a REMOTE script and RemoteSigned
+# refuses an unsigned one, so before the fallback these users silently stopped getting a shortcut
+# they used to get. $1 is what %TEMP% expands to, $2 what %LOCALAPPDATA% does.
+make_three_var_cmd_stub() {
+    # Prints the three candidates in the order the block asks for them, each wrapped in quotes the
+    # way cmd's echo emits them. The expand-then-parse behaviour is covered by the other stub; what
+    # this one exercises is which candidate install.sh SELECTS.
+    cat > "$STUBS/cmd.exe" <<STUB
+#!/bin/sh
+printf '%s\r\n' '"$1"'
+printf '%s\r\n' '"$2\\Temp"'
+printf '%s\r\n' '"C:\\Windows\\Temp"'
+exit 0
+STUB
+    chmod +x "$STUBS/cmd.exe"
+    make_wslpath_stub "$2\\Temp" "$WINTEMP"
+}
+
+# The regression this guards: %TEMP% on a UNC share must not kill shortcut creation. The fallback
+# has to land on the local %LOCALAPPDATA%\Temp instead, and it must still be RemoteSigned.
+make_three_var_cmd_stub '\\fileserver.corp.example.com\profiles$\ci\Temp' 'C:\Users\ci\AppData\Local'
+OUT=$(run_block)
+assert_eq "a UNC %TEMP% falls through to a local directory" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+SCRIPT=$(printf '%s' "$OUT" | sed -n 2p)
+[ -n "$SCRIPT" ] && ok "a script path was allocated despite a redirected %TEMP%" || bad "a UNC %TEMP% silently killed shortcut creation"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
+# And an IP-literal UNC, which is the same zone and a different spelling.
+make_three_var_cmd_stub '\\10.1.2.3\profiles\ci\Temp' 'C:\Users\ci\AppData\Local'
+OUT=$(run_block)
+assert_eq "an IP-literal UNC %TEMP% also falls through" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

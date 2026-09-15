@@ -2208,19 +2208,42 @@ STUB_EOF
             # path character like & ("C:\Users\A&B\AppData\Local\Temp") turns into two commands:
             # the echo prints a truncated path and the rest is run as a command. & is legal in a
             # Windows account name, so this is reachable. Inside double quotes it is literal.
-            _css_win_temp_raw=$(cmd.exe /d /c 'echo "%TEMP%"' 2>/dev/null \
-                | tr -d '\r' | tail -n 1) || _css_win_temp_raw=""
-            # Quotes off FIRST, blanks second. Win32 strips trailing spaces from a path while
-            # [ -d ] does not, so they have to go; but with the closing quote still the last
-            # character there is no trailing blank to find, and trimming first silently did nothing
-            # for a %TEMP% like "C:\Temp   ".
-            _css_win_temp_raw=${_css_win_temp_raw#\"}
-            _css_win_temp_raw=${_css_win_temp_raw%\"}
-            _css_win_temp_raw=$(printf '%s' "$_css_win_temp_raw" | sed 's/[[:space:]]*$//')
-            case "$_css_win_temp_raw" in
-                ""|"%TEMP%") _css_win_temp="" ;;
-                *) _css_win_temp=$(wslpath -u "$_css_win_temp_raw" 2>/dev/null) || _css_win_temp="" ;;
-            esac
+            # Three candidates, most preferred first, each on its own line. %TEMP% can be
+            # redirected onto a share, and a script there is a REMOTE script: RemoteSigned refuses
+            # an unsigned one, so the shortcut would silently stop being created for exactly the
+            # roaming-profile users who had one before. Rather than relax the policy back to Bypass,
+            # fall through to a directory that is local by construction. install.ps1:3419-3432
+            # solves the same problem for the launcher, which cannot move, by relaxing the policy;
+            # this script CAN move, so it does that instead.
+            #
+            # The & separators are ours and deliberate: each value is quoted, so an & inside a value
+            # stays literal and only these three separators split the line.
+            _css_win_temp_list=$(cmd.exe /d /c 'echo "%TEMP%"&echo "%LOCALAPPDATA%\Temp"&echo "%SystemRoot%\Temp"' 2>/dev/null \
+                | tr -d '\r') || _css_win_temp_list=""
+            _css_old_ifs=$IFS
+            IFS='
+'
+            for _css_cand in $_css_win_temp_list; do
+                IFS=$_css_old_ifs
+                # Quotes off FIRST, blanks second. Win32 strips trailing spaces from a path while
+                # [ -d ] does not, so they have to go; but with the closing quote still the last
+                # character there is no trailing blank to find, and trimming first silently did
+                # nothing for a %TEMP% like "C:\Temp   ".
+                _css_cand=${_css_cand#\"}
+                _css_cand=${_css_cand%\"}
+                _css_cand=$(printf '%s' "$_css_cand" | sed 's/[[:space:]]*$//')
+                case "$_css_cand" in
+                    # Unexpanded (the variable is unset), or a UNC path. A dotted FQDN, a DFS root
+                    # and an IP literal all arrive in this same \\server\share form, and all three
+                    # are the remote zone.
+                    ""|'%'*'%'*|'\\'*) continue ;;
+                esac
+                _css_cand_unix=$(wslpath -u "$_css_cand" 2>/dev/null) || continue
+                [ -d "$_css_cand_unix" ] || continue
+                _css_win_temp=$_css_cand_unix
+                break
+            done
+            IFS=$_css_old_ifs
             if [ -n "$_css_win_temp" ] && [ ! -d "$_css_win_temp" ]; then
                 _css_win_temp=""
             fi
