@@ -977,11 +977,20 @@ jobs:
               # The only Add-Type in this lane, here to make the detector fire.
               Add-Type -TypeDefinition 'public static class UnslothWslCompilerProbe { public static int N() { return 1; } }'
           }
+          # BOTH halves, because the install below trusts both. Checking only the process half left
+          # a FileSystemWatcher that never attached, or stopped reporting creations, looking exactly
+          # like a run where no library was dropped -- and $seen.TempLibraries is the half the
+          # Bitdefender report in #10540 actually keyed on. windows-no-compiler-ci.yml validates
+          # both for the same reason.
           if (-not $control.Compilers) {
               Write-Host '::error::the positive control compiled a type and no compiler process was recorded; a clean result from this lane would mean nothing'
               exit 1
           }
-          Write-Host "positive control: compiler seen ($($control.Compilers -join ', '))"
+          if (-not $control.TempLibraries) {
+              Write-Host '::error::the positive control compiled a type and no dropped library was recorded, so the filesystem half of the watch is not working; an empty TempLibraries result from the install below would mean nothing'
+              exit 1
+          }
+          Write-Host "positive control: compiler seen ($($control.Compilers -join ', ')) and library seen ($($control.TempLibraries -join ', '))"
 
       - name: Install inside WSL, piped exactly as documented
         shell: pwsh

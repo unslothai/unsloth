@@ -70,7 +70,8 @@ def _render() -> str:
     body = re.search(
         # The body is captured into a variable now, because it is either written to a file or piped
         # to powershell on stdin depending on whether a Windows directory is reachable.
-        r'(?ms)^            _css_ps1_body=\$\(cat << WSLPS1_EOF\n(.*?)^WSLPS1_EOF$', text
+        r"(?ms)^            _css_ps1_body=\$\(cat << WSLPS1_EOF\n(.*?)^WSLPS1_EOF$",
+        text,
     )
     assert body, (
         "could not find the WSLPS1_EOF here-string in install.sh. Either the WSL shortcut script "
@@ -239,6 +240,11 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
     assert (
         "Process Creation\\s+Success" in earlier
     ), "the audit policy is set but never verified, and machine policy can silently override it"
+    assert "$control.TempLibraries" in earlier, (
+        "the control validates only the process half, so a FileSystemWatcher that never attached "
+        "looks exactly like a run that dropped no library -- and that is the half the Bitdefender "
+        "report in #10540 keyed on"
+    )
     assert "$control.Compilers" in earlier, (
         "nothing proves the detector fires on this runner, so a clean verdict is indistinguishable "
         "from a detector that never attached"
