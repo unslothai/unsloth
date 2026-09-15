@@ -300,6 +300,18 @@ assert_eq "memoised inventory -> cu128 from the first answer" "https://download.
 assert_eq "memoised inventory -> one probe launch" "1" "$(cat "$_dir/calls")"
 rm -rf "$_dir"
 
+# 8g) No system python3: the managed venv's interpreter reads the library, and a run that
+# has no interpreter yet does not remember "no inventory" once the venv exists.
+_dir=$(mktemp -d)
+mkdir -p "$_dir/venv/bin"
+make_mock_probe "$_dir/venv/bin" "12.9 8.9"
+mv "$_dir/venv/bin/python3" "$_dir/venv/bin/python"
+_result=$(PATH="$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; VENV_DIR='$_dir/venv'; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "no python3, venv python reads 12.9 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+_result=$(PATH="$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; VENV_DIR='$_dir/none'; . '$_FUNC_FILE'; _has_usable_nvidia_gpu; VENV_DIR='$_dir/venv'; get_torch_index_url" 2>/dev/null)
+assert_eq "no interpreter yet is not memoised -> cu128 once the venv exists" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func "$_dir")

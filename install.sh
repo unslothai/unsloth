@@ -2439,9 +2439,14 @@ _nvidia_library_inventory() {
         found) printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"; return 0 ;;
         none) return 1 ;;
     esac
+    # The system python3, else the managed venv's once it exists. No interpreter yet is
+    # not an answer to remember: the venv arrives later in this run.
+    if command -v python3 >/dev/null 2>&1; then _nli_py=python3
+    elif [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/python" ]; then _nli_py="$VENV_DIR/bin/python"
+    else return 1
+    fi
     _NVIDIA_LIBRARY_INVENTORY_STATE="none"
-    command -v python3 >/dev/null 2>&1 || return 1
-    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded python3 -I - 2>/dev/null <<'PY'
+    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded "$_nli_py" -I - 2>/dev/null <<'PY'
 import ctypes, sys
 
 def load(*names):
