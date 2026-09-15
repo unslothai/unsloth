@@ -518,25 +518,33 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             return False
 
         started = time.perf_counter()
-        try:
-            import diffusers  # noqa: F401, PLC0415
-            import diffusers.hooks  # noqa: F401, PLC0415
+        # Held across the import AND its cleanup, the way _held_import_lock does for the bare
+        # warm stages, because releasing between the two is the whole bug: CPython drops the
+        # `diffusers` lock the moment __init__ raises, so a request already waiting on it would
+        # wake up, re-import against the submodules that import left behind, and republish the
+        # malformed parent -- at which point purge_partial_import deliberately declines, since
+        # those leftovers now belong to a live importer. Reentrant per thread, so the nested
+        # acquire inside purge_partial_import is free.
+        with _ModuleLockManager("diffusers"):
+            try:
+                import diffusers  # noqa: F401, PLC0415
+                import diffusers.hooks  # noqa: F401, PLC0415
 
-            # diffusers hard-codes _tqdm_active = True at import and honours no env var, so a
-            # prewarm that skipped this would let "Loading pipeline components..." draw straight
-            # onto the structlog stream, mid-record. The load path calls the same helper; it is
-            # idempotent and cheap.
-            from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
+                # diffusers hard-codes _tqdm_active = True at import and honours no env var, so a
+                # prewarm that skipped this would let "Loading pipeline components..." draw
+                # straight onto the structlog stream, mid-record. The load path calls the same
+                # helper; it is idempotent and cheap.
+                from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
 
-            quiet_third_party_progress_bars()
-        except Exception as exc:  # noqa: BLE001 -- the load path imports it again and will report
-            logger.debug("diffusers prewarm skipped: %r", exc)
-            # A failed package import leaves its executed submodules in sys.modules, and the
-            # load path's own `import diffusers` would then re-run __init__ against that cache
-            # and come back missing attributes. The prewarm swallows the failure, so the retry
-            # would be a user's request: hand it a clean slate instead.
-            purge_partial_import("diffusers")
-            return False
+                quiet_third_party_progress_bars()
+            except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+                logger.debug("diffusers prewarm skipped: %r", exc)
+                # A failed package import leaves its executed submodules in sys.modules, and the
+                # load path's own `import diffusers` would then re-run __init__ against that
+                # cache and come back missing attributes. The prewarm swallows the failure, so
+                # the retry would be a user's request: hand it a clean slate instead.
+                purge_partial_import("diffusers")
+                return False
         _diffusers_prewarmed = True
         logger.info(
             "diffusers prewarmed in %.0fms; the first image load skips that import",

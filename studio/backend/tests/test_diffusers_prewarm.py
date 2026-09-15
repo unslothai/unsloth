@@ -316,6 +316,49 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch):
     )
 
 
+def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monkeypatch):
+    """Releasing between the failed import and the purge is the whole bug.
+
+    CPython drops the ``diffusers`` module lock the moment ``__init__`` raises. A request already
+    blocked on that lock would wake up in the gap, re-import against the submodules the failed
+    import left behind, and republish the malformed parent, at which point
+    ``purge_partial_import`` deliberately declines because those leftovers now belong to a live
+    importer. The bare warm stages already hold the lock across import and cleanup
+    (``_held_import_lock``); this asserts the prewarm does the same.
+    """
+    from importlib._bootstrap import _get_module_lock
+
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines", types.ModuleType("diffusers.pipelines"))
+
+    held_during_purge = []
+    real_purge = warm.purge_partial_import
+
+    def _checking_purge(package):
+        lock = _get_module_lock("diffusers")
+        # has_deadlock() answers "would another thread block on me", which is exactly the
+        # property under test, and it does not disturb the lock the way acquiring would.
+        held_during_purge.append(getattr(lock, "owner", None) == threading.get_ident())
+        return real_purge(package)
+
+    monkeypatch.setattr(warm, "purge_partial_import", _checking_purge)
+
+    class _Boom:
+        def find_spec(self, name, path = None, target = None):
+            if name == "diffusers":
+                raise ImportError("simulated half-built diffusers")
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+    assert held_during_purge == [True], (
+        "the diffusers import lock was released before the purge ran, so a waiting importer "
+        f"could take it in the gap (observed: {held_during_purge})"
+    )
+
+
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
     """The case presence alone gets wrong. A CPU or MPS host with a runnable native binary, or
     UNSLOTH_DIFFUSION_ENGINE=sd_cpp, serves a supported GGUF through sd.cpp and imports no
