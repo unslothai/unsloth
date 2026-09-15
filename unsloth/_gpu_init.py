@@ -225,6 +225,7 @@ from .device_type import arch_lacks_bf16, hip_visible_archs
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers_fully_masked_rows,
+    fix_transformers_rope_scaling_drops_theta,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -265,6 +266,10 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+# Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
+# RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
+# retry in models/llama.py sees a config that kept its base (#2405).
+fix_transformers_rope_scaling_drops_theta()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -312,6 +317,7 @@ fix_peft_stale_torchao_import_error()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers_rope_scaling_drops_theta
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue

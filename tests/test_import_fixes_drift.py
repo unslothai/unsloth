@@ -1028,3 +1028,172 @@ def test_torchao_intmm_patch_wired_into_gpu_init():
         "DRIFT DETECTED: fix_torchao_safe_int_mm_repr_probe is left bound on the unsloth "
         "namespace; _gpu_init.py deletes every fix it calls."
     )
+
+
+# ===========================================================================
+# transformers -- a replaced rope_scaling drops the RoPE base frequency
+# ===========================================================================
+
+
+def test_rope_scaling_replacement_keeps_the_base_frequency():
+    """The pathology: transformers 5 moved ``rope_theta`` inside
+    ``config.rope_parameters`` while keeping ``rope_scaling`` as an alias that replaces
+    that whole dict, so assigning a normalized scaling dict leaves the base ``None``.
+    Asked of the live build after the fix has run, so this fails whenever the fix
+    stopped neutralising it, and passes on 4.57.6 where there is nothing to neutralise.
+    """
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import (
+        _rope_scaling_property_owner,
+        _rope_scaling_setter_is_patched,
+        _transformers_rope_scaling_assignment_drops_theta,
+        fix_transformers_rope_scaling_drops_theta,
+    )
+
+    owner = _rope_scaling_property_owner()
+    # Already installed by `import unsloth`; calling it again must be a no-op.
+    fix_transformers_rope_scaling_drops_theta()
+    assert not _transformers_rope_scaling_assignment_drops_theta(), (
+        "DRIFT DETECTED: replacing config.rope_scaling still loses the RoPE base "
+        "frequency, so the object-style delegation retry in models/llama.py falls back "
+        "to unscaled RoPE (issue #2405)."
+    )
+    if owner is None:
+        # transformers 4.x: rope_scaling is a plain attribute an assignment cannot
+        # clobber, so there must be nothing installed.
+        assert not _rope_scaling_setter_is_patched(owner), (
+            "the rope_scaling setter is reported patched on a build that has no "
+            "rope_scaling property to patch"
+        )
+    else:
+        assert _rope_scaling_setter_is_patched(owner), (
+            "DRIFT DETECTED: the rope_scaling alias setter is unpatched yet the probe "
+            "reports the base frequency survives; one of the two is wrong."
+        )
+
+
+def test_rope_scaling_setter_patch_is_idempotent():
+    """Calling the fix twice must not stack a wrapper on a wrapper."""
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import (
+        _ROPE_SCALING_PATCH_FLAG,
+        _rope_scaling_property_owner,
+        fix_transformers_rope_scaling_drops_theta,
+    )
+
+    owner = _rope_scaling_property_owner()
+    fix_transformers_rope_scaling_drops_theta()
+    if owner is None:
+        assert _rope_scaling_property_owner() is None, (
+            "the fix created a rope_scaling property on a build that had none"
+        )
+        return
+    before = owner.__dict__["rope_scaling"]
+    fix_transformers_rope_scaling_drops_theta()
+    after = owner.__dict__["rope_scaling"]
+    assert after is before, "DRIFT DETECTED: the rope_scaling property was replaced twice."
+    inner = getattr(after.fset, "__wrapped__", None)
+    assert inner is not None, "the patched setter must keep the original reachable"
+    assert not getattr(inner, _ROPE_SCALING_PATCH_FLAG, False), (
+        "DRIFT DETECTED: the rope_scaling setter is wrapped twice."
+    )
+
+
+def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
+    """The carry helper, on every shape the parameters can arrive as.
+
+    Cases three to five are the fix, case one is what keeps it self-neutralising on a
+    transformers that keeps the base itself, and the last two are the shapes a naive
+    carry would damage: a per-layer rope dict, and the Gemma local rotary, where a base
+    the caller stated on purpose must survive untouched.
+    """
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
+
+    # 1. The new parameters name their own base and the config states none: write
+    #    nothing at all, so a healthy build is left exactly as it was.
+    parameters = {"rope_type": "linear", "factor": 4.0, "rope_theta": 1000000.0}
+    config = SimpleNamespace(rope_parameters = parameters)
+    assert carry(config, 500000.0) == 1000000.0
+    assert not hasattr(config, "rope_theta")
+    assert parameters == {"rope_type": "linear", "factor": 4.0, "rope_theta": 1000000.0}
+
+    # 2. An attribute that is already there is kept in step, never left stale.
+    config = SimpleNamespace(
+        rope_parameters = {"rope_type": "linear", "factor": 4.0, "rope_theta": 1000000.0},
+        rope_theta = 500000.0,
+    )
+    assert carry(config, 500000.0) == 1000000.0
+    assert config.rope_theta == 1000000.0
+
+    # 3. The base would be lost: restore it inside rope_parameters, where 5.x reads
+    #    it, and leave the config without a top-level attribute it never had.
+    parameters = {"rope_type": "linear", "factor": 4.0}
+    config = SimpleNamespace(rope_parameters = parameters)
+    assert carry(config, 500000.0) == 500000.0
+    assert parameters["rope_theta"] == 500000.0
+    assert not hasattr(config, "rope_theta")
+
+    # 4. Object-style replacement, which is issue #2405's own shape: there is no dict
+    #    to write into, so the attribute is the only thing that can carry the base to
+    #    the normalized retry that follows.
+    config = SimpleNamespace(rope_parameters = object())
+    assert carry(config, 500000.0) == 500000.0
+    assert config.rope_theta == 500000.0
+
+    # 5. The retry itself: the parameters are a dict again and the base survives in
+    #    the attribute case 4 wrote, so it lands back inside rope_parameters.
+    parameters = {"rope_type": "linear", "factor": 4.0}
+    config = SimpleNamespace(rope_parameters = parameters, rope_theta = 500000.0)
+    assert carry(config, None) == 500000.0
+    assert parameters["rope_theta"] == 500000.0
+
+    # 6. Nothing to carry and nothing stated: untouched.
+    parameters = {"rope_type": "linear", "factor": 4.0}
+    config = SimpleNamespace(rope_parameters = parameters)
+    assert carry(config, None) is None
+    assert not hasattr(config, "rope_theta")
+    assert "rope_theta" not in parameters
+
+    # 7. Per-layer-type parameters: the base belongs one level down, so the top-level
+    #    dict must not gain a key, or transformers reads the whole thing as one flat
+    #    dict instead of one per layer type.
+    parameters = {
+        "full_attention": {"rope_type": "linear", "factor": 4.0},
+        "sliding_attention": {"rope_type": "default"},
+    }
+    config = SimpleNamespace(
+        rope_parameters = parameters,
+        layer_types = ["full_attention", "sliding_attention"],
+    )
+    assert carry(config, 500000.0) == 500000.0
+    assert set(parameters) == {"full_attention", "sliding_attention"}
+    assert config.rope_theta == 500000.0, (
+        "a per-layer dict has no global slot, so the attribute is where the base "
+        "standardize_rope_params hands to each layer type has to live"
+    )
+
+    # 8. unsloth_zoo/empty_model.py's Gemma local rotary: rope_theta is set to the
+    #    LOCAL base on purpose, then the scaling is replaced. Carrying the global base
+    #    over it would give the local rotary the wrong base.
+    parameters = {"rope_type": "default"}
+    config = SimpleNamespace(rope_parameters = parameters, rope_theta = 10000.0)
+    assert carry(config, 1000000.0) == 10000.0
+    assert config.rope_theta == 10000.0, (
+        "the carry overwrote a base frequency the caller set deliberately"
+    )
+    assert parameters["rope_theta"] == 10000.0
+
+
+def test_rope_scaling_patch_wired_into_gpu_init():
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "fix_transformers_rope_scaling_drops_theta()" in source, (
+        "DRIFT DETECTED: fix_transformers_rope_scaling_drops_theta is defined but never "
+        "called in _gpu_init.py, so real imports never install it."
+    )
+    assert "del fix_transformers_rope_scaling_drops_theta" in source, (
+        "DRIFT DETECTED: fix_transformers_rope_scaling_drops_theta is left bound on the "
+        "unsloth namespace; _gpu_init.py deletes every fix it calls."
+    )
