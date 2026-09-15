@@ -3404,7 +3404,15 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
             # 0.12.1 lays this out as `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a
             # 0555 `wheels-v6/pypi/requests` one deeper installs fine. Bounded on purpose.
             if entry.name.lower().startswith(("simple-", "wheels-")):
-                for shard in entry.iterdir():
+                # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                # --index-url is set, which Studio does for the torch wheels. Measured on the
+                # pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` passes a one-level probe
+                # and then aborts with "Failed to write to the client cache".
+                shards = list(entry.iterdir())
+                index_dir = entry / "index"
+                if index_dir.is_dir():
+                    shards.extend(index_dir.iterdir())
+                for shard in shards:
                     if not shard.is_dir():
                         # Same rule as the store level: a file, or a symlink dangling or not, is
                         # an existing path uv can neither open nor mkdir. Measured on the pinned

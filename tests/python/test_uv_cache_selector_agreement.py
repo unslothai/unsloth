@@ -130,6 +130,9 @@ def _build(cache: Path, shape: str) -> None:
     elif shape == "index leaf is a dangling link":
         (cache / "wheels-v6").mkdir()
         (cache / "wheels-v6" / "pypi").symlink_to(cache / "gone")
+    elif shape == "custom index hash leaf":
+        (cache / "simple-v20" / "index" / "e1d141a6ca947dff").mkdir(parents = True)
+        (cache / "wheels-v6" / "index" / "e1d141a6ca947dff").mkdir(parents = True)
     elif shape == "index shard":
         (cache / "simple-v20" / "pypi").mkdir(parents = True)
         (cache / "wheels-v6" / "pypi").mkdir(parents = True)
@@ -157,6 +160,7 @@ _SHAPES = [
     "index leaf is a file",
     "index leaf is a dangling link",
     "index leaf is a symlinked dir",
+    "custom index hash leaf",
 ]
 
 
@@ -219,7 +223,12 @@ def test_both_implementations_agree_on_which_stores_are_probed(tmp_path, store, 
         # at 0555, and rejecting would discard the warm cache over a shard uv never rewrites.
         ("interpreter-v4/abcd", True),
         ("archive-v0/pkg", True),
-        # Bounded on purpose: one level, not a walk of a cache with thousands of entries.
+        # `index/<hash>` is where uv puts metadata for a CUSTOM --index-url, which Studio uses
+        # for the torch wheels. Measured on the pinned uv 0.12.1, a 0555 one aborts.
+        ("simple-v20/index/e1d141a6ca947dff", False),
+        ("wheels-v6/index/e1d141a6ca947dff", False),
+        # Bounded on purpose: the level below the hash is one per package and is measured fine.
+        ("wheels-v6/index/e1d141a6ca947dff/idna", True),
         ("simple-v20/pypi/deeper", True),
     ],
 )

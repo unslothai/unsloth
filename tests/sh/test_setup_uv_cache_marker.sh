@@ -393,6 +393,28 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     assert_eq "$shell: and it is adopted once the leaf is a directory" \
         "$LEAFND" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
+    # A CUSTOM --index-url, which Studio uses for the torch wheels, puts metadata at
+    # `<store>/index/<hash>`, not `<store>/pypi`. Measured on the pinned uv 0.12.1: a 0555
+    # `simple-*/index/<hash>` was ADOPTED by a one-level probe and then aborted the install
+    # with "Failed to write to the client cache". The only unsafe direction found so far.
+    CIDX="$CASE/custom index/uv"
+    warm "$CIDX"
+    mkdir -p "$CIDX/simple-v20/index/e1d141a6ca947dff" "$CIDX/wheels-v6/index/e1d141a6ca947dff/idna"
+    record "$HOME_DIR" "$CIDX\\n"
+    for blocked in simple-v20/index/e1d141a6ca947dff wheels-v6/index/e1d141a6ca947dff; do
+        if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$CIDX/$blocked" 2>/dev/null; then
+            assert_eq "$shell: an unwritable $blocked falls back to Studio" \
+                "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+            chmod 0755 "$CIDX/$blocked" 2>/dev/null || true
+        fi
+    done
+    # ...and no deeper: the level below the hash is one directory per package.
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$CIDX/wheels-v6/index/e1d141a6ca947dff/idna" 2>/dev/null; then
+        assert_eq "$shell: a package directory under the hash does not" \
+            "$CIDX" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0755 "$CIDX/wheels-v6/index/e1d141a6ca947dff/idna" 2>/dev/null || true
+    fi
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one

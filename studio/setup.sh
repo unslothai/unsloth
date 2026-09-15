@@ -1109,7 +1109,14 @@ _uv_cache_usable() {
         # index, while the level below it grows with every package.
         case "$_uvu_name" in
             simple-* | wheels-*)
-                for _uvu_shard in "$_uvu_bucket"/*; do
+                for _uvu_shard in "$_uvu_bucket"/* "$_uvu_bucket"/index/*; do
+                    # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                    # --index-url is set, which Studio does for the torch wheels. Measured on
+                    # the pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` is adopted by a
+                    # one-level probe and then aborts `uv pip install --refresh` with "Failed
+                    # to write to the client cache". The literal `index` level is still bounded:
+                    # one entry per index, where the level below THAT is one per package.
+                    [ "${_uvu_shard#"$_uvu_bucket"/index/}" != "*" ] || continue
                     if [ ! -d "$_uvu_shard" ]; then
                         # Same rule as the store level: a file, or a symlink dangling or not, is
                         # an existing path uv can neither open nor mkdir. Measured on the pinned
