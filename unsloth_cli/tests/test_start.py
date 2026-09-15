@@ -5595,7 +5595,10 @@ def test_write_pi_user_resources_resolves_a_relative_agent_dir_from_the_launch_d
 
 
 def test_is_junction_reads_the_reparse_tag_before_python_3_12(tmp_path, monkeypatch):
-    monkeypatch.delattr(Path, "is_junction", raising = False)
+    # Python 3.13 also defines is_junction on a pathlib base class.
+    for cls in type(tmp_path).__mro__:
+        if "is_junction" in vars(cls):
+            monkeypatch.delattr(cls, "is_junction")
     tags = {"junction": 0xA0000003, "symlink": 0xA000000C}
 
     def lstat(path):
