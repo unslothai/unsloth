@@ -230,7 +230,14 @@ runs:
         # the resolve job's log from the original attempt and notice its timestamp.
         #
         # A full re-run (no --failed) re-runs resolve-zoo-ref and picks up main.
-        head="$(git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null | cut -f1)"
+        # `|| true` inside the substitution, not after it. This step runs under
+        # `set -euxo pipefail`, so pipefail hands git's status to the pipeline, the
+        # pipeline's status becomes the assignment's, and -e kills the step. A network
+        # blip on a diagnostic would then fail a Core cell whose clone, install and
+        # tests had all already succeeded, which is the opposite of the point.
+        # tests/studio/test_core_setup_zoo_revision_notice.py runs this block against a
+        # failing git and fails if the step does not survive it.
+        head="$( { git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null || true; } | cut -f1 )"
         pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
         echo "unsloth_zoo revision under test: $pinned"
         if [ -n "$head" ] && [ "$head" != "$pinned" ]; then
