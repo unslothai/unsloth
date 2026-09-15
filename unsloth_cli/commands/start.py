@@ -4650,11 +4650,18 @@ def _pi_settings_entries(key: str, entries, source: Path, home: Path) -> list:
             ):
                 spec = _pi_local_entry(spec, source, home)
                 entry = {**entry, "source": spec} if isinstance(entry, dict) else spec
-        # Patterns remain relative to the linked resource directories.
-        elif isinstance(entry, str) and not (
-            entry.startswith(("!", "+", "-")) or "*" in entry or "?" in entry
-        ):
-            entry = _pi_local_entry(entry, source, home)
+        elif isinstance(entry, str):
+            prefix = entry[:1] if entry.startswith(("!", "+", "-")) else ""
+            pattern = entry[len(prefix) :]
+            if not prefix and "*" not in entry and "?" not in entry:
+                entry = _pi_local_entry(entry, source, home)
+            elif not pattern.strip().startswith("~"):  # Pi does not expand ~ in patterns
+                # Pi matches patterns against paths relative to the agent directory, which moved.
+                # Keep the original too: it still matches basenames and linked directories.
+                anchored = prefix + _pi_local_entry(pattern, source, home)
+                if anchored != entry:
+                    result.append(entry)
+                    entry = anchored
         result.append(entry)
     return result
 

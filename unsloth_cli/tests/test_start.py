@@ -5463,8 +5463,10 @@ def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_pa
                     "-extensions/off.ts",
                     "root.ts",
                     "/abs/ext.ts",
+                    "!local/old.ts",
+                    "-~/literal.ts",
                 ],
-                "skills": ["skills/*"],
+                "skills": ["skills/*", "../shared/*"],
             }
         )
     )
@@ -5497,8 +5499,12 @@ def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_pa
             "-extensions/off.ts",
             str(user_agent_dir / "root.ts"),
             "/abs/ext.ts",
+            # Pi matches patterns relative to the agent directory, so add a user-anchored copy.
+            "!local/old.ts",
+            f"!{user_agent_dir / 'local' / 'old.ts'}",
+            "-~/literal.ts",
         ],
-        "skills": ["skills/*"],
+        "skills": ["skills/*", "../shared/*", str(user_home / ".pi" / "shared" / "*")],
     }
 
 
