@@ -321,3 +321,13 @@ def test_a_symlinked_manifests_dir_still_resolves(tmp_path, monkeypatch):
 
     (row,) = models_route._scan_ollama_dir(root, materialize_links = False)
     assert ollama.ollama_model_ref_files(row.id)[0].startswith(str(root / "blobs"))
+
+
+def test_stop_loading_reaches_a_tag_the_load_renamed(store):
+    """Chat holds the link it picked; the load runs as the tag. Stop must still find it."""
+    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
+    link = models_route._scan_ollama_dir(store, materialize_links = True)[0].id
+    assert link != ref
+    assert inf._names_the_resident_model(ref, link)
+    assert inf._names_the_loading_model(ref, link)
+    assert not inf._names_the_resident_model(ref, str(store / "blobs" / "nothing.gguf"))

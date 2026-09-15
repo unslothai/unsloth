@@ -14218,7 +14218,21 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     client reads back reports the repo id it maps to. Both name the same model, and an unload
     arriving under either has to find it.
     """
-    return bool(resident) and model_id_matches(model_path, resident)
+    if not resident:
+        return False
+    if model_id_matches(model_path, resident):
+        return True
+    # A load rewrites a materialized Ollama link to the tag that made it, so the id the picker
+    # still holds names the same model under a spelling no string compare reaches.
+    return is_ollama_manifest_ref(resident) and _ollama_ref_for_link(model_path) == resident
+
+
+def _ollama_ref_for_link(model_path: str) -> Optional[str]:
+    from hub.services.models.ollama import ollama_manifest_ref_for_path
+    try:
+        return ollama_manifest_ref_for_path(model_path)
+    except (OSError, ValueError):
+        return None
 
 
 def _names_the_loading_model(loading: str, model_path: str) -> bool:
