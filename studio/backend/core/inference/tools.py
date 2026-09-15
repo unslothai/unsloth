@@ -3120,7 +3120,10 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
         expanded = _expand_shell_assignments(text)
-        if expanded != text and _references_studio_credential(expanded):
+        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
+        # directory every later relative path opens from, and handing the unexpanded text to the cwd
+        # walk read `$d` as a directory name and never moved.
+        if expanded != text and _references_studio_credential_here(expanded, workdir):
             return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
@@ -3186,7 +3189,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     chdir_modules = _chdir_modules(tree)
     chdir_names = _chdir_names(tree, chdir_modules)
     name_bases = _literal_name_bases(tree)
-    process_aliases = _process_module_aliases(tree)
+    process_aliases, process_functions = _process_module_aliases(tree)
     cwds: "list[str | None]" = [workdir]
     # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
     # is scoped to that body rather than carried forward. Treating it as permanent refused a later
@@ -3227,7 +3230,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
         if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
-            node, cwds, name_bases, process_aliases
+            node, cwds, name_bases, process_aliases, process_functions
         ):
             # `subprocess.run(["strings", "auth/auth.db"], cwd = "../..")` moves nothing in this
             # process, but the child opens its arguments from the directory it is handed.
@@ -3422,20 +3425,36 @@ _CHILD_PROCESS_BARE_NAMES = frozenset(
 )
 
 
-def _process_module_aliases(tree) -> dict:
-    """Local name -> real module, for `import subprocess as sp` and `import asyncio as aio`."""
+def _process_module_aliases(tree) -> "tuple[dict, set]":
+    """`(module aliases, bare process-function names)` for the import forms that rename either one.
+
+    `import subprocess as sp` renames the module and `from subprocess import run as launch` renames
+    the function, and both leave the call spelled under a name the fixed tables do not hold.
+    """
     aliases: dict = {}
+    bare: "set[str]" = set(_CHILD_PROCESS_BARE_NAMES)
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            functions = _CHILD_PROCESS_RECEIVERS.get(root)
+            if not functions:
+                continue
+            for entry in node.names:
+                if entry.name in functions:
+                    bare.add(entry.asname or entry.name)
+            continue
         if not isinstance(node, ast.Import):
             continue
         for entry in node.names:
             root = entry.name.split(".")[0]
             if root in _CHILD_PROCESS_RECEIVERS and entry.asname:
                 aliases[entry.asname] = root
-    return aliases
+    return aliases, bare
 
 
-def _launches_a_child_process(node: "ast.Call", aliases: "dict | None" = None) -> bool:
+def _launches_a_child_process(
+    node: "ast.Call", aliases: "dict | None" = None, bare: "set | None" = None
+) -> bool:
     """True for a call that starts a process, by module attribute or by a bare imported name.
 
     The receiver is resolved through the import aliases first. `import subprocess as sp` leaves the
@@ -3448,7 +3467,9 @@ def _launches_a_child_process(node: "ast.Call", aliases: "dict | None" = None) -
         name = receiver.id if isinstance(receiver, ast.Name) else getattr(receiver, "attr", "")
         name = (aliases or {}).get(name, name)
         return func.attr in _CHILD_PROCESS_RECEIVERS.get(name, frozenset())
-    return isinstance(func, ast.Name) and func.id in _CHILD_PROCESS_BARE_NAMES
+    return isinstance(func, ast.Name) and func.id in (
+        bare if bare is not None else _CHILD_PROCESS_BARE_NAMES
+    )
 
 
 def _call_runs_from_a_credential_directory(
@@ -3456,6 +3477,7 @@ def _call_runs_from_a_credential_directory(
     cwds: "list",
     name_bases: "dict",
     process_aliases: "dict | None" = None,
+    process_functions: "set | None" = None,
 ) -> bool:
     """True when a call hands a child process a directory that makes one of its paths a credential.
 
@@ -3468,7 +3490,7 @@ def _call_runs_from_a_credential_directory(
     `describe("auth/config.json", cwd = "../..")` was blocked in every permission mode even though
     the function may never touch that path.
     """
-    if not _launches_a_child_process(node, process_aliases):
+    if not _launches_a_child_process(node, process_aliases, process_functions):
         return False
     given = next((kw.value for kw in node.keywords if kw.arg == "cwd"), None)
     if given is None:

@@ -1661,6 +1661,8 @@ def test_a_generic_cwd_keyword_is_not_a_child_process(monkeypatch, tmp_path):
             # An import alias leaves the call spelled `sp.run(...)`.
             'import subprocess as sp\nsp.run(["cat", "auth/auth.db"], cwd = "../..")',
             'import asyncio as aio\naio.create_subprocess_exec("cat", "auth/auth.db", cwd = "../..")',
+            # A renamed from-import leaves the call under a name no fixed table holds.
+            'from subprocess import run as launch\nlaunch(["cat", "auth/auth.db"], cwd = "../..")',
         ):
             assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED
@@ -1699,5 +1701,25 @@ def test_a_context_manager_chdir_restores_on_exit(monkeypatch, tmp_path):
         assert tools._python_exec(permanent, None, 30, _SESSION, disable_sandbox = True) == (
             tools._STUDIO_CREDENTIAL_BLOCKED
         )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_shell_variable_supplying_the_cd_target(monkeypatch, tmp_path):
+    # `d=../..; cd "$d"` moves the directory every later relative path opens from. Handing the
+    # UNexpanded text to the cwd walk read `$d` as a directory name, so the walk never moved.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        command = 'd=../..; cd "$d"; sqlite3 auth/auth.db "select jwt_secret from auth_user"'
+        assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert tools._bash_exec(
+            'd=build; cd "$d"; make', None, 30, _SESSION, disable_sandbox = True
+        ) != tools._STUDIO_CREDENTIAL_BLOCKED
     finally:
         tools._studio_auth_markers_cache = None
