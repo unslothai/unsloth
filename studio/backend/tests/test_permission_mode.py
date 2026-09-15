@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # A multicall binary dispatches to the applet named first, so that is the command to classify.
+    f"busybox cat {_OUTSIDE_FILE}",
+    f"toybox cat {_OUTSIDE_FILE}",
     # `help test`: the unary expressions examine the status of a file.
     f"test -e {_OUTSIDE_FILE}",
     f"[ -r {_OUTSIDE_FILE} ]",
@@ -3509,6 +3512,12 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `os.popen` runs a command line through a shell exactly as `os.system` does.
+    f"import os\nos.popen('cat {_OUTSIDE_FILE}').read()",
+    # Archive members are written UNDER the destination, so it is a write of a whole tree.
+    f"import zipfile\nzipfile.ZipFile('local.zip').extractall({_OUTSIDE_DIR!r})",
+    f"import tarfile\ntarfile.open('local.tar').extractall({_OUTSIDE_DIR!r})",
+    f"import tarfile\ntarfile.open('local.tar').extract('m', path = {_OUTSIDE_DIR!r})",
     # Imported by name, so the call is a bare `Name` rather than a qualified one.
     f"from fileinput import input as read\nprint(next(read({_OUTSIDE_FILE!r})))",
     f"from fileinput import FileInput\nprint(FileInput({_OUTSIDE_FILE!r}))",
@@ -3647,6 +3656,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "busybox cat notes.txt",
     "test -e ./notes.txt",
     "[ -d build ]",
     "test -e /usr/bin/python3",
@@ -3719,6 +3729,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import os\nos.popen('ls').read()",
+    "import zipfile\nzipfile.ZipFile('local.zip').extractall('out')",
     "from fileinput import input as read\nprint(next(read('notes.txt')))",
     "paths = ['/usr/share/a', '/usr/share/b']\nopen(paths[1]).read()",
     "import os\nprint(os.stat('notes.txt'))",

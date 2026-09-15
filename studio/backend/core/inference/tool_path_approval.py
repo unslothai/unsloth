@@ -1251,6 +1251,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         if _SHELL_ASSIGN_TOKEN_RE.match(token):
             index += 1
             continue
+        if base in _tools._MULTICALL_BINARIES:
+            # `busybox cat /media/x` dispatches to the applet named FIRST, so the applet is the
+            # command this scan has to classify. The main high-risk scan already unwraps these.
+            index += 1
+            continue
         if base not in _AUTO_SAFE_WRAPPERS:
             break
         index += 1
@@ -1701,13 +1706,29 @@ _PY_PATH_DEST_KWARGS = frozenset(
 
 # Spawning a child hands the path to a process this scan does not see, so its argv is screened wholesale.
 _PY_PATH_SUBPROCESS_CALLS = frozenset(
-    {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput", "system"}
+    # `os.popen(cmd)` runs the command line through a shell exactly as `os.system` does; only the
+    # handle it returns differs, and that is not what decides whether the child touched a path.
+    {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "getoutput",
+        "getstatusoutput",
+        "system",
+        "popen",
+    }
 )
 
 
 # Callables whose SECOND argument is the destination (shutil.copy(src, dst), os.rename(a, b)).
 # The members of the table below that REMOVE the source: after one, the source path is gone.
 _PY_PATH_MOVE_CALLS = frozenset({"move", "rename", "renames", "replace"})
+
+
+# Archive members are written UNDER the destination these take, so it is a write of a whole tree.
+_PY_PATH_EXTRACT_CALLS = frozenset({"extract", "extractall"})
 
 
 _PY_PATH_DEST_SECOND_CALLS = frozenset(
@@ -2419,6 +2440,14 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # torch.save(obj, path) / joblib.dump(obj, path) put the DESTINATION second, the opposite of
             # numpy.save(path, arr) and df.to_csv(path), so the receiver decides which argument to read.
             add(second, True)
+        elif name in _PY_PATH_EXTRACT_CALLS:
+            # `ZipFile(a).extractall(dest)` and the tarfile equivalents CREATE files under the
+            # destination, which is the first argument for `extractall` and the second (`path = `)
+            # for `extract`. The archive itself is read by the constructor, which is modelled.
+            add(second if name == "extract" else first, True)
+            for keyword in _call_keywords(node):
+                if keyword.arg == "path":
+                    add(keyword.value, True)
         elif name in _PY_PATH_CONTENT_FIRST_CALLS:
             # Path(p).write_text(content): the first argument is DATA, not a path. Only the receiver is a path, so a
             # config value that happens to look like one ("/api/v1/items") must not read as a write target.
