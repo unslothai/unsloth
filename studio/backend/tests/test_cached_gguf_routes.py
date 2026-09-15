@@ -4144,6 +4144,7 @@ def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
         )
     )
     assert result.resolved_locally is True
+    assert result.dependencies_resolved is False
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
 
 

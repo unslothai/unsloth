@@ -5,6 +5,15 @@ import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
+import {
+  type ModelCatalogEntry,
+  REASONING_EFFORT_SCALE,
+  type ReasoningEffortLevel,
+  resolveModelCatalogEntry,
+  sortReasoningEfforts,
+} from "./model-catalog";
+
+export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
  *  Params a provider rejects are hidden; local models use a null capability, so all render. */
@@ -31,28 +40,9 @@ export type ExternalReasoningCapabilities = {
   reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
-  reasoningEffortLevels: readonly (
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "max"
-    | "xhigh"
-  )[];
+  reasoningEffortLevels: readonly ReasoningEffortLevel[];
+  defaultEffort?: ReasoningEffortLevel | null;
 };
-
-/** Weakest -> strongest. Must stay in sync with _REASONING_EFFORT_SCALE in
- *  backend core/inference/llama_cpp.py. */
-const REASONING_EFFORT_SCALE = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const satisfies ExternalReasoningCapabilities["reasoningEffortLevels"];
 
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
  *  when only the latter is exposed (Claude 4.6).
@@ -249,7 +239,9 @@ function _publishedMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): number | null {
-  if (providerType === "openrouter") return null;
+  if (providerType === "openrouter") {
+    return resolveModelCatalogEntry(providerType, modelId)?.maxOutputTokens ?? null;
+  }
   return _documentedMaxOutputTokens(providerType, modelId);
 }
 
@@ -265,6 +257,10 @@ function _documentedMaxOutputTokens(
   if (!providerType || !modelId) return null;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return null;
+  if (providerType === "openrouter") {
+    const live = resolveModelCatalogEntry(providerType, normalized)?.maxOutputTokens;
+    if (live != null) return live;
+  }
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -1003,8 +999,76 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
-/** Resolve external-model thinking capabilities. Per-provider resolvers do the matching;
- *  anything else defaults to no reasoning controls. */
+type ReasoningWire = {
+  levels: readonly ReasoningEffortLevel[] | null;
+  aliases?: Partial<Record<ReasoningEffortLevel, ReasoningEffortLevel>>;
+  off: "unified" | "none-level";
+};
+
+/** What the OpenRouter branch in external_provider.py can put on the wire: the whole effort scale, with one
+ *  unified off switch. */
+const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
+  openrouter: { levels: null, off: "unified" },
+};
+
+function projectCatalogEntry(
+  entry: ModelCatalogEntry,
+  wire: ReasoningWire,
+): ExternalReasoningCapabilities {
+  if (!entry.reasoning) return withEnableThinkingStyle();
+  const supportsOff =
+    wire.off === "unified" ? !entry.mandatory : entry.efforts.includes("none");
+  let levels: ReasoningEffortLevel[] = [];
+  if (wire.levels === null || wire.levels.length > 0) {
+    const mapped = entry.efforts
+      .filter((level) => level !== "none")
+      .map((level) => wire.aliases?.[level] ?? level)
+      .filter((level) => wire.levels === null || wire.levels.includes(level));
+    levels = sortReasoningEfforts(mapped);
+  }
+  if (levels.length === 0) {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: entry.mandatory,
+      supportsReasoningOff: supportsOff,
+    });
+  }
+  const ladder: ReasoningEffortLevel[] = supportsOff ? ["none", ...levels] : levels;
+  // Checked against the final ladder: OpenRouter reports default_effort "none" for models such as openai/gpt-5.1.
+  const mappedDefault = entry.defaultEffort
+    ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
+    : null;
+  const defaultEffort = mappedDefault && ladder.includes(mappedDefault) ? mappedDefault : null;
+  return {
+    ...withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: supportsOff,
+      reasoningEffortLevels: ladder,
+    }),
+    defaultEffort,
+  };
+}
+
+function catalogCapabilities(
+  providerType: string,
+  modelId: string,
+): ExternalReasoningCapabilities | null {
+  const wire = CATALOG_REASONING_WIRE[providerType];
+  if (!wire) return null;
+  const entry = resolveModelCatalogEntry(providerType, modelId);
+  return entry ? projectCatalogEntry(entry, wire) : null;
+}
+
+const OPENROUTER_GENERIC_TOGGLE: ExternalReasoningCapabilities = {
+  supportsReasoning: true,
+  reasoningStyle: "enable_thinking",
+  reasoningAlwaysOn: false,
+  supportsReasoningOff: true,
+  reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
+};
+
+/** Resolve external-model thinking capabilities: the connection pin, then the live OpenRouter catalog for
+ *  OpenRouter routes, then the hand-maintained per-provider tables; anything else has no reasoning controls. */
 export function getExternalReasoningCapabilities(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -1021,6 +1085,11 @@ export function getExternalReasoningCapabilities(
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
+  }
+
+  if (normalizedProvider === "openrouter" && !normalizedModel.startsWith("openrouter/")) {
+    const catalog = catalogCapabilities(normalizedProvider, normalizedModel);
+    if (catalog) return catalog;
   }
 
   // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even when they
@@ -1042,22 +1111,13 @@ export function getExternalReasoningCapabilities(
   const isOpenAIProvider =
     normalizedProvider === "openai" || normalizedProvider === "openai_codex";
   const isAnthropicProvider = normalizedProvider === "anthropic";
-  const isKimiProvider = normalizedProvider === "kimi";
-  const isMistralProvider = normalizedProvider === "mistral";
-  const isOpenRouterProvider = normalizedProvider === "openrouter";
-  if (isOpenRouterProvider) {
+  if (normalizedProvider === "openrouter") {
     // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
-    // models, so past the mandatory guard everything gets a toggleable control.
-    return {
-      supportsReasoning: true,
-      reasoningStyle: "enable_thinking",
-      reasoningAlwaysOn: false,
-      supportsReasoningOff: true,
-      reasoningEffortLevels: DEFAULT_EFFORT_LEVELS,
-    };
+    // models, so a route the live catalog does not know still gets a toggleable control.
+    return OPENROUTER_GENERIC_TOGGLE;
   }
-  if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
-  if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
+  if (normalizedProvider === "kimi") return resolveKimiReasoningCapabilities(modelForMatching);
+  if (normalizedProvider === "mistral") return resolveMistralReasoningCapabilities(modelForMatching);
   if (normalizedProvider === "gemini") {
     // Custom Gemini OAI-compat gateways route through /chat/completions, which drops the native
     // thinkingConfig payload, so hide the ladder.
@@ -1078,4 +1138,31 @@ export function getExternalReasoningCapabilities(
   }
 
   return withEnableThinkingStyle();
+}
+
+export type RuntimeReasoningFields = Pick<
+  ExternalReasoningCapabilities,
+  "supportsReasoning" | "reasoningAlwaysOn" | "reasoningStyle" | "supportsReasoningOff" | "reasoningEffortLevels"
+> & { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean };
+
+/** Runtime reasoning fields for a catalog that lands after the model is selected. A chosen effort the new ladder
+ *  still offers is kept and one it dropped is clamped; the model-selection defaults and pills are left alone. */
+export function reasoningFieldsAfterCatalogRefresh(
+  current: { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean },
+  caps: ExternalReasoningCapabilities,
+): RuntimeReasoningFields {
+  const levels = caps.reasoningEffortLevels;
+  return {
+    supportsReasoning: caps.supportsReasoning,
+    reasoningAlwaysOn: caps.reasoningAlwaysOn,
+    reasoningStyle: caps.reasoningStyle,
+    supportsReasoningOff: caps.supportsReasoningOff,
+    reasoningEffortLevels: levels,
+    reasoningEffort:
+      levels.length > 0 && !levels.includes(current.reasoningEffort)
+        ? clampReasoningEffortToLevels(current.reasoningEffort, levels)
+        : current.reasoningEffort,
+    reasoningEnabled:
+      caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
+  };
 }

@@ -276,9 +276,17 @@ export function usePersonalizationSync(enabled: boolean): void {
           const keepLocalCustomization =
             remote.customizationSaved === false &&
             !isDefaultCustomization(localCustomization);
+          const keepLocalChatWidth =
+            remote.chatWidthSaved === false ||
+            remote.appearance.customization?.chatWidth === undefined;
           const nextCustomization = keepLocalCustomization
             ? localCustomization
-            : remoteCustomization;
+            : keepLocalChatWidth
+              ? {
+                  ...remoteCustomization,
+                  chatWidth: localCustomization.chatWidth,
+                }
+              : remoteCustomization;
           const remoteLanguage = remoteLanguagePreference(
             remote.version,
             remote.appearance.language,

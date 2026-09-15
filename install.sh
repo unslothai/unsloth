@@ -570,21 +570,143 @@ _resolve_studio_destinations() {
 }
 
 # Records which cache this install used, so an update reuses it rather than guessing: the launch below repoints the backend at the Studio cache even in shared mode, so one on-demand install makes an empty Studio cache look full. Never fatal. A relative UV_CACHE_DIR names a different directory in each phase of one install, since uv resolves it against its working directory and setup.sh changes into its own before the dependency pass, so make it absolute once, here.
+# Takes $1, defaulting to UV_CACHE_DIR, and prints it. The scan resolves uv's answer on this
+# same base, so two different bases cannot miss a warm cache.
+# True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
+# is not uv's. One rule for the probe and the warmth scan; tightening one is how they drift.
+# uv --no-cache neither reads nor writes a cache: on uv 0.10.7 a caller's UV_CACHE_DIR stays
+# completely empty, CACHEDIR.TAG included. So nothing this install did belongs in the marker,
+# whichever branch chose the directory. Lowercased, since uv takes it case-insensitively; not
+# trimmed, since uv rejects a padded value outright. The literals are clap's BoolishValueParser
+# set, `y` and `t` included. Mirrors _uv_no_cache_requested() in unsloth_cli/commands/studio.py.
+_uv_no_cache_requested() {
+    case "$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|y|yes|t|true|on) return 0 ;;
+    esac
+    return 1
+}
+
+_uv_is_bucket_name() {
+    case "$1" in
+        *-v[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    # '' too: `##*-v` strips through the LAST `-v`, so `archive-v1-v` leaves an empty suffix
+    # that no `*[!0-9]*` matches. It read as a bucket, and one read-only directory named that
+    # way condemned a warm cache. Test-StudioUvBucketName rejects it, so the two had split.
+    case "${1##*-v}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    # Every CacheBucket in uv 0.12.1 (UV_PINNED_VERSION) plus built-wheels; re-read
+    # uv-cache/src/lib.rs on a pin bump, or a missing kind goes unprobed and uv fails on it.
+    case "${1%-v*}" in
+        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        git|interpreter|osv|python|sdists|simple|wheels) ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
 _absolutize_uv_cache_dir() {
-    case "$UV_CACHE_DIR" in
-        /*) return 0 ;;
-    esac
-    _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
-    case "$_uv_cache_base" in
+    _uv_cache_path="${1-$UV_CACHE_DIR}"
+    case "$_uv_cache_path" in
         /*) ;;
-        *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+        *)
+            _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
+            case "$_uv_cache_base" in
+                /*) ;;
+                *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+            esac
+            _uv_cache_path="$_uv_cache_base/$_uv_cache_path"
+            ;;
     esac
-    UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
+    # A trailing slash names the same directory but compares unequal, and that comparison is
+    # what picks `studio` over `shared` below: `$STUDIO_HOME/cache/uv/` would be called shared
+    # and get the repoint `studio` avoids. Stops at the root, which is a real directory.
+    while [ "$_uv_cache_path" != / ]; do
+        case "$_uv_cache_path" in
+            */) _uv_cache_path="${_uv_cache_path%/}" ;;
+            *) break ;;
+        esac
+    done
+    printf '%s\n' "$_uv_cache_path"
+}
+
+# Can we create AND fill this directory? A real create, since mkdir -p exits 0 on an existing
+# unwritable one and -w reads the mode, not the filesystem. mktemp, since a predictable name
+# in another account's directory can be pre-created as a symlink to follow.
+_uv_cache_root_is_writable() {
+    mkdir -p "$1" 2>/dev/null || return 1
+    _uv_root_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null) || return 1
+    # Creating is not enough: an ACL granting create but denying unlink leaves uv's renames
+    # to fail later. But GONE is the answer, not rm's exit status -- a scanner holding the
+    # handle makes one delete fail and the next succeed, and condemning the cache on the first
+    # failure sends the install to a fallback that may be worse. Retry, then believe the fs.
+    _uv_root_tries=0
+    while :; do
+        rm -f "$_uv_root_probe" 2>/dev/null || true
+        [ -e "$_uv_root_probe" ] || break
+        _uv_root_tries=$((_uv_root_tries + 1))
+        if [ "$_uv_root_tries" -ge 3 ]; then
+            unset _uv_root_probe _uv_root_tries
+            return 1
+        fi
+        sleep 1
+    done
+    unset _uv_root_probe _uv_root_tries
+    return 0
+}
+
+# The root AND every bucket uv would rename into. _uv_cache_root_is_writable answers only for
+# the directory itself, which is not enough once uv has made buckets in it: a `sudo` run leaves
+# one root-owned, and a dangling link is an existing path to mkdir(2), so uv aborts on a cache
+# whose root we can write perfectly well.
+_uv_cache_is_writable() {
+    _uv_cache_root_is_writable "$1" || return 1
+    _uv_w_bad=0
+    # Measured, not assumed: default APFS folds, ext4 does not, and an existing `Python-V0`
+    # beside `python-v0` is one entry on the first and two on the second. Root already writable.
+    _uv_w_fold=0
+    _uv_w_probe="$1/.unsloth-case-probe.$$-A"
+    if mkdir "$_uv_w_probe" 2>/dev/null; then
+        [ -d "$1/.unsloth-case-probe.$$-a" ] && _uv_w_fold=1
+        rmdir "$_uv_w_probe" 2>/dev/null || true
+    fi
+    unset _uv_w_probe
+    _uv_w_glob=on
+    case $- in *f*) _uv_w_glob=off ;; esac
+    set +f
+    for _uv_w_dir in "$1"/*; do
+        _uv_w_name="${_uv_w_dir##*/}"
+        if ! _uv_is_bucket_name "$_uv_w_name"; then
+            # Only the NAME is folded here; file or dangling link is the rejection below.
+            [ "$_uv_w_fold" = 1 ] || continue
+            case "$_uv_w_name" in *[[:upper:]]*) ;; *) continue ;; esac
+            _uv_w_lower=$(printf '%s' "$_uv_w_name" | tr '[:upper:]' '[:lower:]')
+            _uv_is_bucket_name "$_uv_w_lower" || continue
+        fi
+        if [ ! -d "$_uv_w_dir" ]; then
+            # A file, or a symlink dangling or not, is an existing path to mkdir(2).
+            if [ -e "$_uv_w_dir" ] || [ -L "$_uv_w_dir" ]; then
+                _uv_w_bad=1
+            fi
+            continue
+        fi
+        _uv_cache_root_is_writable "$_uv_w_dir" || _uv_w_bad=1
+    done
+    if [ "$_uv_w_glob" = off ]; then set -f; fi
+    unset _uv_w_dir _uv_w_glob _uv_w_name _uv_w_lower _uv_w_fold
+    if [ "$_uv_w_bad" -ne 0 ]; then
+        unset _uv_w_bad
+        return 1
+    fi
+    unset _uv_w_bad
+    return 0
 }
 
 _record_uv_cache_choice() {
     # In place, before anything reads it: every branch records, so this is the one point every phase of the install and the marker are made to agree on one directory.
-    _absolutize_uv_cache_dir
+    UV_CACHE_DIR=$(_absolutize_uv_cache_dir)
     _uv_marker_dir="$STUDIO_HOME/cache"
     _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
     _uv_marker_value="$UV_CACHE_DIR"
@@ -624,23 +746,41 @@ _restore_uv_cache_marker() {
 
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
-    case "${UV_CACHE_DIR-}" in
-        *[![:space:]]*)
-            _UV_CACHE_MODE=custom
-            export UV_CACHE_DIR
-            # Recorded like any other choice; a caller still outranks the marker.
-            _record_uv_cache_choice
-            step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
-            return 0
-            ;;
-    esac
+    # A CALLER's UV_CACHE_DIR outranks everything below; our own default must not, and the
+    # variable cannot tell them apart because the block above already exported it. Without the
+    # flag this matched on every writable install, so nothing below ever ran.
+    if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then
+        case "${UV_CACHE_DIR-}" in
+            *[![:space:]]*)
+                _UV_CACHE_MODE=custom
+                export UV_CACHE_DIR
+                if _uv_no_cache_requested; then
+                    step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR); uv caching is off (UV_NO_CACHE), so nothing is recorded"
+                else
+                    # Recorded like any other choice; a caller still outranks the marker.
+                    _record_uv_cache_choice
+                    step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+                fi
+                return 0
+                ;;
+        esac
+    fi
 
     if [ "$_ISOLATE_UV_CACHE" = true ]; then
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
-        _record_uv_cache_choice
+        _uv_no_cache_requested || _record_uv_cache_choice
         step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        return 0
+    fi
+
+    # Nothing to select either: probing would touch a cache the caller told uv to leave alone.
+    if _uv_no_cache_requested; then
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=studio
+        export UV_CACHE_DIR
+        step "uv cache" "uv caching is off (UV_NO_CACHE); nothing to select or record"
         return 0
     fi
 
@@ -654,40 +794,155 @@ _configure_uv_cache() {
             _uv_default_cache="${HOME}/.cache/uv"
         fi
     fi
-
-    _uv_default_populated=false
-    _uv_scan_blocked=false
-    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
-        # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
-        for _uv_bucket in \
-            "$_uv_default_cache"/archive-* \
-            "$_uv_default_cache"/builds-* \
-            "$_uv_default_cache"/built-wheels-* \
-            "$_uv_default_cache"/wheels-* \
-            "$_uv_default_cache"/sdists-*; do
-            [ -d "$_uv_bucket" ] || continue
-            # Unreadable is not empty; remembered so the message below says why.
-            if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
-                _uv_scan_blocked=true
-                continue
-            fi
-            _uv_artifact=$(find -L "$_uv_bucket" -type f \
-                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
-                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                -print 2>/dev/null | head -n 1) || _uv_artifact=""
-            if [ -n "$_uv_artifact" ]; then
-                _uv_default_populated=true
-                break
-            fi
-        done
+    # A relative cache-dir comes back verbatim and uv resolves it against its working
+    # directory, so scanning it as written inspects a same-named directory beside us.
+    if [ -n "$_uv_default_cache" ]; then
+        _uv_default_cache=$(_absolutize_uv_cache_dir "$_uv_default_cache")
     fi
 
-    if [ "$_uv_default_populated" = true ]; then
-        UV_CACHE_DIR="$_uv_default_cache"
-        _UV_CACHE_MODE=shared
+    # The cache THIS install last recorded outranks uv's default while it is still warm, or a
+    # rerun abandons a Studio cache holding Torch and CUDA the moment one unrelated wheel makes
+    # uv's default read as warm. Content cannot decide it, because the repoint below leaves
+    # backend bytes in the losing cache; that is what the marker is for. Same precedence as
+    # unsloth_cli/commands/studio.py:_with_studio_uv_cache.
+    # install.ps1 writes this with -Encoding utf8, which under PowerShell 5.1 means BOM and
+    # CRLF, and a WSL install shares $STUDIO_HOME with the Windows one. The other two readers
+    # already defend. Untreated, a CR fails [ -d ] and abandons the warm cache in silence, and
+    # a BOM makes the value non-absolute so $PWD gets prepended.
+    # Trailing CR only, like Read-StudioUvCacheMarker's Trim(): `tr -d` ate CRs inside the path.
+    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || _uv_recorded=""
+    _uv_cr=$(printf '\r')
+    _uv_recorded="${_uv_recorded%"$_uv_cr"}"
+    unset _uv_cr
+    _uv_bom=$(printf '\357\273\277')
+    _uv_recorded="${_uv_recorded#"$_uv_bom"}"
+    unset _uv_bom
+    case "$_uv_recorded" in
+        *[![:space:]]*) _uv_recorded=$(_absolutize_uv_cache_dir "$_uv_recorded") ;;
+        *) _uv_recorded="" ;;
+    esac
+
+    # An install from before the marker has a populated $STUDIO_HOME/cache/uv and nothing
+    # recording it, so it is worth keeping rather than abandoning for uv's default. But it goes
+    # LAST, behind uv's default, because content cannot prove whose it is: the marker arrived in
+    # b66d2a4c8 on 2026-09-06 and the early block only in e12963071 the day after, so an install
+    # old enough to have no marker is old enough that `shared` was reachable, and in that mode
+    # the launch repoint leaves backend wheels in the Studio cache while Torch and CUDA sit in
+    # the default. Ordering it ahead of the default picked those leftovers and redownloaded
+    # gigabytes. Behind it, a warm Studio cache still wins whenever the default is cold, which
+    # is the install this was added for. A marker naming a directory that is gone is a stale
+    # pointer rather than a decision, so it lands in the same place.
+    _uv_unmarked_studio=""
+    if [ -z "$_uv_recorded" ] || [ ! -d "$_uv_recorded" ]; then
+        _uv_unmarked_studio="$_uv_studio_cache"
+    fi
+
+    # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
+    # into the buckets, aborting on either. Nested entries are deliberately NOT probed: that
+    # walks hundreds of thousands of files, and a denied leaf keeps a warm cache warm.
+    _uv_scan_blocked=false
+    _uv_blocked_cache=""
+    _uv_warn_cache=""
+    _uv_chosen_cache=""
+    for _uv_candidate in "$_uv_recorded" "$_uv_default_cache" "$_uv_unmarked_studio"; do
+        { [ -n "$_uv_candidate" ] && [ -z "$_uv_chosen_cache" ]; } || continue
+        _uv_cand_populated=false
+        _uv_cand_writable=true
+        if [ -d "$_uv_candidate" ] && [ -r "$_uv_candidate" ]; then
+            # The globs below ARE the scan, so a caller's set -f reads every cache as empty.
+            _uv_glob=on
+            case $- in *f*) _uv_glob=off ;; esac
+            set +f
+
+            # Root and every bucket, through the one helper the fallback and the launch
+            # repoint also use, so a cache rejected here cannot be handed back later.
+            _uv_cache_is_writable "$_uv_candidate" || _uv_cand_writable=false
+
+            # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
+            # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
+            for _uv_bucket in \
+                "$_uv_candidate"/archive-* \
+                "$_uv_candidate"/builds-* \
+                "$_uv_candidate"/built-wheels-* \
+                "$_uv_candidate"/wheels-* \
+                "$_uv_candidate"/sdists-*; do
+                [ -d "$_uv_bucket" ] || continue
+                # Stricter than the probe above, deliberately: the KIND must be one uv fills,
+                # since `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot
+                # reuse. Missing a future kind here costs a fallback; missing one in the PROBE
+                # would let an unwritable cache through, so that stays on the open pattern.
+                _uv_bucket_base="${_uv_bucket##*/}"
+                _uv_is_bucket_name "$_uv_bucket_base" || continue
+                case "${_uv_bucket_base%-v*}" in
+                    archive|builds|built-wheels|wheels|sdists) ;;
+                    *) continue ;;
+                esac
+                # Unreadable is not empty; remembered so the message below says why.
+                if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
+                    _uv_scan_blocked=true
+                    [ -n "$_uv_blocked_cache" ] || _uv_blocked_cache="$_uv_candidate"
+                    continue
+                fi
+                # `|| true`: head closes the pipe, so find dies on SIGPIPE on a large bucket,
+                # and under pipefail that cleared the path it had already printed.
+                _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                    ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                    ! -name '.unsloth-write-probe.*' \
+                    ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                    -print 2>/dev/null | head -n 1) || true
+                if [ -n "$_uv_artifact" ]; then
+                    _uv_cand_populated=true
+                    break
+                fi
+            done
+
+            if [ "$_uv_glob" = off ]; then set -f; fi
+        fi
+        if [ "$_uv_cand_populated" = true ] && [ "$_uv_cand_writable" = true ]; then
+            _uv_chosen_cache="$_uv_candidate"
+        elif [ "$_uv_cand_populated" = true ] && [ -z "$_uv_warn_cache" ]; then
+            _uv_warn_cache="$_uv_candidate"
+        fi
+    done
+    unset _uv_candidate _uv_cand_populated _uv_cand_writable _uv_unmarked_studio
+
+    if [ -n "$_uv_chosen_cache" ]; then
+        UV_CACHE_DIR="$_uv_chosen_cache"
+        # studio, not shared, when the choice IS the Studio cache: the launch repoint below
+        # only has to move a cache that is not already ours.
+        if [ "$_uv_chosen_cache" = "$_uv_studio_cache" ]; then
+            _UV_CACHE_MODE=studio
+        else
+            _UV_CACHE_MODE=shared
+        fi
     else
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
+        # A fallback we cannot write is not a fallback. The early block has ALREADY given up
+        # on $STUDIO_HOME/cache/uv, which is the only reason the selection is running, and the
+        # root can be writable while a bucket uv renames into is not, which the probe rejected
+        # a candidate for. Landing there turns a working install into a uv error, so anything
+        # usable beats it: the populated cache that only failed the probe first, since the
+        # certain failure and the merely suspect cache are both on the table, then uv's own
+        # default, which at worst costs the downloads this cache was never going to save.
+        if ! _uv_cache_is_writable "$_uv_studio_cache"; then
+            # A cache that is WARM and merely failed the probe beats a cold one we can write:
+            # the probe refuses a whole cache for one bucket-shaped entry uv may never touch,
+            # where a cold cache guarantees the downloads, and offline guarantees failure. That
+            # holds when the refused cache is the Studio cache itself.
+            if [ -n "$_uv_warn_cache" ]; then
+                UV_CACHE_DIR="$_uv_warn_cache"
+                if [ "$_uv_warn_cache" != "$_uv_studio_cache" ]; then
+                    _UV_CACHE_MODE=shared
+                fi
+            elif [ -n "$_uv_default_cache" ] \
+                 && [ "$_uv_default_cache" != "$_uv_studio_cache" ] \
+                 && _uv_cache_is_writable "$_uv_default_cache"; then
+                UV_CACHE_DIR="$_uv_default_cache"
+                _UV_CACHE_MODE=shared
+                _uv_studio_unusable=true
+            fi
+        fi
     fi
     export UV_CACHE_DIR
     _record_uv_cache_choice
@@ -697,8 +952,16 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            if [ "$_uv_scan_blocked" = true ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            if [ -n "$_uv_chosen_cache" ]; then
+                step "uv cache" "reusing this install's Studio cache ($UV_CACHE_DIR)"
+            # Never about the directory we are falling back TO: the Studio cache is itself a
+            # candidate now, so it can be the one refused, and naming it claims a fallback
+            # that did not happen.
+            elif [ "$_uv_scan_blocked" = true ] && [ "$_uv_blocked_cache" != "$UV_CACHE_DIR" ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
+            # Warm and still here means the write probe refused it.
+            elif [ -n "$_uv_warn_cache" ] && [ "$_uv_warn_cache" != "$UV_CACHE_DIR" ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
             fi
@@ -708,7 +971,15 @@ _configure_uv_cache() {
 
 _prepare_studio_uv_cache_for_launch() {
     [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    # Only to a cache the backend can fill. shared is reachable exactly when the early block
+    # failed its write probe on $STUDIO_HOME/cache/uv, so repointing unconditionally hands the
+    # autostarted backend a cache uv aborts on, after an install that succeeded. Keeping the
+    # shared one is honest: it is the cache this install just filled.
+    # Root AND buckets, the same rule the selection used: a root-only check repoints into the
+    # very cache the candidate probe rejected for a bucket uv cannot rename into.
+    _uv_launch_cache="$STUDIO_HOME/cache/uv"
+    _uv_cache_is_writable "$_uv_launch_cache" || return 0
+    UV_CACHE_DIR="$_uv_launch_cache"
     export UV_CACHE_DIR
 }
 _resolve_studio_destinations
@@ -771,19 +1042,20 @@ _claim_studio_root
 
 # Keep uv's cache on the same filesystem as the venv it fills.
 # uv hardlinks wheels within one filesystem and copies across a boundary, so a moved STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins. The fallback is required, since uv aborts on a cache it cannot create; mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather than the filesystem, so probe with a real create.
+# True only where the installer assigns its own default; the variable reads the same either way.
+_UV_CACHE_DIR_INSTALLER_DEFAULT=false
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
-    # mktemp, not a $$ name: a predictable path in another account's directory can be pre-created as a symlink for `: >` to follow and truncate as root.
-    _uv_cache_probe=""
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+    _UV_CACHE_DIR_INSTALLER_DEFAULT=true
+    # The same question the selection asks later, through the same helper, so the two answers
+    # cannot drift apart.
+    if ! _uv_cache_root_is_writable "$UV_CACHE_DIR"; then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
+        _UV_CACHE_DIR_INSTALLER_DEFAULT=false
     fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
 fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
@@ -1897,6 +2169,15 @@ STUB_EOF
         fi
         _css_lnk_name_ps=$(printf '%s' "$_css_lnk_name" | sed "s/'/''/g")
 
+        # The generated script prefers this to its download.
+        _css_wsl_ico_win=""
+        for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/frontend/dist; do
+            if [ -f "$_sp/unsloth.ico" ] && command -v wslpath >/dev/null 2>&1; then
+                _css_wsl_ico_win=$(wslpath -w "$_sp/unsloth.ico" 2>/dev/null) || _css_wsl_ico_win=""
+            fi
+        done
+        _css_wsl_ico_win_ps=$(printf '%s' "$_css_wsl_ico_win" | sed "s/'/''/g")
+
         # Create shortcuts via a temp PowerShell script to avoid escaping issues
         _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
         if [ -n "$_css_ps1_tmp" ]; then
@@ -1911,6 +2192,13 @@ if (-not \$targetExe) { exit 1 }
 \$preIconHash = \$null
 if (Test-Path -LiteralPath \$iconPath) {
     try { \$preIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash } catch {}
+}
+\$packagedIcon = '$_css_wsl_ico_win_ps'
+if (-not (Test-Path -LiteralPath \$iconPath) -and \$packagedIcon -and (Test-Path -LiteralPath \$packagedIcon)) {
+    try {
+        New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
+        Copy-Item -LiteralPath \$packagedIcon -Destination \$iconPath -Force -ErrorAction Stop
+    } catch {}
 }
 if (-not (Test-Path -LiteralPath \$iconPath)) {
     try {
@@ -2213,15 +2501,21 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
-    # An automatic path belongs to the origin distro; only an override is portable.
-    case "${UV_CACHE_DIR-}" in
-        *[![:space:]]*)
-            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
-            ;;
-        *)
-            _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
-            ;;
-    esac
+    # An automatic path belongs to the origin distro; only an override is portable, and the
+    # variable alone cannot tell them apart. Forwarding our own default pins the child to
+    # `custom`, which skips its adaptive selection and outranks its --isolated-uv-cache.
+    _rr_uv_cache=""
+    if [ "${_UV_CACHE_DIR_INSTALLER_DEFAULT:-false}" != true ]; then
+        case "${UV_CACHE_DIR-}" in
+            *[![:space:]]*) _rr_uv_cache="$UV_CACHE_DIR" ;;
+        esac
+    fi
+    if [ -n "$_rr_uv_cache" ]; then
+        _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$_rr_uv_cache")"
+    else
+        _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+    fi
+    unset _rr_uv_cache
     [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
@@ -3132,9 +3426,9 @@ _infer_amd_gfx_arch_from_gpu_name() {
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*) echo gfx1101 ;;
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*) echo gfx1100 ;;
         *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*) echo gfx1103 ;;
-        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) echo gfx1030 ;;
+        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) echo gfx1030 ;;
         *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) echo gfx1032 ;;
-        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*) echo gfx1034 ;;
+        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*) echo gfx1034 ;;
         *) return 1 ;;
     esac
 }
@@ -3246,6 +3540,120 @@ _kfd_gfx_targets() {
     done
     return 0
 }
+
+# Pair each rocminfo GPU gfx id with its marketing name, not the CPU-first global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback. Keep in sync with studio/setup.sh.
+_rocminfo_gpu_records() {
+    awk '
+        # Split at the first colon so embedded colons survive.
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        /^[[:space:]]*Name:/ {
+            # Keep a slot for a nameless GPU.
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            gfx = ""; named = 0
+            name = value($0)
+            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
+            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                rest = substr(name, RLENGTH + 1)
+                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
+            }
+            next
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = value($0)
+            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
+            else if (first == "") first = mkt
+            next
+        }
+        END {
+            if (gfx != "" && !named) { print gfx "|"; gpus++ }
+            if (gpus == 0 && first != "") print "|" first
+        }
+    '
+}
+
+_amd_smi_hip_order() {
+    # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
+    { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
+        !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
+        !split_seen { if ($0 != "") rec[++r] = $0; next }
+        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
+        n && tolower($0) ~ /hip.?id/ {
+            if (hip[n] < 0) { v = value($0); if (v ~ /^[0-9]+$/) hip[n] = v + 0 }
+            next
+        }
+        END {
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
+            if (r == 0 || n != r) { keep(); exit }
+            for (i = 1; i <= n; i++) {
+                if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
+                used[hip[i]] = 1
+                out[hip[i]] = rec[i]
+            }
+            print "hip"
+            for (i = 0; i < r; i++) print out[i]
+        }
+    '
+}
+
+# amd-smi enumerates in KFD discovery order while HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES index HIP/ROCr order, and the two disagree on real hardware (MI350X SPX/NPS1), so an untranslated ordinal here can fetch a prebuilt for another card's arch. `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+), the same field utils/hardware/amd.py get_hip_id_by_gpu_index reads. Keep in sync with studio/setup.sh.
+# `gfx|marketing name` records to one arch per adapter, ordinals intact. An unreadable arch
+# keeps its slot as `unknown`: dropping it would shift every later device under a mask.
+# Prints nothing when NO adapter has an arch, so the caller falls through to the next probe.
+_gfx_arch_slots() {
+    awk -F'|' '
+        NF { rec[n++] = $1; if ($1 != "") any = 1 }
+        END {
+            if (!any) exit
+            for (i = 0; i < n; i++) print (rec[i] == "" ? "unknown" : rec[i])
+        }
+    '
+}
+
+# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves of one device. Was: arch indexed, name always adapter 0's, and on amd-smi 6.1.1, which has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from. Keep in sync with studio/setup.sh.
+_amd_smi_gpu_records() {
+    awk '
+        function value(line,   v) {
+            v = line
+            sub(/^[^:]*:[[:space:]]*/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function flush() {
+            if (started) print gfx "|" mkt
+            gfx = ""; mkt = ""
+        }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
+        /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
+            flush(); started = 1
+            if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
+            next
+        }
+        !started { next }
+        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
+        tolower($0) ~ /target.?graphics.?version/ {
+            v = value($0)
+            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
+            next
+        }
+        END { flush() }
+    '
+}
+
 
 # Physical gfx arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof (#7331): $1 = the arch inferred from the product name, $2 = the probed gfx token list. Prints the physical arch, or nothing to mean "believe the probe" (the default). Requires ALL of: the override is set; the product name inferred a spoofable RDNA 3.5 APU arch and the probe reported a DIFFERENT one; the probe saw exactly ONE distinct arch (rocminfo repeats the token per agent, so this is a pre-filter, not the safety property); the variable names EXACTLY the arch that was reported, since ROCr can only spoof to the target the variable names; and a source the override cannot reach agrees with the product name, KFD sysfs first, then rocminfo re-run with the variable unset. That keeps a mixed Strix APU plus discrete AMD GPU host out of reach. Corroboration is REQUIRED, with deliberately no "the variable names the reported arch, so assume a spoof" fallback: that shape is identical on a host telling the truth (a real gfx1100 dGPU in a Ryzen AI Max chassis whose owner set the override for unrelated reasons), and rerouting a working machine to the wrong wheels is worse than #7331 itself. Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
 _hsa_spoofed_physical_gfx() {
@@ -3574,6 +3982,13 @@ get_torch_index_url() {
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
                 # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare assignment never reaches the re-run (the #8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+                # Only arches TheRock actually builds, so Polaris is never pointed at
+                # wheels that do not exist. Untested: nothing routes here on its own.
+                if _amd_therock_extra=$(_therock_device_extra_for_gfx "$_amd_unsup_gfx" 2>/dev/null); then
+                    echo "[INFO] Untested: AMD's TheRock publishes nightly $_amd_unsup_gfx wheels. To try them, export both and re-run:" >&2
+                    echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
+                    echo "[INFO]   export UNSLOTH_TORCH_EXTRA=$_amd_therock_extra" >&2
+                fi
                 echo "$_base/cpu"; return
             fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
@@ -3767,6 +4182,46 @@ _previous_torch_pin() {
     echo "torch==$_ptp_base"
 }
 
+# TheRock's multi-arch index: one URL for every target, selected by a package extra
+# (torch[device-gfx1010]), unlike repo.amd.com's per-family indexes. Nothing routes here
+# automatically; it exists so the message can name a real URL. Override for a mirror.
+THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-multi-arch/}"
+
+# The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
+# Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
+# absent because TheRock has no Polaris target.
+_therock_device_extra_for_gfx() {
+    case "$1" in
+        gfx1010|gfx1011|gfx1012) echo "device-$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Insert a package extra: torch>=2.4,<2.11.0 -> torch[X]>=2.4,<2.11.0. Splits at the first
+# version-operator character, so ==, >=, ~= and bare names all work. An empty extra is a
+# no-op, which is every default path.
+_torch_spec_with_extra() {
+    _tswe_spec="$1"
+    [ -n "${_TORCH_EXTRA:-}" ] || { printf '%s' "$_tswe_spec"; return; }
+    _tswe_name="${_tswe_spec%%[<>=~!]*}"
+    _tswe_rest="${_tswe_spec#"$_tswe_name"}"
+    case "$_tswe_name" in
+        # torch[a][b] is not PEP 508, torch[a,b] is. No caller passes an extra
+        # today; this only keeps the helper total for the next one.
+        *"]")
+            printf '%s,%s]%s' "${_tswe_name%?}" "$_TORCH_EXTRA" "$_tswe_rest"
+            ;;
+        *)
+            printf '%s[%s]%s' "$_tswe_name" "$_TORCH_EXTRA" "$_tswe_rest"
+            ;;
+    esac
+}
+
+# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN set,
+# TORCH_CONSTRAINT is the exact previous release; fall back to the supported range if a
+# pruned mirror lacks it. Shared by every --default-index path so preservation is uniform;
+# extra args pass through to uv. torchaudio stays bare, as TheRock's documented invocation
+# leaves it, reaching the right build through torch's own rocm[libraries] dependency.
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
         # Pair companions with the kept torch minor (torchaudio no longer exact-pins torch).
@@ -3781,16 +4236,16 @@ _install_torch_default_index() {
                 _itdi_ta="torchaudio==2.${_itdi_minor}.*"
                 ;;
         esac
-        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
+        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$_itdi_tv")" "$_itdi_ta" \
             --default-index "$TORCH_INDEX_URL" "$@"; then
             substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
             TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
             _PREV_TORCH_PIN=""
-            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")" "$TORCHAUDIO_CONSTRAINT" \
                 --default-index "$TORCH_INDEX_URL" "$@"
         fi
     else
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")" "$TORCHAUDIO_CONSTRAINT" \
             --default-index "$TORCH_INDEX_URL" "$@"
     fi
 }
@@ -3993,7 +4448,6 @@ _persist_rocm_wsl_dropin() {
     [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
     _rw_rocm=/opt/rocm
     export HSA_ENABLE_DXG_DETECTION=1
-    export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
     case ":${PATH}:" in
         *":${_rw_rocm}/bin:"*) ;;
         *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
@@ -4003,7 +4457,6 @@ _persist_rocm_wsl_dropin() {
     _rw_dropin="$(
         printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
         printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
-        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
         printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
         printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
         printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
@@ -4054,7 +4507,7 @@ _maybe_bootstrap_rocm_wsl() {
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local copy counts only for a --local checkout run, since this executes with no prompt and _REPO_ROOT may otherwise be the caller's cwd. PINNED, never a branch: this runs unattended and installs with sudo, so a moving ref would turn any rewrite of that branch into root code on every affected WSL box. Bump it whenever the helper changes; lagging only means an older helper, and the gate below rejects one too old to be safe.
-    _ROCM_WSL_HELPER_REF="d3367edd9a1de7a0ac15aa899bd9cb97173679dc"
+    _ROCM_WSL_HELPER_REF="b1d829182f8c490a326cf7690f156d2de06381f2"
     # librocdxg pin (v1.2.2), forwarded to the helper. The ref IS the commit, so an older helper that ignores the SHA still resolves this exact revision: its `--branch <sha>` attempt fails and the full clone plus checkout land on it. Kept equal to the helper's defaults; a test enforces that. A user-set ref wins and, with no SHA of its own, turns the helper's check off rather than failing against our pin.
     _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
     _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
@@ -4126,6 +4579,19 @@ fi
 # Created here, not inside get_torch_index_url: that runs in a command substitution, so only a file outlives it. mktemp -d, never a $$-derived name: a predictable path under a world-writable /tmp can be pre-created as a symlink, feeding the probe a chosen version.
 _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null) \
     && _ROCM_TAG_MEMO="$_ROCM_TAG_MEMO_DIR/tag" || _ROCM_TAG_MEMO=""
+# UNSLOTH_TORCH_EXTRA selects a build on indexes that discriminate by package extra
+# (TheRock's whl-multi-arch). Gated on a pinned index: no index this script picks by itself
+# publishes extras, so an unpinned extra could only break a working resolve.
+_TORCH_EXTRA=""
+_te_trim="${UNSLOTH_TORCH_EXTRA:-}"
+_te_trim="${_te_trim#"${_te_trim%%[![:space:]]*}"}"; _te_trim="${_te_trim%"${_te_trim##*[![:space:]]}"}"
+if [ -n "$_te_trim" ]; then
+    if [ "$_torch_index_pinned" = true ]; then
+        _TORCH_EXTRA="$_te_trim"
+    else
+        echo "[WARN] UNSLOTH_TORCH_EXTRA=$_te_trim ignored: it needs UNSLOTH_TORCH_INDEX_URL or _FAMILY set too." >&2
+    fi
+fi
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
@@ -4318,6 +4784,10 @@ case "$_torch_index_leaf" in
 esac
 
 _amd_gpu_radeon=false
+# Set when the runtime GPU has a generic-wheel floor, rerouted or not; the floor is per arch and the migrated-venv repair below must reuse the same number.
+_gfx_rocm64_target=false
+_gfx_rocm64_floor_maj=""
+_gfx_rocm64_floor_min=""
 if [ "$_torch_index_pinned" = false ]; then
 # On the LEAF, like every other index classifier here: the AMD per-arch mirror is https://repo.amd.com/ROCM/whl/gfx120X-all/, so a whole-URL */rocm* glob brands every per-arch reroute as Radeon and the summary then reports repo.radeon.com wheels that were never fetched. The two older per-arch reroutes each clear the flag by hand afterwards; matching the leaf is what stops the next one from having to.
 case "$_torch_index_leaf" in
@@ -4337,31 +4807,62 @@ _rocm_leaf_below() {
     if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
     return 1
 }
+# 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
+_venv_torch_rocm_below() {
+    _vtr_leaf=$("$1" -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
+    [ -n "$_vtr_leaf" ] || return 0
+    _rocm_leaf_below "$_vtr_leaf" "$2" "$3"
+}
+
 # ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
 # gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/, which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167, and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks them, and the Radeon repo can be offline (#7264), so reroute a detected Strix GPU whenever the picked index is older than the arch build; rocm7.13+ already has the fixes.
 case "$_torch_index_leaf" in
     rocm[0-9]*)
-        # Collect every gfx token in rocminfo / amd-smi enumeration order (skipping duplicates), then index by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box where the user selected the dGPU does NOT get rerouted to the Strix per-gfx index. `|| true` on each probe: no gfx match makes grep exit 1, which under set -euo pipefail would abort the installer before the next fallback runs. A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing, mirroring setup.sh and the display block.
-        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        # Re-declared because test_rocm_support.py lifts this arm out whole: under `set -u` an outside initialiser would abort it instead of routing.
+        _gfx_rocm64_target=false
+        _gfx_rocm64_floor_maj=""
+        _gfx_rocm64_floor_min=""
+        # One record per adapter in probe enumeration order, indexed by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the mask selects a CARD. A deduplicated arch list could not: gfx1100 + gfx1100 + gfx1200 ran off the end of a two-entry list, and a Strix iGPU + dGPU box rerouted the selected dGPU to the Strix per-gfx index. `|| true` on each probe so one that finds nothing does not abort the installer under set -euo pipefail before the next fallback. UNSLOTH_ROCM_GFX_ARCH overrides probing, mirroring setup.sh and the display block.
+        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
+        _gfx_all=${_gfx_all%%:*}
+        # which probe answered: only rocminfo is filtered by an rocr mask, so only it can pre-apply one
+        _gfx_probe=""
+        # Which index space _gfx_all is in: `hip` for rocminfo and for an explicit UNSLOTH_ROCM_GFX_ARCH, which names one arch outright, and for amd-smi only once _amd_smi_hip_order has translated its discovery order.
+        _gfx_space=hip
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _gfx_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_records | _gfx_arch_slots || true)
+            # rocminfo is an ROCr client, so it enumerates in the order HIP numbers from.
+            [ -n "$_gfx_all" ] && { _gfx_probe=rocminfo; _gfx_space=hip; }
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _gfx_records=$(amd-smi list 2>/dev/null | _amd_smi_gpu_records || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it so a host with hipinfo-less amd-smi reports the gfx target.
-            if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            # `amd-smi list` may answer ids with no arch (a record per device, arch column empty), so test for an arch, not for records.
+            case "$_gfx_records" in *gfx*) ;; *)
+                _gfx_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true) ;;
+            esac
+            if [ -n "$_gfx_records" ]; then
+                # HIP_ID from `amd-smi list -e` maps discovery order onto the order HIP numbers, as the GPU summary below does. The first output line reports which space came back.
+                _gfx_smi_out=$(amd-smi list -e 2>/dev/null | _amd_smi_hip_order "$_gfx_records" || true)
+                _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | head -n 1)
+                _gfx_records=$(printf '%s\n' "$_gfx_smi_out" | tail -n +2)
+                _gfx_all=$(printf '%s\n' "$_gfx_records" | _gfx_arch_slots || true)
+                [ -n "$_gfx_all" ] && _gfx_probe=amd-smi
             fi
         fi
         # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a mask hiding every agent (ROCR_VISIBLE_DEVICES=-1) still lands here on a generic rocm index; re-probe unmasked or a masked-out Strix box keeps the broken generic wheels. Partial masks never get here (they enumerate at least one agent above) and keep their selection. ${VAR+x}, not :-, because a SET-but-empty mask also hides every agent and must trigger the re-probe.
         if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
             if command -v rocminfo >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _rocminfo_gpu_records | _gfx_arch_slots || true)
+                [ -n "$_gfx_all" ] && _gfx_space=hip
             fi
             if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
                 [ -z "$_gfx_all" ] && \
-                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
+                # Left in discovery space: the single-GPU box this rescue is for routes normally, a mixed one declines below.
+                [ -n "$_gfx_all" ] && _gfx_space=discovery
             fi
         fi
         # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr hand rocminfo the SPOOFED ISA, so a gfx1151 host reports gfx1100 and the Strix case below never matches (#7331). Correct the reading back to the physical arch first, only in the narrow shape that cannot be a real mixed host.
@@ -4372,8 +4873,31 @@ case "$_torch_index_leaf" in
             [ -n "$_spoof_physical" ] && _gfx_all="$_spoof_physical"
         fi
         _runtime_gfx=""
+        _rocr_unresolved=""
         if [ -n "$_gfx_all" ]; then
-            _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+            # first-set-wins, mirroring _pick_visible_index (and _HIP_LAYER_MASKS) in
+            # studio/install_python_stack.py. rocminfo output is ALREADY ROCr-filtered, so
+            # indexing by ROCR again shadows CUDA, its HIP alias: ROCR=2,1 + CUDA=1 is survivor 2.
+            _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
+            if [ "$_gfx_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+                # amd-smi is not ROCr-filtered: ROCr decides which devices exist, then HIP indexes the survivors (_rocr_visible_subset). Ordinals in mask order; none in range keeps the whole list, as _pick_visible_index does.
+                _rocr_kept=$(printf '%s\n' "$_gfx_all" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                    NF { v[n++] = $0 }
+                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
+                [ -n "$_rocr_kept" ] && _gfx_all="$_rocr_kept"
+                # A UUID token names a device but no position here, so with unlike adapters no survivor is known to be the one selected: decline, as _rocr_visible_subset does.
+                _rocr_unresolved=$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')
+            fi
+            _vis_var=""
+            _vis=""
+            for _vis_m in $_vis_masks; do
+                eval "_vis_m_set=\${$_vis_m+x}"
+                if [ -n "$_vis_m_set" ]; then
+                    _vis_var="$_vis_m"
+                    eval "_vis=\$$_vis_m"
+                    break
+                fi
+            done
             _idx=0
             if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
                 _first=${_vis%%,*}
@@ -4383,11 +4907,31 @@ case "$_torch_index_leaf" in
                 esac
             fi
             _runtime_gfx=$(printf '%s\n' "$_gfx_all" | awk -v idx="$_idx" '
-                NF && !seen[$0]++ { vals[n++] = $0 }
+                NF { vals[n++] = $0 }
                 END {
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
                 }')
+            # No HIP_ID map and unlike adapters: in amd-smi discovery order no ordinal names a
+            # known device, so routing would install wheels for a card the runtime will not use.
+            if [ "$_gfx_space" != hip ] && \
+               [ "$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" -gt 1 ]; then
+                echo "" >&2
+                echo "  [WARN] amd-smi lists unlike adapters in discovery order and \`amd-smi list -e\`" >&2
+                echo "  [WARN] returned no HIP_ID map, so no ordinal here names a known device." >&2
+                echo "  [WARN] Skipping arch-specific torch routing. Set UNSLOTH_ROCM_GFX_ARCH to" >&2
+                echo "  [WARN] name the target explicitly." >&2
+                echo "" >&2
+                _runtime_gfx=""
+            elif [ -n "${_rocr_unresolved:-}" ] && \
+               [ "$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" -gt 1 ]; then
+                echo "" >&2
+                echo "  [WARN] ROCR_VISIBLE_DEVICES selects a GPU by UUID, which amd-smi output cannot map to a" >&2
+                echo "  [WARN] position, and the adapters differ. Skipping arch-specific torch routing." >&2
+                echo "  [WARN] Set UNSLOTH_ROCM_GFX_ARCH to name the target explicitly." >&2
+                echo "" >&2
+                _runtime_gfx=""
+            fi
         fi
         # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the MI50 / Radeon VII path and must win over Strix probe-order detection on a mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set. Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- to gfx906) and trim whitespace so the suffix or a stray newline does not defeat the exact gfx906 comparisons below.
         _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -4424,6 +4968,51 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] the $_strix_gfx wheels carry $_strix_gfx kernels, so the runtime has" >&2
                 echo "  [WARN] to report the real arch. Remove the export from your shell profile" >&2
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
+            fi
+        fi
+        # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) have no kernels in the
+        # older generic wheel families. The floor is per arch, read from the
+        # rocBLAS and hipBLASLt Tensile library names in each leaf's cp312 wheels:
+        #
+        #   rocm6.0 (2.3.1-2.4.1) gfx1030 gfx1100
+        #   rocm6.1 (2.5.0-2.6.0) gfx1030 gfx1100 gfx1101
+        #   rocm6.2 (2.5.0-2.5.1) gfx1030 gfx1100
+        #   rocm6.3 (2.7.0-2.9.1) gfx1030 gfx1100 gfx1101 gfx1102 gfx1200 gfx1201
+        #   rocm6.4 (2.8.0-2.9.1) same set
+        #
+        # gfx1102 floors at 6.3. gfx1200/gfx1201 keep 6.4, matching
+        # _GENERIC_WHEEL_GFX_MIN_ROCM in studio/install_python_stack.py (keep the
+        # two tables in step) and AMD's matrix, which puts production RDNA 4 at 6.4.
+        #
+        # Beside the gfx906 policy, not inside the runtime-less */cpu reroute,
+        # because a valid host ROCm reading can otherwise select broken rocm6.1
+        # wheels. Explicit torch-index pins skip this whole block.
+        case "$_runtime_gfx" in
+            gfx1102)          _gfx_rocm64_floor_maj=6; _gfx_rocm64_floor_min=3 ;;
+            gfx1200|gfx1201)  _gfx_rocm64_floor_maj=6; _gfx_rocm64_floor_min=4 ;;
+        esac
+        if [ -n "$_gfx_rocm64_floor_maj" ]; then
+            _gfx_rocm64_target=true
+            # These arches train from the generic wheels, never repo.radeon.com, so
+            # clear the marketing-name flag as the gfx906 branch below does: the
+            # newest rocm-rel-6.4 trio (torch 2.6.0+rocm6.4.0) carries no gfx1102
+            # Tensile library, and rocm-rel-7.2 is narrower still (gfx120X-all,
+            # gfx90a, gfx942, gfx950). Cleared whenever the arch is the runtime
+            # target, even when the leaf already satisfies the floor and the reroute
+            # below is a no-op.
+            _amd_gpu_radeon=false
+            _gfx_rocm64_tag="rocm${_gfx_rocm64_floor_maj}.${_gfx_rocm64_floor_min}"
+            if _rocm_leaf_below "$_torch_index_leaf" "$_gfx_rocm64_floor_maj" "$_gfx_rocm64_floor_min"; then
+                echo "" >&2
+                echo "  [WARN] $_runtime_gfx detected -- routing torch to $_gfx_rocm64_tag because older" >&2
+                echo "  [WARN] generic ROCm wheel families do not ship $_runtime_gfx kernels." >&2
+                echo "" >&2
+                _amd_rocm64_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+                while [ "${_amd_rocm64_base%/}" != "$_amd_rocm64_base" ]; do
+                    _amd_rocm64_base="${_amd_rocm64_base%/}"
+                done
+                TORCH_INDEX_URL="${_amd_rocm64_base}/${_gfx_rocm64_tag}"
+                _torch_index_leaf="$_gfx_rocm64_tag"
             fi
         fi
         # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
@@ -4479,105 +5068,6 @@ if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
 fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
-
-# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback. Keep in sync with studio/setup.sh.
-_rocminfo_gpu_records() {
-    awk '
-        # Split at the first colon so embedded colons survive.
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        /^[[:space:]]*Name:/ {
-            # Keep a slot for a nameless GPU.
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            gfx = ""; named = 0
-            name = value($0)
-            # Accept target suffixes such as gfx90a:sramecc+, but reject ISA names.
-            if (match(name, /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
-                rest = substr(name, RLENGTH + 1)
-                if (rest == "" || rest ~ /^[^0-9a-z]/) gfx = substr(name, 1, RLENGTH)
-            }
-            next
-        }
-        /^[[:space:]]*Marketing Name:/ {
-            mkt = value($0)
-            if (gfx != "" && !named) { print gfx "|" mkt; gpus++; named = 1 }
-            else if (first == "") first = mkt
-            next
-        }
-        END {
-            if (gfx != "" && !named) { print gfx "|"; gpus++ }
-            if (gpus == 0 && first != "") print "|" first
-        }
-    '
-}
-
-# amd-smi enumerates in discovery order over its KFD view, while HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch. `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); utils/hardware/amd.py get_hip_id_by_gpu_index reads the same field. Keep in sync with studio/setup.sh.
-_amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
-    # output line reports which index space the records came back in; the caller needs to
-    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
-    { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        function keep(   i) { print "discovery"; for (i = 1; i <= r; i++) print rec[i] }
-        !split_seen && $0 == "@@hip-map@@" { split_seen = 1; next }
-        !split_seen { if ($0 != "") rec[++r] = $0; next }
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { n++; hip[n] = -1; next }
-        n && tolower($0) ~ /hip.?id/ {
-            if (hip[n] < 0) { v = value($0); if (v ~ /^[0-9]+$/) hip[n] = v + 0 }
-            next
-        }
-        END {
-            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
-            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
-            # colliding map is not a 1:1 device mapping, so keep discovery order.
-            if (r == 0 || n != r) { keep(); exit }
-            for (i = 1; i <= n; i++) {
-                if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
-                used[hip[i]] = 1
-                out[hip[i]] = rec[i]
-            }
-            print "hip"
-            for (i = 0; i < r; i++) print out[i]
-        }
-    '
-}
-
-# One `gfx|marketing name` per adapter, in `GPU: N` order, so the mask picks both halves of one device. Was: arch indexed, name always adapter 0's, and on amd-smi 6.1.1, which has no TARGET_GRAPHICS_VERSION, that name is what --rocm-gfx is inferred from. Keep in sync with studio/setup.sh.
-_amd_smi_gpu_records() {
-    awk '
-        function value(line,   v) {
-            v = line
-            sub(/^[^:]*:[[:space:]]*/, "", v)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
-            return v
-        }
-        function flush() {
-            if (started) print gfx "|" mkt
-            gfx = ""; mkt = ""
-        }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
-        !started { next }
-        tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
-        tolower($0) ~ /target.?graphics.?version/ {
-            v = value($0)
-            if (gfx == "" && v ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/) gfx = v
-            next
-        }
-        END { flush() }
-    '
-}
 
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 if _has_usable_nvidia_gpu; then
@@ -4652,9 +5142,9 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
             *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _gpu_disp_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
             *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-            *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
+            *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
-            *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _gpu_disp_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
+            *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _gpu_disp_gfx="gfx1034" ;;  # RDNA 2 (Navi 24)
         esac
         if [ -n "$_gpu_disp_gfx" ]; then
             substep "gfx arch inferred from GPU name: $_gpu_disp_gfx"
@@ -4922,8 +5412,22 @@ if [ "$_MIGRATED" = true ]; then
         if [ -z "$_has_hip" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
             _install_torch_default_index --force-reinstall
+        elif [ "$_gfx_rocm64_target" = true ] && \
+             _venv_torch_rocm_below "$_VENV_PY" "$_gfx_rocm64_floor_maj" "$_gfx_rocm64_floor_min"; then
+            # A migrated venv keeps its hip torch, but a wheel below this arch's floor has no
+            # kernels for it. The SAME floor the reroute used, so an adequate wheel is left alone.
+            substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
+            _install_torch_default_index --force-reinstall
         fi
         _gfx906_bnb_prune
+    fi
+    # The ROCm repair above cannot reach an extras pin: whl-multi-arch is not a pip ROCm family
+    # leaf, so _torch_index_is_rocm_family is false and the migrated install silently resolves
+    # torch from PyPI. The pin is the only signal a specific build was wanted, so repair on it.
+    # Inert by default: every default path leaves _TORCH_EXTRA empty.
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
+        substep "reinstalling torch from the pinned index (UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA)..."
+        _install_torch_default_index --force-reinstall
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
@@ -5220,8 +5724,28 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
             substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
-            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$(_torch_spec_with_extra "$TORCH_CONSTRAINT")\" \"$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
+    fi
+fi
+
+# An extras pin lands on a leaf the flavor enforcement above does not recognise, so it skips
+# the pin, yet whether the build works IS the reason to pin an extra. Ask torch rather than
+# read the version label: these indexes need not carry a +rocm local tag, which
+# _torch_flavor_tag would read as "cpu". Bounded: a half-working HIP runtime can hang it.
+if [ "$SKIP_TORCH" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
+    # A sentinel line, not all of stdout: a sitecustomize or import hook prints before torch
+    # does, and that text made the equality below fail on a working GPU (as for _PREV_TORCH_VER).
+    _extra_probe=$(_run_bounded "$_VENV_PY" -c \
+        "import torch; print('UNSLOTH_CUDA_OK=%s' % torch.cuda.is_available())" 2>/dev/null \
+        | sed -n 's/^UNSLOTH_CUDA_OK=//p' | tail -n 1 || true)
+    if [ "$_extra_probe" = "True" ]; then
+        substep "torch reports the GPU is usable (UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA)."
+    else
+        [ -n "$_extra_probe" ] || _extra_probe="unavailable (torch did not import)"
+        substep "[WARN] Installed with UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA, but torch.cuda.is_available() is $_extra_probe." "$C_WARN"
+        substep "[WARN] Training and GPU inference will run on CPU. These wheels are not tested by Unsloth." "$C_WARN"
+        substep "[WARN] Please report the result either way: https://github.com/unslothai/unsloth/issues" "$C_WARN"
     fi
 fi
 

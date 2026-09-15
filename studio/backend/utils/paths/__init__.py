@@ -15,6 +15,8 @@ from .path_utils import (
 )
 from .storage_roots import (
     studio_root,
+    account_path,
+    workspace_root,
     assets_root,
     dataset_files_in_dir,
     datasets_root,
@@ -42,6 +44,7 @@ from .storage_roots import (
     ollama_model_dirs,
     hermes_model_dirs,
     well_known_model_dirs,
+    ensure_account_dir,
     ensure_dir,
     ensure_studio_directories,
     resolve_under_root,
@@ -67,6 +70,8 @@ __all__ = [
     "reset_cache_case_resolution_state",
     "reveal_in_file_manager",
     "studio_root",
+    "account_path",
+    "workspace_root",
     "assets_root",
     "dataset_files_in_dir",
     "datasets_root",
@@ -94,6 +99,7 @@ __all__ = [
     "ollama_model_dirs",
     "hermes_model_dirs",
     "well_known_model_dirs",
+    "ensure_account_dir",
     "ensure_dir",
     "ensure_studio_directories",
     "resolve_under_root",

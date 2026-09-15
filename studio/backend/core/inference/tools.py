@@ -13,6 +13,7 @@ import hashlib
 import json
 import http.client
 import os
+from functools import partial
 import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -72,6 +73,10 @@ from core.inference.mcp_client import (
     stdio_mcp_enabled,
 )
 from storage import mcp_servers_db
+from utils.account_context import account_thread, current_account_id, is_owner_context
+from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
+from pathlib import Path
+from utils.paths.storage_roots import RetiredAccountError, ensure_dir
 
 from loggers import get_logger
 
@@ -1301,6 +1306,21 @@ def _is_start_title(token: str) -> bool:
     )
 
 
+# `_BLOCKED_COMMANDS` is a never-mutated frozenset, so this alternation is a constant. Rebuilding it
+# per call cost an `re.escape` per blocked name: over a 2637 command corpus that was 567k calls and
+# 0.60s of 3.9s. None only if the set is empty.
+_BLOCKED_WORD_RE = (
+    re.compile(
+        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
+        r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
+        r"(?:\.(?:exe|com|bat|cmd))?\b"
+    )
+    if _BLOCKED_COMMANDS
+    else None
+)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1535,14 +1555,120 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Regex catches blocked words at command boundaries shlex misses: inside $(rm -rf), <(rm), backtick chains, or
     # "foo;rm". Anchored to command-position delimiters, so it doesn't match in argument position.
     lowered = command.lower()
+    if _BLOCKED_WORD_RE is not None:
+        blocked.update(_BLOCKED_WORD_RE.findall(lowered))
+
+    # A substitution at command position synthesizes the executed word, so `$(ls /usr/bin | grep
+    # "^reb")` never reaches the scan above; screen the body instead. A variable launders the same
+    # shapes (`c=$(...); $c`), so bindings are collected first - bodies reference them too.
     if _BLOCKED_COMMANDS:
-        words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
-        pattern = (
-            rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
-            rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
-            rf"({words_alt})(?:\.(?:exe|com|bat|cmd))?\b"
+        quote_states = _shell_quote_states(command)
+
+        def _site_expands(match: "re.Match") -> bool:
+            """Whether bash expands this substitution AT command position, rather than inside an
+            argument the outer command already owns."""
+            opener = match.end() - 1
+            state = quote_states[opener] if opener < len(quote_states) else ""
+            if state in ("'", "$'", _ESCAPED_CHAR_STATE):
+                return False  # bash substitutes nothing here
+            if state == '"':
+                # Double quotes DO substitute, but into a word the outer command receives - unless
+                # the quote opens at the site itself (`"$(...)"`, `"`...`"`), which is a command
+                # word.
+                return match.group(0).endswith(('"$(', '"`'))
+            return True
+
+        # Name -> the literal it holds, or None when unscreenable. `$C` is not `$c`.
+        laundered: "dict[str, str | None]" = {}
+        for assign in _SUBST_ASSIGN_RE.finditer(command):
+            if assign.group(1) in laundered or not _site_expands(assign):
+                continue
+            # An enumerating body is unknowable even when a literal (the grep selector) shows.
+            opener = assign.end() - 1  # `(` of `$(`, or the backtick
+            assign_body = _command_subst_body(command, opener).lower()
+            if _SUBST_ENUMERATES_COMMANDS_RE.search(assign_body):
+                laundered[assign.group(1)] = None
+                continue
+            found = sorted(_blocked_body_words(assign_body))
+            laundered[assign.group(1)] = found[0] if found else None
+        for printf_v in _PRINTF_V_ASSIGN_RE.finditer(command):
+            laundered.setdefault(printf_v.group(1), None)
+        for literal in _ASSIGN_BLOCKED_LITERAL_RE.finditer(command):
+            name, value = literal.group(1), literal.group(2).strip("\"'")
+            first = value.split()[0] if value.split() else ""
+            base = os.path.basename(first)
+            stem, ext = os.path.splitext(base)
+            if ext.lower() in {".exe", ".com", ".bat", ".cmd"}:
+                base = stem
+            if base.lower() in _BLOCKED_COMMANDS:
+                laundered.setdefault(name, base.lower())
+        laundered_refs = "|".join(sorted({re.escape(n) for n in laundered}, key = len, reverse = True))
+        laundered_in_body_pattern = (
+            rf"\$(?:{laundered_refs}|\{{(?:{laundered_refs})\}})" if laundered_refs else None
         )
-        blocked.update(re.findall(pattern, lowered))
+        sites = [
+            site
+            for site in list(_SUBST_AT_CMD_SITE_RE.finditer(command))
+            + list(_SUBST_EXEC_DIRECTIVE_RE.finditer(command))
+            + _case_arm_sites(command, quote_states)
+            if _site_expands(site)
+        ]
+        if len(sites) > _MAX_SUBST_SITES:
+            # Refuse rather than read: each site costs a span walk to end of line, so `";$(" * 10000`
+            # took over 30s on the request thread. Fail CLOSED, never open.
+            blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+            sites = []
+        for site in sites:
+            opener = site.end() - 1  # `(` of `$(`, or the backtick
+            body = _command_subst_body(command, opener)
+            lowered_body = body.lower()
+            blocked.update(_blocked_body_words(lowered_body))
+            if _subst_is_word_fragment(command, opener):
+                # `"$(printf r)"m` concatenates into `rm`. The body alone is benign, so nothing
+                # above can name the command: only the fact that it is unknowable is reportable.
+                blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+            elif _SUBST_ENUMERATES_COMMANDS_RE.search(lowered_body):
+                blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+            elif laundered_in_body_pattern is not None and re.search(
+                laundered_in_body_pattern, body
+            ):
+                # `$(echo $c)`: the body runs over laundered text, so its output is unknowable.
+                blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+        if laundered_refs:
+            # Named, not positional: a group added in front would silently renumber these.
+            var_word = (
+                r"(?P<var>\"?\$(?:(?P<bare>"
+                + laundered_refs
+                + r")|\{(?P<braced>"
+                + laundered_refs
+                + r")\})"
+                # The closing quote ends the word too, or `"$c"` - the recommended spelling -
+                # walks through the screen the bare one is caught by. Trailing word characters
+                # are part of the SAME word: bash concatenates the fragments, so `${x}m` runs
+                # `rm` when x holds `r`, and requiring the expansion to end the word let that
+                # through.
+                r"\"?[\w.\-]*)(?=\s|$|[;&|)\]}])"
+            )
+            var_hits = list(
+                re.finditer(_SUBST_CMD_SEP + r"\s*" + _SUBST_WRAPPER_RUN + var_word, command)
+            )
+            # A case arm runs a laundered variable just as readily as a substitution.
+            var_hits += _case_arm_sites(
+                command, quote_states, re.compile(r"\)\s*" + _SUBST_WRAPPER_RUN + var_word)
+            )
+            for hit in var_hits:
+                if _is_wrapper_flag_operand(command, hit.start("var")):
+                    continue  # `xargs -P $n`: operand of the option, not the command
+                name = hit.group("bare") or hit.group("braced")
+                precise = laundered.get(name)
+                # A precise literal only stands when the expansion IS the whole word; glued to
+                # more text it is a fragment of an unknown name (`${x}m`), not that name.
+                if precise is not None and hit.group("var").rstrip('"').endswith(
+                    ("$" + name, "{" + name + "}")
+                ):
+                    blocked.add(precise)
+                else:
+                    blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
 
     # Nested shell invocations (bash -c, cmd /c): on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
@@ -4220,7 +4346,13 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # and reaches nothing: it only reports that the user's own armed research is starting, and without it here
 # is_high_risk_tool_call's unknown-name default would prompt on every handoff.
 _ALWAYS_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation", "deep_research"}
+    {
+        "web_search",
+        "search_knowledge_base",
+        "search_conversation",
+        "read_skill",
+        "deep_research",
+    }
 )
 
 
@@ -4942,6 +5074,223 @@ _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
 )
+# Command-position separators for the screens below. `:` is absent on purpose: its arguments are
+# expanded but never executed.
+# `coproc [NAME] command` (bash `help coproc`) executes COMMAND asynchronously, so its operand is
+# a command position; the optional NAME is matched only here, where it cannot widen anything else.
+_SUBST_CMD_SEP = (
+    r"(?:^|[;&|\n({]|&&|\|\||\b(?:then|do|else|elif|if|while|until)\b\s*"
+    r"|\bcoproc\b\s*(?:[A-Za-z_]\w*\s+)?|!\s*)"
+)
+# Wrappers forward to their operand. Repetitions are bounded and flat: unbounded nesting caused
+# catastrophic backtracking. A wrapper's arguments are flags, `VAR=value` and bare numbers (the
+# shapes _exec_child_index steps over), NOT "any word" - its first plain word IS its command, and
+# accepting arbitrary words hard-blocked `timeout 60 python train.py --data $(ls -d data/*)`. An
+# option taking a separate value swallows it too, or `xargs -P $n` reads the `$n` as the command.
+_ALL_WRAPPER_VALUE_FLAGS = frozenset(
+    flag for flags in _WRAPPER_VALUE_FLAGS_BY_CMD.values() for flag in flags
+) | {
+    # `env -C DIR` / `--chdir DIR` (env --help) takes a separate value, so an unconsumed DIR
+    # reads as the command and the real one behind it is never reached. Added HERE rather than
+    # to _WRAPPER_VALUE_FLAGS_BY_CMD because that table also drives the high-risk classifier,
+    # where `-C /` is exactly what makes a following relative `etc/passwd` sensitive.
+    #
+    # `-S`/`--split-string` is deliberately absent: its operand is split into the argv that RUNS,
+    # so consuming it as a value loses the command (`env -S 'rm -rf /tmp/x'` went unblocked).
+    "-C",
+    "--chdir",
+}
+_WRAPPER_VALUE_FLAG_ALT = "|".join(
+    re.escape(flag) for flag in sorted(_ALL_WRAPPER_VALUE_FLAGS, key = len, reverse = True)
+)
+# A bare number covers `nice 5`; timeout's DURATION is "a floating point number with an optional
+# suffix: 's', 'm', 'h' or 'd'" (timeout --help). Floating point there means strtod, so the
+# scientific spellings are valid too and `timeout 1e1 $(...)` really runs - every form this does
+# not accept is a site that goes unscreened.
+_SUBST_WRAPPER_ARG = (
+    r"(?:(?:" + _WRAPPER_VALUE_FLAG_ALT + r")\s+[^\s;&|()]+"
+    r"|-[^\s;&|()]*|[A-Za-z_]\w*=[^\s;&|()]*"
+    r"|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[smhd]?)"
+)
+# Both repetitions are UNBOUNDED. `env --help` documents `[OPTION]...` before COMMAND, so any cap
+# is a number of options an attacker just exceeds to make the whole site regex fail - opening, not
+# closing. Unbounded is safe here because the parts cannot overlap: a wrapper word never matches
+# _SUBST_WRAPPER_ARG (which needs `-`, `VAR=` or a digit) and every repetition must consume a
+# mandatory `\s+`, so no token can be split across two of them and there is nothing to backtrack.
+_SUBST_WRAPPER_RUN = (
+    r"(?:(?:env|command|builtin|exec|time|nohup|nice|setsid|stdbuf|timeout|ionice|chroot"
+    r"|setpriv|sudo|doas|su|xargs)\s+(?:" + _SUBST_WRAPPER_ARG + r"\s+)*)*"
+)
+# Redirections may precede the command word (`>out.log $(...)` runs the substitution's output),
+# and the token walker already treats them as leaving command position intact. Bash allows
+# whitespace between the operator and its target, so `> out.log $(...)` is the same command.
+#
+# The target and the space after it are both MANDATORY, which is what keeps `>$(ls) cmd` out: a
+# substitution that IS the redirection target names a file, it is not run, and an optional target
+# would let this prefix match nothing and read that `$(` as the command word.
+_SUBST_REDIR_PREFIX = r"(?:\d*(?:>>|<<<|<<|>&|<&|>|<)\s*[^\s;&|()]+\s+)*"
+# VAR=x prefixes are stepped over; `(?!\()` drops arithmetic, which is a number, not a command.
+# A double-quoted backtick expands exactly like `"$(...)"`, so it opens a command word too.
+_SUBST_OPENER = r"(?:\"\$\((?!\()|\$\((?!\()|\"`|`)"
+_SUBST_CMD_WORD_PREFIX = (
+    _SUBST_REDIR_PREFIX
+    + r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    + _SUBST_REDIR_PREFIX
+    + _SUBST_WRAPPER_RUN
+)
+_SUBST_AT_CMD_SITE_RE = re.compile(
+    _SUBST_CMD_SEP + r"\s*" + _SUBST_CMD_WORD_PREFIX + _SUBST_OPENER,
+    re.IGNORECASE,
+)
+# A `case` arm's `)` is followed directly by the commands to run, so it is a command position -
+# but only inside `case ... in ... esac`, and only for a `)` that is not closing a substitution.
+# Treating every `)` as a separator would refuse an ordinary `echo $(date) $(ls /tmp)`.
+_SUBST_CASE_ARM_RE = re.compile(
+    r"\)\s*" + _SUBST_CMD_WORD_PREFIX + _SUBST_OPENER,
+    re.IGNORECASE,
+)
+_CASE_REGION_RE = re.compile(r"\bcase\b.*?\bin\b(.*?)(?:\besac\b|$)", re.IGNORECASE | re.DOTALL)
+# The words after a find/fd -exec directive are the executed argv, so `find . -exec $(...) \;`
+# runs whatever the body prints.
+_SUBST_EXEC_DIRECTIVE_RE = re.compile(
+    r"(?:-exec(?:dir)?|--exec(?:-batch)?|-ok(?:dir)?)\s+" + _SUBST_CMD_WORD_PREFIX + _SUBST_OPENER,
+    re.IGNORECASE,
+)
+# An assignment binds wherever it appears, so these three lead on any separator OR whitespace:
+# under `(?:^|[;&|\n])` a launder behind a keyword or subshell went uncollected and ran. Widening
+# only COLLECTS; a name is reported only where it is executed at command position.
+_ASSIGN_LEAD = (
+    r"(?:^|[\s;&|\n(){])(?:(?:export|local|readonly)\s+|(?:declare|typeset)(?:\s+[-\w+]+)*\s+)?"
+)
+# The name is laundered, its content unscreenable. `(?!\()` excludes arithmetic, whose inclusion
+# hard-blocked `sec=$((60*5)); timeout $sec make test`.
+_SUBST_ASSIGN_RE = re.compile(_ASSIGN_LEAD + r"([A-Za-z_]\w*)=[\"']?(?:\$\((?!\()|`)")
+# `printf -v NAME` runs nothing, but a later `$NAME` at command position executes it.
+_PRINTF_V_ASSIGN_RE = re.compile(_ASSIGN_LEAD + r"\bprintf\s+-v\s+([A-Za-z_]\w*)\b")
+# `c=reboot` makes `$c` at command position run reboot. Only the value's first word counts, and
+# arrays never match (the value class excludes parens).
+_ASSIGN_BLOCKED_LITERAL_RE = re.compile(_ASSIGN_LEAD + r"([A-Za-z_]\w*)=([^\s;&|()]+)")
+
+
+def _command_subst_body(command: str, opener: int) -> str:
+    """The body text of the `$(...)` (``opener`` = index of ``(``) or backtick (``opener`` = index
+    of the backtick) substitution opening there. A backtick span ends at the next unescaped
+    backtick; an unterminated span of either kind runs to the end of the string."""
+    if command[opener] == "`":
+        closer = opener + 1
+        while True:
+            closer = command.find("`", closer)
+            if closer < 0:
+                return command[opener + 1 :]
+            if command[closer - 1] != "\\":
+                return command[opener + 1 : closer]
+            closer += 1
+    end = _substitution_span(command, opener - 1)
+    return command[opener + 1 : end if end >= len(command) else end - 1]
+
+
+# For an enumerated command with no literal name to report.
+_BLOCKED_SYNTHESIZED_COMMAND = "command substitution"
+# Primitives that enumerate executable names inside a substitution body. A lookup for one literal
+# binary (`$(which python)`) stays out: that name is visible in the body itself.
+_SUBST_ENUMERATES_COMMANDS_RE = re.compile(
+    r"(?:\bcompgen\b|\b(?:ls|dir|find)\b|\b(?:echo|printf)\b[^\n;&|]*[*?[])"
+)
+# Sites read before refusing instead: each costs a span walk and this function has no length cap.
+_MAX_SUBST_SITES = 64
+
+
+@functools.lru_cache(maxsize = 4)
+def _blocked_body_word_pattern_for(words: "frozenset[str]") -> "re.Pattern":
+    """A blocked name appearing anywhere in a command-substitution body.
+
+    Looser than the command-position scan on purpose: anything in the body may become the word
+    that runs. `.` (the synonym for `source`) cannot share that boundary, because any dot in a
+    filename then matches it - `$(cat .env)` was refused as "Blocked command(s) for safety: .".
+    Punctuation names get the strict boundary, the only place they can run anyway.
+    """
+    word_like = sorted(w for w in words if w[:1].isalnum() or w[:1] == "_")
+    punctuation = sorted(w for w in words if w not in set(word_like))
+    parts = []
+    if word_like:
+        alt = "|".join(re.escape(w) for w in word_like)
+        parts.append(rf"(?:^|[^\w./\\-])(?:[\w./\\-]*/)?({alt})(?:\.(?:exe|com|bat|cmd))?\b")
+    if punctuation:
+        alt = "|".join(re.escape(w) for w in punctuation)
+        parts.append(rf"(?:^|[;&|`\n(])\s*({alt})(?=\s)")
+    return re.compile("|".join(parts) if parts else r"(?!)")
+
+
+def _subst_is_word_fragment(command: str, opener: int) -> bool:
+    """Whether more of the command WORD follows the substitution opening at ``opener``.
+
+    Bash concatenates adjacent fragments, so `$(printf r)m` and `"$(printf r)"m` both run `rm`.
+    The body is benign in each, so a scan that only reads bodies reports nothing; what is
+    reportable is that the executed word cannot be known.
+    """
+    if command[opener] == "`":
+        closer = command.find("`", opener + 1)
+        end = len(command) if closer < 0 else closer + 1
+    else:
+        end = _substitution_span(command, opener - 1)
+    if end < len(command) and command[end] == '"':
+        end += 1  # the `"` closing a `"$(...)"` / `"`...`"` word
+    return end < len(command) and (command[end].isalnum() or command[end] in "_.-/")
+
+
+def _case_arm_sites(
+    command: str,
+    quote_states: "list[str]",
+    pattern: "re.Pattern | None" = None,
+) -> "list[re.Match]":
+    """Matches of ``pattern`` anchored on a `case` arm's `)`, which is a command position.
+
+    Only inside `case ... in ... esac`, and only for a `)` that does not close a substitution -
+    otherwise the `)` of an ordinary `echo $(date) $(ls /tmp)` would read as an arm and refuse it.
+    ``pattern`` defaults to the substitution-site one; the variable-execution scan passes its own,
+    since a laundered `$c` runs in an arm just as readily as a substitution does.
+    """
+    pattern = pattern if pattern is not None else _SUBST_CASE_ARM_RE
+    if not _CASE_REGION_RE.search(command):
+        return []
+    # Every `)` that closes an unquoted `$(`: those belong to the substitution, not to an arm.
+    closers: "set[int]" = set()
+    for opener in re.finditer(r"\$\((?!\()", command):
+        at = opener.start()
+        if at < len(quote_states) and quote_states[at] in ("'", "$'", _ESCAPED_CHAR_STATE):
+            continue
+        end = _substitution_span(command, at)
+        if end <= len(command):
+            closers.add(end - 1)
+    sites = []
+    for region in _CASE_REGION_RE.finditer(command):
+        start, stop = region.start(1), region.end(1)
+        for site in pattern.finditer(command, start, stop):
+            if site.start() not in closers:
+                sites.append(site)
+    return sites
+
+
+def _is_wrapper_flag_operand(command: str, start: int) -> bool:
+    """Whether the word at ``start`` is the VALUE of a wrapper option rather than a command.
+
+    `xargs -P $n` gives `-P` the `$n`, which is never the command the wrapper forwards to. Checked
+    here, not in the regex: a regex consuming the option and its value backtracks to the shorter
+    reading, and the atomic group that would pin it needs 3.11 while this file supports 3.9.
+    """
+    preceding = command[:start].split()
+    return bool(preceding) and preceding[-1] in _ALL_WRAPPER_VALUE_FLAGS
+
+
+def _blocked_body_words(body: str) -> "set[str]":
+    """Every blocked name the substitution body ``body`` (already lowercased) mentions."""
+    found: "set[str]" = set()
+    for groups in _blocked_body_word_pattern_for(frozenset(_BLOCKED_COMMANDS)).findall(body):
+        if isinstance(groups, str):
+            groups = (groups,)
+        found.update(g for g in groups if g)
+    return found
+
 
 # A command substitution appearing anywhere ($(...) that is not arithmetic, or a backtick). Used to catch a
 # substitution stashed in a variable (x=`...`) that a later dynamic exec runs, which never surfaces as literal text.
@@ -6674,6 +7023,28 @@ def _sandbox_preexec():
             pass
 
 
+def _account_confinement():
+    """Confinement for the acting account's next child: None for owner, raises if unavailable."""
+    return account_confinement(_SANDBOX_SITE_DIR)
+
+
+def _run_preexecs(first, second):
+    """Both pre-exec steps in the forked child, in order; no closures, no imports."""
+    if first is not None:
+        first()
+    second()
+
+
+def _apply_confinement(confinement, popen_kwargs: dict, argv: list) -> list:
+    if confinement is None:
+        return argv
+    if confinement.preexec is not None and sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = partial(
+            _run_preexecs, popen_kwargs.get("preexec_fn"), confinement.preexec
+        )
+    return confinement.wrap(argv)
+
+
 def _bypass_preexec():
     """Minimal pre-exec for bypass exec: os.setsid() only. Required, not a restriction:
     _kill_process_tree does killpg(getpgid(child)), so without a new session a timeout/cancel
@@ -6813,27 +7184,48 @@ def _get_shell_cmd(command: str) -> list[str]:
     return ["bash", "-c", command]
 
 
-# Per-session working directories so each chat thread gets its own sandbox. Falls back to ~/studio_sandbox/_default
-# for callers without a session_id.
-_workdirs: dict[str, str] = {}
-# Sessions with a tool call in flight. Deleting a chat unlinks its workdir, and a process whose cwd has been removed
-# fails every relative write with ENOENT.
-_active_sessions: "dict[str, int]" = {}
-# Deletions that arrived mid-call: the thread has gone from history, so nothing would ask for the folder again. Keyed
-# like the above and holding every exact id that folded onto the key, since each can be its own directory.
-_pending_removals: "dict[str, dict[str, bool]]" = {}
+def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
+    """Keep a confined account's command text off argv: other accounts' tools can read
+    /proc/<pid>/cmdline and Landlock cannot deny per-pid reads."""
+    argv = _get_shell_cmd(command)
+    if confinement is None or sys.platform == "win32" or argv[1] != "-c":
+        return argv, None
+    fd, path = tempfile.mkstemp(suffix = ".sh", prefix = ".studio_cmd_", dir = workdir)
+    with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        f.write(command)
+    name = os.path.basename(path)
+    return [argv[0], name], name
+
+
+# Per-session working directories so each chat thread gets its own sandbox.
+# Falls back to ~/studio_sandbox/_default for callers without a session_id.
+_workdirs: dict[tuple[str, str], str] = {}
+# Sessions with a tool call in flight. Deleting a chat unlinks its workdir, and
+# a process whose cwd has been removed fails every relative write with ENOENT.
+_active_sessions: "dict[tuple[str, str], int]" = {}
+# Deletions that arrived mid-call: the thread has gone from history, so nothing
+# would ask for the folder again. Keyed like the above and holding every exact
+# id that folded onto the key, since each can be its own directory.
+_pending_removals: "dict[tuple[str, str], dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
-# Sessions whose sandbox is being removed right now. A start for one of these waits on the condition rather than on
-# the lock, so only that chat is held up.
-_removing_sessions: "set[str]" = set()
+# Sessions whose sandbox is being removed right now. A start for one of these
+# waits on the condition rather than on the lock, so only that chat is held up.
+_removing_sessions: "set[tuple[str, str]]" = set()
 _sessions_free = threading.Condition(_active_sessions_lock)
 
 
-def _session_key(session_id: "str | None") -> str:
-    """Lifecycle key for a session id. Case-folded: two ids differing only in case are one directory
-    on Windows and on a default macOS volume, and keying them apart let a delete land while the
-    other chat was running a tool in there."""
-    return (session_id or _ANON_KEY).casefold()
+def _workdir_key(session_id: "str | None") -> tuple[str, str]:
+    return current_account_id(), session_id or _ANON_KEY
+
+
+def _session_key(session_id: "str | None") -> tuple[str, str]:
+    """Lifecycle key for a session id.
+
+    Case-folded: two ids differing only in case are one directory on Windows and
+    on a default macOS volume, and keying them apart let a delete land while the
+    other chat was running a tool in there.
+    """
+    return current_account_id(), (session_id or _ANON_KEY).casefold()
 
 
 @contextlib.contextmanager
@@ -6902,8 +7294,8 @@ def _orphan_records_dir() -> str:
     by its id: the row that knew the path is gone, and a workspace the user pointed somewhere
     custom cannot be derived from anything else."""
     try:
-        from utils.paths.storage_roots import studio_root
-        return os.path.join(str(studio_root()), "orphaned-projects")
+        from utils.paths.storage_roots import account_path
+        return str(account_path("orphaned-projects"))
     except Exception:
         # Only if the studio home cannot be resolved at all: beside the sandbox root, whose parent an administrator
         # may have made read-only.
@@ -7444,7 +7836,7 @@ def finish_workspace_delete_when_idle(
         wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(
+    thread = account_thread(
         target = _wait_and_collect,
         name = "workspace-delete",
         daemon = True,
@@ -7574,6 +7966,9 @@ def _project_workdir_info_for(session_id: "str | None") -> "tuple[str, bool] | N
 
 
 def _get_project_workdir_info(session_id: str) -> "tuple[str, bool] | None":
+    # Host project paths are single-user only; managed accounts use their sandbox.
+    if not is_owner_context():
+        return None
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     if _thread_exists(session_id):
@@ -7911,17 +8306,34 @@ def _legacy_sandbox_root() -> str:
     return os.path.join(os.path.expanduser("~"), "studio_sandbox")
 
 
+def shared_sandbox_root() -> str:
+    """The base every account's ``sandbox_root`` lives under; confinement hides it first."""
+    override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    if override:
+        return os.path.expanduser(override)
+    try:
+        from utils.paths.storage_roots import studio_root
+        return str(studio_root())
+    except Exception:
+        return _legacy_sandbox_root()
+
+
 def sandbox_root() -> str:
     """Root of the per-session tool sandboxes. Under the studio home, so UNSLOTH_STUDIO_HOME keeps
     everything in one place instead of leaving a stray ~/studio_sandbox. Falls back to the legacy
     path only if the studio root cannot be resolved."""
     override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
     if override:
+        if not is_owner_context():
+            from utils.paths.storage_roots import external_account_sandbox_root
+            return str(external_account_sandbox_root())
         return os.path.expanduser(override)
     try:
-        from utils.paths.storage_roots import studio_root
-        return os.path.join(str(studio_root()), "sandbox")
+        from utils.paths.storage_roots import account_path
+        return str(account_path("sandbox"))
     except Exception:
+        if not is_owner_context():
+            raise
         return _legacy_sandbox_root()
 
 
@@ -7961,28 +8373,46 @@ def _staged_move(source: str, target: str, name: str) -> None:
     the original still in place; the next launch would read that as a session the new root
     already has and strand the files. Filled under a name nothing resolves to, then renamed,
     which on one filesystem is atomic."""
+    global _legacy_sandbox_migrated
     staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
+    # Announced for exactly as long as neither end of the move is where a reader looks. Anything
+    # deciding there is nothing to migrate has to consult this first, or it decides it during the
+    # one moment the evidence is missing.
+    with _legacy_locks_guard:
+        _legacy_moves_in_flight.add(name)
     try:
-        shutil.move(source, staging)
-    except OSError:
-        # Half filled and ours, and the source is still where it was.
-        shutil.rmtree(staging, ignore_errors = True)
-        raise
-    # Marked here, not after the rename: across filesystems the move has already removed the legacy copy, so from this
-    # instant the staging tree is the only one there is and a kill before the marker would leave it unfindable.
-    _preserve_foreign_marker(staging, name)
-    _mark_sandbox(staging, name)
-    try:
-        os.rename(staging, target)
-    except OSError:
-        # The move already took the legacy copy, so this tree is the only one and deleting it would lose the files. It
-        # is marked, so _marked_sandbox_in finds it; put it back and let the next pass retry.
         try:
-            os.rename(staging, source)
+            shutil.move(source, staging)
         except OSError:
-            logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
-        raise
-    _mark_sandbox(target, name)
+            # Half filled and ours, and the source is still where it was.
+            shutil.rmtree(staging, ignore_errors = True)
+            raise
+        # Marked here, not after the rename: across filesystems the move has already removed the legacy copy, so from
+        # this instant the staging tree is the only one there is and a kill before the marker would leave it unfindable.
+        _preserve_foreign_marker(staging, name)
+        _mark_sandbox(staging, name)
+        try:
+            os.rename(staging, target)
+        except OSError:
+            # The move already took the legacy copy, so this tree is the only one and deleting it would lose the files.
+            # It is marked, so _marked_sandbox_in finds it; put it back and let the next pass retry.
+            try:
+                os.rename(staging, source)
+            except OSError:
+                logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
+            else:
+                # There is something to migrate again, so say so. A whole-tree pass that ran while this sat in staging
+                # saw an empty legacy root and can already have called the migration finished; left standing, that
+                # retires the very retry this rollback exists to allow and the chat keeps an empty sandbox until the
+                # process restarts.
+                _legacy_sandbox_migrated = False
+            raise
+        _mark_sandbox(target, name)
+    finally:
+        global _legacy_moves_done
+        with _legacy_locks_guard:
+            _legacy_moves_in_flight.discard(name)
+            _legacy_moves_done += 1
 
 
 # Bookkeeping only, never held across a move: starting the background pass and the sweep. Anything that copies a tree
@@ -8001,15 +8431,37 @@ def _legacy_lock_for(name: str) -> threading.Lock:
         return _legacy_session_locks.setdefault(name, threading.Lock())
 
 
+# Sessions whose move is running right this instant, held by _staged_move across the whole of
+# it. Neither root shows the tree while that runs, so this is the only thing that separates
+# "the legacy copy is gone because it arrived" from "it is gone because it is in staging".
+_legacy_moves_in_flight: "set[str]" = set()
+# Every move that has finished, succeeded or rolled back. The set above only answers "right
+# now", which cannot see a move that both started and ended inside a whole-tree pass: by the
+# end it is empty again although the pass listed the legacy root mid-staging and, if that move
+# rolled back, the source is now sitting there unlisted.
+_legacy_moves_done = 0
+
+
+def _legacy_lock_peek(name: str) -> "threading.Lock | None":
+    """The lock covering this session's move, if one was ever started. Never creates the entry: a
+    name with nothing at the legacy root must not leave one behind."""
+    with _legacy_locks_guard:
+        return _legacy_session_locks.get(name)
+
+
 # Where every id the old code could not use as a directory name went. One bucket for all of them, which is what this
 # change stops doing, so it is never moved up as though it were a chat: several chats' files are in there.
 _LEGACY_SHARED_BUCKET = "_invalid"
 
 
 def _legacy_session_dir(session_id: str) -> "str | None":
-    """This session's directory at the legacy root, while one is still there. Both names, like the
-    migration itself: a chat from before the upgrade whose id starts with the derived prefix kept
-    its folder under the literal id."""
+    """This session's directory at the legacy root, while one is still there.
+
+    Both names, like the migration itself: a chat from before the upgrade whose
+    id starts with the derived prefix kept its folder under the literal id.
+    """
+    if not is_owner_context():
+        return None
     legacy_root = _legacy_sandbox_root()
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
@@ -8034,12 +8486,38 @@ def _legacy_session_dir(session_id: str) -> "str | None":
 
 def _migrate_one_legacy_session(root: str, name: str) -> None:
     """Bring one session up from the legacy root, without waiting for the rest."""
-    if _legacy_sandbox_migrated:
+    if not is_owner_context():
         return
-    source = os.path.join(_legacy_sandbox_root(), name)
-    if os.path.islink(source) or not os.path.isdir(source):
+    # The legacy root, not the done flag and not the session directory. _staged_move renames the
+    # tree aside into staging before renaming it into place, and through that window neither root
+    # holds it; a failing rename then rolls it back. Anything read on one side of that and used on
+    # the other describes an instant that has passed, and the caller leaves without files that are
+    # sitting at the legacy root again. The flag is no safer than the directory, since a pass can
+    # look during the same window, find the root empty, and call the migration finished over a
+    # move it never saw. The root is the stable question: removed once the migration is genuinely
+    # done, present for the whole of any move, and still there when one failed, which is exactly
+    # when this should try rather than skip.
+    legacy_root = _legacy_sandbox_root()
+    if not os.path.isdir(legacy_root):
         return
-    with _legacy_lock_for(name):
+    source = os.path.join(legacy_root, name)
+    if os.path.islink(source):
+        return
+    if os.path.isdir(source):
+        lock = _legacy_lock_for(name)
+    else:
+        # Staged away, or never there at all? Only a mover takes the tree, and it takes this lock
+        # before it does, so an entry is the durable trace of that. Durable is the point: entries
+        # are never removed, so unlike the in-flight set this reading cannot go stale between here
+        # and the wait below. No entry means no move ever began for this name, and none can begin
+        # without the source appearing, which only a rollback does, and only after a move. Looking
+        # without inserting is also what keeps the table bounded by the chats that had a legacy
+        # folder, rather than growing one entry per chat for as long as a failed migration leaves
+        # the root in place.
+        lock = _legacy_lock_peek(name)
+        if lock is None:
+            return
+    with lock:
         if not os.path.isdir(source):
             return  # the background pass got there first
         # Through the resolver, like the whole-tree pass: at a shared root the plain name can be the user's own, and
@@ -8060,7 +8538,7 @@ _legacy_background: "threading.Thread | None" = None
 def _start_legacy_migration() -> "threading.Thread | None":
     """Carry the rest of the tree up, one pass at a time, off this request."""
     global _legacy_background
-    if _legacy_sandbox_migrated:
+    if not is_owner_context() or _legacy_sandbox_migrated:
         return None
     with _legacy_one_lock:
         if _legacy_background is not None and _legacy_background.is_alive():
@@ -8074,7 +8552,7 @@ def _migrate_legacy_sandbox(root: str) -> None:
     so they move rather than being dropped. A session already present at the new root wins and
     its legacy copy is left alone, so nothing is silently overwritten."""
     global _legacy_sandbox_migrated
-    if _legacy_sandbox_migrated:
+    if not is_owner_context() or _legacy_sandbox_migrated:
         return
     # Flagged only once the move is done: setting it first let a concurrent call create the destination, which then
     # read as a collision.
@@ -8082,21 +8560,27 @@ def _migrate_legacy_sandbox(root: str) -> None:
         if _legacy_sandbox_migrated:
             return
         # Only when nothing movable is left: a file locked on Windows is retryable, and one attempt strands it once
-        # the destination exists.
-        if _migrate_legacy_sandbox_locked(root):
-            _legacy_sandbox_migrated = True
+        # the destination exists. The flag is committed inside, in the same guarded moment as the check that earns
+        # it, so a rollback cannot be decided against and then overwritten by a verdict formed before it happened.
+        _migrate_legacy_sandbox_locked(root)
 
 
 def _migrate_legacy_sandbox_locked(root: str) -> bool:
     """True when the legacy root holds nothing that could still be moved. A collision is not a
     failure: the new root already has that session, and the legacy copy is deliberately left for
     the user to find."""
+    global _legacy_sandbox_migrated
     legacy = _legacy_sandbox_root()
     try:
+        # Read before the tree is looked at, so any move that runs from here on is counted.
+        with _legacy_locks_guard:
+            moves_before = _legacy_moves_done
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
+            _legacy_sandbox_migrated = True
             return True
         os.makedirs(root, exist_ok = True)
         moved = 0
+        own_moves = 0
         complete = True
         for name in os.listdir(legacy):
             source = os.path.join(legacy, name)
@@ -8115,6 +8599,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 with _legacy_lock_for(name):
                     if not os.path.isdir(source) or os.path.exists(target):
                         continue  # a request path moved it while we waited
+                    own_moves += 1  # before the call: one that raises still advances the count
                     _staged_move(source, target, name)
                 moved += 1
             except OSError as error:
@@ -8124,6 +8609,19 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 logger.warning("Could not move sandbox %s: %s", name, error)
         if moved:
             logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
+        # Any move but this pass's own, overlapping any part of it. Such a session was in neither root while the
+        # listing above ran, so that listing is not evidence about it: it may have arrived, or rolled back and be
+        # sitting at the legacy root right now, unlisted. Counting rather than asking what is in flight is the point,
+        # since one that started and ended inside the pass leaves nothing in flight to find. The legacy root has to
+        # stay too, as that is where a rollback renames back into. Reporting unfinished is what brings the next pass.
+        with _legacy_locks_guard:
+            overlapped = (
+                bool(_legacy_moves_in_flight) or _legacy_moves_done - moves_before != own_moves
+            )
+            if not overlapped and complete:
+                _legacy_sandbox_migrated = True
+        if overlapped:
+            return False
         # Empty only: a leftover is a collision the user should still find.
         try:
             os.rmdir(legacy)
@@ -8233,7 +8731,7 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
-    key = session_id or _ANON_KEY
+    key = _workdir_key(session_id)
     project = _project_workdir_info_for(session_id)
     project_workdir = project[0] if project else None
     project_external = project[1] if project else False
@@ -8271,8 +8769,11 @@ def _get_workdir(session_id: str | None = None) -> str:
         _workdirs.pop(key, None)
         sandbox_root_path = sandbox_root()
         root_existed = os.path.isdir(sandbox_root_path)
-        # The folder may still be at the legacy root right after an upgrade. Only this chat's, so a first tool call
-        # never waits on the whole tree: across filesystems that is a copy of every session.
+        # Before anything below creates a directory: a call after deletion must refuse.
+        ensure_dir(Path(sandbox_root_path))
+        # The folder may still be at the legacy root right after an upgrade.
+        # Only this chat's, so a first tool call never waits on the whole tree:
+        # across filesystems that is a copy of every session.
         if session_id:
             # A pre-upgrade chat whose id already starts with the derived prefix kept its folder under the literal id,
             # so that name is tried too. Only a usable one: the rest never named a directory.
@@ -8339,7 +8840,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if project:
             return project[0]
     root = sandbox_root()
-    cached = _workdirs.get(session_id or _ANON_KEY)
+    cached = _workdirs.get(_workdir_key(session_id))
     if (
         cached
         and not os.path.islink(cached)
@@ -8393,7 +8894,7 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             logger.debug("legacy sandbox migration failed", exc_info = True)
 
-    thread = threading.Thread(target = _run, name = "sandbox-migrate", daemon = True)
+    thread = account_thread(target = _run, name = "sandbox-migrate", daemon = True)
     thread.start()
     return thread
 
@@ -8492,6 +8993,7 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
 
 
 _swept_detached = False
+_swept_detached_accounts: set[str] = set()
 
 
 def start_sandbox_recovery() -> "threading.Thread | None":
@@ -8503,9 +9005,15 @@ def _start_detached_sweep() -> "threading.Thread | None":
     """Run the sweep once per process, off the call that noticed."""
     global _swept_detached
     with _legacy_one_lock:
-        if _swept_detached:
-            return None
-        _swept_detached = True
+        if is_owner_context():
+            if _swept_detached:
+                return None
+            _swept_detached = True
+        else:
+            account_id = current_account_id()
+            if account_id in _swept_detached_accounts:
+                return None
+            _swept_detached_accounts.add(account_id)
 
     def _sweep() -> None:
         sweep_detached_sandboxes()
@@ -8513,7 +9021,7 @@ def _start_detached_sweep() -> "threading.Thread | None":
         # away.
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(target = _sweep, name = "sandbox-sweep", daemon = True)
+    thread = account_thread(target = _sweep, name = "sandbox-sweep", daemon = True)
     thread.start()
     return thread
 
@@ -8634,12 +9142,15 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
 
 
 def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
-    """The directory this process made for this chat, whatever the marker says. Tool code runs in
-    there and can empty that file or write another id into it, and neither makes the directory
-    somebody else's: this process wrote the marker with O_EXCL and remembers doing it. Put back
-    here, so the ordinary routes find it too rather than leaving the files stranded until some
-    later call happens to repair it."""
-    cached = _workdirs.get(session_id)
+    """The directory this process made for this chat, whatever the marker says.
+
+    Tool code runs in there and can empty that file or write another id into
+    it, and neither makes the directory somebody else's: this process wrote the
+    marker with O_EXCL and remembers doing it. Put back here, so the ordinary
+    routes find it too rather than leaving the files stranded until some later
+    call happens to repair it.
+    """
+    cached = _workdirs.get(_workdir_key(session_id))
     if not cached or cached not in _claimed_here:
         return None
     if os.path.islink(cached) or not os.path.isdir(cached):
@@ -8772,10 +9283,10 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # Nothing says whose this is, and on a case-insensitive volume `foo` and `Foo` are one directory: without the
         # marker the name is the only evidence, and it names the other chat.
         return False
-    _workdirs.pop(session_id, None)
-    # Resolved BEFORE anything is removed: the record is named by the real path of the spill directory, which cannot
-    # be derived once the tree is gone. Without this every deleted chat that ever truncated output leaves one small
-    # file behind for good.
+    _workdirs.pop(_workdir_key(session_id), None)
+    # Resolved BEFORE anything is removed: the record is named by the real path of the
+    # spill directory, which cannot be derived once the tree is gone. Without this every
+    # deleted chat that ever truncated output leaves one small file behind for good.
     forget_record = _spill_record_path(os.path.join(target, _SPILL_DIR))
     try:
         if delete_files:
@@ -8828,10 +9339,16 @@ _EDIT_FILE_DIFF_WINDOW_LINES = 120
 def _edit_file_resolve(
     raw_path: str, session_id: "str | None", disable_sandbox: bool
 ) -> "tuple[str | None, str]":
-    """Resolve the model's path the way python/terminal resolve theirs. Same rules as the
-    sitecustomize shim: a code-interpreter habit prefix (/mnt/data, /workspace, ...) keeps its
-    suffix under the workdir, everything else is relative to it. Containment is checked on the
-    realpath, so a symlink planted inside cannot reach out."""
+    """Resolve the model's path the way python/terminal resolve theirs.
+
+    Same rules as the sitecustomize shim: a code-interpreter habit prefix
+    (/mnt/data, /workspace, ...) keeps its suffix under the workdir, everything
+    else is relative to it. Containment is checked on the realpath, so a symlink
+    planted inside cannot reach out.
+    """
+    from state.tool_policy import require_tool_access
+
+    require_tool_access(disable_sandbox = disable_sandbox)
     raw = (raw_path or "").strip()
     if not raw:
         return None, "Error: 'path' is required."
@@ -9854,6 +10371,65 @@ SEARCH_CONVERSATION_TOOL = {
         },
     },
 }
+READ_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_skill",
+        "description": (
+            "Read instructions or a UTF-8 resource from an enabled Agent Skill. "
+            "Start with SKILL.md, then read referenced resources only when needed. "
+            "This tool reads files; it does not execute scripts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Enabled skill name from the system skill catalog.",
+                },
+                "resource": {
+                    "type": "string",
+                    "description": "Relative resource path. Defaults to SKILL.md.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Character offset for the next page. Defaults to 0.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+CREATE_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_skill",
+        "description": (
+            "Create a new Agent Skill in ~/.agents/skills. Use the skill-creator instructions "
+            "first. Existing skills are never overwritten."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Lowercase skill name using letters, numbers, and single hyphens.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "When the skill should be used, in 1-1024 characters.",
+                },
+                "instructions": {
+                    "type": "string",
+                    "description": "Complete Markdown instructions for the skill body.",
+                },
+            },
+            "required": ["name", "description", "instructions"],
+        },
+    },
+}
+
 
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
@@ -10126,6 +10702,9 @@ def execute_tool(
     observational: the returned result string is identical with or without it. ``website_policy``:
     hidden server-validated domain limits for web_search.
     """
+    from state.tool_policy import require_tool_access
+
+    require_tool_access(disable_sandbox = disable_sandbox)
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     # Set unconditionally, so a value from an earlier call on this thread can never be read by a later one. That is
     # what makes a try/finally reset unnecessary here.
@@ -10151,6 +10730,58 @@ def execute_tool(
             "split across smaller calls if the content is long."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "create_skill":
+        from .skills import SkillError, create_skill
+
+        try:
+            record = create_skill(
+                arguments.get("name", ""),
+                arguments.get("description", ""),
+                arguments.get("instructions", ""),
+            )
+        except SkillError as exc:
+            return f"Error: {exc}"
+        # The next turn must see the new skill, not the 1 s catalog snapshot.
+        from routes.inference import _invalidate_agent_skills_cache
+
+        _invalidate_agent_skills_cache()
+        return (
+            f"Created Agent Skill '{record['name']}' at {record['path']}. "
+            f"It is enabled and ready to use."
+        )
+
+    if name == "read_skill":
+        from .skills import (
+            MAX_SKILL_PAGE_CHARS,
+            MIN_SKILL_PAGE_CHARS,
+            SkillError,
+            read_skill_resource,
+        )
+        try:
+            page_chars = MAX_SKILL_PAGE_CHARS
+            # A model that spells out every optional argument sends null, not nothing.
+            resource = arguments.get("resource")
+            offset = arguments.get("offset")
+            while True:
+                result = read_skill_resource(
+                    arguments.get("name") or "",
+                    "SKILL.md" if resource is None else resource,
+                    0 if offset is None else offset,
+                    page_chars = page_chars,
+                )
+                fitted = _fit_result_to_room(result, name)
+                if fitted == result:
+                    return result
+                # Below this the page is nothing but its own header and footer.
+                if page_chars < MIN_SKILL_PAGE_CHARS:
+                    return (
+                        "Error: Not enough context room to read this skill resource. "
+                        "Reduce the conversation context and retry the same read_skill call."
+                    )
+                page_chars //= 2
+        except SkillError as exc:
+            return f"Error: {exc}"
+
     if name == "search_knowledge_base":
         return _fit_result_to_room(
             _search_knowledge_base_with_budget(
@@ -10528,7 +11159,7 @@ def _search_knowledge_base_with_budget(
             release_slot()
 
     try:
-        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+        account_thread(target = search, name = "rag-tool-search", daemon = True).start()
     except Exception:
         release_slot()
         raise
@@ -14491,8 +15122,8 @@ def _spill_records_dir() -> str:
     a delete and the prune into an unlink. Held beside the other records this file already keeps
     outside the sandboxes."""
     try:
-        from utils.paths.storage_roots import studio_root  # noqa: PLC0415
-        return os.path.join(str(studio_root()), "tool-output-records")
+        from utils.paths.storage_roots import account_path  # noqa: PLC0415
+        return str(account_path("tool-output-records"))
     except Exception:
         return os.path.join(
             os.path.dirname(os.path.realpath(sandbox_root())), "tool-output-records"
@@ -15611,10 +16242,15 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
-    workdir = _get_workdir(session_id)
-    # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share one session by design.
-    # Retaining a result in either, under a path the next chat can list, would leave behind output that existed only
-    # in this call's own response. See `_spill_scope`, which returns None for exactly those cases.
+    try:
+        workdir = _get_workdir(session_id)
+        confinement = _account_confinement()
+    except (ToolConfinementUnavailable, RetiredAccountError) as exc:
+        return _truncate(f"Execution error: {exc}")
+    # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
+    # one session by design. Retaining a result in either, under a path the next chat can
+    # list, would leave behind output that existed only in this call's own response. See
+    # `_spill_scope`, which returns None for exactly those cases.
     spill_scope = _spill_scope(session_id, thread_id)
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
@@ -15653,10 +16289,12 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        # -u forces unbuffered child stdout so a bare print() streams live instead of sitting in the pipe's block
-        # buffer until exit. Applied unconditionally to stay byte-identical with and without streaming; unlike
-        # PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        # -u forces unbuffered child stdout so a bare print() streams live
+        # instead of sitting in the pipe's block buffer until exit. Applied
+        # unconditionally to stay byte-identical with and without streaming;
+        # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
+        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
@@ -15774,8 +16412,13 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    _scratch_name = None
     try:
-        workdir = _get_workdir(session_id)
+        try:
+            workdir = _get_workdir(session_id)
+            confinement = _account_confinement()
+        except (ToolConfinementUnavailable, RetiredAccountError) as exc:
+            return _truncate(f"Execution error: {exc}")
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)
         spill_dir = workdir if session_id else None
@@ -15800,7 +16443,12 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.add(_scratch_name)
+        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
@@ -15824,12 +16472,16 @@ def _bash_exec(
         if timed_out:
             ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
             return ended + (
-                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+                if session_id
+                else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+                if session_id
+                else ""
             )
 
         result = output or ""
@@ -15845,7 +16497,7 @@ def _bash_exec(
         )
         # Only for a chat that has an id (see _python_exec).
         if session_id:
-            result += _created_file_sentinels(workdir, _before, None, call_token)
+            result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
         return result
 
     except Exception as e:
@@ -15855,3 +16507,10 @@ def _bash_exec(
     finally:
         _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.discard(_scratch_name)
+            try:
+                os.unlink(os.path.join(workdir, _scratch_name))
+            except OSError:
+                pass

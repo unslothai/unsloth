@@ -15,6 +15,9 @@ estimate for a lease that runs up to 25 growing rounds.
 """
 
 import base64
+import copy
+
+import pytest
 
 from models.inference import AnthropicMessagesRequest
 from routes.inference import (
@@ -491,14 +494,8 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
         )
 
     def test_the_charge_matches_what_the_translation_actually_sends(self):
-        """The two halves have to agree, so this fails on whichever side moves first.
-
-        `anthropic_messages_to_openai` keeps only the text blocks of a list
-        `tool_result`, so the nested image never reaches llama-server and earns no mtmd
-        allowance. Start forwarding it and this fails, which is the reminder that
-        admission has to start charging for it.
-        """
-        data = _image_b64(64)
+        """Every forwarded tool image earns an embedding allowance, not a base64 charge."""
+        data = _TINY_PNG
         payload = self._request(data)
 
         estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(
@@ -513,6 +510,44 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
         assert image_parts == (1 if forwarded else 0), (
             "admission charges a bounded image allowance exactly when the translation "
             f"sends the image (forwarded={forwarded}, image_parts={image_parts})"
+        )
+
+        from types import SimpleNamespace
+
+        from routes.inference import _openai_llama_admission_image_tokens
+
+        text_only = anthropic_messages_to_openai(
+            [message.model_dump() for message in payload.messages], None, tool_result_images = False
+        )
+        assert data not in str(text_only)
+        assert _openai_llama_admission_image_tokens(SimpleNamespace(is_vision = False)) == 0
+
+    @pytest.mark.parametrize("source_type", ["base64", "url"])
+    @pytest.mark.parametrize("with_text", [False, True])
+    def test_each_nested_image_is_compacted_and_charged(self, source_type, with_text):
+        payload = self._request(_TINY_PNG)
+        blocks = payload.messages[-1].content[0].content
+        first = blocks[-1]
+        second = copy.deepcopy(first)
+        second["source"]["data"] = _OTHER_PNG
+        if source_type == "url":
+            for block in (first, second):
+                block["source"] = {
+                    "type": "url",
+                    "url": f"data:image/png;base64,{block['source']['data']}",
+                }
+        blocks[:] = [first, *blocks[:1], second] if with_text else [first, second]
+        original = payload.model_dump()
+
+        compact, count = _openai_llama_admission_messages_for_estimate(payload.messages)
+        sent = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
+        forwarded = [p for m in sent if m["role"] == "tool" for p in m["content"]]
+        assert count == sum(p["type"] == "image_url" for p in forwarded) == 2
+        assert _TINY_PNG not in str(compact) and _OTHER_PNG not in str(compact)
+        assert payload.model_dump() == original
+        assert (
+            _openai_llama_admission_tokens(payload, budget = 1_000_000, capacity = 4)
+            >= 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
 
 
