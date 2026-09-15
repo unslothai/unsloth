@@ -9367,6 +9367,54 @@ class LlamaCppBackend:
         return None
 
     @staticmethod
+    def _inherited_child_gpu_order(pinned_ids: Iterable[int]) -> Optional[list[int]]:
+        """``pinned_ids`` in the parent mask's order, or None to keep them as given.
+
+        A numeric visibility mask defines enumeration ORDER as well as membership
+        (CUDA_VISIBLE_DEVICES=1,0 makes physical 1 the child's device 0), and every
+        producer of gpu_indices sorts ascending, so re-emitting it verbatim silently
+        reverses a deliberate reordering and the user has no way to place a card
+        first. Same rule _pin_visible_gpu_order_for_split applies to a manual
+        --tensor-split, which is where it was already spelled out.
+
+        Only when the mask covers the whole pinned set: a partial mask cannot say
+        where the ids it omits belong. None when the order is already what we would
+        emit, so callers can treat non-None as "this changed something".
+        """
+        inherited = LlamaCppBackend._resolve_visible_physical_ids()
+        if not inherited:
+            return None
+        wanted = [int(i) for i in pinned_ids]
+        ordered = [i for i in inherited if i in set(wanted)]
+        if sorted(ordered) != sorted(wanted) or ordered == wanted:
+            return None
+        return ordered
+
+    @staticmethod
+    def _repoint_emitted_tensor_split(
+        cmd: list, old_order: list[int], new_order: list[int]
+    ) -> bool:
+        """Move Unsloth's own ``--tensor-split`` shares onto the reordered devices.
+
+        _plan_tensor_parallel returns the shares positional over gpu_indices, so a
+        reordered mask without this hands the roomier card's share to the smaller
+        one. Returns False when the shares cannot be moved, which vetoes the whole
+        reorder: emitting the mask alone would be the same bug.
+        """
+        try:
+            at = len(cmd) - 1 - cmd[::-1].index("--tensor-split")
+        except ValueError:
+            return True  # no shares emitted, nothing positional to carry
+        if at + 1 >= len(cmd):
+            return False
+        shares = cmd[at + 1].split(",")
+        if len(shares) != len(old_order):
+            return False
+        by_id = dict(zip(old_order, shares))
+        cmd[at + 1] = ",".join(by_id[i] for i in new_order)
+        return True
+
+    @staticmethod
     def _pin_visible_gpu_order_for_split(env: dict) -> Optional[tuple[int, ...]]:
         """Pin the child's GPU enumeration to the picker's order for a manual
         ``--tensor-split`` across the whole visible set. CUDA's default
@@ -10880,6 +10928,45 @@ class LlamaCppBackend:
             return self._is_vulkan_backend(self._find_llama_server_binary())
         except Exception:
             return False
+
+    def _gpu_ids_own_placement(
+        self,
+        gpu_ids,
+        *,
+        is_vulkan: Optional[bool] = None,
+    ) -> bool:
+        """Whether a ``gpu_ids`` pick is narrow enough to overrule a user ``--device``.
+
+        A pick that keeps every visible GPU narrows nothing, so there is no conflict
+        to resolve, and stripping there costs the only way to ORDER devices (the
+        picker itself is sorted) for no gain. Anything narrower still owns placement:
+        the flag would send the model to a card the picker deselected.
+
+        Vulkan always owns it -- Unsloth emits its own ``--device Vulkan<i>``, and
+        those ordinals are not the CUDA ids the visible set is counted in, so the
+        two cannot be compared. An unreadable visible set fails closed for the same
+        reason: unproven means stripped, as before.
+
+        Every consumer of the strip must ask this the same way, launch and reload
+        comparator alike, or the argv and the already-loaded check drift apart.
+        """
+        if gpu_ids is None:
+            return False
+        if is_vulkan is None:
+            is_vulkan = self.is_vulkan_build()
+        if is_vulkan:
+            return True
+        picked = {int(i) for i in gpu_ids}
+        if not picked:
+            return True
+        from utils.hardware import get_parent_visible_gpu_ids
+
+        visible = {int(i) for i in get_parent_visible_gpu_ids()}
+        # One device has no order to express, so the pass-through buys nothing there
+        # and a --main-gpu naming the card that is not present still has to go.
+        if len(visible) < 2:
+            return True
+        return not picked.issuperset(visible)
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
@@ -19599,22 +19686,20 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cache_tuning_target_unknown(
-        extra_args: Optional[Iterable[str]],
-        gpu_ids: Optional[Iterable[int]],
-        env: Mapping[str, str],
+        extra_args: Optional[Iterable[str]], device_flags_owned: bool, env: Mapping[str, str]
     ) -> bool:
         """Whether the device this cache tuning would be chosen against is the one
         the child actually gets.
 
         A user device selection is not stripped on an automatic load and llama.cpp
         reads it last (argv) or first (env, before argv either way), so it, not the
-        automatic placement, names the target. Both spellings count: only an explicit
-        ``gpu_ids`` clears LLAMA_ARG_DEVICE, so on an automatic load the env twin
-        survives into the child verbatim. Fail-closed by design -- the failure that
+        automatic placement, names the target. Both spellings count: only a pick that
+        OWNS placement clears LLAMA_ARG_DEVICE, so otherwise the env twin survives
+        into the child verbatim. Fail-closed by design -- the failure that
         matters is emitting --cache-ram 0 against a shared pool, while keeping the
         prompt cache on a discrete card only forgoes a tuning.
         """
-        if gpu_ids is not None:
+        if device_flags_owned:
             return False
         return bool(
             _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
@@ -20975,6 +21060,11 @@ class LlamaCppBackend:
                 return caps
 
             is_vulkan_backend = self._is_vulkan_backend(binary)
+            # Once, and reused everywhere the strip is asked about: the reload
+            # comparator has to reach the same answer as the argv it compares against.
+            _gpu_ids_own_device_flags = self._gpu_ids_own_placement(
+                gpu_ids, is_vulkan = is_vulkan_backend
+            )
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
             )
@@ -23994,13 +24084,13 @@ class LlamaCppBackend:
                     # strips. Unpinned, the child inherits LLAMA_ARG_DEVICE verbatim.
                     _fit_extras = (
                         self._strip_device_extra_args(extra_args)
-                        if gpu_ids is not None
+                        if _gpu_ids_own_device_flags
                         else extra_args
                     )
                     _fit_env = dict(os.environ)
                     if gpu_memory_mode == "manual":
                         self._clear_manual_placement_env(_fit_env)
-                    if gpu_ids is not None:
+                    if _gpu_ids_own_device_flags:
                         self._clear_device_placement_env(_fit_env)
                     # What the placement branch below will emit, so the effective
                     # (last-wins) fitter state is readable before the final argv exists.
@@ -24884,7 +24974,7 @@ class LlamaCppBackend:
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(_spec_placement_env)
                 _spec_placement_extras = extra_args
-                if gpu_ids is not None:
+                if _gpu_ids_own_device_flags:
                     _spec_placement_extras = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_spec_placement_env)
                 # A device the launch really carries, and not the CPU spelling of it.
@@ -25199,7 +25289,7 @@ class LlamaCppBackend:
                 # LLAMA_ARG_DEVICE, and llama.cpp reads it before argv, so an automatic
                 # load can place against a target the generated pin never names.
                 _cache_target_unknown = self._cache_tuning_target_unknown(
-                    extra_args, gpu_ids, os.environ
+                    extra_args, _gpu_ids_own_device_flags, os.environ
                 )
                 _shared_memory_offload = (
                     sys.platform == "win32"
@@ -25326,7 +25416,7 @@ class LlamaCppBackend:
                 # so classifying on them would pin for a --device cpu the child
                 # never sees. Same helpers the launch uses, so they cannot drift.
                 _mem_extra_args = extra_args
-                if gpu_ids is not None:
+                if _gpu_ids_own_device_flags:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_mem_env)
                 # ONE read for every decision below, published as one act: the window a
@@ -25619,7 +25709,7 @@ class LlamaCppBackend:
                 # below when the Unsloth picker owns the GPU selection.
                 if _mem_extras:
                     _emit_extra_args = list(_mem_extras)
-                    if gpu_ids is not None:
+                    if _gpu_ids_own_device_flags:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
                         _emit_extra_args = self._strip_device_extra_args(_emit_extra_args)
@@ -25870,7 +25960,7 @@ class LlamaCppBackend:
                     env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
 
                 # A gpu_ids pin also owns inherited device placement.
-                if gpu_ids is not None:
+                if _gpu_ids_own_device_flags:
                     self._clear_device_placement_env(env)
 
                 # After the scrubs above, so a placement this launch already dropped
@@ -26230,14 +26320,36 @@ class LlamaCppBackend:
                     # we cannot pin, _p2p_veto_reason withholds the flag.
                     if _p2p_launch_order_pinned:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+                    # The set is ours to pin, but the ORDER is the user's to choose,
+                    # and gpu_indices is ascending at every producer. Keep a mask that
+                    # deliberately reorders the same cards.
+                    _pin_ids = list(gpu_indices)
+                    _inherited_order = self._inherited_child_gpu_order(_pin_ids)
+                    if _inherited_order is not None:
+                        # A user --tensor-split is positional over the order they
+                        # expected, so reordering under it re-weights the wrong cards.
+                        # Theirs to own: decline instead of rewriting it.
+                        if _extra_args_tensor_split(extra_args, os.environ) is not None:
+                            logger.info(
+                                "Keeping ascending GPU order: a pass-through "
+                                "--tensor-split is positional over it."
+                            )
+                        elif self._repoint_emitted_tensor_split(cmd, _pin_ids, _inherited_order):
+                            logger.info(
+                                "Pinning the child's GPU order to the inherited "
+                                "visibility mask: %s (ascending would be %s).",
+                                _inherited_order,
+                                _pin_ids,
+                            )
+                            _pin_ids = _inherited_order
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     self._emit_child_gpu_visibility(
-                        env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
+                        env, ",".join(str(i) for i in _pin_ids), prefer_rocr = True
                     )
-                    _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
-                    _launch_pinned_ids = list(gpu_indices)
+                    _child_gpu_physical_ids = tuple(int(i) for i in _pin_ids)
+                    _launch_pinned_ids = list(_pin_ids)
                 elif not is_vulkan_backend and not gpu_ids:
                     # Nothing above pinned the child. Two shapes land here and the gate
                     # breaks both the same way, so they share one probe: `--fit on`
@@ -28246,7 +28358,7 @@ class LlamaCppBackend:
                     # can't resurrect the dropped --device (#7188).
                     self._extra_args = (
                         self._strip_device_extra_args(extra_args)
-                        if gpu_ids is not None
+                        if _gpu_ids_own_device_flags
                         else list(extra_args)
                     )
                     # Device-stripped the same way, so both comparator sides share a rule.
@@ -28267,7 +28379,7 @@ class LlamaCppBackend:
                     )
                     self._requested_extra_args = (
                         self._strip_device_extra_args(_pv_requested)
-                        if gpu_ids is not None
+                        if _gpu_ids_own_device_flags
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
@@ -29010,7 +29122,7 @@ class LlamaCppBackend:
             list(intent.extra_args) if intent.extra_args is not None else self._extra_args
         )
         candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
-        if intent.extra_args is not None and intent.gpu_ids is not None:
+        if intent.extra_args is not None and self._gpu_ids_own_placement(intent.gpu_ids):
             candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
         # A Model Memory toggle changes only the launch flags, so the intent is
         # unchanged and this would otherwise report already-loaded and leave the
@@ -30932,7 +31044,7 @@ class LlamaCppBackend:
                             if fallback_extra_args is not snapshot.extra_args:
                                 self._requested_extra_args = (
                                     self._strip_device_extra_args(_ea)
-                                    if snapshot.gpu_ids is not None
+                                    if self._gpu_ids_own_placement(snapshot.gpu_ids)
                                     else list(_ea)
                                 )
                             # Restore the requested mode + reason load_model("off") cleared,
