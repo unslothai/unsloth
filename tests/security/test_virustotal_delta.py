@@ -551,9 +551,9 @@ def test_an_engine_that_did_not_answer_has_not_cleared_us() -> None:
         "Microsoft": {"category": "undetected", "result": None},
     }
     delta = vtd.compare(baseline, _snap(silent))
-    assert not any("no longer flag" in row for row in delta.better), (
-        f"an engine that never answered was reported as having cleared the candidate: {delta.better}"
-    )
+    assert not any(
+        "no longer flag" in row for row in delta.better
+    ), f"an engine that never answered was reported as having cleared the candidate: {delta.better}"
     assert any("NOT cleared" in row for row in delta.same), delta.same
 
     # And the real improvement still reads as one: Skyhigh answered, and answered undetected.
