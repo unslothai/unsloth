@@ -591,27 +591,32 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
-        from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
+        from routes.inference import get_llama_cpp_backend, get_resident_registry
+
+        # The active backend plus every registry slot: a secondary resident's
+        # repo is as live as the active one's, and a slot still loading holds
+        # its identifier too. Slots the table already dropped are gone.
+        candidates = [get_llama_cpp_backend()]
+        candidates.extend(s.backend for s in get_resident_registry().slots_for_sweep())
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    loaded_id = backend.model_identifier
-    loaded_variant = getattr(backend, "hf_variant", None)
-    if backend.is_active and not backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
+    seen = set()
+    for backend in candidates:
+        if id(backend) in seen:
+            continue
+        seen.add(id(backend))
+        if not backend.is_active:
+            continue
+        loaded_id = backend.model_identifier
+        loaded_variant = getattr(backend, "hf_variant", None)
+        if loaded_id and _loaded_repo_variant_blocks_delete(
             loaded_id,
             repo_id,
             variant,
             loaded_variant,
-        )
-    if backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
-            loaded_id,
-            repo_id,
-            variant,
-            loaded_variant,
-        )
+        ):
+            return True
     return False
 
 
