@@ -992,7 +992,8 @@ class TestLiveServerStartup:
         # otherwise surfaces as a puzzling chat_only failure.
         hidden = subprocess.run(
             [
-                str(py), "-c",
+                str(py),
+                "-c",
                 "import importlib.metadata as m, importlib.util as u, sys\n"
                 "try: m.version('torch'); sys.exit('metadata visible')\n"
                 "except m.PackageNotFoundError: pass\n"
@@ -1003,7 +1004,9 @@ class TestLiveServerStartup:
             timeout = 60,
         )
         if hidden.returncode != 0:
-            pytest.fail(f"torch is still visible to the server process: {hidden.stderr.decode(errors = 'replace')}")
+            pytest.fail(
+                f"torch is still visible to the server process: {hidden.stderr.decode(errors = 'replace')}"
+            )
         proc = subprocess.Popen(
             [str(py), str(backend_dir / "run.py"), "--port", str(port)],
             env = env,
