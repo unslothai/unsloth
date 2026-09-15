@@ -200,6 +200,13 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
+def _request_images(image, images):
+    """One request's images in render order; ``image`` is the older single-image spelling."""
+    if images:
+        return list(images)
+    return [image] if image is not None else []
+
+
 def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     """The parent's view of a model the worker holds. Measured or classified in the subprocess and
     unrecoverable once the model lives there, so a field the worker sends and this does not copy
@@ -966,7 +973,7 @@ class InferenceOrchestrator:
     def _build_generate_cmd(
         self,
         request_id: str,
-        image_b64: Optional[str],
+        images_b64: list,
         *,
         messages: list = None,
         system_prompt: str = "",
@@ -996,7 +1003,7 @@ class InferenceOrchestrator:
             "request_id": request_id,
             "messages": messages or [],
             "system_prompt": system_prompt,
-            "image_base64": image_b64,
+            "images_base64": images_b64,
             "temperature": temperature,
             "top_p": top_p,
             "top_k": top_k,
@@ -1219,6 +1226,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        *,
+        images = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1254,13 +1263,11 @@ class InferenceOrchestrator:
 
         request_id = str(uuid.uuid4())
 
-        image_b64 = None
-        if image is not None:
-            image_b64 = self._pil_to_base64(image)
+        images_b64 = [self._pil_to_base64(one) for one in _request_images(image, images)]
 
         cmd = self._build_generate_cmd(
             request_id,
-            image_b64,
+            images_b64,
             messages = messages,
             system_prompt = system_prompt,
             temperature = temperature,
@@ -2050,6 +2057,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        *,
+        images = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess. ``tools`` / ``enable_thinking`` /
         ``reasoning_effort`` / ``preserve_thinking`` are forwarded so the template can render
@@ -2061,6 +2070,7 @@ class InferenceOrchestrator:
             messages = messages,
             system_prompt = system_prompt,
             image = image,
+            images = images,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -2304,6 +2314,8 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         video: Optional[str] = None,
+        *,
+        images = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -2328,10 +2340,10 @@ class InferenceOrchestrator:
             if cancel_event is not None and cancel_event.is_set():
                 return
             request_id = str(uuid.uuid4())
-            image_b64 = self._pil_to_base64(image) if image is not None else None
+            images_b64 = [self._pil_to_base64(one) for one in _request_images(image, images)]
             cmd = self._build_generate_cmd(
                 request_id,
-                image_b64,
+                images_b64,
                 messages = messages,
                 system_prompt = system_prompt,
                 temperature = temperature,
