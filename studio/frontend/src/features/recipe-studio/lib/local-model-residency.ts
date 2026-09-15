@@ -62,6 +62,14 @@ async function localSelectionMatchesResident(input: {
       model_path: input.target,
       // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
+      // Only `resident` is read here, and these are what /validate assumes of a caller that
+      // sends no intended load settings.
+      // biome-ignore lint/style/useNamingConvention: api schema
+      max_seq_length: 0,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      load_in_4bit: true,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      is_lora: false,
     });
     return validated.resident === true;
   } catch {
