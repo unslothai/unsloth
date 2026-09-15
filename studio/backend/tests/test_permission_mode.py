@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `zcat` and friends uncompress the file they are given to stdout.
+    f"zcat {_OUTSIDE_DIR}/private.gz",
+    f"zstdcat {_OUTSIDE_DIR}/private.zst",
+    # A substitution nested inside a process substitution.
+    f"cat <(cat $(echo {_OUTSIDE_FILE}))",
     # `<( ... )` runs its body as a command of its own, under an outer command this scan does not model.
     f"pr <(cat {_OUTSIDE_FILE})",
     f"comm <(sort {_OUTSIDE_FILE}) <(sort b)",
@@ -3543,6 +3548,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `pandas.read_excel(io = ...)` is the documented name of its first parameter.
+    f"import pandas as pd\nprint(pd.read_excel(io = {_OUTSIDE_FILE!r}))",
     # `io.open_code` opens its argument in binary mode, which is a read of that path.
     f"import io\nprint(io.open_code({_OUTSIDE_FILE!r}).read())",
     # `ZipFile.write` / `TarFile.add` name a SOURCE on disk and copy it into the archive.
@@ -3728,6 +3735,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 _INDIRECT_BENIGN_TERMINAL = (
     "env - FOO=bar cat notes.txt",
     "pr <(cat notes.txt)",
+    "zcat archive.gz",
+    "cat <(cat $(echo notes.txt))",
     "diff <(sort a) <(sort b)",
     # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
     'while [ "$d" != "/" ]; do d=$(dirname "$d"); done',
@@ -3820,6 +3829,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 _INDIRECT_BENIGN_PYTHON = (
     "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
     "import io\nprint(io.open_code('local.py').read())",
+    "import pandas as pd\nprint(pd.read_excel(io = 'book.xlsx'))",
     # A gzip/bz2/lzma object takes DATA, exactly like an ordinary file handle.
     "import gzip\nf = gzip.GzipFile('out.gz', 'w')\nf.write(b'/home/alice/x')",
     "import shutil\nshutil.unpack_archive('local.zip', 'build')",
@@ -4208,6 +4218,13 @@ def test_a_symlink_inside_a_silent_root_does_not_make_its_target_silent(tmp_path
             pytest.skip("this platform does not allow creating a symlink here")
         assert gate._path_needs_approval(str(link / "secret.txt")) is True
         assert gate._path_needs_approval(str(link / "secret.txt"), writing = True) is True
+        # A link that stays INSIDE the silent roots but lands on a credential: containment passes
+        # on the resolved path, so the credential check has to run on it too.
+        secret = pathlib.Path(root) / "token"
+        secret.write_text("k")
+        alias = pathlib.Path(root) / "public"
+        alias.symlink_to(secret)
+        assert gate._path_needs_approval(str(alias)) is True
         # An ordinary path under the same root is unaffected.
         assert gate._path_needs_approval(str(pathlib.Path(root) / "ok.txt")) is False
     finally:

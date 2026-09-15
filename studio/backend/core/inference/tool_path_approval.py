@@ -538,7 +538,13 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # Inside a silent root, so only a credential underneath one still asks. Running the (superlinear) credential
     # scan only here, rather than on every operand, keeps the ordering guarantee at a fraction of the cost:
     # a path outside the roots already returned True, which is what the scan would have concluded anyway.
-    if _credential_under_silent_root(candidate):
+    # The RESOLVED target as well: a link inside one silent root can point at a credential inside
+    # another (`/models/public -> $HF_HOME/token`), and the lexical name carries none of it.
+    if _credential_under_silent_root(candidate) or (
+        resolved != candidate and _credential_under_silent_root(resolved)
+    ):
+        return True
+    if resolved != candidate and _references_sensitive_path(resolved):
         return True
     return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
 
@@ -595,6 +601,14 @@ def _credential_under_silent_root(candidate: str) -> bool:
 _PATH_READ_COMMANDS = frozenset(
     {
         "cat",
+        # `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
+        # whole family reads the file it is given exactly as `cat` does.
+        "zcat",
+        "bzcat",
+        "xzcat",
+        "lzcat",
+        "lz4cat",
+        "zstdcat",
         # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
         "iconv",
         # `help test`: "unary expressions ... are often used to examine the status of a file", and
@@ -1317,7 +1331,7 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     # pipe rather than the path. The lexer splits the parenthesis across tokens, so the body was
     # never classified and `pr <(cat /media/x)` printed the file under an unmodelled outer command.
     if text and "(" in text:
-        for body in _PROCESS_SUBSTITUTION_RE.findall(text):
+        for body in _process_substitution_bodies(text):
             try:
                 inner = shlex.split(body)
             except ValueError:
@@ -1327,8 +1341,31 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     return operands
 
 
-# The body of a process substitution. No nested parenthesis, which is what bounds the recursion above.
-_PROCESS_SUBSTITUTION_RE = re.compile(r"[<>]\(([^()]*)\)")
+def _process_substitution_bodies(text: str) -> "list[str]":
+    """The body of each `<( ... )` / `>( ... )`, matched on BALANCED parentheses.
+
+    A body can hold a substitution of its own (`<(cat $(echo /media/x))`), and a pattern that
+    excluded parentheses rejected the whole body when it did. Depth-counted rather than recursive,
+    and each body is shorter than the text it came from, so the caller's recursion still terminates.
+    """
+    bodies: "list[str]" = []
+    index = 0
+    while index < len(text) - 1:
+        if text[index] in "<>" and text[index + 1] == "(":
+            depth = 0
+            for end in range(index + 1, len(text)):
+                if text[end] == "(":
+                    depth += 1
+                elif text[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        bodies.append(text[index + 2 : end])
+                        index = end
+                        break
+            else:
+                break
+        index += 1
+    return bodies
 
 
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
@@ -2116,6 +2153,8 @@ _PY_PATH_KWARGS_BY_CALL = {
     "listdir": ("path",),
     "scandir": ("path",),
     "walk": ("top",),
+    # `pandas.read_excel(io = ...)`: `io` is the documented name of its first parameter.
+    "read_excel": ("io",),
     # `shutil.make_archive(base_name, format, root_dir, base_dir)`: the archive is the first
     # argument (a write), and the two directories it packs are reads.
     "make_archive": ("root_dir", "base_dir"),
