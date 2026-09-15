@@ -1852,6 +1852,246 @@ def check_transformers_dependency_versions():
     logger.warning("\n".join(lines))
 
 
+# torch releases that first provide a given attribute, used only to name the
+# upgrade in the message below. Measured against the wheels rather than guessed:
+# torch 2.6.0 has neither MX dtype and 2.8.0 has both, and both landed in 2.7.0
+# (pytorch/pytorch#146427 and #146578). An attribute that is not in here still
+# gets the diagnosis, just without a release to name, which is the point: the
+# table is a convenience and never the mechanism.
+_TORCH_ATTRIBUTE_FLOORS = {
+    "float8_e8m0fnu": "2.7.0",
+    "float4_e2m1fn_x2": "2.7.0",
+}
+
+# Packages unsloth imports and cannot add a missing torch attribute to. The same
+# AttributeError raised from user code is a typo, so it is left exactly as torch
+# wrote it.
+_TORCH_ATTRIBUTE_DEPENDENTS = frozenset((
+    "accelerate",
+    "bitsandbytes",
+    "cut_cross_entropy",
+    "diffusers",
+    "peft",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "trl",
+    "unsloth_zoo",
+    "vllm",
+    "xformers",
+))
+
+
+class UnslothTorchTooOldError(AttributeError):
+    """The installed torch is older than a library unsloth imports needs.
+
+    An AttributeError subclass on purpose: it replaces one torch itself raised,
+    so `hasattr(torch, name)` and `getattr(torch, name, default)` keep behaving
+    exactly as they did. Only an unguarded access changes, and only by carrying
+    the diagnosis instead of four words.
+    """
+
+
+def _torch_too_old_message(attribute, package, exception):
+    # torch.__version__ rather than the metadata version, because it carries the
+    # build (2.6.0+cu124) and that is what the user reads in every other message.
+    torch_version = getattr(sys.modules.get("torch"), "__version__", None)
+    if not torch_version:
+        try:
+            torch_version = importlib_version("torch")
+        except Exception:
+            torch_version = "unknown"
+    try:
+        package_version = importlib_version(package)
+    except Exception:
+        package_version = "unknown"
+
+    floor = _TORCH_ATTRIBUTE_FLOORS.get(attribute)
+    requirement = f'"torch>={floor}"' if floor else '"torch"'
+
+    lines = [
+        str(exception),
+        "",
+        f"Unsloth: {package}=={package_version} uses torch.{attribute}, and the "
+        f"installed torch=={torch_version} does not have it, so this environment "
+        f"holds a {package} newer than its torch.",
+    ]
+    if floor is not None:
+        lines.append(f"torch.{attribute} first appears in torch {floor}.")
+    lines += [
+        "",
+        f"Upgrade torch, which leaves {package} where it is:",
+        f"    pip install --upgrade {requirement}",
+        "",
+        f"Installing a {package} that matches this torch works too. Pip allowed the "
+        f"pair because {package} declares a lower torch floor than its own modules "
+        f"actually touch, so there was nothing for the resolver to reject.",
+    ]
+    return "\n".join(lines)
+
+
+def patch_torch_missing_attribute_error():
+    """Name the torch upgrade when a dependency reaches for a dtype torch lacks.
+
+    The reported failure was a Studio training run whose transformers (5.10) was
+    newer than its torch: `import unsloth` died inside unsloth_zoo's temporary
+    patches, importing transformers.processing_utils, on a module-scope
+    `_UE8M0_SF_DTYPE = torch.float8_e8m0fnu` in
+    transformers/integrations/finegrained_fp8.py, as a bare
+
+        AttributeError: module 'torch' has no attribute 'float8_e8m0fnu'
+
+    with no mention of a version and nothing for the user to act on. Both
+    pyprojects still permit the pair, and pip cannot be made to reject it:
+    transformers declares `torch>=2.2` through `torch>=2.5` depending on the
+    release, well below what its own modules touch, so there is no floor for the
+    resolver to enforce. A static transformers-to-torch table here would be no
+    better, because it would have to be wrong somewhere: torch 2.6.0 with
+    transformers 4.57.6 is a supported combination that works.
+
+    So probe the behaviour, at the only place that knows the answer. torch
+    answers a missing attribute through a module-level __getattr__, which the
+    interpreter calls only after normal lookup has already failed, so wrapping
+    that one function costs nothing on every successful attribute access and
+    turns the one failing access into a diagnosis. Idempotent, and the original
+    stays reachable as `__unsloth_original__`.
+    """
+    try:
+        import torch
+    except Exception:
+        # A missing or broken torch has its own, clearer error further down
+        # _gpu_init.py; there is nothing to wrap here.
+        return False
+
+    original = torch.__dict__.get("__getattr__")
+    if original is None:
+        # No module-level __getattr__ to wrap, so torch raises its AttributeError
+        # from the interpreter itself and there is nothing to improve.
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return True
+
+    @functools.wraps(original)
+    def __getattr__(name):
+        try:
+            return original(name)
+        except AttributeError as exception:
+            try:
+                # The frame that made the access, and only that one. Walking
+                # further up would blame transformers for a typo in a callback
+                # transformers happened to call.
+                requester = sys._getframe(1).f_globals.get("__name__") or ""
+            except Exception:
+                raise
+            package = requester.split(".", 1)[0]
+            if package not in _TORCH_ATTRIBUTE_DEPENDENTS:
+                raise
+            raise UnslothTorchTooOldError(
+                _torch_too_old_message(name, package, exception)
+            ) from exception
+
+    __getattr__.__unsloth_patched__ = True
+    __getattr__.__unsloth_original__ = original
+    torch.__getattr__ = __getattr__
+    return True
+
+
+# The '#' argument formats in triton's CUDA driver shim need this macro, and
+# CPython stopped requiring it in 3.13.
+_PY_SSIZE_T_CLEAN = "PY_SSIZE_T_CLEAN"
+
+
+def _triton_driver_shims_missing_py_ssize_t_clean():
+    """Installed triton backend driver shims that cannot parse their own
+    arguments on this interpreter, as [(backend, path), ...].
+
+    Static, because the failure is a property of the C source triton compiles at
+    run time: `loadBinary` parses with the format "ss#ii" into a Py_ssize_t, and
+    CPython below 3.13 raises SystemError for a '#' format unless the extension
+    was compiled with PY_SSIZE_T_CLEAN defined before Python.h.
+    """
+    if sys.version_info >= (3, 13):
+        return []
+    try:
+        spec = importlib.util.find_spec("triton")
+    except Exception:
+        return []
+    if spec is None or not spec.submodule_search_locations:
+        return []
+
+    offenders = []
+    for location in spec.submodule_search_locations:
+        backends = Path(location) / "backends"
+        if not backends.is_dir():
+            continue
+        for driver in sorted(backends.glob("*/driver.c")):
+            try:
+                source = driver.read_text(encoding = "utf-8", errors = "replace")
+            except Exception:
+                continue
+            if "Python.h" not in source:
+                continue
+            if _PY_SSIZE_T_CLEAN in source:
+                continue
+            # Only a '#' in a PyArg_Parse format needs the macro.
+            if not re.search(r"PyArg_Parse\w*\([^;]*?\"[^\"]*#", source, re.S):
+                continue
+            offenders.append((driver.parent.name, str(driver)))
+    return offenders
+
+
+def check_triton_py_ssize_t_clean():
+    """Warn when triton's driver shim will fail at the first kernel launch.
+
+    unsloth #2760: training died at the first Triton kernel with
+
+        SystemError: PY_SSIZE_T_CLEAN macro must be defined for '#' formats
+
+    raised from `driver.active.utils.load_binary`, on Python 3.12. Measured
+    against the wheels, every triton on PyPI from 3.0.0 to 3.8.0 defines the
+    macro in `backends/<backend>/driver.c`, so raising the `triton>=3.0.0` floor
+    in pyproject.toml would not have prevented this and cannot: torch pins triton
+    exactly (torch 2.6.0 requires `triton==3.2.0`), so any floor above what the
+    oldest supported torch carries makes that torch unresolvable rather than
+    safe. What is actually broken in these reports is a rebuilt or repackaged
+    triton whose shim lost the macro, which no dependency specifier can describe,
+    so name it here instead. Warns rather than raises: nothing has failed yet,
+    and a process that launches no Triton kernel never will.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRITON_SHIM_CHECK", "0").lower() in ("1", "true"):
+        return
+    try:
+        offenders = _triton_driver_shims_missing_py_ssize_t_clean()
+    except Exception:
+        return
+    if not offenders:
+        return
+
+    try:
+        triton_version = importlib_version("triton")
+    except Exception:
+        triton_version = "unknown"
+    python_version = ".".join(str(part) for part in sys.version_info[:3])
+
+    logger.warning(
+        f"Unsloth: triton=={triton_version} ships a "
+        f"{', '.join(backend for backend, _ in offenders)} driver shim that includes "
+        f"Python.h without defining {_PY_SSIZE_T_CLEAN}, and Python {python_version} "
+        f"requires that macro for the '#' argument formats the shim uses. The first "
+        f"Triton kernel launch in this process will fail with\n"
+        f"    SystemError: {_PY_SSIZE_T_CLEAN} macro must be defined for '#' formats\n"
+        f"Every triton on PyPI defines it, so this is a rebuilt or repackaged triton. "
+        f"Reinstall the triton your torch pins:\n"
+        f"    pip install --force-reinstall --no-cache-dir triton\n"
+        f"Python 3.13 and later do not need the macro, so moving to a newer Python "
+        f"also clears it. Affected file(s): "
+        f"{', '.join(path for _, path in offenders)}. Set "
+        f"UNSLOTH_SKIP_TRITON_SHIM_CHECK=1 to silence this."
+    )
+
+
+
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
 def fix_openenv_no_vllm():
     spec = importlib.util.find_spec("trl")
