@@ -13,17 +13,14 @@ from playwright.sync_api import expect, sync_playwright
 
 from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _json, klein_row
 
-# The host refuses the requested encoder precision and runs dense weights instead. The backend
-# spells that as value "off" with status "fell_back", which is the ONE shape this driver could not
-# otherwise produce: everywhere else the stub echoes the request back.
+# A refusal: value "off", status "fell_back". The only shape the echoing stub cannot produce.
 DECLINE = os.environ.get("PW_DECLINE", "0") == "1"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_text_encoder"))
 ART.mkdir(parents = True, exist_ok = True)
 
 
 def _record(page, state, loads, plans, errors):
-    """Leave something behind for the CI artifact: a driver that uploads an empty directory on
-    failure tells whoever reads it nothing."""
+    """State, requests and a screenshot, so a failed CI run uploads something readable."""
     (ART / "result.json").write_text(
         json.dumps(
             {
@@ -209,8 +206,7 @@ def main():
             timeout = 20_000
         )
         if DECLINE:
-            # The request reached the backend, the backend declined it, and the select must show what
-            # RAN, not what was asked for. Otherwise the page advertises a precision nothing is using.
+            # The select must show what RAN, or the page advertises a precision nothing is using.
             expect(encoder).to_have_text("Default")
             assert loads[-1]["text_encoder_quant"] == "fp8", loads
             assert not errors, errors
@@ -260,8 +256,7 @@ def main():
             page.wait_for_timeout(50)
         assert len(held_status) == 1
         page.get_by_test_id("nav-row-hub").click()
-        # The path, not the whole URL: the Hub appends its own ?tab= once it has mounted, and an
-        # exact-URL assertion loses that race in every Chromium and Firefox build.
+        # Path only: the Hub appends its own ?tab= on mount and an exact-URL assertion loses that race.
         expect(page).to_have_url(re.compile(r"/hub(\?|$)"))
         page.get_by_test_id("nav-row-images").click()
         expect(page).to_have_url(re.compile(r"/images(\?|$)"))
@@ -279,10 +274,8 @@ def main():
         held_status.clear()
         # The staged load carries the precision pinned when it was queued, so this one is Default.
         assert "text_encoder_quant" not in loads[-1], loads[-1]
-        # Whichever order those two refreshes answer in, the page ends in the same state, and the
-        # edit made WHILE the load was staging survives it: the build that landed is the one that
-        # was already loaded, and the reseed follows a change of build, not every completed load.
-        # That is what the other three Advanced selects do, and Reapply is how the user asks for it.
+        # Either order ends the same, and the edit made while the load staged survives: the reseed
+        # follows a change of BUILD, not every completed load, and Reapply is how the user applies it.
         expect(encoder).to_have_text("FP8 (storage)")
         expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
         assert not errors, errors

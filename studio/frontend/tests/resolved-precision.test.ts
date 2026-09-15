@@ -315,13 +315,11 @@ test("a precision refusal is recognised so it can be shown as an actionable toas
 });
 
 const ENCODER_OPTIONS = ["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
-// The images page's mapping for the Text encoder precision select, in one place.
 const toEncoderOption = (v: string) =>
   ENCODER_OPTIONS.find((o) => o === v || (o === "auto" && (v === "none" || v === "off"))) ?? null;
 
 test("the text encoder select follows what the loaded build actually ran", () => {
-  // Nothing requested and nothing engaged: Default. The backend spells "no encoder quant" as "off",
-  // and an older one as "none"; both have to land on Default rather than leaving a stale pick up.
+  // "off" (and "none", from an older backend) both mean dense, so both seed Default.
   assert.equal(
     resolvedSelectValue({ value: "off", source: "auto", reason: "" }, toEncoderOption),
     "auto",
@@ -330,7 +328,6 @@ test("the text encoder select follows what the loaded build actually ran", () =>
     resolvedSelectValue({ value: "none", source: "auto", reason: "" }, toEncoderOption),
     "auto",
   );
-  // Honored: the select keeps the request.
   assert.equal(
     resolvedSelectValue(
       { value: "fp8_dynamic", requested: "fp8_dynamic", source: "explicit", status: "applied", reason: "" },
@@ -338,7 +335,7 @@ test("the text encoder select follows what the loaded build actually ran", () =>
     ),
     "fp8_dynamic",
   );
-  // Downgraded int8 -> fp8: the request was NOT honored, so the select must snap to what engaged.
+  // Downgraded: the select follows what engaged, not what was asked.
   assert.equal(
     resolvedSelectValue(
       { value: "fp8", requested: "int8", source: "explicit", status: "fell_back", reason: "int8 needs resident weights" },
@@ -346,7 +343,6 @@ test("the text encoder select follows what the loaded build actually ran", () =>
     ),
     "fp8",
   );
-  // Declined to dense entirely: back to Default, not the refused request.
   assert.equal(
     resolvedSelectValue(
       { value: "off", requested: "nvfp4", source: "explicit", status: "fell_back", reason: "no Blackwell GPU" },
@@ -365,8 +361,7 @@ test("the reseed key moves when the text encoder build changes, and only then", 
   } satisfies Record<string, ResolvedControl>;
   const key = resolvedSeedKey(atLoad);
 
-  // A reason-only rewrite is the same build: the user's pending edit must survive it. Keying on the
-  // whole serialized entry (what the first cut of the encoder control did) re-seeded here.
+  // Same build, new wording: keying on the whole serialized entry re-seeded here and lost the edit.
   assert.equal(
     resolvedSeedKey({
       ...atLoad,
@@ -375,7 +370,6 @@ test("the reseed key moves when the text encoder build changes, and only then", 
     key,
     "a reason rewrite must not re-seed",
   );
-  // A reload that downgrades the encoder is a different build, so it must re-seed.
   assert.notEqual(
     resolvedSeedKey({
       ...atLoad,
@@ -384,7 +378,6 @@ test("the reseed key moves when the text encoder build changes, and only then", 
     key,
     "a declined encoder must re-seed",
   );
-  // So is one the user asked to change.
   assert.notEqual(
     resolvedSeedKey({
       ...atLoad,

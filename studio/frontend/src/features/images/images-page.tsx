@@ -2331,8 +2331,7 @@ export function ImagesPage({
     );
     if (quant) setTransformerQuant(quant);
     const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
-      // A declined encoder request engages dense weights, spelled "off" (or "none" by an older
-      // backend); the select's option for that is Default.
+      // A declined request runs dense: "off" (or "none", older backend) is the select's Default.
       (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
         (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
       ) ?? null,
