@@ -73,11 +73,28 @@ def test_leading_zeros_on_the_studio_port_normalize():
     assert "JUPYTER_PORT=9000" in res.stderr, res.stderr
 
 
-@pytest.mark.parametrize("value", ["abc", "0", "65536", "8000.0", "-1", "80 00"])
+@pytest.mark.parametrize(
+    "value", ["abc", "0", "65536", "8000.0", "-1", "80 00", "18446744073709551617"]
+)
 def test_a_studio_port_that_is_not_a_port_is_refused(value: str):
     res = _launch(UNSLOTH_STUDIO_PORT = value, JUPYTER_PORT = "8888")
     assert res.returncode != 0, value
     assert f"UNSLOTH_STUDIO_PORT={value}" in res.stderr, res.stderr
+
+
+def test_many_leading_zeros_still_normalize():
+    res = _launch(UNSLOTH_STUDIO_PORT = "000000000000000000009000", JUPYTER_PORT = "9000")
+    assert "JUPYTER_PORT=9000" in res.stderr, res.stderr
+
+
+@pytest.mark.parametrize("key_var", ["SSH_KEY", "PUBLIC_KEY"])
+def test_studio_on_sshd_port_is_refused_when_ssh_is_enabled(key_var: str):
+    res = _launch(
+        UNSLOTH_STUDIO_PORT = "22", JUPYTER_PORT = "8888", **{key_var: "ssh-ed25519 AAAA test"}
+    )
+    assert res.returncode != 0
+    assert "UNSLOTH_STUDIO_PORT=22 is sshd's port" in res.stderr, res.stderr
+    assert _launch(UNSLOTH_STUDIO_PORT = "22", JUPYTER_PORT = "8888").returncode == 0
 
 
 def test_studio_run_hands_the_port_to_the_cli(tmp_path: Path):

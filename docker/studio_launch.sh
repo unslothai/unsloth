@@ -22,11 +22,16 @@ set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 export UNSLOTH_STUDIO_PORT="${UNSLOTH_STUDIO_PORT:-8000}"
-if ! [[ "$UNSLOTH_STUDIO_PORT" =~ ^[0-9]+$ ]] || (( 10#$UNSLOTH_STUDIO_PORT < 1 || 10#$UNSLOTH_STUDIO_PORT > 65535 )); then
+# at most five significant digits, or bash arithmetic wraps 18446744073709551617 to 1
+if ! [[ "$UNSLOTH_STUDIO_PORT" =~ ^0*[0-9]{1,5}$ ]] || (( 10#$UNSLOTH_STUDIO_PORT < 1 || 10#$UNSLOTH_STUDIO_PORT > 65535 )); then
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=%s is not a port number (1-65535).\n" "$UNSLOTH_STUDIO_PORT" >&2
     exit 1
 fi
 UNSLOTH_STUDIO_PORT=$(( 10#$UNSLOTH_STUDIO_PORT ))
+if [[ -n "${SSH_KEY:-${PUBLIC_KEY:-}}" ]] && (( UNSLOTH_STUDIO_PORT == 22 )); then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=22 is sshd's port inside the container when SSH_KEY or PUBLIC_KEY is set.\n" >&2
+    exit 1
+fi
 # JupyterLab starts first and wins the bind, so Studio silently falls back to an unpublished
 # port. Compared as traitlets does, via int(): whitespace, leading zeros, a leading + and
 # underscores ("08000", " 8000", "8_000") all bind 8000.
