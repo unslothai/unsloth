@@ -789,9 +789,15 @@ export function applyCustomizationToDocument(
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
   // Resolve against each pane so sidebars and compare mode stay responsive.
+  // Wide is half the room between standard and the pane, not a fixed 72rem:
+  // under ~1150px a fixed one collapses onto full and the two read the same.
   setVar(
     "--custom-chat-max-width",
-    c.chatWidth === "full" ? "100%" : c.chatWidth === "wide" ? "72rem" : null,
+    c.chatWidth === "full"
+      ? "100%"
+      : c.chatWidth === "wide"
+        ? "calc(48rem + (100% - 48rem) * 0.5)"
+        : null,
   );
 
   syncImportedFonts(c.importedFonts);
