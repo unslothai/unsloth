@@ -2531,9 +2531,16 @@ _nv_banner_fields() {
             ;;
         *) _nv_idx="$_nv_tok" ;;
     esac
+    # Canonicalise the ordinal before anything compares or subscripts with it.
+    # `[` parses with strtol and ERRORS on a value wider than a long, printing a
+    # shell diagnostic and skipping the range check below, so an absurd ordinal
+    # would have named row 0. Clamped rather than rejected: 9999 is past any real
+    # host, so it stays out of range and declines, which is the right answer.
+    _nv_idx=$(printf '%s' "$_nv_idx" \
+        | awk '{ n = $0 + 0; if (n < 0) n = 0; if (n > 9999) n = 9999; printf "%d", n }')
     _nv_all=$(_run_bounded "$_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null || true)
     _nv_row=$(printf '%s\n' "$_nv_all" \
-        | awk -v idx="$_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+        | awk -v idx="$_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
     [ -n "$_nv_row" ] || return 0
     # A numeric entry is a CUDA ordinal, and CUDA's default CUDA_DEVICE_ORDER=FASTEST_FIRST
     # puts the fastest card at 0 and leaves the rest "unspecified", while nvidia-smi always
@@ -5056,14 +5063,14 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     if [ -n "$_gpu_disp_records" ]; then
         # Records already preserve device ordinals, including duplicate arches.
         _gpu_disp_record=$(printf '%s\n' "$_gpu_disp_records" | awk -v idx="$_gpu_vis_idx" \
-            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
         _gpu_disp_gfx=${_gpu_disp_record%%|*}
         _gpu_disp_mkt=${_gpu_disp_record#*|}
     fi
     # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_gpu_disp_gfx" ]; then
         _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
-            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+            'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
