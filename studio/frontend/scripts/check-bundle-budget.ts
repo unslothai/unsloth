@@ -50,19 +50,20 @@ export const BUDGET = {
   //
   // That is the re-measure. raw ran out first and main went red on its own: at 5fbbd61e6f main
   // measures 5,377.2 KB raw / 1,607.9 KB transfer, 6.1 KB past the raw ceiling, with nothing
-  // on a branch to blame. #10974 then bought main back with +10,000 bytes, to 5,502,720
-  // measured against a 5,510,000 ceiling: 7.1 KB of room, which is one locale string. That is
-  // the pattern this replaces rather than repeats.
+  // on a branch to blame. #10974 then bought main back with +10,000 bytes and it did not
+  // last one merge: at f7ab2098f the same build measures 5,381.0 KB raw against a 5,380.9 KB
+  // ceiling, so main is over again by a tenth of a kilobyte. Buying a week at a time is the
+  // pattern this replaces rather than repeats.
   //
-  // Both halves move together as the note above intended, to the same 4.1% headroom:
-  // 5,730,000 leaves 222.0 KB raw over #10974's measurement, and 1,715,000 leaves 66.9 KB
-  // transfer.
+  // Both halves move together as the note above intended, to the headroom that raise chose:
+  // against f7ab2098f's 5,381.0 KB raw / 1,609.0 KB transfer, 5,730,000 leaves 214.7 KB raw
+  // (3.8%) and 1,715,000 leaves 65.8 KB transfer (3.9%).
   //
-  // Nothing became eager again. The eager set gained one chunk over the window, 84 to 85, and
-  // kept the same top five, so there is still nothing here to lazy-load; the raw total grew
-  // inside chunks that were already eager, the locale messages most of all. Measured on one
-  // machine, one build per side, so the two numbers are comparable to each other rather than
-  // to a CI runner's.
+  // Nothing became eager again. The eager set is still 84 chunks with the same top five
+  // (chat, index, chunk-BO2N2NFS, providers-api, katex), so there is nothing here to
+  // lazy-load; the raw total grew inside chunks that were already eager, the locale messages
+  // most of all. Measured on one machine, one build per side, so the two numbers are
+  // comparable to each other rather than to a CI runner's.
   transferBytes: 1_715_000,
   rawBytes: 5_730_000,
 };
