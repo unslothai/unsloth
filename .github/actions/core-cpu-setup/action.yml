@@ -218,3 +218,21 @@ runs:
         done
         pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
         pip show unsloth_zoo
+
+        # Say which revision this is, and say so loudly when it is not the current one.
+        #
+        # resolve-zoo-ref pins the sha in a separate gating job. `gh run rerun --failed`
+        # re-runs only the FAILED jobs and reuses the successful ones, so a re-run of a red
+        # Core zoo job keeps the sha that job was given the first time, however long ago.
+        # Re-running to confirm a fix that has since landed in unsloth_zoo therefore
+        # re-tests the revision from before the fix, fails again, and says nothing about
+        # why. Nothing here recorded the revision, so the only way to find out was to read
+        # the resolve job's log from the original attempt and notice its timestamp.
+        #
+        # A full re-run (no --failed) re-runs resolve-zoo-ref and picks up main.
+        head="$(git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null | cut -f1)"
+        pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
+        echo "unsloth_zoo revision under test: $pinned"
+        if [ -n "$head" ] && [ "$head" != "$pinned" ]; then
+          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this job is a --failed re-run, it kept the revision resolved on the first attempt. Re-run ALL jobs to pick up main."
+        fi
