@@ -10127,6 +10127,9 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if name.split("__", 2)[2] != raw_name:
             _MCP_TOOL_ALIASES[name] = raw_name
             description = f"({raw_name}) {description}"
+        else:
+            # A name shipped as itself must not resolve through an alias it replaced.
+            _MCP_TOOL_ALIASES.pop(name, None)
         specs.append(
             {
                 "type": "function",

@@ -726,6 +726,28 @@ def test_in_flight_alias_still_dispatches_after_the_tool_cache_is_evicted(tmp_pa
     assert calls == ["catalog.get-catalog-entity"]
 
 
+def test_a_direct_name_is_not_resolved_through_a_retired_alias(tmp_path, monkeypatch):
+    import hashlib
+
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_ALIASES", {})
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, ["with.dot"])
+    alias = tools_mod._mcp_specs_for_server(server, tools)[0]["function"]["name"]
+    taken = "with_dot_" + hashlib.sha256(b"with.dot").hexdigest()[:8]
+    assert alias == f"mcp__{server['id']}__{taken}"
+    calls = []
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs["name"]) or "ok"
+    )
+    refreshed = [{"name": taken}]
+    mcp_client.cache_tools(server["id"], refreshed)
+    assert tools_mod._mcp_specs_for_server(server, refreshed)[0]["function"]["name"] == alias
+    assert tools_mod.execute_tool(alias, {}) == "ok"
+    assert calls == [taken]
+
+
 def test_mcp_specs_skip_empty_tool_name():
     from core.inference.tools import _mcp_specs_for_server
 
