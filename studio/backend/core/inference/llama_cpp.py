@@ -8194,8 +8194,18 @@ class LlamaCppBackend:
             # while sibling build layouts are checked. include_denied returns an
             # unavailable path instead: diffusion asset lookup only needs its dir.
             non_executable = None
+            from utils.llama_cpp_path_settings import prefer_gpu_capable
+
+            statuses = {p: _file_status(p) for p in paths}
+            first = next((p for p in paths if statuses[p] == "file"), None)
+            # A first hit proven CPU-only yields to a GPU-capable sibling build (#5941), unless
+            # a denied candidate precedes it: that denial stops discovery, it is not skipped over.
+            if first is not None and not any(
+                statuses[p] == "denied" for p in paths[: paths.index(first)]
+            ):
+                paths = prefer_gpu_capable(paths, lambda p: statuses[p] == "file")
             for p in paths:
-                st = _file_status(p)
+                st = statuses[p]
                 if st == "file":
                     return str(p), None
                 if st == "denied":
@@ -8275,7 +8285,9 @@ class LlamaCppBackend:
         # 5-6. Legacy: in-tree build (older setup.sh / setup.ps1). A fallback,
         # so a denied candidate here just continues (no no-fallback halt).
         project_root = Path(__file__).resolve().parents[4]
-        for p in _layout_candidates(project_root / "llama.cpp"):
+        from utils.llama_cpp_path_settings import prefer_gpu_capable
+
+        for p in prefer_gpu_capable(_layout_candidates(project_root / "llama.cpp"), _is_file):
             if _is_file(p):
                 return str(p)
 
@@ -10552,6 +10564,8 @@ class LlamaCppBackend:
     # only under PCI_BUS_ID, so a caller pinning the child's device order has to
     # know which it holds (#10613).
     _GPU_IDS_ARE_PCI_INDICES = None
+    # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
+    _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -11718,6 +11732,127 @@ class LlamaCppBackend:
             return f"the reason could not be determined ({type(e).__name__})"
 
     @staticmethod
+    def _nvidia_probe_script() -> Optional[Path]:
+        """studio/nvidia_probe.py, the installers' NVML / CUDA driver reader (UNSLOTH_NVIDIA_PROBE wins)."""
+        from utils.prebuilt.update_flow import find_installer_script
+        return find_installer_script(env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py")
+
+    @staticmethod
+    def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
+        """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
+        uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
+        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
+        MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
+        first slice row stands in for the parent's whole-card memory, and a second slice of
+        the same card is dropped: the rows are keyed by physical index, and one slice per
+        card is what the driver exposed before R570 and what the child is pinned to."""
+        raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+        parents = [r for r in rows if not r.get("mig")]
+
+        def as_cuda_sees(r: dict) -> dict:
+            if r.get("mig"):
+                return r  # a slice the mask named stays that slice
+            slices = [
+                s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))
+            ]
+            return slices[0] if slices else r
+
+        tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
+        picked: list[dict] = []
+        if raw is None:
+            picked = [as_cuda_sees(r) for r in parents]
+        for token in tokens:
+            if token.isdigit():
+                hits = [r for r in parents if str(r.get("index")) == token]
+            elif token.startswith("GPU-"):
+                hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
+            elif token.startswith("MIG-"):
+                # A MIG- entry names a slice row the probe lists under its parent.
+                hits = [
+                    r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
+                ]
+            else:
+                hits = []
+            if len(hits) != 1:
+                break
+            picked.extend(
+                r
+                for r in map(as_cuda_sees, hits)
+                if str(r.get("index")) not in {str(p.get("index")) for p in picked}
+            )
+        return picked
+
+    @staticmethod
+    def _uuid_by_index(rows: list[dict]) -> dict[int, str]:
+        """The uuid each visible index stands for: every row when the mask named rows by
+        uuid, else only a slice standing in for its MIG parent (a slice has no index of its
+        own). Derived from the rows and the mask on each call, so it belongs to no probe."""
+        tokens = [t.strip() for t in (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")]
+        by_uuid = any(t and not t.isdigit() for t in tokens)
+        return {
+            int(r["index"]): str(r["uuid"])
+            for r in LlamaCppBackend._nvml_rows_visible(rows)
+            if str(r.get("index", "")).isdigit() and (by_uuid or r.get("mig"))
+        }
+
+    @staticmethod
+    def _child_visibility_for(gpu_indices) -> str:
+        """The mask for these indices: the inherited uuids when the mask named the rows by
+        uuid (a MIG slice must stay a MIG- entry), else the indices themselves."""
+        ids = [int(i) for i in gpu_indices]
+        by_index = LlamaCppBackend._uuid_by_index(LlamaCppBackend._NVML_ROWS)
+        if by_index and all(i in by_index for i in ids):
+            return ",".join(by_index[i] for i in ids)
+        return ",".join(str(i) for i in ids)
+
+    @staticmethod
+    def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
+        """Free and total memory per NVIDIA GPU from NVML (studio/nvidia_probe.py in a child
+        with a deadline), for a host whose nvidia-smi is absent, stale or hung: read as "no
+        GPU", it pinned the embedding server to the CPU. Physical indices, masked like the
+        nvidia-smi rows; a visible row without a memory reading voids the answer, so the
+        torch probe decides."""
+        if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
+            return []
+        script = LlamaCppBackend._nvidia_probe_script()
+        if script is None:
+            return []
+        try:
+            result = subprocess.run(
+                [sys.executable, "-I", str(script), "--json"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = utf8_child_env(child_env_without_native_path_secret()),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            payload = json.loads(result.stdout or "null")
+        except Exception as e:
+            logger.debug(f"NVML probe failed: {e}")
+            return []
+        if not isinstance(payload, dict) or payload.get("source") != "nvml":
+            return []
+        LlamaCppBackend._NVML_ROWS = list(payload.get("devices") or [])
+        gpus: list[tuple[int, int, int]] = []
+        for row in LlamaCppBackend._nvml_rows_visible(LlamaCppBackend._NVML_ROWS):
+            try:
+                idx = int(row["index"])
+                free_mib = int(row.get("memory_free_mib") or 0)
+                total_mib = int(row.get("memory_total_mib") or 0)
+            except (KeyError, TypeError, ValueError):
+                return []
+            if total_mib <= 0:
+                # The probe writes a failed reading as total 0. One visible GPU without a
+                # reading voids the answer: a partial list would place and split across
+                # fewer GPUs than the child enumerates. A full card (free 0) is a reading.
+                return []
+            gpus.append((idx, free_mib, total_mib))
+        gpus.sort(key = lambda g: g[0])
+        return gpus
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
@@ -11799,6 +11934,12 @@ class LlamaCppBackend:
                     return gpus
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── NVIDIA via NVML, when nvidia-smi is absent, stale or hung ────
+        nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
+        if nvml_gpus:
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            return nvml_gpus
 
         # ── AMD ROCm via amd-smi ─────────────────────────────────────
         rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
@@ -13944,10 +14085,11 @@ class LlamaCppBackend:
             # /usr/local/cuda.
             import glob as _glob
 
+            # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
+            _site = os.path.join(_glob.escape(sys.prefix), "lib", "python*", "site-packages")
             for _nv_pattern in [
-                os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", _sub, "lib")
-                for _sub in ("cu*", "cudnn", "nvjitlink")
-            ]:
+                os.path.join(_site, "nvidia", _sub, "lib") for _sub in ("cu*", "cudnn", "nvjitlink")
+            ] + [os.path.join(_site, "torch", "lib")]:
                 for _nv_dir in _glob.glob(_nv_pattern):
                     if os.path.isdir(_nv_dir):
                         lib_dirs.append(_nv_dir)
@@ -26304,7 +26446,7 @@ class LlamaCppBackend:
                     # enumerates every agent first, which segfaults on a deselected
                     # unsupported GPU (e.g. gfx1036 iGPU under a gfx103X prebuilt).
                     self._emit_child_gpu_visibility(
-                        env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
+                        env, LlamaCppBackend._child_visibility_for(gpu_indices), prefer_rocr = True
                     )
                     _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
                     _launch_pinned_ids = list(gpu_indices)
