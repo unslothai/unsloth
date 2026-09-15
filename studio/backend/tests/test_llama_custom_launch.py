@@ -360,6 +360,28 @@ def test_comment_only_change_dedupes_but_tuning_change_relaunches(launch):
     assert launch.backend.llama_cpp_config_summary["digest"] != old_digest
 
 
+def test_custom_sidecar_rewrite_relaunches_and_invalidates_slots(launch, tmp_path):
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"adapter-v1")
+    launch.caps["option_catalog"] = parse_option_catalog(
+        HELP
+        + "\n--lora FNAME                           apply LoRA adapter\n"
+        + "--alias NAME                          public model id\n"
+        + "--jinja                              Jinja templates\n"
+    )
+    intent = replace(
+        launch.intent,
+        llama_cpp_config = source(f"[*]\nnp=2\nc=56000\nlora={adapter}"),
+    )
+    assert launch.backend.load_model(intent)
+    slot_fingerprint = launch.backend._slot_launch_fingerprint()
+
+    adapter.write_bytes(b"adapter-v2-with-different-size")
+    assert launch.backend._slot_launch_fingerprint() != slot_fingerprint
+    assert launch.backend.load_model(intent)
+    assert len(launch.captured) == 2
+
+
 def test_replay_preserves_compiled_tuning_and_bypasses_mtp_recovery(launch):
     assert launch.backend.load_model(launch.intent)
     replay = launch.backend.last_load_intent

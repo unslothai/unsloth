@@ -21022,10 +21022,13 @@ class LlamaCppBackend:
             )
         resolved = replace(intent, gguf_path = model_path, mmproj_path = projector, verified_gguf = None)
         compiled = self.prepare_custom_config(resolved)
-        identity = self._gguf_load_source_identity(model_path, projector)
+        custom_sidecars = self._sidecar_weight_files_from_args(compiled.argv)
+        identity = self._gguf_load_source_identity(
+            model_path, projector, sidecar_paths = custom_sidecars
+        )
         if identity is None:
             raise CustomConfigError(
-                "The selected model's complete shard identity cannot be verified"
+                "The selected model resources cannot be verified"
             )
         if cancelled():
             return False
@@ -21072,7 +21075,9 @@ class LlamaCppBackend:
                     if self._spawn_is_stale():
                         return False
                 self._reject_implicit_custom_config(env)
-                if self._gguf_load_source_identity(model_path, projector) != identity:
+                if self._gguf_load_source_identity(
+                    model_path, projector, sidecar_paths = custom_sidecars
+                ) != identity:
                     raise CustomConfigError(
                         "Selected model resources changed during validation; retry the load"
                     )
@@ -31175,8 +31180,13 @@ class LlamaCppBackend:
         return fingerprint + (("custom", compiled.digest),) if compiled is not None else fingerprint
 
     @staticmethod
-    def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
-        """Identity of the exact GGUF inode(s) handed to the resident process."""
+    def _gguf_load_source_identity(
+        path: str,
+        mmproj_path: Optional[str] = None,
+        *,
+        sidecar_paths: Optional[Iterable[str]] = None,
+    ) -> Optional[tuple]:
+        """Identity of the exact model resources handed to the resident process."""
         p = Path(path)
         paths = [p]
         match = _SHARD_FULL_RE.match(p.name)
@@ -31214,6 +31224,20 @@ class LlamaCppBackend:
                         stat.st_mtime_ns,
                     )
                 )
+            for sidecar_path in sidecar_paths or ():
+                sidecar = Path(sidecar_path)
+                resolved = sidecar.resolve()
+                stat = sidecar.stat()
+                identity.append(
+                    (
+                        "sidecar",
+                        str(resolved),
+                        stat.st_dev,
+                        stat.st_ino,
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                    )
+                )
             return tuple(identity)
         except (OSError, RuntimeError):
             return None
@@ -31241,24 +31265,23 @@ class LlamaCppBackend:
         "--control-vector-scaled",
     )
 
-    def _sidecar_weight_files(self) -> list[str]:
+    @classmethod
+    def _sidecar_weight_files_from_args(cls, extra_args: Optional[Iterable[str]]) -> list[str]:
         # llama.cpp: comma-separated paths, FNAME:SCALE on -scaled (older builds: FNAME SCALE).
-        args = [str(a).strip() for a in (self._extra_args or ())]
+        args = [str(a).strip() for a in (extra_args or ())]
         files: list[str] = []
         for i, arg in enumerate(args):
             flag = _flag_name(arg)
             _, sep, inline = arg.partition("=")
-            if flag not in self._SIDECAR_WEIGHT_FLAGS:
+            if flag not in cls._SIDECAR_WEIGHT_FLAGS:
                 continue
             operand = inline if sep else (args[i + 1] if i + 1 < len(args) else "")
             if not operand:
                 continue
-            candidates = [operand]
-            pieces = [p for p in operand.split(",") if p]
-            if len(pieces) > 1:
-                candidates.extend(pieces)
+            candidates = [piece for piece in operand.split(",") if piece]
             if flag.endswith("-scaled"):
-                for item in list(candidates):
+                scaled = []
+                for item in candidates:
                     # ":<number>" tail is a scale; rpartition spares drive letters.
                     head, colon, tail = item.rpartition(":")
                     if not (colon and head):
@@ -31267,11 +31290,24 @@ class LlamaCppBackend:
                         float(tail)
                     except ValueError:
                         continue
-                    candidates.append(head)
+                    scaled.append(head)
+                if not scaled and not sep and i + 2 < len(args):
+                    try:
+                        float(args[i + 2])
+                    except ValueError:
+                        pass
+                    else:
+                        scaled.append(operand)
+                candidates = scaled
             for cand in candidates:
                 if cand not in files:
                     files.append(cand)
         return files
+
+    def _sidecar_weight_files(self) -> list[str]:
+        compiled = getattr(self, "_compiled_custom_config", None)
+        args = compiled.argv if compiled is not None else self._extra_args
+        return self._sidecar_weight_files_from_args(args)
 
     def _prompt_cache_off(self) -> bool:
         # Caching off makes restores useless; last prompt-cache flag wins, env only when unset.
