@@ -90,6 +90,10 @@ export function TranscriptGallery({
         }
       });
   }, [archived]);
+  const refreshRef = useRef(refresh);
+  useLayoutEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
   useEffect(() => {
     if (active) void refresh();
     return () => {
@@ -132,7 +136,7 @@ export function TranscriptGallery({
       await action();
       if (removed === null || removed.includes(currentIdRef.current ?? ""))
         onDelete(removed);
-      await refresh();
+      await refreshRef.current();
     } catch (error) {
       toast.error(
         error instanceof Error
