@@ -479,6 +479,11 @@ _PATH_READ_COMMANDS = frozenset(
         "cat",
         # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
         "iconv",
+        # `help test`: "unary expressions ... are often used to examine the status of a file", and
+        # the answer is existence, type, ownership and timestamps of whatever they are given.
+        "test",
+        "[",
+        "[[",
         "tac",
         "head",
         "tail",
@@ -2154,6 +2159,21 @@ def _call_keywords(node) -> "list":
     return keywords
 
 
+def _python_fileinput_readers(tree) -> "set[str]":
+    """Local names bound by `from fileinput import input` / `FileInput`, with or without an alias.
+
+    Tracked by PROVENANCE rather than by name: a bare `input` is the builtin prompt on its own, and
+    only an import from this module makes it the reader that opens a file.
+    """
+    names: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "fileinput":
+            for entry in node.names:
+                if entry.name in ("input", "FileInput"):
+                    names.add(entry.asname or entry.name)
+    return names
+
+
 def _python_literal_containers(tree) -> dict:
     """Name -> the absolute-looking strings a literal list, tuple or dict assigned to it holds."""
     containers: dict = {}
@@ -2246,6 +2266,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     module_aliases = _python_module_aliases(tree)
     function_aliases = _python_function_aliases(tree, module_aliases)
     containers = _python_literal_containers(tree)
+    fileinput_readers = _python_fileinput_readers(tree)
     operands: "list[tuple[str, bool]]" = []
 
     def add_subprocess_operands(call) -> None:
@@ -2420,7 +2441,9 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # Qualified, because the bare name is ambiguous: `numpy.load(p)` opens a path while
             # `json.load(f)`, `pickle.load(f)` and `torch.load(f)` all take an already-open file.
             add(first, False)
-        elif name in ("input", "FileInput") and is_method and receiver_name == "fileinput":
+        elif (name in ("input", "FileInput") and is_method and receiver_name == "fileinput") or (
+            not is_method and func.id in fileinput_readers
+        ):
             # Qualified so the builtin input("/data directory: ") prompt is not read as a file, and
             # through the import aliases so `import fileinput as fi` resolves back. `FileInput` is
             # the constructor `input` returns, and iterates the same files.

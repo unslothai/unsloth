@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `help test`: the unary expressions examine the status of a file.
+    f"test -e {_OUTSIDE_FILE}",
+    f"[ -r {_OUTSIDE_FILE} ]",
     # `ln` hands the sandbox a name that WRITES to its target, so a relative write through the link
     # lands outside afterwards.
     f"ln -s {_OUTSIDE_FILE} local.md",
@@ -3506,6 +3509,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # Imported by name, so the call is a bare `Name` rather than a qualified one.
+    f"from fileinput import input as read\nprint(next(read({_OUTSIDE_FILE!r})))",
+    f"from fileinput import FileInput\nprint(FileInput({_OUTSIDE_FILE!r}))",
     # Past the candidate cap, and reached by a constant index.
     f"paths = ['/usr/a', '/usr/b', '/usr/c', '/usr/d', '/usr/e', '/usr/f', '/usr/g', '/usr/h', {_OUTSIDE_FILE!r}]\nopen(paths[8]).read()",
     # Existence, size, ownership and timestamps of a path outside the sandbox.
@@ -3641,6 +3647,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "test -e ./notes.txt",
+    "[ -d build ]",
+    "test -e /usr/bin/python3",
     "ln -s ./a ./b",
     "cat /dev/urandom",
     "cat /run/systemd/resolve/resolv.conf",
@@ -3710,6 +3719,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "from fileinput import input as read\nprint(next(read('notes.txt')))",
     "paths = ['/usr/share/a', '/usr/share/b']\nopen(paths[1]).read()",
     "import os\nprint(os.stat('notes.txt'))",
     "import pathlib\nprint(pathlib.Path('notes.txt').stat())",
