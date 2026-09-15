@@ -176,8 +176,8 @@ def _probe_nvml() -> dict | None:
                         "memory_total_mib": str(mig_memory.total // (1024 * 1024)),
                         "memory_free_mib": str(mig_memory.free // (1024 * 1024)),
                         "mig": "1",
-                }
-            )
+                    }
+                )
         return {
             "source": "nvml",
             "cuda_driver_version": list(cuda) if cuda else None,

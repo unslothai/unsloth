@@ -68,7 +68,13 @@ class TestProbeModule:
             "cuda_driver_version": [13, 0],
             "devices": [
                 {"index": "0", "uuid": "GPU-a", "name": "H100", "compute_cap": "9.0"},
-                {"index": "0", "uuid": "MIG-b", "name": "H100 MIG", "compute_cap": "9.0", "mig": "1"},
+                {
+                    "index": "0",
+                    "uuid": "MIG-b",
+                    "name": "H100 MIG",
+                    "compute_cap": "9.0",
+                    "mig": "1",
+                },
             ],
         }
         inv = PROBE._from_payload(payload)
