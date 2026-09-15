@@ -574,9 +574,8 @@ function Get-LlamaUpdateFailReason {
     return "download failed"
 }
 
-# The GPU backend of an installed prebuilt that still runs on a host that still has that GPU,
-# or "" when there is nothing to keep, the GPU is gone, or this run asked for something else.
-# Twin of setup.sh _gpu_prebuilt_to_keep_over_cpu_build.
+# The backend of an installed GPU prebuilt that still runs on a host that still has that GPU,
+# else "" (nothing to keep, GPU gone, or this run asked for something else). Twin of setup.sh.
 function Get-GpuPrebuiltToKeepOverSourceBuild {
     param([string]$InstallDir)
     if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1" -or $LlamaPr -or $explicitLlamaSourceBackend) { return "" }
@@ -919,7 +918,7 @@ public static class UnslothNvidiaProbe {
         if (nvmlInit_v2() != 0) return "";
         try {
             uint count; if (nvmlDeviceGetCount_v2(out count) != 0 || count == 0) return "";
-            int version = 0; nvmlSystemGetCudaDriverVersion_v2(out version);
+            int version; if (nvmlSystemGetCudaDriverVersion_v2(out version) != 0 || version < 1000) return "";
             var caps = new StringBuilder();
             for (uint i = 0; i < count; i++) {
                 IntPtr device; int major, minor;
@@ -934,7 +933,7 @@ public static class UnslothNvidiaProbe {
     static string Cuda() {
         if (cuInit(0) != 0) return "";
         int count; if (cuDeviceGetCount(out count) != 0 || count == 0) return "";
-        int version = 0; cuDriverGetVersion(out version);
+        int version; if (cuDriverGetVersion(out version) != 0 || version < 1000) return "";
         var caps = new StringBuilder();
         for (int i = 0; i < count; i++) {
             int device, major, minor;
@@ -963,7 +962,7 @@ public static class UnslothNvidiaProbe {
         $raw = [UnslothNvidiaProbe]::Probe($TimeoutSec * 1000)
     } catch { return $null }
     $parts = "$raw".Split(";")
-    if ($parts.Count -ne 4 -or -not $parts[3]) { return $null }
+    if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
     $caps = @($parts[3].Split(",") | Where-Object { $_ -match '^\d+\.\d+$' })
     if ($caps.Count -eq 0) { return $null }
     $script:NvidiaLibraryInventory = @{
@@ -1000,9 +999,8 @@ function Get-PytorchCudaTag {
         } catch { }
     }
     if ($null -eq $major) {
-        # nvidia-smi absent, stale or hung: the driver library still knows its version. With
-        # neither, "" tells the callers the family is unknown; guessing cu126 replaced a
-        # working cu130 venv on every update (#9255).
+        # nvidia-smi absent, stale or hung: the driver library knows the version. With neither,
+        # "" means unknown; guessing cu126 replaced a working cu130 venv every update (#9255).
         $inventory = Get-NvidiaLibraryInventory
         if (-not $inventory) { return "" }
         $major = $inventory.CudaMajor
@@ -2514,8 +2512,7 @@ if (-not $HasNvidiaSmi) {
     }
 }
 if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
-    # The driver is loaded and lists a GPU although nvidia-smi cannot say so: every gate
-    # below reads $HasNvidiaSmi as "NVIDIA GPU present", and its consumers null-check the exe.
+    # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present".
     $HasNvidiaSmi = $true
     Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
 }
@@ -3342,7 +3339,9 @@ function Resolve-CudaToolkit {
 $DriverMaxCuda = $null
 try {
     # test_resolve_cuda_toolkit.ps1 extracts this function alone, without Invoke-NvidiaSmiBounded.
-    $smiOut = if (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
+    $smiOut = if (-not $NvidiaSmiExe) {
+        ""
+    } elseif (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
         Invoke-NvidiaSmiBounded $NvidiaSmiExe
     } else {
         & $NvidiaSmiExe 2>&1 | Out-String
@@ -3352,6 +3351,14 @@ try {
         substep "driver supports up to CUDA $DriverMaxCuda"
     }
 } catch {}
+if (-not $DriverMaxCuda -and (Get-Command Get-NvidiaLibraryInventory -ErrorAction SilentlyContinue)) {
+    # No nvidia-smi answer: the driver library names the same ceiling, so the toolkit filter holds.
+    $inventory = Get-NvidiaLibraryInventory
+    if ($inventory) {
+        $DriverMaxCuda = "$($inventory.CudaMajor).$($inventory.CudaMinor)"
+        substep "driver supports up to CUDA $DriverMaxCuda (driver library)"
+    }
+}
 
 # Detect compute capability early so we can validate toolkit support
 $CudaArch = Get-CudaComputeCapability

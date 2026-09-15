@@ -5440,7 +5440,7 @@ public static class UnslothNvidiaProbe {
         if (nvmlInit_v2() != 0) return "";
         try {
             uint count; if (nvmlDeviceGetCount_v2(out count) != 0 || count == 0) return "";
-            int version = 0; nvmlSystemGetCudaDriverVersion_v2(out version);
+            int version; if (nvmlSystemGetCudaDriverVersion_v2(out version) != 0 || version < 1000) return "";
             var caps = new StringBuilder();
             for (uint i = 0; i < count; i++) {
                 IntPtr device; int major, minor;
@@ -5455,7 +5455,7 @@ public static class UnslothNvidiaProbe {
     static string Cuda() {
         if (cuInit(0) != 0) return "";
         int count; if (cuDeviceGetCount(out count) != 0 || count == 0) return "";
-        int version = 0; cuDriverGetVersion(out version);
+        int version; if (cuDriverGetVersion(out version) != 0 || version < 1000) return "";
         var caps = new StringBuilder();
         for (int i = 0; i < count; i++) {
             int device, major, minor;
@@ -5484,7 +5484,7 @@ public static class UnslothNvidiaProbe {
             $raw = [UnslothNvidiaProbe]::Probe($TimeoutSec * 1000)
         } catch { return $null }
         $parts = "$raw".Split(";")
-        if ($parts.Count -ne 4 -or -not $parts[3]) { return $null }
+        if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
         $caps = @($parts[3].Split(",") | Where-Object { $_ -match '^\d+\.\d+$' })
         if ($caps.Count -eq 0) { return $null }
         $script:NvidiaLibraryInventory = @{
@@ -5497,6 +5497,9 @@ public static class UnslothNvidiaProbe {
         return $script:NvidiaLibraryInventory
     }
     # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # Under `irm | iex` the script scope is the caller's session: probe once per invocation.
+    $script:NvidiaLibraryInventoryProbed = $false
+    $script:NvidiaLibraryInventory = $null
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null

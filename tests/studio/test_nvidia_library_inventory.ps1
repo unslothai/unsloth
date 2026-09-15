@@ -57,23 +57,62 @@ $setupBlock = @(Get-HelperSources $setupPs1 @("Get-NvidiaLibraryInventory"))[0]
 # install.ps1 nests its helpers one level deeper; compare the two copies without indentation.
 $strip = { param($text) ($text -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n" }
 Check "install.ps1 and setup.ps1 carry the same helper" ((& $strip $installBlock) -eq (& $strip $setupBlock))
-Invoke-Expression $setupBlock
+Check "a failed driver-version read is not an inventory" (
+    $setupBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(out version\) != 0' -and
+    $setupBlock -match 'cuDriverGetVersion\(out version\) != 0')
 
-$script:NvidiaLibraryInventoryProbed = $false
-$env:UNSLOTH_NVIDIA_LIBRARY_PROBE = "0"
-Check "UNSLOTH_NVIDIA_LIBRARY_PROBE=0 turns the probe off" ($null -eq (Get-NvidiaLibraryInventory))
-Remove-Item Env:UNSLOTH_NVIDIA_LIBRARY_PROBE -ErrorAction SilentlyContinue
-
-$script:NvidiaLibraryInventoryProbed = $false
-$real = Get-NvidiaLibraryInventory
-if ($real) {
+# The real libraries, in a child so the fake type below can own this session.
+$helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" + [System.IO.Path]::GetRandomFileName() + ".ps1")
+Set-Content -LiteralPath $helperFile -Value ($setupBlock + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
+$pwshExe = (Get-Process -Id $PID).Path
+$realJson = & $pwshExe -NoProfile -File $helperFile 2>&1 | Select-Object -Last 1
+$offJson = & $pwshExe -NoProfile -Command "`$env:UNSLOTH_NVIDIA_LIBRARY_PROBE = '0'; & '$helperFile'" 2>&1 | Select-Object -Last 1
+Remove-Item -LiteralPath $helperFile -ErrorAction SilentlyContinue
+Check "UNSLOTH_NVIDIA_LIBRARY_PROBE=0 turns the probe off" ("$offJson" -eq "null")
+if ("$realJson" -ne "null" -and "$realJson" -match '^\{') {
+    $real = "$realJson" | ConvertFrom-Json
     Write-Host "  host inventory: $($real.Source) CUDA $($real.CudaMajor).$($real.CudaMinor) caps $($real.ComputeCaps -join ',')"
     Check "a real inventory names the driver family" ($real.CudaMajor -ge 11)
-    Check "a real inventory lists one capability per GPU" ($real.Count -eq $real.ComputeCaps.Count -and $real.Count -ge 1)
-    Check "capabilities are major.minor strings" (@($real.ComputeCaps | Where-Object { $_ -notmatch '^\d+\.\d+$' }).Count -eq 0)
+    Check "a real inventory lists one capability per GPU" ($real.Count -eq @($real.ComputeCaps).Count -and $real.Count -ge 1)
+    Check "capabilities are major.minor strings" (@(@($real.ComputeCaps) | Where-Object { $_ -notmatch '^\d+\.\d+$' }).Count -eq 0)
 } else {
     Write-Host "  (no NVIDIA driver library on this host; the real-inventory checks are skipped)"
 }
+
+# The parser, over a stand-in for the compiled probe: the helper reuses a type that exists.
+Add-Type -TypeDefinition @'
+public static class UnslothNvidiaProbe {
+    public static string Raw = "";
+    public static string Probe(int timeoutMs) { return Raw; }
+}
+'@
+Invoke-Expression $setupBlock
+function Probe-Raw($raw) {
+    $script:NvidiaLibraryInventoryProbed = $false
+    [UnslothNvidiaProbe]::Raw = $raw
+    return Get-NvidiaLibraryInventory
+}
+$parsed = Probe-Raw "nvml;13;1;8.9,12.0"
+Check "a probe line parses to the driver version and capabilities" (
+    $parsed.Source -eq "nvml" -and $parsed.CudaMajor -eq 13 -and $parsed.CudaMinor -eq 1 -and
+    $parsed.Count -eq 2 -and ($parsed.ComputeCaps -join ",") -eq "8.9,12.0")
+Check "the CUDA driver API line parses too" ((Probe-Raw "cuda;12;8;12.0").Source -eq "cuda")
+Check "an empty probe is no inventory" ($null -eq (Probe-Raw ""))
+Check "a zero driver version is no inventory" ($null -eq (Probe-Raw "nvml;0;0;8.9"))
+Check "no capabilities is no inventory" ($null -eq (Probe-Raw "nvml;13;0;"))
+Check "an unreadable capability is dropped" ((Probe-Raw "nvml;13;0;N/A,8.9").Count -eq 1)
+Check "the answer is cached" ((Get-NvidiaLibraryInventory).Count -eq 1)
+
+Write-Host ""
+Write-Host "=== consumers of the inventory ==="
+$resolve = @(Get-HelperSources $setupPs1 @("Resolve-CudaToolkit"))[0]
+Check "Resolve-CudaToolkit takes the driver ceiling from the inventory" (
+    $resolve -match 'Get-NvidiaLibraryInventory' -and $resolve -match '-not \$NvidiaSmiExe')
+$installText = Get-Content -LiteralPath $installPs1 -Raw
+$sharedEnd = $installText.IndexOf("END SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory)")
+$detect = $installText.IndexOf("Detect GPU (robust", $sharedEnd)
+Check "install.ps1 resets the cache before each invocation's detection" (
+    $installText.Substring($sharedEnd, $detect - $sharedEnd) -match 'NvidiaLibraryInventoryProbed = \$false')
 
 # From here on the inventory is a stub the cases control.
 function Get-NvidiaLibraryInventory { param([int]$TimeoutSec = 10) return $script:FakeInventory }

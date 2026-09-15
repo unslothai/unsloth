@@ -2450,7 +2450,8 @@ def nvml():
         count, version = ctypes.c_uint(), ctypes.c_int()
         if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or not count.value:
             return None
-        lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(version))
+        if lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(version)) != 0 or version.value < 1000:
+            return None
         caps = []
         for i in range(count.value):
             dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
@@ -2468,7 +2469,8 @@ def cuda():
     count, version = ctypes.c_int(), ctypes.c_int()
     if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or not count.value:
         return None
-    lib.cuDriverGetVersion(ctypes.byref(version))
+    if lib.cuDriverGetVersion(ctypes.byref(version)) != 0 or version.value < 1000:
+        return None
     caps = []
     for i in range(count.value):
         dev, major, minor = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
@@ -4027,8 +4029,7 @@ get_torch_index_url() {
         | head -1)
     _inventory_caps=""
     if [ -z "$_cuda_ver" ]; then
-        # nvidia-smi absent, stale or hung: the driver library still knows the version and the
-        # capabilities. cu126 stays the last resort when nothing answers.
+        # nvidia-smi absent, stale or hung: the driver library knows both; cu126 is the last resort.
         if _inventory=$(_nvidia_library_inventory) && [ -n "$_inventory" ]; then
             _cuda_ver=${_inventory%% *}
             _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
