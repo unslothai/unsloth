@@ -8062,10 +8062,11 @@ _legacy_moves_in_flight: "set[str]" = set()
 _legacy_moves_done = 0
 
 
-def _legacy_move_in_flight(name: str) -> bool:
-    """Whether this session is between the two halves of a move."""
+def _legacy_lock_peek(name: str) -> "threading.Lock | None":
+    """The lock covering this session's move, if one was ever started. Never creates the entry: a
+    name with nothing at the legacy root must not leave one behind."""
     with _legacy_locks_guard:
-        return name in _legacy_moves_in_flight
+        return _legacy_session_locks.get(name)
 
 
 # Where every id the old code could not use as a directory name went. One bucket for all of them, which is what this
@@ -8107,31 +8108,36 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
     """Bring one session up from the legacy root, without waiting for the rest."""
     if not is_owner_context():
         return
-    # _staged_move renames the tree aside into staging before renaming it into place, and through
-    # that window neither root holds it. Both tests below would otherwise read that absence as
-    # nothing to do and return, and the caller then creates an empty sandbox under the very name
-    # the pending rename needs; that rename fails with ENOTEMPTY and puts the tree back at the
-    # legacy root, so the chat that asked is handed an empty directory and its files show up
-    # nowhere. The flag is no safer than the directory: the whole-tree pass can look at the legacy
-    # root during this same window, find it empty, and declare the migration finished on the
-    # strength of a move it never saw. So wait for the move rather than trust either one.
-    if _legacy_sandbox_migrated and not _legacy_move_in_flight(name):
-        return
-    # Not a test on the session directory. Whether it is there and whether a move is running are
-    # two reads, and between them a failing rename can roll the tree back: the absence seen by the
-    # first and the quiet seen by the second then describe different instants, neither of them now,
-    # and the caller leaves without the files that are once again sitting at the legacy root. The
-    # root itself is the stable question, and the answer that matters, since it is removed once the
-    # migration is genuinely done and present for the whole of any move. Everything past here takes
-    # the lock and decides inside it, which is also the bound the lock table is documented to have:
-    # the chats that had a legacy folder.
+    # The legacy root, not the done flag and not the session directory. _staged_move renames the
+    # tree aside into staging before renaming it into place, and through that window neither root
+    # holds it; a failing rename then rolls it back. Anything read on one side of that and used on
+    # the other describes an instant that has passed, and the caller leaves without files that are
+    # sitting at the legacy root again. The flag is no safer than the directory, since a pass can
+    # look during the same window, find the root empty, and call the migration finished over a
+    # move it never saw. The root is the stable question: removed once the migration is genuinely
+    # done, present for the whole of any move, and still there when one failed, which is exactly
+    # when this should try rather than skip.
     legacy_root = _legacy_sandbox_root()
     if not os.path.isdir(legacy_root):
         return
     source = os.path.join(legacy_root, name)
     if os.path.islink(source):
         return
-    with _legacy_lock_for(name):
+    if os.path.isdir(source):
+        lock = _legacy_lock_for(name)
+    else:
+        # Staged away, or never there at all? Only a mover takes the tree, and it takes this lock
+        # before it does, so an entry is the durable trace of that. Durable is the point: entries
+        # are never removed, so unlike the in-flight set this reading cannot go stale between here
+        # and the wait below. No entry means no move ever began for this name, and none can begin
+        # without the source appearing, which only a rollback does, and only after a move. Looking
+        # without inserting is also what keeps the table bounded by the chats that had a legacy
+        # folder, rather than growing one entry per chat for as long as a failed migration leaves
+        # the root in place.
+        lock = _legacy_lock_peek(name)
+        if lock is None:
+            return
+    with lock:
         if not os.path.isdir(source):
             return  # the background pass got there first
         # Through the resolver, like the whole-tree pass: at a shared root the plain name can be the user's own, and

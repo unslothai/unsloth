@@ -782,12 +782,12 @@ def test_a_first_tool_call_waits_out_a_move_already_in_staging(tmp_path, monkeyp
 
 
 def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, monkeypatch):
-    """The same window, reached through the done flag instead of the missing directory.
+    """A whole-tree pass must not call the migration finished over a move still in staging.
 
-    While one session sits in staging, neither root holds it, so a whole-tree pass that lists
-    the legacy root right then finds it empty, moves nothing, and reports the migration
-    finished. A first tool call for that same chat would then return at the flag without ever
-    reaching the wait, with the same empty sandbox at the end of it."""
+    While one session sits in staging, neither root holds it, so a pass that lists the legacy
+    root right then finds it empty and moves nothing. Reporting that as finished retires the
+    retry a rollback would need, and removes the legacy root a rollback renames back into. The
+    first tool call underneath has to come back with the files either way."""
     import shutil
     import threading
 
@@ -826,10 +826,6 @@ def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, 
     assert (
         not tools._legacy_sandbox_migrated
     ), "a pass that ran through another session's staging window called the migration finished"
-    # Set by hand for the rest of the test: it stands for the one gap that check cannot close,
-    # between a pass reading an empty in-flight set and assigning the flag, during which a
-    # request-path move can start. The caller has to keep waiting even then.
-    tools._legacy_sandbox_migrated = True
 
     result = {}
     caller = threading.Thread(
@@ -845,7 +841,7 @@ def test_the_migrated_flag_cannot_be_set_over_a_move_still_in_staging(tmp_path, 
     caller.join(10)
     mover.join(10)
 
-    assert not returned_early, "the flag let the first tool call answer from inside the window"
+    assert not returned_early, "the first tool call answered from inside the staging window"
     assert "workdir" in result, "the first tool call never returned"
     assert (result["workdir"] / "data.csv").is_file(), f"{result['workdir']} lost its files"
 
@@ -1069,6 +1065,39 @@ def test_a_rollback_between_the_two_reads_is_not_read_as_nothing_to_do(tmp_path,
     assert split, "the caller never split its reads across the rollback"
     assert (workdir / "data.csv").is_file(), f"{workdir} lost its files across the rollback"
 
+
+def test_a_stalled_migration_does_not_grow_a_lock_per_chat(tmp_path, monkeypatch):
+    """The legacy root staying put is the normal shape of a migration that keeps failing, and
+    every uncached session consults it. _legacy_session_locks is documented as bounded by the
+    chats that had a legacy folder, so a chat with nothing there must not leave an entry, or a
+    stalled migration turns the table into a per-chat cache that only a restart clears."""
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox"
+    legacy.mkdir(parents = True)
+    (legacy / "__LOCALID_had_one").mkdir()
+    (legacy / "__LOCALID_had_one" / "data.csv").write_text("a\n")
+    # Left behind so the root itself survives, the way a migration that cannot finish leaves it.
+    (legacy / "_invalid").mkdir()
+
+    tools = _shared_setup_6()
+    tools._legacy_session_locks.clear()
+    root = tools.sandbox_root()
+
+    for index in range(25):
+        tools._migrate_one_legacy_session(root, f"__LOCALID_never_there{index}")
+
+    assert legacy.is_dir(), "this test needs the legacy root to still be there"
+    assert set(tools._legacy_session_locks) == set(), (
+        f"chats with nothing at the legacy root left locks behind: {sorted(tools._legacy_session_locks)}"
+    )
+
+    # The chat that does have one still migrates, and is still allowed its entry.
+    tools._migrate_one_legacy_session(root, "__LOCALID_had_one")
+    assert (Path(root) / "__LOCALID_had_one" / "data.csv").is_file(), "the real move did not happen"
+    assert set(tools._legacy_session_locks) == {"__LOCALID_had_one"}
 
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
