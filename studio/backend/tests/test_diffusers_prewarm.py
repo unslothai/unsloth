@@ -68,8 +68,11 @@ def _stub_gate(
 
     idx.available_media_model_ids = _available
     idx.resolve_local_media_model = lambda model_id, task: types.SimpleNamespace(
-        model_id = model_id, model_path = "/nonexistent", gguf_filename = "m.gguf",
-        model_kind = "gguf", ambiguous = False,
+        model_id = model_id,
+        model_path = "/nonexistent",
+        gguf_filename = "m.gguf",
+        model_kind = "gguf",
+        ambiguous = False,
     )
     monkeypatch.setitem(sys.modules, "core.inference.media_model_index", idx)
 
@@ -205,10 +208,14 @@ def test_a_non_gguf_model_still_prewarms_on_a_native_host(warm, monkeypatch):
     _stub_gate(monkeypatch, {"text-to-image": ["some/dense-sdxl"]}, engine = "sd_cpp")
     idx = sys.modules["core.inference.media_model_index"]
     monkeypatch.setattr(
-        idx, "resolve_local_media_model",
+        idx,
+        "resolve_local_media_model",
         lambda model_id, task: types.SimpleNamespace(
-            model_id = model_id, model_path = "/nonexistent", gguf_filename = None,
-            model_kind = None, ambiguous = False,
+            model_id = model_id,
+            model_path = "/nonexistent",
+            gguf_filename = None,
+            model_kind = None,
+            ambiguous = False,
         ),
     )
     _stub_diffusers(monkeypatch)
