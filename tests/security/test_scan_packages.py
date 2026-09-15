@@ -25,6 +25,41 @@ def test_fixture_files_exist():
         assert (FIXTURES / name).is_file(), name
 
 
+def test_no_archive_fixture_is_committed():
+    """The archives are built at session start, never committed.
+
+    Two of them embed the May-12 IOC literal, which makes them true positives for other vendors:
+    on VirusTotal `malicious_sdist.tar.gz` scores 2/60 and `malicious_wheel.whl` 2/65 (Tencent,
+    Rising), and their presence in GitHub's repository archive is what makes Panda report
+    `Exploit/CVE-2014-6271` against `unsloth-main.zip`. unslothai/unsloth#10060 took the test tree
+    out of the PyPI artifacts, but a repository archive contains tests by construction, so the only
+    way those detections stop is for the archives not to be in git (discussion #9577).
+
+    `git ls-files` rather than a directory listing: the files are present on disk in every run,
+    because `tests/security/conftest.py` builds them. What must stay empty is the index.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "tests/security/fixtures"],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+        timeout = 30,
+    )
+    if tracked.returncode != 0:
+        pytest.skip(f"not a git checkout: {tracked.stderr.strip()}")
+
+    archives = sorted(
+        line
+        for line in tracked.stdout.splitlines()
+        if line.strip().endswith((".whl", ".tar.gz", ".zip", ".tgz"))
+    )
+    assert archives == [], (
+        f"these archive fixtures are committed: {archives}. Build them from "
+        "tests/security/fixtures/_build.py at test time instead (conftest.py already does) and add "
+        "them to .gitignore, so a repository archive carries no file a scanner flags."
+    )
+
+
 def test_fixture_bytes_are_deterministic(tmp_path):
     """Re-running `_build.py` must produce byte-identical archives (deterministic builds)."""
     expected: dict[str, str] = {}
