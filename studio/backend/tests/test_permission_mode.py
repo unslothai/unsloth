@@ -3374,6 +3374,10 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `<( ... )` runs its body as a command of its own, under an outer command this scan does not model.
+    f"pr <(cat {_OUTSIDE_FILE})",
+    f"comm <(sort {_OUTSIDE_FILE}) <(sort b)",
+    f"tee >(gzip > {_OUTSIDE_DIR}/out.gz) < notes.txt",
     # `env --help`: a mere `-` implies `-i`, so the command still follows it.
     f"env - FOO=bar cat {_OUTSIDE_FILE}",
     # A file operator of `test`/`[` still stats what it is given, including through a substitution.
@@ -3539,6 +3543,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `io.open_code` opens its argument in binary mode, which is a read of that path.
+    f"import io\nprint(io.open_code({_OUTSIDE_FILE!r}).read())",
     # `ZipFile.write` / `TarFile.add` name a SOURCE on disk and copy it into the archive.
     f"import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write({_OUTSIDE_FILE!r})",
     f"import tarfile\nwith tarfile.open('out.tar', 'w') as t:\n    t.add({_OUTSIDE_FILE!r})",
@@ -3721,6 +3727,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
     "env - FOO=bar cat notes.txt",
+    "pr <(cat notes.txt)",
+    "diff <(sort a) <(sort b)",
     # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
     'while [ "$d" != "/" ]; do d=$(dirname "$d"); done',
     '[ "$root" = "/" ] && echo top',
@@ -3811,6 +3819,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 
 _INDIRECT_BENIGN_PYTHON = (
     "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
+    "import io\nprint(io.open_code('local.py').read())",
     # A gzip/bz2/lzma object takes DATA, exactly like an ordinary file handle.
     "import gzip\nf = gzip.GzipFile('out.gz', 'w')\nf.write(b'/home/alice/x')",
     "import shutil\nshutil.unpack_archive('local.zip', 'build')",
@@ -4184,14 +4193,19 @@ def test_a_symlink_inside_a_silent_root_does_not_make_its_target_silent(tmp_path
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.setattr(gate, "_silent_roots_cache", None)
     try:
-        root = next((r for r in gate._silent_roots()[0] if r.startswith(str(home))), None)
+        # Roots are case-folded on a case-insensitive platform, so the raw path is not a prefix.
+        folded_home = gate._normalized_fs_text(str(home))
+        root = next((r for r in gate._silent_roots()[0] if r.startswith(folded_home)), None)
         assert root, "no silent root under the test studio home"
         pathlib.Path(root).mkdir(parents = True, exist_ok = True)
         outside = tmp_path / "outside"
         outside.mkdir()
         (outside / "secret.txt").write_text("s")
         link = pathlib.Path(root) / "link"
-        link.symlink_to(outside, target_is_directory = True)
+        try:
+            link.symlink_to(outside, target_is_directory = True)
+        except OSError:  # Windows needs a privilege this runner may not hold
+            pytest.skip("this platform does not allow creating a symlink here")
         assert gate._path_needs_approval(str(link / "secret.txt")) is True
         assert gate._path_needs_approval(str(link / "secret.txt"), writing = True) is True
         # An ordinary path under the same root is unaffected.
@@ -4232,5 +4246,16 @@ def test_a_revoked_root_is_not_served_from_the_cache(tmp_path, monkeypatch):
         monkeypatch.setattr(gate, "_build_silent_roots", two)
         assert gate._silent_roots() == (("/new",), ("/new",))
         assert len(builds) == 2
+
+        # The server runs a WAL keeper, so a committed change lands in `studio.db-wal` and leaves
+        # the main file's mtime alone. Read on its own, the revoked root stayed silent until the TTL.
+        def three():
+            builds.append(1)
+            return (("/wal",), ("/wal",))
+
+        path.with_name(path.name + "-wal").write_bytes(b"wal")
+        monkeypatch.setattr(gate, "_build_silent_roots", three)
+        assert gate._silent_roots() == (("/wal",), ("/wal",))
+        assert len(builds) == 3
     finally:
         gate._silent_roots_cache = None

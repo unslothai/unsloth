@@ -103,6 +103,10 @@ _SYSTEM_READ_SILENT_ROOTS = (
     # Runtime state (pid files, sockets). /run/secrets and /run/credentials are covered by the credential check that
     # runs first. Mirrors tool_confinement._SYSTEM_READ_ROOTS.
     "/run",
+    # The same directory under its older name. On Linux it is a symlink to /run; on macOS it is the
+    # REAL location (/private/var/run), and `/etc/resolv.conf` is a link into it, so resolving the
+    # candidate landed outside every root and an ordinary `grep nameserver /etc/resolv.conf` asked.
+    "/var/run",
     # macOS
     "/System",
     "/Library",
@@ -282,12 +286,28 @@ def _hf_cache_dirs() -> "tuple[str, ...]":
 
 def _studio_db_revision() -> int:
     """The database's modification time, or 0 when there is none. Changes whenever a root that is
-    stored in it does."""
+    stored in it does.
+
+    The write-ahead log counts too: the server runs a WAL keeper, so a committed change to a scan
+    folder or a cache setting lands in `studio.db-wal` and leaves the main file's mtime alone. Read
+    on its own, a revoked folder stayed read-silent until the TTL expired.
+    """
     from storage.studio_db import studio_db_path
+
+    revision = 0
+    path = None
     try:
-        return os.stat(studio_db_path()).st_mtime_ns
+        path = studio_db_path()
+        revision = os.stat(path).st_mtime_ns
     except Exception:  # noqa: BLE001 - no database is a stable revision of its own
         return 0
+    try:
+        wal = os.stat(f"{path}-wal")
+        # Size as well as mtime: a commit within the same mtime granularity still grows the log.
+        revision ^= wal.st_mtime_ns ^ wal.st_size
+    except Exception:  # noqa: BLE001 - no WAL is simply no extra revision
+        pass
+    return revision
 
 
 def _studio_db_exists() -> bool:
@@ -1293,7 +1313,22 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     nested = _split_backticks(tokens, text)
     if nested != list(tokens):
         operands.extend(_terminal_path_operands(nested, text))
+    # `<( ... )` and `>( ... )` run their body as a command of its OWN, handing the outer command a
+    # pipe rather than the path. The lexer splits the parenthesis across tokens, so the body was
+    # never classified and `pr <(cat /media/x)` printed the file under an unmodelled outer command.
+    if text and "(" in text:
+        for body in _PROCESS_SUBSTITUTION_RE.findall(text):
+            try:
+                inner = shlex.split(body)
+            except ValueError:
+                inner = body.split()
+            if inner:
+                operands.extend(_terminal_path_operands(inner, body))
     return operands
+
+
+# The body of a process substitution. No nested parenthesis, which is what bounds the recursion above.
+_PROCESS_SUBSTITUTION_RE = re.compile(r"[<>]\(([^()]*)\)")
 
 
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
@@ -1836,6 +1871,9 @@ _PY_INSTANCE_READ_CTORS = {
 
 _PY_PATH_READ_CALLS = frozenset(
     {
+        # `io.open_code(path)` opens that file in binary mode (it is what the interpreter itself
+        # uses to read source), so it reads a path exactly as `open` does.
+        "open_code",
         "read_text",
         "read_bytes",
         "getline",
