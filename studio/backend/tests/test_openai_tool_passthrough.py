@@ -4105,6 +4105,39 @@ class TestDropEmptyAssistantSentinels:
         ]
         assert out[1]["reasoning_content"] == "first trace\n\nsecond trace\n\nfinal trace"
 
+    def test_a_folded_fragment_keeps_only_a_name_both_halves_agree_on(self):
+        def _synthetic_call(call_id: str) -> dict:
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+            }
+
+        def _fold(first_name, second_name):
+            messages = [
+                {"role": "user", "content": "Find it."},
+                {
+                    "role": "assistant",
+                    **({"name": first_name} if first_name else {}),
+                    "content": "Searching first.",
+                    "tool_calls": [_synthetic_call("call-1")],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+                {
+                    "role": "assistant",
+                    **({"name": second_name} if second_name else {}),
+                    "content": "Here is the answer.",
+                },
+            ]
+            out = _strip_provider_synthetic_tool_history(messages)
+            assert [m["role"] for m in out] == ["user", "assistant"]
+            return out[1]
+
+        assert _fold("researcher", "researcher").get("name") == "researcher"
+        assert _fold("researcher", "auditor").get("name") is None
+        assert _fold("researcher", None).get("name") is None
+        assert _fold(None, "auditor").get("name") is None
+
     def test_synthetic_reasoning_fragment_before_user_stays_valid(self):
         messages = [
             {"role": "user", "content": "Find it."},

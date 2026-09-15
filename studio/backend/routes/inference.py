@@ -34305,6 +34305,9 @@ def _merge_stranded_local_assistant_turns(messages: list[tuple[dict, bool]]) -> 
             continue
 
         merged = dict(message)
+        # One shared name or none: the fragments fold into a single turn.
+        if pending.get("name") != message.get("name"):
+            merged.pop("name", None)
         old_content = pending.get("content")
         new_content = merged.get("content")
         if old_content or new_content:
