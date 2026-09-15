@@ -283,6 +283,17 @@ def _hf_cache_dirs() -> "tuple[str, ...]":
     return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
 
 
+def _studio_db_revision() -> int:
+    """The database's modification time, or 0 when there is none. Changes whenever a root that is
+    stored in it does."""
+    from storage.studio_db import studio_db_path
+
+    try:
+        return os.stat(studio_db_path()).st_mtime_ns
+    except Exception:  # noqa: BLE001 - no database is a stable revision of its own
+        return 0
+
+
 def _studio_db_exists() -> bool:
     """Whether `studio.db` is already there.
 
@@ -339,7 +350,9 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         account = current_account_id() or ""
     except Exception:  # noqa: BLE001
         account = ""
-    account = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS))
+    # The database's mtime too: registered scan folders and the configured cache root live in it, so
+    # removing a folder revoked a root that stayed silent for up to the TTL otherwise.
+    account = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS), _studio_db_revision())
     now = time.monotonic()
     cached = _silent_roots_cache
     if cached is not None and cached[1] == account and now - cached[0] < _SILENT_ROOT_TTL_S:
@@ -399,6 +412,19 @@ _PROC_MAGIC_LINK_RE = re.compile(
 # A local `file:` URI, in the spellings sqlite3 and the stdlib accept: `file:/p`, `file:///p` and
 # `file://localhost/p`. A host other than localhost is a remote resource, not a path here.
 _FILE_URI_RE = re.compile(r"^file://(?:localhost)?(?=/)|^file:(?=/)", re.IGNORECASE)
+
+
+def _contained_in(candidate: str, roots) -> bool:
+    """Component-boundary containment, never a raw prefix test."""
+    return any(candidate == root or candidate.startswith(root + os.sep) for root in roots)
+
+
+def _resolved_fs_text(text: str) -> str:
+    """*text* with its symlinked components resolved, folded the way the roots are."""
+    try:
+        return _normalized_fs_text(os.path.realpath(text))
+    except Exception:  # noqa: BLE001 - an unresolvable path keeps the lexical answer
+        return text
 
 
 def _file_uri_path(text: str) -> "str | None":
@@ -470,12 +496,20 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     ):
         return True
     read_roots, write_roots = _silent_roots()
-    inside = any(
-        candidate == root or candidate.startswith(root + os.sep)
-        for root in (write_roots if writing else read_roots)
-    )
-    if not inside:
+    roots = write_roots if writing else read_roots
+    if not _contained_in(candidate, roots):
         return True
+    # Lexical containment is not enough on its own: a symlink INSIDE a silent root can resolve
+    # outside it, and the lexical answer would have allowed the read. Resolved only here, where the
+    # answer would otherwise be silence, so the stat is paid on the paths that are about to be
+    # allowed rather than on every token. A link planted between this and the open is not covered;
+    # that TOCTOU gap is the OS sandbox's to close.
+    resolved = _resolved_fs_text(candidate)
+    # Against the RESOLVED roots as well: a root that is itself a symlink (a sandbox under a
+    # macOS `/tmp`, `/dev/stdout`) would otherwise reject everything under it.
+    if resolved != candidate and not _contained_in(resolved, roots):
+        if not _contained_in(resolved, tuple(_resolved_fs_text(r) for r in roots)):
+            return True
     # Inside a silent root, so only a credential underneath one still asks. Running the (superlinear) credential
     # scan only here, rather than on every operand, keeps the ordering guarantee at a fraction of the cost:
     # a path outside the roots already returned True, which is what the scan would have concluded anyway.

@@ -4111,3 +4111,68 @@ def test_classification_does_not_create_the_studio_database(tmp_path, monkeypatc
         assert before == after, after
     finally:
         gate._silent_roots_cache = None
+
+
+def test_a_symlink_inside_a_silent_root_does_not_make_its_target_silent(tmp_path, monkeypatch):
+    # Lexical containment alone allowed `<silent root>/link/secret.txt`, which the kernel opens
+    # outside that root. Resolved only where the answer would otherwise be silence, so the stat is
+    # paid on the paths about to be allowed.
+    import pathlib
+
+    import core.inference.tool_path_approval as gate
+
+    home = tmp_path / "studio-home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(gate, "_silent_roots_cache", None)
+    try:
+        root = next((r for r in gate._silent_roots()[0] if r.startswith(str(home))), None)
+        assert root, "no silent root under the test studio home"
+        pathlib.Path(root).mkdir(parents = True, exist_ok = True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("s")
+        link = pathlib.Path(root) / "link"
+        link.symlink_to(outside, target_is_directory = True)
+        assert gate._path_needs_approval(str(link / "secret.txt")) is True
+        assert gate._path_needs_approval(str(link / "secret.txt"), writing = True) is True
+        # An ordinary path under the same root is unaffected.
+        assert gate._path_needs_approval(str(pathlib.Path(root) / "ok.txt")) is False
+    finally:
+        gate._silent_roots_cache = None
+
+
+def test_a_revoked_root_is_not_served_from_the_cache(tmp_path, monkeypatch):
+    # Scan folders and the configured cache root live in `studio.db`, so removing one has to
+    # invalidate the roots. Keyed on the account and environment only, the old root stayed silent
+    # for up to the 60 second TTL.
+    import core.inference.tool_path_approval as gate
+    from storage.studio_db import studio_db_path
+
+    home = tmp_path / "studio-home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(gate, "_silent_roots_cache", None)
+    builds = []
+
+    def one():
+        builds.append(1)
+        return (("/old",), ("/old",))
+
+    def two():
+        builds.append(1)
+        return (("/new",), ("/new",))
+
+    try:
+        monkeypatch.setattr(gate, "_build_silent_roots", one)
+        assert gate._silent_roots() == (("/old",), ("/old",))
+        assert gate._silent_roots() == (("/old",), ("/old",))
+        assert len(builds) == 1, "the cache did not serve the second call"
+        path = studio_db_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+        monkeypatch.setattr(gate, "_build_silent_roots", two)
+        assert gate._silent_roots() == (("/new",), ("/new",))
+        assert len(builds) == 2
+    finally:
+        gate._silent_roots_cache = None
