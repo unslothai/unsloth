@@ -1927,8 +1927,7 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     fi
-    # Exit 0 means torch is gone. Failures and timeouts keep the fast path, as for the ROCm
-    # probe below.
+    # Failures and timeouts keep the fast path, as for the ROCm probe below.
     _fpe_missing_torch=false
     if command -v timeout >/dev/null 2>&1; then
         timeout -k 5 180 "$VENV_DIR/bin/python" \
@@ -1939,8 +1938,7 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         _fpe_missing_torch=true
     fi
     if [ "$_fpe_missing_torch" = true ]; then
-        # The pass only downloads torch, so offline it can only fail: defer it rather than
-        # turn an update that kept a verified install into a failing one.
+        # Offline the pass can only fail, and failing it loses the verified install.
         if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
             # Silent once another escape forced the pass: torch comes back with it.
             if [ "$_SKIP_PYTHON_DEPS" = true ]; then
