@@ -44,11 +44,27 @@ def _extras_referenced_by_the_audit_workflow() -> set[str]:
     helper call, and the shell list the per-extra loop iterates over.
     """
     source = SECURITY_AUDIT.read_text(encoding = "utf-8")
-    names = set(re.findall(r'optional-dependencies"\]\["([^"]+)"\]', source))
-    names |= set(re.findall(r'\bextra\("([^"]+)"\)', source))
+    names = set()
+    for block in _inline_python_blocks():
+        for node in ast.walk(ast.parse(block)):
+            if _is_optional_dependencies_lookup(node) and isinstance(node.slice, ast.Constant):
+                names.add(node.slice.value)
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                  and node.func.id == "extra" and node.args and isinstance(node.args[0], ast.Constant)):
+                names.add(node.args[0].value)
     for listed in re.findall(r"^\s*for extra in ([^;]+); do\s*$", source, re.MULTILINE):
         names |= {word for word in listed.split() if word}
     return names
+
+
+def _is_optional_dependencies_lookup(node: ast.AST) -> bool:
+    """`<expr>["optional-dependencies"][<key>]`, whatever the key's quote style."""
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Subscript)
+        and isinstance(node.value.slice, ast.Constant)
+        and node.value.slice.value == "optional-dependencies"
+    )
 
 
 def _inline_python_blocks() -> list[str]:
@@ -139,10 +155,7 @@ class TestSecurityAuditWorkflowStaysInSync:
                 for child in ast.iter_child_nodes(node):
                     child.parent = node  # type: ignore[attr-defined]
             for node in ast.walk(tree):
-                if not (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Subscript)):
-                    continue
-                key = node.value.slice
-                if not (isinstance(key, ast.Constant) and key.value == "optional-dependencies"):
+                if not _is_optional_dependencies_lookup(node):
                     continue
                 guarded, parent = False, getattr(node, "parent", None)
                 while parent is not None:

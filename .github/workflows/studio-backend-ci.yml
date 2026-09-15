@@ -48,6 +48,8 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
+      # tests/python/test_amd_extras_contract.py asserts against this file.
+      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
 
