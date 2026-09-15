@@ -262,9 +262,7 @@ async def list_hidden_models(
 
     needles, exact_ids, exact_paths = await asyncio.to_thread(hidden_model_matchers)
     return redact_host_paths(
-        HiddenModelsResponse(
-            needles = needles, exact_ids = exact_ids, exact_paths = exact_paths
-        ),
+        HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths),
         via_api_key = via_api_key,
     )
 

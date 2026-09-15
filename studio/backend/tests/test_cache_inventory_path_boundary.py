@@ -144,9 +144,12 @@ def test_scan_root_lists_are_emptied_not_referenced():
 
 def test_the_leak_detector_finds_what_it_is_for():
     assert response_leaks_host_path({"cached": [_cached_row()]}, [HOST_ROOT]) is not None
-    assert response_leaks_host_path(
-        redact_host_paths({"cached": [_cached_row()]}, via_api_key = True), [HOST_ROOT]
-    ) is None
+    assert (
+        response_leaks_host_path(
+            redact_host_paths({"cached": [_cached_row()]}, via_api_key = True), [HOST_ROOT]
+        )
+        is None
+    )
     # A root anywhere in the body, under a field name this module has never heard of.
     assert response_leaks_host_path({"detail": f"could not read {REPO_DIR}"}, [HOST_ROOT])
 
@@ -154,8 +157,14 @@ def test_the_leak_detector_finds_what_it_is_for():
 @pytest.mark.parametrize(
     "message, expected",
     [
-        (f"Skipping {REPO_DIR}: Permission denied", "Skipping .../hub/models--unsloth--Llama-3.2-1B-Instruct: Permission denied"),
-        ("ratio 3/4 and https://huggingface.co/api/models", "ratio 3/4 and https://huggingface.co/api/models"),
+        (
+            f"Skipping {REPO_DIR}: Permission denied",
+            "Skipping .../hub/models--unsloth--Llama-3.2-1B-Instruct: Permission denied",
+        ),
+        (
+            "ratio 3/4 and https://huggingface.co/api/models",
+            "ratio 3/4 and https://huggingface.co/api/models",
+        ),
         ("nothing to see", "nothing to see"),
     ],
 )
@@ -249,9 +258,7 @@ def test_the_scan_folder_list_is_not_disclosed(monkeypatch):
         local_inventory,
         "get_scan_folders_response",
         lambda: ScanFoldersResponse(
-            folders = [
-                ScanFolderInfo(id = 1, path = f"{HOST_ROOT}/extra", created_at = "2026-09-01")
-            ]
+            folders = [ScanFolderInfo(id = 1, path = f"{HOST_ROOT}/extra", created_at = "2026-09-01")]
         ),
     )
     payload = _hub(via_api_key = True).get("/api/hub/scan-folders").json()
@@ -313,7 +320,11 @@ def test_orphan_companions_keep_their_repo_ids(monkeypatch):
 
 
 def test_download_progress_hides_the_cache_dir_it_measured(monkeypatch):
-    async def _progress(repo_id, expected_bytes = 0, hf_token = None):
+    async def _progress(
+        repo_id,
+        expected_bytes = 0,
+        hf_token = None,
+    ):
         return {
             "repo_id": repo_id,
             "downloaded_bytes": 10,
@@ -346,7 +357,9 @@ def test_an_api_key_can_still_delete_by_repo_id_without_ever_seeing_a_path(monke
 
     async def _delete(repo_id, variant, hf_token, cache_path, only_if_orphan):
         seen.update(
-            repo_id = repo_id, variant = variant, cache_path = cache_path,
+            repo_id = repo_id,
+            variant = variant,
+            cache_path = cache_path,
             only_if_orphan = only_if_orphan,
         )
         return {"status": "deleted", "repo_id": repo_id, "variant": variant}
@@ -414,9 +427,11 @@ def test_the_path_field_lists_cover_the_inventory_schemas():
     """A field added to a cached row with a path-shaped name must join the redaction list."""
     from hub.schemas import inventory as inventory_schemas
 
-    known = host_paths.HOST_PATH_SCALAR_FIELDS | host_paths.HOST_PATH_LIST_FIELDS | {
-        host_paths.HOST_PATH_AMBIGUOUS_FIELD
-    }
+    known = (
+        host_paths.HOST_PATH_SCALAR_FIELDS
+        | host_paths.HOST_PATH_LIST_FIELDS
+        | {host_paths.HOST_PATH_AMBIGUOUS_FIELD}
+    )
     suspicious = []
     for name in dir(inventory_schemas):
         model = getattr(inventory_schemas, name)

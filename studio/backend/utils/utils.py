@@ -46,6 +46,7 @@ def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
     stands, which is also what the rule's own test pins.
     """
     from hub.utils.hf_tokens import cached_read_refused, is_anonymous
+
     if not is_anonymous(hf_token):
         return False
     if not hf_env_offline():

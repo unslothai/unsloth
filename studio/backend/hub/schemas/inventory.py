@@ -393,7 +393,6 @@ class OrphanCompanionInfo(BaseModel):
     cache_ref: Optional[str] = None
 
 
-
 class OrphanCompanionsResponse(BaseModel):
     companions: List[OrphanCompanionInfo] = Field(default_factory = list)
     total_bytes: int = 0

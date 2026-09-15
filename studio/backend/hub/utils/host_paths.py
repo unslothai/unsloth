@@ -189,9 +189,7 @@ def _find_leak(
 ) -> Optional[str]:
     dumped = _dump_model(payload)
     if dumped is not None:
-        return _find_leak(
-            dumped, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore
-        )
+        return _find_leak(dumped, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
     if isinstance(payload, Mapping):
         for key, value in payload.items():
             if key in ignore:
@@ -209,17 +207,13 @@ def _find_leak(
                         return f"{key}[]={item_text}"
             if text and any(needle in text for needle in needles):
                 return f"{key}={text}"
-            found = _find_leak(
-                value, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore
-            )
+            found = _find_leak(value, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
             if found is not None:
                 return found
         return None
     if isinstance(payload, (list, tuple)):
         for item in payload:
-            found = _find_leak(
-                item, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore
-            )
+            found = _find_leak(item, needles, ambiguous_is_path = ambiguous_is_path, ignore = ignore)
             if found is not None:
                 return found
         return None
