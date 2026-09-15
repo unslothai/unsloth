@@ -3374,6 +3374,8 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `env --help`: a mere `-` implies `-i`, so the command still follows it.
+    f"env - FOO=bar cat {_OUTSIDE_FILE}",
     # A file operator of `test`/`[` still stats what it is given, including through a substitution.
     f"[ -f {_OUTSIDE_FILE} ]",
     f"test -r {_OUTSIDE_FILE}",
@@ -3537,6 +3539,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # argv[0] IS the binary that runs, even when a later word is a command name this scan knows.
+    f"import subprocess\nsubprocess.run([{_OUTSIDE_FILE!r}, 'cat'])",
+    # `sqlite3.connect(database = ...)` is the documented keyword spelling of the same argument.
+    f"import sqlite3\nsqlite3.connect(database = {_OUTSIDE_FILE!r})",
     # `str.join` concatenates: `"/".join(["/a", "/usr/b"])` is `/a//usr/b`, not `/usr/b`.
     f"print(open('/'.join([{_OUTSIDE_DIR!r}, '/usr/share/doc/readme'])).read())",
     # The same reader under its documented keyword name.
@@ -3696,6 +3702,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "env - FOO=bar cat notes.txt",
     # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
     'while [ "$d" != "/" ]; do d=$(dirname "$d"); done',
     '[ "$root" = "/" ] && echo top',
@@ -3785,6 +3792,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import subprocess\nsubprocess.run(['/usr/bin/python3', 'train.py'])",
+    "import sqlite3\nsqlite3.connect(database = 'local.db')",
     "from PIL import Image\nprint(Image.open(fp = 'local.png').size)",
     "import subprocess\nsubprocess.run(['echo'], executable = '/bin/sh')",
     "import os\nos.symlink('models', 'local')",

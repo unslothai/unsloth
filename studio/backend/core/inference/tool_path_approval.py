@@ -1495,6 +1495,12 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         index += 1
         while index < len(segment):
             candidate = segment[index]
+            # `env --help`: `env [OPTION]... [-] [NAME=VALUE]... [COMMAND [ARG]...]`, and "A mere -
+            # implies -i". The lone dash is env's OWN option, so the command still follows it;
+            # treating it as the command left `env - FOO=bar cat /media/x` unscreened.
+            if candidate == "-" and base == "env":
+                index += 1
+                continue
             if candidate.startswith("-") and candidate != "-":
                 # A wrapper flag that takes a separate value consumes the token after it.
                 index += 1
@@ -2435,9 +2441,9 @@ def _sequence_elements(node, containers) -> "list":
     return [node]
 
 
-def _sqlite_opens_read_only(node) -> bool:
+def _sqlite_opens_read_only(node, given = None) -> bool:
     """True when a sqlite connection is provably read-only: a `file:...?mode=ro` URI."""
-    first = node.args[0] if node.args else None
+    first = given if given is not None else (node.args[0] if node.args else None)
     if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
         return False
     lowered = first.value.lower()
@@ -2597,6 +2603,16 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         for keyword in _call_keywords(call):
             if keyword.arg == "executable":
                 add(keyword.value, False)
+        # argv[0] IS the binary that runs, whatever follows it. A recognised command name later in
+        # the list (`["/media/x/payload", "cat"]`) made the operand scan return something, which
+        # suppressed the bare-path fallback below, so the outside binary launched unscreened.
+        head = call.args[0] if call.args else None
+        if isinstance(head, (ast.List, ast.Tuple)) or (
+            isinstance(head, ast.Name) and head.id in containers
+        ):
+            argv0 = next(iter(_sequence_elements(head, containers)), None)
+            if argv0 is not None:
+                add(argv0, False)
         if words:
             from_command = _terminal_path_operands(words)
             operands.extend(from_command)
@@ -2775,7 +2791,15 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # A connection CREATES the file if it is missing and can write it afterwards, so the
             # database is a write target unless the URI says otherwise. (The whole call already
             # prompts through the existing sqlite rule; this makes the operand itself accurate.)
-            add(first, not _sqlite_opens_read_only(node))
+            # `sqlite3.connect(database = "/media/x/private.db")` is the documented keyword spelling
+            # of the same argument (`apsw.Connection` names it `filename`), and opens the same file.
+            given = first
+            if given is None:
+                given = next(
+                    (kw.value for kw in _call_keywords(node) if kw.arg in ("database", "filename")),
+                    None,
+                )
+            add(given, not _sqlite_opens_read_only(node, given))
         elif name in _PY_PATH_OPENING_CTORS:
             add(first, False)
         elif name in _PY_PATH_READ_CALLS:
