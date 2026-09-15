@@ -6,6 +6,7 @@ export {
   downloadManager,
   finishExternalJob,
   jobKeyOf,
+  pendingDrafterPresentation,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
