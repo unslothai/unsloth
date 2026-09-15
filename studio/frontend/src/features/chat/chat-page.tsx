@@ -805,7 +805,9 @@ function CompareShell({
         >
           {children}
         </div>
-        <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
+        {/* Symmetric: the extra right inset mirrored the viewport's one-sided
+            scrollbar gutter, which is now reserved on both edges. */}
+        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[30px] pb-2 pt-1">
           <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
