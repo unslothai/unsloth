@@ -344,7 +344,12 @@ jobs:
           # Pillow is listed explicitly as a defensive belt-and-braces
           # next to torchvision (vision_utils crashes ModuleNotFoundError
           # if torchvision skipped its Pillow dep for any reason).
-          pip install 'transformers>=4.56,<5.6' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
+          # The window has to cover every transformers pin the notebooks actually
+          # carry, not just the default one. `<5.6` did not: several notebooks pin
+          # transformers==5.15.0 / 5.15.1 and Gemma 4 pins 5.10.1, all outside it, so
+          # the API surface this job dumps was taken from a release those notebooks
+          # never run on. The ceiling now matches pyproject.toml's published cap.
+          pip install 'transformers>=4.56,<=5.17.0' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
                       'datasets>=3.4,<5' 'peft>=0.15,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil

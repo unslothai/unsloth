@@ -4,7 +4,8 @@
 
 Catches breakage classes from unsloth#3998/5036/5155/5259 and
 unsloth-zoo#572/571/549/543/541/495/491/488/472/393/388/583/584/159.
-CPU-only, no install. Anchor versions: transformers 4.57.6, 5.5.0.
+CPU-only, no install. Anchor versions: transformers 4.57.6 (the floor) and 5.17.0 (the
+ceiling). 5.5.0 stays an anchor too: it is the old ceiling and the Apple Silicon cap.
 """
 
 from __future__ import annotations
@@ -43,7 +44,16 @@ TRANSFORMERS_TAGS = [
     "v5.13.0",
     "v5.13.1",
     "v5.14.0",
-    "v5.14.1",  # current PyPI latest
+    "v5.14.1",
+    # 5.15.0 onwards were outside the supported window until the cap moved to 5.17.0.
+    # 5.16.0 is the release that first required tokenizers>=0.23.1, which is what broke
+    # the Apple Silicon install when an unbounded override let it in (see
+    # tests/studio/install/test_transformers_tokenizers_pair.py).
+    "v5.15.0",
+    "v5.15.1",
+    "v5.16.0",
+    "v5.16.1",
+    "v5.17.0",  # current PyPI latest and the declared ceiling
     "main",
 ]
 
