@@ -51,6 +51,7 @@ _IMPORT_WITHOUT_TRITON = """
     for name in [key for key in sys.modules if key == "triton" or key.startswith("triton.")]:
         del sys.modules[name]
     sys.modules["triton"] = None          # the import system's own "blocked" marker
+    frames = []
     try:
         import unsloth
     except BaseException as error:
@@ -65,6 +66,13 @@ _IMPORT_WITHOUT_TRITON = """
         print("UNSLOTH_IMPORT_FAILED")
     else:
         print("UNSLOTH_IMPORT_OK")
+    # Did unsloth/_gpu_init.py run at all? Apple Silicon takes the MLX path and never
+    # executes it, so the message this file checks for is not emitted there. A failed
+    # import drops the module from sys.modules again, so the traceback counts too.
+    ran = ("unsloth._gpu_init" in sys.modules) or any(
+        "_gpu_init.py" in frame.filename for frame in frames
+    )
+    print("GPU_INIT_RAN", ran)
 """
 
 
@@ -158,7 +166,13 @@ def test_a_missing_triton_does_not_fail_in_gpu_init():
 def test_a_missing_triton_is_reported_in_words():
     """A user on Windows has to be told which package to install."""
     _needs_unsloth()
-    combined = (_import_without_triton().stdout + _import_without_triton().stderr).lower()
+    result = _import_without_triton()
+    combined = (result.stdout + result.stderr).lower()
+    if "gpu_init_ran true" not in combined:
+        pytest.skip(
+            "unsloth/_gpu_init.py does not run on this platform (Apple Silicon takes the MLX "
+            "path), so the guard that emits this message never executes"
+        )
     assert "triton" in combined
     assert "triton-windows" in combined, (
         "the message must name the package that provides Triton on Windows:\n" + combined[-4000:]
