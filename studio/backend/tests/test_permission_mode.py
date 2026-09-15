@@ -3548,6 +3548,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     "import os.path\nj = os.path.join\nopen(j('/media/kuser/MEDIA_SSD', 'x.txt')).read()",
     # A module copied through an assignment is the same module.
     "import io\nstream = io\nstream.open('/media/kuser/MEDIA_SSD/private.txt').read()",
+    # A reader reached through an INSTANCE: the constructor is what identifies it.
+    "import configparser\nc = configparser.ConfigParser()\nc.read('/media/kuser/MEDIA_SSD/p.ini')",
+    "import configparser\nconfigparser.ConfigParser().read('/media/kuser/MEDIA_SSD/p.ini')",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3613,6 +3616,9 @@ _INDIRECT_BENIGN_PYTHON = (
     "from pathlib import Path as P\nP('data.csv').read_text()",
     "from pathlib import Path\nP = Path\nP('data.csv').read_text()",
     "import io\nstream = io\nstream.open('notes.txt').read()",
+    "import configparser\nc = configparser.ConfigParser()\nc.read('app.ini')",
+    "f = open('x')\nf.read()",
+    "Foo().read('/media/kuser/MEDIA_SSD/x')",
     "stream = something\nstream.open('/media/kuser/MEDIA_SSD/x')",
     "from numpy import load\nload('data.npy')",
     "from json import load\nload(open('cfg.json'))",

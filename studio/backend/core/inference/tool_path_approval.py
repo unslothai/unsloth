@@ -1357,6 +1357,15 @@ _PY_QUALIFIED_READ_CALLS = {
     "numpy": frozenset({"load"}),
     "np": frozenset({"load"}),
 }
+# Readers reached through an INSTANCE rather than a module, so neither the receiver nor the bare
+# name identifies them. `ConfigParser().read(p)` opens the file it is handed (and accepts a LIST of
+# them), while `read` on anything else is an ordinary method, so the constructor is what says which
+# is which.
+_PY_INSTANCE_READ_CTORS = {
+    "ConfigParser": frozenset({"read"}),
+    "RawConfigParser": frozenset({"read"}),
+    "SafeConfigParser": frozenset({"read"}),
+}
 
 
 _PY_PATH_READ_CALLS = frozenset(
@@ -1654,6 +1663,48 @@ def _python_module_aliases(tree) -> dict:
     return aliases
 
 
+def _chained_instance_reader_methods(receiver, module_aliases: "dict | None" = None) -> frozenset:
+    """Reader methods for `ConfigParser().read(p)`, where the receiver is the constructor call."""
+    if not isinstance(receiver, ast.Call):
+        return frozenset()
+    func = receiver.func
+    if isinstance(func, ast.Attribute):
+        name = func.attr
+    elif isinstance(func, ast.Name):
+        name = (module_aliases or {}).get(func.id, func.id)
+    else:
+        return frozenset()
+    return _PY_INSTANCE_READ_CTORS.get(name, frozenset())
+
+
+def _python_instance_reader_names(tree) -> dict:
+    """`local name -> reader methods`, for a reader reached through an instance.
+
+    `cfg = ConfigParser(); cfg.read(p)` opens p, and `read` on any other receiver is an ordinary
+    method, so the CONSTRUCTOR is what identifies it. Import aliases count. The chained
+    `ConfigParser().read(p)` binds no name and is resolved separately, at the call site.
+    """
+    ctors = dict(_PY_INSTANCE_READ_CTORS)
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.ImportFrom):
+            for entry in node.names:
+                if entry.asname and entry.name in _PY_INSTANCE_READ_CTORS:
+                    ctors[entry.asname] = _PY_INSTANCE_READ_CTORS[entry.name]
+    names: dict = {}
+    for node in _tree_nodes(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        ctor = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        methods = ctors.get(ctor)
+        if not methods:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names[target.id] = methods
+    return names
+
+
 def _python_qualified_read_aliases(tree) -> "set[str]":
     """Local names bound from a module whose reader is only modelled QUALIFIED.
 
@@ -1838,6 +1889,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     """
     ctors, joins = _python_path_fold_aliases(tree)
     qualified_readers = _python_qualified_read_aliases(tree)
+    instance_readers = _python_instance_reader_names(tree)
     bindings = _python_path_bindings(tree, ctors, joins)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
@@ -1962,6 +2014,14 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             add(first, True)
             if is_method:
                 add(func.value, True)
+        elif is_method and (
+            name in instance_readers.get(receiver_name, ())
+            or name in _chained_instance_reader_methods(func.value, module_aliases)
+        ):
+            # `cfg = ConfigParser(); cfg.read(p)`, the chained `ConfigParser().read(p)`, and the
+            # list form `cfg.read([a, b])`.
+            for element in (first.elts if isinstance(first, (ast.List, ast.Tuple)) else [first]):
+                add(element, False)
         elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()) or (
             not is_method and name in qualified_readers
         ):
