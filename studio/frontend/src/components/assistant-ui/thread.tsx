@@ -1972,7 +1972,7 @@ export const Thread: FC<{
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
-          ["--thread-max-width" as string]: "48rem",
+          ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
         }}
@@ -2366,7 +2366,7 @@ const ThreadWelcome: FC<{
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
         {/* Matches the docked composer's gutter; index.css trims both. */}
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-[var(--custom-chat-welcome-padding,1rem)]">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
@@ -2421,7 +2421,9 @@ const ComposerAnimated: FC<{
     // unsloth-composer-shell is the size container the tight (mobile) layout
     // in index.css queries. It sits outside the surface so those rules can
     // trim the surface's own padding.
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[46rem]">
+    // Its own width variable: every parent here is already capped by the width
+    // setting, so re-reading that one would apply the cap twice.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,46rem)]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}

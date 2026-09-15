@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getInferenceStatus, loadModel } from "@/features/chat";
-import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
 import { usePlatformStore } from "@/config/env";
-import {
-  DEFAULT_MAX_SEQ_LENGTH,
-  isServedByMlx,
-} from "@/features/model-picker";
+import { getInferenceStatus, loadModel, validateModel } from "@/features/chat";
+import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { isOllamaModelId } from "@/features/hub/lib/model-identity";
+import { DEFAULT_MAX_SEQ_LENGTH, isServedByMlx } from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
@@ -74,10 +73,7 @@ type LocalModelSelection = {
   target: string;
   ggufVariant: string;
   aliases: string[];
-  /** The context that model's own load asked for, for a selection captured to be
-   *  restored. Absent for a recipe's own target, which pins nothing. */
   requestedContextLength?: number | null;
-  /** Whether MLX served it. Only there is a positive request above unambiguous. */
   isMlx?: boolean;
 };
 
@@ -226,13 +222,40 @@ function localSelectionMatchesActive(input: {
   );
 }
 
-/** A context request, read only where it means something.
- *
- *  An unpinned MLX load sends 0, so a positive value there is a pin. llama.cpp is
- *  ambiguous: a same-model reload echoes the resolved n_ctx while the control is still
- *  Auto (see resolve-ctx-pin-seed.ts), so reading that as a pin would reload the model
- *  on every run and then re-pin an Auto-sized one. 0 is Auto on both.
- */
+/** One blob has three spellings and can carry two tags, so a disagreement is put to the server. */
+async function localSelectionMatchesResident(input: {
+  target: string;
+  ggufVariant: string;
+  activeModel: string | null | undefined;
+  activeVariant: string;
+}): Promise<boolean> {
+  if (localSelectionMatchesActive(input)) {
+    return true;
+  }
+  if (!isOllamaModelId(input.target)) {
+    return false;
+  }
+  try {
+    const validated = await validateModel({
+      // biome-ignore lint/style/useNamingConvention: api schema
+      model_path: input.target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      hf_token: null,
+      // Only `resident` is read; these are what /validate assumes when a caller sends none.
+      // biome-ignore lint/style/useNamingConvention: api schema
+      max_seq_length: 0,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      load_in_4bit: true,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      is_lora: false,
+    });
+    return validated.resident === true;
+  } catch {
+    return false;
+  }
+}
+
+/** A context request, read only where it pins: llama.cpp echoes n_ctx while Auto, MLX does not. */
 function contextIntent(
   value: number | null | undefined,
   isMlx: boolean | null | undefined,
@@ -240,32 +263,29 @@ function contextIntent(
   return isMlx && typeof value === "number" && value > 0 ? value : null;
 }
 
-async function isLocalModelAlreadyLoaded(
+export async function isLocalModelAlreadyLoaded(
   selection: LocalModelSelection,
 ): Promise<boolean> {
   const { target, ggufVariant, requestedContextLength } = selection;
   try {
     const status = await getInferenceStatus();
     if (
-      !localSelectionMatchesActive({
+      !(await localSelectionMatchesResident({
         target,
         ggufVariant,
         activeModel: status.model_identifier ?? status.active_model,
         activeVariant: status.gguf_variant?.trim() ?? "",
-      })
+      }))
     ) {
       return false;
     }
-    // Same checkpoint, different context intent is still a different load: a recipe that
-    // asked for nothing must not inherit whatever window Chat pinned.
-    // The resident backend decides, since both values describe the load that is running.
+    // A different context intent is a different load: asking for nothing inherits no pin.
     const residentIsMlx = status.is_mlx ?? false;
     return (
       contextIntent(requestedContextLength, residentIsMlx) ===
       contextIntent(status.requested_context_length, residentIsMlx)
     );
   } catch {
-    // Fall through to load attempt; the backend will re-error if needed.
     return false;
   }
 }
@@ -387,7 +407,7 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
         requestedContextLength: status.requested_context_length ?? null,
-      isMlx: status.is_mlx ?? false,
+        isMlx: status.is_mlx ?? false,
       },
       unrestorableLabel: null,
     };

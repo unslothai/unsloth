@@ -258,6 +258,19 @@ _nvcc_meets_llama_minimum() {
 # UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
 # ($1). Empty means "no arch detected", so the caller builds CPU instead of a
 # PTX-only binary that fails on an old driver (#5854).
+# Every GPU's capability from nvidia_probe.py, one per line; nothing when the probe is off or
+# absent, or when one listed GPU has no readable capability (a partial list would build kernels
+# for part of the machine).
+_probe_compute_caps() {
+    [ -f "$SCRIPT_DIR/nvidia_probe.py" ] && command -v python3 >/dev/null 2>&1 || return 0
+    _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" 2>/dev/null | awk '
+        /^GPU [0-9]+:/ {
+            if (match($0, /\(compute [0-9]+\.[0-9]+\)$/)) caps = caps substr($0, RSTART + 9, RLENGTH - 10) "\n"
+            else bad = 1
+        }
+        END { if (!bad) printf "%s", caps }' || true
+}
+
 _resolve_cuda_archs() {
     local _raw_caps=$1
     local _arch_override=$2
@@ -654,6 +667,11 @@ _setup_has_physical_nvidia_gpu() {
     if [ -d /proc/driver/nvidia/gpus ] && \
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
+    fi
+    # Last: NVML / the CUDA driver API, which ship with the driver and not with nvidia-smi.
+    if [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] && [ -f "$SCRIPT_DIR/nvidia_probe.py" ] \
+            && command -v python3 >/dev/null 2>&1; then
+        _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" >/dev/null 2>&1 && return 0
     fi
     return 1
 }
@@ -1821,6 +1839,7 @@ _setup_http_get_timed() {
 # ── uv from a pinned release ──
 # Same archive and destination as astral's installer, but it fetches a data file with a
 # pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # Bumping the version means bumping every hash:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
 #
@@ -2762,10 +2781,8 @@ _setup_rocminfo_gpu_records() {
 # side reads the same field in utils/hardware/amd.py get_hip_id_by_gpu_index.
 # Keep in sync with install.sh.
 _setup_amd_smi_hip_order() {
-    # POSIX awk forbids a physical newline in a -v value (gawk --posix makes it fatal),
-    # so the records arrive on stdin ahead of the map, separated by a sentinel. The first
-    # output line reports which index space the records came back in; the caller needs to
-    # know, because a mask cannot be applied to an untranslated list of unlike adapters.
+    # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -2782,9 +2799,7 @@ _setup_amd_smi_hip_order() {
             next
         }
         END {
-            # All or nothing, like get_hip_id_by_gpu_index: an older CLI rejects -e, and
-            # hip_id reads N/A when the library cannot reach a KFD node. A partial or
-            # colliding map is not a 1:1 device mapping, so keep discovery order.
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
             if (r == 0 || n != r) { keep(); exit }
             for (i = 1; i <= n; i++) {
                 if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
@@ -2813,9 +2828,14 @@ _setup_amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
-        # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
+        /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
+            flush(); started = 1
+            if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
+            next
+        }
         !started { next }
         tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
         tolower($0) ~ /target.?graphics.?version/ {
@@ -2877,9 +2897,9 @@ _setup_supported_gfx_from_name() {
         *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _sup_gfx_out="gfx1101" ;;  # RDNA 3 (Navi 32)
         *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _sup_gfx_out="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
         *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _sup_gfx_out="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
-        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
+        *"RX 6950"*|*"RX 6900"*|*"RX 6850"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) _sup_gfx_out="gfx1030" ;;  # RDNA 2 (Navi 21)
         *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _sup_gfx_out="gfx1032" ;;  # RDNA 2 (Navi 23)
-        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*)                                _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
+        *"RX 6550"*|*"RX 6500"*|*"RX 6450"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*|*"PRO W6300"*)                    _sup_gfx_out="gfx1034" ;;  # RDNA 2 (Navi 24)
     esac
     [ -n "$_sup_gfx_out" ] || return 1
     printf '%s\n' "$_sup_gfx_out"
@@ -3127,6 +3147,11 @@ _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
 _LLAMA_KEEP_PREBUILT_ACTIVE=false
+# The installed GPU prebuilt was kept because the source fallback could only build CPU.
+_LLAMA_KEPT_GPU_PREBUILT=""
+_LLAMA_UPDATE_FAIL_REASON=""
+# A GPU host ended on a CPU-only llama.cpp: named in the footer, not just mid-log (#9255).
+_LLAMA_CPU_ONLY_ON_GPU_HOST=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -3215,6 +3240,122 @@ _link_local_llama_quantize_shim() {
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+# The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
+# `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
+# Whether the install marker's $2 names the pinned ref $3: exact, or ($4 = refs) the installer's
+# own alias and commit-prefix matching (a short commit pin matches the recorded full one). A
+# published release tag is a name, not a ref, so it compares exactly.
+_installed_prebuilt_ref_matches() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" "${4:-exact}" <<'PY' 2>/dev/null
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+sys.modules["installer"] = installer  # the module's dataclasses resolve through sys.modules
+spec.loader.exec_module(installer)
+try:
+    marker = json.load(open(sys.argv[2], encoding="utf-8"))
+except Exception:
+    marker = {}
+values = [marker.get(f) for f in sys.argv[3].split(",")] if isinstance(marker, dict) else []
+values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+same = any(
+    v == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(v, sys.argv[4])) for v in values
+)
+sys.exit(0 if same else 1)
+PY
+}
+
+_installed_prebuilt_backend() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
+    python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+KNOWN = ("cuda", "rocm", "vulkan", "cpu")
+try:
+    marker = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    marker = {}
+if not isinstance(marker, dict):
+    marker = {}
+def _field(key):
+    value = marker.get(key)
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return "rocm" if value == "hip" else value
+
+# A recorded backend is final, known to this script or not; llama_backend was the request.
+answer = _field("backend")
+if not answer and _field("llama_backend") in KNOWN:
+    answer = _field("llama_backend")
+if not answer:
+    asset = marker.get("asset")
+    asset = asset.lower() if isinstance(asset, str) else ""
+    for value in KNOWN:
+        if f"-{value}" in asset or (value == "rocm" and "-hip" in asset):
+            answer = value
+            break
+print(answer)
+PY
+}
+
+# The updater's own completeness check, offline: a marker and an executable do not prove the
+# tree loads. Not --validate-install, which downloads a probe model the failed update cannot.
+# Why the prebuilt update failed, in a few words, from the helper's log.
+_llama_update_fail_reason() {
+    if grep -qiE "429|rate limit" "$1" 2>/dev/null; then
+        echo "GitHub rate limit"
+    elif grep -qiE "timed out|timeout|connection|resol|network|unreachable|50[234]" "$1" 2>/dev/null; then
+        echo "network error"
+    else
+        echo "download failed"
+    fi
+}
+
+_installed_prebuilt_runs() {
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" --check-installed "$1" >/dev/null 2>&1
+}
+
+# An Intel GPU by DRM vendor id, the probe the prebuilt router uses for the Vulkan route.
+_setup_has_intel_gpu() {
+    grep -qs -i "^0x8086" /sys/class/drm/card*/device/vendor 2>/dev/null
+}
+
+# A CPU-only source build must not replace a working GPU prebuilt while the GPU is still
+# there (#9255). Prints the backend to keep; false when there is nothing to keep, the GPU
+# the marker names is gone, or the build was asked for by hand. Vulkan fits any vendor.
+_gpu_prebuilt_to_keep_over_cpu_build() {
+    local install_dir=$1 backend
+    [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
+    [ -z "$_LLAMA_PR" ] || return 1
+    # An explicit version pin asked for that version; the old install satisfies it only
+    # when its marker records the same one.
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _installed_prebuilt_ref_matches "$install_dir" release_tag "$UNSLOTH_LLAMA_RELEASE_TAG" || return 1
+    fi
+    case "${UNSLOTH_LLAMA_TAG:-}" in
+        ""|latest|master) ;;
+        # A commit pin is recorded beside the build tag, in the source ref fields.
+        *) _installed_prebuilt_ref_matches "$install_dir" \
+               tag,requested_source_ref,resolved_source_ref,source_commit "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
+    esac
+    _has_local_llama_server "$install_dir" || return 1
+    backend="$(_installed_prebuilt_backend "$install_dir")"
+    case "$backend" in
+        cuda) [ "$_setup_nvidia_physical" = true ] || return 1 ;;
+        rocm) [ "$_setup_amd_detected" = true ] || return 1 ;;
+        vulkan)
+            [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] \
+                || _setup_has_intel_gpu || return 1 ;;
+        *) return 1 ;;
+    esac
+    _installed_prebuilt_runs "$install_dir" || return 1
+    printf '%s' "$backend"
 }
 
 # UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
@@ -3516,6 +3657,7 @@ else
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
+        _LLAMA_UPDATE_FAIL_REASON="$(_llama_update_fail_reason "$_PREBUILT_LOG")"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
@@ -3523,8 +3665,13 @@ else
         # Exit 2 means no concrete backend was in play: a request the installer
         # could not honour -- named here or recorded in the install marker, which
         # this script cannot see -- exits 5 above instead.
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        # A working GPU prebuilt beats any source build: keep it and retry next time.
+        if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+            step "llama.cpp" "update failed ($_LLAMA_UPDATE_FAIL_REASON); keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt, the next update will retry" "$C_WARN"
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -3876,6 +4023,10 @@ else
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
                         CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
+                        # nvidia-smi absent, stale or answering N/A: the driver library lists the capabilities.
+                        if [ -z "$CUDA_ARCHS" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ]; then
+                            CUDA_ARCHS="$(_resolve_cuda_archs "$(_probe_compute_caps)" "")"
+                        fi
 
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
@@ -3981,7 +4132,14 @@ else
                 _BUILD_DESC="building (CPU)"
             fi
 
-            substep "$_BUILD_DESC..."
+            # Decided before the compile: a CPU build adds nothing to a kept GPU prebuilt.
+            if [ -z "$GPU_BACKEND" ] && [ "$_IS_MACOS_ARM64" != true ] \
+                    && _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source fallback could only build for the CPU" "$C_WARN"
+                BUILD_OK=false
+            else
+                substep "$_BUILD_DESC..."
+            fi
 
             NCPU=$(_llama_build_jobs)
             verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
@@ -4000,7 +4158,7 @@ else
                 fi
             }
 
-            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+            if [ "$BUILD_OK" = true ] && ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
                 _FB_LABEL="$(_gpu_fallback_label)"
                 if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
@@ -4085,6 +4243,16 @@ else
             fi
         fi
 
+        # A GPU build that fell back to CPU on the way is caught here, after the fact.
+        if [ "$BUILD_OK" = true ] && [ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]; then
+            if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source build fell back to the CPU" "$C_WARN"
+                BUILD_OK=false
+            elif [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ] \
+                    || _setup_has_intel_gpu; then
+                _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+            fi
+        fi
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -4122,6 +4290,9 @@ else
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
             _LLAMA_CPP_DEGRADED=true
+        elif [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+            # Not a failure: the kept prebuilt is a root-level llama-server, not $LLAMA_SERVER_BIN.
+            print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         else
             step "llama.cpp" "build failed" "$C_ERR"
             [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
@@ -4154,6 +4325,9 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     if run_quiet_no_exit "arm64 CPU prebuilt" "${_ARM64_CPU_CMD[@]}"; then
         step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
+        if [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ]; then
+            _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+        fi
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
     fi
 fi
@@ -4265,6 +4439,17 @@ PY
     fi
 fi
 
+# Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.
+_print_llama_gpu_notes() {
+    if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "update failed (${_LLAMA_UPDATE_FAIL_REASON:-the source fallback could only build for the CPU}); the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept and the next update will retry"
+    fi
+    if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback could only build for the CPU (no GPU toolkit, or the GPU build failed above), so GGUF inference will run on the CPU"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "fix the cause named above, then re-run this installer to restore the GPU"
+    fi
+}
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
@@ -4275,6 +4460,7 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
 elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
@@ -4284,6 +4470,7 @@ elif [ "$IS_COLAB" = true ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     substep "from colab import start"
     substep "start()"
 else
@@ -4294,6 +4481,7 @@ else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else

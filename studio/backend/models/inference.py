@@ -701,6 +701,13 @@ class ValidateModelResponse(BaseModel):
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
+    resident: bool = Field(
+        False,
+        description = (
+            "Whether the weights this identifier names are the ones already loaded. Decided "
+            "from the files, so an Ollama tag answers for whichever of its spellings loaded it."
+        ),
+    )
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_diffusion: bool = Field(
@@ -1861,7 +1868,7 @@ class ChatMessage(BaseModel):
     )
     name: Optional[str] = Field(
         None,
-        description = "OpenAI tool-result messages: name of the tool whose result this is.",
+        description = "Participant name, or the tool name on tool-result messages.",
     )
     extra_content: Optional[dict] = Field(
         None,
@@ -1885,8 +1892,6 @@ class ChatMessage(BaseModel):
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
             raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
-        if self.name is not None and self.role != "tool":
-            raise ValueError('"name" is only valid on role="tool" messages.')
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope. OpenAI accepts empty tool
@@ -4134,10 +4139,10 @@ class DiffusionDownloadPlanEntry(BaseModel):
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
-    """What to download before a load, so the Hub download manager can fetch it with the
-    same file scope the loader would. Empty entries mean nothing to download (local path)."""
+    """Files to stage before loading; plan_failed marks an incomplete listing."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
+    plan_failed: bool = Field(False, description = "Metadata discovery left the file list incomplete")
     total_bytes: int = Field(
         0, description = "Sum of the remaining download entries, 0 when ready or unknown"
     )

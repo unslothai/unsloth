@@ -48,8 +48,7 @@ export const BUDGET = {
   // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
   // together instead of each dragging main red on its own.
   transferBytes: 1_690_000,
-  // Same-toolchain comparison: 1811677f is 5,374.5 KB raw; composer changes are 5,377.1 KB.
-  // Queue controls now load on demand. Cover the existing overage and the 2.6 KB increase.
+  // library locale messages: 5,499,994 to 5,502,720 raw bytes, still 85 eager chunks.
   rawBytes: 5_510_000,
 };
 

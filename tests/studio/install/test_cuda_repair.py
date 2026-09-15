@@ -269,8 +269,23 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_deliberate_cpu_wheel_no_repair(self):
-        mock_pip = _run_cuda_repair(torch_state = "cpu")
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            mock_pip = _run_cuda_repair(torch_state = "cpu")
         mock_pip.assert_not_called()
+
+    def test_a_cuda_request_this_run_outranks_the_pinned_cpu_record(self, monkeypatch):
+        """UNSLOTH_TORCH_BACKEND=cuda names a GPU family, so the old pinned cpu record no longer
+        speaks for this run and a CPU wheel a later step left behind is repaired."""
+        monkeypatch.delenv("UNSLOTH_TORCH_BACKEND_SOURCE", raising = False)
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            mock_pip = _run_cuda_repair(backend = "cuda", torch_state = "cpu")
+        assert mock_pip.call_count == 1
 
     def test_backend_rocm_skips(self):
         mock_pip = _run_cuda_repair(backend = "rocm", torch_state = "hip")
@@ -699,6 +714,94 @@ class TestPreTuringWheelFamily:
 
 
 # The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the only flavor repair.
+class TestTheRepairReadsTheDriverLibrary:
+    """nvidia-smi absent or stale left the pre-Turing repair blind; the driver library
+    lists the same capabilities (#10985 taught the index selector, not the repair)."""
+
+    def test_the_inventory_supplies_the_sms_when_nvidia_smi_cannot(self):
+        inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}])
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1
+            )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = None):
+            blind = _run_cuda_repair(torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1)
+        blind.assert_not_called()
+
+    def test_an_unreadable_inventory_row_is_not_evidence(self):
+        inventory = SimpleNamespace(
+            cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}, {"compute_cap": ""}]
+        )
+        assert stack_mod._inventory_compute_sms(inventory) == []
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1
+            )
+        mock_pip.assert_not_called()
+
+    def test_nvidia_smi_still_wins_when_it_answers(self):
+        inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}])
+        with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", compute_caps = ("8.9",)
+            )
+        mock_pip.assert_not_called()
+
+
+class TestACpuWheelTheInstallRecordedAsCudaIsRepaired:
+    """Linux only recorded the expected flavour; a dependency step that resolved torch from
+    PyPI left a CPU wheel on a GPU host until the next fresh install."""
+
+    def test_the_recorded_cuda_family_brings_cuda_torch_back(self):
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            mock_pip = _run_cuda_repair(torch_state = "cpu", cuda_version = "12.8")
+        assert mock_pip.call_count == 1
+        assert "cu128" in _index_url(mock_pip)
+
+    def test_a_cpu_wheel_nobody_chose_is_repaired_on_an_nvidia_host(self):
+        # No record (an older manifest) and an automatic cpu record (the GPU was not detected
+        # at install time) are both accidents once an NVIDIA GPU is visible.
+        for recorded, pinned in ((None, False), ("", False), ("cpu", False)):
+            with (
+                patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
+                patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", pinned),
+            ):
+                mock_pip = _run_cuda_repair(torch_state = "cpu", cuda_version = "13.0")
+            assert mock_pip.call_count == 1, (recorded, pinned)
+            assert "cu130" in _index_url(mock_pip)
+
+    def test_a_driver_that_runs_no_cuda_wheel_keeps_its_cpu_wheel(self):
+        # CUDA 10.2: the index selector answers cpu, so the CPU wheel is what this host gets.
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            _run_cuda_repair(torch_state = "cpu", cuda_version = "10.2").assert_not_called()
+
+    def test_an_unreadable_driver_is_not_evidence_for_a_cuda_wheel(self):
+        # Neither nvidia-smi nor the library names the driver's CUDA version: the selector's
+        # cu126 default must not replace a CPU wheel a driver older than that could not run.
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"),
+            patch.object(stack_mod, "_nvidia_library_inventory", return_value = None),
+        ):
+            _run_cuda_repair(torch_state = "cpu", cuda_version = "").assert_not_called()
+            with patch.object(stack_mod, "_nvidia_smi_usable_candidates", return_value = []):
+                assert stack_mod._detect_cuda_torch_index_url(known_only = True) is None
+                assert stack_mod._detect_cuda_torch_index_url().endswith("/cu126")
+
+    def test_a_named_cpu_choice_or_an_explicit_cpu_pin_is_respected(self):
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            _run_cuda_repair(torch_state = "cpu").assert_not_called()
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            _run_cuda_repair(torch_state = "cpu", index_family = "cpu").assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", backend = "cpu").assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", nvidia = False).assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", cvd = "").assert_not_called()
+
+
 _ensure_expected_torch_flavor = stack_mod._ensure_expected_torch_flavor
 _UNSET = object()
 

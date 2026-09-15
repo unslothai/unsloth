@@ -26,6 +26,7 @@ export {
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
+  validateModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -258,6 +259,7 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
