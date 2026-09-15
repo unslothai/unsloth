@@ -392,6 +392,4 @@ def test_the_probe_names_the_partially_initialized_break():
 def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
     """`import unsloth` must not be turned into "reinstall torchvision" by an
     AttributeError that carries no evidence of a half-imported module."""
-    _probe_with_import_raising(
-        AttributeError("module 'torchvision' has no attribute 'extension'")
-    )
+    _probe_with_import_raising(AttributeError("module 'torchvision' has no attribute 'extension'"))

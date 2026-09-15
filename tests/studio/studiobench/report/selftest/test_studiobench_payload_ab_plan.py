@@ -20,10 +20,13 @@ from studiobench.report import payload as payload_module  # noqa: E402
 
 
 ROWS = [
-    {"row_type": "run_meta", "run_id": "r1", "base_ref": "aaa",
-     "platform": {"engine": "chromium"}},
-    {"row_type": "ab_plan", "treatment_ref": "bbb", "order": ["base", "treatment"],
-     "balanced": True},
+    {"row_type": "run_meta", "run_id": "r1", "base_ref": "aaa", "platform": {"engine": "chromium"}},
+    {
+        "row_type": "ab_plan",
+        "treatment_ref": "bbb",
+        "order": ["base", "treatment"],
+        "balanced": True,
+    },
     {"row_type": "cell", "completed": True, "cell_id": "c1", "fields": {"instrument_level": 2}},
 ]
 
