@@ -32,7 +32,11 @@ sys.path.insert(0, str(REPO / "scripts"))
 import virustotal_delta as vtd  # noqa: E402
 
 
-def _snap(payload: dict, label: str = "candidate", sha: str = "b" * 64):
+def _snap(
+    payload: dict,
+    label: str = "candidate",
+    sha: str = "b" * 64,
+):
     return vtd.snapshot_from_payload(label, sha, payload)
 
 
@@ -44,6 +48,7 @@ def _baseline():
 # The baseline is a real file, not a number someone typed
 # ---------------------------------------------------------------------------
 
+
 def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
     """Recomputed from this repository's history rather than trusted.
 
@@ -53,7 +58,9 @@ def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
     """
     result = subprocess.run(
         ["git", "show", "1ad44677d:install.ps1"],
-        cwd = REPO, capture_output = True, timeout = 120,
+        cwd = REPO,
+        capture_output = True,
+        timeout = 120,
     )
     if result.returncode != 0:
         pytest.skip("that commit is not present in this clone (shallow checkout)")
@@ -77,14 +84,15 @@ def test_the_recorded_baseline_note_matches_the_fixture() -> None:
     assert baseline.engines == ["Skyhigh (BehavesLike.PS.Suspicious.gr)"]
     assert len(baseline.yara) == 2
     for fragment in ("1 high, 11 medium, 5 low", "Skyhigh", "2 YARA"):
-        assert fragment in vtd.BASELINE_NOTE, (
-            f"the recorded note no longer says {fragment!r}, but the fixture still does"
-        )
+        assert (
+            fragment in vtd.BASELINE_NOTE
+        ), f"the recorded note no longer says {fragment!r}, but the fixture still does"
 
 
 # ---------------------------------------------------------------------------
 # It must report a regression
 # ---------------------------------------------------------------------------
+
 
 def test_a_new_high_severity_sigma_rule_is_worse() -> None:
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
@@ -113,7 +121,8 @@ def test_a_different_engine_flagging_is_worse_even_at_the_same_count() -> None:
 def test_a_new_yara_hit_is_worse() -> None:
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
     payload["data"]["attributes"]["crowdsourced_yara_results"] = [
-        {"rule_name": "SUSP_PS1_Shape_A"}, {"rule_name": "SUSP_PS1_Shape_B"},
+        {"rule_name": "SUSP_PS1_Shape_A"},
+        {"rule_name": "SUSP_PS1_Shape_B"},
         {"rule_name": "SOMETHING_NEW"},
     ]
     delta = vtd.compare(_baseline(), _snap(payload))
@@ -134,6 +143,7 @@ def test_severity_is_compared_per_bucket_and_not_in_total() -> None:
 # ---------------------------------------------------------------------------
 # It must recognise an improvement without overstating it
 # ---------------------------------------------------------------------------
+
 
 def test_a_clear_improvement_passes_and_is_named() -> None:
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
@@ -159,19 +169,21 @@ def test_an_unmoved_engine_verdict_is_reported_as_unchanged() -> None:
 # VOID is not clean
 # ---------------------------------------------------------------------------
 
+
 def test_an_unknown_candidate_hash_is_void() -> None:
     missing = vtd.Snapshot(label = "candidate", sha256 = "f" * 64, note = "not present on VirusTotal")
     delta = vtd.compare(_baseline(), missing)
     assert delta.exit_code() == 3
-    assert not delta.same and not delta.worse and not delta.better, (
-        "an unknown hash produced comparison rows it cannot support"
-    )
+    assert (
+        not delta.same and not delta.worse and not delta.better
+    ), "an unknown hash produced comparison rows it cannot support"
 
 
 def test_a_known_but_never_analysed_file_is_void() -> None:
     """The subtle one. Zero engine verdicts is not sixty engines clearing the file."""
-    payload = {"data": {"attributes": {"size": 1, "last_analysis_stats": {},
-                                       "last_analysis_results": {}}}}
+    payload = {
+        "data": {"attributes": {"size": 1, "last_analysis_stats": {}, "last_analysis_results": {}}}
+    }
     delta = vtd.compare(_baseline(), _snap(payload))
     assert delta.exit_code() == 3
 
@@ -180,7 +192,10 @@ def test_a_missing_api_key_exits_three_and_never_says_clean() -> None:
     env = {k: v for k, v in os.environ.items() if k != vtd.API_KEY_ENV}
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--candidate-sha256", "a" * 64],
-        capture_output = True, text = True, timeout = 120, env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = env,
     )
     assert result.returncode == 3, (
         "a missing key must not exit zero. It is the most likely reason this ever produces no "
@@ -201,9 +216,11 @@ def test_the_three_outcomes_have_distinct_exit_codes() -> None:
 # The tool's own controls, and the parsers
 # ---------------------------------------------------------------------------
 
+
 def test_the_self_test_passes() -> None:
-    result = subprocess.run([sys.executable, str(SCRIPT), "--self-test"],
-                            capture_output = True, text = True, timeout = 120)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--self-test"], capture_output = True, text = True, timeout = 120
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -211,7 +228,7 @@ def test_the_self_test_can_fail() -> None:
     """A control that cannot fail is decoration."""
     original = vtd.compare
     try:
-        vtd.compare = lambda base, cand: vtd.Delta()   # never reports anything
+        vtd.compare = lambda base, cand: vtd.Delta()  # never reports anything
         failures = vtd.self_test()
         assert failures, "a comparison that reports nothing at all still passed the controls"
     finally:
@@ -251,9 +268,11 @@ def test_the_tool_has_no_upload_path_at_all() -> None:
         f"detection it was meant to measure, under a hash no user will ever have."
     )
     imported = {
-        alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
         for alias in node.names
     }
-    assert "scan_file" not in imported and "upload_file" not in imported, (
-        "the delta tool imported an upload helper from virustotal_scan"
-    )
+    assert (
+        "scan_file" not in imported and "upload_file" not in imported
+    ), "the delta tool imported an upload helper from virustotal_scan"

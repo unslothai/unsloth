@@ -169,7 +169,9 @@ def snapshot_from_payload(label: str, sha256: str, payload: object) -> Snapshot:
 
 def fetch(client: VirusTotalClient, sha256: str, label: str) -> Snapshot:
     status, payload = client.request(
-        "GET", f"{API_ROOT}/files/{sha256}", allow_status = (404,),
+        "GET",
+        f"{API_ROOT}/files/{sha256}",
+        allow_status = (404,),
     )
     if status == 404:
         snap = Snapshot(label = label, sha256 = sha256)
@@ -185,6 +187,7 @@ def fetch(client: VirusTotalClient, sha256: str, label: str) -> Snapshot:
 # ---------------------------------------------------------------------------
 # The verdict
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Delta:
@@ -233,11 +236,15 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
     new_engines = sorted(cand_engines - base_engines)
     gone_engines = sorted(base_engines - cand_engines)
     if new_engines:
-        delta.worse.append(f"engines that did not flag the baseline and now flag the candidate: "
-                           f"{', '.join(new_engines)}")
+        delta.worse.append(
+            f"engines that did not flag the baseline and now flag the candidate: "
+            f"{', '.join(new_engines)}"
+        )
     if gone_engines:
-        delta.better.append(f"engines that flagged the baseline and no longer flag the candidate: "
-                            f"{', '.join(gone_engines)}")
+        delta.better.append(
+            f"engines that flagged the baseline and no longer flag the candidate: "
+            f"{', '.join(gone_engines)}"
+        )
     if not new_engines and not gone_engines:
         delta.same.append(
             f"engine verdicts unchanged ({len(cand_engines) or 'none'}"
@@ -255,8 +262,10 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
         elif after < before:
             delta.better.append(f"Sigma {severity}: {before} -> {after}")
     if baseline.sigma == candidate.sigma:
-        delta.same.append(f"Sigma unchanged ({baseline.sigma_total} rules: "
-                          f"{', '.join(f'{k}={v}' for k, v in sorted(baseline.sigma.items())) or 'none'})")
+        delta.same.append(
+            f"Sigma unchanged ({baseline.sigma_total} rules: "
+            f"{', '.join(f'{k}={v}' for k, v in sorted(baseline.sigma.items())) or 'none'})"
+        )
 
     base_yara, cand_yara = set(baseline.yara), set(candidate.yara)
     if cand_yara - base_yara:
@@ -287,8 +296,12 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
         f"| YARA | {len(baseline.yara)} | {len(candidate.yara)} |",
         "",
     ]
-    for heading, rows in (("Worse", delta.worse), ("Better", delta.better),
-                          ("Unchanged", delta.same), ("Could not measure", delta.void)):
+    for heading, rows in (
+        ("Worse", delta.worse),
+        ("Better", delta.better),
+        ("Unchanged", delta.same),
+        ("Could not measure", delta.void),
+    ):
         if rows:
             lines.append(f"**{heading}**")
             lines.append("")
@@ -308,18 +321,21 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
 # This is the half that can be wrong in a way nobody notices: a network call that fails is loud, and
 # a comparison that silently never reports a regression is not.
 _BASELINE_FIXTURE = {
-    "data": {"attributes": {
-        "size": 427113,
-        "last_analysis_stats": {"malicious": 1, "undetected": 58},
-        "last_analysis_results": {
-            "Skyhigh": {"category": "malicious", "result": "BehavesLike.PS.Suspicious.gr"},
-            "Microsoft": {"category": "undetected", "result": None},
-        },
-        "sigma_analysis_stats": {"high": 1, "medium": 11, "low": 5},
-        "crowdsourced_yara_results": [
-            {"rule_name": "SUSP_PS1_Shape_A"}, {"rule_name": "SUSP_PS1_Shape_B"},
-        ],
-    }},
+    "data": {
+        "attributes": {
+            "size": 427113,
+            "last_analysis_stats": {"malicious": 1, "undetected": 58},
+            "last_analysis_results": {
+                "Skyhigh": {"category": "malicious", "result": "BehavesLike.PS.Suspicious.gr"},
+                "Microsoft": {"category": "undetected", "result": None},
+            },
+            "sigma_analysis_stats": {"high": 1, "medium": 11, "low": 5},
+            "crowdsourced_yara_results": [
+                {"rule_name": "SUSP_PS1_Shape_A"},
+                {"rule_name": "SUSP_PS1_Shape_B"},
+            ],
+        }
+    },
 }
 
 
@@ -340,6 +356,7 @@ def self_test() -> list[str]:
         failures.append(f"an identical candidate was not reported as unchanged: {delta}")
 
     import copy
+
     improved_payload = copy.deepcopy(_BASELINE_FIXTURE)
     improved_payload["data"]["attributes"]["sigma_analysis_stats"] = {"medium": 4, "low": 5}
     improved_payload["data"]["attributes"]["crowdsourced_yara_results"] = []
@@ -351,7 +368,11 @@ def self_test() -> list[str]:
         failures.append("an improvement exited non-zero")
 
     worse_payload = copy.deepcopy(_BASELINE_FIXTURE)
-    worse_payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 2, "medium": 11, "low": 5}
+    worse_payload["data"]["attributes"]["sigma_analysis_stats"] = {
+        "high": 2,
+        "medium": 11,
+        "low": 5,
+    }
     worse = snapshot_from_payload("candidate", "d" * 64, worse_payload)
     delta = compare(baseline, worse)
     if not delta.worse or delta.exit_code() != 2:
@@ -380,9 +401,19 @@ def self_test() -> list[str]:
     if delta.worse or delta.same:
         failures.append("an unknown candidate hash produced comparison rows it cannot support")
 
-    unanalysed = snapshot_from_payload("candidate", "0" * 64, {"data": {"attributes": {
-        "size": 1, "last_analysis_stats": {}, "last_analysis_results": {},
-    }}})
+    unanalysed = snapshot_from_payload(
+        "candidate",
+        "0" * 64,
+        {
+            "data": {
+                "attributes": {
+                    "size": 1,
+                    "last_analysis_stats": {},
+                    "last_analysis_results": {},
+                }
+            }
+        },
+    )
     delta = compare(baseline, unanalysed)
     if delta.exit_code() != 3:
         failures.append(
@@ -395,19 +426,29 @@ def self_test() -> list[str]:
 
 # ---------------------------------------------------------------------------
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--candidate", type = Path,
-                        help = "a file to hash and look up")
-    parser.add_argument("--candidate-sha256", default = "",
-                        help = "look up this hash instead of hashing a file")
+    parser.add_argument("--candidate", type = Path, help = "a file to hash and look up")
+    parser.add_argument(
+        "--candidate-sha256", default = "", help = "look up this hash instead of hashing a file"
+    )
     parser.add_argument("--baseline-sha256", default = BASELINE_SHA256)
-    parser.add_argument("--summary", type = Path, default = None,
-                        help = "write the markdown report here as well as to stdout")
-    parser.add_argument("--self-test", action = "store_true",
-                        help = "check the comparison logic offline and exit")
-    parser.add_argument("--request-interval", type = float, default = 20.0,
-                        help = "seconds between API calls; the public tier allows 4 per minute")
+    parser.add_argument(
+        "--summary",
+        type = Path,
+        default = None,
+        help = "write the markdown report here as well as to stdout",
+    )
+    parser.add_argument(
+        "--self-test", action = "store_true", help = "check the comparison logic offline and exit"
+    )
+    parser.add_argument(
+        "--request-interval",
+        type = float,
+        default = 20.0,
+        help = "seconds between API calls; the public tier allows 4 per minute",
+    )
     return parser
 
 
@@ -419,8 +460,10 @@ def main(argv: list[str] | None = None) -> int:
         for failure in failures:
             print(f"::error::self-test: {failure}")
         if failures:
-            print("::error::the delta tool's own checks failed, so no comparison it reports can be "
-                  "trusted. Refusing to compare.")
+            print(
+                "::error::the delta tool's own checks failed, so no comparison it reports can be "
+                "trusted. Refusing to compare."
+            )
             return 1
         print("self-test: the comparison reports regressions, improvements and VOID correctly")
         return 0
@@ -467,9 +510,11 @@ def main(argv: list[str] | None = None) -> int:
     elif code == 2:
         print("::error::the candidate scores WORSE than the baseline on at least one axis.")
     elif delta.better:
-        print("the candidate scores better than the baseline. Sigma and YARA move immediately; a "
-              "cloud engine's behavioural verdict may not, and that is reported as unchanged rather "
-              "than dressed up.")
+        print(
+            "the candidate scores better than the baseline. Sigma and YARA move immediately; a "
+            "cloud engine's behavioural verdict may not, and that is reported as unchanged rather "
+            "than dressed up."
+        )
     return code
 
 
