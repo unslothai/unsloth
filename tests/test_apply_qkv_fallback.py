@@ -116,9 +116,9 @@ def test_no_bare_instance_attribute_call(filename, attr, fallback):
 def test_call_site_uses_the_module_level_fallback(filename, attr, fallback):
     """And the call site really is the getattr form, not something else that happens to parse."""
     calls = _fallback_calls(_tree(filename), attr, fallback)
-    assert calls, (
-        f"unsloth/models/{filename} has no getattr(self, {attr!r}, {fallback})(...) call site"
-    )
+    assert (
+        calls
+    ), f"unsloth/models/{filename} has no getattr(self, {attr!r}, {fallback})(...) call site"
 
 
 @pytest.mark.parametrize("filename", SIBLING_FILES)
