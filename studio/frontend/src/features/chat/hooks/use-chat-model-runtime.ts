@@ -671,6 +671,9 @@ function pickOf(info: {
   };
 }
 
+// Shared across the three live useChatModelRuntime instances (chat, hub, hub gear).
+let chatEjectInFlight = false;
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
@@ -2532,6 +2535,10 @@ export function useChatModelRuntime() {
     if (!params.checkpoint) {
       return false;
     }
+    if (chatEjectInFlight) {
+      toast.info("Wait for the model to finish unloading.");
+      return false;
+    }
     const bailIfLoading = (): boolean => {
       const runtime = useChatRuntimeStore.getState();
       if (!runtime.modelLoading && !runtime.loadingModelPick) return false;
@@ -2548,6 +2555,7 @@ export function useChatModelRuntime() {
       return true;
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
+    chatEjectInFlight = true;
     try {
       // Block queue materialization before taking the confirmation snapshot, or a queue can appear
       // while the dialog is open and be stopped without the user confirming it.
@@ -2555,13 +2563,19 @@ export function useChatModelRuntime() {
       if (lifecycleLease === null) {
         return false;
       }
-      // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
-      // loaded, so it must not be worded as a reload.
+      // Visible before the backend snapshot: that read had no timeout, so a wedged
+      // /active-generations left the first click with no toast and the lease held.
+      const toastId = toast.loading("Unloading model", {
+        description: "Releases VRAM and resets inference state.",
+      });
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         "Unloading the model",
         "unload",
       );
-      if (!stopDecision.proceed) return false;
+      if (!stopDecision.proceed) {
+        toast.dismiss(toastId);
+        return false;
+      }
 
       async function performUnload(): Promise<void> {
         cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
@@ -2577,6 +2591,7 @@ export function useChatModelRuntime() {
 
       const unloadPromise = performUnload();
       toast.promise(unloadPromise, {
+        id: toastId,
         loading: "Unloading model",
         success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
@@ -2591,6 +2606,7 @@ export function useChatModelRuntime() {
       setModelsError(message);
       return false;
     } finally {
+      chatEjectInFlight = false;
       if (lifecycleLease !== null) {
         useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
       }

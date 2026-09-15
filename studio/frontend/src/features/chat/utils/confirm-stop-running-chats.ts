@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getActiveGenerations } from "../api/chat-api";
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
 import {
@@ -10,6 +11,10 @@ import {
 } from "../stores/stop-running-chats-dialog-store";
 import { listStoredChatThreads } from "./chat-history-storage";
 import { listLocalPreStreamRunReservations } from "./pre-stream-run-reservation";
+
+// Pre-dialog snapshot of other tabs' runs. Unbounded, a wedged backend leaves the
+// eject click with no toast and the load lease held until refresh.
+const ACTIVE_GENERATIONS_TIMEOUT_MS = 8_000;
 
 export interface StopRunningChatsDecision {
   /** False when the user chose to keep generating; the caller must not load. */
@@ -94,7 +99,13 @@ export async function confirmStopRunningChatsIfNeeded(
   // reload and blind to a second tab, while force_cancel_active cancels every backend run. The
   // union stays local-only, since external-provider runs are never in it.
   try {
-    const active = await getActiveGenerations();
+    const timeout = disposableTimeoutSignal(ACTIVE_GENERATIONS_TIMEOUT_MS);
+    let active;
+    try {
+      active = await getActiveGenerations(timeout.signal);
+    } finally {
+      timeout.dispose();
+    }
     const entries = active.active ?? [];
     const merged = new Set(running);
     for (const threadId of active.thread_ids ?? []) {
