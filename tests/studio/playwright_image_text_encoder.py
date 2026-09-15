@@ -26,7 +26,13 @@ def _record(page, state, loads, plans, errors):
     failure tells whoever reads it nothing."""
     (ART / "result.json").write_text(
         json.dumps(
-            {"state": state, "loads": loads, "plans": plans, "page_errors": errors, "declined": DECLINE},
+            {
+                "state": state,
+                "loads": loads,
+                "plans": plans,
+                "page_errors": errors,
+                "declined": DECLINE,
+            },
             indent = 2,
         ),
         encoding = "utf-8",
@@ -61,7 +67,9 @@ def main():
                         "requested": requested,
                         "source": "explicit" if requested else "auto",
                         "status": (
-                            "fell_back" if (requested == "int8" or (DECLINE and requested)) else "applied"
+                            "fell_back"
+                            if (requested == "int8" or (DECLINE and requested))
+                            else "applied"
                         ),
                         "reason": "Test precision outcome",
                     }
