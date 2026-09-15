@@ -115,6 +115,10 @@ def _build(cache: Path, shape: str) -> None:
     elif shape == "stray version-shaped dir":
         (cache / "unused-v999").mkdir()
         (cache / "unused-v999" / ".lock").write_bytes(b"")
+    elif shape == "index leaf is a symlinked dir":
+        (cache / "simple-v20").mkdir()
+        (cache / "elsewhere").mkdir()
+        (cache / "simple-v20" / "pypi").symlink_to(cache / "elsewhere")
     elif shape == "index leaf is a file":
         (cache / "simple-v20").mkdir()
         (cache / "simple-v20" / "pypi").write_bytes(b"")
@@ -147,6 +151,7 @@ _SHAPES = [
     "index shard",
     "index leaf is a file",
     "index leaf is a dangling link",
+    "index leaf is a symlinked dir",
 ]
 
 

@@ -380,6 +380,14 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     ln -s "$LEAFND/nowhere" "$LEAFND/simple-v20/pypi"
     assert_eq "$shell: nor a dangling symlink there" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+    # A symlink TO a directory is not the same thing and must stay adopted: uv writes through
+    # it (measured on the pinned uv 0.12.1, installs fine), and rejecting every link here would
+    # discard a cache whose index leaf is deliberately relocated.
+    rm -f "$LEAFND/simple-v20/pypi"
+    mkdir -p "$CASE/relocated index"
+    ln -s "$CASE/relocated index" "$LEAFND/simple-v20/pypi"
+    assert_eq "$shell: a leaf symlinked to a real directory is still adopted" \
+        "$LEAFND" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
     rm -f "$LEAFND/simple-v20/pypi"
     mkdir -p "$LEAFND/simple-v20/pypi"
     assert_eq "$shell: and it is adopted once the leaf is a directory" \
