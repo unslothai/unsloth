@@ -279,3 +279,87 @@ def test_the_defender_event_fields_survive_a_real_message(tmp_path: Path) -> Non
             f"so the report would carry a timestamp and an event id and nothing else. Selected: "
             f"{selected.strip()!r}"
         )
+
+
+def test_a_localised_defender_message_still_reports_its_details(tmp_path: Path) -> None:
+    """Defender localises the field labels, and a partial match is worse than none.
+
+    On a non-English Windows the English labels miss, so the entry would be a timestamp and an
+    event id. Some labels coincide across languages -- German renders `Name:` identically -- so
+    testing for an empty result is not enough: one match out of six looks like a successful
+    extraction. The fallback is therefore count-based, and prints the whole message, redacted,
+    when too few fields resolve.
+    """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    snippet = _snippet()
+    assert "localised" in snippet, "the collection script no longer has a localisation fallback"
+
+    german = [
+        "Windows Defender Antivirus hat Malware gefunden.",
+        " Name: HackTool:Win64/Mimikatz.A",
+        " Schweregrad: Hoch",
+        " Pfad: C:\\Users\\jsmith\\AppData\\Local\\Temp\\m64.exe",
+    ]
+    match = re.search(r"\$_ -match '([^']+)'", snippet)
+    assert match
+    script = tmp_path / "loc.ps1"
+    script.write_text(
+        "\n".join(
+            ["$lines = @(" + ", ".join(f"'{line}'" for line in german) + ")"]
+            + [
+                f"$matched = @($lines | Where-Object {{ $_ -match '{match.group(1)}' }})",
+                "if ($matched.Count -ge 2) { $fields = $matched -join ' | ' }",
+                "else { $fields = '(localised) ' + (($lines | Where-Object { $_.Trim() }) -join ' | ') }",
+                'Write-Output "OUT:$fields"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert "Schweregrad" in done.stdout and "Pfad" in done.stdout, (
+        f"a German Defender message lost its severity and path: {done.stdout.strip()!r}"
+    )
+
+
+def test_the_screenshot_field_is_not_a_rendered_textarea() -> None:
+    """A `render:` textarea wraps everything in a code fence, attachments included.
+
+    So an image dragged into one appears as literal markup rather than as a picture. The error
+    field keeps `render: text`, because it carries pasted console output where the monospace block
+    is worth having; screenshots get their own unrendered field instead.
+    """
+    fields = _fields()
+    assert "screenshot" in fields, (
+        "there is no screenshot field, so a reporter whose failure was a dialog has nowhere to put "
+        "it except a rendered textarea, where it will not display"
+    )
+    assert "render" not in fields["screenshot"]["attributes"], (
+        "the screenshot field is rendered, so an attachment dropped into it becomes literal text "
+        "inside a code block"
+    )
+    error_description = fields["error-text"]["attributes"]["description"]
+    assert "a screenshot is fine" not in error_description, (
+        "the rendered error field still invites a screenshot it cannot display"
+    )
+
+
+def test_the_required_error_field_warns_about_its_own_paths() -> None:
+    """The probe output is not the only required field that publishes a path.
+
+    A PowerShell error quotes the script's location, so on the documented cloned-checkout entry
+    point the required error text carries the reporter's user name, and they are asked to paste it
+    verbatim before they ever reach the probe field's privacy note.
+    """
+    description = _fields()["error-text"]["attributes"]["description"]
+    assert "public" in description.lower(), (
+        "the error field does not mention that the issue is public, though it is required and "
+        "routinely contains C:\\Users\\<name>"
+    )
