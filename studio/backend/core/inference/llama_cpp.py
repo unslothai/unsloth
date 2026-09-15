@@ -11662,16 +11662,29 @@ class LlamaCppBackend:
         return find_installer_script(env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py")
 
     @staticmethod
-    def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
-        """Free and total memory per NVIDIA GPU from NVML, for a host nvidia-smi cannot answer for.
+    def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
+        """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
+        uuid prefix per entry, as the CUDA runtime reads it; any other entry hides every GPU."""
+        raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if raw is None:
+            return rows
+        picked: list[dict] = []
+        for token in (t.strip() for t in raw.split(",") if t.strip()):
+            if token.isdigit():
+                hits = [r for r in rows if str(r.get("index")) == token]
+            elif token.startswith(("GPU-", "MIG-")):
+                hits = [r for r in rows if str(r.get("uuid", "")).startswith(token)]
+            else:
+                return []
+            picked.extend(r for r in hits if r not in picked)
+        return picked
 
-        nvidia-smi absent, stale or hung read as "no GPU" here, and the embedding server
-        then pins itself to the CPU with -ngl 0 (the same misread #10985 closed for the
-        installers). NVML ships with the driver and is what nvidia-smi is a client of; it is
-        read by studio/nvidia_probe.py in a child with a deadline. Physical indices, masked
-        like the nvidia-smi rows. Rows without a memory reading are not evidence and fall
-        through to the torch probe.
-        """
+    @staticmethod
+    def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
+        """Free and total memory per NVIDIA GPU from NVML (studio/nvidia_probe.py in a child
+        with a deadline), for a host whose nvidia-smi is absent, stale or hung: read as "no
+        GPU", it pinned the embedding server to the CPU. Physical indices, masked like the
+        nvidia-smi rows; rows without a memory reading fall through to the torch probe."""
         if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
             return []
         script = LlamaCppBackend._nvidia_probe_script()
@@ -11694,16 +11707,15 @@ class LlamaCppBackend:
             return []
         if not isinstance(payload, dict) or payload.get("source") != "nvml":
             return []
-        allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
         gpus: list[tuple[int, int, int]] = []
-        for row in payload.get("devices") or []:
+        for row in LlamaCppBackend._nvml_rows_visible(list(payload.get("devices") or [])):
             try:
                 idx = int(row["index"])
                 free_mib = int(row.get("memory_free_mib") or 0)
                 total_mib = int(row.get("memory_total_mib") or 0)
             except (KeyError, TypeError, ValueError):
                 continue
-            if free_mib <= 0 or (allowed is not None and idx not in allowed):
+            if free_mib <= 0:
                 continue
             gpus.append((idx, free_mib, total_mib))
         gpus.sort(key = lambda g: g[0])

@@ -96,6 +96,22 @@ class TestTheMemoryProbeFallsBackToNvml:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         assert LlamaCppBackend._get_gpu_memory() == []
 
+    def test_a_uuid_mask_selects_by_the_rows_own_uuid(self, monkeypatch, probe_script):
+        _failing_smi(monkeypatch)
+        probe_script(_payload([_row(0, 8000, uuid = "GPU-aaaa1111-0"), _row(1, 20000, uuid = "GPU-bbbb2222-1")]))
+        # A full uuid, a prefix, mask order, and a mixed index + uuid mask, as the CUDA runtime reads them.
+        for mask, expected in (
+            ("GPU-bbbb2222-1", [(1, 20000, 24576)]),
+            ("GPU-aaaa", [(0, 8000, 24576)]),
+            ("GPU-bbbb,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
+            ("1,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
+            # A MIG slice or an entry the rows cannot name hides every GPU rather than exposing all.
+            ("MIG-cccc3333", []),
+            ("nope", []),
+        ):
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+            assert LlamaCppBackend._get_gpu_memory() == expected, mask
+
     def test_rows_without_a_memory_reading_are_not_evidence(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
         probe_script(_payload([_row(0, 0, 0)], source = "cuda"))
@@ -204,6 +220,38 @@ class TestAGpuCapableBuildIsPreferred:
         assert ps.resolve_llama_server_binary(tmp_path, platform = platform) == made["build-cuda"]
         assert ps.binary_gpu_verdict(made["build"]) == "cpu"
         assert ps.binary_gpu_verdict(made["build-cuda"]) == "gpu"
+
+    def test_a_stale_cuda_build_does_not_shadow_the_build_this_host_can_run(self, tmp_path, monkeypatch):
+        from utils import llama_cpp_path_settings as ps
+
+        made = self._tree(
+            tmp_path,
+            "linux",
+            {
+                "build": ["libggml-cpu.so", "libggml-base.so"],
+                "build-cuda": ["libggml-cuda.so", "libggml-cpu.so"],
+                "build-hip": ["libggml-hip.so", "libggml-cpu.so"],
+                "build-vulkan": ["libggml-vulkan.so", "libggml-cpu.so"],
+            },
+        )
+        for vendors, winner in (({"amd"}, "build-hip"), ({"nvidia"}, "build-cuda"), (None, "build-cuda")):
+            monkeypatch.setattr(ps, "host_gpu_vendors", lambda v = vendors: v)
+            assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made[winner], vendors
+        # A vendor no build targets still gets the vendor-agnostic Vulkan build.
+        monkeypatch.setattr(ps, "host_gpu_vendors", lambda: {"intel"})
+        assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-vulkan"]
+
+    def test_host_vendors_read_the_drm_sysfs(self, tmp_path, monkeypatch):
+        from utils import llama_cpp_path_settings as ps
+
+        monkeypatch.setattr(ps.sys, "platform", "linux")
+        monkeypatch.setattr(ps.os.path, "isdir", lambda p: False)
+        monkeypatch.setattr(ps, "_DRM_ROOT", str(tmp_path))
+        assert ps.host_gpu_vendors() is None
+        for card, vendor in (("card0", "0x1002"), ("card1", "0x10de"), ("card1-DP-1", "0x10de")):
+            (tmp_path / card / "device").mkdir(parents = True)
+            (tmp_path / card / "device" / "vendor").write_text(vendor + "\n", encoding = "utf-8")
+        assert ps.host_gpu_vendors() == {"amd", "nvidia"}
 
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps

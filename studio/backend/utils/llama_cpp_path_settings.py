@@ -11,7 +11,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 CUSTOM_LLAMA_CPP_PATH_SETTING_KEY = "custom_llama_cpp_path"
 MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH = 32767
@@ -80,39 +80,97 @@ def _usable_binary(path: Path, *, platform: Optional[str] = None) -> bool:
 
 
 _GPU_BACKEND_LIB_RE = re.compile(
-    r"^(?:lib)?ggml-(?:cann|cuda|hip|metal|musa|opencl|sycl|virtgpu|vulkan)"
+    r"^(?:lib)?ggml-(cann|cuda|hip|metal|musa|opencl|sycl|virtgpu|vulkan)"
     r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
 )
 _CPU_BACKEND_LIB_RE = re.compile(r"^(?:lib)?ggml-(?:cpu|base)(?:[-.]|$)")
+# Backends bound to one vendor; vulkan, opencl and virtgpu run on any GPU.
+_BACKEND_VENDOR = {
+    "cuda": "nvidia",
+    "hip": "amd",
+    "sycl": "intel",
+    "metal": "apple",
+    "musa": "mthreads",
+    "cann": "huawei",
+}
+_DRM_VENDOR = {"0x10de": "nvidia", "0x1002": "amd", "0x8086": "intel"}
+_WINDOWS_VENDOR_DLLS = {
+    "nvidia": ("nvcuda.dll",),
+    "amd": ("amdhip64*.dll", "amdocl64.dll"),
+    "intel": ("ze_intel_gpu64.dll", "igdrcl64.dll"),
+}
+_DRM_ROOT = "/sys/class/drm"
+_HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from this host
+
+
+def binary_gpu_backends(binary: Path | str) -> Optional[set[str]]:
+    """GPU backend libraries beside the binary; empty for a split build with only CPU
+    libraries, None when the layout says nothing (a static build or a wrapper)."""
+    try:
+        names = [p.name for p in Path(binary).resolve().parent.iterdir() if p.is_file()]
+    except OSError:
+        return None
+    gpu = {m.group(1) for m in map(_GPU_BACKEND_LIB_RE.match, names) if m}
+    if gpu or any(_CPU_BACKEND_LIB_RE.match(name) for name in names):
+        return gpu
+    return None
 
 
 def binary_gpu_verdict(binary: Path | str) -> str:
     """``gpu``, ``cpu`` (a split-library build with no GPU backend beside it) or ``unknown``."""
-    try:
-        names = [p.name for p in Path(binary).resolve().parent.iterdir() if p.is_file()]
-    except OSError:
-        return "unknown"
-    if any(_GPU_BACKEND_LIB_RE.match(name) for name in names):
-        return "gpu"
-    if any(_CPU_BACKEND_LIB_RE.match(name) for name in names):
-        return "cpu"
-    return "unknown"
+    backends = binary_gpu_backends(binary)
+    return "unknown" if backends is None else ("gpu" if backends else "cpu")
 
 
-def prefer_gpu_capable(candidates: Iterable[Path], usable: Callable[[Path], bool]) -> list[Path]:
-    """The candidates in search order, except that a first hit proven CPU-only yields to a
-    later usable one that ships a GPU backend: a tree with a CPU build/ beside a CUDA
-    build-cuda/ otherwise ran on the CPU forever (#5941). Unknown layouts keep their place."""
+def host_gpu_vendors() -> Optional[set[str]]:
+    """GPU vendors on this host from the DRM sysfs entries or the vendors' Windows driver
+    DLLs; None when nothing answers, so an unknown host filters nothing."""
+    vendors: set[str] = set()
+    if sys.platform == "darwin":
+        return {"apple"}
+    if sys.platform == "win32":
+        system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        for vendor, patterns in _WINDOWS_VENDOR_DLLS.items():
+            if any(next(system32.glob(pattern), None) for pattern in patterns):
+                vendors.add(vendor)
+    else:
+        for vendor_file in Path(_DRM_ROOT).glob("card*/device/vendor"):
+            try:
+                vendor = _DRM_VENDOR.get(vendor_file.read_text(encoding = "utf-8").strip().lower())
+            except OSError:
+                continue
+            if vendor:
+                vendors.add(vendor)
+        if os.path.isdir("/proc/driver/nvidia"):
+            vendors.add("nvidia")
+    return vendors or None
+
+
+def _fits_host(backends: set[str], vendors: Optional[set[str]]) -> bool:
+    if vendors is None:
+        return True
+    return any(_BACKEND_VENDOR.get(b) is None or _BACKEND_VENDOR[b] in vendors for b in backends)
+
+
+def prefer_gpu_capable(
+    candidates: Iterable[Path], usable: Callable[[Path], bool], vendors: Any = _HOST
+) -> list[Path]:
+    """Search order, except that a first hit proven CPU-only yields to a later usable build
+    shipping a GPU backend this host's vendor runs (#5941: a CPU build/ beside build-cuda/;
+    a stale build-cuda/ must not shadow build-hip/ on an AMD box). Unknown layouts stay put."""
     ordered = list(candidates)
     first = next((c for c in ordered if usable(c)), None)
     if first is None or binary_gpu_verdict(first) != "cpu":
         return ordered
-    gpu = next(
-        (c for c in ordered if c != first and usable(c) and binary_gpu_verdict(c) == "gpu"), None
-    )
-    if gpu is None:
-        return ordered
-    return [gpu] + [c for c in ordered if c != gpu]
+    if vendors is _HOST:
+        vendors = host_gpu_vendors()
+    for candidate in ordered:
+        if candidate == first or not usable(candidate):
+            continue
+        backends = binary_gpu_backends(candidate)
+        if backends and _fits_host(backends, vendors):
+            return [candidate] + [c for c in ordered if c != candidate]
+    return ordered
 
 
 def resolve_llama_server_binary(

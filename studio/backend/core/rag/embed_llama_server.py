@@ -752,8 +752,7 @@ class LlamaServerBackend:
             env = _with_dyld_path(env, _binary_lib_dir(binary))
         elif use_gpu:
             if sys.platform == "win32":
-                # The same DLL search path chat gives its server: without it a CUDA build whose
-                # cudart lives in the venv's nvidia wheels loads no GPU backend and runs on the CPU.
+                # Chat's DLL search path: without it a venv-hosted cudart is never found and the CUDA build runs on the CPU.
                 from core.inference.llama_cpp import _llama_lib_dir
 
                 path_dirs = LlamaCppBackend._build_windows_path_dirs(
@@ -761,8 +760,7 @@ class LlamaServerBackend:
                 )
                 env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
             else:
-                # Left as Path(binary).parent: resolving the entrypoint here would move the first
-                # LD_LIBRARY_PATH entry for every existing Linux GPU install whose llama-server is a symlink.
+                # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
                 self._add_linux_cuda_libs(env, str(Path(binary).parent))
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
