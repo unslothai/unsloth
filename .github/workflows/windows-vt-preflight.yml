@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Measurement only. Changes nothing, gates nothing, and is the prerequisite for replacing the
+# installers' native console thunk with $Host.UI.SupportsVirtualTerminal.
+#
+# Why it exists: GetStdHandle / GetConsoleMode / SetConsoleMode are three of the native imports left
+# in install.ps1 and, in studio/setup.ps1, the only reason that file carries reflection-emit helpers,
+# a child-process capability probe and a Device Guard CIM query at all -- roughly 300 lines whose
+# entire purpose is colouring a banner. "Defines a dynamic assembly, P/Invokes kernel32, spawns a
+# hidden child interpreter" is the densest malicious-looking region in either script, so removing it
+# is the largest single reduction available. It is only safe if the property answers what the native
+# code answers, and a wrong guess prints raw escape sequences at a user.
+#
+# Why a plain step cannot answer it: Actions captures stdout, so [Console]::IsOutputRedirected is
+# true in every step and BOTH answers come back as the redirected ones -- which is the case the
+# installers decide early and never reach the native path for. So the console case is measured under
+# conhost.exe, which allocates a real console, and the result travels through a file because that
+# console's output goes nowhere a runner can read.
+
+name: "Windows: virtual terminal preflight"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/scripts/Probe-VirtualTerminal.ps1'
+      - '.github/workflows/windows-vt-preflight.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: does the host property agree with the native call
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Measure with stdout redirected, and with a real console
+        shell: pwsh
+        run: |
+          $probe = (Resolve-Path '.github/scripts/Probe-VirtualTerminal.ps1').Path
+          $outDir = Join-Path $env:RUNNER_TEMP 'vt-preflight'
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+          $redirected = Join-Path $outDir 'redirected.json'
+          $console    = Join-Path $outDir 'console.json'
+
+          # Windows PowerShell 5.1 specifically. That is the interpreter install.rs spawns
+          # (install.rs:433-440) and the one a clean Windows box ships, and it is a different host
+          # implementation from pwsh 7, so pwsh's answer does not transfer.
+          $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          if (-not (Test-Path -LiteralPath $ps51)) {
+            Write-Host "::error::Windows PowerShell 5.1 is not at $ps51; this runner cannot answer the question that matters"
+            exit 1
+          }
+
+          # RemoteSigned, not a relaxed policy: the script comes out of a checkout so it carries no
+          # mark of the web. Using Bypass in the lane that exists to remove Bypass would be absurd.
+          & $ps51 -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $probe -OutFile $redirected
+          if (-not (Test-Path -LiteralPath $redirected)) {
+            Write-Host '::error::the redirected probe wrote no result file'
+            exit 1
+          }
+
+          # conhost.exe allocates a real console for the child, so its stdout handle is a console
+          # handle and GetConsoleMode can answer. -Wait because the result is read below.
+          $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+          if (-not (Test-Path -LiteralPath $conhost)) {
+            Write-Host '::error::conhost.exe is absent; the console case cannot be measured on this runner'
+            exit 1
+          }
+          Start-Process -FilePath $conhost -Wait -ArgumentList @(
+            $ps51, '-NoProfile', '-NonInteractive',
+            '-ExecutionPolicy', 'RemoteSigned',
+            '-File', $probe, '-OutFile', $console, '-Attached'
+          )
+
+          if (-not (Test-Path -LiteralPath $console)) {
+            Write-Host '::error::the console-attached probe wrote no result file. Not reporting a verdict: an unmeasured console is not a safe one.'
+            exit 1
+          }
+
+          $r = Get-Content -Raw $redirected | ConvertFrom-Json
+          $c = Get-Content -Raw $console    | ConvertFrom-Json
+
+          foreach ($row in @($r, $c)) {
+            Write-Host ''
+            Write-Host "--- $($row.label)"
+            Write-Host "  host               : $($row.hostName) / $($row.psVersion) / $($row.psEdition)"
+            Write-Host "  isOutputRedirected : $($row.isOutputRedirected)"
+            Write-Host "  SupportsVirtualTerminal : $($row.supportsVt)$(if ($row.supportsVtError) { " [$($row.supportsVtError)]" })"
+            Write-Host "  native GetConsoleMode/Set : $($row.nativeVt)$(if ($row.nativeVtError) { " [$($row.nativeVtError)]" })"
+            Write-Host "  console mode       : $($row.nativeConsoleMode)"
+          }
+
+          # The control: the console run must actually have had a console. Without this check a
+          # conhost that silently failed to attach would make both runs redirected, the two answers
+          # would trivially agree, and the lane would report SAFE having measured nothing.
+          if ($c.isOutputRedirected -ne $false) {
+            Write-Host ''
+            Write-Host "::error::the console-attached run still reports isOutputRedirected=$($c.isOutputRedirected), so no real console was measured."
+            Write-Host '::error::Refusing to report a verdict. Two redirected runs agree with each other for reasons that say nothing about a user at a console.'
+            exit 1
+          }
+          Write-Host ''
+          Write-Host 'control: the console-attached run really had a console (isOutputRedirected=False)'
+
+          Write-Host ''
+          if ($null -ne $c.supportsVt -and $c.supportsVt -eq $c.nativeVt) {
+            Write-Host "VERDICT: SAFE. At a real console the property and the native call both answer $($c.supportsVt),"
+            Write-Host '         so Enable-StudioVirtualTerminal can read the property and the three kernel32'
+            Write-Host '         imports can go, taking studio/setup.ps1 emit helpers with them.'
+            exit 0
+          }
+
+          Write-Host "::error::VERDICT: UNSAFE. At a real console the property answers '$($c.supportsVt)' but the native call answers '$($c.nativeVt)'."
+          Write-Host '::error::Do NOT swap the implementation. Users on this host would lose banner colour, or worse get raw escape sequences.'
+          Write-Host '::error::This is the measurement saying no, which is the outcome this lane exists to be able to produce.'
+          exit 1
+
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vt-preflight
+          path: ${{ runner.temp }}/vt-preflight/*.json
+          if-no-files-found: warn
+          retention-days: 30
