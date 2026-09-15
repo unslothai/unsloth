@@ -11,9 +11,9 @@ runs on low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 st
 faster and slightly more accurate, at a higher-memory dense load. Strictly opt-in; GGUF stays the
 low-memory default and fallback.
 
-Scheme by architecture (``auto`` picks the best supported, best first): nvfp4 / mxfp8 for Blackwell
-sm_100+ FP4 / MX tensor cores (biggest win; prototype), fp8 for Ada / Hopper / Blackwell (sm_89+),
-int8 for Ampere+ (sm_80+), the broadest-hardware lever.
+Scheme by architecture (``auto`` picks the best supported, best first): int8 leads every tier, then
+fp8 on Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8
+alone. nvfp4 is an explicit opt-in and is not in the auto ladder.
 
 Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
 loader compiles the repeated block after this. torch / torchao imported lazily; every probe is
@@ -205,17 +205,12 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more
-# accurate at DiT shapes, while mxfp8 block scaling only adds overhead. nvfp4's FP4 GEMM is real with torch>=2.11 but
-# wins only on very large GEMMs (0.81x on Z-Image 1024px, LPIPS 0.166 vs fp8 0.044), so it is kept OUT of the ladder
-# below and stays an explicit opt-in (transformer_quant="nvfp4"): auto must never silently drop to a scheme that is
-# both slower and less accurate. Restore the commented Blackwell tier to re-enable it once the FP4 tensor-core GEMM
-# wins at the DiT's real shapes (hidden ~3072, MLP ~12288, M ~4096) and its accuracy is validated by the prequant
-# gate. Consumer / workstation GPUs move int8 first: they halve fp8/fp16 FP32-accumulate.
+# int8 leads every tier: full-rate on consumer and workstation cards (which halve fp8 FP32 accumulate) and within a
+# few percent of fp8 on data-center parts. nvfp4 is kept OUT: slower AND less accurate at DiT shapes.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
-    # ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # restore to re-enable nvfp4 under auto
-    ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
+    ((10, 0), (TQ_INT8, TQ_FP8, TQ_MXFP8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
+    # ((10, 0), (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)),  # restore to re-enable nvfp4 under auto
+    ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
 
@@ -396,7 +391,7 @@ _PROFESSIONAL_GPU_MARKERS = ("RTX PRO 6000", "RTX 6000 ADA")
 def _is_consumer_gpu(device: Any = None) -> bool:
     """Whether the active GPU is consumer-class (GDDR), where fp8 FP32 accumulate is halved so fast
     (FP16) accumulate is a ~2x win. Data-center HBM and professional parts are not nerfed (return
-    False -> precise accumulate, fp8 first). Heuristic on the device name: GeForce / TITAN ->
+    False -> precise accumulate). Heuristic on the device name: GeForce / TITAN ->
     consumer; a data-center token or professional marker -> not; anything else defaults to
     consumer (fast accumulate is free on data-center, a win on consumer). True on any failure."""
     try:
@@ -496,7 +491,7 @@ def select_transformer_quant_scheme(
         return None
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            for scheme in _prefer_consumer_scheme(schemes, device):
+            for scheme in schemes:
                 if _family_denied(family, scheme):
                     continue
                 if _scheme_supported(scheme, device):
@@ -522,19 +517,10 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
         if cap >= floor:
             return tuple(
                 scheme
-                for scheme in _prefer_consumer_scheme(schemes, device)
+                for scheme in schemes
                 if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
             )
     return ()
-
-
-def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
-    """Reorder an arch tier's schemes for the GPU class. On consumer / workstation cards move int8
-    first: they halve fp8/fp16 FP32-accumulate while int8 runs full-rate, so int8 is as fast or
-    faster (and the only path on pre-Ada consumer). Data-center parts keep fp8 first."""
-    if TQ_INT8 in schemes and schemes[0] != TQ_INT8 and _is_consumer_gpu(device):
-        return (TQ_INT8,) + tuple(s for s in schemes if s != TQ_INT8)
-    return schemes
 
 
 def _capability() -> Optional[tuple[int, int]]:
