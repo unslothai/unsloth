@@ -56,7 +56,8 @@ export const BUDGET = {
   // lazy boundary, and the next PR to cross it pays for a drift it did not cause.
   //
   // So both halves move together as the note above intended, to the headroom that raise
-  // chose: PLACEHOLDER
+  // chose. Against this merge's 5,384.0 KB raw / 1,610.2 KB transfer, 5,730,000 leaves
+  // 211.7 KB raw (3.8%) and 1,715,000 leaves 64.6 KB transfer (3.9%).
   //
   // Nothing became eager. The eager set is still 84 chunks with the same top five (chat,
   // index, chunk-BO2N2NFS, providers-api, katex), so there is nothing here to lazy-load; the
