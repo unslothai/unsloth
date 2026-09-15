@@ -2546,10 +2546,24 @@ def _resolve_swa_pattern(
 
 
 def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
-    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`."""
-    if not url or "huggingface.co/" not in url:
+    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`.
+
+    A mirrored HF_ENDPOINT is recognised too, so a URL recorded on a mirror
+    still resolves to its repo id. huggingface.co stays accepted either way:
+    the same install can hold entries written before the mirror was set.
+    """
+    if not url:
         return None
-    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    marker = "huggingface.co/"
+    if marker not in url:
+        mirror = get_hf_endpoint().split("://", 1)[-1].rstrip("/") + "/"
+        if mirror in url:
+            marker = mirror
+        else:
+            return None
+    tail = url.split(marker, 1)[1].rstrip("/")
     parts = tail.split("/")
     if len(parts) < 2:
         return None
