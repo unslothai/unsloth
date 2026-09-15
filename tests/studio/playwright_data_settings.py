@@ -275,6 +275,7 @@ def run(page):
     checks.extend(run_library_selection(page))
     checks.extend(run_library_collation(page))
     checks.extend(run_restore_notifications(page))
+    checks.extend(run_thumbnail_retention(page))
 
     errors = page.evaluate("window.__settingsSmoke.errors()")
     resize_notice = "ResizeObserver loop completed with undelivered notifications."
@@ -914,6 +915,65 @@ def run_restore_notifications(page):
             )
             assert mutations == completed + (failure_index is not None)
             checks.append(f"{kind}-{action}-{count}-notification-failure-{failure_index}")
+    return checks
+
+
+def run_thumbnail_retention(page):
+    checks = []
+    for kind in ["images", "videos"]:
+        page.evaluate("window.__settingsSmoke.close()")
+        expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
+        page.evaluate(
+            """kind => {
+                const f = window.__dataFixture;
+                Object.assign(f, {requests: [], thumbnailRequests: 0, failPage: false, stallPage: false});
+                const originalFetch = window.fetch;
+                f.restoreFetch = () => { window.fetch = originalFetch; };
+                window.fetch = async (input, init) => {
+                    const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+                    if (url.pathname.endsWith('/content')) {
+                        f.thumbnailRequests += 1;
+                        const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAIAAAADnC86AAAAMklEQVR4nO3NAQ0AMAgAoPtMhrOGjY3h5qAAkV1vw19ZxWKxWCwWi8VisVgsFovFR+MBbzgBjTOVo70AAAAASUVORK5CYII='), c => c.charCodeAt(0));
+                        const bytes = new Uint8Array(6 * 1024 * 1024);
+                        bytes.set(png);
+                        return new Response(bytes, {headers: {'Content-Type': 'image/png'}});
+                    }
+                    return originalFetch(input, init);
+                };
+                f.media[kind] = Array.from({length: 6}, (_, i) => ({
+                    id: `thumbnail-${i}`, prompt: `Sample ${5-i}`,
+                    url: `/api/inference/images/gallery/thumbnail-${i}/content`,
+                    created_at: kind === 'images' ? 1700000000 : '2023-11-14T22:13:20Z',
+                }));
+                window.__settingsSmoke.openArchived(kind);
+            }""",
+            kind,
+        )
+        try:
+            page.wait_for_function("""() => {
+                const images = [...document.querySelectorAll('[data-archived-id] img')];
+                return images.length === 6 && images.every(img => img.complete && img.naturalWidth > 0);
+            }""")
+            assert page.evaluate("window.__dataFixture.thumbnailRequests") == 6, page.evaluate(
+                "window.__dataFixture.thumbnailRequests"
+            )
+            page.get_by_role("button", name = "Filter and sort", exact = True).click()
+            page.get_by_role("menuitemradio", name = "Alphabetical", exact = True).click()
+            expect(page.locator("[data-archived-id] p[title]").first).to_have_text("Sample 0")
+            page.wait_for_timeout(200)
+            assert page.evaluate("window.__dataFixture.thumbnailRequests") == 6, page.evaluate(
+                "window.__dataFixture.thumbnailRequests"
+            )
+            checks.append(f"{kind}-sort-retains-visible-thumbnails-over-budget")
+            page.get_by_role("searchbox").fill("Sample")
+            expect(page.locator("[data-archived-id]")).to_have_count(6)
+            page.wait_for_timeout(200)
+            assert page.evaluate("window.__dataFixture.thumbnailRequests") == 6, page.evaluate(
+                "window.__dataFixture.thumbnailRequests"
+            )
+            checks.append(f"{kind}-search-retains-visible-thumbnails-over-budget")
+        finally:
+            page.evaluate("window.__dataFixture.restoreFetch()")
     return checks
 
 

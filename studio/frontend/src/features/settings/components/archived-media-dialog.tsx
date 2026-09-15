@@ -247,7 +247,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   useEffect(() => {
     const root = listRef.current;
     if (!root) return;
-    setVisible(new Set());
+    setVisible((previous) =>
+      new Set(
+        displayed.filter((row) => previous.has(row.id)).map((row) => row.id),
+      ),
+    );
     let observing = true;
     if (typeof IntersectionObserver === "undefined") {
       setVisible(new Set(displayed.map((r) => r.id)));
