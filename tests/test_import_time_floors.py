@@ -166,7 +166,7 @@ def test_a_failed_probe_does_not_re_read_the_installed_metadata(patched_torch, m
 
 
 def test_an_unresolvable_package_still_reports_a_version_word(patched_torch, monkeypatch):
-    """ "unknown" rather than a traceback, and cached like any other answer."""
+    """The word unknown rather than a traceback, and cached like any other answer."""
 
     def always_raises(package):
         raise RuntimeError("no metadata here")
