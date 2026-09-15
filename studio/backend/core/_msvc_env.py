@@ -3,7 +3,8 @@
 
 """Gate torch.compile on Triton's C toolchain, on Windows (#7595). `import triton` succeeding does not
 mean a compile will: Triton's clang-cl JIT dies on `'stdlib.h'` mid-run when the CRT headers are absent.
-It passes its own `/I` dirs and never reads `INCLUDE`, so there is nothing to repair, only a state to refuse."""
+It passes its own `/I` dirs and never reads `INCLUDE`, so there is nothing to repair, only a state to refuse.
+The module also forces torch before triton on Windows ROCm builds (triton-windows#35)."""
 
 from __future__ import annotations
 
@@ -197,9 +198,30 @@ def crt_headers_reachable() -> bool:
     return _headers_complete(triton_dirs + env_dirs)
 
 
+def _torch_is_rocm_build() -> bool:
+    # Wheel metadata only, no torch import on CUDA/CPU builds. The version tag alone is not
+    # enough: AMD's Windows torch 2.8 versions as 2.8.0a0+gitfc14c65, no rocm anywhere, so only
+    # torch/version.py's hip field says ROCm. _installed_torch_is_rocm reads both off disk.
+    try:
+        from core._torchao_stub import _installed_torch_is_rocm  # noqa: PLC0415
+        verdict = _installed_torch_is_rocm()
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read the installed torch's ROCm signals", exc_info = True)
+        return False
+    # None means neither signal was legible; the preload stays scoped to builds known to need it.
+    return verdict is True
+
+
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     if sys.platform != "win32":
         return
+    if _torch_is_rocm_build():
+        try:
+            # torch before triton, else triton-first loads System32 amdhip64_7.dll and
+            # torch_hip.dll then fails with WinError 126 (triton-windows#35).
+            import torch  # noqa: F401, PLC0415
+        except Exception:  # noqa: BLE001
+            logger.debug("The torch preload failed; probing triton anyway", exc_info = True)
     try:
         import triton  # noqa: F401, PLC0415
     except ImportError:
