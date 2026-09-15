@@ -314,10 +314,12 @@ rm -rf "$_dir"
 
 # 8h) The memo lives in the parent shell: the presence check runs there before the
 # torch index is read in a command substitution, so the later checks do not probe again.
-_prime=$(grep -n '^_has_usable_nvidia_gpu >/dev/null 2>&1 || true$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_prime=$(grep -n '^    _has_usable_nvidia_gpu >/dev/null 2>&1 || true$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_guard=$(sed -n "$((_prime - 1))p" "$INSTALL_SH")
 _assign=$(grep -n -F 'TORCH_INDEX_URL=$(get_torch_index_url)' "$INSTALL_SH" | head -1 | cut -d: -f1)
 if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _result=ordered; else _result="prime=$_prime assign=$_assign"; fi
 assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
+assert_eq "the prime is skipped for a pinned index or no torch" 'if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then' "$_guard"
 
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
 _dir=$(make_mock_amd_smi "6.3")

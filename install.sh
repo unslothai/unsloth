@@ -4526,7 +4526,10 @@ _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null
 
 # The NVIDIA presence check runs here first: get_torch_index_url runs in a command substitution,
 # whose library inventory memo would not outlive it, and the later checks would probe again.
-_has_usable_nvidia_gpu >/dev/null 2>&1 || true
+# Not for a pinned index or no torch at all: the selection does not read the GPU then.
+if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then
+    _has_usable_nvidia_gpu >/dev/null 2>&1 || true
+fi
 TORCH_INDEX_URL=$(get_torch_index_url)
 
 # Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (unslothai#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
