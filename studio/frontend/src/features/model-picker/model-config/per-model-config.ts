@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeLlamaCppConfig, type LlamaCppConfig } from "./llama-cpp-config";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   ggufVariantFromStorageKey,
@@ -46,6 +47,7 @@ export interface PerModelConfig {
      *  alive); `null` means the user cleared the box and must be sent as an explicit `[]`; a non-empty list is what
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
+  llamaCppConfig?: LlamaCppConfig;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
   // selectedGpuIds means automatic. --tensor-split is not remembered: it follows the GPU set.
   gpuMemoryMode?: "auto" | "manual";
@@ -296,8 +298,8 @@ const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
-// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam); a client from before any of them
-const STORAGE_SCHEMA_VERSION = 5;
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 custom llama.cpp configuration.
+const STORAGE_SCHEMA_VERSION = 6;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
 const PRE_VISION_SCHEMA_VERSION = 3;
 const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
@@ -331,6 +333,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "disableVision",
   "chatTemplateOverride",
   "llamaExtraArgs",
+  "llamaCppConfig",
   "gpuMemoryMode",
   "gpuLayers",
   "nCpuMoe",
@@ -955,6 +958,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? partial.chatTemplateOverride
         : null,
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
+    llamaCppConfig: normalizeLlamaCppConfig(partial.llamaCppConfig),
     ...normalizeGpuFields(partial),
   };
 }
@@ -989,8 +993,10 @@ function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
     normalized.specDraftCacheDtype != null ||
     normalized.ctxCheckpoints != null ||
     normalized.cacheRam != null;
-  const version = hasServerTuning
+  const version = normalized.llamaCppConfig !== undefined
     ? STORAGE_SCHEMA_VERSION
+    : hasServerTuning
+    ? 5
     : normalized.disableVision
       ? PRE_SERVER_TUNING_SCHEMA_VERSION
       : normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
@@ -1163,6 +1169,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     // Or a config whose only change is Extra Arguments reads as default, and savePerModelConfig
     // deletes the entry it was asked to remember.
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
+    config.llamaCppConfig === undefined &&
     gpuFieldsAtDefault(config)
   );
 }
@@ -1186,6 +1193,9 @@ export function savePerModelConfig(
      *  without this their server overrides would keep applying with nothing in the UI able to forget them. */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
+  if (config.llamaCppConfig !== undefined && normalizeLlamaCppConfig(config.llamaCppConfig) === undefined) {
+    return false;
+  }
   if (
     typeof config.chatTemplateOverride === "string" &&
     !isChatTemplateWithinLimit(config.chatTemplateOverride)

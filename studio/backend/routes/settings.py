@@ -45,6 +45,7 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
+from models.llama_custom_config import LlamaCppConfigFields
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
@@ -787,7 +788,7 @@ MAX_GGUF_VARIANT_KEY_LEN = 4096
 MAX_GPU_IDS = MAX_GPU_ID + 1
 
 
-class ModelOverridePayload(BaseModel):
+class ModelOverridePayload(LlamaCppConfigFields):
     """One model's saved launch config, applied when the API loads that model.
 
     Everything past ``model_id`` is optional and omitted means "app default", so a
@@ -944,7 +945,8 @@ def _active_launch_placement():
         # placement answering for the launch that replaced it. One attribute carries both
         # "is a launch pending" and "what is it committed to".
         pending = getattr(backend, "_memory_pending_launch", None)
-        if not backend.is_active and pending is None:
+        custom_pending = bool(getattr(backend, "_custom_launch_pending", False))
+        if not backend.is_active and pending is None and not custom_pending:
             return _NO_LAUNCH, False, True, None, False, False, None
         return (
             getattr(backend, "_memory_state", None),
@@ -981,9 +983,9 @@ def _model_memory_reload_required() -> bool:
 
     Keyed on is_active, not is_loaded: a save that lands while a load is still
     passing its health check would otherwise report no reload while the child is
-    already committed to the pre-save flags. _memory_launch_pending covers the
-    same window before Popen, where the placement is decided but _process is
-    still None.
+    already committed to the pre-save flags. The managed pending snapshot and
+    custom launch marker cover the same window before Popen, where placement is
+    decided but _process is still None.
     """
     state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed, pending = (
         _active_launch_placement()
@@ -1773,6 +1775,22 @@ def update_openai_auto_switch_override(
                         _kept_tuning[name] = _stored_tuning.get(name)
                 break
         removed_keys: list[str] = []
+        kept_custom_config = payload.llama_cpp_config
+        if kept_custom_config is None and not is_removal:
+            config_ids = [payload.model_id]
+            for candidate in (
+                _bare_model_id(payload.model_id),
+                _legacy_standalone_gguf_key(payload.model_id),
+                *cached_repo_alias_keys(payload.model_id),
+            ):
+                if candidate and candidate not in config_ids:
+                    config_ids.append(candidate)
+            config_ids.sort(key = lambda key: not is_cache_load_path_key(key))
+            for config_id in config_ids:
+                stored_config = get_model_override(config_id)
+                if stored_config:
+                    kept_custom_config = stored_config.get("llama_cpp_config")
+                    break
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to, not the literal one sent
             # (the browser normalizes casing), and every spelling: clearing one of two leaves the survivor as the sole
@@ -1826,6 +1844,7 @@ def update_openai_auto_switch_override(
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
+                llama_cpp_config = kept_custom_config,
                 keep_empty_extra_args = keep_empty,
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,

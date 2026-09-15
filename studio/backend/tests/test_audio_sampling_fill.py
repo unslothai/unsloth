@@ -46,6 +46,24 @@ class _FakeLlama:
     _is_audio = False
 
 
+class _FakeCustomLlama:
+    is_loaded = True
+    _is_audio = True
+    _audio_type = "snac"
+    model_identifier = "custom.gguf"
+    llama_cpp_config_summary = {
+        "mode": "custom",
+        "request_defaults": {"temperature": 0.25, "top_k": 180, "repeat_penalty": 0.9},
+    }
+
+    def __init__(self):
+        self.captured = {}
+
+    def generate_audio_response(self, **kwargs):
+        self.captured.update(kwargs)
+        return (b"RIFFfake", 24000)
+
+
 class _FakeTransformersBackend:
     def __init__(self, audio_type = "snac"):
         self.active_model_name = "some/custom-tts"
@@ -131,6 +149,30 @@ def test_audio_operator_pin_overrides_client(monkeypatch):
 def test_audio_client_explicit_preserved(monkeypatch):
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
     assert captured["temperature"] == 0.2  # explicit client value preserved over recommendation
+
+
+def test_direct_gguf_audio_uses_custom_defaults_for_automatic_ui_values(monkeypatch):
+    backend = _FakeCustomLlama()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "custom.gguf",
+        messages = [{"role": "user", "content": "hi"}],
+        temperature = 0.8,
+        top_k = 20,
+        repetition_penalty = 1.05,
+        sampling_fields_explicit = [],
+    )
+
+    asyncio.run(inference_route.generate_audio(payload, request = None, current_subject = "t"))
+
+    assert backend.captured["temperature"] == 0.25
+    assert backend.captured["top_k"] == 180
+    assert backend.captured["repetition_penalty"] == 0.9
 
 
 def test_audio_generate_returns_the_exact_persisted_clip_id(monkeypatch):

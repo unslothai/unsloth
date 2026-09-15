@@ -240,6 +240,7 @@ class TestOldCallers:
         )
         tail = names[-len(_TOOL_LOOP_HOOKS) :]
         assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
+        assert names[-len(_TOOL_LOOP_HOOKS) - 1] == "request_template_kwargs"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

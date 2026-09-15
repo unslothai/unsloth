@@ -295,8 +295,9 @@ test("Run waits out the budget save without starting two loads", () => {
   assert.match(body, /if \(budgetSettling\) \{ return; \}/);
   assert.match(body, /setBudgetSettling\(true\);/);
   assert.match(body, /setBudgetSettling\(false\); onRun\(/);
+  const onClick = pageSource.indexOf("onClick={handleRun}");
   const disabled = pageSource
-    .slice(pageSource.indexOf("onClick={handleRun}") - 400)
+    .slice(pageSource.lastIndexOf("<Button", onClick), onClick)
     .replace(/\s+/g, " ");
   assert.match(disabled, /budgetSettling \|\|/);
 });

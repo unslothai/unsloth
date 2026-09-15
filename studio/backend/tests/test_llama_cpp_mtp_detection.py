@@ -2826,7 +2826,7 @@ def test_diffusion_load_clears_the_previous_models_spec_fallback():
     src = inspect.getsource(LlamaCppBackend.load_model)
     diffusion = src.find("if self._is_diffusion:")
     assert diffusion != -1
-    start = src.find("return self._start_diffusion_server", diffusion)
+    start = src.find("started = self._start_diffusion_server", diffusion)
     assert start != -1
     assert "self._spec_fallback_reason = None" in src[diffusion:start]
     assert "self._spec_drafter_kind = None" in src[diffusion:start]
@@ -3223,6 +3223,30 @@ def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
     assert _matches(clamped, n_parallel = 4, **_same_settings_apply()) is False
 
 
+def _diffusion_return_lines(load_model):
+    assignments = [
+        node
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_start_diffusion_server"
+    ]
+    assert len(assignments) == 1
+    target = assignments[0].targets[0]
+    assert isinstance(target, ast.Name)
+    returns = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == target.id
+        and node.lineno > assignments[0].lineno
+    ]
+    assert len(returns) == 1, "diffusion must return its launch result"
+    return returns
+
+
 def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
     """The marker describes the RUNNING runtime, so load_model must not write it before
     the launch is committed.
@@ -3252,14 +3276,7 @@ def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
     ]
     assert len(writes) == 1, f"expected one commit-point write, found {len(writes)}"
 
-    diffusion_returns = [
-        node.lineno
-        for node in ast.walk(load_model)
-        if isinstance(node, ast.Return)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Attribute)
-        and node.value.func.attr == "_start_diffusion_server"
-    ]
+    diffusion_returns = _diffusion_return_lines(load_model)
     assert diffusion_returns, "the diffusion early return moved; re-pin this test"
     assert writes[0] > max(diffusion_returns), (
         "the marker is written before the diffusion early return, so a diffusion runner "
@@ -3311,14 +3328,7 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
             or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
         )
     ]
-    diffusion_return = max(
-        node.lineno
-        for node in ast.walk(load_model)
-        if isinstance(node, ast.Return)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Attribute)
-        and node.value.func.attr == "_start_diffusion_server"
-    )
+    diffusion_return = max(_diffusion_return_lines(load_model))
     # The probes that legitimately sit above the diffusion return are the pre-existing
     # ones, and every one of them is guarded by the feature that needs it (the
     # --kv-unified clamp behind n_parallel > 1, the DSpark lookup behind its own request),

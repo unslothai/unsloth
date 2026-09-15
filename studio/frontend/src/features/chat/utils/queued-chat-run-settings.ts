@@ -39,6 +39,9 @@ const QUEUED_SETTING_KEYS = [
   // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
+  "loadedLlamaCppConfig",
+  "llamaCppConfig",
+  "llamaCppConfigSummary",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",

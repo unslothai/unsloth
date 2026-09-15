@@ -9,10 +9,29 @@ import { buildResearchInferenceRequest } from "../src/features/chat/research-inf
 const clamp = (effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") =>
   effort === "xhigh" ? "high" as const : effort;
 
+test("local research preserves automatic and explicit sampling provenance", () => {
+  for (const samplingFieldsExplicit of [[], ["temperature", "top_p"]]) {
+    const request = buildResearchInferenceRequest({
+      checkpoint: "local/model.gguf",
+      temperature: 0.2,
+      topP: 0.9,
+      maxTokens: 4096,
+      samplingFieldsExplicit,
+      reasoningRequested: false,
+      reasoningStyle: "none",
+      reasoningEffort: "none",
+      reasoningEffortLevels: ["none"],
+      clampReasoningEffort: clamp,
+    });
+    assert.deepEqual(request.samplingFieldsExplicit, samplingFieldsExplicit);
+  }
+});
+
 test("Codex research keeps provider routing and clamps generation settings", () => {
   assert.deepEqual(
     buildResearchInferenceRequest({
       checkpoint: "external::provider::gpt-5.6-sol",
+      samplingFieldsExplicit: [],
       external: {
         providerId: "provider",
         providerType: "openai_codex",

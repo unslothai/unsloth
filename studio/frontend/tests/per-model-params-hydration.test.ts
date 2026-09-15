@@ -856,7 +856,12 @@ test("a browser that only read an entry does not write it back", async () => {
     );
   }
   settingsHttp.puts.length = 0;
-  assert.deepEqual(patch, { [LLAMA]: { temperature: 0.42 } });
+  assert.deepEqual(patch, {
+    [LLAMA]: {
+      samplingFieldsExplicit: ["temperature"],
+      temperature: 0.42,
+    },
+  });
 
   // And switching away from it writes nothing more: the edit already said it,
   // and the rest of the entry is not this browser's to restate.
@@ -928,7 +933,15 @@ test("two edits to one model inside a debounce window both survive", async () =>
 
   assert.deepEqual(
     settingsHttp.puts.map((put) => put.inferenceParamsByModel),
-    [{ [QWEN]: { temperature: 0.42, topP: 0.11 } }],
+    [
+      {
+        [QWEN]: {
+          samplingFieldsExplicit: ["temperature", "top_p"],
+          temperature: 0.42,
+          topP: 0.11,
+        },
+      },
+    ],
     "one PUT carrying both edits, not the last one alone",
   );
 });

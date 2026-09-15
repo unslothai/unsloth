@@ -14,6 +14,7 @@ import type {
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED, type MinPMode } from "../types/runtime.ts";
+import { explicitSamplingFields } from "../../model-picker/model-config/llama-cpp-config.ts";
 import {
   isRecord,
   sanitizeBoundedNumber,
@@ -24,6 +25,7 @@ import {
 export type ThreadPermissionMode = Exclude<PermissionMode, "full">;
 
 export interface ThreadScopedSettings {
+  samplingFieldsExplicit?: string[];
   reasoningEnabled?: boolean;
   reasoningEffort?: ReasoningEffort;
   toolsEnabled?: boolean;
@@ -55,6 +57,7 @@ export interface ThreadScopedSettings {
 
 /** The subset living under `params` rather than as a store field of its own. */
 export const THREAD_SCOPED_PARAM_KEYS = [
+  "samplingFieldsExplicit",
   "temperature",
   "topP",
   "topK",
@@ -128,6 +131,7 @@ const THREAD_SCOPED_STRING_KEYS = [
 ] as const satisfies readonly (keyof ThreadScopedSettings)[];
 
 export const THREAD_SCOPED_SETTING_KEYS = [
+  "samplingFieldsExplicit",
   ...THREAD_SCOPED_STRING_KEYS,
   ...THREAD_SCOPED_BOOLEAN_KEYS,
   ...(Object.keys(
@@ -173,6 +177,9 @@ export function sanitizeThreadScopedSettings(
   const settings: ThreadScopedSettings = {};
   if (!isRecord(value)) return settings;
   const target = settings as Record<string, unknown>;
+  if (value.samplingFieldsExplicit !== undefined) {
+    settings.samplingFieldsExplicit = explicitSamplingFields(value);
+  }
   for (const key of THREAD_SCOPED_BOOLEAN_KEYS) {
     if (typeof value[key] === "boolean") target[key] = value[key];
   }

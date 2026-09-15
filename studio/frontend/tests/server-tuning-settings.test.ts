@@ -113,9 +113,13 @@ test("a record only claims the new schema version when it carries one", () => {
   // toStoredConfig stamps the OLDEST version that understands every field
   // present, so an older client can still rewrite a record it fully knows.
   const source = readSrc("features/model-picker/model-config/per-model-config.ts");
-  assert.match(source, /const STORAGE_SCHEMA_VERSION = 5;/);
+  assert.match(source, /const STORAGE_SCHEMA_VERSION = 6;/);
   assert.match(source, /const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;/);
-  assert.match(source, /hasServerTuning\s*\n?\s*\?\s*STORAGE_SCHEMA_VERSION/);
+  assert.match(
+    source,
+    /normalized\.llamaCppConfig !== undefined\s*\n?\s*\?\s*STORAGE_SCHEMA_VERSION/,
+  );
+  assert.match(source, /hasServerTuning\s*\n?\s*\?\s*5/);
 });
 
 test("blank knobs are omitted from the load payload", () => {

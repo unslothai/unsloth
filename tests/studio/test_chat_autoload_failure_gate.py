@@ -127,6 +127,7 @@ export type Scenario = {
   // Which backend the host serves with, and what the record holds: both decide the ask.
   platform?: { deviceType: string; chatOnlyReason: string | null };
   config?: Record<string, unknown>;
+  overrideError?: boolean;
 };
 
 // The stored-arguments hydration the auto-load runs before it calls /load. Neutral
@@ -137,6 +138,13 @@ export type Scenario = {
 // llamaExtraArgs still sends exactly what it set.
 export async function loadManagedLlamaFlags(): Promise<any> {
   return null;
+}
+export async function fetchLoadModelOverride(): Promise<any> {
+  if (SCENARIO.overrideError) throw new Error("override endpoint unavailable");
+  return undefined;
+}
+export function llamaCppConfigPayload(config: any): any {
+  return config === undefined ? {} : { llama_cpp_config: config };
 }
 export async function fetchLoadExtraArgs(
   _loadId: string,
@@ -317,6 +325,8 @@ function makeStore(): any {
     // has to resolve a local model of its own.
     params: { maxSeqLength: 4096, checkpoint: SCENARIO?.visibleCheckpoint ?? "" },
     activeGgufVariant: null,
+    loadedLlamaCppConfig: null,
+    llamaCppConfigSummary: null,
     activePresetSource: null,
     gpuMemoryMode: "auto",
     selectedGpuIds: null,
@@ -948,6 +958,7 @@ def _run(
             customContextLength: s.customContextLength ?? null,
             loadedCustomContextLength: s.loadedCustomContextLength ?? null,
             loadedContextLength: s.loadedContextLength ?? null,
+            loadedLlamaCppConfig: s.loadedLlamaCppConfig ?? null,
           }},
         }}));
         """
@@ -980,6 +991,29 @@ def _toasts(out: dict, kind: str) -> list[dict]:
 
 def _downloads_started(out: dict) -> list[str]:
     return [event["repoId"] for event in out["events"] if event["kind"] == "download.start"]
+
+
+def test_override_outage_does_not_block_managed_autoload():
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " overrideError: true })"
+    )
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
+
+
+def test_queued_background_custom_load_retains_its_own_sampling_config():
+    out = _run(
+        "scenario({ visibleCheckpoint: EXTERNAL, ggufRepos: [GEMMA],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " load: p => ({ ...LOADED(p), requested_llama_cpp_config: CUSTOM,"
+        " llama_cpp_config_summary: { mode: 'custom', digest: 'local' } }) })",
+        queued = True,
+        prelude = "const CUSTOM = { version: 1, mode: 'custom', ini: '[*]\\nnp=1', section: null };",
+    )
+    assert out["result"]["modelRuntime"]["loadedLlamaCppConfig"]["mode"] == "custom"
+    assert out["result"]["modelRuntime"]["llamaCppConfigSummary"]["digest"] == "local"
+    assert out["store"]["loadedLlamaCppConfig"] is None
 
 
 def test_failed_cached_load_does_not_download_the_default_model():

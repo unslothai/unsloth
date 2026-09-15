@@ -36,6 +36,17 @@ const LEGACY_SNAPSHOT = {
   systemVariables: "",
   fastMode: false,
 };
+const LEGACY_EXPLICIT_FIELDS = [
+  "temperature",
+  "top_p",
+  "top_k",
+  "min_p",
+  "repetition_penalty",
+  "presence_penalty",
+];
+const legacyMaskPut = {
+  inferenceParams: { samplingFieldsExplicit: LEGACY_EXPLICIT_FIELDS },
+};
 
 function resetHttp(settings: Record<string, unknown>): void {
   settingsHttp.settings = settings;
@@ -50,9 +61,17 @@ function resetHttp(settings: Record<string, unknown>): void {
 
 /** The store as it stands with the legacy Qwen3.8 snapshot loaded and active. */
 function seedActiveQwen(overrides: Record<string, unknown> = {}): void {
-  const hydratedSnapshot = { ...LEGACY_SNAPSHOT, minPMode: "custom" as const };
+  const hydratedSnapshot = {
+    ...LEGACY_SNAPSHOT,
+    minPMode: "custom" as const,
+  };
   useChatRuntimeStore.setState((state) => ({
-    params: { ...state.params, ...hydratedSnapshot, checkpoint: QWEN38 },
+    params: {
+      ...state.params,
+      ...hydratedSnapshot,
+      checkpoint: QWEN38,
+      samplingFieldsExplicit: LEGACY_EXPLICIT_FIELDS,
+    },
     paramsByModel: { [QWEN38]: hydratedSnapshot },
     activePreset: "Default",
     activePresetSource: "builtin-default",
@@ -112,7 +131,7 @@ test("a rejected retry leaves local sampling on the value the server kept", asyn
 
   await adoptQwenDefaults();
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [legacyMaskPut]);
   assert.equal(serverRow().presencePenalty, 0.4);
   // The local store must not advertise the rejected values.
   const after = useChatRuntimeStore.getState();
@@ -129,7 +148,9 @@ test("an accepted retry still applies the migration locally", async () => {
 
   await adoptQwenDefaults();
 
-  assert.equal(settingsHttp.puts.length, 1);
+  assert.equal(settingsHttp.puts.length, 2);
+  assert.deepEqual(settingsHttp.puts[0], legacyMaskPut);
+  assert.ok("inferenceParamsByModel" in (settingsHttp.puts[1] ?? {}));
   assert.equal(serverRow().presencePenalty, 1.5);
   assert.equal(serverRow().minP, 0);
   const after = useChatRuntimeStore.getState();
@@ -137,7 +158,7 @@ test("an accepted retry still applies the migration locally", async () => {
   assert.equal(after.params.minP, 0);
 });
 
-test("a backend without the conditional route persists nothing and shows nothing", async () => {
+test("a backend without the conditional route does not apply the migration", async () => {
   resetHttp({ ...LEGACY_SETTINGS });
   // The desktop app adopts backends above a version floor, so an older one that
   // never learned this route is a supported install rather than an error.
@@ -146,21 +167,21 @@ test("a backend without the conditional route persists nothing and shows nothing
 
   await adoptQwenDefaults();
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [legacyMaskPut]);
   assert.equal(serverRow().presencePenalty, 0);
   assert.equal(serverRow().minP, 0.01);
   const after = useChatRuntimeStore.getState();
   assert.notEqual(after.params.presencePenalty, 1.5);
 });
 
-test("the browser build's 405 is treated the same as an absent route", async () => {
+test("the browser build's 405 does not apply the migration either", async () => {
   resetHttp({ ...LEGACY_SETTINGS });
   settingsHttp.conditionalStatus = 405;
   seedActiveQwen();
 
   await adoptQwenDefaults();
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [legacyMaskPut]);
   assert.equal(serverRow().presencePenalty, 0);
   assert.notEqual(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
 });

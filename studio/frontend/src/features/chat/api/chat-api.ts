@@ -275,6 +275,25 @@ export async function loadModel(
     });
   if (options?.signal?.aborted)
     throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  if (payload.llama_cpp_config?.mode === "custom") {
+    if (payload.nativePathLease && !payload.nativePathToken) {
+      throw new Error(
+        "Please re-select the local model file to validate its custom configuration.",
+      );
+    }
+    const validationLease = payload.nativePathToken
+      ? (
+          await consumeNativePathToken(payload.nativePathToken, "validate-model")
+        ).nativePathLease
+      : null;
+    const validation = await validateModel({
+      ...payload,
+      nativePathLease: validationLease,
+    });
+    if (!validation.valid) throw new Error(validation.message);
+    if (options?.signal?.aborted)
+      throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  }
   options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row. The indicator
   // otherwise had nothing to show until its next 5s poll.
@@ -290,10 +309,19 @@ export async function loadModel(
           hf_token: preparedToken.token,
           native_path_lease: payload.nativePathLease ?? null,
           nativePathLease: undefined,
+          nativePathToken: undefined,
         }),
         signal: options?.signal,
       });
       const loaded = await parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+      if (
+        payload.llama_cpp_config?.mode === "custom" &&
+        loaded.llama_cpp_config_summary?.mode !== "custom"
+      ) {
+        throw new Error(
+          "The server did not confirm the custom llama.cpp configuration. Update Studio and try again.",
+        );
+      }
       // Unconditional: absent on nearly every load, anything malformed is ignored,
       // and the model is already resident by the time this runs. Both identities are
       // passed -- a cached Hub candidate is requested by its loadId while the runtime
@@ -362,6 +390,9 @@ export async function validateModel(
       n_parallel: payload.n_parallel,
       // A --ctx-size or cache override in here changes the estimate, so a preflight that dropped them
       // would approve a different command from the one that runs.
+      ...(payload.llama_cpp_config !== undefined
+        ? { llama_cpp_config: payload.llama_cpp_config }
+        : {}),
       ...(payload.llama_extra_args !== undefined
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: payload.llama_extra_args }
@@ -375,7 +406,17 @@ export async function validateModel(
       spec_draft_n_max: payload.spec_draft_n_max ?? null,
     }),
   });
-  return parseJsonOrThrow<ValidateModelResponse>(response);
+  const validated = await parseJsonOrThrow<ValidateModelResponse>(response);
+  if (
+    payload.llama_cpp_config?.mode === "custom" &&
+    validated.valid &&
+    validated.llama_cpp_config_summary?.mode !== "custom"
+  ) {
+    throw new Error(
+      "This server cannot validate custom llama.cpp configuration. Update Studio and try again.",
+    );
+  }
+  return validated;
 }
 
 /** Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from its

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CustomLlamaConfigEditor } from "./custom-llama-config-editor";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -1916,6 +1917,8 @@ export function ModelConfigPage({
   // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
   // settings collapse while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
+  const [customConfigLoadable, setCustomConfigLoadable] = useState(true);
+  const effectiveCustomSummary = useChatRuntimeStore((s) => s.llamaCppConfigSummary);
   // True until the stored-arguments read below settles: a load started before it lands sends no
   // llama_extra_args, and /load cannot inherit them from a process that is not running.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
@@ -1966,7 +1969,8 @@ export function ModelConfigPage({
   // and a width that starts applying then has to surface.
   const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
   const showAdvanced =
-    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
+    configState.llamaCppConfig?.mode === "custom" ||
+    (advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits));
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -2606,6 +2610,7 @@ export function ModelConfigPage({
           nCpuMoe: runtimeConfig.nCpuMoe ?? null,
           selectedGpuIds: runtimeConfig.selectedGpuIds ?? null,
           llamaExtraArgs: runtimeConfig.llamaExtraArgs ?? null,
+          llamaCppConfig: runtimeConfig.llamaCppConfig,
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
@@ -2997,7 +3002,12 @@ export function ModelConfigPage({
         </div>
       )}
 
-      <div className="space-y-3.5">
+      <fieldset
+        disabled={config.llamaCppConfig?.mode === "custom"}
+        inert={config.llamaCppConfig?.mode === "custom" ? true : undefined}
+        className={`min-w-0 space-y-3.5 ${config.llamaCppConfig?.mode === "custom" ? "opacity-50" : ""}`}
+        aria-label="Studio engine settings"
+      >
         {target.isGguf && (
           <>
             {/* Above Context Length on purpose: that is the control moving this number most, and a readout
@@ -3120,10 +3130,6 @@ export function ModelConfigPage({
               />
             )}
 
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
           </>
         )}
         {!target.isGguf && (
@@ -3156,7 +3162,32 @@ export function ModelConfigPage({
             />
           </>
         )}
-      </div>
+      </fieldset>
+
+      {target.isGguf && (
+        <>
+          {showAdvanced && !resolvedIsDiffusion && (
+            <div className="mt-3.5">
+              <CustomLlamaConfigEditor
+                value={config.llamaCppConfig}
+                onChange={(llamaCppConfig) => update({ llamaCppConfig })}
+                modelPath={target.id}
+                ggufVariant={target.ggufVariant}
+                hfToken={hfToken || null}
+                nativePathToken={nativePathToken}
+                onLoadableChange={setCustomConfigLoadable}
+                effectiveSummary={
+                  isActiveModel && atBaseline ? effectiveCustomSummary : null
+                }
+              />
+            </div>
+          )}
+          <AdvancedSettingsToggle
+            checked={showAdvanced}
+            onCheckedChange={toggleAdvanced}
+          />
+        </>
+      )}
 
       <div
         className={
@@ -3207,6 +3238,7 @@ export function ModelConfigPage({
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
+                llamaCppConfig: { version: 1, mode: "managed" },
               });
             }}
           >
@@ -3219,8 +3251,10 @@ export function ModelConfigPage({
             disabled={
               stagedMetadataPending ||
               budgetSettling ||
-              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
-              sharedExtraArgsRefused ||
+              !customConfigLoadable ||
+              (config.llamaCppConfig?.mode !== "custom" &&
+                ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                  sharedExtraArgsRefused)) ||
               extraArgsHydrating ||
               (isActiveModel &&
                 atBaseline &&

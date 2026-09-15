@@ -4,6 +4,8 @@
 export type MinPMode = "server-default" | "custom";
 
 export interface InferenceParams {
+  /** Absent on legacy user snapshots; [] identifies automatic UI defaults. */
+  samplingFieldsExplicit?: string[];
   temperature: number;
   topP: number;
   topK: number;
@@ -60,6 +62,7 @@ export type PersistedInferenceParams = Partial<
 >;
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
+  samplingFieldsExplicit: [],
   temperature: 0.6,
   topP: 0.95,
   topK: 20,

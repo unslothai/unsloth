@@ -187,6 +187,7 @@ def test_a_bare_positional_is_rejected():
         "--path",
         "--api-prefix",
         "--reuse-port",
+        "--rpc",
         # Auth / TLS
         "--api-key",
         "--api-key-file",
@@ -1142,6 +1143,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
         ("LLAMA_ARG_HF_REPO", "--hf-repo"),
         ("LLAMA_ARG_HOST", "--host"),
         ("LLAMA_ARG_PORT", "--port"),
+        ("LLAMA_ARG_RPC", "--rpc"),
         ("LLAMA_ARG_N_PARALLEL", "--parallel"),
         ("LLAMA_ARG_SSL_KEY_FILE", "--ssl-key-file"),
         ("LLAMA_ARG_SSL_CERT_FILE", "--ssl-cert-file"),

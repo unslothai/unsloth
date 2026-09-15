@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { LlamaCppConfig } from "../model-config/llama-cpp-config";
 import { authFetch } from "@/features/auth";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 
@@ -79,6 +80,7 @@ export interface MemoryEstimateRequest {
   nCpuMoe?: number | null;
   selectedGpuIds?: number[] | null;
   llamaExtraArgs?: string[] | null;
+  llamaCppConfig?: LlamaCppConfig;
 }
 
 const UNAVAILABLE: MemoryEstimate = {
@@ -133,6 +135,7 @@ function estimateRequestBody(
 ): string {
   return JSON.stringify({
     model_path: payload.modelPath,
+    ...(payload.llamaCppConfig !== undefined ? { llama_cpp_config: payload.llamaCppConfig } : {}),
     gguf_variant: payload.ggufVariant ?? null,
     hf_token: payload.hfToken ?? null,
     native_path_lease: nativePathLease,

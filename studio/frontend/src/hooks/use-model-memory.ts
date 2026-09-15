@@ -289,6 +289,7 @@ function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   // Pass-through args are appended after Unsloth's own flags, so an -ngl or a device pin in that box
   // is what the launch actually uses. Reading only the structured fields left the bar charting a
   // CPU-offloaded run against every GPU on the host.
+  if (config.llamaCppConfig?.mode === "custom") return false;
   if (extraArgsOwnPlacement(config.llamaExtraArgs)) return false;
   // Same reasoning one term over: these do not move the cache, they resize it. A --swa-full in the
   // box has the launch reserve a full-context cache while the bar priced the compact sliding window.

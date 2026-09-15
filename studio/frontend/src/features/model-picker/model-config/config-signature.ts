@@ -45,6 +45,7 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    JSON.stringify(config.llamaCppConfig) ?? "",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",

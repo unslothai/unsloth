@@ -31,9 +31,10 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from models.llama_custom_config import LlamaCppConfigFields
 
 
-class LoadRequest(BaseModel):
+class LoadRequest(LlamaCppConfigFields):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -445,7 +446,7 @@ class SttLoadRequest(BaseModel):
     )
 
 
-class ValidateModelRequest(BaseModel):
+class ValidateModelRequest(LlamaCppConfigFields):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     model_path: str = Field(..., description = "Model identifier or local path")
@@ -699,6 +700,7 @@ class ValidateModelResponse(BaseModel):
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
+    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
@@ -758,7 +760,7 @@ class ValidateModelResponse(BaseModel):
     )
 
 
-class EstimateMemoryRequest(BaseModel):
+class EstimateMemoryRequest(LlamaCppConfigFields):
     """Settings a Load-Model panel is about to submit, priced before it submits them.
 
     Every field mirrors the load request it previews, so the estimate answers for the
@@ -1075,6 +1077,9 @@ class GenerateRequest(BaseModel):
 
 class _InferenceRuntimeFields(BaseModel):
     """Runtime fields shared by load and status responses."""
+
+    requested_llama_cpp_config: Optional[Dict[str, Any]] = None
+    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
 
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
@@ -1975,6 +1980,13 @@ class ChatCompletionRequest(BaseModel):
     Non-OpenAI extension fields are marked with 'x-unsloth'.
     """
 
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
+    sampling_fields_explicit: Optional[List[str]] = Field(
+        None,
+        max_length = 16,
+        description = "Studio fields explicitly edited by the caller; omitted for ordinary API clients.",
+    )
+
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
@@ -2587,6 +2599,8 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     """Count prompt tokens for a local chat without generating."""
 
     model_config = {"extra": "allow"}
+
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
 
     model: str = Field(
         "default",

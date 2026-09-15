@@ -5437,6 +5437,17 @@ def test_chat_count_tokens_renders_the_requested_reasoning_mode(
     assert counted.get("chat_template_kwargs") == expected
 
 
+def test_chat_count_tokens_layers_explicit_template_kwargs_over_reasoning(monkeypatch):
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 7)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}],
+        enable_thinking = True,
+        chat_template_kwargs = {"custom_switch": "kept"},
+    )
+    assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
+    assert counted["chat_template_kwargs"] == {"custom_switch": "kept", "enable_thinking": True}
+
+
 @pytest.mark.parametrize(
     ("template_kwargs", "expected_tokens"),
     [
