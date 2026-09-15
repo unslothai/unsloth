@@ -226,6 +226,11 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
         )
     if candidate.found and candidate.total_engines == 0:
         delta.void.append(f"the candidate has no engine verdicts: {candidate.note}")
+    if baseline.found and baseline.total_engines == 0:
+        # Same guard, same reason, other side. A baseline VirusTotal knows but has never analysed
+        # carries no engines, no Sigma and no YARA, so every finding on the candidate reads as newly
+        # introduced and the run exits 2 while having compared against nothing at all.
+        delta.void.append(f"the baseline has no engine verdicts: {baseline.note}")
     if delta.void:
         return delta
 
@@ -251,16 +256,30 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
             f"{': ' + ', '.join(sorted(cand_engines)) if cand_engines else ''})"
         )
 
-    # Sigma, per severity rather than in total. Trading one high for three lows is an improvement and
-    # a total would call it a regression; the reverse is a regression a total would call an
-    # improvement.
-    for severity in SEVERITIES:
-        before = baseline.sigma.get(severity, 0)
-        after = candidate.sigma.get(severity, 0)
+    # Sigma, per severity and in severity ORDER. Trading one high for three lows is an improvement
+    # and a total would call it a regression; the reverse is a regression a total would call an
+    # improvement. Reporting each bucket independently does not express that either: a trade moves
+    # two buckets in opposite directions, so it lands in `worse` and in `better` at once, and
+    # exit_code answers `worse`. SEVERITIES is ordered most severe first, so the most severe bucket
+    # that moved is the one that decides; the rest are reported alongside it and do not flip it.
+    movements = [
+        (severity, baseline.sigma.get(severity, 0), candidate.sigma.get(severity, 0))
+        for severity in SEVERITIES
+        if baseline.sigma.get(severity, 0) != candidate.sigma.get(severity, 0)
+    ]
+    if movements:
+        detail = ", ".join(f"{sev} {before} -> {after}" for sev, before, after in movements)
+        decisive, before, after = movements[0]
         if after > before:
-            delta.worse.append(f"Sigma {severity}: {before} -> {after}")
-        elif after < before:
-            delta.better.append(f"Sigma {severity}: {before} -> {after}")
+            delta.worse.append(
+                f"Sigma {decisive} rose ({before} -> {after}), the most severe bucket that moved: "
+                f"{detail}"
+            )
+        else:
+            delta.better.append(
+                f"Sigma {decisive} fell ({before} -> {after}), the most severe bucket that moved: "
+                f"{detail}"
+            )
     if baseline.sigma == candidate.sigma:
         delta.same.append(
             f"Sigma unchanged ({baseline.sigma_total} rules: "

@@ -148,6 +148,46 @@ def test_severity_is_compared_per_bucket_and_not_in_total() -> None:
     assert any("high" in row for row in delta.worse)
 
 
+def test_trading_a_high_for_several_lows_is_the_improvement_the_comment_claims() -> None:
+    """The stated intent, finally enforced.
+
+    Reporting each bucket independently cannot express a trade: it moves two buckets in opposite
+    directions, so it landed in `worse` and in `better` at once and exit_code answered `worse`.
+    A run that swapped the single high rule for three extra low ones was therefore rejected while
+    the comment beside it called that exact swap an improvement.
+    """
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 0, "medium": 11, "low": 8}
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.exit_code() == 0, f"a high rule traded for lows was rejected: {delta.worse}"
+    assert any("high" in row for row in delta.better)
+    # The lower buckets are still reported; they just do not decide.
+    assert any("low" in row for row in delta.better)
+
+
+def test_a_low_traded_for_a_high_is_still_a_regression() -> None:
+    """The reverse of the trade above, which a total would have called an improvement."""
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 2, "medium": 11, "low": 0}
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.exit_code() == 2
+    assert any("high" in row for row in delta.worse)
+
+
+def test_a_baseline_with_no_engine_verdicts_is_void_like_the_candidate() -> None:
+    """The guard existed on one side only.
+
+    A baseline hash VirusTotal knows but has never analysed carries no engines, no Sigma and no
+    YARA. Compared against a real candidate, every finding reads as newly introduced, so the run
+    exited 2 and named a list of regressions while having compared against nothing at all.
+    """
+    empty = {"data": {"attributes": {"size": 1, "last_analysis_stats": {}, "last_analysis_results": {}}}}
+    baseline = _snap(empty, "baseline", "a" * 64)
+    delta = vtd.compare(baseline, _snap(copy.deepcopy(vtd._BASELINE_FIXTURE)))
+    assert delta.exit_code() == 3, "an unanalysed baseline was compared against instead of voiding"
+    assert not delta.worse, f"it reported regressions against an empty baseline: {delta.worse}"
+
+
 # ---------------------------------------------------------------------------
 # It must recognise an improvement without overstating it
 # ---------------------------------------------------------------------------
