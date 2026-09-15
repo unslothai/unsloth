@@ -2350,9 +2350,9 @@ export function ImagesPage({
   }, [resolvedKey]);
 
   const bakedLorasFor = useCallback(
-    (repoId: string): LoraSpecInput[] => {
+    (repoId: string, preserveSelection = false): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
-      if (!sameTarget) return [];
+      if (!sameTarget && !preserveSelection) return [];
       return loras
         .map((l) => ({ id: l.id.trim(), weight: l.weight }))
         .filter((l) => l.id && l.weight > 0);
@@ -2362,8 +2362,8 @@ export function ImagesPage({
 
   // One snapshot of every Advanced control a load sends, so a staged pick can pin the values it planned against.
   const currentLoadAdvanced = useCallback(
-    (repoId: string): LoadAdvanced => {
-      const baked = bakedLorasFor(repoId);
+    (repoId: string, preserveSelection = false): LoadAdvanced => {
+      const baked = bakedLorasFor(repoId, preserveSelection);
       return {
         cpu_offload: cpuOffload,
         speed_mode: speedMode === "auto" ? undefined : speedMode,
@@ -3413,13 +3413,15 @@ export function ImagesPage({
       load: loadSeq.current + 1,
       workflow,
     };
-    const started = await handleLoad(rememberedModel.repoId, {
-      kind: rememberedModel.kind,
-      filename: rememberedModel.filename,
-    });
+    const started = await handleLoad(
+      rememberedModel.repoId,
+      { kind: rememberedModel.kind, filename: rememberedModel.filename },
+      currentLoadAdvanced(rememberedModel.repoId, true),
+    );
     if (!started) pendingRecalledGeneration.current = null;
   }, [
     busy,
+    currentLoadAdvanced,
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
