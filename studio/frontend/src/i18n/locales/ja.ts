@@ -1012,6 +1012,13 @@ export const ja = {
         minimal: "ミニマル",
       },
       custom: {
+        chatWidth: {
+          label: "チャットの幅",
+          description: "メッセージと入力欄の幅を設定します。全幅ではサイドバーの間のスペースを使います。",
+          standard: "標準",
+          wide: "広い",
+          full: "全幅",
+        },
         reset: "リセット",
         resetAll: "カスタマイズをリセット",
         preferencesTitle: "環境設定",
@@ -1059,6 +1066,10 @@ export const ja = {
           errorLimit: "インポートできるフォントは最大 3 つです。",
           errorStorageFull: "ローカルストレージの空き容量が足りません。先にインポート済みフォントを削除してください。",
           errorFailed: "このフォントファイルを読み込めませんでした。",
+        },
+        interfaceScale: {
+          label: "インターフェースの表示倍率",
+          description: "すべてのインターフェース要素のサイズを変更します。",
         },
         uiFontSize: {
           label: "UI フォントサイズ",

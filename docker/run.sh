@@ -5,7 +5,8 @@
 #   --ipc=host           ample /dev/shm; the default 64MB crashes DataLoader workers
 #   --ulimit memlock=-1  unlimited pinned memory (else multi-GPU training stalls)
 #   --ulimit stack=64MB  larger libtorch thread stack (some kernels OOM the 8MB default)
-# Plus mounts the host HF + Triton caches so downloads and kernels persist.
+# Plus mounts the host HF + Triton caches so downloads and kernels persist, and the
+# LM Studio, Ollama and Hermes model folders it finds, read-only, so Studio lists them.
 #
 # With no command the image's own CMD runs, which on unsloth/unsloth:latest is the
 # Studio (8000) + JupyterLab (8888) launcher, not a REPL. $PWD is at /workspace/host.
@@ -34,6 +35,10 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_LMSTUDIO_DIR=<detected>         host LM Studio models dir, "none" to skip
+#   UNSLOTH_OLLAMA_DIR=<detected>           host Ollama models dir, "none" to skip
+#   UNSLOTH_HERMES_DIR=<detected>           host Hermes models dir, "none" to skip
+#   UNSLOTH_MODELS_DIR=                     host dir of GGUFs/model folders for Studio
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
@@ -127,6 +132,77 @@ if [ -n "$STUDIO_VOLUME" ]; then
 fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
+
+first_dir() {
+    local dir
+    for dir in "$@"; do
+        if [[ -n "$dir" && -d "$dir" ]]; then
+            printf '%s' "$dir"
+            return 0
+        fi
+    done
+}
+
+# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
+host_path() {
+    local path="$1"
+    case "$path" in
+        # backslash, not quotes: a quoted ~ reads to shellcheck as a literal tilde
+        # that will never expand (SC2088), and an unquoted one would be expanded
+        # in the pattern itself. Escaped, it matches the literal character.
+        \~ | \~/*) path="$HOME${path:1}" ;;
+        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
+    esac
+    printf '%s' "$path"
+}
+
+lmstudio_dir() {
+    local settings="$HOME/.lmstudio/settings.json" custom=""
+    local re='"downloadsFolder"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    if [[ -f "$settings" && "$(<"$settings")" =~ $re ]]; then
+        # JSON doubles any backslash in the path
+        custom="$(printf '%s' "${BASH_REMATCH[1]}" | sed 's/\\\\/\\/g')"
+        custom="$(host_path "$custom")"
+    fi
+    first_dir "$custom" "$HOME/.lmstudio/models" "$HOME/.cache/lm-studio/models"
+}
+
+# Mirrors Studio's _hermes_root: a HERMES_HOME outside ~/.hermes is the root, or
+# <root>/profiles/<name> for a profile; downloads land in <root>/models.
+hermes_dir() {
+    local native="$HOME/.hermes" root
+    root="$(host_path "${HERMES_HOME:-}")"
+    root="${root%/}"
+    if [[ -z "$root" || "$root" == "$native" || "$root" == "$native"/* ]]; then
+        root="$native"
+    elif [[ "${root%/*}" == */profiles ]]; then
+        root="${root%/profiles/*}"
+    fi
+    first_dir "$root/models" "$native/models"
+}
+
+ollama_dir() {
+    first_dir "$(host_path "${OLLAMA_MODELS:-}")" "$HOME/.ollama/models" \
+        /usr/share/ollama/.ollama/models /var/lib/ollama/.ollama/models
+}
+
+declare -a MODEL_MOUNTS=()
+mount_models() {
+    local name="$1" dir="$2" target="$3"
+    [[ -z "$dir" || "$dir" == none ]] && return 0
+    if [[ ! -d "$dir" ]]; then
+        printf "\033[1;33mWARN:\033[0m %s models folder %s does not exist; not mounting it.\n" "$name" "$dir" >&2
+        return 0
+    fi
+    [[ "$dir" == /* ]] || dir="$PWD/$dir"
+    MODEL_MOUNTS+=(-v "$dir:$target:ro")
+    printf "Mounting %s models from %s (read-only)\n" "$name" "$dir" >&2
+}
+
+mount_models "LM Studio" "${UNSLOTH_LMSTUDIO_DIR:-$(lmstudio_dir)}" /root/.lmstudio/models
+mount_models Ollama "${UNSLOTH_OLLAMA_DIR:-$(ollama_dir)}" /root/.ollama/models
+mount_models Hermes "${UNSLOTH_HERMES_DIR:-$(hermes_dir)}" /root/.hermes/models
+mount_models local "${UNSLOTH_MODELS_DIR:-}" /workspace/models
 
 # Docker resolves --gpus in the DAEMON, before the container exists: on a host with
 # no NVIDIA GPU it dies with "failed to discover GPU vendor from CDI: no known GPU
@@ -244,6 +320,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
+    ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

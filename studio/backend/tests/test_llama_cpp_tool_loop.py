@@ -6304,6 +6304,27 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("wanted", [True, False])
+def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monkeypatch, wanted):
+    """Verbose alone would attach the whole prompt, so it travels with the narrowing."""
+    final = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    final["__verbose"] = {"id_slot": 3}
+    stream = [_sse({"content": "done"}), "data: " + json.dumps(final) + "\n", _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
+    seen = []
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hi"}],
+        _render_html_tools(),
+        on_decode_slot = (lambda url, slot: seen.append((url, slot))) if wanted else None,
+    )
+
+    assert seen == ([(backend.base_url, 3)] if wanted else [])
+    assert payloads[0].get("verbose") is (True if wanted else None)
+    assert payloads[0].get("response_fields") == (["id_slot"] if wanted else None)
+
+
 @pytest.mark.parametrize(
     "held",
     [
@@ -6576,3 +6597,44 @@ def test_structured_every_independent_edit_keeps_its_verification(monkeypatch):
         ["v1", "Edited a.txt", "v2", "Edited b.txt", "v3"],
     )
     assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeypatch):
+    data = {
+        "type": "object",
+        "properties": {
+            "view_url": {"type": "string"},
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+        },
+        "required": ["view_url"],
+    }
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "mcp__notion__query",
+            "parameters": {"type": "object", "properties": {"data": data}, "required": ["data"]},
+        },
+    }
+    arguments = {"data": {"view_url": "u", "page_size": "1", "start_cursor": "c"}}
+    stream = [
+        _tool_call_sse("mcp__notion__query", arguments, "call_a"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
+    calls = _record_tool_calls(monkeypatch, "row 2")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "next page"}],
+        [tool],
+        max_tool_iterations = 2,
+    )
+
+    wire = payloads[0]["tools"][0]["function"]["parameters"]["properties"]["data"]
+    assert wire == {**data, "anyOf": [{"type": "object", "additionalProperties": True}]}
+    assert calls == [
+        ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
+    ]
