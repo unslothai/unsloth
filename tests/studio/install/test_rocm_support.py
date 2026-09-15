@@ -96,9 +96,8 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 def _gpu_record_helpers(source: str) -> str:
     """install.sh's per-device GPU helpers, for injecting into a probe block.
 
-    Every helper the extracted block calls has to be here. A missing one is not a loud
-    failure: the block's `|| true` swallows the command-not-found and the assertion then
-    runs against an empty architecture list, so the test passes for the wrong reason.
+    A missing one fails silently: `|| true` swallows the command-not-found and the
+    assertion runs against an empty arch list, so the test passes for the wrong reason.
     """
     return "\n".join(
         _extract_sh_function_body(source, name)
@@ -1874,10 +1873,9 @@ class TestGfx906LegacyReroute:
         assert 'setdefault("UNSLOTH_COMPILE_DISABLE", "1")' in gate_body
 
 
-# The generic-wheel floor is PER ARCH, measured from the rocBLAS / hipBLASLt Tensile
-# library names inside the published wheels: rocm6.3 is the first family carrying
-# gfx1102, gfx1200 and gfx1201, so gfx1102 floors at 6.3. gfx1200/gfx1201 floor at 6.4
-# to match _GENERIC_WHEEL_GFX_MIN_ROCM and AMD's production matrix.
+# The floor is PER ARCH, from the Tensile library names in the published wheels: rocm6.3 is
+# the first family carrying gfx1102/gfx1200/gfx1201, so gfx1102 floors at 6.3; gfx1200 and
+# gfx1201 floor at 6.4 to match _GENERIC_WHEEL_GFX_MIN_ROCM and AMD's production matrix.
 _GFX_FLOOR_TAG = {"gfx1102": "rocm6.3", "gfx1200": "rocm6.4", "gfx1201": "rocm6.4"}
 
 
@@ -1918,15 +1916,11 @@ class TestGfx1102Rocm64Floor:
             patch.object(m, "pip_install_try", return_value = True),
             patch.object(m, "_has_usable_nvidia_gpu", return_value = False),
             patch.object(m, "_has_rocm_gpu", return_value = True),
-            # The scenarios below install GENERIC pytorch.org wheels (2.8.0+rocm6.4 and
-            # friends), which do not pull `rocm[libraries]`, so the per-arch family is
-            # None by construction. Left unpatched these two read the RUNNING
-            # interpreter's torch instead of the scenario: on a gfx1151 Strix Halo
-            # runner whose venv holds 2.11.0+rocm7.13.0 they answered "gfx1151", the
-            # per-arch repick arm saw _have != _want and called pip_install, and the two
-            # assert_not_called tests failed on hardware while passing on every CUDA or
-            # CPU box. A test about the generic-wheel floor must not depend on what the
-            # machine running it happens to have installed.
+            # These scenarios install GENERIC pytorch.org wheels, which do not pull
+            # `rocm[libraries]`, so the per-arch family is None by construction. Left
+            # unpatched these read the RUNNING interpreter's torch instead: on a gfx1151
+            # Strix Halo runner holding 2.11.0+rocm7.13.0 the per-arch repick arm called
+            # pip_install, failing the assert_not_called tests on hardware only.
             patch.object(m, "_torch_requires_rocm_sdk", return_value = False),
             patch.object(m, "_installed_rocm_wheel_family", return_value = None),
             patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
@@ -1941,10 +1935,8 @@ class TestGfx1102Rocm64Floor:
     def test_the_shared_kernel_table_knows_gfx1102(self):
         """The rocm6.0, rocm6.1 and rocm6.2 wheels carry no gfx1102 Tensile library.
 
-        Read from the rocBLAS / hipBLASLt library names inside the published wheels:
-        rocm6.3 is the first family that carries gfx1102 (and gfx1200 / gfx1201).
-        Without an entry here _generic_tag_lacks_kernels reads "support unknown" and
-        leaves an RX 7600 on a wheel it cannot run.
+        rocm6.3 is the first family that carries it. Without an entry here
+        _generic_tag_lacks_kernels reads "support unknown" and leaves an RX 7600 stranded.
         """
         assert stack_mod._GENERIC_WHEEL_GFX_MIN_ROCM["gfx1102"] == (6, 3)
         assert stack_mod._generic_tag_lacks_kernels("gfx1102", (6, 0)) is True
@@ -1980,9 +1972,8 @@ class TestGfx1102Rocm64Floor:
     ):
         """A resolved Debian rocm6.1 host cannot install a kernel-less generic wheel.
 
-        The existing per-arch route answers this once the arch has a floor entry, and
-        it is the better answer than a newer generic family: repo.amd.com ships wheels
-        built for exactly this arch.
+        The per-arch route beats a newer generic family: repo.amd.com ships wheels built
+        for exactly this arch.
         """
         torch_call = str(self._ensure_for_gfx(gfx, monkeypatch).call_args_list[0])
         assert index in torch_call
@@ -2025,11 +2016,10 @@ class TestGfx1102Rocm64Floor:
         pip.assert_not_called()
 
     def test_install_sh_floors_resolved_rocm61_by_runtime_gfx(self):
-        """Exercise install.sh's existing generic-routing block with a resolved leaf.
+        """Exercise install.sh's generic-routing block with a resolved leaf.
 
-        This models the Debian split detector handing the already-resolved rocm6.1
-        leaf to architecture routing: gfx1100 stays there, while gfx1102/RDNA4
-        move to the wheel family that ships their kernels.
+        The Debian split detector hands the resolved rocm6.1 leaf to arch routing:
+        gfx1100 stays, gfx1102/RDNA4 move to the family that ships their kernels.
         """
         shell = shutil.which("bash")
         if not shell:
@@ -2152,12 +2142,9 @@ class TestGfx1102Rocm64Floor:
     def _amd_smi_stub(*arches, hip_ids = None):
         """An amd-smi that answers `list -e` separately from the ASIC listing.
 
-        A stub that returns the ASIC text for every argv has no HIP_ID map, and the
-        routing block then refuses to apply an ordinal to unlike adapters it only knows
-        in discovery order. That refusal is correct, but it makes the caller's leaf the
-        default one, so a test expecting the default passes without exercising anything
-        it names. Default `hip_ids` is the identity, i.e. HIP order == discovery order,
-        which is what these callers assume when they index the listing directly.
+        Without a HIP_ID map the routing block declines to index unlike adapters, so a
+        test expecting the default leaf passes without exercising anything it names.
+        Default `hip_ids` is the identity: HIP order == discovery order.
         """
         asic = "\\n".join(
             line
@@ -2234,10 +2221,8 @@ class TestGfx1102Rocm64Floor:
     def test_install_sh_declines_an_ordinal_when_amd_smi_gives_no_hip_map(self):
         """Without `list -e` there is no HIP order, so an ordinal names no known device.
 
-        The companion to the two above: same unlike adapters, same mask, but the map is
-        withheld. Routing has to decline and leave the caller's leaf alone rather than
-        index a discovery-ordered list. This is the case those tests were silently
-        landing in before the stub learned to answer `list -e`.
+        Same adapters and mask as the two above, map withheld: routing must decline and
+        leave the caller's leaf alone rather than index a discovery-ordered list.
         """
         preamble = (
             "rocminfo() { return 1; }\n"
@@ -2268,15 +2253,13 @@ class TestGfx1102Rocm64Floor:
     @pytest.mark.parametrize(
         ("gfx", "leaf", "expected_radeon"),
         (
-            # The floor picks an index that ships this arch's kernels, so the Radeon
-            # branch must not substitute repo.radeon.com wheels for it: rocm-rel-6.4's
-            # newest pairing trio (torch 2.6.0+rocm6.4.0) has no gfx1102 Tensile
-            # libraries, and rocm-rel-7.2 carries neither gfx1102 nor gfx1100.
+            # The Radeon branch must not substitute repo.radeon.com wheels for the floor
+            # index: rocm-rel-6.4's newest trio (torch 2.6.0+rocm6.4.0) has no gfx1102
+            # Tensile libraries, and rocm-rel-7.2 carries neither gfx1102 nor gfx1100.
             ("gfx1102", "rocm6.1", "false"),
             ("gfx1200", "rocm6.1", "false"),
             ("gfx1201", "rocm6.1", "false"),
-            # Cleared even when the leaf already satisfies the floor and the reroute
-            # is a no-op, exactly as the gfx906 branch below does.
+            # Cleared even when the leaf satisfies the floor and the reroute is a no-op.
             ("gfx1102", "rocm6.4", "false"),
             ("gfx1102", "rocm7.2", "false"),
             # Every other Radeon keeps the branch.
@@ -2351,8 +2334,7 @@ class TestGfx1102Rocm64Floor:
             ("2.7.0+rocm6.3", "6.3.42131", "true", (6, 4), True),
             ("2.8.0+rocm6.4", "6.4.43482", "true", (6, 4), False),
             ("2.11.0+rocm7.13.0", "7.13.0", "true", (6, 4), False),
-            # gfx1102 floors at 6.3, so a 6.3 wheel already has its kernels and the
-            # repair must leave it alone rather than reinstall an equivalent build.
+            # gfx1102 floors at 6.3, so a 6.3 wheel already has its kernels.
             ("2.5.1+rocm6.1", "6.1.40093", "true", (6, 3), True),
             ("2.7.0+rocm6.3", "6.3.42131", "true", (6, 3), False),
             ("2.8.0+rocm6.4", "6.4.43482", "true", (6, 3), False),
@@ -6714,9 +6696,9 @@ class TestStrixRocm71Override:
         )
         assert block, "could not extract the gfx-detection block"
         with tempfile.TemporaryDirectory() as d:
-            # rocminfo emits no gfx token; amd-smi supplies gfx1151 (the fallback).
-            # `list` carries no arch on a real host, so `static --asic` is the one
-            # that answers -- the shim keeps the subcommands distinct to prove it.
+            # rocminfo emits no gfx token; amd-smi supplies gfx1151. `list` carries no arch
+            # on a real host, so the shim keeps the subcommands distinct to prove that
+            # `static --asic` is the one that answers.
             amd_smi = (
                 '#!/bin/sh\ncase "$1" in\n'
                 '  list) printf "GPU: 0\\n    BDF: 0000:03:00.0\\n" ;;\n'

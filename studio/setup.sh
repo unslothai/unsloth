@@ -2768,8 +2768,7 @@ _setup_rocminfo_gpu_records() {
 # Keep in sync with install.sh.
 _setup_amd_smi_hip_order() {
     # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
-    # on stdin ahead of the map, sentinel-separated. Line 1 reports the index space: a mask
-    # cannot be applied to an untranslated list of unlike adapters.
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -2786,8 +2785,7 @@ _setup_amd_smi_hip_order() {
             next
         }
         END {
-            # All or nothing, like get_hip_id_by_gpu_index: -e may be rejected and hip_id may
-            # read N/A, and a partial or colliding map is not 1:1, so keep discovery order.
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
             if (r == 0 || n != r) { keep(); exit }
             for (i = 1; i <= n; i++) {
                 if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
@@ -2816,10 +2814,9 @@ _setup_amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys); matched
-        # case-folded so older spellings work. Two header shapes: `GPU: 0` opens a keyed block
-        # with the arch later, while `GPU[0] : gfx1100` IS the record. Matching only the first
-        # answered no arch at all on an amd-smi-only host.
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
         /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
             flush(); started = 1
             if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)

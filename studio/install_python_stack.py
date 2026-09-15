@@ -2741,11 +2741,10 @@ _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
     "gfx950": (7, 0),
     "gfx1150": (7, 0),
     "gfx1151": (7, 0),
-    # gfx1102 (Navi 33 / RX 7600). Read from the rocBLAS and hipBLASLt Tensile library names
-    # inside every cp312 wheel each leaf publishes: rocm6.0 carries gfx1030 + gfx1100, rocm6.1
-    # adds gfx1101, rocm6.2 is back to gfx1030 + gfx1100, and rocm6.3 is the first with
-    # gfx1102 (and with gfx1200 / gfx1201). Without an entry here the tag check reads
-    # "support unknown" and leaves an RX 7600 on a wheel that has no kernels for it.
+    # gfx1102 (Navi 33 / RX 7600): rocm6.3 is the first family whose rocBLAS / hipBLASLt
+    # Tensile libraries carry it (rocm6.0-6.2 stop at gfx1030/gfx1100/gfx1101). Without an
+    # entry here the tag check reads "support unknown" and leaves an RX 7600 on a wheel that
+    # has no kernels for it.
     "gfx1102": (6, 3),
     "gfx1200": (6, 4),
     "gfx1201": (6, 4),

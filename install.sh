@@ -3541,7 +3541,7 @@ _kfd_gfx_targets() {
     return 0
 }
 
-# Pair each rocminfo GPU gfx id with its marketing name instead of using the CPU-first global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback. Keep in sync with studio/setup.sh.
+# Pair each rocminfo GPU gfx id with its marketing name, not the CPU-first global name (#7307). Blank names keep device ordinals; no GPU keeps the old fallback. Keep in sync with studio/setup.sh.
 _rocminfo_gpu_records() {
     awk '
         # Split at the first colon so embedded colons survive.
@@ -3578,8 +3578,7 @@ _rocminfo_gpu_records() {
 
 _amd_smi_hip_order() {
     # POSIX awk forbids a newline in a -v value (fatal under gawk --posix), so records arrive
-    # on stdin ahead of the map, sentinel-separated. Line 1 reports the index space: a mask
-    # cannot be applied to an untranslated list of unlike adapters.
+    # on stdin before the map, sentinel-separated. Line 1 names the index space.
     { printf '%s\n' "$1"; echo "@@hip-map@@"; cat; } | awk '
         function value(line,   v) {
             v = line
@@ -3596,8 +3595,7 @@ _amd_smi_hip_order() {
             next
         }
         END {
-            # All or nothing, like get_hip_id_by_gpu_index: -e may be rejected and hip_id may
-            # read N/A, and a partial or colliding map is not 1:1, so keep discovery order.
+            # All or nothing, like get_hip_id_by_gpu_index: a partial or colliding map is not 1:1.
             if (r == 0 || n != r) { keep(); exit }
             for (i = 1; i <= n; i++) {
                 if (hip[i] < 0 || hip[i] >= r || (hip[i] in used)) { keep(); exit }
@@ -3610,11 +3608,10 @@ _amd_smi_hip_order() {
     '
 }
 
-# amd-smi enumerates in discovery order over its KFD view, while HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES index HIP/ROCr order, which the library derives from the KFD node id instead. The two disagree on real hardware (MI350X SPX/NPS1), and _gfx here becomes --rocm-gfx, so an untranslated ordinal can fetch a prebuilt for another card's arch. `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+); utils/hardware/amd.py get_hip_id_by_gpu_index reads the same field. Keep in sync with studio/setup.sh.
+# amd-smi enumerates in KFD discovery order while HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES index HIP/ROCr order, and the two disagree on real hardware (MI350X SPX/NPS1), so an untranslated ordinal here can fetch a prebuilt for another card's arch. `amd-smi list -e` is the map AMD publishes for this (HIP_ID, ROCm 6.4.0+), the same field utils/hardware/amd.py get_hip_id_by_gpu_index reads. Keep in sync with studio/setup.sh.
 # `gfx|marketing name` records to one arch per adapter, ordinals intact. An unreadable arch
-# keeps its slot as `unknown` (dropping it would shift every later device under a mask, and
-# `unknown` matches no policy). Prints nothing when NO adapter has an arch, so the caller
-# falls through to the next probe.
+# keeps its slot as `unknown`: dropping it would shift every later device under a mask.
+# Prints nothing when NO adapter has an arch, so the caller falls through to the next probe.
 _gfx_arch_slots() {
     awk -F'|' '
         NF { rec[n++] = $1; if ($1 != "") any = 1 }
@@ -3638,10 +3635,9 @@ _amd_smi_gpu_records() {
             if (started) print gfx "|" mkt
             gfx = ""; mkt = ""
         }
-        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys); matched
-        # case-folded so older spellings work. Two header shapes: `GPU: 0` opens a keyed block
-        # with the arch later, while `GPU[0] : gfx1100` IS the record. Matching only the first
-        # answered no arch at all on an amd-smi-only host.
+        # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys), so match
+        # case-folded. Two header shapes: `GPU: 0` opens a keyed block with the arch later,
+        # `GPU[0] : gfx1100` IS the record. Matching only the first answered no arch at all.
         /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
             flush(); started = 1
             if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
@@ -4730,8 +4726,7 @@ case "$_torch_index_leaf" in
 esac
 
 _amd_gpu_radeon=false
-# Set when the runtime GPU has a generic-wheel floor at all, rerouted or not, with the floor
-# beside it: it is per arch, and the migrated-venv repair below must use the same number.
+# Set when the runtime GPU has a generic-wheel floor, rerouted or not; the floor is per arch and the migrated-venv repair below must reuse the same number.
 _gfx_rocm64_target=false
 _gfx_rocm64_floor_maj=""
 _gfx_rocm64_floor_min=""
@@ -4765,23 +4760,21 @@ _venv_torch_rocm_below() {
 # gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/, which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167, and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks them, and the Radeon repo can be offline (#7264), so reroute a detected Strix GPU whenever the picked index is older than the arch build; rocm7.13+ already has the fixes.
 case "$_torch_index_leaf" in
     rocm[0-9]*)
-        # Re-declared: tests/studio/install/test_rocm_support.py lifts this arm out whole, and
-        # under `set -u` a block depending on an outside initialiser aborts rather than routes.
+        # Re-declared because test_rocm_support.py lifts this arm out whole: under `set -u` an outside initialiser would abort it instead of routing.
         _gfx_rocm64_target=false
         _gfx_rocm64_floor_maj=""
         _gfx_rocm64_floor_min=""
-        # One record per adapter in rocminfo / amd-smi enumeration order, then index that by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the mask selects a CARD. A deduplicated arch list could not: a mixed gfx1100 + gfx1100 + gfx1200 box ran off the end of a two-entry list, and a mixed Strix iGPU + non-Strix dGPU box where the user selected the dGPU got rerouted to the Strix per-gfx index anyway. `|| true` on each probe: a probe that finds nothing must not abort the installer under set -euo pipefail before the next fallback runs. A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing, mirroring setup.sh and the display block.
+        # One record per adapter in probe enumeration order, indexed by HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES so the mask selects a CARD. A deduplicated arch list could not: gfx1100 + gfx1100 + gfx1200 ran off the end of a two-entry list, and a Strix iGPU + dGPU box rerouted the selected dGPU to the Strix per-gfx index. `|| true` on each probe so one that finds nothing does not abort the installer under set -euo pipefail before the next fallback. UNSLOTH_ROCM_GFX_ARCH overrides probing, mirroring setup.sh and the display block.
         _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
         _gfx_all=${_gfx_all%%:*}
         # which probe answered: only rocminfo is filtered by an rocr mask, so only it can pre-apply one
         _gfx_probe=""
-        # Which index space _gfx_all is in. amd-smi enumerates in discovery order, which is not HIP order on a mixed host, so an ordinal cannot be applied to it until it has been translated. `hip` once _amd_smi_hip_order has done that, or straight away for rocminfo and for an explicit UNSLOTH_ROCM_GFX_ARCH, which names one arch outright.
+        # Which index space _gfx_all is in: `hip` for rocminfo and for an explicit UNSLOTH_ROCM_GFX_ARCH, which names one arch outright, and for amd-smi only once _amd_smi_hip_order has translated its discovery order.
         _gfx_space=hip
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
             _gfx_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_records | _gfx_arch_slots || true)
-            # rocminfo is an ROCr client, so it enumerates in the order HIP numbers from. The
-            # mask handling below already runs on that premise; not a new claim.
+            # rocminfo is an ROCr client, so it enumerates in the order HIP numbers from.
             [ -n "$_gfx_all" ] && { _gfx_probe=rocminfo; _gfx_space=hip; }
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
@@ -4790,7 +4783,7 @@ case "$_torch_index_leaf" in
             [ -z "$_gfx_records" ] && \
                 _gfx_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true)
             if [ -n "$_gfx_records" ]; then
-                # Same translation the GPU summary below does, for the same reason: HIP_ID from `amd-smi list -e` maps discovery order onto the order HIP numbers. The first output line reports which space came back.
+                # HIP_ID from `amd-smi list -e` maps discovery order onto the order HIP numbers, as the GPU summary below does. The first output line reports which space came back.
                 _gfx_smi_out=$(amd-smi list -e 2>/dev/null | _amd_smi_hip_order "$_gfx_records" || true)
                 _gfx_space=$(printf '%s\n' "$_gfx_smi_out" | head -n 1)
                 _gfx_records=$(printf '%s\n' "$_gfx_smi_out" | tail -n +2)
@@ -4808,8 +4801,7 @@ case "$_torch_index_leaf" in
                 _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
                 [ -z "$_gfx_all" ] && \
                     _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _amd_smi_gpu_records | _gfx_arch_slots || true)
-                # Left in discovery space: the single-GPU box this rescue is for has one arch
-                # and routes normally, while a mixed one declines below rather than guess.
+                # Left in discovery space: the single-GPU box this rescue is for routes normally, a mixed one declines below.
                 [ -n "$_gfx_all" ] && _gfx_space=discovery
             fi
         fi
@@ -4822,11 +4814,9 @@ case "$_torch_index_leaf" in
         fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
-            # first-set-wins, mirroring _pick_visible_index in studio/install_python_stack.py.
-            # rocminfo output is ALREADY ROCr-filtered, so indexing it by
-            # ROCR again applies one layer twice and shadows CUDA (the HIP alias) that should
-            # pick among the survivors: ROCR=2,1 + CUDA=1 means the SECOND survivor.
-            # Mirrors _HIP_LAYER_MASKS in studio/install_python_stack.py.
+            # first-set-wins, mirroring _pick_visible_index (and _HIP_LAYER_MASKS) in
+            # studio/install_python_stack.py. rocminfo output is ALREADY ROCr-filtered, so
+            # indexing by ROCR again shadows CUDA, its HIP alias: ROCR=2,1 + CUDA=1 is survivor 2.
             if [ "$_gfx_probe" = rocminfo ]; then
                 _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
             else
@@ -4856,9 +4846,8 @@ case "$_torch_index_leaf" in
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
                 }')
-            # No HIP_ID map and unlike adapters: these are in amd-smi discovery order, so no
-            # ordinal names a known device and routing would install wheels for a card the
-            # runtime will not use. Alike adapters are unaffected, every ordinal agrees.
+            # No HIP_ID map and unlike adapters: in amd-smi discovery order no ordinal names a
+            # known device, so routing would install wheels for a card the runtime will not use.
             if [ "$_gfx_space" != hip ] && \
                [ "$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" -gt 1 ]; then
                 echo "" >&2
@@ -4907,10 +4896,9 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
         fi
-        # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) predate the older generic
-        # wheel families, which carry no kernels for them. The floor is per arch,
-        # not one number, from the rocBLAS and hipBLASLt Tensile library names
-        # inside every cp312 wheel each leaf publishes:
+        # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) have no kernels in the
+        # older generic wheel families. The floor is per arch, read from the
+        # rocBLAS and hipBLASLt Tensile library names in each leaf's cp312 wheels:
         #
         #   rocm6.0 (2.3.1-2.4.1) gfx1030 gfx1100
         #   rocm6.1 (2.5.0-2.6.0) gfx1030 gfx1100 gfx1101
@@ -4918,33 +4906,26 @@ case "$_torch_index_leaf" in
         #   rocm6.3 (2.7.0-2.9.1) gfx1030 gfx1100 gfx1101 gfx1102 gfx1200 gfx1201
         #   rocm6.4 (2.8.0-2.9.1) same set
         #
-        # So rocm6.3 already carries all three. gfx1102 takes that as its floor.
-        # gfx1200/gfx1201 keep 6.4, matching _GENERIC_WHEEL_GFX_MIN_ROCM in
-        # studio/install_python_stack.py and AMD's own matrix, which puts
-        # production RDNA 4 at ROCm 6.4 rather than at the first wheel that
-        # happens to contain the kernels. Keep the two tables in step.
+        # gfx1102 floors at 6.3. gfx1200/gfx1201 keep 6.4, matching
+        # _GENERIC_WHEEL_GFX_MIN_ROCM in studio/install_python_stack.py (keep the
+        # two tables in step) and AMD's matrix, which puts production RDNA 4 at 6.4.
         #
-        # This is deliberately beside the existing gfx906 policy, rather than
-        # inside the runtime-less */cpu reroute, because a valid host ROCm
-        # reading can otherwise select broken rocm6.1 wheels. Explicit
-        # torch-index pins skip this whole architecture-policy block.
+        # Beside the gfx906 policy, not inside the runtime-less */cpu reroute,
+        # because a valid host ROCm reading can otherwise select broken rocm6.1
+        # wheels. Explicit torch-index pins skip this whole block.
         case "$_runtime_gfx" in
             gfx1102)          _gfx_rocm64_floor_maj=6; _gfx_rocm64_floor_min=3 ;;
             gfx1200|gfx1201)  _gfx_rocm64_floor_maj=6; _gfx_rocm64_floor_min=4 ;;
         esac
         if [ -n "$_gfx_rocm64_floor_maj" ]; then
             _gfx_rocm64_target=true
-            # These arches train from the PyTorch generic wheels, never the Radeon
-            # repo, so clear the marketing-name flag exactly as the gfx906 branch
-            # below does -- and for the same reason. repo.radeon.com's newest
-            # pairing trio under rocm-rel-6.4/ is torch 2.6.0+rocm6.4.0, whose
-            # rocBLAS Tensile libraries carry gfx1030/1100/1101/1200/1201/908/942
-            # and no gfx1102 at all; rocm-rel-7.2/ is narrower still (gfx120X-all,
-            # gfx90a, gfx942, gfx950). Leaving the flag set sends the very host this
-            # floor exists for to a wheel with no kernels for its arch, because the
-            # index chosen just above is only the Radeon branch's fallback.
-            # Clear it whenever the arch is the runtime target, even when the leaf
-            # already satisfies the floor and the reroute below is a no-op.
+            # These arches train from the generic wheels, never repo.radeon.com, so
+            # clear the marketing-name flag as the gfx906 branch below does: the
+            # newest rocm-rel-6.4 trio (torch 2.6.0+rocm6.4.0) carries no gfx1102
+            # Tensile library, and rocm-rel-7.2 is narrower still (gfx120X-all,
+            # gfx90a, gfx942, gfx950). Cleared whenever the arch is the runtime
+            # target, even when the leaf already satisfies the floor and the reroute
+            # below is a no-op.
             _amd_gpu_radeon=false
             _gfx_rocm64_tag="rocm${_gfx_rocm64_floor_maj}.${_gfx_rocm64_floor_min}"
             if _rocm_leaf_below "$_torch_index_leaf" "$_gfx_rocm64_floor_maj" "$_gfx_rocm64_floor_min"; then
@@ -5359,9 +5340,8 @@ if [ "$_MIGRATED" = true ]; then
             _install_torch_default_index --force-reinstall
         elif [ "$_gfx_rocm64_target" = true ] && \
              _venv_torch_rocm_below "$_VENV_PY" "$_gfx_rocm64_floor_maj" "$_gfx_rocm64_floor_min"; then
-            # A migrated venv keeps its hip torch, but a wheel below this arch's floor carries no
-            # kernels for it. The SAME floor the reroute used, not a second number: a wheel that
-            # already clears it must not be reinstalled with an equivalent one.
+            # A migrated venv keeps its hip torch, but a wheel below this arch's floor has no
+            # kernels for it. The SAME floor the reroute used, so an adequate wheel is left alone.
             substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
             _install_torch_default_index --force-reinstall
         fi
