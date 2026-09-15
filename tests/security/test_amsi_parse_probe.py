@@ -897,3 +897,35 @@ def test_the_defender_verdict_assigns_causality_per_script() -> None:
     assert (
         "is flagged on the merge base and clean on the candidate" in defender
     ), "a base-only detection is still reported as a neutral clean head"
+
+
+def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
+    """A control that any failure can satisfy is not a control.
+
+    The catch around the EICAR write and scan used to set `$fired = $true` and print that real-time
+    protection blocked the file. A permission or I/O failure under `$RUNNER_TEMP`, or MpCmdRun
+    failing to launch, took that path too, and every candidate result after it was then trusted --
+    so an unavailable scanner reporting no hit, which is the exact condition this control exists to
+    catch, could report clean.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner"):]
+    defender = defender[:defender.index("Upload the measurements")]
+    control = defender[:defender.index("EICAR proves the LOCAL engine scans")]
+    # Every place the control is declared live has to be immediately preceded by an observation,
+    # which here means a Test-Path on the control file rather than the fact that something threw.
+    lines = control.splitlines()
+    for i, line in enumerate(lines):
+        if "$fired = $true" not in line:
+            continue
+        window = "\n".join(lines[max(0, i - 6):i])
+        assert "Test-Path -LiteralPath $controlFile" in window, (
+            "this sets the control live without first observing that the control file is gone:\n"
+            + window + "\n" + line
+        )
+    assert "so this was not a Defender block" in control, (
+        "a failed control write no longer reports itself as something other than a block"
+    )
+    assert "there is no positive control" in control, (
+        "a control scan that cannot be launched no longer says the control did not run"
+    )

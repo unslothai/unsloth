@@ -451,29 +451,55 @@ jobs:
           New-Item -ItemType Directory -Force -Path $controlDir | Out-Null
           $controlFile = Join-Path $controlDir 'control.txt'
           $fired = $false
+          # A control only fires on something OBSERVED. The write and the scan are therefore in
+          # separate try blocks, and neither catch infers a Defender block from the mere fact that
+          # something threw: a permission or I/O failure under $RUNNER_TEMP, or MpCmdRun failing to
+          # launch, would otherwise be reported as live real-time protection and every candidate
+          # result after it trusted. An unavailable scanner reporting no hit is the exact failure
+          # this control exists to catch, so it must not be able to satisfy it.
+          $wrote = $false
           try {
             Set-Content -LiteralPath $controlFile -Encoding ascii -NoNewline -Value (
               'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
-            # -DisableRemediation on the CONTROL too, so it is the same invocation the candidates
-            # get. It is not only about remediation: release-desktop.yml records that the flag makes
-            # the explicit scan ignore file exclusions (:1295, :1440-1442), and the hosted images
-            # this lane describes ship with both drive roots excluded. Without it the control scan
-            # of $RUNNER_TEMP can be skipped entirely, the control reads as silent, and the step
-            # exits without testing candidates whose own scans would have worked.
-            $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile -DisableRemediation 2>&1 | Out-String)
-            $fired = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
-            if (-not $fired -and -not (Test-Path -LiteralPath $controlFile)) {
-              # Quarantined before the scan could open it. Real-time protection is live, which is a
-              # stronger result than the on-demand scan reporting it.
+            $wrote = $true
+          } catch {
+            # The one case where a throw IS the evidence, and it is evidence because the file is
+            # gone afterwards rather than because an exception was raised. Real-time protection
+            # quarantining on write is a stronger result than the on-demand scan reporting it.
+            if (Test-Path -LiteralPath $controlFile) {
+              Write-Host "::warning::could not write the EICAR control and the file is still there, so this was not a Defender block: $($_.Exception.Message)"
+            } else {
               Write-Host 'control: EICAR was quarantined on write; real-time protection is live.'
               $fired = $true
             }
-          } catch {
-            Write-Host 'control: EICAR was blocked on write; real-time protection is live.'
-            $fired = $true
-          } finally {
-            Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
           }
+          if ($wrote -and -not (Test-Path -LiteralPath $controlFile)) {
+            Write-Host 'control: EICAR was quarantined immediately after the write; real-time protection is live.'
+            $fired = $true
+          } elseif ($wrote) {
+            try {
+              # -DisableRemediation on the CONTROL too, so it is the same invocation the candidates
+              # get. It is not only about remediation: release-desktop.yml records that the flag makes
+              # the explicit scan ignore file exclusions (:1295, :1440-1442), and the hosted images
+              # this lane describes ship with both drive roots excluded. Without it the control scan
+              # of $RUNNER_TEMP can be skipped entirely, the control reads as silent, and the step
+              # exits without testing candidates whose own scans would have worked.
+              $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile -DisableRemediation 2>&1 | Out-String)
+              $controlCode = $LASTEXITCODE
+              $fired = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+              if (-not $fired -and -not (Test-Path -LiteralPath $controlFile)) {
+                # Quarantined between the write and the scan opening it. Still an observation.
+                Write-Host 'control: EICAR was quarantined before it could be scanned; real-time protection is live.'
+                $fired = $true
+              } elseif (-not $fired) {
+                Write-Host "::warning::the control scan completed (exit $controlCode) and named no threat, so the file scanner is not detecting EICAR on this runner."
+              }
+            } catch {
+              # A launch failure is a control that did not run. Saying so is the whole point.
+              Write-Host "::warning::the control scan could not be run, so there is no positive control: $($_.Exception.Message)"
+            }
+          }
+          Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
 
           if (-not $fired) {
             Write-Host '::warning::the EICAR positive control did NOT fire, so Defender is not scanning on this runner.'
