@@ -2068,10 +2068,21 @@ _setup_persist_uv_path() {
         _supp_fish="$_supp_fish_dir/unsloth.fish"
         # Single-quoted: an unquoted path with a space is two arguments to fish_add_path.
         _supp_quoted=$(printf '%s' "$_supp_dir" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")
-        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv.
-        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null | grep -qxF "fish_add_path '$_supp_quoted'"; then
+        # fish_add_path PREPENDS, and that ordering outlives the conda activation it was
+        # written under, so from the next shell on this directory sits ahead of the active
+        # conda environment's own entries and conda resolves out of ours (#5871). -a is the
+        # same registration at the back. install.sh and install.ps1 make the same choice.
+        _supp_fish_line="fish_add_path '$_supp_quoted'"
+        if [ -n "${CONDA_PREFIX:-}" ]; then
+            _supp_fish_line="fish_add_path -a '$_supp_quoted'"
+        fi
+        # The exact line, not any occurrence: /opt/uv-old must not pass for /opt/uv. BOTH
+        # spellings count as present, or a run outside conda adds a second line for a
+        # directory a run inside it already registered.
+        if ! grep -v '^[[:space:]]*#' "$_supp_fish" 2>/dev/null \
+            | grep -qxF -e "fish_add_path '$_supp_quoted'" -e "fish_add_path -a '$_supp_quoted'"; then
             echo "# Added by Unsloth setup" >> "$_supp_fish"
-            echo "fish_add_path '$_supp_quoted'" >> "$_supp_fish"
+            echo "$_supp_fish_line" >> "$_supp_fish"
         fi
     fi
     # An entry has to be active, whole and on a line that SETS PATH: a commented-out export,
@@ -2082,6 +2093,14 @@ _setup_persist_uv_path() {
     # Escaped: the line is double-quoted, so a path holding $, ` or " would be expanded or
     # terminated by the shell that reads it.
     _supp_literal=$(printf '%s' "$_supp_dir" | sed 's/[\\"$`]/\\&/g')
+    # A persisted PREPEND jumps ahead of an active conda environment's own entries in every
+    # later shell, and that ordering outlives the activation (#5871). Inside one, write the
+    # same line as an APPEND; the grep below matches either spelling, so a later run does not
+    # add a second line for the same directory.
+    _supp_export_line="export PATH=\"$_supp_literal:\$PATH\""
+    if [ -n "${CONDA_PREFIX:-}" ]; then
+        _supp_export_line="export PATH=\"\$PATH:$_supp_literal\""
+    fi
     # Every startup file astral's installer wired, because it is the installer this replaced:
     # ~/.profile always, each bash file that exists, and zsh under ZDOTDIR. Writing only the
     # file for the shell that happens to be running would leave a bash user whose .bash_profile
@@ -2096,7 +2115,7 @@ _setup_persist_uv_path() {
             | grep -qE "(^|[^[:alnum:]_.~/-])$_supp_grep([^[:alnum:]_.~/-]|\$)"; then continue; fi
         echo '' >> "$_supp_profile"
         echo '# Added by Unsloth setup' >> "$_supp_profile"
-        echo "export PATH=\"$_supp_literal:\$PATH\"" >> "$_supp_profile"
+        echo "$_supp_export_line" >> "$_supp_profile"
     done
 }
 
