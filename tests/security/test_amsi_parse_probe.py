@@ -274,12 +274,10 @@ def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
     # substring search over the raw file matches the explanation and fails. That has now happened
     # three times while writing these guards, which is a good argument for never grepping a file
     # for a string its own prose is obliged to contain.
-    code = "\n".join(
-        line for line in body.splitlines() if not line.strip().startswith("#")
-    )
-    assert ':Zone.Identifier"' not in code, (
-        "the workflow appends a stream name to a path again; use -Stream"
-    )
+    code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+    assert (
+        ':Zone.Identifier"' not in code
+    ), "the workflow appends a stream name to a path again; use -Stream"
     assert "was scanned WITHOUT mark-of-the-web" in body, (
         "a failed stamp is no longer reported. A scan of a MyComputer-zone file is a weaker test "
         "than this lane claims to run, and a reader has to know which one they got."
