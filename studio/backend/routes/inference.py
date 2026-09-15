@@ -1613,12 +1613,12 @@ try:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -1671,12 +1671,12 @@ except ImportError:
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
-        _flash_attn_enabled_from_args,
         _hf_offline_if_unreachable,
         _hf_offline_if_unreachable_for,
         _kv_bytes_per_elem,
         _kv_unified_from_args,
         _metal_device_is_paravirtual,
+        _planned_flash_attn,
         _planned_main_cache_types,
         _planned_scratch_cache_type,
         _swa_full_from_args_or_env,
@@ -10658,7 +10658,6 @@ def _gguf_runtime_bytes(
         # llama-server b10632, Qwen3-0.6B at 32k with -ctk/-ctv q4_0: 2296 MiB reserved
         # against 1008 MiB allocated, identical on the CPU and Vulkan builds.
         planned_v_type = planned_cache_types[1]
-        v_forces_flash_attn = planned_v_type not in {"f16", "bf16", "f32"}
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
         # caps the micro-batch against it, so budget from the emitted value. Diffusion
         # takes neither flag, and SWA metadata prices the KV against the micro-batch,
@@ -10731,25 +10730,19 @@ def _gguf_runtime_bytes(
         # so the default here is ON, not off. The false arm pads variable-width V
         # tensors to the model-wide maximum (_max_kv_value_width), which on an
         # architecture whose global and SWA layers disagree about n_embd_v_gqa
-        # inflates the whole cache and can call a load that fits an overflow. Resolved
-        # the way the launch resolves it: the managed default, narrowed by the
-        # capability probe, then llama.cpp's own env-then-last-wins-argv rule. A
-        # quantized V still forces it on top of all that, because llama-context.cpp
-        # turns it on itself rather than refusing the load.
-        _fa_default = True
+        # inflates the whole cache and can call a load that fits an overflow.
+        # Resolved the way the launch resolves it, narrowed by the capability probe.
+        _fa_supported = True
         try:
             _fa_caps = LlamaCppBackend.probe_server_capabilities()
             # Same ``found`` test as the checkpoint probe above: the defaults dict
             # reports nothing supported, so keying on the flag alone would size every
             # unprobed host as flash-attention-less.
             if _fa_caps.get("found") and not _fa_caps.get("supports_flash_attn", True):
-                _fa_default = False
+                _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = (
-            _flash_attn_enabled_from_args(llama_extra_args, default = _fa_default, env = os.environ)
-            or v_forces_flash_attn
-        )
+        flash_attn = _planned_flash_attn(llama_extra_args, _fa_supported, planned_v_type)
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,

@@ -4659,6 +4659,22 @@ def _flash_attn_enabled_from_args(
     return enabled
 
 
+def _planned_flash_attn(
+    extra_args: Optional[Iterable[str]],
+    supports_flash_attn: bool,
+    v_cache_type: Optional[str] = None,
+) -> bool:
+    """Flash attention as the launch command will resolve it.
+
+    The managed --flash-attn on follows the environment and precedes user extras, so
+    only extras can turn it off. A build without the flag gets neither the flag nor
+    the inherited LLAMA_ARG_FLASH_ATTN. A quantized V cache forces it on."""
+    if not supports_flash_attn:
+        return False
+    enabled = _flash_attn_enabled_from_args(extra_args, default = True, env = {})
+    return enabled or (v_cache_type or "f16").strip().lower() not in {"f16", "bf16", "f32"}
+
+
 def _effective_spec_type(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
@@ -22022,12 +22038,11 @@ class LlamaCppBackend:
                     extra_args,
                 )
                 # Price compute for the launch; KV separately covers the no-flash retry.
-                # Resolve overrides against the build default. Quantized V forces flash on.
-                _launch_flash_attn = _flash_attn_enabled_from_args(
+                _launch_flash_attn = _planned_flash_attn(
                     extra_args,
-                    default = bool(server_caps.get("supports_flash_attn", True)),
-                    env = os.environ,
-                ) or (_planned_cache_pair[1] not in {"f16", "bf16", "f32"})
+                    bool(server_caps.get("supports_flash_attn", True)),
+                    _planned_cache_pair[1],
+                )
                 # A user --split-mode in extras last-wins-overrides the toggle, and
                 # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
                 # would run tensor unbudgeted otherwise). The duplicate-load matchers
