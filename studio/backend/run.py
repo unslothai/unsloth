@@ -1439,6 +1439,13 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping the LAN listener: %s", e)
 
+    try:
+        from core.training.training import _training_backend
+        if _training_backend is not None:
+            _training_backend.stop_for_shutdown()
+    except Exception as e:
+        logger.warning("Error stopping the training run for shutdown: %s", e)
+
     if server is not None:
         server.should_exit = True
 

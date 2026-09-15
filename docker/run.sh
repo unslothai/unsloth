@@ -42,6 +42,9 @@
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
+#   UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=120  how long a training run gets to save a
+#                                           checkpoint on docker stop; --stop-timeout is
+#                                           set 30s above it
 # --rocm only:
 #   UNSLOTH_ROCM=1                          same as a leading --rocm
 #   HSA_OVERRIDE_GFX_VERSION                force a gfx target (e.g. 10.3.0)
@@ -293,9 +296,12 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
 [[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
+[[ -n "${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
+
+STOP_TIMEOUT=$(( ${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120} + 30 ))
 
 declare -a PORT_FLAGS=()
 if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
@@ -314,6 +320,7 @@ fi
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
+    --stop-timeout "$STOP_TIMEOUT" \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     -v "$HF_CACHE":/workspace/.cache/huggingface \

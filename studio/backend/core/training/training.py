@@ -72,6 +72,7 @@ _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 # Generous: is_run_finished already unwedges the UI, and a post-run wandb sync can legitimately take a while.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
+_SHUTDOWN_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S", 120)
 
 # A few short retries so a transient SQLite lock doesn't lose the terminal state.
 _DB_FINALIZE_RETRIES = 3
@@ -2337,6 +2338,23 @@ class TrainingBackend:
                     # Only if still current; a new run's finalize state is never touched.
                     if self.current_job_id == run_id:
                         self._run_finalized = False
+
+    def stop_for_shutdown(self, timeout: float = _SHUTDOWN_STOP_TIMEOUT_S) -> bool:
+        with self._lock:
+            proc = self._proc
+            job_id = self.current_job_id
+        if proc is None or not proc.is_alive() or not job_id or self.is_run_finished():
+            return True
+        if not self.stop_training(save = True, expected_job_id = job_id):
+            return False
+        logger.info("Shutdown: stopping training run %s and saving a checkpoint", job_id)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if not proc.is_alive() or self.is_run_finished():
+                return True
+            time.sleep(0.25)
+        logger.warning("Shutdown: training run %s did not finish saving within %.0fs", job_id, timeout)
+        return False
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
         """Force-kill the training subprocess so state can be reset immediately. With
