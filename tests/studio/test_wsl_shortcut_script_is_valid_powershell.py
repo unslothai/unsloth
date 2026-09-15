@@ -195,3 +195,49 @@ def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
             "the dropped-library half is never inspected, and that is the half the Bitdefender "
             "report in #10540 keyed on"
         )
+
+
+def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
+    """The watcher's process half was dead in this lane, and a dead half reads as a clean one.
+
+    `Watch-ForCompiler.ps1` says outright that 4688 "needs auditing enabled by the caller". Its
+    no-match path returns an empty compiler list whenever the Security log is merely readable, so
+    with auditing off `$seen.Compilers` is empty no matter what ran, and the step still prints that
+    no compiler process was seen. That leaves the FileSystemWatcher carrying the whole result alone
+    while the output claims two detectors. Require the audit policy to be turned on, verified, and
+    shown to produce a real detection before the install is judged.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "clean-machine-install-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+    )
+    job = next(
+        job
+        for job in workflow["jobs"].values()
+        if any(
+            "cat install.sh | sh" in str(step.get("run", ""))
+            and "wsl -d unsloth-ci" in str(step.get("run", ""))
+            for step in (job.get("steps") or [])
+        )
+    )
+    runs = [str(step.get("run", "")) for step in (job.get("steps") or [])]
+    index = next(i for i, run in enumerate(runs) if "cat install.sh | sh" in run)
+    # Only the steps BEFORE the install count: auditing turned on afterwards measures nothing.
+    earlier = "\n".join(runs[:index])
+    assert 'auditpol /set /subcategory:"Process Creation" /success:enable' in earlier, (
+        "the WSL lane never enables process creation auditing, so the 4688 half of the watch is "
+        "dead and an empty compiler list means unmeasured rather than clean"
+    )
+    assert "ProcessCreationIncludeCmdLine_Enabled" in earlier, (
+        "without the command line, 4688 cannot tell csc.exe ran for us from csc.exe ran"
+    )
+    assert "Process Creation\\s+Success" in earlier, (
+        "the audit policy is set but never verified, and machine policy can silently override it"
+    )
+    assert "$control.Compilers" in earlier, (
+        "nothing proves the detector fires on this runner, so a clean verdict is indistinguishable "
+        "from a detector that never attached"
+    )

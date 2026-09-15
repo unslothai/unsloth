@@ -940,6 +940,49 @@ jobs:
           # A freshly imported rootfs is genuinely bare: the clean machine, not a simulation.
           wsl -d unsloth-ci -- sh -c 'for t in curl wget git gcc cmake python3 sudo; do printf "%-8s %s\n" "$t" "$(command -v $t || echo ABSENT)"; done'
 
+      - name: Enable process creation auditing, and prove the watcher sees a real compile
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Watch-ForCompiler.ps1 unions two detectors, and its 4688 half needs the caller to turn
+          # auditing on -- its no-match path returns an empty compiler list whenever the Security
+          # log merely reads clean. Without this step that half is silently dead here, so a compile
+          # the FileSystemWatcher missed would be reported as "no compiler process" rather than as
+          # "not measured". windows-no-compiler-ci.yml enables the same two settings.
+          auditpol /set /subcategory:"Process Creation" /success:enable | Out-Null
+          $auditKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+          New-Item -Path $auditKey -Force | Out-Null
+          New-ItemProperty -Path $auditKey -Name 'ProcessCreationIncludeCmdLine_Enabled' `
+              -Value 1 -PropertyType DWord -Force | Out-Null
+
+          # Large enough that the install's own process noise cannot roll the watched window off
+          # the end of the log.
+          wevtutil sl Security /ms:268435456
+
+          $state = auditpol /get /subcategory:"Process Creation"
+          $state | Tee-Object -FilePath logs/auditpol.txt
+          # Out-String first: auditpol returns an array, and -notmatch on an array filters instead
+          # of testing, so the surviving header lines make any array truthy.
+          if (($state | Out-String) -notmatch 'Process Creation\s+Success') {
+              Write-Host '::error::process creation auditing did not turn on; this lane cannot measure whether a compiler ran'
+              exit 1
+          }
+
+          # A machine-policy override can leave auditpol reporting Success while no 4688 is written,
+          # and a clean run looks identical to an unmeasured one. So compile something on purpose
+          # and require both halves to see it before any clean verdict below is believed.
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+          $control = Invoke-WithCompilerWatch -Name 'wsl-control' -EvidenceRoot "$PWD/logs" -Action {
+              # The only Add-Type in this lane, here to make the detector fire.
+              Add-Type -TypeDefinition 'public static class UnslothWslCompilerProbe { public static int N() { return 1; } }'
+          }
+          if (-not $control.Compilers) {
+              Write-Host '::error::the positive control compiled a type and no compiler process was recorded; a clean result from this lane would mean nothing'
+              exit 1
+          }
+          Write-Host "positive control: compiler seen ($($control.Compilers -join ', '))"
+
       - name: Install inside WSL, piped exactly as documented
         shell: pwsh
         run: |
