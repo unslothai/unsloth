@@ -2996,6 +2996,21 @@ def _text_names_the_studio_root(text: str) -> bool:
     return any(spelling in lowered for spelling in _studio_root_spellings())
 
 
+def _quoted_words(text: str) -> "list[str]":
+    """Split on whitespace, honouring quotes but NOT backslash escapes.
+
+    `shlex.split(posix = True)` eats the separators of a Windows path, so
+    `find "C:\\Users\\me\\Unsloth Studio" ...` came back as one mangled word and matched no root.
+    """
+    lexer = shlex.shlex(text, posix = True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:  # unbalanced quotes: the raw words are the best available reading
+        return text.split()
+
+
 def _names_the_studio_root_itself(text: str) -> bool:
     """True when one WORD of the command is the root itself, so the walk starts there.
 
@@ -3007,11 +3022,7 @@ def _names_the_studio_root_itself(text: str) -> bool:
     spellings = [spelling.rstrip("/\\") for spelling in _studio_root_spellings()]
     if not spellings:
         return False
-    try:
-        words = shlex.split(text, posix = True)
-    except ValueError:  # unbalanced quotes: the raw words are the best available reading
-        words = text.split()
-    return any(word.lower().rstrip("/\\") in spellings for word in words)
+    return any(word.lower().rstrip("/\\") in spellings for word in _quoted_words(text))
 
 
 # Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
@@ -3045,6 +3056,15 @@ def _walks_a_tree_reading_it(text: str) -> bool:
     return False
 
 
+# `c:\\users\\me\\...` is as absolute as `/home/me/...`, and embedding it inside another directory
+# (`/mnt/backupc:\\users\\me\\...`) makes it a different path, exactly as on POSIX.
+_ABSOLUTE_MARKER_RE = re.compile(r"^(?:[/\\]|[a-z]:[/\\])")
+
+
+def _marker_is_absolute(marker: str) -> bool:
+    return bool(_ABSOLUTE_MARKER_RE.match(marker))
+
+
 def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
     """True when ``marker`` appears in ``lowered`` as a whole path, not merely as a prefix.
 
@@ -3060,8 +3080,8 @@ def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
         # refused an ordinary read under a backup copy.
         begins_here = (
             start == 0
-            or not marker.startswith(("/", "\\"))
-            or lowered[start - 1] in "'\" \t\r\n;:&|(=,"
+            or not _marker_is_absolute(marker)
+            or lowered[start - 1] in "'\" \t\r\n;&|(=,"
         )
         if ends_here and begins_here:
             return True

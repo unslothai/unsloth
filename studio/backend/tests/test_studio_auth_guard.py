@@ -2491,6 +2491,24 @@ def test_a_foreign_environment_variable_is_not_the_studio_home(monkeypatch, tmp_
         tools._studio_auth_markers_cache = None
 
 
+def test_windows_spellings_of_the_root_are_read_as_paths(monkeypatch, tmp_path):
+    # Platform independent, because the marker comparison is: a backslash path must not be mangled
+    # by escape processing when the words are split, and a drive-qualified marker embedded inside
+    # ANOTHER directory is a different path, exactly as a POSIX one is.
+    home = r"c:\users\runneradmin\appdata\local\temp\studio-home"
+    marker = home + r"\auth"
+    assert tools._marker_is_a_path_segment("cat " + home + r"\auth\auth.db", marker)
+    assert not tools._marker_is_a_path_segment(
+        r"cat /mnt/backup" + home + r"\auth\config.json", marker
+    )
+    assert tools._quoted_words(r'find "C:\Users\me\Unsloth Studio" -type f') == [
+        "find",
+        r"C:\Users\me\Unsloth Studio",
+        "-type",
+        "f",
+    ]
+
+
 def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
     # `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +` names no credential and no auth segment,
     # but the child inherits the variable and emits `auth/auth.db` and `.bootstrap_password`. Only
