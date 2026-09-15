@@ -136,12 +136,15 @@ class TestTheMemoryProbeFallsBackToNvml:
         probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row]))
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-cccc")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
-        # The parent's rows, not the slices, answer an index, a GPU- entry and no mask at all.
+        # An index, a GPU- entry and no mask at all name the parent, and CUDA exposes its
+        # first slice then, not the whole card: the slice's memory is what the model gets.
         for mask in ("0", "GPU-aaaa"):
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
-            assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920)], mask
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)], mask
+            assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920)]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
         # A slice the probe does not list hides every GPU rather than exposing the parent.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd")
         assert LlamaCppBackend._get_gpu_memory() == []
@@ -162,13 +165,16 @@ class TestTheMemoryProbeFallsBackToNvml:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
         # The launch must not turn the slice into its parent's index.
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
+        # The GPU- entry names the MIG parent, which CUDA exposes as its first slice.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbb,GPU-aaaa")
-        LlamaCppBackend._get_gpu_memory()
-        assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,GPU-aaaa1111-0"
-        # A numeric or absent mask re-emits indices as before.
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480), (1, 20000, 24576)]
+        assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,MIG-cccc3333-0"
+        # A numeric or absent mask re-emits indices as before; only a slice standing in
+        # for its MIG parent is named by uuid, and a selection mixing both stays numeric.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
-        LlamaCppBackend._get_gpu_memory()
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480), (1, 20000, 24576)]
         assert LlamaCppBackend._child_visibility_for([1]) == "1"
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
         LlamaCppBackend._get_gpu_memory()
         assert LlamaCppBackend._child_visibility_for([0, 1]) == "0,1"

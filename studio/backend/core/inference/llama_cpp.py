@@ -11674,31 +11674,41 @@ class LlamaCppBackend:
     def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
         uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
-        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU."""
+        ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
+        MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
+        first slice row stands in for the parent's whole-card memory."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
-        gpus = [r for r in rows if not r.get("mig")]
-        LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {}
-        if raw is None:
-            return gpus
+        parents = [r for r in rows if not r.get("mig")]
+
+        def as_cuda_sees(r: dict) -> dict:
+            slices = [s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))]
+            return slices[0] if slices else r
+
+        tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
         picked: list[dict] = []
-        for token in (t.strip() for t in raw.split(",") if t.strip()):
+        if raw is None:
+            picked = [as_cuda_sees(r) for r in parents]
+        for token in tokens:
             if token.isdigit():
-                hits = [r for r in gpus if str(r.get("index")) == token]
-            elif token.startswith(("GPU-", "MIG-")):
+                hits = [r for r in parents if str(r.get("index")) == token]
+            elif token.startswith("GPU-"):
+                hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
+            elif token.startswith("MIG-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
-                pool = [r for r in rows if bool(r.get("mig")) == token.startswith("MIG-")]
-                hits = [r for r in pool if str(r.get("uuid", "")).startswith(token)]
+                hits = [r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)]
             else:
                 hits = []
             if len(hits) != 1:
                 break
-            picked.extend(r for r in hits if r not in picked)
-        if any(not t.strip().isdigit() for t in raw.split(",") if t.strip()):
-            # The launch re-emits a selection as indices; a slice has only its parent's, so
-            # remember the uuid each index stands for and hand that back instead.
-            LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {
-                int(r["index"]): str(r["uuid"]) for r in picked if str(r.get("index", "")).isdigit()
-            }
+            picked.extend(r for r in map(as_cuda_sees, hits) if r not in picked)
+        # The launch re-emits a selection as indices; a slice has only its parent's, so
+        # remember the uuid each index stands for and hand that back instead.
+        by_uuid = any(not t.isdigit() for t in tokens)
+        LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {
+            int(r["index"]): str(r["uuid"])
+            for r in picked
+            if str(r.get("index", "")).isdigit() and (by_uuid or r.get("mig"))
+        }
         return picked
 
     @staticmethod
