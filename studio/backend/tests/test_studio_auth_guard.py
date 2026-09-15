@@ -2190,6 +2190,15 @@ def test_a_recursive_read_of_the_studio_root_is_refused(studio_home):
         ), ordinary
 
 
+def test_a_snippet_the_parser_cannot_hold_is_a_decision(studio_home):
+    # `ast.parse` raises RecursionError on ~10k chained operators. Caught here, the guard returns a
+    # decision; uncaught, the tool raised an internal exception instead of the interpreter's own
+    # error. The credential hint is what gets the snippet this far at all.
+    huge = "x = " + "+".join(["1"] * 20000) + "\n# auth\n"
+    workdir = str(studio_home / "sandbox" / _SESSION)
+    assert tools._python_builds_a_credential_path(huge, workdir) is False
+
+
 def test_a_long_run_of_escapes_is_a_decision_rather_than_a_crash(studio_home):
     home = studio_home
     # Unescaping recursed once per backslash, so 550 of them raised RecursionError out of the guard,

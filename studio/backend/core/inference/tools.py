@@ -3760,7 +3760,10 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         return False
     try:
         tree = ast.parse(code)
-    except SyntaxError:  # the executor reports the error itself; nothing to fold
+    except (SyntaxError, RecursionError, MemoryError, ValueError):
+        # The executor reports a syntax error itself, and a snippet the PARSER cannot hold (10k
+        # chained operators) is not a decision this guard can make either. Both are "nothing to
+        # fold" rather than an exception raised out of the tool.
         return False
     # Source order, because `os.chdir('../..')` moves every path after it. String constants are
     # included: `sqlite3.connect('auth/auth.db')` is no path constructor, so the argument is it.
