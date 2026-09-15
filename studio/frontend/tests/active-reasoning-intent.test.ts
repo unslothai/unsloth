@@ -38,7 +38,30 @@ function activeConfig(patch: Record<string, unknown> = {}) {
       },
     },
   );
-  return useActiveModelConfig().config!;
+  const config = useActiveModelConfig().config!;
+  const { currentRuntimePerModelConfig } = loadWithStubs<{
+    currentRuntimePerModelConfig: () => NonNullable<
+      ActiveModelConfigState["config"]
+    >;
+  }>(
+    new URL(
+      "../src/features/model-picker/model-config/apply-per-model-config.ts",
+      import.meta.url,
+    ),
+    {
+      "@/features/chat/stores/chat-runtime-store": {
+        useChatRuntimeStore: { getState: () => state },
+        normalizeSpeculativeType: (value: unknown) => value ?? null,
+      },
+      "@/features/chat/presets/preset-policy": {},
+      "./config-signature": {},
+      "./per-model-config": {},
+    },
+  );
+  const snapshot = currentRuntimePerModelConfig();
+  assert.equal(snapshot.reasoningBudget, config.reasoningBudget);
+  assert.equal(snapshot.reasoningBudgetMessage, config.reasoningBudgetMessage);
+  return config;
 }
 
 test("unrelated edits preserve inherited reasoning launch intent", () => {

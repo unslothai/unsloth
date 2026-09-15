@@ -118,8 +118,14 @@ export function currentRuntimePerModelConfig(
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
     nParallel: s.nParallel ?? null,
-    reasoningBudget: s.reasoningBudget,
-    reasoningBudgetMessage: s.reasoningBudgetMessage,
+    reasoningBudget:
+      s.reasoningBudget === s.loadedReasoningBudget
+        ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+        : s.reasoningBudget,
+    reasoningBudgetMessage:
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
     nBatch: s.nBatch ?? null,
     nUbatch: s.nUbatch ?? null,
     loadMode: s.loadMode ?? null,
