@@ -2282,6 +2282,45 @@ def test_enumerating_the_studio_root_for_a_credential_name_is_refused(monkeypatc
         tools._studio_auth_markers_cache = None
 
 
+def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
+    # `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +` names no credential and no auth segment,
+    # but the child inherits the variable and emits `auth/auth.db` and `.bootstrap_password`. Only
+    # the forms that READ or COPY the tree count: a listing names files without opening them, and
+    # work inside a project under the root is ordinary.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +',
+            'find "$UNSLOTH_STUDIO_HOME" -type f | xargs cat',
+            f"find {home} -type f -exec cat {{}} +",
+            f'tar -czf backup.tgz "{home}"',
+            f'grep -r sk-unsloth "{home}"',
+            f'cp -a "{home}" ./copy',
+            f'rsync -av "{home}/" ./copy',
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            f'find "{home}" -type f',
+            f'ls -la "{home}"',
+            f'cp -r ./out "{home}/projects/p/sandbox/"',
+            f'grep -r TODO "{home}/projects/p"',
+            "grep -r TODO .",
+            "tar -czf out.tgz .",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_long_run_of_escapes_is_a_decision_rather_than_a_crash(monkeypatch, tmp_path):
     # Unescaping recursed once per backslash, so 550 of them raised RecursionError out of the guard,
     # before the command was classified at all.

@@ -2911,18 +2911,70 @@ def _binds_an_unset_studio_home(text: str) -> bool:
     return False
 
 
-def _text_names_the_studio_root(text: str) -> bool:
-    """True when *text* names the Studio root directory, literally or by one of its variables."""
+def _studio_root_spellings() -> "list[str]":
+    """Every lowered spelling of the Studio root: the literal path and its environment variables."""
     root = _studio_home_for_guard()
     if not root:
-        return False
-    lowered = text.lower()
+        return []
     spellings = [root.lower()]
     for variable in _STUDIO_HOME_ENV_VARS:
         spellings.extend(
             (f"${variable}".lower(), f"${{{variable}}}".lower(), f"%{variable}%".lower())
         )
-    return any(spelling in lowered for spelling in spellings)
+    return spellings
+
+
+def _text_names_the_studio_root(text: str) -> bool:
+    """True when *text* names the Studio root directory, literally or by one of its variables."""
+    lowered = text.lower()
+    return any(spelling in lowered for spelling in _studio_root_spellings())
+
+
+def _names_the_studio_root_itself(text: str) -> bool:
+    """True when one WORD of the command is the root itself, so the walk starts there.
+
+    Word by word, because the spelling appearing anywhere is not enough: the pattern in
+    `grep -rn 'cd <root>' src/` searches a project, and `<root>/projects/p/sandbox` is ordinary work
+    inside a project. Only a bare `<root>` (with any trailing separator) is the directory whose walk
+    reaches `auth/`.
+    """
+    spellings = [spelling.rstrip("/\\") for spelling in _studio_root_spellings()]
+    if not spellings:
+        return False
+    try:
+        words = shlex.split(text, posix = True)
+    except ValueError:  # unbalanced quotes: the raw words are the best available reading
+        words = text.split()
+    return any(word.lower().rstrip("/\\") in spellings for word in words)
+
+
+# Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
+# `find` with no action) is not one of these: it names files without reading them.
+_STUDIO_WALK_COMMANDS = frozenset({"rsync", "tar", "cpio", "rg", "ag", "ack"})
+_STUDIO_WALK_FLAG_COMMANDS = frozenset({"grep", "egrep", "fgrep", "cp", "scp", "zip", "7z", "7za"})
+# `find` reads nothing by itself; an ACTION (or a pipe into another command) is what does.
+_STUDIO_FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint"})
+_STUDIO_WALK_SPLIT_RE = re.compile(r"[\s;&()<>]+")
+
+
+def _walks_a_tree_reading_it(text: str) -> bool:
+    """True when the command recursively reads or copies a whole directory tree."""
+    lowered = text.lower()
+    tokens = [token for token in _STUDIO_WALK_SPLIT_RE.split(lowered) if token]
+    if not tokens:
+        return False
+    names = {os.path.basename(token.strip("\"'")) for token in tokens if not token.startswith("-")}
+    if names & _STUDIO_WALK_COMMANDS:
+        return True
+    if "find" in names and (any(token in _STUDIO_FIND_ACTIONS for token in tokens) or "|" in text):
+        return True
+    if names & _STUDIO_WALK_FLAG_COMMANDS:
+        for token in tokens:
+            if token in ("--recursive", "--archive"):
+                return True
+            if token.startswith("-") and not token.startswith("--") and set(token[1:]) & {"r", "a"}:
+                return True
+    return False
 
 
 def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
@@ -3363,6 +3415,15 @@ def _references_studio_credential_here(
     # `find "$UNSLOTH_STUDIO_HOME" -name auth.db -exec cat` hands the directory to a tool that
     # walks it, and no single token of it is a path to the database.
     if _CREDENTIAL_BASENAME_RE.search(text) and _text_names_the_studio_root(text):
+        return True
+    # A recursive read of the root itself emits `auth/auth.db` and `.bootstrap_password` without
+    # naming either: `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +`, `tar czf b.tgz "$STUDIO_HOME"`,
+    # `grep -r sk- "$STUDIO_HOME"`. Work INSIDE a project under the root is untouched.
+    if (
+        _text_names_the_studio_root(text)
+        and _walks_a_tree_reading_it(text)
+        and _names_the_studio_root_itself(text)
+    ):
         return True
     # `c\d ../..` runs the `cd` builtin: bash removes the backslash before a word is a command name
     # at all, so the escaped spelling has to be folded away before the cwd walk reads it.
