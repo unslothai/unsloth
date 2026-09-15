@@ -3036,15 +3036,70 @@ _STUDIO_FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete
 _STUDIO_WALK_SPLIT_RE = re.compile(r"[\s;&()<>]+")
 
 
+def _command_words(text: str) -> "list[str]":
+    """The word in COMMAND position of each pipeline segment, lowered and basenamed.
+
+    `echo tar "$STUDIO_HOME"` runs `echo`; `tar` is data it prints. Reading every non-option token
+    as an executable refused that. Assignments and the usual wrappers are stepped over so
+    `env -u X tar ...` still reports `tar`.
+    """
+    words: "list[str]" = []
+    for segment in _COMMAND_SEPARATOR_RE.split(text.lower()):
+        skip_next = False
+        for token in _quoted_words(segment):
+            if skip_next:
+                skip_next = False
+                continue
+            if token.startswith("-"):
+                # A wrapper option that takes a separate value swallows the token after it, which
+                # would otherwise read as the command (`env -u FOO tar ...`).
+                skip_next = token in _WRAPPER_VALUE_OPTIONS
+                continue
+            if "=" in token:  # a NAME=value assignment preceding the command
+                continue
+            base = os.path.basename(token.strip("\"'"))
+            if base in _WALK_TRANSPARENT_WRAPPERS or _WRAPPER_DURATION_RE.match(base):
+                continue
+            words.append(base)
+            break
+    return words
+
+
+# Separators that start a new command, so the word after one is in command position again.
+_COMMAND_SEPARATOR_RE = re.compile(r"[;&|()\n]+|&&|\|\|")
+_WRAPPER_VALUE_OPTIONS = frozenset(
+    {"-u", "--unset", "-n", "-c", "-i", "-p", "-C", "--chdir", "-k", "--kill-after", "-s"}
+)
+# `timeout 5 tar ...`: a bare duration is the wrapper's own operand.
+_WRAPPER_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+# Wrappers that run the command that FOLLOWS them, so the walker can still be behind one.
+_WALK_TRANSPARENT_WRAPPERS = frozenset(
+    {
+        "env",
+        "nice",
+        "ionice",
+        "nohup",
+        "time",
+        "timeout",
+        "sudo",
+        "command",
+        "builtin",
+        "exec",
+        "stdbuf",
+        "xargs",
+        "busybox",
+    }
+)
+
+
 def _walks_a_tree_reading_it(text: str) -> bool:
     """True when the command recursively reads or copies a whole directory tree."""
-    lowered = text.lower()
-    tokens = [token for token in _STUDIO_WALK_SPLIT_RE.split(lowered) if token]
-    if not tokens:
+    names = set(_command_words(text))
+    if not names:
         return False
-    names = {os.path.basename(token.strip("\"'")) for token in tokens if not token.startswith("-")}
     if names & _STUDIO_WALK_COMMANDS:
         return True
+    tokens = [token for token in _STUDIO_WALK_SPLIT_RE.split(text.lower()) if token]
     if "find" in names and (any(token in _STUDIO_FIND_ACTIONS for token in tokens) or "|" in text):
         return True
     if names & _STUDIO_WALK_FLAG_COMMANDS:
@@ -3056,8 +3111,6 @@ def _walks_a_tree_reading_it(text: str) -> bool:
     return False
 
 
-# `c:\\users\\me\\...` is as absolute as `/home/me/...`, and embedding it inside another directory
-# (`/mnt/backupc:\\users\\me\\...`) makes it a different path, exactly as on POSIX.
 _ABSOLUTE_MARKER_RE = re.compile(r"^(?:[/\\]|[a-z]:[/\\])")
 
 

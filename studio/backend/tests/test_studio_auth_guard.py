@@ -2531,6 +2531,9 @@ def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
             f'rsync -av "{home}/" ./copy',
             # `7z a` recurses into a directory with no flag at all.
             f'7z a out.7z "{home}"',
+            # The walker behind a wrapper, whose option value must not read as the command.
+            'env -u FOO tar -czf b.tgz "$UNSLOTH_STUDIO_HOME"',
+            'timeout 5 tar -czf b.tgz "$UNSLOTH_STUDIO_HOME"',
             f'zip -r out.zip "{home}"',
         ):
             assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
@@ -2545,6 +2548,10 @@ def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
             "tar -czf out.tgz .",
             "7z a out.7z src",
             f'du -sh "{home}"',
+            # A walker's NAME as data is not a walk: `echo` is what runs here.
+            'echo tar "$UNSLOTH_STUDIO_HOME"',
+            'echo "rsync is a tool" "$UNSLOTH_STUDIO_HOME"',
+            'printf "%s" "$UNSLOTH_STUDIO_HOME"',
         ):
             assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
                 tools._STUDIO_CREDENTIAL_BLOCKED
