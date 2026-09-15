@@ -213,6 +213,13 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
     src = (_BACKEND / "core/inference/video.py").read_text(encoding = "utf-8").splitlines()
     guards = [n for n, line in enumerate(src, 1) if "close_dynamo_import_window(" in line]
     imports = [n for n, line in enumerate(src, 1) if line.strip() == "import diffusers"]
+    # assert_pipeline_class_available does its own `import diffusers` and then probes a lazy
+    # pipeline attribute, so it reaches dynamo without a plain import line appearing here. It
+    # runs for EVERY non-native video validation, which makes it the earliest one on that branch.
+    imports += [
+        n for n, line in enumerate(src, 1)
+        if "assert_pipeline_class_available(" in line and "import" not in line
+    ]
 
     assert imports, "video.py no longer imports diffusers; re-check this test"
     assert guards, "the video path never closes the dynamo window"
