@@ -294,9 +294,7 @@ _ARG_FIXTURES = {
     "body_end": lambda text: len(text),
     "end": lambda text: len(text),
     "envelope_close": lambda text: (
-        text.find("</ifm|tool_calls>")
-        if "</ifm|tool_calls>" in text
-        else len(text)
+        text.find("</ifm|tool_calls>") if "</ifm|tool_calls>" in text else len(text)
     ),
     "arg_type": lambda text: "string",
     # Nothing to restore: the masker's own output is what pairs with it, and an invented
