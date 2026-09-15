@@ -458,6 +458,8 @@ def _credential_under_silent_root(candidate: str) -> bool:
 _PATH_READ_COMMANDS = frozenset(
     {
         "cat",
+        # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
+        "iconv",
         "tac",
         "head",
         "tail",
@@ -713,6 +715,9 @@ _PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
 _PATH_FLAG_SPECS = {
     "cp": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
     "mv": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
+    # `iconv -o, --output=FILE` writes the converted text there; the rest name encodings, not paths.
+    "iconv": {"-o": "write", "--output": "write", "-f": "skip", "--from-code": "skip",
+              "-t": "skip", "--to-code": "skip"},
     "install": {
         "-t": "write",
         "--target-directory": "write",
@@ -1069,14 +1074,17 @@ def _split_backticks(tokens, text = None) -> "list[str]":
         return list(tokens)
     out: "list[str]" = []
     for token in tokens:
-        if "`" not in token or (text and (f"'{token}'" in text or f'"{token}"' in text)):
+        # SINGLE quotes only: a command substitution still runs inside double quotes, so
+        # `echo "`cat /media/x`"` executes the read exactly as the unquoted form does.
+        if "`" not in token or (text and f"'{token}'" in text):
             out.append(token)
             continue
         for index, piece in enumerate(token.split("`")):
             if index:
                 out.append("(")
-            if piece:
-                out.append(piece)
+            # Split on whitespace too: inside double quotes the substitution is ONE token, so the
+            # body arrived as a single word and the command at its head was never read as one.
+            out.extend(piece.split())
     return out
 
 
@@ -1817,6 +1825,11 @@ def _python_instance_reader_names(tree) -> dict:
                     ctors[entry.asname] = _PY_INSTANCE_READ_CTORS[entry.name]
     names: dict = {}
     for node in _tree_nodes(tree):
+        # `cfg: ConfigParser = ConfigParser()` binds exactly what the unannotated form binds.
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            if not isinstance(node.target, ast.Name):
+                continue
+            node = ast.Assign(targets = [node.target], value = node.value)
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
             continue
         func = node.value.func

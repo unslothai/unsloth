@@ -3374,6 +3374,12 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # A command substitution runs inside DOUBLE quotes too, and the quoted body arrives as one
+    # token, so the command at its head was not read as a command at all.
+    f'echo "`cat {_OUTSIDE_FILE}`"',
+    # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", and `-o, --output=FILE` writes.
+    f"iconv {_OUTSIDE_FILE}",
+    f"iconv -o {_OUTSIDE_DIR}/out.txt local.txt",
     # A control word ends one command and begins another, so the read below was grouped under
     # `then` / `do` / `{`, none of which is a command any table knows.
     f"if true; then cat {_OUTSIDE_FILE}; fi",
@@ -3482,6 +3488,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # An annotated instance assignment binds the reader exactly as the plain form does.
+    f"import configparser\ncfg: configparser.ConfigParser = configparser.ConfigParser()\ncfg.read({_OUTSIDE_FILE!r})",
     # Called BEFORE the rebinding, so dropping the alias outright let the read through.
     f"reader = open\nprint(reader({_OUTSIDE_FILE!r}).read())\nreader = None",
     # The rebound name sits inside a larger expression, where only its first binding was folded.
@@ -3590,6 +3598,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    'echo "`ls`"',
+    "iconv -f utf8 -t ascii local.txt",
+    "iconv -o out.txt local.txt",
     "if true; then cat notes.txt; fi",
     "for f in *.txt; do wc -l $f; done",
     "echo `ls`",
@@ -3649,6 +3660,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import configparser\ncfg: configparser.ConfigParser = configparser.ConfigParser()\ncfg.read('settings.ini')",
     "base = 'local'\nbase = 'other'\nopen(base + '/report').read()",
     "import configparser\nc = configparser.ConfigParser()\nc.read(filenames = 'settings.ini')",
     "import glob\nprint(glob.glob(pathname = '*.txt'))",
