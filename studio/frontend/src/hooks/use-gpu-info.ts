@@ -250,6 +250,29 @@ function toGpuDevices(
     }));
 }
 
+/**
+ * Carry the previous `denseQuantSchemes` array forward when its contents are unchanged.
+ *
+ * A snapshot that differs only in free host RAM is still a NEW snapshot -- `refresh_memory=true`
+ * re-probes `memory.available_gb` behind every footprint estimate, so the comparison below sees a
+ * difference on nearly every poll -- but this list is a hardware capability that does not move.
+ * Consumers memoise the media picker's option list on it (`useImageModels`, `curatedRowLabelFor`),
+ * so handing back an equal-but-fresh array rebuilt every row on every probe: the GGUF rows carry a
+ * host-dependent `(Slow)` suffix, so each rebuild detached and re-created them.
+ */
+export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
+  const held = current.denseQuantSchemes;
+  const fresh = next.denseQuantSchemes;
+  if (held === fresh) return next;
+  if (
+    held.length === fresh.length &&
+    held.every((scheme, index) => scheme === fresh[index])
+  ) {
+    return { ...next, denseQuantSchemes: held };
+  }
+  return next;
+}
+
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
   const cachedSystem = getCachedSystemInfo();
@@ -264,7 +287,9 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
       if (cancelled) return;
       const next = toGpuInfo(data, source);
       setGpu((current) =>
-        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+        JSON.stringify(current) === JSON.stringify(next)
+          ? current
+          : withStableSchemes(current, next),
       );
     };
     const update = () => {
