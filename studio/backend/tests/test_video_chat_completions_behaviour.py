@@ -179,7 +179,9 @@ def test_only_the_scheme_is_lowercased_not_the_path(monkeypatch):
         client.post("/v1/chat/completions", json = _part_body(url))
     sent = _sent_media(backend)[0]["input_video"]["url"]
     assert sent == "https://Example.COM/A/Mixed/Case-Path.MP4?Token=AbC"
-    assert sent.startswith("http"), "handle_media's string_starts_with(url, 'http') is case-sensitive"
+    assert sent.startswith(
+        "http"
+    ), "handle_media's string_starts_with(url, 'http') is case-sensitive"
 
 
 def test_the_translated_part_is_the_only_video_key_left(monkeypatch):
@@ -359,9 +361,15 @@ def test_admission_compacts_a_clip_after_translation_too():
     import copy
 
     big = "data:video/mp4;base64," + "A" * 40_000
-    msgs = [{"role": "user", "content": [
-        {"type": "video_url", "video_url": {"url": big}},
-        {"type": "text", "text": "hi"}]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": big}},
+                {"type": "text", "text": "hi"},
+            ],
+        }
+    ]
 
     translated = copy.deepcopy(msgs)
     inference_route._translate_video_parts(translated)
@@ -671,9 +679,7 @@ def test_a_public_remote_clip_is_still_forwarded(monkeypatch):
     with _client(monkeypatch, backend) as client:
         response = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
     assert response.status_code == 200
-    assert _sent_media(backend) == [
-        {"type": "input_video", "input_video": {"url": _REMOTE}}
-    ]
+    assert _sent_media(backend) == [{"type": "input_video", "input_video": {"url": _REMOTE}}]
 
 
 def test_the_destination_guard_also_runs_without_a_pre_switch_validation():
@@ -718,6 +724,9 @@ def test_the_pre_switch_validation_refuses_a_private_host_before_any_model_loads
     assert rejection is not None
     assert rejection[0] == 400
     assert "must point at a public host" in rejection[1]
-    assert inference_route._request_video_rejection(
-        ChatCompletionRequest.model_validate(_part_body(_REMOTE))
-    ) is None
+    assert (
+        inference_route._request_video_rejection(
+            ChatCompletionRequest.model_validate(_part_body(_REMOTE))
+        )
+        is None
+    )

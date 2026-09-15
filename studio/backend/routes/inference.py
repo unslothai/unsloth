@@ -20565,8 +20565,7 @@ def _remote_video_destination_rejection(url: str) -> Optional[tuple[int, str]]:
     host = (urlsplit(url).hostname or "").rstrip(".")
     refusal = (
         400,
-        "A remote video URL must point at a public host. "
-        "Send the clip as a data URI instead.",
+        "A remote video URL must point at a public host. Send the clip as a data URI instead.",
     )
     if not host:
         return refusal
