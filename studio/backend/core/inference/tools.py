@@ -2985,7 +2985,10 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 _CD_TARGET_RE = re.compile(
     # `builtin cd ..` and `command cd ..` run the same builtin with the same argument, so a walk
     # that only knows the bare name resolves everything after them against the wrong directory.
-    r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)(?:(?:builtin|command|exec)\s+)*(?:cd|pushd)\s+"
+    # `!` and `time` are reserved words, not commands, so they can precede the builtin directly:
+    # `! cd ../..` and `time cd ../..` both move the shell exactly as the bare form does.
+    r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*)*(?:cd|pushd)\s+"
     r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
     re.IGNORECASE,
 )
@@ -3060,6 +3063,77 @@ def _subshell_end(text: str, start: int) -> int:
     return len(text)
 
 
+# `name() {`, `name () {` and `function name {`, the three spellings a shell accepts.
+_SHELL_FUNCTION_RE = re.compile(
+    r"(?:^|[;&|(){}\n]\s*)(?:function\s+([A-Za-z_][\w.:-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w.:-]*)\s*\(\s*\))\s*\{",
+    re.MULTILINE,
+)
+# Bounds the scan on a command that is nothing but nested definitions.
+_MAX_TRACKED_FUNCTIONS = 64
+
+
+def _unquoted_braces(text: str):
+    """Yield `(index, char)` for each `{` or `}` that is shell syntax, skipping quoted ones."""
+    quote = ""
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char in "{}":
+            yield index, char
+
+
+def _uncalled_function_spans(text: str) -> "list[tuple[int, int]]":
+    """Spans of function bodies *text* defines but never invokes.
+
+    `helper() { cd ../..; }; cat auth/config.json` never runs the `helper`, so the `cd` in its body
+    moves nothing and the `cat` reads the project's own auth file from the unchanged sandbox.
+    Refusing that is a false positive, and it is the same rule the python walk already applies to an
+    uncalled def.
+    """
+    bodies: "list[tuple[str, int, int, int]]" = []
+    for match in _SHELL_FUNCTION_RE.finditer(text):
+        group = 1 if match.group(1) else 2
+        name = match.group(group)
+        named_at = match.start(group)
+        start = text.index("{", match.end() - 1)
+        depth = 0
+        end = len(text)
+        for index, char in _unquoted_braces(text):
+            if index < start:
+                continue
+            depth = depth + 1 if char == "{" else depth - 1
+            if not depth:
+                end = index
+                break
+        bodies.append((name, named_at, start, end))
+        if len(bodies) >= _MAX_TRACKED_FUNCTIONS:
+            break
+    spans: "list[tuple[int, int]]" = []
+    for name, named_at, start, end in bodies:
+        # Called is the assumption: the body is only inert when the name appears NOWHERE outside its
+        # own definition and its own body, which is the one case that needs no guess about control
+        # flow. A recursive call inside the body does not run it either, so the body is skipped too.
+        called = any(
+            call.start() != named_at and not (start <= call.start() <= end)
+            for call in re.finditer(r"(?<![\w.:-])" + re.escape(name) + r"(?![\w.:-])", text)
+        )
+        if not called:
+            spans.append((start, end))
+    return spans
+
+
 def _token_spellings(token: str) -> "list[str]":
     """The paths *token* can be, once the shell has had its say.
 
@@ -3091,9 +3165,13 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
     states: "list[tuple[str, int]]" = [(workdir, len(text))]
     walked: "list[tuple[int, int, str]]" = []
     seen: "set[tuple[str, int]]" = set()
+    inert = _uncalled_function_spans(text) if "(" in text or "function" in text else []
     for match in _CD_TARGET_RE.finditer(text):
         target = match.group(1).strip("'\"")
         if not target or target.startswith("-"):
+            continue
+        # A `cd` in a function body that nothing invokes never runs.
+        if any(start <= match.start() <= end for start, end in inert):
             continue
         # A subshell that has already closed takes its moves with it.
         states = [(cwd, until) for cwd, until in states if until >= match.start()] or [

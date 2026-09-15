@@ -1908,3 +1908,66 @@ def test_a_snippets_own_chdir_is_not_a_move(monkeypatch, tmp_path):
             ), blocked
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_reserved_word_before_cd_still_moves_the_directory(monkeypatch, tmp_path):
+    # `!` and `time` are reserved words rather than commands, so the shell runs the `cd` builtin
+    # straight after them and the move lands. Accepting only a command position that started at a
+    # separator, the guard read `! cd ../..; cat auth/auth.db` as a command that never moved.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            "! cd ../..; cat auth/auth.db",
+            "time cd ../..; cat auth/.desktop_secret",
+            "time -p cd ../..; cat auth/.cli_api_key_cli_1",
+            'nohup cd ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            "! true; cat auth/config.json",
+            "time cat models/m.gguf",
+            "echo time cd ../..",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_cd_in_a_function_nothing_calls_does_not_move_the_directory(monkeypatch, tmp_path):
+    # Defining a function does not run it, so `helper() { cd ../..; }; cat auth/config.json` reads
+    # the project's own auth file from the unchanged sandbox. Carried out of the body regardless,
+    # the move turned an ordinary read into a refusal in every permission mode.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for ordinary in (
+            "helper() { cd ../..; }; cat auth/config.json",
+            "function helper { cd ../..; }; cat auth/auth.db",
+            "helper () { cd ../..; helper; }; cat auth/auth.db",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        # Invoking it, or moving outside any function at all, is the same move it always was.
+        for command in (
+            "helper() { cd ../..; }; helper; cat auth/auth.db",
+            "function helper { cd ../..; }; helper && cat auth/.desktop_secret",
+            "helper() { echo hi; }; cd ../..; cat auth/auth.db",
+            "{ cd ../..; cat auth/auth.db; }",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+    finally:
+        tools._studio_auth_markers_cache = None
