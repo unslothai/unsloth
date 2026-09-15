@@ -153,6 +153,27 @@ class TestTheMemoryProbeFallsBackToNvml:
         probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row, second]))
         assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 10240)]
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
+        # Two slices of one card: one row per physical index, the first named, and the
+        # child is pinned to that one so the budget and the launch agree.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd,MIG-cccc")
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 10240)]
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
+
+    def test_a_later_probe_that_answers_clears_the_uuid_map(self, monkeypatch, probe_script):
+        _failing_smi(monkeypatch)
+        slice_row = dict(_row(0, 9000, 20480, uuid = "MIG-cccc3333-0"), mig = "1")
+        probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row]))
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
+        # nvidia-smi recovers: its rows are physical cards, so the child gets the index back.
+        def smi_ok(cmd, *args, **kwargs):
+            if cmd and os.path.basename(str(cmd[0])) == "nvidia-smi":
+                return types.SimpleNamespace(returncode = 0, stdout = "0, 60000, 81920\n", stderr = "")
+            raise AssertionError("no other probe should run")
+
+        monkeypatch.setattr(mod.subprocess, "run", smi_ok)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920)]
+        assert LlamaCppBackend._child_visibility_for([0]) == "0"
 
     def test_a_uuid_mask_is_handed_to_the_child_as_uuids(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)

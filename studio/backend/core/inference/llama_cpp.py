@@ -11676,7 +11676,9 @@ class LlamaCppBackend:
         uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
         ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
         MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
-        first slice row stands in for the parent's whole-card memory."""
+        first slice row stands in for the parent's whole-card memory, and a second slice of
+        the same card is dropped: the rows are keyed by physical index, and one slice per
+        card is what the driver exposed before R570 and what the child is pinned to."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         parents = [r for r in rows if not r.get("mig")]
 
@@ -11702,7 +11704,11 @@ class LlamaCppBackend:
                 hits = []
             if len(hits) != 1:
                 break
-            picked.extend(r for r in map(as_cuda_sees, hits) if r not in picked)
+            picked.extend(
+                r
+                for r in map(as_cuda_sees, hits)
+                if str(r.get("index")) not in {str(p.get("index")) for p in picked}
+            )
         # The launch re-emits a selection as indices; a slice has only its parent's, so
         # remember the uuid each index stands for and hand that back instead.
         by_uuid = any(not t.isdigit() for t in tokens)
@@ -11795,6 +11801,9 @@ class LlamaCppBackend:
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable."""
+        # Only the NVML step names rows by uuid; a later answer from nvidia-smi or torch must
+        # not be translated through a map that step left behind.
+        LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {}
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
