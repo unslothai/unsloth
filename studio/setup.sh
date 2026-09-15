@@ -655,6 +655,11 @@ _setup_has_physical_nvidia_gpu() {
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
+    # Last: NVML / the CUDA driver API, which ship with the driver and not with nvidia-smi.
+    if [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] && [ -f "$SCRIPT_DIR/nvidia_probe.py" ] \
+            && command -v python3 >/dev/null 2>&1; then
+        _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" >/dev/null 2>&1 && return 0
+    fi
     return 1
 }
 
