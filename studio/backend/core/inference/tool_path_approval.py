@@ -225,9 +225,11 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
             sandbox_root,
             _legacy_sandbox_root,
             tmp_root,
-            shared_tmp_root,
+            # Not the SHARED bases: `shared_project_workspaces_root()` is the ancestor of every
+            # account's `Accounts/<id>/Projects`, and `shared_tmp_root()` of every account's tmp,
+            # so allowlisting either hands the owner (who gets no OS confinement) another account's
+            # private data. The owner's own `tmp_root()` IS the shared base, so nothing is lost.
             project_workspaces_root,
-            shared_project_workspaces_root,
             cache_root,
             # Studio downloads models into these itself, so a tool that fetches one must not need approval for the
             # cache write. Credential files inside them (token, stored_tokens) are caught by the sensitive-path check.
@@ -637,8 +639,27 @@ _PATH_READ_COMMANDS = frozenset(
 
 # Commands whose file operands are CREATED or OVERWRITTEN.
 _PATH_WRITE_COMMANDS = frozenset(
-    {"tee", "touch", "mkdir", "truncate", "shred", "gunzip", "zip", "gzip", "bzip2", "xz"}
+    {
+        "tee",
+        "touch",
+        "mkdir",
+        "truncate",
+        "shred",
+        "zip",
+        # Each of these replaces its operand with the compressed or decompressed file.
+        "gzip",
+        "gunzip",
+        "bzip2",
+        "bunzip2",
+        "xz",
+        "unxz",
+        "zstd",
+    }
 )
+# `gzip --help`: "-c, --stdout   write on standard output, keep original files unchanged". In that
+# mode the operand is only READ, so it belongs against the wider read roots.
+_STDOUT_COMPRESSORS = frozenset({"gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "zstd"})
+_STDOUT_FLAGS = frozenset({"-c", "--stdout", "--to-stdout"})
 
 
 # Copy-like commands: the LAST operand is the destination (a write), the earlier ones are sources (reads).
@@ -1483,6 +1504,18 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     )
     flag_only = command in _PATH_FLAG_ONLY_COMMANDS
     write_cmd = command in _PATH_WRITE_COMMANDS or sqlite_write
+    if (
+        write_cmd
+        and command in _STDOUT_COMPRESSORS
+        and any(
+            arg in _STDOUT_FLAGS
+            or (arg.startswith("-") and not arg.startswith("--") and "c" in arg.lstrip("-"))
+            for arg in args
+        )
+    ):
+        # The operand is still opened, just not modified, so it becomes a READ rather than nothing.
+        write_cmd = False
+        read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last or flag_only):
         return []
@@ -1592,6 +1625,21 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             continue
         operands.append((arg, writing))
     return operands
+
+
+def _shell_words(text: str) -> "list[str]":
+    """Split a `shell = True` command line the way the shell does.
+
+    A plain `str.split()` tore `cat '/media/x/My Documents/private.txt'` into two tokens, neither of
+    which looked absolute, so the read was never seen. Quotes are the thing being decided here.
+    """
+    if not text:
+        return []
+    try:
+        words = shlex.split(text)
+    except ValueError:  # unbalanced quotes: the raw words are the best available reading
+        words = text.split()
+    return words or [text]
 
 
 def _serializes_to_second_arg(func, module_aliases: "dict | None" = None) -> bool:
@@ -2629,16 +2677,16 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         for argument in (*call.args, *(k.value for k in call.keywords)):
             for piece in ast.walk(argument):
                 if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
-                    words.extend(piece.value.split() or [piece.value])
+                    words.extend(_shell_words(piece.value))
                 elif isinstance(piece, ast.Name):
                     # Split a folded value the same way a literal is split. `cmd = "cat /media/x";
                     # subprocess.run(cmd, shell = True)` otherwise appended one unrecognised word,
                     # so the operand scan saw no command and no path.
                     folded = bindings.get(piece.id)
                     if isinstance(folded, str) and folded:
-                        words.extend(folded.split() or [folded])
+                        words.extend(_shell_words(folded))
                     for path in rebound.get(piece.id, ()):
-                        words.extend(path.split() or [path])
+                        words.extend(_shell_words(path))
         # `subprocess.run(["echo"], executable = "/media/x")` LAUNCHES that binary; argv[0] is only
         # what the child sees as its name. Scanned on its own, since a recognised argv command
         # otherwise suppressed the fallback that would have caught it.

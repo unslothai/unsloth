@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `-c` only stops the operand being REWRITTEN; it is still opened.
+    f"gzip -c {_OUTSIDE_DIR}/x",
+    f"zstd {_OUTSIDE_DIR}/x",
     # `zcat` and friends uncompress the file they are given to stdout.
     f"zcat {_OUTSIDE_DIR}/private.gz",
     f"zstdcat {_OUTSIDE_DIR}/private.zst",
@@ -3554,6 +3557,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     f"import os\nos.replace({_OUTSIDE_FILE!r}, 'b')",
     f"import os\nos.remove({_OUTSIDE_FILE!r})",
     f"from pathlib import Path\np = Path('x')\np.replace({_OUTSIDE_FILE!r})",
+    # A quoted path with a space in a `shell = True` command line.
+    f"import subprocess\nsubprocess.run(\"cat '{_OUTSIDE_DIR}/My Documents/private.txt'\", shell = True)",
     # `io.open_code` opens its argument in binary mode, which is a read of that path.
     f"import io\nprint(io.open_code({_OUTSIDE_FILE!r}).read())",
     # `ZipFile.write` / `TarFile.add` name a SOURCE on disk and copy it into the archive.
@@ -3743,6 +3748,10 @@ _INDIRECT_BENIGN_TERMINAL = (
     "basename /media/alice/private.txt",
     "dirname /media/alice/private.txt",
     "zcat archive.gz",
+    # `-c` keeps the original unchanged, so a system-root read stays a read.
+    "gzip -dc /usr/share/doc/archive.gz",
+    "gunzip -c /usr/share/doc/archive.gz",
+    "zstd out.txt",
     "cat <(cat $(echo notes.txt))",
     "diff <(sort a) <(sort b)",
     # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
