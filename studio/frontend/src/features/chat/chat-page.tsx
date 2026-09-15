@@ -127,6 +127,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
@@ -184,12 +185,15 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  reasoningFieldsAfterCatalogRefresh,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -2549,14 +2553,20 @@ export function ChatPage({
       : effortLevels.includes("medium")
         ? "medium"
         : clampedEffort;
+    const catalogDefaultEffort =
+      reasoningCaps.defaultEffort &&
+      effortLevels.includes(reasoningCaps.defaultEffort)
+        ? reasoningCaps.defaultEffort
+        : null;
     const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? isAnthropic
-        ? anthropicTopEffort
-        : isOpenAI
-          ? openaiDefaultEffort
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort
+      ? (catalogDefaultEffort ??
+        (isAnthropic
+          ? anthropicTopEffort
+          : isOpenAI
+            ? openaiDefaultEffort
+            : effortLevels.includes("medium")
+              ? "medium"
+              : clampedEffort))
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
@@ -2653,6 +2663,34 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
+  // never the selection defaults above, so a chosen effort and the pills survive the refresh.
+  const modelCatalogChange = useSyncExternalStore(
+    subscribeModelCatalog,
+    modelCatalogVersion,
+  );
+  const appliedCatalogChange = useRef(modelCatalogChange);
+  useEffect(() => {
+    if (appliedCatalogChange.current === modelCatalogChange) return;
+    appliedCatalogChange.current = modelCatalogChange;
+    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    if (!selection) return;
+    const { providers, connectionsEnabled: enabled } = useExternalProvidersStore.getState();
+    const provider = enabled
+      ? providers.find((p) => p.id === selection.providerId)
+      : undefined;
+    const caps = getExternalReasoningCapabilities(
+      provider?.providerType,
+      selection.modelId,
+      {
+        isReasoningProvider: provider?.isReasoningModel === true,
+        baseUrl: provider?.baseUrl ?? null,
+      },
+    );
+    useChatRuntimeStore.setState(
+      reasoningFieldsAfterCatalogRefresh(useChatRuntimeStore.getState(), caps),
+    );
+  }, [modelCatalogChange, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -3165,14 +3203,20 @@ export function ChatPage({
           : effortLevels.includes("medium")
             ? "medium"
             : clampedEffort;
+        const catalogDefaultEffort =
+          reasoningCaps.defaultEffort &&
+          effortLevels.includes(reasoningCaps.defaultEffort)
+            ? reasoningCaps.defaultEffort
+            : null;
         const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? isAnthropic
-            ? anthropicTopEffort
-            : isOpenAI
-              ? openaiDefaultEffort
-              : effortLevels.includes("medium")
-                ? "medium"
-                : clampedEffort
+          ? (catalogDefaultEffort ??
+            (isAnthropic
+              ? anthropicTopEffort
+              : isOpenAI
+                ? openaiDefaultEffort
+                : effortLevels.includes("medium")
+                  ? "medium"
+                  : clampedEffort))
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.
