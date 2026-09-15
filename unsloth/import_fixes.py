@@ -2665,6 +2665,47 @@ def _torchcodec_provenance_hint() -> "str | None":
     )
 
 
+def _ffmpeg_on_loader_path():
+    """Every library torchcodec links (per the shipped libtorchcodec_core*.so NEEDED entries) resolvable by the dynamic loader. Distros package them separately, so a host missing only libswscale cannot load the codec; calling that present sends the user at a torch ABI bug."""
+    import ctypes.util
+    import glob
+    import os
+
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    # A prefix on LD_LIBRARY_PATH may ship only versioned files (libavcodec.so.61), which the loader resolves but find_library never sees: it reads the ld cache and linker names.
+    libdirs = [d for v in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH") for d in os.environ.get(v, "").split(os.pathsep) if d]
+    for name in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
+        if ctypes.util.find_library(name):
+            continue
+        # find_library does not glob, so walk PATH for Windows names like avutil-59.dll. Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
+        if os.name == "nt" and any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
+            continue
+        if os.name != "nt" and any(glob.glob(os.path.join(d, "lib" + name + ".so*")) or glob.glob(os.path.join(d, "lib" + name + ".*dylib")) for d in libdirs):
+            continue
+        return False
+    return True
+
+
+def torchcodec_load_state():
+    """One of "ok", "absent", "broken", "ffmpeg" or "native": what `import torchcodec` does on this interpreter (#8642).
+
+    The wheel is Python-side only: it installs and satisfies the torch/torchcodec matrix, then fails at import when FFmpeg's avcodec/avutil are absent, which `datasets` 4.x reports as "please install torchcodec" for an installed package. The Studio installers print this after the Python deps land (loading this file by path, since `import unsloth` needs a GPU stack the venv may not have) and word their step line from it. Importing torchcodec imports torch, so callers bound it.
+    """
+    try:
+        import torchcodec  # noqa: F401
+    except ModuleNotFoundError as e:
+        # An absent package always names itself here, so any other name (a transitive module, or a submodule of a damaged wheel) means present but broken.
+        return "absent" if getattr(e, "name", "") == "torchcodec" else "broken"
+    except Exception:  # noqa: BLE001
+        import traceback
+
+        # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other runtime deps, so the text cannot pick between them. Ask the system: FFmpeg missing from the loader path is the one cause establishable here.
+        if "libtorchcodec" not in traceback.format_exc():
+            return "broken"
+        return "native" if _ffmpeg_on_loader_path() else "ffmpeg"
+    return "ok"
+
+
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 

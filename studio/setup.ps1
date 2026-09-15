@@ -6672,55 +6672,23 @@ if (-not $SkipPythonDeps -or (Test-Path -LiteralPath (Join-Path $VenvDir 'Script
     # Importing torchcodec imports torch: bound it so a wedged GPU runtime cannot
     # hang setup. No double quotes anywhere in the body, comments included: the helper
     # wraps it in them for -c <body>, so one more silently truncates the program.
+    # The classification itself lives in unsloth/import_fixes.py, shared with setup.sh.
     $_torchcodecProbe = @'
-import signal
+import importlib.util, os, signal
 _alarm = getattr(signal, 'alarm', None)
 if _alarm is not None:
     _alarm(60)
-
-
-def _ffmpeg_on_loader_path():
-    import ctypes.util, glob, os
-    # EVERY library torchcodec links, per the shipped libtorchcodec_core*.so NEEDED
-    # entries. Distros package these separately, so a host missing only libswscale
-    # cannot load the codec; calling that present sends the user at a torch ABI bug.
-    dirs = [d for d in os.environ.get('PATH', '').split(os.pathsep) if d]
-    # A prefix on LD_LIBRARY_PATH may ship only versioned files (libavcodec.so.61), which
-    # the loader resolves but find_library never sees: it reads the ld cache and linker names.
-    libdirs = [d for v in ('LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH')
-               for d in os.environ.get(v, '').split(os.pathsep) if d]
-    for name in ('avutil', 'avcodec', 'avformat', 'avdevice', 'avfilter',
-                 'swscale', 'swresample'):
-        if ctypes.util.find_library(name):
-            continue
-        # find_library does not glob, so walk PATH for Windows names like avutil-59.dll.
-        # Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
-        if os.name == 'nt' and any(glob.glob(os.path.join(d, name + '-*.dll')) for d in dirs):
-            continue
-        if os.name != 'nt' and any(glob.glob(os.path.join(d, 'lib' + name + '.so*'))
-                                   or glob.glob(os.path.join(d, 'lib' + name + '.*dylib')) for d in libdirs):
-            continue
-        return False
-    return True
-
-
-try:
-    import torchcodec  # noqa: F401
-except ModuleNotFoundError as e:
-    # An absent package always names itself here, so any other name (a transitive
-    # module, or a submodule of a damaged wheel) means present but broken.
-    print('TORCHCODEC=' + ('absent' if getattr(e, 'name', '') == 'torchcodec' else 'broken'))
-except Exception:
-    import traceback
-    # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other
-    # runtime deps, so the text cannot pick between them. Ask the system: FFmpeg
-    # missing from the loader path is the one cause establishable here.
-    if 'libtorchcodec' not in traceback.format_exc():
-        print('TORCHCODEC=broken')
-    else:
-        print('TORCHCODEC=' + ('native' if _ffmpeg_on_loader_path() else 'ffmpeg'))
-else:
-    print('TORCHCODEC=ok')
+# The probe is unsloth.import_fixes.torchcodec_load_state. Load that file alone: the package
+# import needs a GPU stack this venv may not have. No unsloth means no report, as an absent torchcodec does.
+_spec = importlib.util.find_spec('unsloth')
+# The first location holding the file: a bare `unsloth` directory elsewhere on sys.path is a namespace package without it.
+_paths = [os.path.join(d, 'import_fixes.py') for d in (getattr(_spec, 'submodule_search_locations', None) or [])] if _spec else []
+_paths = [p for p in _paths if os.path.isfile(p)]
+if _paths:
+    _fx = importlib.util.spec_from_file_location('unsloth_import_fixes', _paths[0])
+    _mod = importlib.util.module_from_spec(_fx)
+    _fx.loader.exec_module(_mod)
+    print('TORCHCODEC=' + _mod.torchcodec_load_state())
 '@
     # The venv interpreter by path: under install.ps1's SKIP_STUDIO_BASE=1 nothing puts
     # the venv on PATH, so bare `python` is the system one and answers a silent "absent".

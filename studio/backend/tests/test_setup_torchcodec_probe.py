@@ -8,6 +8,7 @@ satisfies notebook_validator's torch/torchcodec matrix, then fails at import, wh
 `datasets` 4.x reports as "please install 'torchcodec'" for an installed package.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -68,10 +69,12 @@ def _probe(preamble: str) -> str:
     """The state the installers would read: the sentinel line, not all of stdout."""
     # sys.executable, not a bare "python": a host with only python3 on PATH (Debian
     # without python-is-python3, the AMD CI runners) has no `python` to find.
+    # The checkout's own unsloth/import_fixes.py, not whichever unsloth is installed.
     out = subprocess.run(
         [sys.executable, "-c", preamble + _PROBE],
         capture_output = True,
         text = True,
+        env = {**os.environ, "PYTHONPATH": str(_STUDIO.parent)},
     )
     states = [
         line[len("TORCHCODEC=") :].strip()
@@ -181,14 +184,26 @@ def test_versioned_libraries_on_the_loader_path_count_as_present(tmp_path):
     assert _probe(libs.replace("'posix'", "'nt'") + same_error) == "ffmpeg"
 
 
-@pytest.mark.parametrize("probe", [_shipped_sh_probe, _shipped_ps1_probe], ids = ["sh", "ps1"])
-def test_both_installers_require_every_ffmpeg_library(probe):
-    # Otherwise the copies drift: one installer keeps calling a partial FFmpeg present.
-    body = probe()
+_IMPORT_FIXES = _STUDIO.parent / "unsloth" / "import_fixes.py"
+
+
+def test_the_probe_requires_every_ffmpeg_library():
     # All seven, per the shipped libtorchcodec_core*.so NEEDED entries. A subset reports
     # a partial FFmpeg as present and sends the user at the wrong fix.
+    text = _IMPORT_FIXES.read_text(encoding = "utf-8")
+    body = text[text.index("def _ffmpeg_on_loader_path"): text.index("def torchcodec_load_state")]
     for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
-        assert f"'{lib}'" in body or f'"{lib}"' in body, (lib, body)
+        assert f'"{lib}"' in body, lib
+
+
+@pytest.mark.parametrize("probe", [_shipped_sh_probe, _shipped_ps1_probe], ids = ["sh", "ps1"])
+def test_both_installers_load_the_probe_from_import_fixes(probe):
+    # One classification, in unsloth/import_fixes.py, loaded by file: `import unsloth`
+    # needs a GPU stack the venv may not have, and a second copy here would drift.
+    body = probe()
+    assert "import_fixes.py" in body and "spec_from_file_location" in body
+    assert "torchcodec_load_state()" in body
+    assert "import unsloth\n" not in body and "import torchcodec" not in body
 
 
 def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
@@ -367,7 +382,7 @@ def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
             str(harness),
             str(_SETUP_PS1),
             sys.executable,
-            str(tmp_path),
+            os.pathsep.join([str(tmp_path), str(_STUDIO.parent)]),
         ],
         capture_output = True,
         text = True,

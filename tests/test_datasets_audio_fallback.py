@@ -216,6 +216,28 @@ def test_the_audio_extras_carry_the_fallback_decoders():
         assert {"torchcodec", "soundfile", "av"} <= names, name
 
 
+def test_torchcodec_load_state_names_each_outcome(monkeypatch, tmp_path):
+    # The installers print this word and pick their step line from it.
+    import sys
+    import types
+
+    for name in [n for n in sys.modules if n == "torchcodec" or n.startswith("torchcodec.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, "torchcodec", types.ModuleType("torchcodec"))
+    assert import_fixes.torchcodec_load_state() == "ok"
+    monkeypatch.setitem(sys.modules, "torchcodec", None)
+    assert import_fixes.torchcodec_load_state() == "absent"
+    monkeypatch.delitem(sys.modules, "torchcodec")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "torchcodec.py").write_text("raise RuntimeError('Could not load libtorchcodec')\n", encoding = "utf-8")
+    monkeypatch.setattr(import_fixes, "_ffmpeg_on_loader_path", lambda: False)
+    assert import_fixes.torchcodec_load_state() == "ffmpeg"
+    monkeypatch.setattr(import_fixes, "_ffmpeg_on_loader_path", lambda: True)
+    assert import_fixes.torchcodec_load_state() == "native"
+    (tmp_path / "torchcodec.py").write_text("raise ImportError('DLL load failed while importing _core')\n", encoding = "utf-8")
+    assert import_fixes.torchcodec_load_state() == "broken"
+
+
 def _normalized(path: Path, name: str, rename: dict) -> str:
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
