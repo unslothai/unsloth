@@ -1669,10 +1669,12 @@ pythonpath = ["."]
 markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+    "reads_real_pip_config: opts out of the hermetic pip config stub, for the few tests that drive that read themselves",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with
 # `-m 'gpu or slow'`, and `pytest -m gpu tests/` gets them back locally.
 # A run that names one of these files directly will report "no tests ran"
 # until you pass `-m gpu` -- that is the cost of the default being fast.
-addopts = "-m 'not gpu and not slow'"
+# Live Studio tests are opt-in: `pytest -m server`.
+addopts = "-m 'not gpu and not slow and not server'"

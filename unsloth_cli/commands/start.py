@@ -796,6 +796,7 @@ _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
+_START_PORT_PREFIX = "UNSLOTH_START_PORT: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 
 
@@ -1091,11 +1092,15 @@ def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
         return False
 
 
-def _log_tail(path: Path, lines: int = 20) -> str:
+def _read_log(path: Path) -> str:
     try:
-        return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
+        return path.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return "(no server log)"
+
+
+def _log_tail(path: Path, lines: int = 20) -> str:
+    return "\n".join(_read_log(path).splitlines()[-lines:])
 
 
 def _redacted_log_tail(path: Path, lines: int = 20) -> str:
@@ -1155,8 +1160,8 @@ def _start_studio_server(
     model: str,
     load: LoadOptions,
     server: ServerOptions = ServerOptions(),
-) -> subprocess.Popen:
-    """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
+) -> tuple:
+    """Spawn `unsloth run` for `model`, wait until it is fully ready, and return (base, server)."""
     global _auto_served_server
     # Windows goes through this interpreter, not the launcher on PATH: shutil.which resolves `unsloth` to the denied unsloth.exe, since PATHEXT puts .EXE ahead of the .cmd shim (#8490). Without this, a user who reached the CLI through unsloth.cmd would still fail here. sys.executable is the interpreter already running this command, so the child inherits the same environment.
     if sys.platform == "win32":
@@ -1246,6 +1251,7 @@ def _start_studio_server(
     progress: Optional[_ModelDownloadProgress] = None
     downloaded_bytes = 0
     early_key_seen = False
+    port_followed = False
     try:
         while time.monotonic() < deadline:
             if server.poll() is not None:
@@ -1254,6 +1260,17 @@ def _start_studio_server(
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
+            # `unsloth run` falls forward off a taken port, so poll the port it reports. Printed
+            # once, so read the whole log, not the tail below.
+            if not port_followed:
+                bound_port = re.search(
+                    rf"^{re.escape(_START_PORT_PREFIX)}(\d+)$",
+                    _read_log(log_path),
+                    flags = re.MULTILINE,
+                )
+                if bound_port:
+                    port_followed = True
+                    base = _effective_base(base, int(bound_port.group(1)))
             if progress is None:
                 marker = re.search(
                     rf"^{re.escape(_START_API_KEY_PREFIX)}(sk-unsloth-[^\s]+)$",
@@ -1287,7 +1304,7 @@ def _start_studio_server(
                     progress.complete()
                     progress.close()
                     progress = None
-                return server
+                return base, server
             time.sleep(2.0)
     finally:
         if progress is not None:
@@ -1299,13 +1316,13 @@ def _start_studio_server(
     )
 
 
-def _effective_base(base: str) -> str:
+def _effective_base(base: str, port: Optional[int] = None) -> str:
     # `unsloth run` binds to `parsed.port or 8888` and serves at the root, so normalize UNSLOTH_STUDIO_URL to plain scheme://host:port. A portless http://127.0.0.1 would otherwise launch on 8888 but poll port 80, and a path like /studio would poll /studio/api/health (404), either way hitting the startup timeout. IPv6 literals stay bracketed.
     parsed = urlparse(base)
     host = parsed.hostname or "127.0.0.1"
     if ":" in host:  # bare IPv6 literal (urlparse strips the brackets)
         host = f"[{host}]"
-    return f"{parsed.scheme or 'http'}://{host}:{parsed.port or 8888}"
+    return f"{parsed.scheme or 'http'}://{host}:{port or parsed.port or 8888}"
 
 
 def _require_studio(
@@ -1370,7 +1387,7 @@ def _require_studio(
         expected = _effective_base(expected)
         load = load or LoadOptions()
         # Leave a bare GGUF repo's variant unset: the server's own quant preference already picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back when that exact quant is missing, which forcing a fixed variant here would break.
-        return expected, _start_studio_server(expected, model, load, server_options)
+        return _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
         f"No running Unsloth server found at {expected}.{model_hint} start one with "

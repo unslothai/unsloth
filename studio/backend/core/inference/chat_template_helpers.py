@@ -1017,7 +1017,7 @@ def neutralize_control_markup_in_messages(
     cache: dict = None,
     markup = None,
 ) -> list:
-    """Neutralize control markup in message content and tool-result names (#7066). User / system /
+    """Neutralize control markup in message content and names (#7066). User / system /
     tool turns lose every marker; assistant turns lose only turn boundaries and keep the think /
     channel / tool markup replayed history legitimately holds. Returns the same list object when
     nothing changed, so the prompt stays byte-for-byte what it was. Pass a ``sweep_cache()`` when
@@ -1082,7 +1082,7 @@ def neutralize_control_markup_in_messages(
             if new_result_id != result_id:
                 updates["tool_call_id"] = new_result_id
         name = msg.get("name")
-        if role == "tool" and isinstance(name, str) and name:
+        if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
@@ -1931,6 +1931,19 @@ def reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
         forced,
     )
     return "auto"
+
+
+def forced_tool_catalog(tool_choice, tools):
+    forced = forced_tool_name(tool_choice)
+    if forced is None:
+        return []
+    return [
+        tool
+        for tool in tools or []
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and tool["function"].get("name") == forced
+    ]
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
@@ -2969,7 +2982,7 @@ def messages_with_attached_image(
             for m in conversation
         )
     ]
-    if not parts:
+    if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
         message = conversation[index]
@@ -2980,9 +2993,11 @@ def messages_with_attached_image(
             content = [{"type": "text", "text": content or fallback_user_text}]
         elif not isinstance(content, list):
             break
+        elif fallback_user_text and not last_user_text([message]):
+            content = [*content, {"type": "text", "text": fallback_user_text}]
         conversation[index] = {**message, "content": parts + list(content)}
         return conversation
-    if fallback_user_text:
+    if parts and fallback_user_text:
         conversation.append(
             {"role": "user", "content": parts + [{"type": "text", "text": fallback_user_text}]}
         )
