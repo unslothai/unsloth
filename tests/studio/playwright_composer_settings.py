@@ -143,6 +143,9 @@ def main():
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(base + PAGE)
+                page.get_by_role("switch", name = "Plain text composer", exact = True).wait_for(
+                    state = "visible", timeout = 60_000
+                )
                 check_settings(page)
                 assert not errors, errors
             finally:

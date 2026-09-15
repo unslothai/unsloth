@@ -59,6 +59,9 @@ def main():
             ).perform()
 
         driver.get(base + "/smoke-prompt-queue-actions.html")
+        WebDriverWait(driver, 60).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "[data-queue-item-id]"))
+        )
         order(["q0", "q1", "q2"])
         label("Reorder queued prompt 3 of 3").send_keys(Keys.HOME)
         order(["q2", "q0", "q1"])
@@ -108,6 +111,9 @@ def main():
         label("Remove queued prompt 2").click()
         order(["q0"])
         driver.get(base + "/smoke-composer-settings.html")
+        WebDriverWait(driver, 60).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, '[aria-label="Message"]'))
+        )
         label("Message")
         driver.execute_script("localStorage.clear()")
         driver.refresh()

@@ -18,6 +18,7 @@ on:
       - 'tests/studio/*prompt_queue*'
       - 'tests/studio/_playwright_robust.py'
       - '.github/workflows/studio-composer-compatibility.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 permissions:
@@ -91,14 +92,44 @@ jobs:
       - name: Install Linux browser libraries
         if: runner.os == 'Linux'
         timeout-minutes: 10
-        run: python -m playwright install-deps chromium firefox webkit
+        env:
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          if python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              for name in ("chromium", "firefox", "webkit"):
+                  browser = getattr(p, name).launch()
+                  browser.close()
+          PY
+          then
+            echo "Browser libraries are already installed"
+          else
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python -m playwright install-deps chromium firefox webkit
+          fi
       - name: Queue engine and composer regressions
         if: matrix.suite == 'browsers'
         working-directory: studio/frontend
-        run: node --experimental-strip-types --test tests/composer-*.test.ts tests/prompt-queue-*.test.ts tests/model-lifecycle-gate.test.ts tests/pre-stream-run-reservation.test.ts tests/auto-compaction-settings.test.ts
+        run: node --experimental-strip-types --test tests/composer-*.test.ts tests/prompt-queue-*.test.ts tests/model-lifecycle-gate.test.ts tests/loading-model-selection.test.ts tests/pre-stream-run-reservation.test.ts tests/auto-compaction-settings.test.ts
       - name: Browser simulations
         if: matrix.suite == 'browsers'
-        run: python tests/studio/run_composer_compatibility.py
+        run: |
+          mkdir -p temp/queue-validation/compatibility
+          status=0
+          for browser in chromium firefox webkit chrome msedge; do
+            export PW_ENGINE=chromium
+            unset PW_CHANNEL PW_EXECUTABLE
+            case "$browser" in
+              firefox|webkit) export PW_ENGINE="$browser" ;;
+              chrome|msedge) export PW_CHANNEL="$browser" ;;
+            esac
+            python tests/studio/playwright_prompt_queue_actions.py \
+              > "temp/queue-validation/compatibility/$browser-queue.log" 2>&1 || status=1
+            python tests/studio/playwright_composer_settings.py \
+              > "temp/queue-validation/compatibility/$browser-composer.log" 2>&1 || status=1
+          done
+          exit "$status"
       - name: Native Safari simulations
         if: ${{ !cancelled() && matrix.suite == 'safari' }}
         run: |

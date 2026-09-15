@@ -205,7 +205,8 @@ def test_composer_only_queues_behind_the_current_chat():
     # abort and cleanup branches beside it hold the same comparison, so a
     # whole-file search stays green while the dispatch alone regresses to `.has`.
     dispatch_guard = _guard_for(
-        THREAD, "startPromptQueue(items, target, waitForCurrentRun, behavior);"
+        THREAD,
+        "startPromptQueue(\n              items,\n              target,\n              reservation.waitForCurrentRun,\n              reservation.behavior,\n            );",
     )
     assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
     assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
@@ -514,7 +515,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
     assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
-    assert "beginModelLoading()" in CHAT_ADAPTER
+    assert 'beginModelLoading("loading")' in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
     lifecycle = _between(
         CHAT_ADAPTER,
@@ -524,7 +525,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     # The probe waits out an in-flight load rather than reading a status taken
     # mid-replacement, which names the outgoing model alongside the incoming one.
     probe = "await waitForSettledServerStatus({ abortSignal })"
-    assert lifecycle.index("beginModelLoading()") < lifecycle.index(probe)
+    assert lifecycle.index('beginModelLoading("loading")') < lifecycle.index(probe)
     assert lifecycle.index(probe) < lifecycle.index("await autoLoadSmallestModel(")
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
     assert f"const settled = {probe};" in lifecycle
