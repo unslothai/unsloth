@@ -20,6 +20,9 @@ import weakref
 
 import pytest
 import torch
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.utils import attention_dispatch
 from unsloth.utils import packing as packing_utils
@@ -236,7 +239,14 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 
 
 @pytest.mark.skipif(
-    torch.cuda.device_count() < 2 or packing_utils._XFormersBlockMask is None,
+    # has_real_accelerator() first, and not merely for tidiness: the spoof in
+    # tests/_zoo_aggressive_cuda_spoof.py makes device_count() return 1 process-wide, so
+    # this guard's answer on a CPU-only runner is the spoof's, not the machine's. It
+    # happens to skip today because 1 < 2; raise that stub to 2 to exercise a multi-GPU
+    # path and this test un-skips on a box with no card at all.
+    not has_real_accelerator()
+    or torch.cuda.device_count() < 2
+    or packing_utils._XFormersBlockMask is None,
     reason = "needs xFormers and two CUDA devices",
 )
 def test_real_xformers_packed_mask_validates_on_each_device():

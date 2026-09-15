@@ -40,16 +40,61 @@ _TESTS_ROOT = Path(__file__).resolve().parents[1]
 
 # The spoof itself, the recorded-answer helper and conftest are what implement the
 # real probe. They are the only places allowed to call the raw torch API for it.
+_SPOOF = _TESTS_ROOT / "_zoo_aggressive_cuda_spoof.py"
+
 _ALLOWED = {
-    _TESTS_ROOT / "_zoo_aggressive_cuda_spoof.py",
+    _SPOOF,
     _TESTS_ROOT / "_shared" / "real_accelerator.py",
     _TESTS_ROOT / "conftest.py",
 }
 
+# Every probe the spoof answers that a skip guard could plausibly ask. is_available was the
+# only one listed, and it is not the only one spoofed: device_count returns 1, is_initialized
+# True, is_bf16_supported True, get_device_capability (8, 0). A guard written
+# `skipif(torch.cuda.device_count() == 0)` or `skipif(not torch.cuda.is_bf16_supported())`
+# read exactly as safe and evaded this test completely.
+# test_the_spoofed_probe_list_keeps_up_with_the_spoof below keeps this in step.
 _SPOOFED_CALLS = {
     ("torch", "cuda", "is_available"),
     ("torch", "xpu", "is_available"),
     ("torch", "accelerator", "is_available"),
+    ("torch", "cuda", "device_count"),
+    ("torch", "cuda", "is_initialized"),
+    ("torch", "cuda", "is_bf16_supported"),
+    ("torch", "cuda", "get_device_capability"),
+    ("torch", "cuda", "get_device_name"),
+    ("torch", "cuda", "get_device_properties"),
+}
+
+# The rest of what the spoof patches: things a test DOES, not things it asks. Seeding,
+# stream and event plumbing, cache and device handling. Listing them is what lets the
+# meta-test below insist that every newly spoofed name is put in one bucket or the other.
+_SPOOFED_NON_PREDICATES = {
+    ("torch", "Tensor", "is_pinned"),
+    ("torch", "Tensor", "pin_memory"),
+    ("torch", "cuda", "Event"),
+    ("torch", "cuda", "Stream"),
+    ("torch", "cuda", "_is_in_bad_fork"),
+    ("torch", "cuda", "_unsloth_consolidated_spoof"),
+    ("torch", "cuda", "amp"),
+    ("torch", "cuda", "cudart"),
+    ("torch", "cuda", "current_device"),
+    ("torch", "cuda", "current_stream"),
+    ("torch", "cuda", "default_stream"),
+    ("torch", "cuda", "empty_cache"),
+    ("torch", "cuda", "get_rng_state"),
+    ("torch", "cuda", "get_rng_state_all"),
+    ("torch", "cuda", "initial_seed"),
+    ("torch", "cuda", "manual_seed"),
+    ("torch", "cuda", "manual_seed_all"),
+    ("torch", "cuda", "nvtx"),
+    ("torch", "cuda", "seed"),
+    ("torch", "cuda", "seed_all"),
+    ("torch", "cuda", "set_device"),
+    ("torch", "cuda", "set_rng_state"),
+    ("torch", "cuda", "set_rng_state_all"),
+    ("torch", "cuda", "stream"),
+    ("torch", "cuda", "synchronize"),
 }
 
 # The other half of the hazard above: a skip guard decides whether a test RUNS, these
@@ -85,6 +130,46 @@ def _skipif_calls(tree: ast.AST):
                 yield decorator
 
 
+def _is_real_accelerator_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and _dotted(node.func)[-1:] == ("has_real_accelerator",)
+
+
+def _is_negated_real_accelerator(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and _is_real_accelerator_call(node.operand)
+    )
+
+
+def _unguarded_spoofed_calls(node: ast.AST, guarded: bool = False):
+    """Spoofable probes in `node` whose value the spoof is still free to decide.
+
+    Python's `and` / `or` short-circuit, so a probe is safe once an earlier conjunct in
+    the same chain has already settled the CPU-only case:
+
+        skipif(not has_real_accelerator() or torch.cuda.device_count() < 2)
+        skipif(has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12)
+
+    In both, `torch.cuda.*` is reached only on a machine that really has a card, and
+    there the spoof has nothing left to lie about. Flagging those would push guards
+    towards the unguarded spelling, which is the opposite of the point.
+    """
+    if isinstance(node, ast.BoolOp):
+        is_and = isinstance(node.op, ast.And)
+        gate = _is_real_accelerator_call if is_and else _is_negated_real_accelerator
+        seen_gate = guarded
+        for value in node.values:
+            yield from _unguarded_spoofed_calls(value, seen_gate)
+            if gate(value):
+                seen_gate = True
+        return
+    if isinstance(node, ast.Call) and _dotted(node.func) in _SPOOFED_CALLS and not guarded:
+        yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _unguarded_spoofed_calls(child, guarded)
+
+
 def _python_test_files():
     for path in sorted(_TESTS_ROOT.rglob("*.py")):
         if path in _ALLOWED:
@@ -104,17 +189,52 @@ def test_no_skip_guard_reads_a_spoofable_accelerator_probe():
             # interpreter (the 3.9 floor checks). Not our business.
             continue
         for decorator in _skipif_calls(tree):
-            for call in ast.walk(decorator):
-                if isinstance(call, ast.Call) and _dotted(call.func) in _SPOOFED_CALLS:
-                    offenders.append(
-                        f"{path.relative_to(_TESTS_ROOT)}:{call.lineno}: "
-                        f"{'.'.join(_dotted(call.func))}()"
-                    )
+            for call in _unguarded_spoofed_calls(decorator):
+                offenders.append(
+                    f"{path.relative_to(_TESTS_ROOT)}:{call.lineno}: "
+                    f"{'.'.join(_dotted(call.func))}()"
+                )
     assert not offenders, (
         "these skip guards read a probe tests/_zoo_aggressive_cuda_spoof.py patches to "
         "True process-wide, so they un-skip on a CPU-only box whenever they share a "
-        "pytest session with tests/version_compat or tests/vllm_compat. Use "
-        "`from real_accelerator import has_real_accelerator` instead:\n  " + "\n  ".join(offenders)
+        "pytest session with tests/version_compat or tests/vllm_compat. Gate on "
+        "`from real_accelerator import has_real_accelerator` first, either alone or as the "
+        "conjunct that short-circuits ahead of the torch call:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_spoofed_probe_list_keeps_up_with_the_spoof():
+    """Every name the spoof patches has to be classified, or this guard rots quietly.
+
+    _SPOOFED_CALLS started as the three is_available probes while the spoof was already
+    answering device_count, is_initialized, is_bf16_supported and get_device_capability. A
+    skip guard reading any of those was un-skipped by the spoof and invisible to the test
+    above. Adding a patch to the spoof now fails here until it is called a predicate a skip
+    guard could read, or plumbing no guard would."""
+    spoof = ast.parse(_SPOOF.read_text(encoding = "utf-8"))
+    patched = set()
+    for node in ast.walk(spoof):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            name = _dotted(target)
+            if name[:1] == ("torch",) and len(name) >= 3:
+                patched.add(name)
+
+    classified = _SPOOFED_CALLS | _SPOOFED_NON_PREDICATES
+    unclassified = sorted(".".join(n) for n in patched - classified)
+    assert not unclassified, (
+        "the spoof patches these and this file does not say what they are. Put each in "
+        "_SPOOFED_CALLS if a skip guard could read it, or _SPOOFED_NON_PREDICATES if no "
+        "guard would:\n  " + "\n  ".join(unclassified)
+    )
+
+    # And nothing claimed here may have quietly stopped being spoofed, or the guard above
+    # is rejecting an idiom that is now perfectly safe.
+    stale = sorted(".".join(n) for n in (classified - patched) if n[1] == "cuda")
+    assert not stale, (
+        "these are listed as spoofed but the spoof no longer patches them:\n  "
+        + "\n  ".join(stale)
     )
 
 
@@ -282,9 +402,51 @@ def test_the_scanner_would_catch_a_regression(probe, tmp_path):
     )
     tree = ast.parse(offending.read_text(encoding = "utf-8"))
     found = [
-        call
-        for decorator in _skipif_calls(tree)
-        for call in ast.walk(decorator)
-        if isinstance(call, ast.Call) and _dotted(call.func) in _SPOOFED_CALLS
+        call for decorator in _skipif_calls(tree) for call in _unguarded_spoofed_calls(decorator)
     ]
     assert len(found) == 1
+
+
+def _offenders_in(condition: str) -> list[str]:
+    tree = ast.parse(
+        "import pytest\nimport torch\nfrom real_accelerator import has_real_accelerator\n\n\n"
+        f"@pytest.mark.skipif({condition}, reason = 'x')\n"
+        "def test_x():\n    pass\n"
+    )
+    return [
+        ".".join(_dotted(call.func))
+        for decorator in _skipif_calls(tree)
+        for call in _unguarded_spoofed_calls(decorator)
+    ]
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        # Short-circuits before the torch call on a machine with no accelerator, so the
+        # spoof never gets to answer. Both polarities, and nested one level down.
+        "not has_real_accelerator() or torch.cuda.device_count() < 2",
+        "has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12",
+        "not has_real_accelerator() or (torch.cuda.device_count() < 2 or x)",
+        "has_real_accelerator() and not torch.cuda.is_bf16_supported()",
+    ],
+)
+def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
+    assert _offenders_in(condition) == []
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        # The gate is there but does not dominate the torch call, so on a CPU-only box
+        # the spoof still decides. These are the near-misses the exemption must not cover.
+        ("torch.cuda.device_count() < 2 or not has_real_accelerator()", "gate comes after"),
+        ("has_real_accelerator() or torch.cuda.device_count() < 2", "and-gate under or"),
+        ("not has_real_accelerator() and torch.cuda.device_count() < 2", "or-gate under and"),
+        ("torch.cuda.device_count() < 2", "no gate at all"),
+        ("x if has_real_accelerator() else torch.cuda.device_count() < 2", "not a bool chain"),
+    ],
+)
+def test_a_gate_that_does_not_short_circuit_is_still_an_offender(condition):
+    expression, why = condition
+    assert _offenders_in(expression), f"missed: {why}"

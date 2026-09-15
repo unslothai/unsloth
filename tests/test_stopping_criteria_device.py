@@ -9,6 +9,9 @@ non-CUDA build.
 import types
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 from unsloth.chat_templates import create_stopping_criteria
@@ -48,7 +51,11 @@ def test_multi_token_criteria_builds_and_runs_on_cpu():
     assert criteria[0](torch.tensor([100, 101, 7]), None) is False
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs an accelerator")
+# Not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches that to True
+# process-wide, so sharing a session with tests/version_compat or tests/vllm_compat would
+# un-skip this on a CPU-only box and die inside torch. tests/python/test_accelerator_skip_guards.py
+# is the guard that catches it.
+@pytest.mark.skipif(not has_real_accelerator(), reason = "needs an accelerator")
 def test_stop_token_follows_the_input_device():
     criteria = create_stopping_criteria(_FakeTokenizer(eos_token_id = 2))
 
