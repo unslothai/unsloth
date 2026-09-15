@@ -2928,8 +2928,15 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
 def _inside_quotes(text: str, index: int) -> bool:
     """Whether *index* sits inside a quoted region, where an assignment is DATA and binds nothing."""
     quote = ""
+    escaped = False
     for character in text[:index]:
-        if quote:
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            # A backslash escapes the next character everywhere a single quote is not open, so
+            # `echo "x \" H=/tmp;"` never leaves the quoted region that `\"` only prints.
+            escaped = True
+        elif quote:
             if character == quote:
                 quote = ""
         elif character in "'\"":
