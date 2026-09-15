@@ -233,8 +233,7 @@ def test_the_spoofed_probe_list_keeps_up_with_the_spoof():
     # is rejecting an idiom that is now perfectly safe.
     stale = sorted(".".join(n) for n in (classified - patched) if n[1] == "cuda")
     assert not stale, (
-        "these are listed as spoofed but the spoof no longer patches them:\n  "
-        + "\n  ".join(stale)
+        "these are listed as spoofed but the spoof no longer patches them:\n  " + "\n  ".join(stale)
     )
 
 
