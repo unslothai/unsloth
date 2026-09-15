@@ -122,18 +122,11 @@ _ASSIGNMENT = re.compile(r"\$(?:script:|env:)?(\w+)\s*(?:=|\+=)\s*(.*)")
 # it. A ratchet: these counts may go down, never up, and the test fails BOTH ways -- too many is a
 # new site, too few is a stale entry that has stopped guarding anything.
 KNOWN_BYPASS_SITES = {
-    # studio/setup.bat:5. Removed by unblocking setup.ps1 through -Command first, then loading it
-    # under RemoteSigned: policy applies to script files, not to -Command, so the first call always
-    # runs and the second then loads a local unmarked script.
-    "studio/setup.bat": 1,
-    # scripts/uninstall.ps1:32, inside the printed _Usage here-string. Never executed, but AMSI
-    # scans the file whole and a classifier cannot tell a string from a statement.
-    "scripts/uninstall.ps1": 1,
-    # install.ps1:3433, the roaming-profile fallback for a launcher on a share. The only one that is
-    # genuinely load-bearing: %LOCALAPPDATA% can be folder-redirected to a UNC path, and RemoteSigned
-    # refuses an unsigned script there, so removing this needs the launcher written to a
-    # guaranteed-local directory first. Until then a shortcut that silently does nothing is worse
-    # than the token.
+    # install.ps1:3433, the roaming-profile fallback for a launcher on a share. The last one left,
+    # and the only one that is genuinely load-bearing: %LOCALAPPDATA% can be folder-redirected to a
+    # UNC path, RemoteSigned refuses an unsigned script there, and a desktop shortcut that silently
+    # does nothing is worse than the token. Removing it needs launch-studio.ps1 written to a
+    # guaranteed-local directory first.
     "install.ps1": 1,
 }
 
@@ -257,6 +250,48 @@ def _native_imports(text: str) -> set:
         for match in re.finditer(r"@\{\s*Name\s*=\s*\"(\w+)\"", text):
             imported.add(match.group(1))
     return imported
+
+
+def test_setup_bat_clears_the_mark_before_loading_under_remotesigned() -> None:
+    """The batch launcher's two calls, in order, and the one flag it must not grow.
+
+    `setup.bat` used to run `powershell -ExecutionPolicy Bypass -File setup.ps1`. RemoteSigned is
+    enough, because setup.ps1 ships beside it inside an installed package and is MyComputer-zone.
+    The exception is a package unzipped from a download, where setup.ps1 carries a mark of the web
+    that RemoteSigned honours and Bypass ignored, so the mark is cleared first. Execution policy
+    governs script FILES and not -Command, so that first call runs under any machine policy.
+
+    The launch must keep loading profiles. That is not an oversight: tests/studio/
+    test_amd_venv_repair_loop.ps1 drives a profile that sets `Set-StrictMode -Version Latest`
+    against setup.ps1, and adding -NoProfile here would silently retire that coverage.
+    """
+    text = _text("studio/setup.bat")
+    lines = [line for line in text.splitlines() if line.strip() and not line.strip().lower().startswith(("rem ", "@echo", "rem\t"))]
+    launches = [line for line in lines if "-File" in line and "setup.ps1" in line]
+    assert len(launches) == 1, f"expected exactly one setup.ps1 launch, found {launches}"
+    launch = launches[0]
+
+    assert "-ExecutionPolicy RemoteSigned" in launch, (
+        f"studio/setup.bat must load setup.ps1 under RemoteSigned, not a relaxed policy: {launch}"
+    )
+    assert "-NoProfile" not in launch, (
+        "studio/setup.bat must keep loading profiles for setup.ps1. "
+        "tests/studio/test_amd_venv_repair_loop.ps1 drives a profile that sets Set-StrictMode "
+        "against it, and -NoProfile here would retire that coverage without anything failing."
+    )
+
+    unblock = [line for line in lines if "Unblock-File" in line]
+    assert len(unblock) == 1, f"expected exactly one Unblock-File call, found {unblock}"
+    assert text.index(unblock[0]) < text.index(launch), (
+        "the mark of the web has to be cleared before the launch that RemoteSigned would refuse, "
+        "not after it"
+    )
+    # Interpolating the path into the command string breaks on an apostrophe in the install
+    # directory, which is a real Windows user name.
+    assert "$env:" in unblock[0], (
+        f"pass the script path to Unblock-File through an environment variable rather than "
+        f"interpolating it into the command string: {unblock[0]}"
+    )
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)

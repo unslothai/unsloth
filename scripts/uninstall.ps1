@@ -29,7 +29,11 @@ Unsloth Studio uninstaller (Windows PowerShell).
 
 Usage:
   irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
-  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned; .\scripts\uninstall.ps1
+
+RemoteSigned is enough for the second form: a git clone carries no mark of the
+web, so this script loads unsigned. From a downloaded zip it does carry one, so
+clear it first with:  Unblock-File .\scripts\uninstall.ps1
 
 Stops running Unsloth Studio servers, then removes the install dir, launcher
 data, CLI shim, desktop and Start Menu shortcuts, the user PATH entry and the
