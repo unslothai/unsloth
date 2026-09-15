@@ -5404,6 +5404,99 @@ exit 0
         return ($LASTEXITCODE -eq 0 -and $out -match '(?m)^GPU\s+\d+:')
     }
 
+    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
+    # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
+    # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
+    function Get-NvidiaLibraryInventory {
+        param([int]$TimeoutSec = 10)
+        if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
+        $script:NvidiaLibraryInventoryProbed = $true
+        $script:NvidiaLibraryInventory = $null
+        if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
+        $windows = ($env:OS -eq "Windows_NT")
+        $nvml = if ($windows) { "nvml.dll" } else { "libnvidia-ml.so.1" }
+        $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+        $source = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading.Tasks;
+public static class UnslothNvidiaProbe {
+    [DllImport("NVML_LIB")] static extern int nvmlInit_v2();
+    [DllImport("NVML_LIB")] static extern int nvmlShutdown();
+    [DllImport("NVML_LIB")] static extern int nvmlSystemGetCudaDriverVersion_v2(out int version);
+    [DllImport("NVML_LIB")] static extern int nvmlDeviceGetCount_v2(out uint count);
+    [DllImport("NVML_LIB")] static extern int nvmlDeviceGetHandleByIndex_v2(uint index, out IntPtr device);
+    [DllImport("NVML_LIB")] static extern int nvmlDeviceGetCudaComputeCapability(IntPtr device, out int major, out int minor);
+    [DllImport("CUDA_LIB")] static extern int cuInit(uint flags);
+    [DllImport("CUDA_LIB")] static extern int cuDriverGetVersion(out int version);
+    [DllImport("CUDA_LIB")] static extern int cuDeviceGetCount(out int count);
+    [DllImport("CUDA_LIB")] static extern int cuDeviceGet(out int device, int ordinal);
+    [DllImport("CUDA_LIB")] static extern int cuDeviceGetAttribute(out int value, int attribute, int device);
+    // "source;cudaMajor;cudaMinor;cap,cap", "" when neither library answers. Versions are
+    // major*1000 + minor*10. A missing library raises DllNotFoundException, caught in Read.
+    static string Nvml() {
+        if (nvmlInit_v2() != 0) return "";
+        try {
+            uint count; if (nvmlDeviceGetCount_v2(out count) != 0 || count == 0) return "";
+            int version = 0; nvmlSystemGetCudaDriverVersion_v2(out version);
+            var caps = new StringBuilder();
+            for (uint i = 0; i < count; i++) {
+                IntPtr device; int major, minor;
+                if (nvmlDeviceGetHandleByIndex_v2(i, out device) != 0) continue;
+                if (nvmlDeviceGetCudaComputeCapability(device, out major, out minor) != 0) continue;
+                if (caps.Length > 0) caps.Append(',');
+                caps.Append(major).Append('.').Append(minor);
+            }
+            return "nvml;" + (version / 1000) + ";" + ((version % 1000) / 10) + ";" + caps;
+        } finally { nvmlShutdown(); }
+    }
+    static string Cuda() {
+        if (cuInit(0) != 0) return "";
+        int count; if (cuDeviceGetCount(out count) != 0 || count == 0) return "";
+        int version = 0; cuDriverGetVersion(out version);
+        var caps = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            int device, major, minor;
+            if (cuDeviceGet(out device, i) != 0) continue;
+            // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+            if (cuDeviceGetAttribute(out major, 75, device) != 0) continue;
+            if (cuDeviceGetAttribute(out minor, 76, device) != 0) continue;
+            if (caps.Length > 0) caps.Append(',');
+            caps.Append(major).Append('.').Append(minor);
+        }
+        return "cuda;" + (version / 1000) + ";" + ((version % 1000) / 10) + ";" + caps;
+    }
+    static string Read() {
+        try { var r = Nvml(); if (r != "") return r; } catch (Exception) { }
+        try { return Cuda(); } catch (Exception) { return ""; }
+    }
+    // A wedged driver can block inside the library; the deadline leaves that thread behind.
+    public static string Probe(int timeoutMs) {
+        var task = Task.Run(new Func<string>(Read));
+        return task.Wait(timeoutMs) ? task.Result : "";
+    }
+}
+'@ -replace "NVML_LIB", $nvml -replace "CUDA_LIB", $cuda
+        try {
+            if (-not ("UnslothNvidiaProbe" -as [type])) { Add-Type -TypeDefinition $source -ErrorAction Stop }
+            $raw = [UnslothNvidiaProbe]::Probe($TimeoutSec * 1000)
+        } catch { return $null }
+        $parts = "$raw".Split(";")
+        if ($parts.Count -ne 4 -or -not $parts[3]) { return $null }
+        $caps = @($parts[3].Split(",") | Where-Object { $_ -match '^\d+\.\d+$' })
+        if ($caps.Count -eq 0) { return $null }
+        $script:NvidiaLibraryInventory = @{
+            Source      = $parts[0]
+            CudaMajor   = [int]$parts[1]
+            CudaMinor   = [int]$parts[2]
+            ComputeCaps = $caps
+            Count       = $caps.Count
+        }
+        return $script:NvidiaLibraryInventory
+    }
+    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
     # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
@@ -5424,6 +5517,11 @@ exit 0
                 } catch {}
             }
         }
+    }
+    if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
+        # Same promotion as setup.ps1: the gates below read $HasNvidiaSmi as "NVIDIA GPU present".
+        $HasNvidiaSmi = $true
+        Write-Host "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
     }
     # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
     $HasROCm = $false
@@ -6054,10 +6152,13 @@ exit 0
     # the wheel must support the host. Mirrors _nvidia_cu126_verdict in install.sh.
     function Get-NvidiaCu126Verdict {
         # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
-        param([string]$SmiExe, [int]$LegacyFloorSm = 75)
-        if (-not $SmiExe) { return '' }
-        $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
-        if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        param([string]$SmiExe, [int]$LegacyFloorSm = 75, [string[]]$ComputeCaps = @())
+        if ($ComputeCaps.Count -gt 0) {
+            $raw = $ComputeCaps -join "`n"
+        } elseif ($SmiExe) {
+            $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+            if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        } else { return '' }
         $legacy = $false
         $outsideCu126 = $false
         $seen = $false
@@ -6076,11 +6177,11 @@ exit 0
     }
 
     function Get-CudaFamilyCappedForPreTuring {
-        param([string]$Family, [string]$SmiExe)
+        param([string]$Family, [string]$SmiExe, [string[]]$ComputeCaps = @())
         if ($Family -notin @('cu128', 'cu130')) { return $Family }
         # torch 2.11.0+cu128 dropped Volta, so cu128 now strands a pre-Turing host as cu130 does.
         $legacyFloorSm = 75
-        switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm) {
+        switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm $ComputeCaps) {
             'cu126' {
                 substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
                 return 'cu126'
@@ -6104,22 +6205,34 @@ exit 0
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
             return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"
         }
-        if (-not $NvidiaSmiExe) { return "$baseUrl/cpu" }
-        try {
-            $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
-            if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
-                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                        { $family = "cu130" }
-                elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-                elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-                elseif ($major -ge 12) { $family = "cu124" }
-                elseif ($major -ge 11) { $family = "cu118" }
-                else { return "$baseUrl/cpu" }
-                return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe)"
+        $major = $null; $minor = $null; $caps = @()
+        if ($NvidiaSmiExe) {
+            try {
+                $output = Invoke-NvidiaSmiBounded $NvidiaSmiExe
+                if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
+                    $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+                }
+            } catch {}
+        }
+        if ($null -eq $major) {
+            # nvidia-smi absent, stale or hung: the driver library still names the version.
+            $inventory = Get-NvidiaLibraryInventory
+            if ($inventory) {
+                $major = $inventory.CudaMajor; $minor = $inventory.CudaMinor; $caps = $inventory.ComputeCaps
+            } elseif (-not $NvidiaSmiExe) {
+                return "$baseUrl/cpu"
+            } else {
+                substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
+                return "$baseUrl/cu126"
             }
-        } catch {}
-        substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
-        return "$baseUrl/cu126"
+        }
+        if ($major -ge 13)                        { $family = "cu130" }
+        elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+        elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+        elseif ($major -ge 12) { $family = "cu124" }
+        elseif ($major -ge 11) { $family = "cu118" }
+        else { return "$baseUrl/cpu" }
+        return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe $caps)"
     }
 
     function Remove-IndexUrlCredentials {

@@ -53,6 +53,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_nvidia_library_inventory()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_nvidia_cu126_verdict()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_cap_cuda_family_for_pre_turing()/,/^}/p' "$INSTALL_SH"
@@ -251,6 +253,41 @@ MOCK
 chmod +x "$_dir/nvidia-smi"
 _result=$(run_func "$_dir")
 assert_eq "unparseable -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+rm -rf "$_dir"
+
+# Helper: a python3 stand-in for the driver-library probe, printing "<cuda> <caps>".
+make_mock_probe() {
+    printf '#!/bin/sh\ncat >/dev/null\necho "%s"\n' "$2" > "$1/python3"
+    chmod +x "$1/python3"
+}
+
+# 8b) Unparseable banner, but the driver library names the version -> its family
+_dir=$(mktemp -d)
+cat > "$_dir/nvidia-smi" <<'MOCK'
+#!/bin/sh
+case "$1" in
+    -L) echo "GPU 0: NVIDIA GeForce RTX 5090 (UUID: GPU-fake-uuid)" ;;
+    *)  echo "something completely unexpected" ;;
+esac
+MOCK
+chmod +x "$_dir/nvidia-smi"
+make_mock_probe "$_dir" "13.0 12.0"
+_result=$(run_func "$_dir")
+assert_eq "unparseable banner, library says 13.0 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+# 8c) The library's capabilities feed the pre-Turing cap
+make_mock_probe "$_dir" "12.8 6.1"
+_result=$(run_func "$_dir")
+assert_eq "library says 12.8 with sm_61 -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
+# 8d) The probe switched off -> the cu126 default again
+_result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; UNSLOTH_NVIDIA_LIBRARY_PROBE=0; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null)
+assert_eq "probe off -> cu126 default" "https://download.pytorch.org/whl/cu126" "$_result"
+rm -rf "$_dir"
+
+# 8e) No nvidia-smi anywhere, the library lists a GPU -> its family, not cpu
+_dir=$(mktemp -d)
+make_mock_probe "$_dir" "12.9 8.9"
+_result=$(run_func "$_dir")
+assert_eq "no nvidia-smi, library says 12.9 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3

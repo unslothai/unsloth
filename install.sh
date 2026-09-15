@@ -2428,8 +2428,67 @@ _cvd_hides_nvidia() {
     [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
 }
 
+# NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API) for a host whose nvidia-smi is absent, stale or hangs (#9255): "<cuda major>.<minor> <cap>,<cap>" or exit 1. Inline rather than studio/nvidia_probe.py, which is not on disk yet when the torch index is chosen; the two read the same calls.
+_nvidia_library_inventory() {
+    [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+    _run_bounded python3 -I - 2>/dev/null <<'PY'
+import ctypes, sys
+
+def load(*names):
+    for name in names:
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            pass
+
+def nvml():
+    lib = load("libnvidia-ml.so.1", "libnvidia-ml.so")
+    if lib is None or lib.nvmlInit_v2() != 0:
+        return None
+    try:
+        count, version = ctypes.c_uint(), ctypes.c_int()
+        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or not count.value:
+            return None
+        lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(version))
+        caps = []
+        for i in range(count.value):
+            dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
+            if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(dev)) == 0 and \
+               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) == 0:
+                caps.append(f"{major.value}.{minor.value}")
+        return version.value, caps
+    finally:
+        lib.nvmlShutdown()
+
+def cuda():
+    lib = load("libcuda.so.1", "libcuda.so")
+    if lib is None or lib.cuInit(0) != 0:
+        return None
+    count, version = ctypes.c_int(), ctypes.c_int()
+    if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or not count.value:
+        return None
+    lib.cuDriverGetVersion(ctypes.byref(version))
+    caps = []
+    for i in range(count.value):
+        dev, major, minor = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+        # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+        if lib.cuDeviceGet(ctypes.byref(dev), i) == 0 and \
+           lib.cuDeviceGetAttribute(ctypes.byref(major), 75, dev) == 0 and \
+           lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, dev) == 0:
+            caps.append(f"{major.value}.{minor.value}")
+    return version.value, caps
+
+found = nvml() or cuda()
+if not found or not found[1]:
+    sys.exit(1)
+version, caps = found
+print(f"{version // 1000}.{version % 1000 // 10} {','.join(caps)}")
+PY
+}
+
 # ── NVIDIA usable-GPU helper ──
-# nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback; a hidden GPU is NOT usable.
+# nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback, driver library last; a hidden GPU is NOT usable.
 _has_usable_nvidia_gpu() {
     if _cvd_hides_nvidia; then
         return 1
@@ -2449,6 +2508,7 @@ _has_usable_nvidia_gpu() {
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
+    _nvidia_library_inventory >/dev/null 2>&1 && return 0
     return 1
 }
 
@@ -3645,8 +3705,13 @@ _probe_amd_gfx_arch() {
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
 _nvidia_cu126_verdict() {
-    [ -n "$1" ] || return 0
-    _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    # $2: capabilities already read from the driver library, one per line, when nvidia-smi cannot.
+    if [ -n "${2:-}" ]; then
+        _ncv_caps=$2
+    else
+        [ -n "$1" ] || return 0
+        _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    fi
     printf '%s\n' "$_ncv_caps" | awk '
         { gsub(/^[[:space:]]+|[[:space:]]+$/, "") }   # match the .Trim()/.strip() siblings
         /^[0-9]+\.[0-9]+$/ {
@@ -3675,7 +3740,7 @@ _cap_cuda_family_for_pre_turing() {
         cu128|cu130) ;;
         *) printf '%s\n' "$1"; return ;;
     esac
-    case "$(_nvidia_cu126_verdict "$2")" in
+    case "$(_nvidia_cu126_verdict "$2" "${3:-}")" in
         cu126)
             echo "[WARN] Pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $1 wheels start at sm_75." >&2
             printf '%s\n' "cu126"
@@ -3960,9 +4025,17 @@ get_torch_index_url() {
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
+    _inventory_caps=""
     if [ -z "$_cuda_ver" ]; then
-        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-        echo "$_base/cu126"; return
+        # nvidia-smi absent, stale or hung: the driver library still knows the version and the
+        # capabilities. cu126 stays the last resort when nothing answers.
+        if _inventory=$(_nvidia_library_inventory) && [ -n "$_inventory" ]; then
+            _cuda_ver=${_inventory%% *}
+            _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
+        else
+            echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+            echo "$_base/cu126"; return
+        fi
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
@@ -3972,7 +4045,7 @@ get_torch_index_url() {
     elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
     elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
     else echo "$_base/cpu"; return; fi
-    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
+    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
