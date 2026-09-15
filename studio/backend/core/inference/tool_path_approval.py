@@ -1043,10 +1043,41 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
         _token_command_base(t) in _PATH_FORWARDING_COMMANDS for t in tokens
     ):
         operands.extend((t, False) for t in tokens if _looks_absolute(t))
+    # A backtick substitution runs as a command of its own, so it is scanned as one IN ADDITION to
+    # the pass above. Not instead of: `cat `echo /media/x`` puts the path in the outer command's
+    # operand position too, and replacing the tokens dropped exactly that reading.
+    nested = _split_backticks(tokens, text)
+    if nested != list(tokens):
+        operands.extend(_terminal_path_operands(nested, text))
     return operands
 
 
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
+
+
+def _split_backticks(tokens, text = None) -> "list[str]":
+    """Break a token carrying a backtick substitution into its own command.
+
+    `` echo `cat /media/x` `` runs that read as a command of its own, but the outer lexer keeps the
+    backticks inside ordinary tokens, so the path arrived as an argument of `echo` and was dropped
+    with it. `$( ... )` needs none of this: its brackets are punctuation to the lexer already.
+
+    The backtick becomes a separator, which is exactly what it is here -- everything between a pair
+    is a command line in its own right, and the segment machinery classifies it as one.
+    """
+    if not any("`" in token for token in tokens):
+        return list(tokens)
+    out: "list[str]" = []
+    for token in tokens:
+        if "`" not in token or (text and (f"'{token}'" in text or f'"{token}"' in text)):
+            out.append(token)
+            continue
+        for index, piece in enumerate(token.split("`")):
+            if index:
+                out.append("(")
+            if piece:
+                out.append(piece)
+    return out
 
 
 def _split_attached_redirections(tokens, text = None) -> "list[str]":
@@ -1087,8 +1118,35 @@ def _split_attached_redirections(tokens, text = None) -> "list[str]":
     return out
 
 
+# Words that END one command and begin another. `if true; then cat /abs; fi` groups the read under
+# `then` otherwise, which is in no command table, so the whole segment was discarded unscanned.
+_SHELL_CONTROL_WORDS = frozenset(
+    {
+        "if",
+        "then",
+        "elif",
+        "else",
+        "fi",
+        "for",
+        "while",
+        "until",
+        "select",
+        "do",
+        "done",
+        "case",
+        "esac",
+        "in",
+        "{",
+        "}",
+        "!",
+    }
+)
+
+
 def _looks_separator_for_paths(token: str) -> bool:
-    return bool(token) and all(ch in ";&|()" for ch in token)
+    return bool(token) and (
+        all(ch in ";&|()" for ch in token) or token in _SHELL_CONTROL_WORDS
+    )
 
 
 def _segment_path_operands(segment) -> "list[tuple[str, bool]]":

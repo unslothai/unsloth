@@ -3374,6 +3374,15 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # A control word ends one command and begins another, so the read below was grouped under
+    # `then` / `do` / `{`, none of which is a command any table knows.
+    f"if true; then cat {_OUTSIDE_FILE}; fi",
+    f"for f in a b; do cat {_OUTSIDE_FILE}; done",
+    f"while true; do cat {_OUTSIDE_FILE}; done",
+    f"{{ cat {_OUTSIDE_FILE}; }}",
+    # A backtick substitution is a command of its own, but the lexer keeps the backticks inside
+    # ordinary tokens, so the read arrived as an argument of `echo` and was dropped with it.
+    f"echo `cat {_OUTSIDE_FILE}`",
     # `wget --help`: `-o, --output-file=FILE` logs there and `-a, --append-output=FILE` appends.
     f"wget --output-file={_OUTSIDE_FILE} https://example.com",
     f"wget -o {_OUTSIDE_FILE} https://example.com",
@@ -3581,6 +3590,11 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "if true; then cat notes.txt; fi",
+    "for f in *.txt; do wc -l $f; done",
+    "echo `ls`",
+    # Quoted, so the backticks are literal and nothing runs.
+    f"echo 'a `cat {_OUTSIDE_FILE}` b'",
     # Quoted, so the shell prints it and opens nothing.
     f"printf 'see >{_OUTSIDE_FILE}'",
     f'echo "a > {_OUTSIDE_FILE}"',
