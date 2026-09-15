@@ -108,6 +108,7 @@ class TestTheMemoryProbeFallsBackToNvml:
             # A MIG slice or an entry the rows cannot name hides every GPU rather than exposing all.
             ("MIG-cccc3333", []),
             ("nope", []),
+            ("GPU-", []),
         ):
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
             assert LlamaCppBackend._get_gpu_memory() == expected, mask

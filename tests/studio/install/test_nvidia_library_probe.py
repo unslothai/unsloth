@@ -211,8 +211,9 @@ class TestProbeModule:
             1 for line in listing.stdout.splitlines() if line.startswith("GPU ")
         )
         assert inv.cuda_driver_version is not None and inv.cuda_driver_version[0] >= 11
-        # The memory reading the runtime probe needs: a real card has some VRAM free.
-        assert all(int(d["memory_total_mib"]) >= int(d["memory_free_mib"]) > 0 for d in inv.devices)
+        # The memory reading the runtime probe needs; a busy card may legitimately have none free.
+        assert all(int(d["memory_total_mib"]) > 0 for d in inv.devices)
+        assert all(0 <= int(d["memory_free_mib"]) <= int(d["memory_total_mib"]) for d in inv.devices)
 
 
 # ── detect_host ──

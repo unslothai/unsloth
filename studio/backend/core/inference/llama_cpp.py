@@ -11680,6 +11680,8 @@ class LlamaCppBackend:
                 hits = [r for r in rows if str(r.get("index")) == token]
             elif token.startswith(("GPU-", "MIG-")):
                 hits = [r for r in rows if str(r.get("uuid", "")).startswith(token)]
+                if len(hits) > 1:
+                    return []  # an abbreviation must name one device, or CUDA sees none
             else:
                 return []
             picked.extend(r for r in hits if r not in picked)
