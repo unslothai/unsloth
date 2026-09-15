@@ -397,11 +397,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await useChatRuntimeStore.getState().hydratePersistedSettings()" in target
     assert target.index(
         "await useChatRuntimeStore.getState().hydratePersistedSettings()"
-    ) < target.index("snapshotQueuedChatRunSettings(chatStateAtQueueStart)")
+    ) < target.index("snapshotQueuedChatRunSettings(")
     assert "!promptQueueTargetMountedRef.current" in target
     assert "const currentState = aui.threadListItem().getState()" in target
     assert "initialRunningThreadIds.includes(id)" in target
-    assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
+    assert re.search(r"snapshotQueuedChatRunSettings\(\s*chatStateAtQueueStart,", target)
     assert "registerQueuedChatRunSettings(" in target
     assert "params: { ...runSettingsAtQueueStart.params }" in target
     assert "runSettingsAtQueueStart.deepResearchEnabled = false" in target

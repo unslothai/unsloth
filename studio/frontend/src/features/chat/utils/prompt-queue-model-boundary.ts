@@ -54,16 +54,15 @@ export function planLocalPromptQueueStop(
 export function shouldAbortPendingQueueForModelBoundary({
   capturedGeneration,
   usesLocalModel,
-  modelLoading,
 }: {
   capturedGeneration: number;
   usesLocalModel: boolean;
-  modelLoading: boolean;
 }): boolean {
+  // Loading is a dispatch wait, not a reason to reject new follow-ups. A real
+  // model switch/unload still invalidates factories from the previous boundary.
   return (
     usesLocalModel &&
-    (modelLoading ||
-      capturedGeneration !== localPromptQueueModelBoundary.capture())
+    capturedGeneration !== localPromptQueueModelBoundary.capture()
   );
 }
 

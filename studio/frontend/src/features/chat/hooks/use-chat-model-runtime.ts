@@ -1090,8 +1090,8 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Block queue materialization before taking the cancellation snapshot: a queue that appears while
-      // the dialog is open must not be stopped without having been included in the confirmation.
+      // Acquire the local lifecycle before taking the cancellation snapshot.
+      // Local queue dispatch waits for this operation to settle.
       const lifecycleLease = useChatRuntimeStore
         .getState()
         .beginModelLoading();
@@ -2544,8 +2544,8 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
-      // Block queue materialization before taking the confirmation snapshot, or a queue can appear
-      // while the dialog is open and be stopped without the user confirming it.
+      // Serialize the unload before taking the confirmation snapshot. Local
+      // queue dispatch waits until this operation settles.
       lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
       if (lifecycleLease === null) {
         return false;

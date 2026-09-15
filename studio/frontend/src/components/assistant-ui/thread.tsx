@@ -756,6 +756,12 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
+  // Accept and display follow-ups while the model loads, but keep them pending
+  // (and editable/reorderable) until the local lifecycle operation settles.
+  if (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading) {
+    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+    return;
+  }
   if (
     isPromptQueueTargetRunning(
       item.target,
@@ -778,7 +784,12 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  if (hasIndexingDocuments) {
+  // A load can start while the document probe is pending. Check again before
+  // accepting an append, so the prompt stays editable throughout the wait.
+  if (
+    hasIndexingDocuments ||
+    (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
+  ) {
     promptQueueActiveRunIds.delete(run.id);
     scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_INDEXING_RETRY_MS);
     return;
@@ -3662,8 +3673,17 @@ const Composer: FC<{
     const usesKnowledgeBaseAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "kb";
-    const runSettingsAtQueueStart =
-      snapshotQueuedChatRunSettings(chatStateAtQueueStart);
+    const runSettingsAtQueueStart = snapshotQueuedChatRunSettings(
+      chatStateAtQueueStart,
+      {
+        // The picker can still show the outgoing local model during a load.
+        // Resolve the settled model through the adapter's existing empty-model
+        // path, while retaining this prompt's sampling and tool preferences.
+        deferModelResolution:
+          chatStateAtQueueStart.modelLoading &&
+          parseExternalModelId(chatStateAtQueueStart.params.checkpoint) === null,
+      },
+    );
     const getThreadListItemState = () => {
       const runtime =
         assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
@@ -3983,7 +4003,6 @@ const Composer: FC<{
                 capturedGeneration:
                   reservation.localModelBoundaryGeneration,
                 usesLocalModel: target.usesLocalModel,
-                modelLoading: currentQueueSettings.modelLoading,
               })
             : false;
           const settingsInvalidated =
