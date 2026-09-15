@@ -19987,6 +19987,10 @@ _MAX_VIDEO_SCHEME_CHARS = 16
 # set_follow_location(true) (common/http.h), so a public URL redirecting to a private address
 # defeats any host check made here. Refuse the whole shape; #11010 tracks a pinned fetch that
 # would let images and video both accept one.
+# Each clip is a separate ffprobe + ffmpeg pair, so this bounds process launches per request.
+# Four rather than one: GGUF genuinely serves several clips, and the non-GGUF path already
+# refuses more than one on its own.
+_MAX_VIDEO_CLIPS_PER_REQUEST = 4
 _REMOTE_VIDEO_REFUSAL = (
     400,
     "Remote video URLs are not supported. Send the clip as a data URI instead.",
@@ -20909,8 +20913,17 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
 
 
 def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
+    clips = _request_video_clips(payload)
+    # Bytes alone do not bound the work: each clip costs its own ffprobe and ffmpeg (30s and
+    # 300s ceilings), so thousands of tiny clips stay under the byte cap while holding the
+    # request, and its admission lease, for hours. Count is the bound on process launches.
+    if len(clips) > _MAX_VIDEO_CLIPS_PER_REQUEST:
+        return (
+            400,
+            f"Too many videos in one request (max {_MAX_VIDEO_CLIPS_PER_REQUEST}).",
+        )
     total = 0
-    for clip in _request_video_clips(payload):
+    for clip in clips:
         if _is_remote_video(clip):
             return _REMOTE_VIDEO_REFUSAL
         rejection = _video_scheme_rejection(clip)
@@ -20920,9 +20933,7 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
         if rejection is not None:
             return rejection
         total += _video_payload_chars(clip)
-        # Per-clip alone bounds nothing: every clip is transcoded, and shrink_video_for_llama
-        # allows 300s each, so N clips just under the limit is N*300s of ffmpeg for one request.
-        # The cap is therefore per request, not per clip.
+        # And bytes bound the per-clip transcode cost the count cannot see.
         if total > _MAX_VIDEO_B64_CHARS:
             return (413, "Videos are too large (max 64 MB per request).")
     return None

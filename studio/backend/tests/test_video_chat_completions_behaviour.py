@@ -898,3 +898,39 @@ def test_audio_is_still_charged_from_the_field_during_recosting():
         inference_route._openai_llama_admission_media_tokens(payload, message_video_clips = [])
         == 1000
     )
+
+
+def test_many_tiny_clips_are_refused_by_count_not_only_by_bytes():
+    """Each clip is its own ffprobe and ffmpeg (30s and 300s ceilings), so thousands of tiny
+    clips stay under the byte cap while holding the request and its lease for hours."""
+    from models.inference import ChatCompletionRequest
+
+    tiny = "data:video/mp4;base64,QUJD"
+    many = ChatCompletionRequest.model_validate(
+        _part_body(*[tiny] * (inference_route._MAX_VIDEO_CLIPS_PER_REQUEST + 1))
+    )
+    rejection = inference_route._request_video_rejection(many)
+    assert rejection is not None and rejection[0] == 400
+    assert "Too many videos" in rejection[1]
+
+
+def test_a_request_at_the_clip_limit_is_still_served():
+    """The count cap must bound abuse, not ordinary multi-clip use."""
+    from models.inference import ChatCompletionRequest
+
+    tiny = "data:video/mp4;base64,QUJD"
+    ok = ChatCompletionRequest.model_validate(
+        _part_body(*[tiny] * inference_route._MAX_VIDEO_CLIPS_PER_REQUEST)
+    )
+    assert inference_route._request_video_rejection(ok) is None
+
+
+def test_the_clip_count_includes_the_legacy_field():
+    """Otherwise the field plus the maximum parts exceeds the bound together."""
+    from models.inference import ChatCompletionRequest
+
+    tiny = "data:video/mp4;base64,QUJD"
+    body = _part_body(*[tiny] * inference_route._MAX_VIDEO_CLIPS_PER_REQUEST)
+    body["video_base64"] = tiny
+    rejection = inference_route._request_video_rejection(ChatCompletionRequest.model_validate(body))
+    assert rejection is not None and rejection[0] == 400
