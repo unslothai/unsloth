@@ -1220,7 +1220,36 @@ def test_mlx_tool_turn_preserves_native_gemma_special_token_ids(monkeypatch):
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
 
-def test_mlx_reasoning_tool_turn_filters_special_ids_by_provenance(monkeypatch):
+def test_mlx_reasoning_tool_turn_keeps_provenance_across_buffered_segments(monkeypatch):
+    """A kept control has to reach the parser once, where the model wrote it, and a suppressed one
+    must not ride along inside the segment that carries it."""
+    # Built before the fake mlx modules land, so the real detokenizer still imports.
+    turn = _SpmTurn(
+        (
+            "<|channel>",
+            "thought",
+            "\n",
+            "weighing",
+            "<pad>",
+            "▁it",
+            "<channel|>",
+            "<|tool_call>",
+            "call:terminal{command:id}",
+            "<tool_call|>",
+            "<eos>",
+        ),
+        specials = (
+            "<|channel>",
+            "<channel|>",
+            "<|tool_call>",
+            "<tool_call|>",
+            "<pad>",
+            "<eos>",
+        ),
+        eos = "<eos>",
+        chat_template = "x",
+        ends = "stop",
+    )
     _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference
     from core.inference.tool_call_parser import parse_tool_calls_from_text
@@ -1243,65 +1272,28 @@ def test_mlx_reasoning_tool_turn_filters_special_ids_by_provenance(monkeypatch):
     mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
     mlx_lm_sample.make_sampler = lambda **_kwargs: object()
     mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
-
-    pieces = {
-        1: "<|channel>",
-        2: "thought\n",
-        3: "reasoned",
-        4: "<channel|>",
-        5: "<|tool_call>",
-        6: "call:terminal{command:id}",
-        7: "<tool_call|>",
-        8: "<eos>",
-    }
-    special_ids = {1, 4, 5, 7, 8}
-
-    def _stream_generate(_model, _tokenizer, **_kwargs):
-        for token_id, piece in pieces.items():
-            # Special-token text is deliberately wrong: production must trust
-            # response.token provenance and decode that id itself.
-            text = "untrusted-special-text" if token_id in special_ids else piece
-            yield SimpleNamespace(token = token_id, text = text)
-
-    mlx_lm_pkg.stream_generate = _stream_generate
+    mlx_lm_pkg.stream_generate = lambda _model, _tokenizer, **_kwargs: turn.stream()
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
 
-    class _Tokenizer:
-        chat_template = "x"
-        all_special_ids = list(special_ids)
-        all_special_tokens = [pieces[token_id] for token_id in special_ids]
-
-        def convert_ids_to_tokens(self, token_id):
-            return pieces[token_id]
-
-        def decode(
-            self,
-            ids,
-            *,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            skipped = special_ids if skip_special_tokens else set()
-            return "".join(pieces[int(token_id)] for token_id in ids if token_id not in skipped)
-
     backend = mlx_inference.MLXInferenceBackend()
     backend._model = object()
-    backend._tokenizer = _Tokenizer()
+    backend._tokenizer = turn
     backend._is_vlm = False
 
     snapshots = list(
         backend.generate_chat_response(
             messages = [{"role": "user", "content": "run it"}],
             tools = [{"type": "function", "function": {"name": "terminal"}}],
-            max_new_tokens = len(pieces),
+            max_new_tokens = len(turn.ids),
         )
     )
     assert snapshots[-1] == (
-        "<think>reasoned</think><|tool_call>call:terminal{command:id}<tool_call|>"
+        "<think>weighing it</think><|tool_call>call:terminal{command:id}<tool_call|>"
     )
-    assert "<eos>" not in snapshots[-1]
-    assert "untrusted-special-text" not in snapshots[-1]
+    # The suppressed pieces rode in on ordinary text; the kept one is written once, not twice.
+    assert "<pad>" not in snapshots[-1] and "<eos>" not in snapshots[-1]
+    assert snapshots[-1].count("<|tool_call>") == 1
     calls = parse_tool_calls_from_text(snapshots[-1], enabled_tool_names = {"terminal"})
     assert [call["function"]["name"] for call in calls] == ["terminal"]
 
@@ -4553,14 +4545,120 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
-def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
-    """mlx-vlm's ``response.text`` has already dropped the native tool controls. Without recovering
-    them the wrapper never reaches the parser, so a genuine
-    ``<|tool_call>call:terminal{..}<tool_call|>`` arrives markerless and the execution guard
-    refuses it. Text-only requests on a model classified as a VLM use this route too."""
-    from core.inference import mlx_inference
+def _uncopyable_naive_detokenizer(detokenizers):
+    """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
 
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+    Pinning the behaviour rather than the installed version: on 0.6.0 and later ``copy.copy``
+    succeeds, so a test that let the real class decide passed only on an older wheel and said
+    nothing about the branch it meant to cover."""
+
+    class _Uncopyable(detokenizers.NaiveStreamingDetokenizer):
+        def __copy__(self):
+            raise AttributeError(
+                "property 'text' of 'NaiveStreamingDetokenizer' object has no setter"
+            )
+
+    return _Uncopyable
+
+
+class _SpmTurn:
+    """One generated turn, standing in for both the tokenizer and the runtime's detokenizer.
+
+    The SPM detokenizer releases text only when a piece begins with the SPM space marker, so a
+    control reaches ``response.text`` inside a later segment. Fakes handing each piece back on its
+    own step hide that, and under that shape re-decoding a control on its own step reads correct."""
+
+    def __init__(
+        self,
+        pieces,
+        specials = (),
+        eos = None,
+        chat_template = None,
+        ends = "exhausted",
+        reports_finish_reason = True,
+        block = False,
+        shares_detokenizer = False,
+        detokenizer_class = "spm",
+    ):
+        detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+        self.vocab = {}
+        self.ids = [self.vocab.setdefault(piece, len(self.vocab)) for piece in pieces]
+        self._by_id = {token_id: piece for piece, token_id in self.vocab.items()}
+        self.all_special_ids = tuple(self.vocab[piece] for piece in specials)
+        self.all_special_tokens = tuple(specials)
+        self.chat_template = chat_template
+        self._ends = ends
+        self._reports_finish_reason = reports_finish_reason
+        self._block = block
+        self._shares_detokenizer = shares_detokenizer
+        if eos is not None:
+            eos_ids = [self.vocab[piece] for piece in ((eos,) if isinstance(eos, str) else eos)]
+            self.eos_token_ids = tuple(eos_ids)
+            self.eos_token_id = eos_ids[-1]
+        self.detokenizer = (
+            _uncopyable_naive_detokenizer(detokenizers)(self)
+            if detokenizer_class == "naive"
+            else detokenizers.SPMStreamingDetokenizer(self, trim_space = False)
+        )
+
+    def convert_ids_to_tokens(self, token_id):
+        return self._by_id[token_id]
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        **_kwargs,
+    ):
+        return "".join(
+            "" if (skip_special_tokens and i in self.all_special_ids) else self._by_id.get(i, "")
+            for i in token_ids
+        ).replace("▁", " ")
+
+    def stream(self, *_a, **_k):
+        """A segment per step from the runtime's own detokenizer, then the flush ending the turn.
+
+        ``ends`` picks that last yield's shape: exhausting the sampler repeats the position already
+        reported, while breaking out reports one never yielded -- on a stop token the detokenizer
+        never saw, or on the token limit, which mlx-lm reaches after feeding it.
+        ``reports_finish_reason`` is off for the supported mlx-vlm floor, which has no such field."""
+        if self._block:
+            # What mlx-vlm's diffusion generators report for a denoised block: every id at once,
+            # the count grown by all of them, only the last one named, and the block's own text.
+            yield self._yielded(self.decode(self.ids), self.ids[-1], len(self.ids), "stop")
+            return
+        # mlx-vlm's supported floor streams through the processor's own instance rather than a
+        # copy of it, so anything else driving that instance corrupts both.
+        detokenizer = self.detokenizer if self._shares_detokenizer else copy.copy(self.detokenizer)
+        detokenizer.reset()
+        streamed = self.ids if self._ends == "exhausted" else self.ids[:-1]
+        for position, token_id in enumerate(streamed, start = 1):
+            detokenizer.add_token(token_id, skip_special_token_ids = [])
+            yield self._yielded(detokenizer.last_segment, token_id, position, None)
+        if self._ends == "length":
+            detokenizer.add_token(self.ids[-1], skip_special_token_ids = [])
+        detokenizer.finalize()
+        yield self._yielded(
+            detokenizer.last_segment,
+            self.ids[-1],
+            len(self.ids),
+            "stop" if self._ends == "stop" else "length",
+        )
+
+    def _yielded(self, text, token_id, position, finish_reason):
+        fields = dict(text = text, token = token_id, prompt_tokens = 3, generation_tokens = position)
+        if self._reports_finish_reason:
+            fields["finish_reason"] = finish_reason
+        return SimpleNamespace(**fields)
+
+
+def _run_spm_vlm_turn(
+    monkeypatch,
+    turn,
+    tool_name = "get_weather",
+    stop = None,
+):
+    from core.inference import mlx_inference
 
     @contextmanager
     def _adapter_state(_model, _state):
@@ -4570,397 +4668,359 @@ def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
     )
-
-    class _Tok:
-        # 7/8 are the Gemma wrapper; mlx-vlm reports them as empty text.
-        _IDS = {7: "<|tool_call>", 8: "<tool_call|>", 9: "<eos>"}
-        all_special_ids = tuple(_IDS)
-
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_k,
-        ):
-            return "".join(
-                self._IDS.get(i, "")
-                for i in token_ids
-                if not (skip_special_tokens and i in self.all_special_ids)
-            )
-
-    prompt_utils = SimpleNamespace(
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
         MODEL_CONFIG = {"deepseek_vl_v2": object()},
         apply_chat_template = lambda *_a, **_k: "<image> model-aware",
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in (
-            (7, ""),
-            (None, 'call:terminal{command:"id"}'),
-            (8, ""),
-        ):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
+    mlx_vlm.stream_generate = turn.stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         lambda _t, _m, **_k: "<image> model-aware",
     )
 
-    backend = MLXInferenceBackend()
+    backend = mlx_inference.MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
-
-    snapshots = list(
+    backend._processor = SimpleNamespace(
+        tokenizer = turn, chat_template = turn.chat_template, detokenizer = turn.detokenizer
+    )
+    backend._tokenizer = turn
+    return list(
         backend._generate_vlm(
-            *args,
+            [{"role": "user", "content": [{"type": "image"}]}],
+            object(),
+            0,
+            1,
+            0,
+            0,
+            32,
+            1,
+            None,
             _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            tools = [{"type": "function", "function": {"name": tool_name}}],
+            stop = stop,
         )
     )
+
+
+def test_mlx_vlm_keeps_a_native_tool_wrapper_exactly_once(monkeypatch):
+    """Strict parsing needs the wrapper to tell a native call from markerless prose, and a second
+    copy is no better: the parser reads the pair as a malformed envelope."""
+    turn = _SpmTurn(
+        (
+            "<|tool_call>",
+            "call",
+            ":",
+            "terminal",
+            "{",
+            "command",
+            ":",
+            '"id"',
+            "}",
+            "<tool_call|>",
+        ),
+        specials = ("<|tool_call>", "<tool_call|>"),
+    )
+    snapshots = _run_spm_vlm_turn(monkeypatch, turn, tool_name = "terminal")
     assert snapshots[-1] == '<|tool_call>call:terminal{command:"id"}<tool_call|>'
 
 
-def test_mlx_drops_a_trailing_stop_token_from_the_preserved_decode(monkeypatch):
-    """``skip_special_tokens`` used to swallow the stop id; the decoder keeps controls. Some
-    runtimes stop on an allowlisted one (TML Inkling's ``<|end_message|>``), so without filtering
-    it an ordinary answer is delivered with the protocol marker appended."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
-
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                ""
-                if (skip_special_tokens and i in self.all_special_ids)
-                else self._IDS.get(i, chr(i))
-                for i in token_ids
-            )
-
-    tok = _Tok()
-    decoder = mlx_inference.NativeToolTokenDecoder(tok)
-    stop_ids = mlx_inference._mlx_stop_token_ids(tok, None)
-    assert 5 in stop_ids, stop_ids
-
-    ids = [ord("h"), ord("i"), 5]
-    assert decoder.decode(ids) == "hi<|end_message|>"
-    trimmed = ids[:-1] if ids[-1] in stop_ids else ids
-    assert decoder.decode(trimmed) == "hi"
-    # The marker still survives when it is not the turn's final token.
-    assert decoder.decode([ord("h"), 5, ord("i")]) == "h<|end_message|>i"
+def test_mlx_vlm_keeps_prose_that_spells_a_suppressed_control(monkeypatch):
+    """Suppression is about where a control came from, not what the text spells."""
+    turn = _SpmTurn(
+        ("Write", "▁`", "<", "pad", ">", "`", "▁literally.", "<pad>"),
+        specials = ("<pad>",),
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Write `<pad>` literally."
 
 
 def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
-    """The VLM path appends each decoded token straight into the snapshot. So an allowlisted control
-    used as the runtime EOS would trail every ordinary answer; ``_generate_text`` drops it at its
-    final re-decode and this route needs the same."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    """This path appends each settled piece straight into the snapshot, so an allowlisted control
+    used as the runtime EOS would trail every ordinary answer."""
+    turn = _SpmTurn(
+        ("Hi", "▁there", "<|end_message|>"),
+        specials = ("<|end_message|>",),
+        eos = "<|end_message|>",
+        ends = "stop",
     )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Hi there"
 
-    class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
 
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
-
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+def test_mlx_vlm_settles_a_turn_a_runtime_ends_without_saying_so(monkeypatch):
+    """mlx-vlm gained a finish reason well after the floor Studio supports."""
+    turn = _SpmTurn(
+        ("Hi", "▁there", "<|end_message|>"),
+        specials = ("<|end_message|>",),
+        eos = "<|end_message|>",
+        ends = "stop",
+        reports_finish_reason = False,
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in ((None, "hi"), (5, "")):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
-    )
-
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
-
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "terminal"}}],
-        )
-    )
-    assert snapshots[-1] == "hi"
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Hi there"
 
 
 def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
-    """The suppression is for a turn with NO tool markup. TML Inkling uses ``<|end_message|>`` both
-    as the required close for ``<|content_invoke_tool_json|>`` and as a possible EOS, and strict
-    parsing rejects the call without it, so blanking it unconditionally loses a complete call."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    """TML Inkling uses ``<|end_message|>`` both as that closer and as a possible EOS, and the
+    runtime stops before its detokenizer sees that id."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":',
+            '▁"get_weather",',
+            '▁"args":',
+            "▁{}}",
+            "<|end_message|>",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>"),
+        eos = "<|end_message|>",
+        ends = "stop",
     )
+    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == envelope + "<|end_message|>"
+
+
+def test_mlx_vlm_keeps_a_stop_id_the_runtime_generated_straight_through(monkeypatch):
+    """``_mlx_stop_token_ids`` reads the config before the tokenizer attribute and the two disagree
+    on some repos, so a held id can be one the runtime generated and carried on from."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":',
+            '▁"get_weather",',
+            '▁"args":',
+            "▁{}}",
+            "<|end_message|>",
+            "<eos>",
+            "▁Anything",
+            "▁else?",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>", "<eos>"),
+        eos = ("<|end_message|>", "<eos>"),
+    )
+    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
+    snapshot = _run_spm_vlm_turn(monkeypatch, turn)[-1]
+    assert snapshot == envelope + "<|end_message|> Anything else?"
+
+
+def test_mlx_vlm_drops_a_generated_stop_id_outside_the_allowlist(monkeypatch):
+    """Carrying on past a stop id says it ended nothing, not that the reply may show it."""
+    turn = _SpmTurn(
+        ("Nearly", "▁done", "<eos>", "▁and", "▁back"),
+        specials = ("<eos>",),
+        eos = "<eos>",
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Nearly done and back"
+
+
+def test_mlx_vlm_keeps_a_closer_a_later_stop_id_followed(monkeypatch):
+    """The config lists more ids than the runtime stopped on, so a closer can be followed by
+    another stop id."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":"get_weather","args":{}}',
+            "<|end_message|>",
+            "<eos>",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>", "<eos>"),
+        eos = ("<|end_message|>", "<eos>"),
+        ends = "stop",
+    )
+    envelope = '<|content_invoke_tool_json|>{"name":"get_weather","args":{}}'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == envelope + "<|end_message|>"
+
+
+def test_mlx_vlm_keeps_every_closer_a_nested_call_needs(monkeypatch):
+    """Half-closed is as rejectable as unclosed."""
+    turn = _SpmTurn(
+        (
+            "<tool_call>",
+            "<function=get_weather>",
+            "<parameter=city>",
+            "Paris",
+            "</parameter>",
+            "</function>",
+            "</tool_call>",
+        ),
+        specials = ("<tool_call>", "</parameter>", "</function>", "</tool_call>"),
+        eos = ("</parameter>", "</function>", "</tool_call>"),
+        ends = "stop",
+    )
+    call = "<tool_call><function=get_weather><parameter=city>Paris"
+    snapshot = _run_spm_vlm_turn(monkeypatch, turn)[-1]
+    assert snapshot == call + "</parameter></function></tool_call>"
+
+
+def test_mlx_stream_detokenizer_handles_one_that_cannot_be_copied():
+    """Its ``text`` is a property over an inherited slot, so ``copy.copy`` raises. It is also the
+    one mlx-lm builds per read, which is what makes a second read independent."""
+    detokenizers = pytest.importorskip("mlx_lm.tokenizer_utils")
+    from core.inference.mlx_inference import _mlx_stream_detokenizer
 
     class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
+        def decode(self, token_ids):
+            return "".join(f"<{token_id}>" for token_id in token_ids)
 
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
+    class _PerRead:
+        """Stands in for ``TokenizerWrapper``, whose ``detokenizer`` is a property."""
 
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
+        @property
+        def detokenizer(self):
+            return detokenizers.NaiveStreamingDetokenizer(_Tok())
 
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    source = _PerRead()
+    with pytest.raises(AttributeError):
+        copy.copy(source.detokenizer)
+    own = _mlx_stream_detokenizer(source)
+    assert own is not None
+    own.add_token(7)
+    own.finalize()
+    assert own.text == "<7>"
+
+
+def test_mlx_stream_detokenizer_rebuilds_the_one_a_retained_source_cannot_copy():
+    """mlx-vlm's processor hands back a single retained instance, and below 0.6.0 -- which is
+    where ``__copy__`` arrives -- copying the naive one raises. Falling back to no detokenizer
+    there would pass the runtime's text through unfiltered for the whole turn, so a control the
+    allowlist suppresses would reach the reply."""
+    detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+    from core.inference.mlx_inference import _mlx_stream_detokenizer
+
+    class _Tok:
+        def decode(self, token_ids, **_kwargs):
+            return "".join(f"<{token_id}>" for token_id in token_ids)
+
+    class _Retained:
+        def __init__(self):
+            self.detokenizer = _uncopyable_naive_detokenizer(detokenizers)(_Tok())
+
+    source = _Retained()
+    with pytest.raises(AttributeError):
+        copy.copy(source.detokenizer)
+
+    own = _mlx_stream_detokenizer(source)
+    assert own is not None, "a detokenizer that cannot be copied can still be rebuilt"
+    assert own is not source.detokenizer
+
+    own.add_token(7)
+    own.finalize()
+    assert own.text == "<7>"
+    # and driving ours left the one the runtime streams through alone
+    source.detokenizer.add_token(9)
+    source.detokenizer.finalize()
+    assert source.detokenizer.text == "<9>"
+
+
+def test_mlx_vlm_suppresses_a_control_on_a_runtime_whose_detokenizer_cannot_be_copied(monkeypatch):
+    """The end of that: on the supported mlx-vlm floor the reply still owes only what the
+    allowlist keeps, rather than every control the runtime rendered."""
+    turn = _SpmTurn(
+        ("▁Hello", "<pad>", "▁world"),
+        specials = ("<pad>",),
+        ends = "exhausted",
+        shares_detokenizer = True,
+        detokenizer_class = "naive",
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == " Hello world"
 
-    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}'
 
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in ((None, envelope), (5, "")):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+@pytest.mark.parametrize("ends", ("stop", "exhausted"))
+def test_mlx_vlm_owes_a_closer_exactly_once_without_a_detokenizer_of_its_own(monkeypatch, ends):
+    """A runtime that stopped before rendering the stop id never wrote it; one that did has already
+    said it."""
+    turn = _SpmTurn(
+        (
+            "<|content_invoke_tool_json|>",
+            '{"name":"get_weather","args":{}}',
+            "<|end_message|>",
+        ),
+        specials = ("<|content_invoke_tool_json|>", "<|end_message|>"),
+        eos = "<|end_message|>",
+        ends = ends,
+    )
     monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
+        "core.inference.mlx_inference._mlx_stream_detokenizer", lambda _source: None
     )
+    envelope = '<|content_invoke_tool_json|>{"name":"get_weather","args":{}}'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == envelope + "<|end_message|>"
 
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
 
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "get_weather"}}],
-        )
+@pytest.mark.parametrize(
+    "trailing, expected_tail", ((("▁Done.",), " Done."), (("\n", "Done."), "\nDone."))
+)
+def test_mlx_vlm_does_not_repeat_a_closer_the_runtime_already_wrote(
+    monkeypatch, trailing, expected_tail
+):
+    """The runtime's text already carries every control but the one it stopped before -- whether an
+    SPM space marker released it mid-turn or the whole reply arrived in the final flush."""
+    turn = _SpmTurn(
+        ("<tool_call>", '{"name":"get_weather","arguments":{}}', "</tool_call>")
+        + trailing
+        + ("<eos>",),
+        specials = ("<tool_call>", "</tool_call>", "<eos>"),
+        eos = ("</tool_call>", "<eos>"),
+        ends = "stop",
     )
-    assert snapshots[-1] == envelope + "<|end_message|>"
+    monkeypatch.setattr(
+        "core.inference.mlx_inference._mlx_stream_detokenizer", lambda _source: None
+    )
+    call = '<tool_call>{"name":"get_weather","arguments":{}}</tool_call>'
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == call + expected_tail
+
+
+def test_mlx_vlm_does_not_drive_the_detokenizer_the_runtime_streams_through(monkeypatch):
+    """The supported mlx-vlm floor streams through the processor's own instance."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "\n", "weighing", "▁it", "<channel|>", "▁the", "▁answer"),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "...<|channel>thought\n...<channel|>",
+        shares_detokenizer = True,
+    )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "<think>weighing it</think> the answer"
 
 
 def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
-    """ "the turn mentions a marker" is not enough to keep a closer. An ordinary answer that merely
-    writes ``[ARGS]`` opened no envelope, so a trailing ``<|end_message|>`` is orphan markup and
-    must not reach the user."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    """Mentioning a marker is not opening an envelope."""
+    turn = _SpmTurn(
+        ("The", "▁[ARGS]", "▁marker", "▁is", "▁neat", "<|end_message|>"),
+        specials = ("<|end_message|>",),
+        eos = "<|end_message|>",
+        ends = "stop",
     )
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "The [ARGS] marker is neat"
 
-    class _Tok:
-        _IDS = {5: "<|end_message|>"}
-        all_special_ids = (5,)
-        eos_token_id = 5
 
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
+def test_mlx_vlm_keeps_a_block_the_runtime_settled_in_one_step(monkeypatch):
+    """A diffusion generator denoises a whole block and names only its last id."""
+    turn = _SpmTurn(("Hello", "\u2581world"), block = True)
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "Hello world"
 
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
 
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+def test_mlx_vlm_matches_a_stop_sequence_the_detokenizer_held_to_the_end(monkeypatch):
+    """Text the cut held back is unmatched, not cleared."""
+    turn = _SpmTurn(("Hi", "\u2581STOP"))
+    assert _run_spm_vlm_turn(monkeypatch, turn, stop = "STOP")[-1] == "Hi "
+
+
+def test_mlx_vlm_writes_a_buffered_reasoning_delimiter_once(monkeypatch):
+    """The opener is buffered with the pieces after it, so a second copy written on its own step
+    lands ahead of them: the normalizer then matches the later copy and emits the earlier one as
+    answer text, which is how a gemma-4 thought leaked ``<|channel>`` into the reply."""
+    turn = _SpmTurn(
+        (
+            "<|channel>",
+            "thought",
+            "\n",
+            "weighing",
+            "▁it",
+            "<channel|>",
+            "▁the",
+            "▁answer",
+        ),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "...<|channel>thought\n...<channel|>",
     )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in ((None, "The [ARGS] marker is neat"), (5, "")):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
-    )
-
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok())
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
-
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "get_weather"}}],
-        )
-    )
-    assert snapshots[-1] == "The [ARGS] marker is neat"
-
-
-def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypatch):
-    """The VLM decoder drops every special id outside its preserved set. A turn that combines tools
-    with a native reasoning protocol therefore loses the delimiters
-    ``normalize_reasoning_snapshots`` is waiting for, and the thought is emitted as ordinary
-    answer text. The text path already passes the protocol's controls."""
-    from core.inference import mlx_inference
-
-    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
-
-    @contextmanager
-    def _adapter_state(_model, _state):
-        yield
-
-    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
-    )
-
-    class _Tok:
-        # The delimiters are special-token ids, as they are in the real vocabulary.
-        _IDS = {1: "<|channel>", 2: "<channel|>", 9: "<eos>"}
-        all_special_ids = (1, 2, 9)
-        eos_token_id = 9
-        chat_template = "...<|channel>thought\n...<channel|>"
-
-        def convert_ids_to_tokens(self, token_id):
-            return self._IDS[token_id]
-
-        def decode(
-            self,
-            token_ids,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            return "".join(
-                "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
-                for i in token_ids
-            )
-
-    prompt_utils = SimpleNamespace(
-        MODEL_CONFIG = {"deepseek_vl_v2": object()},
-        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
-    )
-    mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.prompt_utils = prompt_utils
-
-    def _vlm_stream(*_a, **_k):
-        for token_id, text in (
-            (1, "<|channel>"),
-            (None, "thought\n"),
-            (None, "weighing it"),
-            (2, "<channel|>"),
-            (None, " the answer"),
-        ):
-            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
-
-    mlx_vlm.stream_generate = _vlm_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
-    monkeypatch.setattr(
-        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
-        lambda _t, _m, **_k: "<image> model-aware",
-    )
-
-    backend = MLXInferenceBackend()
-    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
-    backend._processor = SimpleNamespace(tokenizer = _Tok(), chat_template = _Tok.chat_template)
-    backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 8, 1, None)
-
-    snapshots = list(
-        backend._generate_vlm(
-            *args,
-            _adapter_state = False,
-            tools = [{"type": "function", "function": {"name": "get_weather"}}],
-        )
-    )
-    # The thought is a closed reasoning block, not answer text.
-    assert snapshots[-1] == "<think>weighing it</think> the answer"
+    assert _run_spm_vlm_turn(monkeypatch, turn)[-1] == "<think>weighing it</think> the answer"
 
 
 # --- VLM prompt snapshots -------------------------------------------------------
@@ -5005,8 +5065,11 @@ def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
     assert rule("gemma4", template) == "mlx-vlm's answer"
 
 
-def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
-    """Drive the MLX text reasoning path over ``pieces``, stopping on ``eos_id``."""
+def _run_mlx_reasoning_stream(
+    monkeypatch,
+    turn,
+    stop = None,
+):
     _install_fake_mlx(monkeypatch)
     from core.inference import mlx_inference
 
@@ -5029,74 +5092,83 @@ def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
     mlx_lm_sample.make_sampler = lambda **_kwargs: object()
     mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
 
-    def _stream_generate(_model, _tokenizer, **_kwargs):
-        for token_id, piece in pieces.items():
-            yield SimpleNamespace(token = token_id, text = piece)
-
-    mlx_lm_pkg.stream_generate = _stream_generate
+    mlx_lm_pkg.stream_generate = lambda _model, _tokenizer, **_kwargs: turn.stream()
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
 
-    class _Tokenizer:
-        chat_template = "x"
-        all_special_ids = list(special_ids)
-        all_special_tokens = [pieces[token_id] for token_id in special_ids]
-        eos_token_id = eos_id
-
-        def convert_ids_to_tokens(self, token_id):
-            return pieces[token_id]
-
-        def decode(
-            self,
-            ids,
-            *,
-            skip_special_tokens = False,
-            **_kwargs,
-        ):
-            skipped = special_ids if skip_special_tokens else set()
-            return "".join(pieces[int(t)] for t in ids if t not in skipped)
-
     backend = mlx_inference.MLXInferenceBackend()
     backend._model = object()
-    backend._tokenizer = _Tokenizer()
+    backend._tokenizer = turn
     backend._is_vlm = False
     return list(
         backend.generate_chat_response(
             messages = [{"role": "user", "content": "hi"}],
             tools = [{"type": "function", "function": {"name": "terminal"}}],
-            max_new_tokens = len(pieces),
+            max_new_tokens = len(turn.ids),
+            stop = stop,
         )
     )
 
 
 def test_mlx_reasoning_reply_does_not_end_in_a_preserved_eos_control(monkeypatch):
-    """The non-reasoning branch trims a trailing stop id that is also an allowlisted
-    control; the reasoning branch appended it, ending an ordinary reply in raw markup."""
-    pieces = {
-        1: "<|channel>",
-        2: "thought",
-        3: "reasoned",
-        4: "<channel|>",
-        5: "Done.",
-        6: "<|end_message|>",
-    }
-    snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 6}, 6)
+    """The reasoning branch appended it, ending an ordinary reply in raw markup."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "▁reasoned", "<channel|>", "▁Done.", "<|end_message|>"),
+        specials = ("<|channel>", "<channel|>", "<|end_message|>"),
+        eos = "<|end_message|>",
+        chat_template = "x",
+        ends = "stop",
+    )
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, turn)
     assert "<|end_message|>" not in snapshots[-1]
     assert snapshots[-1].endswith("Done.")
 
 
+def test_mlx_reasoning_keeps_the_token_the_limit_cut_the_turn_after(monkeypatch):
+    """mlx-lm reports that token without ever yielding it on its own step."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "▁reasoned", "<channel|>", "▁the", "▁answer"),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "x",
+        ends = "length",
+    )
+    assert _run_mlx_reasoning_stream(monkeypatch, turn)[-1].endswith(" the answer")
+
+
+def test_mlx_reasoning_matches_a_stop_sequence_the_detokenizer_held_to_the_end(monkeypatch):
+    """As on the VLM path: the flush ending the turn is the first the sequence is visible in."""
+    turn = _SpmTurn(
+        ("<|channel>", "thought", "\u2581reasoned", "<channel|>", "\u2581Answer", "\u2581STOP"),
+        specials = ("<|channel>", "<channel|>"),
+        chat_template = "x",
+    )
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, turn, stop = "STOP")
+    assert snapshots[-1] == "<think> reasoned</think> Answer "
+
+
 def test_mlx_reasoning_keeps_an_eos_control_that_closes_a_tool_envelope(monkeypatch):
     """The trim is envelope-aware: the same marker terminates a real Inkling call."""
-    pieces = {
-        1: "<|channel>",
-        2: "thought",
-        3: "reasoned",
-        4: "<channel|>",
-        5: "<|content_invoke_tool_json|>",
-        6: '{"name":"terminal","args":{}}',
-        7: "<|end_message|>",
-    }
-    snapshots = _run_mlx_reasoning_stream(monkeypatch, pieces, {1, 4, 5, 7}, 7)
+    turn = _SpmTurn(
+        (
+            "<|channel>",
+            "thought",
+            "▁reasoned",
+            "<channel|>",
+            "<|content_invoke_tool_json|>",
+            '{"name":"terminal","args":{}}',
+            "<|end_message|>",
+        ),
+        specials = (
+            "<|channel>",
+            "<channel|>",
+            "<|content_invoke_tool_json|>",
+            "<|end_message|>",
+        ),
+        eos = "<|end_message|>",
+        chat_template = "x",
+        ends = "stop",
+    )
+    snapshots = _run_mlx_reasoning_stream(monkeypatch, turn)
     assert snapshots[-1].endswith("<|end_message|>")
 
 

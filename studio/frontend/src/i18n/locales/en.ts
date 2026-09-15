@@ -1023,6 +1023,13 @@ export const en = {
         minimal: "Minimal",
       },
       custom: {
+        chatWidth: {
+          label: "Chat width",
+          description: "Set the width of messages and the composer. Full width uses the space between sidebars.",
+          standard: "Standard",
+          wide: "Wide",
+          full: "Full width",
+        },
         reset: "Reset",
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",
@@ -1072,6 +1079,10 @@ export const en = {
           errorStorageFull:
             "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
+        },
+        interfaceScale: {
+          label: "Interface scale",
+          description: "Resize all interface elements.",
         },
         uiFontSize: {
           label: "UI font size",

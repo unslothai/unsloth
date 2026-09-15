@@ -1052,6 +1052,13 @@ export const fr = {
         minimal: "Minimale",
       },
       custom: {
+        chatWidth: {
+          label: "Largeur du chat",
+          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          standard: "Standard",
+          wide: "Large",
+          full: "Pleine largeur",
+        },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
         preferencesTitle: "Préférences",
@@ -1101,6 +1108,10 @@ export const fr = {
           errorStorageFull:
             "Stockage local insuffisant pour cette police. Retirez d'abord une police importée.",
           errorFailed: "Impossible de charger ce fichier de police.",
+        },
+        interfaceScale: {
+          label: "Échelle de l'interface",
+          description: "Redimensionnez tous les éléments de l'interface.",
         },
         uiFontSize: {
           label: "Taille de police de l'interface",
