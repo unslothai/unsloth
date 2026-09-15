@@ -446,9 +446,7 @@ def run_libraries(page):
         assert page.get_by_text("Date created", exact = True).count() == 0
         checks.append(f"{kind}-search-full-archive-and-compact-row")
         search.fill("missing query")
-        expect(
-            page.get_by_text("No archived items match your search.", exact = True)
-        ).to_be_visible()
+        expect(page.get_by_text("No archived items match your search.", exact = True)).to_be_visible()
         search.fill("")
         sort("Alphabetical")
         expect(row.first).to_contain_text("Café needle")
@@ -498,9 +496,7 @@ def run_libraries(page):
         dialog = page.get_by_role("alertdialog")
         dialog.get_by_role("button", name = "Delete", exact = True).click()
         expect(dialog).to_have_count(0)
-        expect(
-            page.get_by_role("button", name = "Delete: Café needle", exact = True)
-        ).to_be_enabled()
+        expect(page.get_by_role("button", name = "Delete: Café needle", exact = True)).to_be_enabled()
         assert page.evaluate("kind => window.__dataFixture.media[kind].length", kind) == 447
         checks.append(f"{kind}-failed-delete-retains-row")
 
@@ -631,17 +627,26 @@ def run_library_locales(page):
                 page.locator(f'[data-settings-label="{text["manage"]}"]').get_by_role(
                     "button", name = text["manageAction"], exact = True
                 ).click()
-            placeholder = text[{
-                "manage": "searchChats", "chats": "searchArchivedChats", "images": "searchImages",
-                "videos": "searchVideos", "audio": "searchAudio",
-            }[shelf]]
+            placeholder = text[
+                {
+                    "manage": "searchChats",
+                    "chats": "searchArchivedChats",
+                    "images": "searchImages",
+                    "videos": "searchVideos",
+                    "audio": "searchAudio",
+                }[shelf]
+            ]
             search = page.get_by_role("searchbox", name = placeholder, exact = True)
             expect(search).to_be_visible()
             toolbar = page.get_by_role("button", name = text["filterSort"], exact = True)
             toolbar.click()
-            expect(page.get_by_role("menuitemradio", name = text["alphabetical"], exact = True)).to_be_visible()
+            expect(
+                page.get_by_role("menuitemradio", name = text["alphabetical"], exact = True)
+            ).to_be_visible()
             if shelf in ["manage", "chats"]:
-                expect(page.get_by_role("menuitemradio", name = text["singleChats"], exact = True)).to_be_visible()
+                expect(
+                    page.get_by_role("menuitemradio", name = text["singleChats"], exact = True)
+                ).to_be_visible()
             page.keyboard.press("Escape")
             if shelf in ["manage", "chats"]:
                 expect(page.get_by_role("button", name = "Sample 0", exact = True)).to_be_visible()
@@ -652,18 +657,28 @@ def run_library_locales(page):
                 expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_be_visible()
                 search.fill("")
                 page.get_by_role("button", name = text["filterProject"], exact = True).click()
-                page.get_by_role("combobox", name = text["searchProjects"], exact = True).fill(text["noProject"])
+                page.get_by_role("combobox", name = text["searchProjects"], exact = True).fill(
+                    text["noProject"]
+                )
                 page.get_by_role("option", name = text["noProject"], exact = True).click()
-                expect(page.get_by_role("heading", name = text["noProject"], exact = True)).to_be_visible()
+                expect(
+                    page.get_by_role("heading", name = text["noProject"], exact = True)
+                ).to_be_visible()
                 expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_have_count(0)
                 if shelf == "manage":
                     page.get_by_role("checkbox", name = text["selectAll"], exact = True).click()
-                    expect(page.get_by_role("button", name = text["archive"], exact = True)).to_be_visible()
+                    expect(
+                        page.get_by_role("button", name = text["archive"], exact = True)
+                    ).to_be_visible()
                     page.get_by_role("button", name = text["delete"], exact = True).click()
-                    expect(page.get_by_role("alertdialog")).to_contain_text(text["deleteChatsWarning"].replace("{count}", "1"))
+                    expect(page.get_by_role("alertdialog")).to_contain_text(
+                        text["deleteChatsWarning"].replace("{count}", "1")
+                    )
                 else:
                     page.get_by_role("button", name = text["deleteResults"], exact = True).click()
-                    expect(page.get_by_role("alertdialog")).to_contain_text(text["deleteArchivedWarning"].replace("{count}", "1"))
+                    expect(page.get_by_role("alertdialog")).to_contain_text(
+                        text["deleteArchivedWarning"].replace("{count}", "1")
+                    )
             else:
                 row = page.locator("[data-archived-id]")
                 expect(row).to_contain_text("Sample media")
@@ -672,19 +687,41 @@ def run_library_locales(page):
                     locale,
                 )
                 expect(row).to_contain_text(expected_date)
-                expect(page.get_by_role("button", name = text["unarchiveItem"].replace("{title}", "Sample media"), exact = True)).to_be_visible()
+                expect(
+                    page.get_by_role(
+                        "button",
+                        name = text["unarchiveItem"].replace("{title}", "Sample media"),
+                        exact = True,
+                    )
+                ).to_be_visible()
                 page.get_by_role("button", name = text["deleteAll"], exact = True).click()
-                expect(page.get_by_role("alertdialog").get_by_role("heading")).to_have_text(text["deleteItemsTitle"].replace("{count}", "1"))
+                expect(page.get_by_role("alertdialog").get_by_role("heading")).to_have_text(
+                    text["deleteItemsTitle"].replace("{count}", "1")
+                )
                 expect(page.get_by_role("alertdialog")).to_contain_text(text["deleteFilesWarning"])
-            page.get_by_role("alertdialog").get_by_role("button", name = text["cancel"], exact = True).click()
-            assert not page.evaluate("window.__dataFixture.requests.some(r => r.method === 'DELETE' || r.method === 'PATCH')")
+            page.get_by_role("alertdialog").get_by_role(
+                "button", name = text["cancel"], exact = True
+            ).click()
+            assert not page.evaluate(
+                "window.__dataFixture.requests.some(r => r.method === 'DELETE' || r.method === 'PATCH')"
+            )
             search.fill("NoMatchingTitle")
-            empty_key = "noChats" if shelf == "manage" else "noArchivedMatches" if shelf == "chats" else "noMediaMatches"
+            empty_key = (
+                "noChats"
+                if shelf == "manage"
+                else "noArchivedMatches"
+                if shelf == "chats"
+                else "noMediaMatches"
+            )
             expect(page.get_by_text(text[empty_key], exact = True)).to_be_visible()
             if locale == "es" and shelf == "chats":
                 page.locator("aside input").fill(text["archived"])
-                page.locator("aside").get_by_role("button", name = text["archived"], exact = True).click()
-                expect(page.locator(".settings-search-hit")).to_have_attribute("data-settings-label", text["archived"])
+                page.locator("aside").get_by_role(
+                    "button", name = text["archived"], exact = True
+                ).click()
+                expect(page.locator(".settings-search-hit")).to_have_attribute(
+                    "data-settings-label", text["archived"]
+                )
                 expect(page.get_by_role("button", name = text["back"], exact = True)).to_have_count(0)
                 checks.append("localized-settings-search-exits-archive")
             checks.append(f"library-locale-{locale}-{shelf}")
