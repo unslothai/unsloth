@@ -49,8 +49,13 @@ def _extras_referenced_by_the_audit_workflow() -> set[str]:
         for node in ast.walk(ast.parse(block)):
             if _is_optional_dependencies_lookup(node) and isinstance(node.slice, ast.Constant):
                 names.add(node.slice.value)
-            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                  and node.func.id == "extra" and node.args and isinstance(node.args[0], ast.Constant)):
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "extra"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
                 names.add(node.args[0].value)
     for listed in re.findall(r"^\s*for extra in ([^;]+); do\s*$", source, re.MULTILINE):
         names |= {word for word in listed.split() if word}
@@ -85,7 +90,9 @@ def _inline_python_blocks() -> list[str]:
     """Every `python ... <<PY` or `<<'PY'` heredoc in security-audit.yml, dedented."""
     source = SECURITY_AUDIT.read_text(encoding = "utf-8")
     blocks = re.findall(
-        r"^[ \t]*python[^\n]*<<'?PY'?[^\n]*\n(.*?)^[ \t]*PY[ \t]*$", source, re.MULTILINE | re.DOTALL
+        r"^[ \t]*python[^\n]*<<'?PY'?[^\n]*\n(.*?)^[ \t]*PY[ \t]*$",
+        source,
+        re.MULTILINE | re.DOTALL,
     )
     assert blocks, "expected security-audit.yml to embed python heredocs"
     return [textwrap.dedent(b) for b in blocks]
@@ -128,8 +135,12 @@ class TestAmdBitsandbytesFloor:
             requirement = spec.split(";", 1)[0].strip()
             allowed = SpecifierSet(requirement[len("bitsandbytes") :].strip())
             # The whole broken range, not one release: `>=0.49.3` or `!=0.49.2` must fail too.
-            floors = [Version(sp.version) for sp in allowed if sp.operator in (">=", ">", "==", "~=")]
-            assert floors and min(floors) >= BNB_MIN, f"{requirement} has no lower bound at or above {BNB_MIN}"
+            floors = [
+                Version(sp.version) for sp in allowed if sp.operator in (">=", ">", "==", "~=")
+            ]
+            assert (
+                floors and min(floors) >= BNB_MIN
+            ), f"{requirement} has no lower bound at or above {BNB_MIN}"
             for old in ("0.45.0", "0.49.2", "0.49.3", "0.49.99"):
                 assert not allowed.contains(Version(old)), f"{requirement} still admits bnb {old}"
             assert allowed.contains(BNB_MIN), f"{requirement} excludes the fixed release {BNB_MIN}"
@@ -176,7 +187,9 @@ class TestSecurityAuditWorkflowStaysInSync:
                 # Guarded means inside the try BODY (not else/finally) of a try whose handler catches KeyError.
                 guarded, child, parent = False, node, getattr(node, "parent", None)
                 while parent is not None:
-                    if isinstance(parent, ast.Try) and any(_contains_node(stmt, child) for stmt in parent.body):
+                    if isinstance(parent, ast.Try) and any(
+                        _contains_node(stmt, child) for stmt in parent.body
+                    ):
                         if any(_catches_key_error(h) for h in parent.handlers):
                             guarded = True
                         break
