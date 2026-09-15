@@ -165,6 +165,7 @@ class TestTheMemoryProbeFallsBackToNvml:
         probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row]))
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
+
         # nvidia-smi recovers: its rows are physical cards, so the child gets the index back.
         def smi_ok(cmd, *args, **kwargs):
             if cmd and os.path.basename(str(cmd[0])) == "nvidia-smi":
@@ -435,7 +436,11 @@ class TestAGpuCapableBuildIsPreferred:
         monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", _REAL_FINDER)
         monkeypatch.setattr(mod.sys, "platform", "linux")
         monkeypatch.setattr(mod, "__file__", str(tmp_path / "s" / "b" / "c" / "i" / "llama_cpp.py"))
-        for var in ("LLAMA_SERVER_PATH", "UNSLOTH_LLAMA_CPP_PATH", "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH"):
+        for var in (
+            "LLAMA_SERVER_PATH",
+            "UNSLOTH_LLAMA_CPP_PATH",
+            "UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH",
+        ):
             monkeypatch.delenv(var, raising = False)
         monkeypatch.setattr(ps, "get_stored_custom_llama_cpp_path", lambda: None)
         monkeypatch.setattr(

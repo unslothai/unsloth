@@ -11685,7 +11685,9 @@ class LlamaCppBackend:
         def as_cuda_sees(r: dict) -> dict:
             if r.get("mig"):
                 return r  # a slice the mask named stays that slice
-            slices = [s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))]
+            slices = [
+                s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))
+            ]
             return slices[0] if slices else r
 
         tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
@@ -11699,7 +11701,9 @@ class LlamaCppBackend:
                 hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
             elif token.startswith("MIG-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
-                hits = [r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)]
+                hits = [
+                    r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
+                ]
             else:
                 hits = []
             if len(hits) != 1:

@@ -161,7 +161,9 @@ def host_gpu_vendors() -> Optional[set[str]]:
         # HIP reads HIP_, then ROCR_, then CUDA_VISIBLE_DEVICES (_active_gpu_visibility_mask).
         if "amd" in vendors and (
             not os.path.exists("/dev/kfd")
-            or _mask_hides_all("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+            or _mask_hides_all(
+                "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"
+            )
         ):
             vendors.discard("amd")
         return vendors if detected else None
