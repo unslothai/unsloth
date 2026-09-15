@@ -10742,7 +10742,12 @@ def _gguf_runtime_bytes(
                 _fa_supported = False
         except Exception as _fa_exc:
             logger.debug("flash-attention capability probe failed: %s", _fa_exc)
-        flash_attn = _planned_flash_attn(llama_extra_args, _fa_supported, planned_v_type)
+        flash_attn = _planned_flash_attn(
+            llama_extra_args,
+            _fa_supported,
+            planned_v_type,
+            getattr(probe, "_architecture", None),
+        )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,

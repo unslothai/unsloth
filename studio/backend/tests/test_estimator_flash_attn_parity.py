@@ -368,3 +368,18 @@ def test_flash_attention_follows_the_launch_argv_not_the_inherited_env(
     monkeypatch.setenv("LLAMA_ARG_FLASH_ATTN", "on")
     _flash_attn_caps(monkeypatch, False)
     assert _runtime(qwen3_shaped_gguf) == off
+
+
+def test_grok_is_priced_without_flash_attention(monkeypatch, qwen3_shaped_gguf):
+    """llama.cpp forces flash attention off for Grok whatever the launch asks for."""
+    monkeypatch.delenv("LLAMA_ARG_FLASH_ATTN", raising = False)
+    _flash_attn_caps(monkeypatch, True)
+    off = _runtime(qwen3_shaped_gguf, ["--flash-attn", "off"])
+    real_read = ri.LlamaCppBackend._read_gguf_metadata
+
+    def read_as_grok(self, path):
+        real_read(self, path)
+        self._architecture = "grok"
+
+    monkeypatch.setattr(ri.LlamaCppBackend, "_read_gguf_metadata", read_as_grok)
+    assert _runtime(qwen3_shaped_gguf) == off
