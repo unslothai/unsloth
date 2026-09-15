@@ -59,7 +59,8 @@ needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs Po
 # (tests/python/test_install_uv_override_space.py:21,
 # tests/studio/install/test_selection_logic.py:4185).
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason = "renders install.sh with bash; POSIX shell installer test",
+    sys.platform == "win32",
+    reason = "renders install.sh with bash; POSIX shell installer test",
 )
 
 # Values install.sh would interpolate, chosen to be awkward: a distro name with a space, and the
