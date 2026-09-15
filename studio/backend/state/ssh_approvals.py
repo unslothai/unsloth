@@ -10,9 +10,11 @@ recorded here so later terminal and python invocations can connect consistently.
 import threading
 from typing import Iterable, Optional
 
+from utils.account_context import current_account_id
+
 _lock = threading.Lock()
-# session_id -> normalized host literals approved for that sandbox session
-_approved: dict[str, set[str]] = {}
+# account and session -> approved host literals
+_approved: dict[tuple[str, str], set[str]] = {}
 
 
 def normalize_host(host: str) -> str:
@@ -31,7 +33,7 @@ def approve_hosts(session_id: Optional[str], hosts: Iterable[str]) -> None:
     if not normalized:
         return
     with _lock:
-        bucket = _approved.setdefault(session_id, set())
+        bucket = _approved.setdefault((current_account_id(), session_id), set())
         bucket.update(normalized)
 
 
@@ -42,21 +44,21 @@ def is_host_approved(session_id: Optional[str], host: str) -> bool:
     if not key:
         return False
     with _lock:
-        return key in _approved.get(session_id, set())
+        return key in _approved.get((current_account_id(), session_id), set())
 
 
 def approved_hosts(session_id: Optional[str]) -> frozenset[str]:
     if not session_id:
         return frozenset()
     with _lock:
-        return frozenset(_approved.get(session_id, set()))
+        return frozenset(_approved.get((current_account_id(), session_id), set()))
 
 
 def clear_session(session_id: Optional[str]) -> None:
     if not session_id:
         return
     with _lock:
-        _approved.pop(session_id, None)
+        _approved.pop((current_account_id(), session_id), None)
 
 
 def reset_ssh_approvals() -> None:

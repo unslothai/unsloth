@@ -341,6 +341,15 @@ def test_supported_literal_destinations_after_approval(command):
     assert check_ssh_command_access(command, "review") is None
 
 
+def test_approvals_are_scoped_to_account():
+    from utils.account_context import AccountContext, run_as
+
+    alice = AccountContext("alice", "alice")
+    bob = AccountContext("bob", "bob")
+    run_as(alice, approve_hosts, "shared-id", ["approved.example"])
+    assert run_as(bob, approved_hosts, "shared-id") == frozenset()
+    run_as(bob, clear_session, "shared-id")
+    assert run_as(alice, approved_hosts, "shared-id") == {"approved.example"}
 
 
 @pytest.mark.parametrize(
