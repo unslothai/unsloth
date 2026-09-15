@@ -2563,9 +2563,9 @@ def test_the_scan_predicate_covers_every_config_the_scanner_reads(monkeypatch, c
     # Compared as paths, not as strings: the value travels from this test's own
     # Path("/studio/cache") through the predicate and back through str(), and on Windows that
     # round trip spells it "\\studio\\cache". The claim is which root was asked about.
-    assert all(Path(root) == Path("/studio/cache") for _n, root in seen), (
-        "asked the wrong cache root"
-    )
+    assert all(
+        Path(root) == Path("/studio/cache") for _n, root in seen
+    ), "asked the wrong cache root"
 
 
 def test_the_template_predicate_asks_the_active_cache(monkeypatch):
@@ -2602,9 +2602,9 @@ def test_the_template_predicate_asks_the_active_cache(monkeypatch):
     )
 
     assert picker_service.read_default_chat_template("org/private", "hf_dummy") is None
-    assert roots and all(Path(r) == Path("/studio/cache") for r in roots), (
-        "asked the wrong cache root"
-    )
+    assert roots and all(
+        Path(r) == Path("/studio/cache") for r in roots
+    ), "asked the wrong cache root"
     assert not downloads, "a template cached in the active root was served to a denied caller"
 
 
