@@ -1100,6 +1100,69 @@ def test_an_image_continuation_resumes_the_replayed_partial_after_the_no_system_
 
 
 @pytest.mark.parametrize(
+    "system_prompt, messages, tools",
+    [
+        ("SYSTEM_RULE", [{"role": "user", "content": "what is in this picture"}], None),
+        (
+            "",
+            [
+                {"role": "system", "content": "SYSTEM_RULE"},
+                {"role": "user", "content": "what is in this picture"},
+            ],
+            [_LOOKUP],
+        ),
+    ],
+)
+def test_every_image_render_carries_the_reasoning_controls(system_prompt, messages, tools):
+    backend, _ = _vision_probe()
+    renders = []
+
+    def apply_chat_template(messages, **kwargs):
+        renders.append(kwargs)
+        if any(m["role"] == "system" for m in messages):
+            raise ValueError("system role not supported")
+        return "PROMPT"
+
+    backend.models["vision-tools"]["processor"].apply_chat_template = apply_chat_template
+    _drain(
+        backend,
+        system_prompt = system_prompt,
+        messages = messages,
+        tools = tools,
+        enable_thinking = False,
+        reasoning_effort = "low",
+        preserve_thinking = True,
+    )
+    assert len(renders) >= 2
+    for kwargs in renders:
+        assert kwargs["enable_thinking"] is False
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["preserve_thinking"] is True
+
+
+def test_an_image_turn_penalizes_repeats_in_the_generated_tokens_only():
+    torch = pytest.importorskip("torch")
+    from transformers import RepetitionPenaltyLogitsProcessor
+
+    backend, _ = _vision_probe()
+    calls = []
+    backend.models["vision-tools"]["model"].generate = lambda **kwargs: calls.append(kwargs)
+    messages = [{"role": "user", "content": "what is in this picture"}]
+    _drain(backend, messages = messages, repetition_penalty = 1.0)
+    _drain(backend, messages = messages, repetition_penalty = 2.0)
+
+    def penalties(call):
+        return [
+            p for p in call["logits_processor"] if isinstance(p, RepetitionPenaltyLogitsProcessor)
+        ]
+
+    assert penalties(calls[0]) == []
+    (penalty,) = penalties(calls[1])
+    scores = penalty(torch.tensor([[9, 2]]), torch.ones((1, 4)))
+    assert scores.tolist() == [[1.0, 1.0, 0.5, 1.0]]
+
+
+@pytest.mark.parametrize(
     "content, structured, expected",
     [
         ("", False, [{"type": "image"}, {"type": "text", "text": ""}]),
