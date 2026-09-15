@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import asyncio
+import math
 import os
 import sys
 import time
@@ -22,6 +23,38 @@ class _Request:
 def test_non_streaming_generation_timeout_has_read_deadline():
     timeout = inf_mod._llama_non_streaming_generation_timeout()
     assert timeout.read == inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S
+
+
+def test_an_infinite_env_value_does_not_remove_the_deadline(monkeypatch):
+    """`inf` is positive, so a `value > 0` parser lets it through.
+
+    Both of this branch's knobs feed deadlines, and the first-token one also
+    builds `httpx.Timeout` for the non-streaming path, where the positional
+    form covers connect, read, write and pool. An operator writing `inf`, or
+    `1e309` which parses to it, would otherwise get a request that can never
+    time out anywhere. The default is restored instead.
+    """
+    for raw in ("inf", "Infinity", "1e309", "-inf"):
+        monkeypatch.setenv(inf_mod._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, raw)
+        monkeypatch.setenv(inf_mod._OPENAI_COMPAT_STREAM_KEEPALIVE_ENV, raw)
+
+        first = inf_mod._first_token_timeout_s()
+        assert math.isfinite(first), (raw, first)
+        assert first == inf_mod._DEFAULT_FIRST_TOKEN_TIMEOUT_S, (raw, first)
+
+        keepalive = inf_mod._openai_passthrough_stream_keepalive_interval()
+        assert keepalive is None or math.isfinite(keepalive), (raw, keepalive)
+
+        # The non-streaming timeout is built from the same value, and every
+        # field of it has to stay finite.
+        timeout = inf_mod._llama_non_streaming_generation_timeout()
+        for field in ("connect", "read", "write", "pool"):
+            value = getattr(timeout, field)
+            assert value is None or math.isfinite(value), (raw, field, value)
+
+    # A finite override is still honoured; this must not become a blanket veto.
+    monkeypatch.setenv(inf_mod._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, "37.5")
+    assert inf_mod._first_token_timeout_s() == 37.5
 
 
 def test_stream_first_item_deadline_after_headers():

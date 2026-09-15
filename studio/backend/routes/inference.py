@@ -1736,6 +1736,16 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+# The same comment WITHOUT the blank line, for ticks emitted once upstream bytes
+# are already flowing. A blank line ends an SSE block, and both the openai and
+# anthropic Python decoders dispatch an empty event for a block that carries no
+# data once an `id:` has been seen, because a retained last-event-id satisfies
+# their "is there anything to dispatch" test. openai's stream then calls .json()
+# on it and raises JSONDecodeError. Verified against both installed decoders: a
+# bare comment line leaves the parsed event sequence byte-identical, a comment
+# plus blank line inserts an empty event. This relay is verbatim, so it must not
+# introduce a frame boundary into framing it did not produce.
+_OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE = ": keep-alive\n"
 
 
 class _LlamaStreamKeepalive:
@@ -2584,6 +2594,20 @@ def _openai_compat_stream_stall_timeout():
     )
 
 
+def _finite_positive_float_env(env_name: str, default):
+    """``_positive_float_env`` with infinities rejected.
+
+    ``float("inf")`` is positive, so the plain parser accepts it and the caller
+    ends up with a deadline that never fires; ``1e309`` parses to it too, which
+    a human writing a large number will not expect. Both fall back to the
+    default here. NaN already does, since no comparison with it is true.
+    """
+    value = _positive_float_env(env_name, default)
+    if isinstance(value, float) and not math.isfinite(value):
+        return default
+    return value
+
+
 def _first_token_timeout_s() -> float:
     """How long a passthrough waits for llama-server's first token.
 
@@ -2592,7 +2616,7 @@ def _first_token_timeout_s() -> float:
     it: the same value builds the non-streaming timeout, where httpx.Timeout's
     positional form also covers connect/read/write/pool.
     """
-    value = _positive_float_env(
+    value = _finite_positive_float_env(
         _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
     )
@@ -2605,7 +2629,7 @@ def _openai_passthrough_stream_keepalive_interval():
     llama-server is silent for the whole prefill and undici aborts a response
     after 300s with no bytes. 0 relays in silence like before.
     """
-    return _positive_float_env(
+    return _finite_positive_float_env(
         _OPENAI_COMPAT_STREAM_KEEPALIVE_ENV,
         _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S,
     )
@@ -27589,7 +27613,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 async for chunk in items_iter:
                     # Out of `buffer`: the split below would hand it to the monitor.
                     if chunk is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE.encode()
                         continue
                     buffer += chunk
                     while b"\n\n" in buffer:
@@ -29948,7 +29972,7 @@ async def _responses_stream(
             )
             async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE
                     continue
                 if not raw_line:
                     continue
@@ -33518,7 +33542,7 @@ async def _anthropic_passthrough_stream(
             )
             async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE
                     continue
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
@@ -35145,7 +35169,7 @@ async def _openai_passthrough_stream_admitted(
                 )
                 async for raw_line in items_iter:
                     if raw_line is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE
                         continue
                     if not raw_line:
                         continue

@@ -13,6 +13,7 @@ surface can be added without translating the sentinel.
 from __future__ import annotations
 
 import ast
+import math
 import asyncio
 import time
 from pathlib import Path
@@ -291,6 +292,7 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
 def _load_env_accessors():
     wanted = {
         "_positive_float_env",
+        "_finite_positive_float_env",
         "_openai_passthrough_stream_keepalive_interval",
         "_first_token_timeout_s",
         "_OPENAI_COMPAT_STREAM_KEEPALIVE_ENV",
@@ -307,7 +309,11 @@ def _load_env_accessors():
             ok = False
         if ok:
             chunks.append(ast.get_source_segment(SRC, node))
-    ns = {"os": __import__("os"), "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": 1200.0}
+    ns = {
+        "os": __import__("os"),
+        "math": math,
+        "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": 1200.0,
+    }
     exec("\n\n".join(chunks), ns)
     return ns
 
@@ -341,6 +347,13 @@ def test_keepalive_interval_env(monkeypatch, raw, expected):
         ("-5", 1200.0),
         ("garbage", 1200.0),
         ("2400", 2400.0),
+        # `inf` is positive, so a `value > 0` parser used to let it through and
+        # the deadline stopped existing. `1e309` is the same value written by a
+        # human who meant "very large".
+        ("inf", 1200.0),
+        ("Infinity", 1200.0),
+        ("1e309", 1200.0),
+        ("nan", 1200.0),
     ],
 )
 def test_first_token_timeout_env_never_unbounded(monkeypatch, raw, expected):
@@ -354,6 +367,11 @@ def test_first_token_timeout_env_never_unbounded(monkeypatch, raw, expected):
     assert isinstance(got, float) and got > 0, (
         "the first-token deadline is unconditional downstream, so this accessor "
         f"must never return None or a non-positive value; got {got!r}"
+    )
+    assert math.isfinite(got), (
+        "a non-finite bound is the same as no bound: this value also builds the "
+        f"non-streaming httpx.Timeout, whose positional form covers connect, "
+        f"read, write and pool; got {got!r}"
     )
 
 
@@ -507,3 +525,46 @@ def test_sdk_sse_readers_ignore_the_keepalive_comment(module_name):
         if event is not None
     ]
     assert events == [], f"{module_name} SSE reader must ignore a comment; got {events}"
+
+
+def test_the_in_body_keepalive_never_ends_an_sse_block():
+    """A tick must not insert a frame boundary into upstream's own framing.
+
+    A blank line ends an SSE block. Both the openai and the anthropic Python
+    decoders dispatch an EMPTY event for a data-less block once an `id:` has
+    been seen, because a retained last-event-id satisfies their "anything to
+    dispatch" test; openai's higher level stream then calls .json() on it and
+    raises. llama-server is not known to send `id:`, but this relay forwards
+    upstream bytes verbatim, so the tick has to be safe against framing it did
+    not produce. A comment line with no blank line is: it still puts bytes on
+    the wire, which is the whole point, without closing a block.
+    """
+    source = SRC
+    assert '_OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE = ": keep-alive\\n"' in source
+    assert '_OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\\n\\n"' in source
+
+    # Every site that relays a tick must emit the LINE form.
+    emit_sites = source.count("yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE")
+    assert emit_sites == 4, f"expected 4 in-body tick emitters, found {emit_sites}"
+
+    openai_streaming = pytest.importorskip("openai._streaming")
+    anthropic_streaming = pytest.importorskip("anthropic._streaming")
+
+    def decoded(decoder, raw):
+        out = []
+        for line in raw.split("\n"):
+            event = decoder.decode(line)
+            if event is not None:
+                out.append(event.data)
+        return out
+
+    clean = 'id: sticky\ndata: {"n":1}\n\ndata: {"n":2}\n\n'
+    with_line = 'id: sticky\ndata: {"n":1}\n\n: keep-alive\ndata: {"n":2}\n\n'
+    with_block = 'id: sticky\ndata: {"n":1}\n\n: keep-alive\n\ndata: {"n":2}\n\n'
+
+    for module in (openai_streaming, anthropic_streaming):
+        decoder = module.SSEDecoder
+        baseline = decoded(decoder(), clean)
+        assert decoded(decoder(), with_line) == baseline, module.__name__
+        # The form this test exists to keep out of the relay.
+        assert decoded(decoder(), with_block) != baseline, module.__name__
