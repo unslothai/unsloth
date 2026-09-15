@@ -2651,6 +2651,2043 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
     re.IGNORECASE,
 )
+# $STUDIO_HOME/auth holds this install's credentials in the clear, and tool subprocesses run as the
+# backend's own OS user, so their 0600 modes are no boundary against them. Narrow on purpose: these
+# basenames and the auth directory itself, so an app's own auth/ package or auth.py stays ordinary.
+# A name ends where the shell ends a word, so the punctuation that separates commands, redirects and
+# subshells closes it too: without them `cat /tmp/.bootstrap_password; echo done` named the file and
+# matched nothing.
+_WORD_END = r"(?:$|[\s'\";&|)(<>`])"
+_STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
+    # Dotted names nothing else spells, so they match bare too.
+    r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
+    + _WORD_END
+    # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
+    # and Studio's copy is covered by the auth-directory patterns below.
+    + r"|[/\\]llama_api_key"
+    + _WORD_END
+    # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
+    # refused `print('agent_api_key.json')`.
+    + r"|[/\\]agent_api_key\.json"
+    + _WORD_END,
+    re.IGNORECASE,
+)
+_STUDIO_AUTH_DIR_RE = re.compile(
+    r"(?:^|[/\\\s'\"=])\.unsloth[/\\]studio[/\\]auth(?:[/\\]|" + _WORD_END + r")",
+    re.IGNORECASE,
+)
+
+# Only counted with a `cd` INTO the studio root, never a mere mention of it: `grep -rn auth
+# <studio root>/logs/studio.log` is ordinary work.
+_BARE_AUTH_SEGMENT_RE = re.compile(
+    r"(?:^|[/\\\s'\"=])auth(?:[/\\]|" + _WORD_END + r")", re.IGNORECASE
+)
+
+# Prefilter: a new pattern needs a hint here or it never runs.
+# Whether this host distinguishes `auth` from `Auth`. `os.path.normcase` is identity on POSIX other
+# than macOS, which is the same test the path comparisons elsewhere in this file rely on.
+_CASE_SENSITIVE_PATHS = os.path.normcase("A") == "A" and sys.platform != "darwin"
+
+
+_STUDIO_CREDENTIAL_HINTS = (
+    "auth",
+    ".cli_api_key",
+    ".bootstrap_password",
+    ".desktop_secret",
+    "llama_api_key",
+    "agent_api_key",
+)
+
+# Both survive into the tool subprocess environment, so `$STUDIO_HOME/auth` IS the path to the
+# shell, not a rewrite of it.
+_STUDIO_HOME_ENV_VARS = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME")
+
+
+def _same_directory(left: str, right: str) -> bool:
+    """Whether two spellings name the same directory.
+
+    normcase because Windows paths are case-insensitive, and realpath because `studio_root()`
+    resolves aliases: a `STUDIO_HOME` that is a symlink or junction to the configured root is the
+    root, and reading it as somewhere else drops every spelling of the variable from the guard.
+    """
+
+    def tidy(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    if tidy(left) == tidy(right):
+        return True
+    try:
+        return tidy(os.path.realpath(left)) == tidy(os.path.realpath(right))
+    except OSError:
+        return False
+
+
+def _studio_home_variable_spellings(resolved: "str | None" = None) -> "list[str]":
+    """`$VAR`, `${VAR}`, `%VAR%` and `$env:VAR` for each studio-home variable (sh, cmd, PowerShell).
+
+    A variable that is SET to some other directory is skipped. `STUDIO_HOME` is a generic name, and
+    another application can own it; with the spelling registered unconditionally, a command naming
+    that application's directory was refused in every permission mode even though it never came near
+    this install. A variable that is unset stays registered: the child cannot expand it either, so
+    the spelling reaches nothing, and dropping it would only widen the guard for no gain.
+    """
+    out: "list[str]" = []
+    for var in _STUDIO_HOME_ENV_VARS:
+        value = os.environ.get(var)
+        if value and resolved:
+            try:
+                points_here = _same_directory(os.path.expanduser(value), resolved)
+            except Exception:  # noqa: BLE001 - an unreadable value must not break classification
+                points_here = True
+            if not points_here:
+                continue
+        out.extend((f"${var}", f"${{{var}}}", f"%{var}%", f"$env:{var}"))
+    return out
+
+
+_studio_auth_markers_cache: "tuple | None" = None
+
+
+def _studio_auth_dir_markers() -> tuple:
+    """``(plain spellings, variable spellings, "cd into the studio root" pattern)`` for this install.
+
+    Each spelling is a ``(marker, canonical marker)`` pair, both lowercased, so the per-call path
+    does no string building. The variable spellings (``$HOME/...``, ``$STUDIO_HOME/auth``, ``~/...``)
+    are kept apart because a text containing no ``$``, ``%`` or ``~`` cannot match one, and the
+    terminal classifier runs this once per candidate token of every command.
+
+    Resolved once per process: STUDIO_HOME is fixed at startup, and a custom UNSLOTH_STUDIO_HOME is
+    only covered by asking for the real root rather than assuming the default layout. A failure is
+    not cached, so a root that could not be resolved during startup import ordering does not leave
+    the guard half-blind for the process lifetime."""
+    global _studio_auth_markers_cache
+    if _studio_auth_markers_cache is not None:
+        return _studio_auth_markers_cache
+    try:
+        from utils.paths.storage_roots import auth_root
+        resolved = str(auth_root())
+    except Exception:  # noqa: BLE001 - an unresolvable root leaves the literal patterns above
+        return (), (), None
+    if not resolved:
+        return (), (), None
+    auth_markers = [resolved]
+    variable_markers: "list[str]" = []
+    root_markers = [os.path.dirname(resolved.rstrip("/\\"))]
+    home = os.path.expanduser("~")
+    # Boundary-aware: a plain startswith reads /home/u2 as under /home/u and mints a "~2/..." marker.
+    if home and (resolved == home or resolved.startswith(home.rstrip(os.sep) + os.sep)):
+        for target, base in ((variable_markers, resolved), (root_markers, root_markers[0])):
+            tail = base[len(home.rstrip(os.sep)) :]
+            target.extend(("~" + tail, "$HOME" + tail, "${HOME}" + tail))
+    # Minus any variable that is set to somewhere else.
+    for spelling in _studio_home_variable_spellings(os.path.dirname(resolved.rstrip("/\\"))):
+        root_markers.append(spelling)
+        variable_markers.extend((spelling + "/auth", spelling + "\\auth"))
+    roots = [m for m in root_markers if m and m not in ("/", "\\")]
+    # The root must END where it matched, or continue into `auth`. Without the boundary
+    # `cd <home>-backup && ls auth` and `cd <home>/models && grep auth README` were both refused.
+    # Only where a shell would RUN one: `echo 'cd <root>'; grep auth README` prints the text and
+    # searches a project, and matched unanchored it read as a move into the studio root.
+    cd_re = (
+        re.compile(
+            r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)(?:(?:builtin|command|exec)\s+)*"
+            r"(?:cd|pushd)\s+(?:/d\s+)?[\"']?(?:"
+            + "|".join(re.escape(m) for m in roots)
+            + r")(?:[\"']|\s|[;&|]|$|[/\\]auth(?![\w-]))",
+            re.IGNORECASE,
+        )
+        if roots
+        else None
+    )
+
+    def pairs(names: "list[str]") -> tuple:
+        out = []
+        for name in names:
+            if not name:
+                continue
+            lowered = name.lower()
+            # The ORIGINAL spelling travels with the folded ones: on a case-sensitive filesystem
+            # `<home>/Auth` is a different directory from `<home>/auth`, and folding alone refused
+            # an ordinary read under it.
+            out.append((lowered, _canonical_path_text(lowered), name))
+        return tuple(out)
+
+    _studio_auth_markers_cache = (pairs(auth_markers), pairs(variable_markers), cd_re)
+    return _studio_auth_markers_cache
+
+
+# Names neither the path nor the value: this string goes back to the model.
+_STUDIO_CREDENTIAL_BLOCKED = (
+    "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
+    "credentials and is not readable by tools."
+)
+
+
+def _canonical_path_text(text: str) -> str:
+    """Rewrite *text* into the one spelling the OS would resolve it to, lexically.
+
+    Separators are unified to "/", then `//` and `/./` collapse and `x/..` pairs cancel. The OS
+    opens `<home>/bin/../auth/auth.db` and `C:\\Studio\\.\\auth\\auth.db` as the protected database,
+    so without this the guard matched only the tidiest spelling of a path and every equivalent one
+    walked past it.
+
+    Lexical on purpose: no `realpath`, so no filesystem access and nothing to race. That makes it
+    wrong for a path whose parent is a symlink, which is the accepted limit here -- this is an extra
+    candidate spelling, never a replacement, so a match found in the raw text still counts.
+    """
+    unified = text.replace("\\", "/")
+    out: "list[str]" = []
+    for index, segment in enumerate(unified.split("/")):
+        # `a//b` is `a/b` to every OS; the first two positions keep a leading "/" and a UNC
+        # "//server/share" intact. Mixed separators (`C:\Studio\home//auth//auth.db`) need it here,
+        # since the other candidate collapses slashes in the RAW text only.
+        if segment == "" and index > 1:
+            continue
+        if segment == ".":
+            continue
+        if segment == ".." and out and out[-1] not in ("", ".."):
+            out.pop()
+            continue
+        out.append(segment)
+    return "/".join(out)
+
+
+_GLOB_META_RE = re.compile(r"[*?\[]")
+_BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
+# A class holding exactly one character expands to that character and nothing else, so
+# `[a][u][t][h]` IS `auth`. Collapsing it to a wildcard threw the literal away, and a segment of
+# nothing but wildcards is deliberately not matched.
+_SINGLETON_CLASS_RE = re.compile(r"\[([^\]/\s!^-])\]")
+
+
+# A backslash before an ordinary word character is quoting, and the shell drops it: `c\d` is `cd`.
+# Restricted to word characters so a Windows separator (`auth\auth.db`) is left alone, which the
+# spelling walk handles separately.
+_ESCAPED_WORD_CHAR_RE = re.compile(r"\\(\w)")
+# The spellings of the home directory a shell expands before the command sees them. The bare `~` only
+# counts at the head of a path, so `file~` and `a~b` are left alone.
+_HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])", re.IGNORECASE)
+# The shell's spellings of the working directory. Bypass sets PWD to the tool workdir, so
+# `$PWD/../..` is the sandbox walked two levels up, exactly as `$HOME/../..` is.
+_CWD_VARIABLE_RE = re.compile(r"\$\{PWD\}|\$PWD\b|%CD%|\$env:PWD\b", re.IGNORECASE)
+
+
+def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
+    """True when *lowered*, read as a shell glob, can expand to *marker* or something under it.
+
+    `sqlite3 ../../a?th/auth.db` never spells the auth directory, but bash expands `a?th` to `auth`
+    before sqlite3 opens anything, so comparing the literal text alone let the database through.
+    Matched segment by segment, because a shell wildcard does not cross a separator while
+    `fnmatch`'s does.
+
+    A segment whose literal characters are all metacharacters is skipped: `ls <studio root>/*` names
+    the auth directory only in the sense that listing a parent does, and refusing it would break
+    ordinary work for no secret read.
+    """
+    candidate = lowered.split("/")
+    wanted = marker.split("/")
+    if len(candidate) < len(wanted):
+        return False
+    aligned = candidate[len(wanted) - 1]
+    if not _GLOB_META_RE.sub("", aligned).strip("]-"):
+        return False
+    return all(
+        fnmatch.fnmatchcase(want, have) for want, have in zip(wanted, candidate[: len(wanted)])
+    )
+
+
+# The files inside the auth directory, by basename alone. A command that names the studio ROOT and
+# one of these is enumerating for it, however it joins them.
+_CREDENTIAL_BASENAME_RE = re.compile(
+    r"(?<![\w.-])(?:auth\.db|\.desktop_secret|\.bootstrap_password|\.cli_api_key[\w.-]*"
+    r"|llama_api_key[\w.-]*|agent_api_key[\w.-]*)(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+# An assignment to one of the studio home variables, anywhere in the command.
+_STUDIO_HOME_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|(\s])(?:export\s+|set\s+)?(" + "|".join(_STUDIO_HOME_ENV_VARS) + r")\s*=",
+    re.IGNORECASE,
+)
+
+
+def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
+    """True when a command follows the assignment's value on the same simple command.
+
+    `H=/tmp cat x` is a prefix assignment; `H=/tmp; cat x` is an assignment that stands alone. The
+    value ends at the first unquoted separator, so the quotes are tracked while scanning it.
+    """
+    index = value_start
+    quote = ""
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in " \t;&|\n":
+            break
+        index += 1
+    following = text[index:].lstrip(" \t")
+    return bool(following) and following[0] not in ";&|\n"
+
+
+def _assignment_is_inert(text: str, index: int) -> bool:
+    """Whether an assignment at *index* binds nothing for the commands that follow it.
+
+    Inside quotes it is DATA that the command merely prints, and inside `( ... )` or
+    `$( ... )` it binds only the SUBSHELL, so the outer commands still expand the
+    inherited value."""
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text[:index]:
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            # A backslash escapes the next character everywhere a single quote is not open, so
+            # `echo "x \" H=/tmp;"` never leaves the quoted region that `\"` only prints.
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    return bool(quote) or depth > 0
+
+
+def _rebinds_the_studio_home_first(text: str) -> bool:
+    """True when *text* assigns a studio home variable BEFORE any use of it.
+
+    The shell assignment is what the child expands, whether or not the backend sets the same name,
+    so `UNSLOTH_STUDIO_HOME=/tmp/project; cat "$UNSLOTH_STUDIO_HOME/auth/config.json"` reads a
+    project file and not this install's directory. An assignment that comes AFTER a use rebinds
+    nothing for that use, and expanding it would hide a real read of the install's own auth
+    directory, so the ordering is what decides it.
+    """
+    lowered = text.lower()
+    assignments: "dict[str, int]" = {}
+    for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
+        # `echo " H=/tmp;"; cat "$H/auth/auth.db"` only PRINTS the assignment and
+        # `(H=/tmp); cat "$H/auth/auth.db"` binds only the subshell, so in both the later
+        # expansion still uses the inherited home and rewriting it hid a real credential read.
+        if _assignment_is_inert(text, match.end()):
+            continue
+        # A PREFIX assignment (`H=/tmp cmd "$H/auth/auth.db"`) does not govern the expansion of its
+        # own command's arguments: the shell expands the word list before the assignment takes
+        # effect, so that read still happens under the INHERITED home. Only an assignment that
+        # stands as a command of its own, terminated by a separator, rebinds what follows.
+        if (
+            _assignment_is_a_command_prefix(text, match.end())
+            and (os.environ.get(match.group(1).upper()) or "").strip()
+        ):
+            # Only when the variable is SET: that inherited value is what the expansion uses. With
+            # it unset the expansion is empty, which can name no directory of this install's, so the
+            # assigned value is still the closest reading of what the command means.
+            continue
+        # The LAST assignment of a name is the one the expansion applies, so that is the position
+        # the first use has to come after: `H=$H; cat "$H/auth/auth.db"; H=/tmp` reads the real
+        # database and then rebinds, and rewriting every use to `/tmp` erased the marker.
+        assignments[match.group(1).lower()] = match.end()
+    # EVERY assigned name has to be safe, not just one of them: the expansion that follows rewrites
+    # all of them from their last assignment, so one name that is only assigned (`STUDIO_HOME=/tmp;`)
+    # used to authorize rewriting another whose assignment comes AFTER its use, and
+    # `STUDIO_HOME=/tmp; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"; UNSLOTH_STUDIO_HOME=/tmp` read the
+    # real database under a rewritten path.
+    rebinds = False
+    for name, position in assignments.items():
+        uses = [
+            found
+            for found in (
+                lowered.find(f"${name}"),
+                lowered.find(f"${{{name}}}"),
+                lowered.find(f"%{name}%"),
+            )
+            if found != -1
+        ]
+        if uses and min(uses) < position:
+            return False
+        rebinds = True
+    return rebinds
+
+
+_studio_root_spellings_cache: "tuple | None" = None
+
+
+def _studio_root_spellings() -> "list[str]":
+    """Every lowered spelling of the Studio root: the literal path and its environment variables.
+
+    The variables come from `_studio_home_variable_spellings`, which drops one that is SET to some
+    other directory: `STUDIO_HOME` is a generic name another application can own, and registering it
+    unconditionally refused `find "$STUDIO_HOME" ...` against that application's tree.
+    """
+    global _studio_root_spellings_cache
+    markers = _studio_auth_dir_markers()[0]
+    if _studio_root_spellings_cache is not None and _studio_root_spellings_cache[0] is markers:
+        return _studio_root_spellings_cache[1]
+    root = _studio_home_for_guard()
+    if not root:
+        return []
+    # Both separator styles of the literal, because how the root is STORED must not decide whether
+    # the text naming it matches: a Windows root reaches source as `c:\\dir` and as `c:/dir`.
+    folded = _folded_word(root)
+    spellings = [root.lower()]
+    if os.sep == "\\":
+        spellings += [folded, folded.replace("/", "\\")]
+    spellings.extend(spelling.lower() for spelling in _studio_home_variable_spellings(root))
+    spellings = list(dict.fromkeys(spellings))
+    # Rebuilt for every command otherwise, and this runs on every one of them.
+    _studio_root_spellings_cache = (markers, spellings)
+    return spellings
+
+
+def _text_names_the_studio_root(text: str) -> bool:
+    """True when *text* names the Studio root directory, literally or by one of its variables."""
+    lowered = text.lower()
+    spellings = _studio_root_spellings()
+    if any(spelling in lowered for spelling in spellings):
+        return True
+    # The escaped spellings name the same directory: a shell escapes a space as `\\ `, and a python
+    # literal doubles every separator of a Windows path. Both need a backslash to exist at all, and
+    # rewriting the text is worth paying for only then.
+    if "\\" not in lowered:
+        return False
+    for unescaped in (lowered.replace("\\ ", " "), lowered.replace("\\\\", "\\")):
+        if unescaped != lowered and any(spelling in unescaped for spelling in spellings):
+            return True
+    return False
+
+
+def _quoted_words(text: str) -> "list[str]":
+    """Split on whitespace, honouring quotes but NOT backslash escapes.
+
+    `shlex.split(posix = True)` eats the separators of a Windows path, so
+    `find "C:\\Users\\me\\Unsloth Studio" ...` came back as one mangled word and matched no root.
+    """
+    lexer = shlex.shlex(text, posix = True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:  # unbalanced quotes: the raw words are the best available reading
+        return text.split()
+
+
+def _folded_word(word: str) -> str:
+    """A word reduced to the directory it names: `"<root>"/.` and `<root>//` are both `<root>`."""
+    # `cp -a /tmp/Studio\\ Home .` names a root WITH a space; the backslash is the shell's escape,
+    # not a separator, so it is removed before the separators are normalised.
+    folded = word.lower().replace("\\ ", " ").replace("\\", "/")
+    while folded.endswith(("/.", "/")):
+        folded = folded[:-2] if folded.endswith("/.") else folded[:-1]
+    return folded
+
+
+def _names_the_studio_root_itself(text: str) -> bool:
+    """True when one WORD of the command is the root itself, so the walk starts there.
+
+    Word by word, because the spelling appearing anywhere is not enough: the pattern in
+    `grep -rn 'cd <root>' src/` searches a project, and `<root>/projects/p/sandbox` is ordinary work
+    inside a project. Only a bare `<root>` (with any trailing separator) is the directory whose walk
+    reaches `auth/`.
+    """
+    # Folded the SAME way as the words, or a Windows root never matches: `_folded_word` turns
+    # `c:\\users\\...` into `c:/users/...`, while a merely right-stripped spelling keeps its
+    # backslashes.
+    spellings = [_folded_word(spelling) for spelling in _studio_root_spellings()]
+    if not spellings:
+        return False
+    words = _quoted_words(text)
+    if "\\ " in text:
+        # Escapes are disabled in the lexer so Windows paths survive, which splits
+        # `Studio\\ Home` in two. The escaped spelling is re-joined before folding.
+        words = words + [
+            word.replace("\x00", " ") for word in _quoted_words(text.replace("\\ ", "\x00"))
+        ]
+    return any(_folded_word(word) in spellings for word in words)
+
+
+# Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
+# `find` with no action) is not one of these: it names files without reading them.
+# `7z a out.7z <dir>` recurses into the directory with no flag at all, so it belongs here rather
+# than with the ones that need `-r`.
+_STUDIO_WALK_COMMANDS = frozenset({"rsync", "tar", "cpio", "rg", "ag", "ack", "7z", "7za", "7zr"})
+_STUDIO_WALK_FLAG_COMMANDS = frozenset({"grep", "egrep", "fgrep", "cp", "scp", "zip"})
+# `find` reads nothing by itself; an ACTION (or a pipe into another command) is what does.
+_STUDIO_FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint"})
+_STUDIO_WALK_SPLIT_RE = re.compile(r"[\s;&()<>]+")
+
+
+def _command_words(text: str) -> "list[str]":
+    """The word in COMMAND position of each pipeline segment, lowered and basenamed.
+
+    `echo tar "$STUDIO_HOME"` runs `echo`; `tar` is data it prints. Reading every non-option token
+    as an executable refused that. Assignments and the usual wrappers are stepped over so
+    `env -u X tar ...` still reports `tar`.
+    """
+    words: "list[str]" = []
+    for segment in _COMMAND_SEPARATOR_RE.split(text.lower()):
+        skip_next = False
+        for token in _quoted_words(segment):
+            if skip_next:
+                skip_next = False
+                continue
+            if token.startswith("-"):
+                # A wrapper option that takes a separate value swallows the token after it, which
+                # would otherwise read as the command (`env -u FOO tar ...`).
+                skip_next = token in _WRAPPER_VALUE_OPTIONS
+                continue
+            if "=" in token:  # a NAME=value assignment preceding the command
+                continue
+            base = os.path.basename(token.strip("\"'"))
+            if base in _WALK_TRANSPARENT_WRAPPERS or _WRAPPER_DURATION_RE.match(base):
+                continue
+            words.append(base)
+            break
+    return words
+
+
+# Separators that start a new command, so the word after one is in command position again.
+_COMMAND_SEPARATOR_RE = re.compile(r"[;&|()\n]+|&&|\|\|")
+_STUDIO_WALK_NAME_HINTS = frozenset(_STUDIO_WALK_COMMANDS | _STUDIO_WALK_FLAG_COMMANDS | {"find"})
+_WRAPPER_VALUE_OPTIONS = frozenset(
+    {"-u", "--unset", "-n", "-c", "-i", "-p", "-C", "--chdir", "-k", "--kill-after", "-s"}
+)
+# `timeout 5 tar ...`: a bare duration is the wrapper's own operand.
+_WRAPPER_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+# Wrappers that run the command that FOLLOWS them, so the walker can still be behind one.
+_WALK_TRANSPARENT_WRAPPERS = frozenset(
+    {
+        "env",
+        "nice",
+        "ionice",
+        "nohup",
+        "time",
+        "timeout",
+        "sudo",
+        "command",
+        "builtin",
+        "exec",
+        "stdbuf",
+        "xargs",
+        "busybox",
+    }
+)
+
+
+def _walks_a_tree_reading_it(text: str) -> bool:
+    """True when the command recursively reads or copies a whole directory tree."""
+    lowered = text.lower()
+    # Splitting into command positions costs a lexer pass, so skip it when no walker is named at
+    # all: that is the case for almost every command that mentions the studio root.
+    if not any(name in lowered for name in _STUDIO_WALK_NAME_HINTS):
+        return False
+    names = set(_command_words(text))
+    if not names:
+        return False
+    if names & _STUDIO_WALK_COMMANDS:
+        return True
+    tokens = [token for token in _STUDIO_WALK_SPLIT_RE.split(text.lower()) if token]
+    if "find" in names and (any(token in _STUDIO_FIND_ACTIONS for token in tokens) or "|" in text):
+        return True
+    if names & _STUDIO_WALK_FLAG_COMMANDS:
+        for token in tokens:
+            if token in ("--recursive", "--archive"):
+                return True
+            if token.startswith("-") and not token.startswith("--") and set(token[1:]) & {"r", "a"}:
+                return True
+    return False
+
+
+_ABSOLUTE_MARKER_RE = re.compile(r"^(?:[/\\]|[a-z]:[/\\])")
+
+
+def _marker_is_absolute(marker: str) -> bool:
+    return bool(_ABSOLUTE_MARKER_RE.match(marker))
+
+
+def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
+    """True when ``marker`` appears in ``lowered`` as a whole path, not merely as a prefix.
+
+    ``<home>/auth`` must match ``<home>/auth/auth.db`` and a bare ``<home>/auth``, but not
+    ``<home>/authors/notes.txt`` or ``<home>/auth-backup``.
+    """
+    start = lowered.find(marker)
+    while start != -1:
+        end = start + len(marker)
+        ends_here = end == len(lowered) or lowered[end] in "/\\'\" \t\r\n;:&|)"
+        # The LEADING boundary matters too for an absolute marker: `/mnt/backup<home>/auth` embeds
+        # the configured path inside another directory and is not it, and checking only the end
+        # refused an ordinary read under a backup copy.
+        begins_here = (
+            start == 0
+            or not _marker_is_absolute(marker)
+            or lowered[start - 1] in "'\" \t\r\n;&|(=,"
+        )
+        if ends_here and begins_here:
+            return True
+        start = lowered.find(marker, start + 1)
+    return False
+
+
+def _glob_text_can_name_the_auth_dir(lowered: str) -> bool:
+    """True when *lowered*, read as a shell glob, can expand onto the auth directory or below it."""
+    auth_markers, variable_markers, _cd_re = _studio_auth_dir_markers()
+    markers = auth_markers + (variable_markers if ("$" in lowered or "%" in lowered) else ())
+    if not markers:
+        return False
+    candidates = {lowered, _canonical_path_text(lowered)}
+    return any(
+        _glob_can_name_the_marker(candidate, canonical_marker)
+        for _marker, canonical_marker, _original in markers
+        for candidate in candidates
+    )
+
+
+def _references_studio_credential(text: str) -> bool:
+    """True if *text* names Studio's auth directory or one of the credential files in it."""
+    if not text:
+        return False
+    lowered = text.lower()
+    # Once per candidate token of every command, so skip the regexes when nothing can match.
+    if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
+        # A WILDCARD can name the directory without spelling it: `../../a?th/.b*` expands to
+        # `auth/.bootstrap_password` and carries no hint at all, so the prefilter was skipping the
+        # glob analysis that exists for exactly this. Only the marker comparison can match here, the
+        # literal patterns needing a hint by construction, so that is all this runs.
+        if not _GLOB_META_RE.search(lowered):
+            return False
+        return _glob_text_can_name_the_auth_dir(lowered)
+    # `<home>//auth/auth.db` and `<home>/./auth/auth.db` open the same file.
+    normalized = _REDUNDANT_SLASH_RE.sub("", text)
+    lowered_normalized = normalized.lower()
+    # A shell escapes a space in a home name; read as a separator it splits the directory in half.
+    unescaped = text.replace("\\ ", " ") if "\\ " in text else text
+    # A shell concatenates adjacent fragments, so no marker can span the quote in
+    # `"$STUDIO_HOME"/auth/auth.db`.
+    if '"' in unescaped or "'" in unescaped:
+        unescaped = unescaped.replace('"', "").replace("'", "")
+    canonical = _canonical_path_text(text)
+    lowered_canonical = canonical.lower()
+    canonical_candidates = {canonical}
+    if unescaped is not text:
+        canonical_candidates.add(_canonical_path_text(unescaped))
+    if any(
+        pattern.search(candidate)
+        for pattern in (_STUDIO_CREDENTIAL_BASENAME_RE, _STUDIO_AUTH_DIR_RE)
+        for candidate in ({text, normalized} | canonical_candidates)
+    ):
+        return True
+    auth_markers, variable_markers, cd_into_root_re = _studio_auth_dir_markers()
+    # No `$`, `%` or `~` means no variable spelling.
+    if variable_markers and ("$" in lowered or "%" in lowered or "~" in lowered):
+        auth_markers = auth_markers + variable_markers
+    if not auth_markers:
+        return False
+    # Segment-bounded, or `<home>/authors/notes.txt` and `<home>/auth-backup/` are refused too. The
+    # markers are canonicalised alongside the text; on Windows the raw ones carry backslashes.
+    lowered_raw = {lowered, lowered_normalized}
+    lowered_canonicals = {lowered_canonical} | {c.lower() for c in canonical_candidates}
+    if unescaped is not text:
+        lowered_raw.add(unescaped.lower())
+    matched = [
+        original
+        for marker, canonical_marker, original in auth_markers
+        if any(_marker_is_a_path_segment(candidate, marker) for candidate in lowered_raw)
+        or any(
+            _marker_is_a_path_segment(candidate, canonical_marker)
+            for candidate in lowered_canonicals
+        )
+    ]
+    if matched:
+        # On a case-sensitive filesystem the folded match is not enough on its own: `<home>/Auth` is
+        # a different directory from `<home>/auth`, and refusing a read under it is a false refusal.
+        # The check is only applied where the ORIGINAL marker is an ordinary literal path, so a
+        # variable or `~` spelling (which the shell expands, and whose case the shell decides) keeps
+        # the folded answer.
+        raw_candidates = {text, normalized, unescaped, canonical}
+        if _CASE_SENSITIVE_PATHS and not any(
+            original in candidate
+            for original in matched
+            if original[:1] not in ("$", "~", "%")
+            for candidate in raw_candidates
+        ):
+            literal = [o for o in matched if o[:1] not in ("$", "~", "%")]
+            if literal and len(literal) == len(matched):
+                return False
+        return True
+    # Once more as a glob, gated on a wildcard being there at all. Per path-shaped TOKEN, not on
+    # the whole text: the segments of `sqlite3 <home>/a?th/auth.db` start at `sqlite3 <home>`, so
+    # comparing from segment zero could never line up with an absolute marker.
+    if _GLOB_META_RE.search(lowered):
+        glob_tokens = {t for c in lowered_canonicals for t in _PATH_TOKEN_RE.findall(c)}
+        glob_tokens.update(lowered_canonicals)
+        if any(
+            _glob_can_name_the_marker(token, canonical_marker)
+            for _marker, canonical_marker, _original in auth_markers
+            for token in glob_tokens
+            if _GLOB_META_RE.search(token)
+        ):
+            return True
+    return bool(
+        cd_into_root_re is not None
+        and _BARE_AUTH_SEGMENT_RE.search(text)
+        and any(cd_into_root_re.search(candidate) for candidate in (text, unescaped))
+    )
+
+
+# Any run of text that could be a path argument, used to read one token at a time.
+_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
+# Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
+_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
+# Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
+_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
+# `cd DIR`, `cd /d DIR` or `pushd DIR` at a command position; `pushd` moves the cwd as `cd` does.
+# Case-insensitive because the shell is `cmd /c` on a Windows host without a trusted bash.
+_CD_TARGET_RE = re.compile(
+    # `builtin cd ..` and `command cd ..` run the same builtin with the same argument, so a walk
+    # that only knows the bare name resolves everything after them against the wrong directory.
+    # `!` and `time` are reserved words, not commands, so they can precede the builtin directly:
+    # `! cd ../..` and `time cd ../..` both move the shell exactly as the bare form does.
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:cd|pushd)\s+"
+    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
+    re.IGNORECASE,
+)
+# `cd`/`pushd` with a target, or one of the moves that RETURNS: `cd -` goes back to the previous
+# directory and `popd` pops the stack `pushd` built. Matched in one pass so the order is kept.
+_DIRECTORY_MOVE_RE = re.compile(
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:(?P<back>cd\s+-(?![\w/\\-])|popd\b)"
+    # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir, so the commands
+    # after it open from the sandbox again: `cd ../..; cd; cat auth/config.json` reads the
+    # project's own file and was refused as a read of the studio root.
+    r"|(?P<home>cd(?:\s+(?:-[LPe@]+|--))*\s*(?=[;&|)\n]|$))"
+    r"|(?:cd|pushd)\s+(?:(?:-[LPe@]+|--|/d)\s+)*(?P<target>[^\s;&|)]+))",
+    re.IGNORECASE,
+)
+
+
+# `&&` immediately after a move: the next command runs only if that move succeeded.
+_CHAINED_ON_SUCCESS_RE = re.compile(r"\s*&&")
+
+
+# Distinct directories, not `cd` commands: padding with repeats must not spend the budget.
+_MAX_TRACKED_CWDS = 64
+# Hard ceiling on the directories reported, well past any real command.
+_MAX_WALKED_CWDS = 2048
+
+
+# A symlink to the cwd, which the kernel resolves before any `..` that follows. `$$` and `$BASHPID`
+# expand to the shell's own PID, so they name the same one a literal number does.
+_PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/cwd")
+
+
+def _unquoted_parens(text: str):
+    """Yield `(index, char)` for each bracket that is shell syntax, skipping quoted ones.
+
+    `echo '('; cd ../..; echo ')'` writes two brackets no shell ever opens, and counted as syntax
+    they ended a subshell that was never entered, dropping the `cd` that came between them.
+    """
+    quote = ""
+    escaped = False
+    # Quotes suspended by a `$(` inside them. A command substitution stays ACTIVE within double
+    # quotes, so `echo "$(cd ../..; pwd)"` opens a real subshell: skipping both of its brackets made
+    # the inner `cd` look like it lasted through the rest of the command. Single quotes suppress
+    # substitution entirely, so only a double quote is ever suspended here.
+    suspended: "list[str]" = []
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if quote == '"' and char == "(" and index and text[index - 1] == "$":
+                suspended.append(quote)
+                quote = ""
+                yield index, char
+                continue
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char in "()":
+            yield index, char
+            if char == ")" and suspended:
+                quote = suspended.pop()
+
+
+def _subshell_end(text: str, start: int) -> int:
+    """Where the subshell containing *start* closes, or the end of *text* when it is not in one.
+
+    `(cd ../..; ls models); cat auth/config.json` runs the `cat` in the unchanged directory: a
+    subshell's `cd` dies with the subshell, so its move must not reach past the closing bracket.
+    """
+    depth = 0
+    for index, char in _unquoted_parens(text):
+        if index >= start:
+            break
+        depth = depth + 1 if char == "(" else max(0, depth - 1)
+    if not depth:
+        return len(text)
+    for index, char in _unquoted_parens(text):
+        if index < start:
+            continue
+        depth = depth + 1 if char == "(" else depth - 1
+        if char == ")" and not depth:
+            return index
+    return len(text)
+
+
+# `name() {`, `name () {` and `function name {`, the three spellings a shell accepts.
+_SHELL_FUNCTION_RE = re.compile(
+    r"(?:^|[;&|(){}\n]\s*)(?:function\s+([A-Za-z_][\w.:-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w.:-]*)\s*\(\s*\))\s*\{",
+    re.MULTILINE,
+)
+# Bounds the scan on a command that is nothing but nested definitions.
+_MAX_TRACKED_FUNCTIONS = 64
+
+
+def _unquoted_braces(text: str):
+    """Yield `(index, char)` for each `{` or `}` that is shell syntax, skipping quoted ones."""
+    quote = ""
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char in "{}":
+            yield index, char
+
+
+def _uncalled_function_spans(text: str) -> "list[tuple[int, int]]":
+    """Spans of function bodies *text* defines but never invokes.
+
+    `helper() { cd ../..; }; cat auth/config.json` never runs the `helper`, so the `cd` in its body
+    moves nothing and the `cat` reads the project's own auth file from the unchanged sandbox.
+    Refusing that is a false positive, and it is the same rule the python walk already applies to an
+    uncalled def.
+    """
+    bodies: "list[tuple[str, int, int, int]]" = []
+    for match in _SHELL_FUNCTION_RE.finditer(text):
+        group = 1 if match.group(1) else 2
+        name = match.group(group)
+        named_at = match.start(group)
+        start = text.index("{", match.end() - 1)
+        depth = 0
+        end = len(text)
+        for index, char in _unquoted_braces(text):
+            if index < start:
+                continue
+            depth = depth + 1 if char == "{" else depth - 1
+            if not depth:
+                end = index
+                break
+        bodies.append((name, named_at, start, end))
+        if len(bodies) >= _MAX_TRACKED_FUNCTIONS:
+            break
+    spans: "list[tuple[int, int]]" = []
+    for name, named_at, start, end in bodies:
+        # Called is the assumption: the body is only inert when the name appears NOWHERE outside its
+        # own definition and its own body, which is the one case that needs no guess about control
+        # flow. A recursive call inside the body does not run it either, so the body is skipped too.
+        called = any(
+            call.start() != named_at and not (start <= call.start() <= end)
+            for call in re.finditer(r"(?<![\w.:-])" + re.escape(name) + r"(?![\w.:-])", text)
+        )
+        if not called:
+            spans.append((start, end))
+    return spans
+
+
+def _token_spellings(token: str) -> "list[str]":
+    """The paths *token* can be, once the shell has had its say.
+
+    A backslash is a separator on Windows and an escape on POSIX, so `au\\th/auth.db` is both
+    `au/th/auth.db` and `auth/auth.db` and the guard has to try each.
+    """
+    if "\\" not in token:
+        return [token]
+    return list(dict.fromkeys([token.replace("\\", "/"), token.replace("\\", "")]))
+
+
+def _path_tokens_containing(text: str, wanted: str):
+    """Whole path tokens of *text* holding any character of *wanted* (or the substring `..`).
+
+    One linear pass, then a substring test per token. The equivalent patterns put the interesting
+    characters in the MIDDLE, so their leading `[^...]*` backtracks over every position of a long
+    token that does not contain one: a fifth of a second for a single 8 KB token, and a command
+    carries many.
+    """
+    for match in _PATH_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if ".." in token if wanted == ".." else any(ch in token for ch in wanted):
+            yield match
+
+
+def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
+    """Every working directory *text* walks into via `cd`, as `(offset, limit, directory)` in order.
+
+    The offset is where that `cd` ends, because a relative path written BEFORE it opens from the
+    old directory: `cat auth/auth.db; cd ../..` reads inside the sandbox and is ordinary work.
+
+    `cd ../..` from the session sandbox lands on the Studio root, and the `auth/auth.db` that
+    follows is then the protected database under a name that matches nothing on its own.
+    """
+    # A set of possible directories, not one: a `cd` into a path that does not exist FAILS, and a
+    # shell carries on from where it was, so `cd missing; cd ../..; cat auth/auth.db` reaches the
+    # studio root from the sandbox. Assuming every `cd` succeeds resolved the rest against a
+    # directory the command was never in.
+    # Each state carries the position it stays valid until: the end of the text for an outer `cd`,
+    # the closing bracket for one inside a subshell. `(cd ../..; cd auth; sqlite3 auth.db)` needs
+    # the first move to reach the second `cd`, and dropping a subshell move outright resolved that
+    # second one from the outer sandbox and missed the database.
+    states: "list[tuple[str, int]]" = [(workdir, len(text))]
+    walked: "list[tuple[int, int, str]]" = []
+    seen: "set[tuple[str, int]]" = set()
+    inert = _uncalled_function_spans(text) if "(" in text or "function" in text else []
+    # Where each move came FROM. `cd -` and `popd` go back there, and reading them as no move at all
+    # kept the studio root live: `cd ../..; cd -; cat auth/config.json` is back in the sandbox
+    # reading the project's own file, and it was refused in every mode.
+    history: "list[list[tuple[str, int]]]" = []
+    for match in _DIRECTORY_MOVE_RE.finditer(text):
+        returning = match.group("back")
+        if returning:
+            if any(start <= match.start() <= end for start, end in inert):
+                continue
+            states = history.pop() if history else [(workdir, len(text))]
+            # The directories walked so far stop being where a later path opens from, so every span
+            # still open ends HERE. Without this the earlier move still covered the rest of the
+            # command and the return changed nothing.
+            walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
+            # Those spans are closed, so the SAME directory walked into again afterwards is a new
+            # span rather than a repeat: `cd ../..; cd -; cd ../..` reaches the root twice, and the
+            # dedup that stops padding from spending the budget hid the second one.
+            seen.clear()
+            # Where the return LANDS is where the commands after it open from, so those directories
+            # get spans of their own: `cd ../..; cd sandbox; cd -; cat auth/auth.db` is back at the
+            # studio root reading the real database, and restoring the state without re-opening its
+            # span left nothing covering the `cat`.
+            for cwd, until in states:
+                if cwd == workdir or until <= match.end() or (cwd, until) in seen:
+                    continue
+                seen.add((cwd, until))
+                walked.append((match.end(), until, cwd))
+            continue
+        if match.group("home"):
+            # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir. Unlike a
+            # `cd <path>` it cannot land anywhere else, so it RETURNS the way `cd -` does and the
+            # spans still open end here: `cd ../..; cd; cat auth/config.json` reads the project's
+            # own file. Only outside a subshell, where the move lasts to the end of the command; a
+            # bare `cd` inside `( ... )` leaves the outer directory alone.
+            if any(start <= match.start() <= end for start, end in inert):
+                continue
+            if _subshell_end(text, match.end()) != len(text):
+                continue
+            history.append(states)
+            states = [(workdir, len(text))]
+            walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
+            seen.clear()
+            continue
+        target = (match.group("target") or "").strip("'\"")
+        if not target or target.startswith("-"):
+            continue
+        # A `cd` in a function body that nothing invokes never runs.
+        if any(start <= match.start() <= end for start, end in inert):
+            continue
+        # A subshell that has already closed takes its moves with it.
+        states = [(cwd, until) for cwd, until in states if until >= match.start()] or [
+            (workdir, len(text))
+        ]
+        # A `cd` inside `( ... )` or `$( ... )` moves only that subshell, so its move stops there.
+        limit = _subshell_end(text, match.end())
+        moved: "list[str]" = []
+        for cwd, _until in states:
+            nxt = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
+            if nxt not in moved:
+                moved.append(nxt)
+            # Deduplicated: `cd .` x8 spent the budget before the real ones.
+            if (nxt, limit) not in seen:
+                seen.add((nxt, limit))
+                walked.append((match.end(), limit, nxt))
+        # Both outcomes stay live, capped so a long chain cannot grow the set without bound. The
+        # starting directory is kept FIRST: it is where the shell is when every `cd` fails, which is
+        # what a padded command relies on, and truncating the tail used to drop exactly that state.
+        # The cap bounds the STATES only, never the scan, or the padding hides the `cd ../..`.
+        ordered = (
+            [(workdir, len(text))]
+            + [(c, u) for c, u in states if c != workdir]
+            + [(m, limit) for m in moved]
+        )
+        # `cd x && cd ../..` only reaches the second move when the first SUCCEEDED, so the
+        # unmoved state is not live afterwards. Keeping it modelled a branch no shell can take, and
+        # `cd subdir && cd ../.. && cat auth/config.json` was refused as a read of the studio root
+        # when it reads the project's own file.
+        if _CHAINED_ON_SUCCESS_RE.match(text, match.end()):
+            ordered = [(m, limit) for m in moved]
+        history.append(states)
+        states = list(dict.fromkeys(ordered))[:_MAX_TRACKED_CWDS]
+        if len(walked) >= _MAX_WALKED_CWDS:
+            break
+    return walked
+
+
+def _references_studio_credential_here(
+    text: str,
+    workdir: "str | None",
+    _unescaped: bool = False,
+) -> bool:
+    """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
+
+    The tool cwd is `<studio home>/sandbox/<session>`, a sibling of the auth directory, so
+    `open('../../auth/auth.db')` reads the protected database while naming neither the directory
+    nor a credential basename. Resolving only the `..` tokens keeps this to the one shape that can
+    leave the sandbox at all."""
+    # A command that BINDS one of these variables itself means its own directory by it, and the
+    # generic `STUDIO_HOME` is registered as this install's root even when the backend does not
+    # set it. Resolving the local binding first stops `STUDIO_HOME=/opt/app cat
+    # "$STUDIO_HOME/auth/config.json"` from being refused as a read of Studio's own auth directory.
+    if "=" in text and _rebinds_the_studio_home_first(text):
+        text = _expand_shell_assignments(text)
+    if _references_studio_credential(text):
+        return True
+    # Naming the studio ROOT and a credential BASENAME is enough, even with nothing joining them:
+    # `find "$UNSLOTH_STUDIO_HOME" -name auth.db -exec cat` hands the directory to a tool that
+    # walks it, and no single token of it is a path to the database.
+    if _CREDENTIAL_BASENAME_RE.search(text) and _text_names_the_studio_root(text):
+        return True
+    # A recursive read of the root itself emits `auth/auth.db` and `.bootstrap_password` without
+    # naming either: `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +`, `tar czf b.tgz "$STUDIO_HOME"`,
+    # `grep -r sk- "$STUDIO_HOME"`. Work INSIDE a project under the root is untouched.
+    if (
+        _text_names_the_studio_root(text)
+        and _walks_a_tree_reading_it(text)
+        and _names_the_studio_root_itself(text)
+    ):
+        return True
+    # `c\d ../..` runs the `cd` builtin: bash removes the backslash before a word is a command name
+    # at all, so the escaped spelling has to be folded away before the cwd walk reads it.
+    if "\\" in text and not _unescaped:
+        # One level only: `\\` repeated 550 times drops a backslash per pass, and recursing per pass
+        # was a RecursionError raised out of the guard rather than a decision.
+        unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
+        if unescaped != text and _references_studio_credential_here(
+            unescaped, workdir, _unescaped = True
+        ):
+            return True
+    if "[" in text:
+        # A one-character class is deterministic: `[a][u][t][h]/auth.db` is the auth directory
+        # spelled out, and it has to be read as the literal BEFORE the wildcard collapse below
+        # discards it.
+        literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
+        if literal != text and _references_studio_credential_here(literal, workdir):
+            return True
+    # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
+    if "[" in text:
+        collapsed = _BRACKET_CLASS_RE.sub("?", text)
+        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+            return True
+    # The kernel resolves the symlink FIRST, then applies `..`; a lexical normpath reads
+    # `/proc/self/cwd/../../auth` as `/proc/self/auth` and misses.
+    if workdir and "/proc/" in text:
+        substituted = _PROC_CWD_RE.sub(lambda _m: workdir.rstrip("/"), text)
+        if substituted != text and _references_studio_credential(substituted):
+            return True
+    # Bypass repoints HOME at the tool workdir, so `$HOME/../..` is the auth directory's parent.
+    # Substituted, not replaced: the raw text still carries the real-home spellings.
+    if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
+        here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
+        if here != text and _references_studio_credential_here(here, workdir):
+            return True
+    if workdir and ("home" in text.lower() or "~" in text):
+        homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
+        # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
+        if homed != text and not _HOME_VARIABLE_RE.search(homed):
+            if _references_studio_credential_here(homed, workdir):
+                return True
+    # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
+    # sensitive-path scan uses, and it only ADDS detections.
+    if "$" in text:
+        expanded = _expand_shell_assignments(text)
+        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
+        # directory every later relative path opens from, and handing the unexpanded text to the cwd
+        # walk read `$d` as a directory name and never moved.
+        if expanded != text and _references_studio_credential_here(expanded, workdir):
+            return True
+    # A `cd` earlier in the command moves where every later relative path opens from.
+    if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
+        for offset, limit, cwd in _cwds_after_cd(workdir, text):
+            # The directory itself: `cd ../..; cd auth; sqlite3 auth.db` writes no separator at
+            # all, so every token below reads as an ordinary filename. Only when something actually
+            # RUNS there, though: `(cd ../..; cd auth); cat config.json` enters the directory and
+            # leaves without reading anything, and the `cat` outside the subshell is back in the
+            # sandbox.
+            if _references_studio_credential(cwd) and text[offset:limit].strip(" \t\n;&|()"):
+                return True
+            for match in _path_tokens_containing(text, "/\\"):
+                # Only what comes AFTER that `cd`: a path written before it opens from the old
+                # directory, so resolving `cat auth/auth.db; cd ../..` against the root refused a
+                # read that never left the sandbox.
+                if match.start() < offset or match.start() >= limit:
+                    continue
+                token = match.group(0)
+                if os.path.isabs(token) or token.startswith("~"):
+                    continue
+                if any(
+                    _references_studio_credential(os.path.normpath(os.path.join(cwd, spelling)))
+                    for spelling in _token_spellings(token)
+                ):
+                    return True
+    if not workdir or ".." not in text:
+        return False
+    for token in (m.group(0) for m in _path_tokens_containing(text, "..")):
+        if "/" not in token and "\\" not in token:
+            continue
+        if any(
+            _references_studio_credential(os.path.normpath(os.path.join(workdir, spelling)))
+            for spelling in _token_spellings(token)
+        ):
+            return True
+    return False
+
+
+def _calls_in_uncalled_scopes(tree) -> "set[int]":
+    """Ids of calls sitting in a function or lambda body that nothing in *code* calls.
+
+    Deliberately narrow. A body whose name IS called anywhere in the snippet stays live, because the
+    move is then real and only the ordering is unknown, and the conservative reading is what a guard
+    wants. A branch is not a scope: `if cond: os.chdir(...)` may well run, so it keeps moving.
+
+    A CLASS body is not deferred at all: python executes it when the class statement runs, whether
+    or not anything instantiates the class, so `class C: os.chdir("../..")` moves the process. Only
+    the methods inside it are deferred, and those are function bodies reached in their own right.
+    """
+    called: "set[str]" = set()
+    # A lambda in the CALLED position runs immediately, and a lambda bound to a name runs when that
+    # name is called, so neither is inert.
+    invoked: "set[int]" = set()
+    lambda_names: "dict[str, int]" = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node.value, ast.Lambda):
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        lambda_names[target.id] = id(node.value)
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Lambda):
+            invoked.add(id(func))
+        elif isinstance(func, ast.Name):
+            called.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            called.add(func.attr)
+    invoked.update(node_id for name, node_id in lambda_names.items() if name in called)
+    inert: "set[int]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in called:
+                continue
+        elif isinstance(node, ast.Lambda) and id(node) in invoked:
+            # `(lambda: os.chdir("../.."))()` runs its body right there.
+            continue
+        elif not isinstance(node, ast.Lambda):
+            continue
+        # The BODY only. Default arguments, decorators and annotations are evaluated when the
+        # function is DEFINED, so `def f(x = os.chdir("../..")): pass` moves the process even
+        # though nothing ever calls `f`.
+        body = node.body if isinstance(node.body, list) else [node.body]
+        for statement in body:
+            for inner in ast.walk(statement):
+                if isinstance(inner, ast.Call):
+                    inert.add(id(inner))
+    return inert
+
+
+# A recursive copy or archive of the studio ROOT carries `auth/` with it, and the copy is then an
+# ordinary file nothing guards. Mirrors the terminal walk rule.
+_PY_TREE_COPY_CALLS = frozenset({"copytree", "make_archive", "copy_tree", "unpack_archive"})
+# A recursive WALK of the root reaches `auth/` the same way a copy of it does, and reading
+# what it yields prints the secrets without any of them being named.
+# Only the RECURSIVE ones: a shallow listing returns the root's own entry names and reads
+# nothing inside `auth`, which is what the terminal side allows for a plain root listing.
+_PY_TREE_WALK_CALLS = frozenset("walk rglob glob iglob".split())
+# `glob` is shallow unless its pattern descends.
+_PY_SHALLOW_UNLESS_RECURSIVE = frozenset({"glob", "iglob"})
+_PY_TREE_ROOT_CALLS = _PY_TREE_COPY_CALLS | _PY_TREE_WALK_CALLS
+# One C-speed scan for any of them, so ordinary code pays a single search rather than a
+# substring test per name.
+_PY_TREE_CALL_RE = re.compile("|".join(sorted(_PY_TREE_ROOT_CALLS)))
+
+
+def _python_copies_the_studio_root(tree) -> bool:
+    """True when a recursive copy, archive or walk call names the studio root as its SOURCE."""
+    root = _studio_home_for_guard()
+    if not root:
+        return False
+    folded_root = _folded_word(root)
+    # `root = os.environ["UNSLOTH_STUDIO_HOME"]; os.walk(root)` names the root through one binding,
+    # which arrives as a bare `Name` that neither the env test nor the fold can resolve.
+    aliases = {
+        target.id: node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if name not in _PY_TREE_ROOT_CALLS:
+            continue
+        # `copytree(src, dst)` names its source first; `make_archive(base, format, root_dir,
+        # base_dir)` names it third. A walker names it first too, or as the RECEIVER it is called
+        # on: `Path(os.environ["UNSLOTH_STUDIO_HOME"]).rglob("*")`.
+        sources = list(node.args[2:4]) if name == "make_archive" else list(node.args[:1])
+        if name in _PY_SHALLOW_UNLESS_RECURSIVE and not any(
+            isinstance(a, ast.Constant) and isinstance(a.value, str) and "**" in a.value
+            for a in node.args
+        ):
+            continue
+        if name in _PY_TREE_WALK_CALLS:
+            receiver = getattr(node.func, "value", None)
+            sources.append(receiver)
+            # `Path(<root>)` WRAPS the name the walk starts from, so the wrapped name is the source.
+            sources.extend(getattr(receiver, "args", ())[:1])
+        sources.extend(
+            k.value
+            for k in node.keywords
+            if k.arg in ("src", "root_dir", "base_dir", "top", "path")
+        )
+        for argument in sources:
+            if isinstance(argument, ast.Name):
+                argument = aliases.get(argument.id)
+            # `copytree(Path(os.environ["UNSLOTH_STUDIO_HOME"]), ...)`: the constructor WRAPS the
+            # name of the source, and the fold reduces the call itself to a dynamic marker.
+            if isinstance(argument, ast.Call) and getattr(argument, "args", None):
+                argument = argument.args[0]
+            if isinstance(argument, ast.Name):
+                argument = aliases.get(argument.id)
+            if argument is None:
+                continue
+            if _names_the_studio_home_env(argument):
+                return True
+            folded = _folded_path(argument)
+            if isinstance(folded, str) and folded and _folded_word(folded) == folded_root:
+                return True
+    return False
+
+
+def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
+    """True when a path the CODE builds names the auth directory, however it is spelled.
+
+    `os.path.join("..", "..", "auth", "auth.db")` names the protected database in pieces, so the
+    text scan sees four ordinary strings and nothing that looks like a path. `_folded_path` is the
+    same fold the sensitive-path analyzer already applies to python; here its result is put through
+    the credential test, resolved against the cwd like any other relative path."""
+    lowered = code.lower()
+    # A recursive copy of the ROOT carries `auth/` without naming it, so it passes the hint filter
+    # below. Two substring tests gate the parse, which keeps this off the ordinary path.
+    # Three tests gate the parse, cheapest first: the root has to be NAMEABLE in the text at all,
+    # then a tree call has to appear, and only then do the real root tests run. Ordinary numeric or
+    # dataframe code stops at the first one, which is two substring scans.
+    if (
+        (
+            "studio_home" in lowered
+            or any(spelling in lowered for spelling in _studio_home_spellings_lowered())
+        )
+        and _PY_TREE_CALL_RE.search(lowered)
+        and (_text_names_the_studio_root(code) or _code_reads_the_studio_home(code))
+    ):
+        try:
+            if _python_copies_the_studio_root(ast.parse(code)):
+                return True
+        except (SyntaxError, RecursionError, MemoryError, ValueError):
+            pass
+    if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
+        return False
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, RecursionError, MemoryError, ValueError):
+        # The executor reports a syntax error itself, and a snippet the PARSER cannot hold (10k
+        # chained operators) is not a decision this guard can make either. Both are "nothing to
+        # fold" rather than an exception raised out of the tool.
+        return False
+    # Source order, because `os.chdir('../..')` moves every path after it. String constants are
+    # included: `sqlite3.connect('auth/auth.db')` is no path constructor, so the argument is it.
+    nodes = sorted(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.Call, ast.BinOp, ast.JoinedStr))
+            or (isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value)
+        ),
+        key = lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)),
+    )
+    # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
+    # path that does not exist raises, and code that catches it carries on from where it was.
+    chdir_modules = _chdir_modules(tree)
+    chdir_names = _chdir_names(tree, chdir_modules)
+    # A `chdir` inside a function body only moves anything if that function RUNS. An uncalled helper
+    # was moving the walk for the statements after it, so a snippet that defines one and then reads
+    # its own `auth/config.json` was refused although the process never left the sandbox.
+    inert_moves = _calls_in_uncalled_scopes(tree)
+    name_bases = _literal_name_bases(tree)
+    # `root = os.open("../..", os.O_RDONLY)` names a DIRECTORY, and `os.open("auth/auth.db", ...,
+    # dir_fd = root)` opens relative to it. The two calls look unrelated token by token: `../..`
+    # resolves to the studio root and goes nowhere, and `auth/auth.db` is checked against the
+    # sandbox, while the kernel joins them.
+    dir_fds = _literal_directory_descriptors(tree, workdir)
+    studio_env_names, foreign_env_names = _python_env_binding_names(tree)
+    process_aliases, process_functions = _process_module_aliases(tree)
+    cwds: "list[str | None]" = [workdir]
+    # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
+    # is scoped to that body rather than carried forward. Treating it as permanent refused a later
+    # read of the project's OWN `auth/config.json` in every permission mode.
+    scoped_until = _scoped_chdir_bounds(tree)
+    restore: "list[tuple[int, list]]" = []
+    for node in nodes:
+        while restore and getattr(node, "lineno", 0) > restore[-1][0]:
+            cwds = restore.pop()[1]
+        if (
+            isinstance(node, ast.Call)
+            and _is_chdir_call(node, chdir_names, chdir_modules)
+            and id(node) not in inert_moves
+        ):
+            argument = _chdir_argument(node)
+            target = None if argument is None else _folded_path(argument)
+            targets: "list[str]" = []
+            # `os.fchdir(fd)` names its destination by a descriptor, so there is no path to fold and
+            # the move is real. The one destination that matters here is the studio root, so it is
+            # added to the live states: a later `auth/auth.db` is then resolved from there as well
+            # as from the sandbox, which is the fail-closed reading the unknown target calls for.
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "fchdir":
+                root = _studio_home_for_guard()
+                if root:
+                    targets = [root]
+            # `os.chdir(os.environ["UNSLOTH_STUDIO_HOME"])` names the root without spelling it, and
+            # `_build_bypass_env` keeps that variable in the child, so the move is real. The fold
+            # has no value for a subscript, which left the walk sitting in the sandbox.
+            if not targets and _names_the_studio_home_env(argument):
+                root = _studio_home_for_guard()
+                if root:
+                    targets = [root]
+            if not targets and target and "\x00" not in target:
+                # `os.chdir(Path.cwd().parents[1])` is an ordinary move, and the fold writes the
+                # walk as one marker, so resolve it here rather than ignoring the move.
+                targets = (
+                    _parent_walk_targets(argument, target, cwds, name_bases)
+                    if "\x02" in target
+                    else [target]
+                )
+            if targets:
+                moved: "list[str | None]" = []
+                for one in targets:
+                    for cwd in cwds:
+                        nxt = (
+                            one
+                            if os.path.isabs(one) or not cwd
+                            else os.path.normpath(os.path.join(cwd, one))
+                        )
+                        if nxt not in moved:
+                            moved.append(nxt)
+                        if _references_studio_credential(nxt):
+                            return True
+                bound = scoped_until.get(id(node))
+                if bound is not None:
+                    restore.append((bound, cwds))
+                cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
+            continue
+        if isinstance(node, ast.Call) and dir_fds and _call_opens_under_a_descriptor(node, dir_fds):
+            return True
+        if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
+            node, cwds, name_bases, process_aliases, process_functions
+        ):
+            # `subprocess.run(["strings", "auth/auth.db"], cwd = "../..")` moves nothing in this
+            # process, but the child opens its arguments from the directory it is handed.
+            return True
+        folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)
+        if not folded:
+            continue
+        if "\x02" in folded:
+            # `Path.cwd().parents[1] / "auth" / "auth.db"` folds the parent walk to a marker. The
+            # analyzer that reads that is skipped in bypass mode, so resolve it here, from the base
+            # and the level count in the expression rather than from the folded text.
+            if any(
+                _references_studio_credential(target)
+                for target in _parent_walk_targets(node, folded, cwds, name_bases)
+            ):
+                return True
+            continue
+        if "\x00" in folded:
+            # A dynamic piece is the sensitive-path analyzer's, unless the code reads a
+            # studio-home variable: bypass keeps that in the child env, so its value is known.
+            root = (
+                _studio_home_for_guard()
+                if _code_reads_the_studio_home(code)
+                and _expression_reads_the_studio_home(node, studio_env_names, foreign_env_names)
+                else None
+            )
+            if root and any(
+                _references_studio_credential_here(folded.replace("\x00", root), cwd)
+                for cwd in cwds
+            ):
+                return True
+            # `os.environ["PWD"] + "/../../auth/auth.db"` reads the cwd the same way, and bypass
+            # sets PWD to the tool workdir, so the dynamic piece is known here too.
+            if _code_reads_the_working_directory(code) and any(
+                cwd and _references_studio_credential_here(folded.replace("\x00", cwd), cwd)
+                for cwd in cwds
+            ):
+                return True
+            continue
+        for cwd in cwds:
+            # Against the cwd by then: after `os.chdir('../..')`, `auth/auth.db` is the database.
+            if cwd and not os.path.isabs(folded):
+                joined = os.path.normpath(os.path.join(cwd, folded.replace("\\", "/")))
+                if _references_studio_credential(joined):
+                    return True
+            if _references_studio_credential_here(folded, cwd):
+                return True
+    return False
+
+
+def _parent_chain(node) -> "tuple | None":
+    """``(base node, levels walked up)`` for a `.parent` / `.parents[n]` chain, else None."""
+    levels = 0
+    current = node
+    while True:
+        if isinstance(current, ast.Attribute) and current.attr == "parent":
+            levels += 1
+            current = current.value
+            continue
+        if (
+            isinstance(current, ast.Subscript)
+            and isinstance(current.value, ast.Attribute)
+            and current.value.attr == "parents"
+        ):
+            index = current.slice
+            if isinstance(index, ast.Constant) and isinstance(index.value, int):
+                levels += index.value + 1
+                current = current.value.value
+                continue
+            return None
+        break
+    return (current, levels) if levels else None
+
+
+def _is_cwd_call(node) -> bool:
+    """`Path.cwd()`, `os.getcwd()`, `Path.home()` and the bare spellings of each.
+
+    `home` counts because both subprocess environment builders set `HOME` to the session workdir, so
+    `Path.home()` returns the same directory `Path.cwd()` does and a parent walk off it lands in the
+    studio root just the same.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    return name in ("cwd", "getcwd", "home", "expanduser")
+
+
+def _literal_name_bases(tree) -> "dict[str, str]":
+    """Names bound once to a literal path, so `root = Path('/tmp/p')` is not read as the cwd.
+
+    A name assigned more than once, or bound to something this fold cannot read, is left out: the
+    caller then falls back to the working directory, which is where an unqualified name usually is.
+    """
+    bases: "dict[str, str]" = {}
+    rebound: "set[str]" = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id in bases or target.id in rebound:
+            rebound.add(target.id)
+            bases.pop(target.id, None)
+            continue
+        value = _folded_path(node.value)
+        if value and "\x00" not in value and "\x02" not in value:
+            bases[target.id] = value
+        else:
+            rebound.add(target.id)
+    return bases
+
+
+def _parent_walk_targets(
+    node,
+    folded: str,
+    cwds: "list",
+    name_bases: "dict | None" = None,
+) -> "list[str]":
+    """Where a `.parent` / `.parents[n]` expression can land, resolved rather than guessed.
+
+    The fold writes one marker for the whole walk, so the level count and the base come from the
+    expression itself: `Path('/tmp').parent / 'auth'` is `/auth`, not something under the sandbox.
+    """
+    tail = folded.rsplit("\x02", 1)[-1].lstrip("/\\")
+    left = node
+    while isinstance(left, ast.BinOp):
+        left = left.left
+    chain = _parent_chain(left)
+    if chain is None:
+        return []
+    base_node, levels = chain
+    bases: "list[str]" = []
+    named = (name_bases or {}).get(base_node.id) if isinstance(base_node, ast.Name) else None
+    if named:
+        bases = (
+            [named]
+            if os.path.isabs(named)
+            else [os.path.normpath(os.path.join(c, named)) for c in cwds if c]
+        )
+    elif _is_cwd_call(base_node) or isinstance(base_node, ast.Name):
+        bases = [c for c in cwds if c]
+    else:
+        folded_base = _folded_path(base_node)
+        if folded_base and "\x00" not in folded_base and "\x02" not in folded_base:
+            bases = (
+                [folded_base]
+                if os.path.isabs(folded_base)
+                else [os.path.normpath(os.path.join(c, folded_base)) for c in cwds if c]
+            )
+    out: "list[str]" = []
+    for base in bases:
+        for _ in range(min(levels, 64)):
+            parent = os.path.dirname(base.rstrip("/\\"))
+            if not parent or parent == base:
+                break
+            base = parent
+        out.append(os.path.normpath(os.path.join(base, tail)) if tail else base)
+    return out
+
+
+def _scoped_chdir_bounds(tree) -> dict:
+    """`id(call) -> last line of the with body`, for a chdir used as a context manager.
+
+    `with contextlib.chdir(p):` restores the directory on exit, so the move applies to the body and
+    nothing after it. A call that is not a `with` item is absent here and stays permanent, which is
+    what a bare `os.chdir(p)` does.
+    """
+    bounds: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.With, ast.AsyncWith)):
+            continue
+        end = getattr(node, "end_lineno", None)
+        if end is None:
+            continue
+        for item in node.items:
+            if isinstance(item.context_expr, ast.Call):
+                bounds[id(item.context_expr)] = end
+    return bounds
+
+
+# The APIs that start a child process and accept a `cwd`. Anything else carrying that keyword is an
+# ordinary function whose argument means whatever its author decided.
+_CHILD_PROCESS_RECEIVERS = {
+    "subprocess": frozenset(
+        {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+    ),
+    "asyncio": frozenset({"create_subprocess_exec", "create_subprocess_shell"}),
+    "os": frozenset({"popen"}),
+}
+_CHILD_PROCESS_BARE_NAMES = frozenset(
+    {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
+)
+
+
+def _process_module_aliases(tree) -> "tuple[dict, set]":
+    """`(module aliases, bare process-function names)` for the import forms that rename either one.
+
+    `import subprocess as sp` renames the module and `from subprocess import run as launch` renames
+    the function, and both leave the call spelled under a name the fixed tables do not hold.
+    """
+    aliases: dict = {}
+    # NOT pre-seeded with the generic names. `run`, `call` and `check_output` are ordinary function
+    # names, and treating a snippet's own `def run(...)` as a process launch refused ordinary code in
+    # every permission mode. Only a name an import actually binds from a process module counts.
+    bare: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            functions = _CHILD_PROCESS_RECEIVERS.get(root)
+            if not functions:
+                continue
+            for entry in node.names:
+                if entry.name in functions:
+                    bare.add(entry.asname or entry.name)
+            continue
+        if not isinstance(node, ast.Import):
+            continue
+        for entry in node.names:
+            root = entry.name.split(".")[0]
+            if root in _CHILD_PROCESS_RECEIVERS and entry.asname:
+                aliases[entry.asname] = root
+    return aliases, bare
+
+
+def _launches_a_child_process(
+    node: "ast.Call",
+    aliases: "dict | None" = None,
+    bare: "set | None" = None,
+) -> bool:
+    """True for a call that starts a process, by module attribute or by a bare imported name.
+
+    The receiver is resolved through the import aliases first. `import subprocess as sp` leaves the
+    call spelled `sp.run(...)`, and reading the receiver literally missed it, so a child handed a
+    `cwd` outside the sandbox went unchecked.
+    """
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        receiver = func.value
+        name = receiver.id if isinstance(receiver, ast.Name) else getattr(receiver, "attr", "")
+        name = (aliases or {}).get(name, name)
+        return func.attr in _CHILD_PROCESS_RECEIVERS.get(name, frozenset())
+    return isinstance(func, ast.Name) and func.id in (
+        bare if bare is not None else _CHILD_PROCESS_BARE_NAMES
+    )
+
+
+def _literal_directory_descriptors(tree, workdir: "str | None") -> dict:
+    """Name -> the directory an `os.open` of a literal path bound to it names.
+
+    Only the shape that can reach the auth directory is resolved: a literal path, opened as a
+    descriptor, held in a plain name. Anything else leaves the name absent and the `dir_fd` below
+    unresolved, which is what it already was.
+    """
+    descriptors: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        if not isinstance(value, ast.Call) or not value.args:
+            continue
+        called = getattr(value.func, "attr", None) or getattr(value.func, "id", None)
+        if called != "open":
+            continue
+        folded = _folded_path(value.args[0])
+        if not folded or "\x00" in folded or "\x02" in folded:
+            continue
+        here = (
+            folded
+            if os.path.isabs(folded) or not workdir
+            else os.path.normpath(os.path.join(workdir, folded))
+        )
+        for target in targets:
+            if isinstance(target, ast.Name):
+                descriptors[target.id] = here
+    return descriptors
+
+
+def _call_opens_under_a_descriptor(node: "ast.Call", dir_fds: dict) -> bool:
+    """True when a call opens a credential path relative to a tracked directory descriptor."""
+    given = next((kw.value for kw in node.keywords if kw.arg == "dir_fd"), None)
+    if not isinstance(given, ast.Name):
+        return False
+    base = dir_fds.get(given.id)
+    if not base:
+        return False
+    for argument in node.args:
+        folded = _folded_path(argument)
+        if not folded or "\x00" in folded or "\x02" in folded or os.path.isabs(folded):
+            continue
+        if _references_studio_credential(
+            os.path.normpath(os.path.join(base, folded.replace("\\", "/")))
+        ):
+            return True
+    return False
+
+
+def _call_runs_from_a_credential_directory(
+    node: "ast.Call",
+    cwds: "list",
+    name_bases: "dict",
+    process_aliases: "dict | None" = None,
+    process_functions: "set | None" = None,
+) -> bool:
+    """True when a call hands a child process a directory that makes one of its paths a credential.
+
+    `subprocess.run([...], cwd = "../..")` leaves this process where it is, so the walk above never
+    moves, and each literal argument was tested against the sandbox instead of against the
+    directory the child actually runs from.
+
+    Restricted to the APIs that actually start a process. `cwd` is an ordinary keyword name, and
+    reading it as process semantics on any call refused ordinary code:
+    `describe("auth/config.json", cwd = "../..")` was blocked in every permission mode even though
+    the function may never touch that path.
+    """
+    if not _launches_a_child_process(node, process_aliases, process_functions):
+        return False
+    given = next((kw.value for kw in node.keywords if kw.arg == "cwd"), None)
+    if given is None:
+        return False
+    folded = _folded_path(given)
+    if (not folded or "\x00" in folded) and _names_the_studio_home_env(given):
+        # `cwd = os.environ["UNSLOTH_STUDIO_HOME"]` hands the child the studio root itself, and the
+        # fold has no value for the subscript. Same resolution the chdir walk uses.
+        root = _studio_home_for_guard()
+        folded = root or folded
+    if not folded or "\x00" in folded:
+        return False
+    targets = (
+        _parent_walk_targets(given, folded, cwds, name_bases) if "\x02" in folded else [folded]
+    )
+    directories: "list[str]" = []
+    for target in targets:
+        for cwd in cwds:
+            here = (
+                target
+                if os.path.isabs(target) or not cwd
+                else os.path.normpath(os.path.join(cwd, target))
+            )
+            if here not in directories:
+                directories.append(here)
+    if any(_references_studio_credential(here) for here in directories):
+        return True
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Constant) and isinstance(inner.value, str) and inner.value:
+            piece = inner.value
+        else:
+            piece = _folded_path(inner) if isinstance(inner, (ast.BinOp, ast.Call)) else ""
+        if not piece or "\x00" in piece or "\x02" in piece or os.path.isabs(piece):
+            continue
+        for here in directories:
+            if _references_studio_credential(
+                os.path.normpath(os.path.join(here, piece.replace("\\", "/")))
+            ):
+                return True
+    return False
+
+
+def _chdir_argument(node: "ast.Call"):
+    """The path a `chdir` call is given, positionally or as `path=`."""
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg == "path":
+            return keyword.value
+    return None
+
+
+def _chdir_names(tree, modules: "set[str] | None" = None) -> "set[str]":
+    """Every name that refers to `os.chdir` in this snippet, including aliases.
+
+    `from os import chdir as move` and `move = os.chdir` are both ordinary python, and a walk that
+    only knows the literal name resolves everything after `move('../..')` against the wrong place.
+    An alias of somebody else's `chdir`, `move = ftp.chdir`, is not one of them.
+    """
+    modules = modules or {"os", "contextlib"}
+    # The BARE name only counts once an import binds it. A snippet's own `def chdir(path)` is an
+    # ordinary function, and treating a call to it as a move refused code that never leaves the
+    # sandbox. The qualified `os.chdir(...)` form does not go through this set.
+    names: "set[str]" = set()
+    defined_locally = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "chdir"
+        for node in ast.walk(tree)
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("os", "contextlib"):
+            for alias in node.names:
+                if alias.name == "chdir":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+            if not isinstance(target, ast.Name):
+                continue
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr == "chdir"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in modules
+            ) or (isinstance(value, ast.Name) and value.id in names):
+                names.add(target.id)
+    if defined_locally:
+        names.discard("chdir")
+    return names
+
+
+def _chdir_modules(tree) -> "set[str]":
+    """The names that stand for a module whose `chdir` moves THIS process.
+
+    `ftp.chdir('../..')` changes a remote directory and leaves the local one alone, so reading a
+    project's own `auth/config.json` afterwards was refused for a move that never happened.
+    """
+    # `posix` on POSIX and `nt` on Windows are the platform modules `os` itself is built on, so
+    # `posix.chdir` is the same primitive under a different name.
+    known = ("os", "contextlib", "posix", "nt")
+    modules = set(known)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in known and alias.asname:
+                    modules.add(alias.asname)
+    return modules
+
+
+# The calls that change the process directory. `os.fchdir(fd)` moves to whatever the descriptor
+# names, which this scan cannot resolve: the move is real and its destination is unknown, so it is
+# tracked as an UNRESOLVED move rather than ignored.
+_CHDIR_METHODS = frozenset({"chdir", "fchdir"})
+
+
+def _is_chdir_call(
+    node: "ast.Call",
+    names: "set[str] | None" = None,
+    modules: "set[str] | None" = None,
+) -> bool:
+    """True for `os.chdir(...)`, a bare `chdir(...)`, and any alias bound from it.
+
+    `names` is the set of BARE names that refer to it, which is empty for a snippet that defines its
+    own `chdir` and never imports one. Empty is meaningful here, so it is distinguished from the
+    None the callers that do not compute it pass. The qualified `os.chdir(...)` form is unaffected:
+    the receiver is what identifies it there.
+    """
+    bare = {"chdir"} if names is None else names
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        if func.attr not in _CHDIR_METHODS and func.attr not in bare:
+            return False
+        # Only a module that owns the process directory. An unknown receiver is not one.
+        return isinstance(func.value, ast.Name) and func.value.id in (
+            modules or {"os", "contextlib"}
+        )
+    return isinstance(func, ast.Name) and func.id in bare
+
+
+def _reads_an_environment_variable(node) -> bool:
+    """True for `os.environ[...]`, `os.environ.get(...)` and `os.getenv(...)`."""
+    if isinstance(node, ast.Subscript):
+        receiver = node.value
+        return (getattr(receiver, "attr", None) or getattr(receiver, "id", None)) == "environ"
+    if isinstance(node, ast.Call):
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if called == "getenv":
+            return True
+        receiver = getattr(node.func, "value", None)
+        return (
+            called == "get"
+            and (getattr(receiver, "attr", None) or getattr(receiver, "id", None)) == "environ"
+        )
+    return False
+
+
+def _python_env_binding_names(tree) -> "tuple[set, set]":
+    """`(names holding the studio home, names holding some OTHER environment variable)`.
+
+    A dynamic path piece is only the studio root when the expression that built it actually read
+    that variable. Attributing it to any snippet that mentions the variable ANYWHERE refused
+    `project = os.environ["PROJECT_HOME"]; open(project + "/auth/config.json")`, which names an
+    unrelated application's directory.
+    """
+    studio: "set[str]" = set()
+    foreign: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        if not _reads_an_environment_variable(value):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                (studio if _names_the_studio_home_env(value) else foreign).add(target.id)
+    return studio, foreign
+
+
+def _expression_reads_the_studio_home(node, studio_names, foreign_names) -> bool:
+    """Whether THIS expression's dynamic piece is the studio home.
+
+    Positive attribution both ways: the expression reads the variable itself or uses a name bound to
+    it, or every environment-backed name in it belongs to a different variable. Anything this cannot
+    attribute keeps the old whole-snippet answer, which is the fail-closed one.
+    """
+    names = {piece.id for piece in ast.walk(node) if isinstance(piece, ast.Name)}
+    if any(_names_the_studio_home_env(piece) for piece in ast.walk(node)):
+        return True
+    if names & set(studio_names):
+        return True
+    return not (names & set(foreign_names))
+
+
+def _variable_points_at_this_install(name: str) -> bool:
+    """Whether a studio-home variable's VALUE is this install's root.
+
+    `STUDIO_HOME` is a generic name another application can own, and bypass keeps that foreign value
+    in the child, so `open(os.environ["STUDIO_HOME"] + "/auth/config.json")` reads the other
+    application. Unset stays True: the child cannot expand it either, so nothing is granted.
+    """
+    value = (os.environ.get(name.upper()) or "").strip()
+    if not value:
+        return True
+    root = _studio_home_for_guard()
+    if not root:
+        return True
+    try:
+        return _same_directory(os.path.expanduser(value), root)
+    except Exception:  # noqa: BLE001 - an unreadable value must not break classification
+        return True
+
+
+def _names_the_studio_home_env(node) -> bool:
+    """True when *node* reads an environment variable that holds the studio home.
+
+    `os.environ["UNSLOTH_STUDIO_HOME"]`, the `.get` spelling and `os.getenv` all return the same
+    directory. Case-insensitive, because `os.environ` upper-cases every key it is handed on Windows.
+    """
+    if node is None:
+        return False
+    if isinstance(node, ast.Subscript):
+        receiver = node.value
+        named = getattr(receiver, "attr", None) or getattr(receiver, "id", None)
+        key = node.slice
+        return (
+            named == "environ"
+            and isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and key.value.upper() in _STUDIO_HOME_ENV_VARS
+            and _variable_points_at_this_install(key.value)
+        )
+    if isinstance(node, ast.Call) and node.args:
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        first = node.args[0]
+        return (
+            called in ("get", "getenv")
+            and isinstance(first, ast.Constant)
+            and isinstance(first.value, str)
+            and first.value.upper() in _STUDIO_HOME_ENV_VARS
+            and _variable_points_at_this_install(first.value)
+        )
+    return False
+
+
+def _code_reads_the_studio_home(code: str) -> bool:
+    """True when *code* mentions one of the environment variables that name the studio home.
+
+    Case-insensitive: on Windows `os.environ` upper-cases every key it is given (`os._createenviron`
+    sets `encodekey = str.upper` for `nt`), so `os.environ["unsloth_studio_home"]` returns the same
+    value the upper-case spelling does. The variable markers the text scan uses are already compared
+    lowercased, so this brings the python fold into line with them."""
+    lowered = code.lower()
+    # A variable SET to another application's directory names that one, not this install's root.
+    return any(
+        var.lower() in lowered and _variable_points_at_this_install(var)
+        for var in _STUDIO_HOME_ENV_VARS
+    )
+
+
+def _code_reads_the_working_directory(code: str) -> bool:
+    """True when *code* asks for the working directory by any of its usual names."""
+    lowered = code.lower()
+    return '"pwd"' in lowered or "'pwd'" in lowered or "getcwd" in lowered or "cwd()" in lowered
+
+
+_studio_home_lowered_cache: "tuple | None" = None
+
+
+def _studio_home_spellings_lowered() -> "tuple[str, ...]":
+    """The root as source text can spell it, memoized on the marker table it comes from.
+
+    A per-call prefilter, so rebuilding the root for every python snippet showed up. Three forms,
+    because a Windows root reaches the text as `c:\\dir`, as `c:\\\\dir` inside a python literal and
+    as `c:/dir`; on posix all three are the same string.
+    """
+    global _studio_home_lowered_cache
+    markers = _studio_auth_dir_markers()[0]
+    if _studio_home_lowered_cache is None or _studio_home_lowered_cache[0] is not markers:
+        # Built from the FOLDED root, so the separators the root happens to be stored with do not
+        # decide the answer: only the ones the source text spells do.
+        base = _folded_word(_studio_home_for_guard() or "\x00")
+        _studio_home_lowered_cache = (
+            markers,
+            tuple({base, base.replace("/", "\\"), base.replace("/", "\\\\")}),
+        )
+    return _studio_home_lowered_cache[1]
+
+
+def _studio_home_for_guard() -> "str | None":
+    """This install's studio root, derived from the same resolution the markers use.
+
+    From the ORIGINAL spelling, not the folded one: a root with an uppercase character in it would
+    otherwise be reconstructed in lowercase, and on a case-sensitive host the marker check then
+    rejected its own synthesized path, letting a move to the real root through.
+    """
+    auth_markers, _variable_markers, _cd_re = _studio_auth_dir_markers()
+    if not auth_markers:
+        return None
+    return os.path.dirname(auth_markers[0][2].rstrip("/\\")) or None
+
+
+def _needs_a_workdir(text: str) -> bool:
+    """Whether resolving *text* needs the cwd at all.
+
+    Traversal needs it, and so does anything that MOVES the directory: `pushd <studio home>;
+    sqlite3 auth/auth.db` carries no `..`, and without the workdir the walk that would have caught
+    it never ran.
+    """
+    if ".." in text:
+        return True
+    lowered = text.lower()
+    return (
+        "cd" in lowered
+        or "pushd" in lowered
+        or "chdir" in lowered
+        # `os.path.dirname(os.path.dirname(os.getcwd()))` walks up without writing a `..`, and the
+        # python analyzer resolves `getcwd` itself -- but only if it is handed the workdir.
+        or "getcwd" in lowered
+        or "cwd" in lowered
+        # `Path.cwd().parents[1] / "auth"` walks up from the cwd without writing a `..`.
+        or "parent" in lowered
+    )
+
+
+def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":
+    """The cwd the executor is about to use, or None if it cannot be resolved cheaply."""
+    try:
+        return _get_workdir(session_id)
+    except Exception:  # noqa: BLE001 - an unresolvable workdir leaves the textual match in place
+        return None
+
+
 # A shell redirection with no following space (cat <../../notes) keeps `..` adjacent to `<`/`>`, so those count as
 # leading delimiters here too.
 _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:<>])\.\.(?:[/\\]|$|[\s'\"])")
@@ -2829,7 +4866,13 @@ def _references_sensitive_path(text: str) -> bool:
     if norm != text and _SENSITIVE_PATH_RE.search(norm):
         return True
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
-    return bool(debracket != text and _SENSITIVE_PATH_RE.search(debracket))
+    # The three checks the conflicting revisions both spelled out here (parent traversal, and the
+    # pattern against the raw and slash-normalised text) already returned above, so only the
+    # credential test and the de-bracketed rewrite are left to decide.
+    return bool(
+        _references_studio_credential(text)
+        or (debracket != text and _SENSITIVE_PATH_RE.search(debracket))
+    )
 
 
 def _pattern_matches_dir(pattern: str, target: str) -> bool:
@@ -4198,6 +6241,27 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
     r"client[-_]?secret|password|passwd|session[-_]?token)$",
     re.IGNORECASE,
 )
+
+
+def _mcp_arguments_reference_studio_credential(arguments) -> bool:
+    """True if an MCP call's arguments point at Studio's auth directory. An MCP server runs outside
+    the terminal sandbox, so a filesystem server would read the credential the local tools refuse.
+    Prose fields are skipped for the same reason they are below: an issue body that mentions the
+    filename is text to store, not a file to open."""
+
+    def walk(value, is_prose: bool = False) -> bool:
+        if isinstance(value, str):
+            return False if is_prose else _references_studio_credential(value)
+        if isinstance(value, dict):
+            return any(
+                walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
+                for k, v in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(walk(v, is_prose) for v in value)
+        return False
+
+    return walk(arguments)
 
 
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
@@ -9525,6 +11589,10 @@ def _edit_file(
     disable_sandbox: bool = False,
 ) -> str:
     """Replace exact strings in a file. See the notes above."""
+    # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
+    # lifts the containment that would otherwise keep it out.
+    if _references_studio_credential(str(arguments.get("path") or "")):
+        return _STUDIO_CREDENTIAL_BLOCKED
     edits, error = _edit_file_parse_edits(arguments.get("edits"))
     if error:
         return error
@@ -9533,6 +11601,12 @@ def _edit_file(
     )
     if error:
         return error
+    # Again on the RESOLVED path: the sandbox is a sibling of the auth directory, so
+    # `../../auth/agents/...` only names it once the resolve has joined the two.
+    if _references_studio_credential(target) or _references_studio_credential(
+        os.path.realpath(target)
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -10502,6 +12576,9 @@ def execute_tool(
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
+        # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
+        if _mcp_arguments_reference_studio_credential(arguments):
+            return _STUDIO_CREDENTIAL_BLOCKED
         try:
             _, server_id, tool_name = name.split("__", 2)
         except ValueError:
@@ -14706,7 +16783,9 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     from .tool_loop_controller import strip_result_for_model
 
     try:
-        body = strip_result_for_model(text, name)
+        # Unredacted: this subtracts the body to recover the envelope, so the strip has to remove a
+        # suffix and nothing else. The model-bound copy is masked in `model_message`.
+        body = strip_result_for_model(text, name, redact = False)
     except Exception:
         logger.debug("frontend suffix split failed", exc_info = True)
         return text, ""
@@ -15909,6 +17988,13 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
+    # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
+    _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
+    if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
+        code, _guard_workdir
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
+
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
         error = _check_code_safety(code)
@@ -16077,6 +18163,13 @@ def _bash_exec(
     returned result is unchanged."""
     if not command or not command.strip():
         return "No command provided."
+
+    # Refused in every mode, unlike the blocklist below, which Bypass Permissions opts out of: this
+    # install's live bearer would be replayed to whatever provider is serving the turn.
+    if _references_studio_credential_here(
+        command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:

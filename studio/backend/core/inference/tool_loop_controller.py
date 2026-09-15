@@ -290,10 +290,13 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
+        # Not only in model_message(): the frontend PERSISTS this payload and serializes it back
+        # into a role="tool" message on the next turn, so an unmasked key is replayed then.
+        result = self.result
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
-            "result": self.result,
+            "result": redact_studio_credentials(result) if isinstance(result, str) else result,
             "provenance": self.decision.provenance,
         }
 
@@ -945,9 +948,42 @@ _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 _WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
-def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+# `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
+# the way to the model, which is where it would leave the machine. The mask carries neither prefix,
+# so re-running is a no-op.
+_STUDIO_API_KEY_RE = re.compile(
+    # 8, not 32: a result cut to fit the window ends mid-key, and half a key is still one. Bare
+    # `sk-unsloth-` (prose about the format) still reads through.
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote this repo's
+    # own `sk-unsloth-internal-workflow` to `[redacted]-workflow`.
+    r"sk-unsloth-[0-9a-fA-F]{8,}"
+    # `desktop-` + token_urlsafe(48); the floor keeps "desktop-app" out of it.
+    r"|desktop-[A-Za-z0-9_-]{40,}"
+)
+_STUDIO_SECRET_MASK = "[redacted]"
+
+
+def redact_studio_credentials(text: str) -> str:
+    """Mask any Unsloth Studio credential in text bound for the model/provider."""
+    # Two substring scans first: the alternation has no literal to anchor on and costs ~20x per MB.
+    if "sk-unsloth-" not in text and "desktop-" not in text:
+        return text
+    return _STUDIO_API_KEY_RE.sub(_STUDIO_SECRET_MASK, text)
+
+
+def strip_result_for_model(
+    result: str,
+    tool_name: "str | None" = None,
+    *,
+    redact: bool = True,
+) -> str:
+    """Remove frontend-only sentinels (image paths, RAG source map) and mask Studio credentials
+    before feeding the result back to the model.
+
+    ``redact = False`` is for the one caller that needs the strip to stay suffix-only
+    (`tools._split_frontend_suffix` re-derives the removed envelope from `startswith`); masking
+    rewrites bytes inside the body, which that comparison cannot survive. That path feeds the model
+    through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
         result = strip_images_suffix(result)
@@ -958,7 +994,7 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
         result = _strip_images_sentinel(result)
     if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
         result = _strip_rag_sources_sentinel(result)
-    return result
+    return redact_studio_credentials(result) if redact else result
 
 
 def deferred_nudge_text(msgs: Sequence[dict]) -> str:
