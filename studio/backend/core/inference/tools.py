@@ -2988,7 +2988,9 @@ _CD_TARGET_RE = re.compile(
     # `!` and `time` are reserved words, not commands, so they can precede the builtin directly:
     # `! cd ../..` and `time cd ../..` both move the shell exactly as the bare form does.
     r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
-    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*)*(?:cd|pushd)\s+"
+    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:cd|pushd)\s+"
     r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
     re.IGNORECASE,
 )

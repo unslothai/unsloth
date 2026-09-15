@@ -1923,6 +1923,9 @@ def test_a_reserved_word_before_cd_still_moves_the_directory(monkeypatch, tmp_pa
         for command in (
             "! cd ../..; cat auth/auth.db",
             "time cd ../..; cat auth/.desktop_secret",
+            # Bash accepts assignment words before a special builtin, so these move too.
+            "X=1 cd ../..; cat auth/auth.db",
+            'LC_ALL=C TZ=UTC cd ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
             "time -p cd ../..; cat auth/.cli_api_key_cli_1",
             'nohup cd ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
         ):
@@ -1931,6 +1934,8 @@ def test_a_reserved_word_before_cd_still_moves_the_directory(monkeypatch, tmp_pa
             ), command
         for ordinary in (
             "! true; cat auth/config.json",
+            "X=1 cat models/m.gguf",
+            "echo X=1 cd ../..",
             "time cat models/m.gguf",
             "echo time cd ../..",
         ):
