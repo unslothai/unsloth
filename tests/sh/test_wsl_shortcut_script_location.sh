@@ -173,7 +173,14 @@ fi
 # block is reading. Static as well as behavioural: the case above proves the block survives a
 # banner, this proves it survives it the cheap way rather than by out-parsing whatever prints.
 assert_contains "the %TEMP% probe disables AutoRun" \
-    "$(grep 'cmd.exe .* echo %TEMP%' "$INSTALL_SH")" "cmd.exe /d /c"
+    "$(grep 'cmd.exe .*echo .*%TEMP%' "$INSTALL_SH")" "cmd.exe /d /c"
+
+# The value is expanded inside quotes. cmd expands before it parses, so an unquoted %TEMP% holding
+# an & is split into two commands; the behavioural case above proves the block survives that, and
+# this pins the mechanism so a rewrite cannot quietly drop the quoting and still pass on paths that
+# happen to contain no metacharacter.
+assert_contains "the %TEMP% probe quotes the value inside cmd" \
+    "$(grep 'cmd.exe .*echo .*%TEMP%' "$INSTALL_SH")" '"%TEMP%"'
 
 LAUNCH=$(grep -n 'powershell.exe -NoProfile -ExecutionPolicy .* -File "\$_css_ps1_win"' "$INSTALL_SH" || true)
 assert_contains "the shortcut launch uses RemoteSigned" "$LAUNCH" "-ExecutionPolicy RemoteSigned"
@@ -196,6 +203,62 @@ assert_contains "SHChangeNotify is emitted instead" "$(cat "$INSTALL_SH")" "Defi
 BODY=$(cat "$INSTALL_SH")
 assert_contains "per-item SHCNE_UPDATEITEM refresh kept" "$BODY" "SHChangeNotify(0x00002000, 0x0005"
 assert_contains "global SHCNE_ASSOCCHANGED refresh kept" "$BODY" "SHChangeNotify(0x08000000, 0"
+
+# A cmd.exe stub that reproduces the ORDER cmd works in: %VAR% is expanded first, and the result is
+# then parsed for metacharacters. That is what makes an & inside the value dangerous, and the
+# earlier stub could not show it because it echoed a fixed string without ever parsing a command.
+# & is legal in a Windows account name, so "C:\Users\A&B\AppData\Local\Temp" is a real path.
+make_parsing_cmd_stub() {
+    cat > "$STUBS/cmd.exe" <<STUB
+#!/bin/sh
+# Everything after /c, joined with spaces. cmd receives a command LINE, so the old unquoted
+# `echo %TEMP%` form arrives as one line too; joining is what lets this stub judge both forms.
+_cmd=""
+_take=0
+for _a in "\$@"; do
+    if [ "\$_take" = 1 ]; then
+        if [ -z "\$_cmd" ]; then _cmd="\$_a"; else _cmd="\$_cmd \$_a"; fi
+    fi
+    [ "\$_a" = "/c" ] && _take=1
+done
+# Expansion happens BEFORE parsing, exactly as cmd does it.
+_cmd=\$(printf '%s' "\$_cmd" | sed "s/%TEMP%/\$(printf '%s' '$1' | sed 's/[&/\\\\]/\\\\&/g')/g")
+# Now parse. An & inside double quotes is literal; outside, it separates commands.
+_q=0; _first=""; _rest=""; _i=1
+while [ "\$_i" -le "\${#_cmd}" ]; do
+    _ch=\$(printf '%s' "\$_cmd" | cut -c"\$_i")
+    if [ "\$_ch" = '"' ]; then _q=\$((1-_q))
+    elif [ "\$_ch" = "&" ] && [ "\$_q" = 0 ]; then
+        _rest=\$(printf '%s' "\$_cmd" | cut -c\$((_i+1))-); break
+    fi
+    _first="\$_first\$_ch"; _i=\$((_i+1))
+done
+# Only the echo command's argument is printed, with the quotes consumed the way cmd consumes them.
+_out=\$(printf '%s' "\$_first" | sed 's/^echo //' | sed 's/^"//; s/"\$//')
+printf '%s\r\n' "\$_out"
+[ -n "\$_rest" ] && printf "'%s' is not recognized as an internal or external command\r\n" "\$_rest"
+exit 0
+STUB
+    chmod +x "$STUBS/cmd.exe"
+    make_wslpath_stub "$1" "$WINTEMP"
+}
+
+# A plain path through the faithful stub: the quoting must not corrupt the ordinary case.
+make_parsing_cmd_stub 'C:\Users\ci\AppData\Local\Temp'
+OUT=$(run_block)
+assert_eq "quoted expansion still resolves an ordinary path" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
+# The case this guards: an & in the Windows temp path. Unquoted, cmd splits the line, the echo
+# prints a truncated path, wslpath is handed something that is not the temp directory and the whole
+# shortcut is silently skipped.
+make_parsing_cmd_stub 'C:\Users\A&B\AppData\Local\Temp'
+OUT=$(run_block)
+assert_eq "an ampersand in %TEMP% survives expansion" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+SCRIPT=$(printf '%s' "$OUT" | sed -n 2p)
+[ -n "$SCRIPT" ] && ok "a script path was allocated despite the ampersand" || bad "the ampersand killed shortcut creation"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
 
 echo ""
 echo "  $PASS passed, $FAIL failed"

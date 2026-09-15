@@ -2202,8 +2202,16 @@ STUB_EOF
             # some other way, a login banner), and trailing blanks go because Win32 strips them
             # from a path while [ -d ] does not. The || is not dead code: this file runs under
             # set -e, where a failed substitution would end the install.
-            _css_win_temp_raw=$(cmd.exe /d /c echo %TEMP% 2>/dev/null \
+            #
+            # Quoted inside cmd, and the quotes stripped back off here. cmd expands %TEMP% BEFORE
+            # it parses metacharacters, so an unquoted `echo %TEMP%` on a profile holding a valid
+            # path character like & ("C:\Users\A&B\AppData\Local\Temp") turns into two commands:
+            # the echo prints a truncated path and the rest is run as a command. & is legal in a
+            # Windows account name, so this is reachable. Inside double quotes it is literal.
+            _css_win_temp_raw=$(cmd.exe /d /c 'echo "%TEMP%"' 2>/dev/null \
                 | tr -d '\r' | tail -n 1 | sed 's/[[:space:]]*$//') || _css_win_temp_raw=""
+            _css_win_temp_raw=${_css_win_temp_raw#\"}
+            _css_win_temp_raw=${_css_win_temp_raw%\"}
             case "$_css_win_temp_raw" in
                 ""|"%TEMP%") _css_win_temp="" ;;
                 *) _css_win_temp=$(wslpath -u "$_css_win_temp_raw" 2>/dev/null) || _css_win_temp="" ;;
@@ -2296,8 +2304,23 @@ try {
     \$refreshType = 'UnslothShellIconRefresh' -as [type]
     if (-not \$refreshType) {
         \$asmName = New-Object System.Reflection.AssemblyName 'UnslothShellIconRefreshAsm'
-        \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
-            \$asmName, [System.Reflection.Emit.AssemblyBuilderAccess]::Run)
+        # Both spellings, matching New-StudioDynamicAssembly in install.ps1. The static
+        # AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
+        # 4.8.1, so the 5.1 host this script is launched under should take the first branch; it
+        # is tried rather than assumed because the outer catch here is empty, so guessing wrong
+        # costs the icon refresh with nothing printed. AppDomain.CurrentDomain is the .NET
+        # Framework spelling and is absent on .NET Core, so it is the fallback and not the lead.
+        \$access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+        try {
+            \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(\$asmName, \$access)
+        } catch [System.Management.Automation.MethodException] {
+            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+        } catch [System.Management.Automation.RuntimeException] {
+            # Some hosts surface a missing static as RuntimeException rather than
+            # MethodException. Both mean "no such method here", and a real emit failure throws
+            # from the AppDomain call too, so a genuine refusal still reaches the outer catch.
+            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+        }
         \$module = \$asm.DefineDynamicModule('UnslothShellIconRefreshMod')
         \$typeBuilder = \$module.DefineType('UnslothShellIconRefresh',
             'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')

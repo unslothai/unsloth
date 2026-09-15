@@ -241,3 +241,29 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
         "nothing proves the detector fires on this runner, so a clean verdict is indistinguishable "
         "from a detector that never attached"
     )
+
+
+def test_the_generated_emit_carries_both_spellings_of_define_dynamic_assembly() -> None:
+    """The outer catch is empty, so guessing the wrong spelling costs the icon refresh silently.
+
+    `install.ps1`'s `New-StudioDynamicAssembly` tries the static
+    `AssemblyBuilder::DefineDynamicAssembly` and falls back to
+    `AppDomain.CurrentDomain.DefineDynamicAssembly`, and says why: the static form is documented for
+    .NET Framework 4.5 through 4.8.1, so the Windows PowerShell 5.1 host this script is launched
+    under should take the first branch, but nothing in this repository can run a .NET Framework host
+    to confirm it. The generated WSL script had only the static form under a bare `catch {}`, which
+    is the combination that fails invisibly. Carry the same fallback.
+    """
+    script = _render()
+    assert "[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly" in script, (
+        "the generated script no longer tries the documented static spelling first"
+    )
+    assert "[AppDomain]::CurrentDomain.DefineDynamicAssembly" in script, (
+        "the generated script has no AppDomain fallback, so on a host without the static overload "
+        "the empty outer catch swallows the failure and both icon refreshes stop happening"
+    )
+    static_at = script.index("[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly")
+    appdomain_at = script.index("[AppDomain]::CurrentDomain.DefineDynamicAssembly")
+    assert static_at < appdomain_at, (
+        "AppDomain.CurrentDomain is absent on .NET Core, so leading with it would break pwsh"
+    )
