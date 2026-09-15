@@ -14,6 +14,7 @@ from playwright.sync_api import sync_playwright
 
 def check_widths(page):
     """Full must preserve the space available in Wide, including narrow panes."""
+    thread_url = page.url
     measurements = {}
     for preset in ("Standard", "Wide", "Full width"):
         page.set_viewport_size({"width": 1440, "height": 900})
@@ -36,6 +37,16 @@ def check_widths(page):
                     };
                 }"""
             )
+        if preset == "Wide":
+            page.set_viewport_size({"width": 1920, "height": 900})
+            page.goto(thread_url.split("?")[0] + "?new=width-transition")
+            shell = page.locator(".unsloth-composer-shell")
+            shell.wait_for()
+            page.wait_for_timeout(300)
+            welcome_width = shell.bounding_box()["width"]
+            assert abs(welcome_width - measurements[preset][1920]["composer"]) <= 1
+            page.goto(thread_url)
+            page.locator(".aui-assistant-message-root").wait_for()
     for width, full in measurements["Full width"].items():
         standard = measurements["Standard"][width]
         wide = measurements["Wide"][width]

@@ -803,6 +803,10 @@ export function applyCustomizationToDocument(
     "--custom-chat-shell-max-width",
     c.chatWidth === "standard" ? null : "100%",
   );
+  setVar(
+    "--custom-chat-welcome-padding",
+    c.chatWidth === "standard" ? null : "0px",
+  );
 
   syncImportedFonts(c.importedFonts);
 
