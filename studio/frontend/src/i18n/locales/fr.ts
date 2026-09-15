@@ -1052,6 +1052,13 @@ export const fr = {
         minimal: "Minimale",
       },
       custom: {
+        chatWidth: {
+          label: "Largeur du chat",
+          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          standard: "Standard",
+          wide: "Large",
+          full: "Pleine largeur",
+        },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
         preferencesTitle: "Préférences",
@@ -1101,6 +1108,10 @@ export const fr = {
           errorStorageFull:
             "Stockage local insuffisant pour cette police. Retirez d'abord une police importée.",
           errorFailed: "Impossible de charger ce fichier de police.",
+        },
+        interfaceScale: {
+          label: "Échelle de l'interface",
+          description: "Redimensionnez tous les éléments de l'interface.",
         },
         uiFontSize: {
           label: "Taille de police de l'interface",
@@ -1454,6 +1465,7 @@ export const fr = {
           "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
         chatWithFiles: "Discuter avec des fichiers (RAG)",
         mcp: "MCP",
+        skills: "Compétences des agents",
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
@@ -2559,5 +2571,23 @@ export const fr = {
     kvRate: "KV réservé, ~{rate}/token",
     oomLikely: "Avec les réglages actuels, un dépassement de mémoire est probable",
     tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
+  },
+  skills: {
+    title: "Compétences des agents",
+    description: "Les compétences sont détectées dans vos dossiers d'agents standard. Activez-les ici, puis tapez @ dans le chat pour en mentionner une.",
+    precedence: "~/.agents/skills est prioritaire par rapport à ~/.claude/skills.",
+    refresh: "Actualiser",
+    empty: "Aucune compétence d'agent trouvée. Ajoutez un dossier SKILL.md dans ~/.agents/skills ou ~/.claude/skills, puis actualisez.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Intégrée",
+    shadowed: "Masquée",
+    invalid: "Non valide",
+    compatibility: "Compatibilité : {value}",
+    shadowedBy: "Une autre compétence ({source}) portant ce nom est prioritaire.",
+    enable: "Activer {name}",
+    disable: "Désactiver {name}",
+    updateError: "Impossible de mettre à jour la compétence d'agent",
+    mentions: "Compétences des agents",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

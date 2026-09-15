@@ -1790,6 +1790,136 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     )
 
 
+def test_auto_tensor_parallel_honors_user_tensor_split_when_planner_returns_none(tmp_path):
+    """When auto tensor planning decides an even split is safe, the user's
+    per-GPU ratio must still be emitted instead of being silently ignored.
+    Regression for unslothai/unsloth#10355."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )["cmd"]
+
+    assert backend.tensor_parallel is True
+    assert "--split-mode" in cmd
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--tensor-split" in cmd
+    assert cmd[cmd.index("--tensor-split") + 1] == "3,1"
+
+
+def test_auto_tensor_parallel_drops_user_split_when_it_exceeds_budget(tmp_path):
+    """A user ratio that overshoots a GPU's usable budget must not be forwarded
+    in auto mode just because an even split fits."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 25 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )["cmd"]
+
+    assert backend.tensor_parallel is True
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+    assert "--tensor-split" not in cmd
+
+
+def test_auto_tensor_parallel_records_split_for_reload_matching(tmp_path):
+    """An auto tensor-parallel load with a concrete ratio must not be reused
+    when a later request asks for a different ratio.
+
+    What is recorded is the ratio the load was ASKED for, normalized, not the
+    list that was emitted: the planner's own split is in per-device MiB and a
+    declined ratio emits nothing, so recording the emitted value would
+    mismatch every identical repeat and reload forever. See
+    ``_auto_split_fingerprint``.
+    """
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 0
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
+
+    _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = [3, 1],
+        gpu_ids = [0, 1],
+        n_ctx = 4096,
+    )
+
+    assert backend._auto_tensor_split == (0.75, 0.25)
+    # /status should also surface the normalized ratio that was emitted.
+    assert backend.tensor_split == [0.75, 0.25]
+
+    # The same ratio written differently is the same instruction to llama.cpp,
+    # so it reuses; a different one reloads.
+    def _intent(split):
+        return GgufLoadIntent(
+            gguf_path = str(gguf),
+            model_identifier = "test",
+            gpu_memory_mode = "auto",
+            tensor_parallel = True,
+            tensor_split = split,
+            gpu_ids = [0, 1],
+            n_ctx = 4096,
+        )
+
+    assert backend.adopt_load_intent_if_matched(_intent([3, 1])) is True
+    assert backend.adopt_load_intent_if_matched(_intent([6, 2])) is True
+    assert backend.adopt_load_intent_if_matched(_intent([1, 3])) is False
+
+    intent_same = GgufLoadIntent(
+        model_identifier = "test",
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = (3, 1),
+        gpu_ids = (0, 1),
+        n_ctx = 4096,
+    )
+    intent_changed = GgufLoadIntent(
+        model_identifier = "test",
+        gpu_memory_mode = "auto",
+        tensor_parallel = True,
+        tensor_split = (1, 3),
+        gpu_ids = (0, 1),
+        n_ctx = 4096,
+    )
+    assert backend._runtime_matches_intent(intent_same, None) is True
+    assert backend._runtime_matches_intent(intent_changed, None) is False
+
+
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
     """A 30 GiB GGUF on a host with 4 GiB of RAM left, full manual offload."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = memory)
@@ -3377,3 +3507,84 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+def _write_mtp_drafter(path: Path, *, with_token_embd: bool) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names += ["token_embd.weight", "output_norm.weight"]
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def _headless_mtp_backend(tmp_path):
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def test_an_mtp_drafter_llama_server_cannot_load_is_dropped(tmp_path):
+    """Dropped before the launch it would abort, and recorded so Apply does not reload."""
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    drafter = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+
+    cmd = _launch(backend, gguf, mtp_draft_path = str(drafter), speculative_type = "mtp")["cmd"]
+
+    assert "--model-draft" not in cmd
+    assert str(drafter) not in cmd
+    assert backend.mtp_draft_path is None
+    assert backend.mtp_draft_suppressed_path == str(drafter)
+
+
+def test_an_advanced_argument_drafter_survives_the_unloadable_drop(tmp_path):
+    """A user-named --model-draft wins last, so the head-only sibling never opens.
+
+    Dropping it anyway made the load read as drafterless, and the fallback emits
+    ngram-mod or --spec-default BEFORE the extras are appended, so the override stopped
+    running as MTP at all. Nothing here needs protecting: the file llama-server opens is
+    the user's, and the sibling is not passed.
+    """
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    bad = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+    good = _write_mtp_drafter(tmp_path / "user-draft.gguf", with_token_embd = True)
+
+    cmd = _launch(
+        backend,
+        gguf,
+        mtp_draft_path = str(bad),
+        speculative_type = "mtp",
+        extra_args = ["--model-draft", str(good)],
+    )["cmd"]
+
+    # The user's file is what runs, as MTP, and the rejected sibling is nowhere.
+    assert cmd[-2:] == ["--model-draft", str(good)]
+    assert "draft-mtp" in cmd
+    assert "--spec-default" not in cmd
+    assert "ngram-mod" not in cmd
+    assert backend.mtp_draft_suppressed_path is None
+    assert backend.spec_fallback_reason is None
+
+
+def test_a_drafter_carrying_its_own_embeddings_still_reaches_the_command(tmp_path):
+    """The control for the drop above: same load, one tensor different."""
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    drafter = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+
+    cmd = _launch(backend, gguf, mtp_draft_path = str(drafter), speculative_type = "mtp")["cmd"]
+
+    assert cmd[cmd.index("--model-draft") + 1] == str(drafter)
+    assert backend.mtp_draft_path == str(drafter)
+    assert backend.mtp_draft_suppressed_path is None

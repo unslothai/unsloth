@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.llama_tool_schema import unrelaxed
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -183,8 +184,12 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+    """The one JSON encoding of an argument mapping, so the card and the replay agree.
+
+    Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
+    `canonical_tool_call_key` keeps its own sorted key for dedup.
+    """
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
 @dataclass(frozen = True)
@@ -474,6 +479,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
     every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
     would turn ``"001"`` into 1."""
+    spec = unrelaxed(spec)
     if not _readable(spec):
         return None, None, False
     union = _UNION_KEYWORDS & spec.keys()
@@ -491,6 +497,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
             return None, None, False
         named = []
         for branch in branches:
+            branch = unrelaxed(branch)
             name = branch.get("type") if _readable(branch) else None
             if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
                 return None, None, False

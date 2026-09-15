@@ -1023,6 +1023,13 @@ export const en = {
         minimal: "Minimal",
       },
       custom: {
+        chatWidth: {
+          label: "Chat width",
+          description: "Set the width of messages and the composer. Full width uses the space between sidebars.",
+          standard: "Standard",
+          wide: "Wide",
+          full: "Full width",
+        },
         reset: "Reset",
         resetAll: "Reset customization",
         preferencesTitle: "Preferences",
@@ -1072,6 +1079,10 @@ export const en = {
           errorStorageFull:
             "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
+        },
+        interfaceScale: {
+          label: "Interface scale",
+          description: "Resize all interface elements.",
         },
         uiFontSize: {
           label: "UI font size",
@@ -1414,6 +1425,7 @@ export const en = {
           "Pin items to chat's + side menu. Others move into “More”.",
         chatWithFiles: "Chat with Files (RAG)",
         mcp: "MCP",
+        skills: "Agent Skills",
         savedPrompts: "Saved prompts",
         compareChat: "Compare chat",
         exportChat: "Export chat",
@@ -2462,5 +2474,23 @@ export const en = {
     kvRate: "KV reserved, ~{rate}/token",
     oomLikely: "With current settings OOM likely",
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",
+  },
+  skills: {
+    title: "Agent Skills",
+    description: "Skills are discovered from your standard agent folders. Enable them here, then type @ in chat to mention one.",
+    precedence: "~/.agents/skills takes precedence over ~/.claude/skills.",
+    refresh: "Refresh",
+    empty: "No Agent Skills found. Add a SKILL.md folder under ~/.agents/skills or ~/.claude/skills, then refresh.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Bundled",
+    shadowed: "Shadowed",
+    invalid: "Invalid",
+    compatibility: "Compatibility: {value}",
+    shadowedBy: "Another {source} skill with this name takes precedence.",
+    enable: "Enable {name}",
+    disable: "Disable {name}",
+    updateError: "Could not update Agent Skill",
+    mentions: "Agent Skills",
   },
 } as const;

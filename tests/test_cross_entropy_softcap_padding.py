@@ -3,7 +3,7 @@
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 import torch.nn.functional as F
@@ -11,7 +11,7 @@ import torch.nn.functional as F
 pytestmark = pytest.mark.gpu
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
     "vocab_size,softcap,offset",
@@ -46,7 +46,7 @@ def test_cross_entropy_softcap_padding(dtype, vocab_size, softcap, offset):
     torch.testing.assert_close(logits.grad, reference_logits.grad, rtol = 1e-2, atol = 1e-7)
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("vocab_size", [32000, 65537, 256000])
 @pytest.mark.parametrize("logit_scaling", [0.0625, 0.5, 2.0])
 def test_cross_entropy_softcap_padding_with_logit_scaling(vocab_size, logit_scaling):
@@ -76,7 +76,7 @@ def test_cross_entropy_softcap_padding_with_logit_scaling(vocab_size, logit_scal
     torch.testing.assert_close(logits.grad, reference_logits.grad, rtol = 1e-2, atol = 1e-7)
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("vocab_size", [32000, 65537])
 @pytest.mark.parametrize("softcap", [0.0, 30.0])
 def test_negative_logit_scaling_does_not_nan(vocab_size, softcap):
@@ -104,7 +104,7 @@ def test_negative_logit_scaling_does_not_nan(vocab_size, softcap):
     torch.testing.assert_close(actual, expected, rtol = 1e-5, atol = 1e-5)
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("vocab_size", [32000, 65537, 256000, 262208])
 def test_softcapped_probabilities_sum_to_one(vocab_size):
     """Guards the denominator without leaning on a loss tolerance."""

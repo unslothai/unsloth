@@ -1029,6 +1029,13 @@ export const ar = {
         minimal: "بسيطة",
       },
       custom: {
+        chatWidth: {
+          label: "عرض المحادثة",
+          description: "حدّد عرض الرسائل وحقل الكتابة. يستخدم العرض الكامل المساحة بين الشريطين الجانبيين.",
+          standard: "قياسي",
+          wide: "واسع",
+          full: "العرض الكامل",
+        },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
         preferencesTitle: "التفضيلات",
@@ -1078,6 +1085,10 @@ export const ar = {
           errorStorageFull:
             "لا توجد مساحة تخزين محلية كافية لهذا الخط. أزل خطًا مستوردًا أولًا.",
           errorFailed: "تعذّر تحميل ملف الخط هذا.",
+        },
+        interfaceScale: {
+          label: "مقياس الواجهة",
+          description: "غيّر حجم جميع عناصر الواجهة.",
         },
         uiFontSize: {
           label: "حجم خط الواجهة",
@@ -1421,6 +1432,7 @@ export const ar = {
           "ثبّت العناصر في القائمة الجانبية لعلامة + في المحادثة. تنتقل العناصر الأخرى إلى «المزيد».",
         chatWithFiles: "المحادثة مع الملفات (RAG)",
         mcp: "MCP",
+        skills: "مهارات الوكلاء",
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
@@ -2479,5 +2491,23 @@ export const ar = {
     kvRate: "KV محجوزة مسبقًا، ~{rate}/توكن",
     oomLikely: "مع الإعدادات الحالية يُرجَّح نفاد الذاكرة",
     tooLarge: "أكبر من ذاكرة الرسوميات، وسيُفرَّغ جزء منه إلى المعالج. التكميم الأصغر أسرع",
+  },
+  skills: {
+    title: "مهارات الوكلاء",
+    description: "تُكتشف المهارات من مجلدات الوكلاء القياسية. فعّلها هنا ثم اكتب @ في الدردشة لذكر إحداها.",
+    precedence: "‎~/.agents/skills له الأولوية على ‎~/.claude/skills.",
+    refresh: "تحديث",
+    empty: "لم يُعثر على مهارات. أضف مجلدًا يحتوي على SKILL.md ضمن ‎~/.agents/skills أو ‎~/.claude/skills ثم حدّث.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "مضمّنة",
+    shadowed: "محجوبة",
+    invalid: "غير صالحة",
+    compatibility: "التوافق: {value}",
+    shadowedBy: "مهارة أخرى ({source}) بالاسم نفسه لها الأولوية.",
+    enable: "تفعيل {name}",
+    disable: "تعطيل {name}",
+    updateError: "تعذّر تحديث مهارة الوكيل",
+    mentions: "مهارات الوكلاء",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

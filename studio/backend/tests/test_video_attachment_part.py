@@ -14,9 +14,13 @@ GGUF alone.
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 
 import pytest
+
+_CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header, decoded byte-for-byte by the backend
+_DATA_URI = f"data:video/mp4;base64,{_CLIP_B64}"
 
 pytest.importorskip("torch")
 
@@ -156,14 +160,68 @@ def test_an_external_provider_refuses_video_rather_than_ignoring_it():
     start = source.index("if payload.provider_id or payload.provider_type:")
     branch = source[start : source.index("_proxy_to_external_provider(payload", start)]
     assert "payload.video_base64" in branch
-    assert "Video input is only supported on a local GGUF model" in branch
+    assert "_VIDEO_INPUT_REFUSAL" in branch
 
 
-def test_a_non_gguf_model_refuses_video_rather_than_ignoring_it():
-    """Injection lives in the GGUF branch, so a transformers model would answer
-    as if nothing were attached."""
+def _model_info(**fields):
+    return {"is_vision": True, **fields}
+
+
+def test_a_video_backend_is_handed_the_bare_clip():
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clip
+
+    payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
+    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _CLIP_B64)
+    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+
+    with pytest.raises(HTTPException) as exc:
+        _local_video_clip(payload, _model_info())
+    assert exc.value.status_code == 400 and exc.value.detail == _VIDEO_INPUT_REFUSAL
+    payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = "data:video/mp4;base64,")
+    with pytest.raises(HTTPException) as exc:
+        _local_video_clip(payload, _model_info(has_video_input = True))
+    assert exc.value.status_code == 400
+
+
+def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_generation():
+    """The gate precedes the early-returning dispatches, and the clip rides the generation kwargs."""
     source = _inference_source()
-    assert "if payload.video_base64 and not using_gguf:" in source
+    handler = source.index("using_gguf = llama_backend.is_loaded")
+    gate = source.index("_video_clip = _local_video_clip(payload, model_info)", handler)
+    speech = source.index("return await _monitored_generate_audio(model_name)", handler)
+    audio_input = source.index("# ── Audio INPUT path", handler)
+    assert gate < speech and gate < audio_input
+    assert 'gen_kwargs["video"] = _video_clip' in source
+    use_tools = source.index("_sf_use_tools = (", handler)
+    assert "and _video_clip is None" in source[use_tools : use_tools + 400]
+    # Structural, not literal. This pinned the exact
+    # "(image is not None or _video_clip is not None) and not _sf_use_tools"; #10970
+    # widened the image half to `_sf_has_image`, a superset, so the clause still fires
+    # for everything it used to and the test failed on the spelling.
+    client_tools = source.index("_sf_client_tools = (", handler)
+    block = source[client_tools : source.index("\n    )", client_tools)]
+    # Comments stripped, then narrowed to the ONE line carrying the escape hatch. Both
+    # matter: the block names an image in its own prose and carries a second
+    # `and not _sf_use_tools` conjunct, so reading the whole block passes on the wrong
+    # occurrences. Two mutations below were missed before this narrowing.
+    block = "\n".join(line.split("#")[0] for line in block.splitlines())
+    escape = next(line for line in block.splitlines() if "not _sf_tools_on" in line)
+    assert "and not _sf_use_tools" in escape, escape
+    # An image and a clip have to be ALTERNATIVES, each read positively. Merely occurring
+    # is not enough: `and` for `or` stops an image-only or video-only request entering the
+    # passthrough, and `image is None` / `not _sf_has_image` invert the condition. Either
+    # order, since which side reads first is arbitrary.
+    image = r"(?:\bimage is not None\b|\b_sf_has_image\b)"
+    clip = r"\b_video_clip is not None\b"
+    assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
+    assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_image\b", escape), escape
+    # Settled at the gate: a model without audio input never enters the audio-input path.
+    conflict = source.index("if payload.audio_base64:", gate)
+    assert conflict < speech
+    assert "_AUDIO_VIDEO_INPUT_DETAIL" in source[conflict : conflict + 200]
 
 
 def test_token_counting_refuses_video_like_image_and_audio():
@@ -180,4 +238,4 @@ def test_both_video_checks_share_one_rule():
     """Two size checks that drift let the pre-switch one pass what the post-load
     one refuses, which is the model load this was meant to avoid."""
     source = _inference_source()
-    assert source.count("_video_b64_rejection(payload.video_base64)") == 2
+    assert source.count("_video_b64_rejection(payload.video_base64)") == 3
