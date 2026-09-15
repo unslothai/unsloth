@@ -280,9 +280,7 @@ class TestTheKeptBundleMustStillCoverTheCard:
         ilp = _load_ilp()
         marker = {"backend": "cuda", "supported_sms": ["7.5", "8.6", "8.9"]}
         assert ilp._kept_install_covers_host(marker, _linux_host(ilp, compute_caps = ["8.9"]))
-        assert not ilp._kept_install_covers_host(
-            marker, _linux_host(ilp, compute_caps = ["12.0"])
-        )
+        assert not ilp._kept_install_covers_host(marker, _linux_host(ilp, compute_caps = ["12.0"]))
         # Two cards: every one must be covered.
         assert not ilp._kept_install_covers_host(
             marker, _linux_host(ilp, compute_caps = ["8.9", "12.0"])
@@ -367,9 +365,7 @@ def test_an_intel_host_on_cpu_is_named_too():
 
 
 def test_the_arm64_cpu_prebuilt_fallback_is_named_in_the_footer_too():
-    window = _between(
-        'step "llama.cpp" "arm64 CPU prebuilt installed', "_STUDIO_OWNED_MARKER"
-    )
+    window = _between('step "llama.cpp" "arm64 CPU prebuilt installed', "_STUDIO_OWNED_MARKER")
     assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=true" in window
 
 
