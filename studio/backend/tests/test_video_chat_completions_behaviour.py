@@ -733,3 +733,46 @@ def test_gguf_still_keeps_a_clip_on_the_turn_that_carried_it(monkeypatch):
     ]
     assert [p.get("type") for p in turns[0]["content"]] == ["input_video", "text"]
     assert [p.get("type") for p in turns[-1]["content"]] == ["text"]
+
+
+def test_validation_does_not_copy_the_clip():
+    """Validation runs twice per request and only wants the verdict, so slicing the header off
+    to get it copied the whole payload each time: 89 MB for a clip at the limit."""
+    import tracemalloc
+
+    from models.inference import ChatCompletionRequest
+
+    clip = "data:video/mp4;base64," + "A" * (8 * 1024 * 1024)
+    payload = ChatCompletionRequest.model_validate(_part_body(clip))
+    tracemalloc.start()
+    try:
+        assert inference_route._request_video_rejection(payload) is None
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1024 * 1024, f"validation allocated {peak} bytes for an 8 MB clip"
+
+
+@pytest.mark.parametrize(
+    "clip, expected",
+    [
+        ("data:video/mp4;base64," + "A" * 40, None),
+        ("A" * 40, None),
+        ("", (400, "Could not read the provided video file.")),
+        ("data:video/mp4;base64,", (400, "Could not read the provided video file.")),
+        ("data:video/mp4;base64", (400, "Could not read the provided video file.")),
+    ],
+)
+def test_the_measured_verdict_matches_the_sliced_one(clip, expected):
+    """The fast path has to agree with _video_b64_rejection, header handling included."""
+    assert inference_route._video_size_rejection(clip) == expected
+    assert inference_route._video_b64_rejection(clip)[1] == expected
+
+
+def test_the_measured_verdict_agrees_on_the_cap_boundary():
+    limit = inference_route._MAX_VIDEO_B64_CHARS
+    for length in (limit, limit + 1):
+        clip = "data:video/mp4;base64," + "A" * length
+        assert inference_route._video_size_rejection(clip) == (
+            inference_route._video_b64_rejection(clip)[1]
+        )
