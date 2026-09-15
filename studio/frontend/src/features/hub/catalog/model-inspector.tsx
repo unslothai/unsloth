@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   Tooltip,
   TooltipContent,
@@ -74,7 +75,8 @@ function ViewRepositoryButton({
   isDataset: boolean;
 }) {
   const online = useOnlineStatus();
-  const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
+  const hfEndpoint = useHfEndpoint();
+  const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
