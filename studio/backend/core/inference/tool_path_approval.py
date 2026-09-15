@@ -2091,7 +2091,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 # A parameter name only this callable uses, so it is read per call rather than from the
                 # shared list: `ConfigParser.read(filenames = ...)` takes a sequence as readily as a str.
                 value = keyword.value
-                for element in (value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]):
+                for element in value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]:
                     add(element, False)
             elif keyword.arg in _PY_PATH_DEST_KWARGS:
                 add(keyword.value, True)
