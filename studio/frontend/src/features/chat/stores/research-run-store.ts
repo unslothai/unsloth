@@ -958,14 +958,16 @@ export function beginExternalResearchFollow(
   };
 }
 
-/** Open a run already carried by message metadata. Hydrate first so the chat layout can resolve
- *  the panel's thread immediately; opening a bare id leaves the panel unmounted when the run store
- *  missed the server-created run. A click also clears a stale follower error and retries it. */
+/** Open metadata-only runs without changing an existing session or retrying its connection. */
 export function openResearchRun(run: ResearchRun): void {
-  ingestResearchUpdate(run);
-  useResearchRunStore.getState().setConnectionError(run.id, null);
-  ensureResearchRunFollowed(run.id, run);
-  useResearchRunStore.getState().openPanel(run.id);
+  if (!useResearchRunStore.getState().sessions[run.id]) {
+    ingestResearchUpdate(run);
+  }
+  const state = useResearchRunStore.getState();
+  if (state.sessions[run.id]?.run.status === "awaiting_approval") {
+    state.setPlanReviewOpen(run.id, true);
+  }
+  state.openPanel(run.id);
 }
 
 /** Yield the run each time the store applies something to it, until it settles or *signal*
