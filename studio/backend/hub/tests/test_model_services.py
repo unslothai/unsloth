@@ -4309,9 +4309,7 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
     assert result.variants[0].partial is True
 
 
-def test_local_gguf_state_demotes_matching_main_until_companion_completes(
-    monkeypatch, tmp_path
-):
+def test_local_gguf_state_demotes_matching_main_until_companion_completes(monkeypatch, tmp_path):
     repo_id = "Org/CompanionRepo"
     quant = "UD-Q4_K_XL"
     state_quant = quant.lower()
@@ -4401,9 +4399,7 @@ def test_local_gguf_state_demotes_matching_main_until_companion_completes(
     assert completed.default_variant == quant
 
 
-def test_pinned_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(
-    monkeypatch, tmp_path
-):
+def test_pinned_complete_gguf_ignores_newer_state_but_keeps_state_only_quant(monkeypatch, tmp_path):
     repo_id = "Org/PinnedRepo"
     hub_cache = tmp_path / "hub"
     repo_dir = hub_cache / "models--Org--PinnedRepo"

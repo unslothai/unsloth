@@ -1184,8 +1184,7 @@ async def get_gguf_variants_answer(
             )
 
         def _with_state_partials(
-            response: GgufVariantsResponse,
-            snapshot_dir: Optional[Path],
+            response: GgufVariantsResponse, snapshot_dir: Optional[Path]
         ) -> GgufVariantsResponse:
             """Reconcile cache rows with download state and add state-only quants.
 
@@ -1209,10 +1208,7 @@ async def get_gguf_variants_answer(
                 snapshot_dir,
             )
             complete_here = (
-                {
-                    quant.lower()
-                    for quant in (_complete_quants_under(str(snapshot_dir)) or ())
-                }
+                {quant.lower() for quant in (_complete_quants_under(str(snapshot_dir)) or ())}
                 if snapshot_dir is not None
                 else set()
             )
@@ -1234,9 +1230,7 @@ async def get_gguf_variants_answer(
                         # Repo-wide state belongs to another attempt when this
                         # older snapshot can serve the quant. An absent quant is
                         # still the interrupted attempt and is not excused.
-                        repo_signal_applies = (
-                            repo_signal_applies or key not in complete_here
-                        ),
+                        repo_signal_applies = (repo_signal_applies or key not in complete_here),
                     )
                 except Exception as e:
                     logger.warning(
