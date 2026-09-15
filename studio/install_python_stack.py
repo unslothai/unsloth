@@ -3811,10 +3811,9 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
 
 def _deliberate_cpu_torch() -> bool:
     """Someone chose CPU torch: an explicit CPU index pin, or a manifest that recorded cpu
-    as NAMED rather than selected. An unproven cpu record is not a choice."""
-    return _explicit_cpu_torch_index_pin() or (
-        _RECORDED_TORCH_TAG == "cpu" and bool(_RECORDED_TORCH_TAG_PINNED)
-    )
+    as NAMED rather than selected and nothing in this run names a GPU family instead.
+    An unproven cpu record is not a choice."""
+    return _explicit_cpu_torch_index_pin() or _expected_torch_flavor_was_pinned("cpu")
 
 
 def _ensure_cuda_torch() -> None:

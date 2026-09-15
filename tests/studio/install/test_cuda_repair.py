@@ -276,6 +276,17 @@ class TestCudaRepairSkips:
             mock_pip = _run_cuda_repair(torch_state = "cpu")
         mock_pip.assert_not_called()
 
+    def test_a_cuda_request_this_run_outranks_the_pinned_cpu_record(self, monkeypatch):
+        """UNSLOTH_TORCH_BACKEND=cuda names a GPU family, so the old pinned cpu record no longer
+        speaks for this run and a CPU wheel a later step left behind is repaired."""
+        monkeypatch.delenv("UNSLOTH_TORCH_BACKEND_SOURCE", raising = False)
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            mock_pip = _run_cuda_repair(backend = "cuda", torch_state = "cpu")
+        assert mock_pip.call_count == 1
+
     def test_backend_rocm_skips(self):
         mock_pip = _run_cuda_repair(backend = "rocm", torch_state = "hip")
         mock_pip.assert_not_called()
