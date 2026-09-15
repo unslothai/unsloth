@@ -2606,9 +2606,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _unresolved_checkpoint_plan(
-        repo_id: str,
-        gguf_filename: Optional[str],
-        hf_token: Optional[str],
+        repo_id: str, gguf_filename: Optional[str], hf_token: Optional[str]
     ) -> dict[str, Any]:
         """The plan for a pick whose family could not be resolved: its checkpoint, and nothing else.
 

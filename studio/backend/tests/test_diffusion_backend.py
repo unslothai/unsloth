@@ -7417,9 +7417,7 @@ def test_an_unrecognised_gguf_already_on_disk_plans_nothing(monkeypatch):
         monkeypatch,
         {"someone/mixed-gguf-collection": [_FakeSibling("unknown-Q4_K_M.gguf", 4_000)]},
     )
-    monkeypatch.setattr(
-        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda *a, **k: True)
-    )
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda *a, **k: True))
 
     plan = DiffusionBackend().download_plan(
         "someone/mixed-gguf-collection",
