@@ -17,6 +17,7 @@ export const NATIVE_MAC_TITLEBAR_HEIGHT_VAR = `var(--studio-native-titlebar-heig
 export const NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR = `var(--studio-native-traffic-light-inset, ${NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX}px)`;
 
 let appliedInterfaceZoom = 1;
+const appliedInterfaceZoomListeners = new Set<() => void>();
 
 /**
  * The zoom last handed to the webview, not a reading off it. Page zoom is not observable
@@ -24,6 +25,13 @@ let appliedInterfaceZoom = 1;
  */
 export function getAppliedInterfaceZoom(): number {
   return appliedInterfaceZoom;
+}
+
+export function subscribeAppliedInterfaceZoom(listener: () => void): () => void {
+  appliedInterfaceZoomListeners.add(listener);
+  return () => {
+    appliedInterfaceZoomListeners.delete(listener);
+  };
 }
 
 export function setAppliedInterfaceZoom(zoom: number): void {
@@ -36,4 +44,5 @@ export function setAppliedInterfaceZoom(zoom: number): void {
     "--studio-native-traffic-light-inset",
     `${NATIVE_MAC_TRAFFIC_LIGHT_INSET_PX / zoom}px`,
   );
+  for (const listener of appliedInterfaceZoomListeners) listener();
 }

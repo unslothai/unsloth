@@ -31,6 +31,8 @@ import {
   NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
   applyCustomizationToDocument,
   applyInterfaceScale,
+  getAppliedInterfaceZoom,
+  subscribeAppliedInterfaceZoom,
   useAppearanceCustomStore,
   useInterfaceScaleStore,
   useTheme,
@@ -90,11 +92,12 @@ const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 const STACK_SHADOW_GUTTER_BOTTOM = 16;
 const STACK_SHADOW_GUTTER_TOP = 8;
 
-// Logical px per CSS px: webview zoom above the display scale; 1 if none.
+// macos page zoom does not change dpr; windows already includes zoom in its dpr.
 function logicalPerCssPx(monitorScale: number): number {
-  if (typeof window === "undefined" || !(monitorScale > 0)) return 1;
+  const zoom = Math.max(1, getAppliedInterfaceZoom());
+  if (typeof window === "undefined" || !(monitorScale > 0)) return zoom;
   const ratio = window.devicePixelRatio / monitorScale;
-  return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
+  return Math.max(zoom, Number.isFinite(ratio) ? ratio : 1);
 }
 
 // Autostart passes --hidden: layout still applies, but the window stays in the tray.
@@ -706,7 +709,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     if (!ratioSource) return;
 
     let disposed = false;
-    const stop = observeDevicePixelRatio(ratioSource, () => {
+    const refresh = () => {
       // The setup window has no constraints to keep current.
       if (disposed || appliedWindowModeRef.current !== "app") return;
       // Read on the change, not on mount: a layout pass that starts after this
@@ -717,10 +720,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       ).catch(() => {
         /* swallow; the floor in force stands */
       });
-    });
+    };
+    const stop = observeDevicePixelRatio(ratioSource, refresh);
+    const stopZoom = subscribeAppliedInterfaceZoom(refresh);
     return () => {
       disposed = true;
       stop();
+      stopZoom();
     };
   }, []);
 

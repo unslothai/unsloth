@@ -60,6 +60,8 @@ export {
 export {
   NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
+  getAppliedInterfaceZoom,
+  subscribeAppliedInterfaceZoom,
 } from "./lib/interface-scale-runtime";
 export {
   type MonitorFrame,
