@@ -237,7 +237,14 @@ runs:
         # tests had all already succeeded, which is the opposite of the point.
         # tests/studio/test_core_setup_zoo_revision_notice.py runs this block against a
         # failing git and fails if the step does not survive it.
-        head="$( { git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null || true; } | cut -f1 )"
+        # `timeout` as well as `|| true`: the guard covers a lookup that FAILS, this one
+        # covers a lookup that HANGS. git has no timeout of its own here and no low-speed
+        # limit is configured, so a connection that opens and then stalls would block this
+        # step until the job's own 25 or 35 minute limit killed the cell -- again after the
+        # clone, the install and the whole suite had passed. `timeout` exits 124, which the
+        # `|| true` absorbs like any other failure. Both jobs using this action run on
+        # ubuntu-24.04, where timeout is coreutils and always present.
+        head="$( { timeout 15 git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null || true; } | cut -f1 )"
         pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
         echo "unsloth_zoo revision under test: $pinned"
         if [ -n "$head" ] && [ "$head" != "$pinned" ]; then

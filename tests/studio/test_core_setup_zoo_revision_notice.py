@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import time
 import textwrap
 from pathlib import Path
 
@@ -66,7 +67,19 @@ def test_the_step_declares_the_shell_flags_this_test_reproduces():
     assert _clone_step().get("shell") == "bash", _clone_step().get("shell")
 
 
-def _run_notice(tmp_path: Path, *, git_exit: int, git_stdout: str) -> subprocess.CompletedProcess:
+def _lookup_timeout_seconds() -> int:
+    """The bound the action puts on the lookup, read from the action itself."""
+    block = _revision_notice_block()
+    found = re.search(r"timeout\s+(\d+)\s+git ls-remote", block)
+    assert found, f"the lookup is no longer bounded by `timeout`:\n{block}"
+    seconds = int(found.group(1))
+    assert 0 < seconds <= 30, f"an unreasonable bound for a diagnostic: {seconds}s"
+    return seconds
+
+
+def _run_notice(
+    tmp_path: Path, *, git_exit: int, git_stdout: str, git_sleep: int = 0
+) -> subprocess.CompletedProcess:
     """Execute the notice block with `git` stubbed, under the step's own flags."""
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
@@ -74,6 +87,7 @@ def _run_notice(tmp_path: Path, *, git_exit: int, git_stdout: str) -> subprocess
     git.write_text(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "ls-remote" ]; then\n'
+        f"  sleep {git_sleep}\n"
         # %b, not %s: the repr below writes the tab and newline as backslash escapes, and
         # ls-remote output is tab-separated. With %s they stay literal, cut -f1 finds no
         # field separator and hands back the whole line, which reads as a mismatch.
@@ -161,4 +175,32 @@ def test_the_lookup_absorbs_its_failure_inside_the_substitution():
     assert "|| true" in lookup.group(1), (
         "the lookup must absorb its own failure inside the command substitution, not "
         f"after it:\n{lookup.group(0)}"
+    )
+
+
+def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
+    """A lookup that stalls rather than fails must not run out the job's clock.
+
+    `|| true` cannot help here: nothing has exited, so nothing is absorbed. git applies no
+    timeout to this itself and no low-speed limit is configured, so without an external
+    bound the step would sit here until the 25 or 35 minute job limit killed the cell,
+    long after the clone, the install and the suite had all passed.
+
+    Takes the bound in real time, which is why it is the slowest test in this file.
+    """
+    bound = _lookup_timeout_seconds()
+    began = time.monotonic()
+    proc = _run_notice(tmp_path, git_exit = 0, git_stdout = "", git_sleep = bound * 6)
+    elapsed = time.monotonic() - began
+
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined[-2000:]
+    assert "NOTICE_BLOCK_SURVIVED" in proc.stdout, combined[-2000:]
+    assert elapsed < bound + 20, (
+        f"the block took {elapsed:.1f}s against a {bound}s bound, so the lookup is not "
+        "actually bounded and a stalled connection would hold the step open"
+    )
+    assert "::warning" not in combined, (
+        "a lookup that never answered must stay quiet rather than claim staleness:\n"
+        + combined[-2000:]
     )
