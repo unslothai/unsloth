@@ -286,7 +286,12 @@ def test_a_data_uri_part_is_translated_in_place_without_its_header():
     ]
 
 
-def test_a_remote_url_is_left_for_llama_server_to_fetch():
+def test_a_remote_url_is_refused_rather_than_forwarded():
+    """llama-server would fetch it from this machine, and its downloader follows redirects
+    (set_follow_location, common/http.h), so a public URL redirecting to a private address
+    defeats any host check made here. input_video therefore only ever carries bytes."""
+    import pytest
+    from fastapi import HTTPException
     from routes.inference import _translate_video_parts
 
     messages = [
@@ -298,11 +303,10 @@ def test_a_remote_url_is_left_for_llama_server_to_fetch():
             ],
         }
     ]
-    _translate_video_parts(messages)
-    assert messages[0]["content"][1] == {
-        "type": "input_video",
-        "input_video": {"url": "https://example.com/clip.mp4"},
-    }
+    with pytest.raises(HTTPException) as exc:
+        _translate_video_parts(messages)
+    assert exc.value.status_code == 400
+    assert "Remote video URLs are not supported" in exc.value.detail
 
 
 def test_an_uppercase_data_uri_header_is_still_stripped():
@@ -319,26 +323,20 @@ def test_an_uppercase_data_uri_header_is_still_stripped():
     assert messages[0]["content"][0] == {"type": "input_video", "input_video": {"data": "QUJD"}}
 
 
-def test_an_uppercase_scheme_is_still_a_remote_url():
-    """URL schemes are case-insensitive, but handle_media matches them with a case-sensitive
-    string_starts_with(url, "http"), so the scheme is lowercased on the way out. Classifying
-    it correctly and then forwarding the original spelling still fails downstream."""
+def test_an_uppercase_scheme_is_refused_as_a_remote_url_too():
+    """Schemes are case-insensitive, so HTTPS:// must be recognised as remote and refused
+    rather than falling through and being decoded as base64."""
+    import pytest
+    from fastapi import HTTPException
     from routes.inference import _translate_video_parts
 
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "video_url", "video_url": {"url": "HTTPS://example.com/clip.mp4"}},
-                {"type": "video_url", "video_url": {"url": "Http://example.com/other.mp4"}},
-            ],
-        }
-    ]
-    _translate_video_parts(messages)
-    assert [part["input_video"] for part in messages[0]["content"]] == [
-        {"url": "https://example.com/clip.mp4"},
-        {"url": "http://example.com/other.mp4"},
-    ]
+    for url in ("HTTPS://example.com/clip.mp4", "Http://example.com/other.mp4"):
+        messages = [
+            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": url}}]}
+        ]
+        with pytest.raises(HTTPException) as exc:
+            _translate_video_parts(messages)
+        assert exc.value.status_code == 400
 
 
 def test_message_parts_are_translated_where_the_legacy_clip_is_injected():
@@ -358,10 +356,10 @@ def test_message_parts_are_translated_where_the_legacy_clip_is_injected():
 def test_every_data_uri_part_is_sized_not_only_the_first():
     from routes.inference import _MAX_VIDEO_B64_CHARS, _request_video_rejection
 
-    fits = _video_url_request("https://example.com/clip.mp4", "data:video/mp4;base64,QUJD")
+    fits = _video_url_request("data:video/mp4;base64,QUJD", "data:video/mp4;base64,QUJD")
     assert _request_video_rejection(fits) is None
     oversized = "data:video/mp4;base64," + "A" * (_MAX_VIDEO_B64_CHARS + 1)
-    too_big = _video_url_request("https://example.com/clip.mp4", oversized)
+    too_big = _video_url_request("data:video/mp4;base64,QUJD", oversized)
     assert _request_video_rejection(too_big) == (413, "Video file is too large (max 64 MB).")
     assert _request_video_rejection(_video_url_request("")) == (
         400,
@@ -420,7 +418,7 @@ def test_a_message_clip_reaches_the_switch_as_video(monkeypatch):
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
-    payload = _video_url_request("https://example.com/clip.mp4", model = "org/B-GGUF")
+    payload = _video_url_request("data:video/mp4;base64,QUJD", model = "org/B-GGUF")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert captured["require_video"] is True
@@ -443,7 +441,7 @@ def test_every_clip_in_every_turn_is_translated():
         {
             "role": "user",
             "content": [
-                {"type": "video_url", "video_url": {"url": "https://example.com/a.mp4"}},
+                {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,QUJE"}},
                 {"type": "video_url", "video_url": {"url": "data:video/webm;base64,REVG"}},
             ],
         },
@@ -451,25 +449,19 @@ def test_every_clip_in_every_turn_is_translated():
     _translate_video_parts(messages)
     assert messages[0]["content"][0] == {"type": "input_video", "input_video": {"data": "QUJD"}}
     assert messages[2]["content"] == [
-        {"type": "input_video", "input_video": {"url": "https://example.com/a.mp4"}},
+        {"type": "input_video", "input_video": {"data": "QUJE"}},
         {"type": "input_video", "input_video": {"data": "REVG"}},
     ]
 
 
-def test_admission_charges_each_clip_once_and_a_remote_one_at_the_download_ceiling():
-    """A remote clip is charged at llama-server's download ceiling, since its size is unknown."""
-    from routes.inference import (
-        _REMOTE_VIDEO_ADMISSION_B64_CHARS,
-        _openai_llama_admission_media_tokens,
-    )
+def test_admission_charges_each_clip_once():
+    """Every clip is base64 now, so each is priced by its own length and none is double counted."""
+    from routes.inference import _openai_llama_admission_media_tokens
 
     first = "data:video/mp4;base64," + "A" * 4000
     second = "data:video/mp4;base64," + "B" * 8000
-    req = _video_url_request(first, "https://example.com/a.mp4", second)
-    assert (
-        _openai_llama_admission_media_tokens(req)
-        == len(first) // 4 + _REMOTE_VIDEO_ADMISSION_B64_CHARS // 4 + len(second) // 4
-    )
+    req = _video_url_request(first, second)
+    assert _openai_llama_admission_media_tokens(req) == len(first) // 4 + len(second) // 4
 
 
 def test_a_clip_on_any_non_user_role_is_refused():
@@ -509,7 +501,6 @@ def test_an_oversized_message_clip_is_refused_before_the_switch(monkeypatch):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
     payload = _video_url_request(
-        "https://example.com/clip.mp4",
         "data:video/mp4;base64," + "A" * (_MAX_VIDEO_B64_CHARS + 1),
         model = "org/B-GGUF",
     )

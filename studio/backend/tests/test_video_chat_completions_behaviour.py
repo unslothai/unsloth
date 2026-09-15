@@ -78,21 +78,6 @@ def _client(
     return TestClient(app, raise_server_exceptions = False)
 
 
-@pytest.fixture(autouse = True)
-def _hosts_resolve_publicly(monkeypatch):
-    """A remote clip's host is resolved now, and conftest blocks the real lookup.
-
-    Default every name to one public address so each test below still asserts its own subject;
-    the tests about the destination guard install their own resolver over this one.
-    """
-    import socket
-
-    def _resolve(host, port, *_a, **_k):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-
-    monkeypatch.setattr(socket, "getaddrinfo", _resolve)
-
-
 def _part_body(
     *urls,
     text = "what happens here?",
@@ -170,12 +155,6 @@ def _sent_media(backend):
         ("data:video/webm;base64,REVG", {"data": "REVG"}),
         # Bare base64 with no header: handle_media's final fallback treats it as payload.
         (_CLIP_B64, {"data": _CLIP_B64}),
-        # Remote is forwarded whole; llama-server fetches it under its own 10 MB ceiling.
-        (_REMOTE, {"url": _REMOTE}),
-        ("http://example.com/clip.mp4", {"url": "http://example.com/clip.mp4"}),
-        # handle_media matches the scheme case-sensitively, so it is lowercased before
-        # forwarding. Only the scheme: the path is case-sensitive and must survive verbatim.
-        ("HTTPS://EXAMPLE.COM/Clip.MP4", {"url": "https://EXAMPLE.COM/Clip.MP4"}),
     ],
 )
 def test_a_clip_reaches_llama_server_as_input_video(monkeypatch, url, expected):
@@ -184,19 +163,6 @@ def test_a_clip_reaches_llama_server_as_input_video(monkeypatch, url, expected):
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 200
     assert _sent_media(backend) == [{"type": "input_video", "input_video": expected}]
-
-
-def test_only_the_scheme_is_lowercased_not_the_path(monkeypatch):
-    """A case-folded path would 404 on any host that serves case-sensitive paths."""
-    backend = _VideoGguf()
-    url = "HtTpS://Example.COM/A/Mixed/Case-Path.MP4?Token=AbC"
-    with _client(monkeypatch, backend) as client:
-        client.post("/v1/chat/completions", json = _part_body(url))
-    sent = _sent_media(backend)[0]["input_video"]["url"]
-    assert sent == "https://Example.COM/A/Mixed/Case-Path.MP4?Token=AbC"
-    assert sent.startswith(
-        "http"
-    ), "handle_media's string_starts_with(url, 'http') is case-sensitive"
 
 
 def test_the_translated_part_is_the_only_video_key_left(monkeypatch):
@@ -220,10 +186,10 @@ def test_the_text_of_the_turn_survives_translation(monkeypatch):
 def test_every_clip_in_a_turn_is_translated(monkeypatch):
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
-        client.post("/v1/chat/completions", json = _part_body(_DATA_URI, _REMOTE))
+        client.post("/v1/chat/completions", json = _part_body(_DATA_URI, "data:video/webm;base64,REVG"))
     assert [p["input_video"] for p in _sent_media(backend)] == [
         {"data": _CLIP_B64},
-        {"url": _REMOTE},
+        {"data": "REVG"},
     ]
 
 
@@ -479,24 +445,6 @@ def test_a_data_uri_with_no_payload_is_refused(monkeypatch):
     assert "Could not read the provided video file" in _detail(response)
 
 
-def test_a_remote_url_is_not_measured_against_the_64_mb_cap(monkeypatch):
-    """The bytes never reach us, so llama.cpp's 10 MB ceiling is the limit that holds.
-    Measuring the URL string would make the cap look enforced while admitting any size."""
-    backend = _VideoGguf()
-    with _client(monkeypatch, backend) as client:
-        response = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
-    assert response.status_code == 200
-    assert inference_route._REMOTE_VIDEO_ADMISSION_B64_CHARS < inference_route._MAX_VIDEO_B64_CHARS
-
-
-def test_admission_prices_a_remote_clip_at_llama_cpp_s_download_ceiling():
-    """10 MB, matching common_remote_params.max_size in handle_media."""
-    import math
-    assert inference_route._REMOTE_VIDEO_ADMISSION_B64_CHARS == 4 * math.ceil(
-        (10 * 1024 * 1024) / 3
-    )
-
-
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_an_external_provider_refuses_either_spelling(monkeypatch, body):
     """_build_external_messages rebuilds from an allowlist, so a clip left standing is dropped
@@ -667,228 +615,54 @@ def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
     assert response.status_code == 400
     assert "hologram_url" in _detail(response)
 
-
 @pytest.mark.parametrize(
     "url",
     [
+        "https://example.com/clip.mp4",
+        "http://example.com/clip.mp4",
+        "HTTPS://EXAMPLE.COM/Clip.MP4",
         "http://169.254.169.254/latest/meta-data/",
         "http://127.0.0.1:8080/clip.mp4",
-        "http://localhost/clip.mp4",
-        "http://[::1]/clip.mp4",
-        "http://[::ffff:127.0.0.1]/clip.mp4",
-        "http://192.168.1.10/clip.mp4",
-        "http://10.0.0.5/clip.mp4",
+        "http://[::1",
+        "https://clips.example:bad/clip.mp4",
     ],
 )
-def test_a_remote_clip_aimed_at_a_private_host_is_refused(monkeypatch, url):
-    """llama-server downloads the URL from this machine, so an unchecked host turns a clip into
-    a server-side fetch of loopback, the LAN or a metadata endpoint."""
+def test_a_remote_video_url_is_refused(monkeypatch, url):
+    """llama-server, not Studio, would fetch the clip, and its downloader follows redirects
+    (set_follow_location in common/http.h), so a public URL redirecting to a private address
+    defeats any host check made here. The shape is refused rather than guarded."""
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 400
-    assert "must point at a public host" in _detail(response)
+    assert "Remote video URLs are not supported" in _detail(response)
 
 
-def test_a_public_remote_clip_is_still_forwarded(monkeypatch):
+def test_no_url_ever_reaches_llama_server_as_a_video(monkeypatch):
+    """The refusal is the point: input_video must always carry bytes, never something to dial."""
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
-        response = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
-    assert response.status_code == 200
-    assert _sent_media(backend) == [{"type": "input_video", "input_video": {"url": _REMOTE}}]
+        client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
+    assert all("data" in part["input_video"] for part in _sent_media(backend))
+    assert not any("url" in part["input_video"] for part in _sent_media(backend))
 
 
-def test_the_destination_guard_also_runs_without_a_pre_switch_validation():
-    """_request_video_rejection only runs on a pre-switch validation, so the dispatch boundary
-    has to refuse the same host on its own."""
+def test_the_dispatch_boundary_refuses_a_remote_url_on_its_own():
+    """_request_video_rejection only runs on a pre-switch validation, so translation has to
+    refuse it too rather than trust that it was already checked."""
     from fastapi import HTTPException
 
     messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "video_url", "video_url": {"url": "http://169.254.169.254/clip.mp4"}}
-            ],
-        }
+        {"role": "user", "content": [{"type": "video_url", "video_url": {"url": _REMOTE}}]}
     ]
     with pytest.raises(HTTPException) as exc:
         inference_route._translate_video_parts(messages)
     assert exc.value.status_code == 400
-    assert "must point at a public host" in exc.value.detail
+    assert "Remote video URLs are not supported" in exc.value.detail
 
 
-def test_a_hostname_is_not_resolved_in_the_request_path(monkeypatch):
-    """Resolving would block the event loop, and llama-server re-resolves anyway, so a name is
-    forwarded rather than classified. Pinned so the tradeoff is not lost by accident."""
-    import socket
-
-    def _boom(*_a, **_k):
-        raise AssertionError("the request path must not resolve a video hostname")
-
-    monkeypatch.setattr(socket, "getaddrinfo", _boom)
-    assert inference_route._remote_video_destination_rejection(_REMOTE) is None
-
-
-def test_the_pre_switch_validation_refuses_a_private_host_before_any_model_loads():
-    """The dispatch boundary would catch it, but only after a switch had already been paid for."""
-    from models.inference import ChatCompletionRequest
-
-    payload = ChatCompletionRequest.model_validate(
-        _part_body("http://169.254.169.254/latest/meta-data/")
-    )
-    rejection = inference_route._request_video_rejection(payload)
-    assert rejection is not None
-    assert rejection[0] == 400
-    assert "must point at a public host" in rejection[1]
-    assert (
-        inference_route._request_video_rejection(
-            ChatCompletionRequest.model_validate(_part_body(_REMOTE))
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize(
-    "host",
-    ["2130706433", "127.1", "0177.0.0.1", "0x7f000001", "0x7f.1", "017700000001"],
-)
-def test_a_legacy_numeric_form_of_loopback_is_refused_too(monkeypatch, host):
-    """ip_address reads dotted-quad only, but a resolver reads all of these as 127.0.0.1, so
-    classifying with ip_address alone left the guard bypassable."""
+def test_both_spellings_refuse_a_remote_clip_alike(monkeypatch):
     with _client(monkeypatch, _VideoGguf()) as client:
-        response = client.post("/v1/chat/completions", json = _part_body(f"http://{host}/clip.mp4"))
-    assert response.status_code == 400
-    assert "must point at a public host" in _detail(response)
-
-
-@pytest.mark.parametrize("url", ["http://[::1", "http://[bad]/clip.mp4", "https://[::1]:x/c.mp4"])
-def test_a_malformed_remote_url_is_a_client_error_not_a_crash(monkeypatch, url):
-    """urlsplit raises on a broken authority; uncaught it would surface as a 500."""
-    with _client(monkeypatch, _VideoGguf()) as client:
-        response = client.post("/v1/chat/completions", json = _part_body(url))
-    assert response.status_code == 400
-
-
-def test_a_public_numeric_host_is_still_allowed(monkeypatch):
-    """The numeric check must refuse loopback, not every address written as digits."""
-    backend = _VideoGguf()
-    with _client(monkeypatch, backend) as client:
-        response = client.post("/v1/chat/completions", json = _part_body("http://8.8.8.8/c.mp4"))
-    assert response.status_code == 200
-    assert _sent_media(backend) == [
-        {"type": "input_video", "input_video": {"url": "http://8.8.8.8/c.mp4"}}
-    ]
-
-
-def _fake_resolver(mapping):
-    """getaddrinfo shaped like socket's, answering from a dict of host -> addresses."""
-    import socket
-
-    def _resolve(host, port, *a, **k):
-        if host not in mapping:
-            raise socket.gaierror(-2, "Name or service not known")
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))
-            for address in mapping[host]
-        ]
-
-    return _resolve
-
-
-@pytest.mark.parametrize(
-    "address", ["127.0.0.1", "169.254.169.254", "10.1.2.3", "192.168.0.9", "::1"]
-)
-def test_a_hostname_resolving_somewhere_private_is_refused(monkeypatch, address):
-    """The literal checks never see a name, and a name the caller controls can answer loopback."""
-    import socket
-
-    monkeypatch.setattr(
-        socket, "getaddrinfo", _fake_resolver({"clips.example": [address]})
-    )
-    with _client(monkeypatch, _VideoGguf()) as client:
-        response = client.post(
-            "/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4")
-        )
-    assert response.status_code == 400
-    assert "must point at a public host" in _detail(response)
-
-
-def test_a_hostname_with_one_private_answer_among_public_ones_is_refused(monkeypatch):
-    """Checking only the first answer would let a name volunteer a public address and still
-    hand llama-server a private one."""
-    import socket
-
-    monkeypatch.setattr(
-        socket, "getaddrinfo", _fake_resolver({"clips.example": ["93.184.216.34", "127.0.0.1"]})
-    )
-    with _client(monkeypatch, _VideoGguf()) as client:
-        response = client.post(
-            "/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4")
-        )
-    assert response.status_code == 400
-
-
-def test_a_hostname_resolving_publicly_is_still_forwarded(monkeypatch):
-    import socket
-
-    monkeypatch.setattr(
-        socket, "getaddrinfo", _fake_resolver({"clips.example": ["93.184.216.34"]})
-    )
-    backend = _VideoGguf()
-    with _client(monkeypatch, backend) as client:
-        response = client.post(
-            "/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4")
-        )
-    assert response.status_code == 200
-    assert _sent_media(backend) == [
-        {"type": "input_video", "input_video": {"url": "http://clips.example/clip.mp4"}}
-    ]
-
-
-def test_a_host_that_cannot_be_resolved_is_refused_by_name(monkeypatch):
-    """llama-server would fail the fetch too; saying so beats letting it try."""
-    import socket
-
-    monkeypatch.setattr(socket, "getaddrinfo", _fake_resolver({}))
-    with _client(monkeypatch, _VideoGguf()) as client:
-        response = client.post(
-            "/v1/chat/completions", json = _part_body("http://nowhere.example/clip.mp4")
-        )
-    assert response.status_code == 400
-    assert "could not be resolved" in _detail(response)
-
-
-def test_the_lookup_does_not_run_on_the_event_loop(monkeypatch):
-    """A blocking getaddrinfo in the request path would stall every other request."""
-    import asyncio
-    import socket
-
-    seen = {}
-
-    def _resolve(host, port, *a, **k):
-        try:
-            asyncio.get_running_loop()
-            seen["on_loop"] = True
-        except RuntimeError:
-            seen["on_loop"] = False
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
-
-    monkeypatch.setattr(socket, "getaddrinfo", _resolve)
-    with _client(monkeypatch, _VideoGguf()) as client:
-        client.post("/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4"))
-    assert seen == {"on_loop": False}
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://clips.example:bad/clip.mp4",
-        "https://clips.example:99999/clip.mp4",
-    ],
-)
-def test_an_invalid_port_on_a_resolvable_host_is_a_client_error(monkeypatch, url):
-    """urlsplit parses the hostname but raises on .port, so reading it outside the guarded
-    block surfaced a malformed URL as a 500."""
-    with _client(monkeypatch, _VideoGguf()) as client:
-        response = client.post("/v1/chat/completions", json = _part_body(url))
-    assert response.status_code == 400
-    assert "could not be parsed" in _detail(response)
+        part = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
+        field = client.post("/v1/chat/completions", json = _field_body(_REMOTE))
+    assert part.status_code == field.status_code == 400
+    assert _detail(part) == _detail(field)

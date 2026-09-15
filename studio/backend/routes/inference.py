@@ -2087,7 +2087,7 @@ def _openai_llama_admission_media_tokens(
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
     for clip in _message_video_urls(getattr(payload, "messages", None)):
-        length = _REMOTE_VIDEO_ADMISSION_B64_CHARS if _is_remote_video(clip) else len(clip)
+        length = len(clip)
         extra += max(1, length // 4)
     return extra
 
@@ -19773,11 +19773,17 @@ _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
 # llama-server's remote download ceiling (handle_media). A remote clip's bytes never reach us,
 # so the 64 MB cap cannot apply and this is the only limit that holds.
-_REMOTE_VIDEO_ADMISSION_B64_CHARS = 4 * math.ceil((10 * 1024 * 1024) / 3)
 # Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
+# llama-server, not Studio, would fetch a remote clip, and its downloader sets
+# set_follow_location(true) (common/http.h), so a public URL redirecting to a private address
+# defeats any host check made here. Refuse the whole shape; #11010 tracks a pinned fetch that
+# would let images and video both accept one.
+_REMOTE_VIDEO_REFUSAL = (
+    400,
+    "Remote video URLs are not supported. Send the clip as a data URI instead.",
+)
 # Bound on the host lookup for a remote clip; llama-server's own fetch timeout is 10s.
-_VIDEO_HOST_RESOLVE_TIMEOUT_S = 3.0
 _MAX_AUDIO_SECONDS = 30 * 60
 # The duration cap alone is rate-relative, so a high-rate container retains far
 # more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
@@ -20651,131 +20657,14 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     return (
         400,
         f"Unsupported video URL scheme ('{head.split(':', 1)[0]}:'). "
-        "Send the clip as a data URI or an http(s) URL.",
+        "Send the clip as a data URI.",
     )
-
-
-def _remote_video_destination_rejection(url: str) -> Optional[tuple[int, str]]:
-    """Refuse a remote clip aimed at a host llama-server should not be asked to fetch.
-
-    llama-server downloads the URL from this machine, so a caller could otherwise reach loopback,
-    the LAN or a cloud metadata endpoint through us. Only literals are classified: resolving a
-    name would block the event loop here, and llama-server re-resolves anyway, so a name that
-    rebinds is out of reach from this side. Tracked for the image path in #11010.
-    """
-    import ipaddress
-    import socket
-    from urllib.parse import urlsplit
-
-    refusal = (
-        400,
-        "A remote video URL must point at a public host. Send the clip as a data URI instead.",
-    )
-    try:
-        host = (urlsplit(url).hostname or "").rstrip(".")
-    except ValueError:
-        # A malformed authority such as http://[::1 is a client error, not a 500.
-        return refusal
-    if not host:
-        return refusal
-    if host == "localhost" or host.endswith(".localhost"):
-        return refusal
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        # ip_address takes dotted-quad only, but a resolver also reads 2130706433, 127.1,
-        # 0177.0.0.1 and 0x7f000001 as 127.0.0.1. inet_aton reads that same legacy set, and
-        # rejects a real name, so it classifies the numeric forms without a lookup.
-        try:
-            ip = ipaddress.IPv4Address(socket.inet_aton(host))
-        except (OSError, ipaddress.AddressValueError):
-            return None
-    # An IPv4 address wrapped in IPv6 is the same destination, and is_global reads the wrapper.
-    for mapped in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
-        if mapped is not None:
-            ip = mapped
-            break
-    return None if ip.is_global else refusal
-
-
-async def _reject_remote_video_by_resolved_address(payload) -> None:
-    """Refuse a remote clip whose hostname resolves anywhere non-public.
-
-    The literal checks above never see ``http://name.example/clip.mp4``, and a name the caller
-    controls can answer 127.0.0.1, so they alone left the guard bypassable. Resolution runs on a
-    worker thread because this is the request path. llama-server resolves again before it fetches,
-    so a name that rebinds between the two is still out of reach; the pinned fetch in #11010 is
-    the only thing that closes that, and it belongs with the image path.
-    """
-    import ipaddress
-    import socket
-    from urllib.parse import urlsplit
-
-    for clip in _request_video_clips(payload):
-        if not _is_remote_video(clip):
-            continue
-        try:
-            parts = urlsplit(clip)
-            host_and_port = (parts.hostname, parts.port)
-        except ValueError:
-            # A bad authority or an out-of-range port; both are client errors, not 500s. The
-            # literal check refuses the ones it can see, so anything still here is refused now.
-            raise HTTPException(
-                status_code = 400, detail = "The remote video URL could not be parsed."
-            ) from None
-        host = (host_and_port[0] or "").rstrip(".")
-        # A literal was already classified, and resolving it would only repeat that answer.
-        if not host or _remote_video_destination_rejection(clip) is not None:
-            continue
-        try:
-            ipaddress.ip_address(host)
-            continue
-        except ValueError:
-            pass
-        port = host_and_port[1] or (443 if parts.scheme.lower() == "https" else 80)
-        try:
-            infos = await asyncio.wait_for(
-                asyncio.to_thread(socket.getaddrinfo, host, port, type = socket.SOCK_STREAM),
-                timeout = _VIDEO_HOST_RESOLVE_TIMEOUT_S,
-            )
-        except (OSError, UnicodeError, asyncio.TimeoutError):
-            # llama-server would fail this fetch too, so name the reason rather than let it.
-            raise HTTPException(
-                status_code = 400,
-                detail = "The remote video URL's host could not be resolved.",
-            ) from None
-        addresses = [ipaddress.ip_address(str(i[4][0]).split("%", 1)[0]) for i in infos]
-        for index, ip in enumerate(addresses):
-            mapped = getattr(ip, "ipv4_mapped", None) or getattr(ip, "sixtofour", None)
-            if mapped is not None:
-                addresses[index] = mapped
-        if not addresses or any(not ip.is_global for ip in addresses):
-            raise HTTPException(
-                status_code = 400,
-                detail = "A remote video URL must point at a public host. "
-                "Send the clip as a data URI instead.",
-            )
-
-
-def _normalise_remote_scheme(url: str) -> str:
-    """Lowercase the scheme, and only the scheme.
-
-    handle_media classifies remote media with a case-sensitive string_starts_with(url, "http"),
-    so HTTPS://host/clip.mp4 falls through to its raw-base64 branch and the completion fails.
-    RFC 3986 makes the scheme case-insensitive; the path is not, so it is left alone.
-    """
-    scheme, sep, rest = url.partition("://")
-    return f"{scheme.lower()}{sep}{rest}" if sep else url
 
 
 def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
     for clip in _request_video_clips(payload):
-        # llama-server fetches it, so the cap cannot see its bytes; llama.cpp's 10 MB governs.
         if _is_remote_video(clip):
-            destination_rejection = _remote_video_destination_rejection(clip)
-            if destination_rejection is not None:
-                return destination_rejection
-            continue
+            return _REMOTE_VIDEO_REFUSAL
         rejection = _video_scheme_rejection(clip)
         if rejection is not None:
             return rejection
@@ -20786,8 +20675,7 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
 
 
 def _translate_video_parts(messages: list[dict]) -> None:
-    """Rewrite ``video_url`` parts in place as llama-server's ``input_video``; a remote
-    URL is left for it to fetch."""
+    """Rewrite ``video_url`` parts in place as llama-server's ``input_video``, always as bytes."""
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -20798,22 +20686,17 @@ def _translate_video_parts(messages: list[dict]) -> None:
             video_url = part.get("video_url")
             url = video_url.get("url") if isinstance(video_url, dict) else video_url
             url = url if isinstance(url, str) else ""
-            # Restated: no caller reaching here by another route may hand it a file:// path.
+            # Restated: _request_video_rejection only runs when a pre-switch validation happens,
+            # so no caller reaching here by another route may hand llama-server a URL to dial.
+            if _is_remote_video(url):
+                raise HTTPException(
+                    status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1]
+                )
             scheme_rejection = _video_scheme_rejection(url)
             if scheme_rejection is not None:
                 raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
-            if _is_remote_video(url):
-                # Restated here too: _request_video_rejection only runs on a pre-switch validation.
-                destination_rejection = _remote_video_destination_rejection(url)
-                if destination_rejection is not None:
-                    raise HTTPException(
-                        status_code = destination_rejection[0], detail = destination_rejection[1]
-                    )
-                media = {"url": _normalise_remote_scheme(url)}
-            else:
-                media = {"data": _video_b64_rejection(url)[0]}
             part.clear()
-            part.update({"type": "input_video", "input_video": media})
+            part.update({"type": "input_video", "input_video": {"data": _video_b64_rejection(url)[0]}})
 
 
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
@@ -23724,9 +23607,6 @@ async def produce_openai_chat_completions(
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
         if video_b64:
             _inject_video_part(gguf_messages, video_b64)
-        # Only this path forwards a remote URL, so one check here covers every clip llama-server
-        # is asked to fetch.
-        await _reject_remote_video_by_resolved_address(payload)
         _translate_video_parts(gguf_messages)
 
         cancel_event = _chat_cancel_event(request)
