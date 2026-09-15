@@ -527,6 +527,11 @@ jobs:
 
           $flagged = @()
           $unscanned = @()
+          # Per SCRIPT and per side, so the verdict below can say whether a detection is introduced
+          # by this change or already present on the merge base. Without it a signature that flags
+          # the base too reads exactly like a regression, and a base-only detection -- an
+          # improvement -- reads as a plain clean head. The AMSI half already works this way.
+          $defState = @{}
           foreach ($side in 'base', 'head') {
             foreach ($file in (Get-UnslothExpected $side)) {
               # Mark of the web, so the cloud is consulted rather than treating a
@@ -568,6 +573,7 @@ jobs:
               $hit = [bool]($text -match 'found\s+([1-9]\d*)\s+threat')
               $state = if ($hit) { 'FLAGGED' } elseif ($code -ne 0) { "UNSCANNED (exit $code)" } else { 'clean' }
               Write-Host ("  {0,-8} {1,-24} {2}" -f $side, $file.Name, $state)
+              $defState["$side|$($file.Name)"] = if ($hit) { 'flagged' } elseif ($code -ne 0) { 'unmeasured' } else { 'clean' }
               if ($hit) {
                 $flagged += "$side/$($file.Name)"
                 ($text -split "`r?`n" | Where-Object { $_ -match 'Threat|found' } | Select-Object -First 5) |
@@ -582,6 +588,10 @@ jobs:
           foreach ($v in $script:UnslothVanished) {
             Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be scanned"
             $unscanned += "$v [the laid-out copy vanished before it was scanned]"
+            # "base/install.ps1" -> keyed the same way as a scanned row, as unmeasured. A file that
+            # vanished was not found clean, and leaving it out of the map made `default` below say
+            # "no base row at all", which is a different and wrong explanation.
+            if ($v -match '^(base|head)/(.+)$') { $defState["$($Matches[1])|$($Matches[2])"] = 'unmeasured' }
           }
 
           Write-Host ''
@@ -607,9 +617,31 @@ jobs:
             } else {
               Write-Host 'Defender: nothing on head was flagged BY LOCAL SIGNATURES. The cloud half was unavailable, so this is a weaker statement than it looks.'
             }
+            # A base-only detection is the result this lane is trying to produce, and reporting it as
+            # a plain clean head throws away the only positive evidence the change ever gets.
+            foreach ($key in $defState.Keys | Where-Object { $_ -like 'base|*' }) {
+              if ($defState[$key] -ne 'flagged') { continue }
+              $name = ($key -split '\|', 2)[1]
+              if ($defState["head|$name"] -eq 'clean') {
+                Write-Host "Defender: $name is flagged on the merge base and clean on the candidate. That is an improvement, not a neutral result."
+              }
+            }
             exit 0
           }
-          foreach ($f in $headFlagged) { Write-Host "::error::Defender flagged $f" }
+          # Causality is per SCRIPT, the same way the AMSI half assigns it. Reporting only the head
+          # side named this change as the cause of a signature that already flags the merge base.
+          $introduced = 0
+          foreach ($f in $headFlagged) {
+            Write-Host "::error::Defender flagged $f"
+            $name = ($f -replace '^head/', '') -replace ' \[.*$', ''
+            switch ($defState["base|$name"]) {
+              'flagged'    { Write-Host "::error::  the merge base is flagged for $name too, so this is pre-existing rather than introduced. It is still a shipped script Defender objects to." }
+              'clean'      { Write-Host "::error::  the merge base scanned clean for $name and the candidate did not. This change introduced it."; $introduced++ }
+              'unmeasured' { Write-Host "::error::  the merge base for $name was never validly scanned, so whether this is introduced or pre-existing cannot be said from this run." }
+              default      { Write-Host "::error::  there is no merge base scan for $name at all, so causality cannot be assigned." }
+            }
+          }
+          Write-Host "Defender: $($headFlagged.Count) detection(s) on head, $introduced of which the merge base does not share."
           exit 1
 
       - name: Upload the measurements

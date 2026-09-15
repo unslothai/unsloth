@@ -871,3 +871,27 @@ def test_the_probe_reports_the_inner_parse_error_id(tmp_path: Path) -> None:
         f"the probe recorded only the outer generic id, so a real AMSI refusal would be invisible "
         f"too: {row['errorId']!r}"
     )
+
+
+def test_the_defender_verdict_assigns_causality_per_script() -> None:
+    """A differential lane that reports only the head side is not differential.
+
+    The AMSI half builds per-script base state and says whether a block is introduced or
+    pre-existing. The Defender half collected base results and then filtered them out of the
+    verdict, so a signature that already flags the merge base was reported exactly like a
+    regression this change caused, and a base-only detection -- the result this work is trying to
+    produce -- was reported as a plain clean head.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner"):]
+    defender = defender[:defender.index("Upload the measurements")]
+    assert "$defState" in defender, "the Defender half records no per-script state to compare against"
+    assert '$defState["base|$name"]' in defender, (
+        "the Defender verdict does not look up the matching base script, so it cannot tell an "
+        "introduced detection from a pre-existing one"
+    )
+    for phrase in ("pre-existing rather than introduced", "This change introduced it"):
+        assert phrase in defender, f"the Defender verdict never says {phrase!r}"
+    assert "is flagged on the merge base and clean on the candidate" in defender, (
+        "a base-only detection is still reported as a neutral clean head"
+    )
