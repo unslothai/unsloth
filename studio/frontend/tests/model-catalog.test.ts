@@ -194,3 +194,26 @@ test("a catalog that lands after selection refreshes the stored reasoning fields
     assert.equal(alwaysOn.reasoningEnabled, true, "a model without an off switch is forced on");
   });
 });
+
+test("a mandatory OpenRouter alias keeps its catalog effort ladder", () => {
+  setProviderModelCatalog("openrouter", [{
+    id: "~google/gemini-pro-latest",
+    reasoning: {
+      mandatory: true,
+      supported_efforts: ["high", "medium", "low"],
+      default_effort: "medium",
+    },
+  }]);
+  try {
+    const caps = getExternalReasoningCapabilities("openrouter", "~google/gemini-pro-latest");
+    assert.equal(caps.reasoningStyle, "reasoning_effort");
+    assert.deepEqual([...caps.reasoningEffortLevels], ["low", "medium", "high"]);
+    assert.equal(caps.supportsReasoningOff, false);
+    assert.equal(caps.defaultEffort, "medium");
+  } finally {
+    clearProviderModelCatalog("openrouter");
+  }
+  const fallback = getExternalReasoningCapabilities("openrouter", "~google/gemini-pro-latest");
+  assert.equal(fallback.reasoningAlwaysOn, true);
+  assert.equal(fallback.supportsReasoningOff, false);
+});
