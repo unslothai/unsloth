@@ -179,7 +179,11 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_via_api_key,
+    get_current_subject,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import (
     HfTokenArg,
@@ -189,6 +193,7 @@ from hub.utils.hf_tokens import (
     is_anonymous,
     normalize_token,
 )
+from hub.utils.host_paths import redact_host_paths, scrub_paths
 from utils.utils import anonymous_and_offline
 
 
@@ -4692,13 +4697,18 @@ def _preferred_gguf_copy(
 
 
 @router.get("/cached-gguf")
-async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
+async def list_cached_gguf(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         # Off the loop: the filter can probe the Hub per ungranted repo.
-        return {"cached": await asyncio.to_thread(cached_gguf_rows)}
+        return redact_host_paths(
+            {"cached": await asyncio.to_thread(cached_gguf_rows)}, via_api_key = via_api_key
+        )
     except Exception as e:
-        logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
+        logger.error("Error listing cached GGUF repos: %s", scrub_paths(e), exc_info = True)
         return {"cached": []}
 
 
@@ -4799,13 +4809,16 @@ def _cached_repo_partial(
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         # Off the loop: the filter can probe the Hub per ungranted repo.
-        return {"cached": await asyncio.to_thread(cached_model_rows)}
+        return redact_host_paths(
+            {"cached": await asyncio.to_thread(cached_model_rows)}, via_api_key = via_api_key
+        )
     except Exception as e:
-        logger.error(f"Error listing cached models: {e}", exc_info = True)
+        logger.error("Error listing cached models: %s", scrub_paths(e), exc_info = True)
         return {"cached": []}
 
 

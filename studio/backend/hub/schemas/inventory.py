@@ -250,6 +250,10 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, written instead of it for a caller that may not see
+    # host paths (an API key). Stable for the life of the server, so two rows for the same
+    # directory still compare equal, and not reversible into the path.
+    cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -383,6 +387,11 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, written instead of it for a caller that may not see
+    # host paths (an API key). Stable for the life of the server, so two rows for the same
+    # directory still compare equal, and not reversible into the path.
+    cache_ref: Optional[str] = None
+
 
 
 class OrphanCompanionsResponse(BaseModel):
