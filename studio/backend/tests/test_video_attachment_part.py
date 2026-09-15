@@ -218,13 +218,16 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     # are both caught here and were both missed by the broader read.
     block = "\n".join(line.split("#")[0] for line in block.splitlines())
     escape = next(line for line in block.splitlines() if "not _sf_tools_on" in line)
-    assert "_video_clip is not None" in escape, escape
     assert "and not _sf_use_tools" in escape, escape
-    # The image half has to be read POSITIVELY. Matching the identifier alone accepts
-    # `image is None` and `not _sf_has_image`, which invert the condition and route an
-    # image request the wrong way -- the literal this replaces would have caught that, so
-    # this has to as well. Both spellings are in the mutation matrix.
-    assert re.search(r"\bimage is not None\b|\b_sf_has_image\b", escape), escape
+    # An image and a clip have to be ALTERNATIVES, each read positively. Asserting that
+    # both predicates merely OCCUR is not enough, and the literal this replaces caught
+    # what that misses: `and` for `or` stops an image-only or a video-only request
+    # entering the passthrough, and `image is None` / `not _sf_has_image` invert the
+    # condition outright. All three are in the mutation matrix. Either order, since which
+    # side reads first is arbitrary.
+    image = r"(?:\bimage is not None\b|\b_sf_has_image\b)"
+    clip = r"\b_video_clip is not None\b"
+    assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
     assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
     conflict = source.index("if payload.audio_base64:", gate)
