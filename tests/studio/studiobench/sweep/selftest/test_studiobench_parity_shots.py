@@ -547,8 +547,12 @@ NOT_GATED: dict[str, str] = {
     "studio/backend/core/inference/key_exchange.py": "encrypts stored credentials. studiobench "
     "posts its provider without one, so this code is not on the measured path",
     "studio/backend/core/inference/pricing.py": "cost figures, which the scene never renders",
+    "studio/backend/core/inference/provider_model_capabilities.py": "OpenRouter and models.dev "
+    "capability catalogs; studiobench registers a custom provider, which neither catalog describes",
     "studio/backend/utils/utils.py": "generic helpers imported by most of the backend; gating on "
     "it would run this workflow on nearly every PR and defeat the filter",
+    "studio/backend/utils/account_context.py": "request identity ContextVar imported across the "
+    "backend; studiobench runs as the sole owner session, where it resolves to the legacy root",
 }
 
 

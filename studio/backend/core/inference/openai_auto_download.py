@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from loggers import get_logger
+from utils.account_context import current_account_id
 
 logger = get_logger(__name__)
 
@@ -54,7 +55,7 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
-# Probe the selected weight because speech GGUFs need not publish tokenizer sidecars.
+# Probe the selected weight: speech GGUFs need not publish tokenizer sidecars.
 _REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
 _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
@@ -82,6 +83,8 @@ class _Active:
     # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
+    # Who asked: another account's busy answer names no repo or quant.
+    account_id: Optional[str] = None
 
 
 _lock = threading.Lock()
@@ -557,7 +560,9 @@ async def maybe_auto_download(
             busy = current
         else:
             adopted = None
-            provisional = _Active(repo_id = repo_id, started_at = time.time())
+            provisional = _Active(
+                repo_id = repo_id, started_at = time.time(), account_id = current_account_id()
+            )
             _active = provisional
 
     if busy is not None:
@@ -566,13 +571,14 @@ async def maybe_auto_download(
         # a 2nd download.
         if not await _is_downloadable_model(repo_id, hf_token):
             return None
+        if busy.account_id == current_account_id():
+            what = f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'."
+        else:
+            what = "Another download is in progress."
         return AutoDownloadRefusal(
             status = 503,
             code = "model_download_busy",
-            message = (
-                f"Already downloading '{_public_label(busy.repo_id, busy.variant)}'. "
-                f"Retry '{requested_model}' once it finishes."
-            ),
+            message = f"{what} Retry '{requested_model}' once it finishes.",
             retry_after = _RETRY_AFTER_S,
         )
 
@@ -777,7 +783,6 @@ async def _admit_and_start(
             default = (None, False),
         )
         if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
-            # Prefer the selected weight; use a supported sidecar only when it is inconclusive.
             sidecar_audio_type = audio_type
             main_files = sorted(getattr(plan, "main_filenames", ()) or ())
             probed_audio_type, probed_definitive = await _bounded_probe(
@@ -981,7 +986,14 @@ async def _dispatch(
             tracked = active
         else:
             # Released underneath us: track the job we started, but never stomp a newer owner.
-            tracked = _Active(repo_id, variant, expected_bytes, monitor_id, time.time())
+            tracked = _Active(
+                repo_id,
+                variant,
+                expected_bytes,
+                monitor_id,
+                time.time(),
+                account_id = active.account_id,
+            )
             if _active is None:
                 _active = tracked
 

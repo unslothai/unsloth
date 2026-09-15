@@ -69,7 +69,7 @@ def _shared_setup_6():
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "thread-1",
@@ -378,13 +378,14 @@ def test_report_is_recovered_from_substantial_synthesis_reasoning():
 
 def test_document_citations_are_restricted_to_persisted_sources():
     from core import research_runs as worker
+    from core.research.citations import _validate_report_document_sources
 
     report = (
         "Supported [Document: private.pdf, p. 2]. "
         "Fabricated [Document: invented.pdf, p. 9] and "
         "[Document: multiline.pdf,\np. 3]."
     )
-    validated = worker._validate_report_document_sources(
+    validated = _validate_report_document_sources(
         report,
         [{"filename": "private.pdf", "page": 2}],
     )
@@ -549,7 +550,7 @@ def test_schema_and_state_transitions(research_home):
 
 def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -594,7 +595,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -619,7 +620,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
 
 def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -661,14 +662,14 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
         return real_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     with pytest.raises(RuntimeError, match = "simulated crash"):
         studio_db.get_connection()
 
     # Recover: the interrupted migration left nothing half-applied, so a clean boot
     # completes the migration and preserves the original claim exactly once.
     monkeypatch.setattr(studio_db.sqlite3, "connect", real_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -1155,13 +1156,13 @@ def test_partial_report_is_persisted_and_emits_an_event(research_home):
 
 
 def test_report_citations_are_limited_to_gathered_sources():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     report = (
         "Supported [claim](https://example.com/source) and "
         "invented [claim](https://invalid.example/guess)."
     )
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         report,
         [
             {
@@ -1176,24 +1177,24 @@ def test_report_citations_are_limited_to_gathered_sources():
 
 
 def test_report_citations_preserve_balanced_parentheses_in_urls():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         f"Supported [generic label]({url}).",
         [{"url": url, "title": "Function (mathematics)"}],
     )
 
     assert f"[Function (mathematics)]({url})" in validated
     assert (
-        _validate_report_sources(
+        citations._validate_report_sources(
             f'With title [generic label]({url} "reference page").',
             [{"url": url, "title": "Function (mathematics)"}],
         )
         == f"With title [Function (mathematics)]({url})."
     )
     assert (
-        _validate_report_sources(
+        citations._validate_report_sources(
             f"Malformed [generic label]({url}",
             [{"url": url, "title": "Function (mathematics)"}],
         )
@@ -1202,13 +1203,13 @@ def test_report_citations_preserve_balanced_parentheses_in_urls():
 
 
 def test_report_citations_use_canonical_titles_without_model_sources_section():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     report = (
         "A supported claim [generic source](https://example.com/a).\n\n"
         "## Sources\n\n- [Duplicate](https://example.com/a)"
     )
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         report,
         [
             {"url": "https://example.com/a", "title": "Primary Report"},
@@ -1223,13 +1224,13 @@ def test_report_citations_use_canonical_titles_without_model_sources_section():
 
 
 def test_report_citations_normalize_numbered_bare_and_autolink_styles():
-    from core.research_runs import _validate_report_sources
+    from core.research import citations
 
     sources = [
         {"url": "https://example.com/a", "title": "Primary Report"},
         {"url": "https://example.com/b", "title": "Supporting Data"},
     ]
-    validated = _validate_report_sources(
+    validated = citations._validate_report_sources(
         "Numbered [1], bare https://example.com/b, and "
         "automatic <https://example.com/a>. Unknown https://invalid.example/x.",
         sources,
@@ -2872,7 +2873,8 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     ("cancelled", "expected_status", "text"),
     [
         (True, "cancelled", "Research cancelled."),
-        (False, "failed", "Research failed: mocked model failure"),
+        # Provider text reaches a Markdown surface here too, so it is quoted literally.
+        (False, "failed", "Research failed: `mocked model failure`"),
     ],
 )
 def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
