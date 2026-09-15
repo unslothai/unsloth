@@ -701,6 +701,13 @@ class ValidateModelResponse(BaseModel):
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
+    resident: bool = Field(
+        False,
+        description = (
+            "Whether the weights this identifier names are the ones already loaded. Decided "
+            "from the files, so an Ollama tag answers for whichever of its spellings loaded it."
+        ),
+    )
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_diffusion: bool = Field(
@@ -4132,10 +4139,10 @@ class DiffusionDownloadPlanEntry(BaseModel):
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
-    """What to download before a load, so the Hub download manager can fetch it with the
-    same file scope the loader would. Empty entries mean nothing to download (local path)."""
+    """Files to stage before loading; plan_failed marks an incomplete listing."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
+    plan_failed: bool = Field(False, description = "Metadata discovery left the file list incomplete")
     total_bytes: int = Field(
         0, description = "Sum of the remaining download entries, 0 when ready or unknown"
     )

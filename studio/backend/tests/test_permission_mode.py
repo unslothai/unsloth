@@ -141,15 +141,18 @@ def _clear_pending():
         ("cat ~/.aws/credentials", True),  # credential path
         ("cat /home/a/.azure/msal_token_cache.json", True),  # azure token store
         ("cat ~/.config/gh/hosts.yml", True),  # gh cli credentials
-        ("cat ~/.config/app/settings.json", False),  # ordinary config stays safe
+        # A plain `~` IS the sandbox: both env builders set the child's HOME to the tool workdir.
+        ("cat ~/.config/app/settings.json", False),
         ("cat /home/alice/.cache/huggingface/token", True),  # HF login token
         ("cat ~/.cache/huggingface/stored_tokens", True),  # HF multi-token store
         ("cat /home/alice/.huggingface/token", True),  # legacy HF token location
-        ("cat /home/alice/myhuggingface/token", False),  # unrelated dir stays safe
+        # Not the HF token store, so no credential match -- but another user's home is outside the sandbox, so the
+        # read gate asks anyway.
+        ("cat /home/alice/myhuggingface/token", True),
         (
             "cat /home/alice/.cache/huggingface/hub/models--x/config.json",
-            False,
-        ),  # HF model cache is not a credential
+            True,
+        ),  # not a credential; THIS install's own HF cache stays silent (test_configured_cache_reads_stay_silent)
         ("cat /run/secrets/hf_token", True),  # docker secret mount
         ("cat /var/run/secrets/kubernetes.io/serviceaccount/token", True),  # k8s mount
         ("cat /run/app.pid", False),  # ordinary /run file stays safe
@@ -206,7 +209,7 @@ def _clear_pending():
         ("du -sh", False),  # du with no path defaults to cwd
         ("du -sh ./build", False),  # relative disk-usage stays safe
         ("ls -R subdir", False),  # relative recursive listing stays safe
-        ("ls -la /home", False),  # non-recursive listing of one level stays here
+        ("ls -la /home", True),  # one level, but it is the host's home tree, not the sandbox
         ("sort --files0-from=list.txt", True),  # reads an indirect file list
         ("sort --files0-from list.txt", True),  # separate-value form
         ("sort -u data.txt", False),  # ordinary sort stays read only
@@ -228,7 +231,10 @@ def _clear_pending():
         ("cat proj/.en?", True),  # .env anywhere via a glob
         ("cat notes/dra?t.txt", False),  # benign globbed basename stays safe
         ("cat data/token_counts.tx?", False),  # 'token' prefix basename stays safe
-        ("ls /home/*/projects", False),  # benign glob not into a cred dir
+        (
+            "ls /home/*/projects",
+            True,
+        ),  # no credential dir, but an absolute listing outside the sandbox
         ("grep -R TOKEN ~root", True),  # tilde-user recursive root escapes
         ("grep -R TOKEN ~/logs", True),  # tilde-home recursive root escapes
         ("cat /etc/pass{w,}d", True),  # brace expansion builds /etc/passwd
@@ -254,7 +260,7 @@ def _clear_pending():
         ("cat $'notes.txt'", False),  # benign ANSI-C quote stays safe
         ("cat /home/*/.az?re/msal_token_cache.json", True),  # azure token glob
         ("cat /home/*/.config/g?/hosts.yml", True),  # gh config glob
-        ("cat /home/*/projects/readme", False),  # benign home glob stays safe
+        ("cat /home/*/projects/readme", True),  # no credential match, but a read of the host's home
         ("cat /proc/$PPID/task/$PPID/environ", True),  # per-thread proc env alias
         ("cat /proc/cpuinfo", False),  # non-sensitive proc read stays safe
         ("grep -R TOKEN ${root:-/home}", True),  # default-param recursive root
@@ -266,10 +272,13 @@ def _clear_pending():
         ("p=hello; cat notes/${p,,}", False),  # benign case expansion stays safe
         ("f=-delete; find . $f", True),  # find action hidden behind an assignment
         ("g=e??; cat /$g/passwd", True),  # glob assembled through an assignment
-        ("g=abc; cat /$g/readme", False),  # benign assigned path stays safe
+        (
+            "g=abc; cat /$g/readme",
+            True,
+        ),  # the assignment resolves to /abc/readme, outside the sandbox
         ("cat /etc/pass[[:lower:]]d", True),  # POSIX class glob builds /etc/passwd
         ("x=passwd; p=x; cat /etc/${!p}", True),  # indirect expansion builds path
-        ("x=notes; p=x; cat /home/${!p}", False),  # benign indirect expansion stays safe
+        ("x=notes; p=x; cat /home/${!p}", True),  # indirect expansion resolves into the host's home
         ("cat </dev/tcp/example.com/80", True),  # bash /dev/tcp opens a socket
         ("cat < /dev/udp/1.2.3.4/53", True),  # bash /dev/udp opens a socket
         ("cat /dev/null", False),  # ordinary /dev file stays safe
@@ -354,6 +363,13 @@ def test_terminal_classifier(command, unsafe):
         ("cat ~/.ssh/id_rsa", True),
         ("cat ~/.aws/credentials", True),
         ("cat /proc/1/environ", True),
+        # Studio's own auth dir: the cached CLI bearer, the bootstrap password and auth.db live there.
+        ("cat ~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742", True),
+        ("ls -a ~/.unsloth/studio/auth", True),
+        ("cat /custom/home/auth/.bootstrap_password", True),
+        # ...while an application's own auth code is ordinary work.
+        ("grep -rn auth src/", False),
+        ("cat src/auth.py", False),
         # --- prompt: sandbox-escape via env that hijacks loading/lookup ---
         ("LD_PRELOAD=/tmp/x.so ls", True),
         # --- prompt: a verb hidden behind an assignment / default param ---
@@ -429,7 +445,8 @@ def test_terminal_classifier(command, unsafe):
         ("echo x >> ~/.profile", True),
         ("cp payload.desktop ~/.config/autostart/x.desktop", True),
         ("cp x.service ~/.config/systemd/user/x.service", True),
-        ("mkdir ~/.config/myapp", False),  # a non-persistence ~/.config dir is fine
+        # No persistence hook, and a plain `~` resolves inside the sandbox.
+        ("mkdir ~/.config/myapp", False),
         # non-persistence /etc reads/writes stay ordinary (no over-prompt)
         ("cat /etc/hostname", False),
         ("grep nameserver /etc/resolv.conf", False),
@@ -1398,6 +1415,10 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # --- prompt: credential-path read/write ---
         ("open('/etc/shadow').read()", True),
         ("open('/root/.ssh/id_rsa').read()", True),
+        ("Path('/custom/home/auth/.cli_api_key_cli_99bb88401742').read_text()", True),
+        ("open('/home/u/.unsloth/studio/auth/auth.db', 'rb').read()", True),
+        # an application's own auth module stays ordinary
+        ("import auth\nprint(auth.__file__)", False),
         # --- prompt: destructive filesystem deletion (parity with terminal rm) ---
         ("import os; os.remove('important.py')", True),
         ("import os; os.unlink('x')", True),
@@ -2012,7 +2033,7 @@ def test_high_risk_dispatcher_non_terminal():
             True,
         ),  # qualified path-ctor alias (P = pathlib.Path)
         (
-            "import pathlib\nP = pathlib.Path\n(P('/tmp') / 'x').read_text()",
+            "import pathlib\nP = pathlib.Path\n(P('/usr/share') / 'x').read_text()",
             False,
         ),  # benign qualified path-ctor alias stays safe
         (
@@ -2104,8 +2125,8 @@ def test_high_risk_dispatcher_non_terminal():
         ),  # reads the Hugging Face login token
         (
             "open('/home/alice/.cache/huggingface/hub/models--x/config.json').read()",
-            False,
-        ),  # HF model cache is not a credential
+            True,
+        ),  # not a credential; THIS install's own HF cache stays silent (test_configured_cache_reads_stay_silent)
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -2116,9 +2137,9 @@ def test_high_risk_dispatcher_non_terminal():
             True,
         ),  # os.path.join aliased
         (
-            "from pathlib import Path\nP = Path\n(P('/tmp') / 'x').read_text()",
+            "from pathlib import Path\nP = Path\n(P('/usr/share') / 'x').read_text()",
             False,
-        ),  # benign alias
+        ),  # benign alias, under a read-silent root: /tmp is the SHARED temp dir, not the session's
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -2141,8 +2162,8 @@ def test_high_risk_dispatcher_non_terminal():
         ),  # with_suffix drops the suffix onto a secret
         (
             "from pathlib import Path\nPath('/tmp/a').with_name('b.txt').read_text()",
-            False,
-        ),  # benign with_name in the sandbox stays safe
+            True,
+        ),  # not a secret, but /tmp is outside the sandbox (which has its own TMPDIR)
         (
             "from pathlib import Path\nPath('report.txt').with_suffix('.md').read_text()",
             False,
@@ -2151,8 +2172,8 @@ def test_high_risk_dispatcher_non_terminal():
         # destructured string literals fold into the sensitive path
         ("d, f = ('/etc', 'passwd')\nopen('/'.join([d, f])).read()", True),
         # destructured literals reused through str.join
-        ("base, leaf = ('/tmp', 'x')\nopen(base + '/' + leaf).read()", False),
-        # benign destructured literals stay safe
+        ("base, leaf = ('/tmp', 'x')\nopen(base + '/' + leaf).read()", True),
+        # destructured literals fold to /tmp/x: no secret, but outside the sandbox's own TMPDIR
         ("open(b'/etc/passwd').read()", True),  # bytes path literal
         ("open(b'data.txt').read()", False),  # benign bytes literal stays safe
         (
@@ -2479,6 +2500,7 @@ def test_blender_cli_summaries_require_approval(tool, approval):
         ({"path": "/etc/passwd"}, True),  # read-named tool at a credential path
         ({"path": "../../.ssh/id_rsa"}, True),
         ({"nested": {"file": "~/.aws/credentials"}}, True),
+        ({"path": "~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742"}, True),
         ({"name": "OPENAI_API_KEY"}, True),  # explicit credential env-var read
         ({"name": "AWS_SECRET_ACCESS_KEY"}, True),
         ({"key": "DATABASE_PASSWORD"}, True),
@@ -3232,3 +3254,1147 @@ def test_auto_mode_prompts_on_dangerous_python_work(code):
 @pytest.mark.parametrize("name", _DANGEROUS_MCP)
 def test_auto_mode_prompts_on_dangerous_mcp_work(name):
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}{name}", {"code": "x"}) is True
+
+
+# The reported sandbox escape (HF discussion #107, Desktop v0.1.808-beta): the session sandbox directory is a working
+# directory, not an OS boundary, so an ABSOLUTE path in a tool call reaches the user's real filesystem with their own
+# permissions. Deletion already prompted; reading and overwriting did not. These are the reporter's own operations,
+# plus the ones that reach the same files by another route.
+_OUTSIDE_DIR = "/media/kuser/MEDIA_SSD/MyProjects/local_ai_project_ternary"
+_OUTSIDE_FILE = _OUTSIDE_DIR + "/memory.md"
+
+_OUTSIDE_SANDBOX_TERMINAL = (
+    f"cat {_OUTSIDE_FILE}",  # the read half of the report: no credential match, but the host's own data
+    f"head -c 200 {_OUTSIDE_FILE}",
+    f"tail -n 5 {_OUTSIDE_FILE}",
+    f"wc -l {_OUTSIDE_FILE}",
+    f"stat {_OUTSIDE_FILE}",
+    f"ls -la {_OUTSIDE_DIR}",
+    f"cp {_OUTSIDE_FILE} ./stolen.md",  # exfiltration INTO the sandbox
+    f"cp ./payload.md {_OUTSIDE_FILE}",  # ... and the reverse, which overwrites
+    f"mv {_OUTSIDE_FILE} {_OUTSIDE_FILE}.bak",
+    f"sed -i 's/a/b/' {_OUTSIDE_FILE}",  # in-place rewrite of a host file
+    f"echo clobbered > {_OUTSIDE_FILE}",  # redirect truncates it
+    f"echo more >> {_OUTSIDE_FILE}",
+    f"tee {_OUTSIDE_FILE}",
+    f"touch {_OUTSIDE_DIR}/new_file",
+    f"mkdir {_OUTSIDE_DIR}/new_dir",
+    "cat /home/kuser/Documents/taxes.pdf",  # another user's documents
+    "wc -l ~alice/notes.txt",  # a named account is the real home, not the sandbox
+    "ls -la /home",
+)
+
+_OUTSIDE_SANDBOX_PYTHON = (
+    f"print(open({_OUTSIDE_FILE!r}).read())",  # the exact bypass the report used, read side
+    f"open({_OUTSIDE_FILE!r}, 'w').write('clobbered')",  # overwrite, which used to run unprompted
+    f"open({_OUTSIDE_FILE!r}, 'a').write('more')",
+    f"from pathlib import Path\nPath({_OUTSIDE_FILE!r}).read_text()",
+    f"from pathlib import Path\nPath({_OUTSIDE_FILE!r}).write_text('x')",
+    f"from pathlib import Path\nPath({_OUTSIDE_DIR!r} + '/new').touch()",
+    f"import os\nos.remove({_OUTSIDE_FILE!r})",  # the reporter's os.remove
+    f"import shutil\nshutil.rmtree({_OUTSIDE_DIR!r})",
+    f"import shutil\nshutil.copy({_OUTSIDE_FILE!r}, './stolen.md')",
+    f"import os\nprint(os.listdir({_OUTSIDE_DIR!r}))",
+    f"import os\nfor root, dirs, files in os.walk({_OUTSIDE_DIR!r}):\n    print(root)",
+    f"import pandas as pd\nprint(pd.read_csv({_OUTSIDE_FILE!r}))",  # a reader that is not open()
+    f"import numpy as np\nnp.loadtxt({_OUTSIDE_FILE!r})",
+    f"import linecache\nprint(linecache.getline({_OUTSIDE_FILE!r}, 1))",
+    f"import json\nprint(json.load(open({_OUTSIDE_FILE!r})))",
+    f"import numpy as np\nnp.save({_OUTSIDE_DIR!r} + '/weights.npy', np.zeros(3))",
+    f"p = {_OUTSIDE_FILE!r}\nprint(open(p).read())",  # through a variable
+    f"from pathlib import Path\np = Path({_OUTSIDE_DIR!r}) / 'memory.md'\nprint(p.read_text())",
+    f"import os\nprint(open(os.path.join({_OUTSIDE_DIR!r}, 'memory.md')).read())",
+    "print(open('/home/kuser/Documents/taxes.pdf', 'rb').read())",
+)
+
+# The same shape of call, but pointed somewhere a tool reads all the time. These must NOT start prompting, or auto
+# mode becomes unusable and users turn the sandbox off -- which is what the reporter was advised to do.
+_ALLOWLISTED_TERMINAL = (
+    "cat /proc/cpuinfo",
+    "cat /etc/os-release",
+    "ls /usr/lib",
+    "ls -la /usr/share/doc",
+    "wc -l /usr/include/stdio.h",
+    "stat /bin/sh",
+    "cat /sys/class/net/eth0/address",
+    "sed '/etc/d' notes.txt",  # a sed PROGRAM that starts with a slash is not a path
+    "grep /usr/bin list.txt",  # a PATTERN that looks like a path is not a path
+    "awk '/home/ {print}' access.log",
+    "python train.py 2> /dev/null",
+    "head -n 5 data.csv",
+    "sort -k 2 -t , data.csv",
+    "jq '.results[0]' out.json",
+    "diff old.py new.py",
+    "cp build/a.txt build/b.txt",
+    "find . -name '*.safetensors'",
+    # The other side of the tar fix: a relative operand stays silent in every spelling, and an
+    # ordinary filename containing a "c" must not read as tar's create mode.
+    "tar -cf out.tar data src",
+    "tar -xf archive.tar src",
+    "tar czf out.tgz .",
+    # -C in CREATE mode really is only a read, and a substitution naming no path is not an operand.
+    "tar -C /usr/share -cf out.tar .",
+    'echo "$(date)"',
+    'echo "$(ls)"',
+    # The pattern-flag fix must not make an ordinary grep or a plain redirect prompt.
+    "grep -e needle local.log",
+    "grep -f patterns.txt local.log",
+    "grep --exclude-from=filters needle local.txt",
+    "cat notes.txt > out.txt",
+    "echo hi > /dev/null",
+    "tar --extract --file=/usr/share/in.tar",
+    "cat /usr/share/doc/readme",
+)
+
+_ALLOWLISTED_PYTHON = (
+    "print(open('/proc/cpuinfo').read())",
+    "import os\nprint(os.listdir('/usr/lib'))",
+    "print(open('/etc/os-release').read())",
+    "import sys\nprint(open(sys.prefix + '/pyvenv.cfg').read())",
+    "import pandas as pd\ndf = pd.read_csv('train.csv')\ndf.to_csv('out.csv')",
+    "import numpy as np\nnp.save('embeddings.npy', np.zeros(3))",
+    "from pathlib import Path\nPath('results').mkdir(exist_ok=True)",
+    "import json\nprint(json.load(open('config.json')))",
+    # The module-open fix reads the first argument instead of the receiver; a relative one is silent.
+    "import io\nprint(io.open('notes.txt').read())",
+    "import gzip\ngzip.open('data.gz', 'rb').read()",
+    "import io as stream\nprint(stream.open('notes.txt').read())",
+    "import os.path as p\nprint(p.join('data', 'train.csv'))",
+    "from io import open as fopen\nprint(fopen('notes.txt').read())",
+    "from os.path import join as j\nprint(j('data', 'train.csv'))",
+    "from pandas import read_csv as rc\nrc('train.csv')",
+    "import os\nopen(os.path.join('/usr', 'share', 'doc')).read()",
+    (
+        "\n".join(f"base = '/usr/a{i}'" for i in range(9))
+        + "\np = base + '/report.txt'\nopen(p).read()"
+    ),
+    "base = 'local'\np = base + '/report.txt'\nopen(p).read()",
+    "import os\nos.rename('a.txt', 'b.txt')",
+    "import shutil\nshutil.copy('a.txt', 'b.txt')",
+    "import tarfile\ntarfile.open('out.tar', 'w')",
+    "import numpy as np\nnp.save('emb.npy', [1])",
+    (
+        "base = 'local'\n"
+        + "\n".join(f"base = 'r{i}'" for i in range(30))
+        + "\np = base + '/r.txt'\nopen(p).read()"
+    ),
+    # ... and the receiver IS the path for Path.open, which must keep working.
+    "from pathlib import Path\nPath('out.txt').open('w').write('hi')",
+)
+
+
+# Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
+# before the operand scan learned about them.
+_OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # Running a path-qualified binary READS that file before anything else it does.
+    "/media/alice/tool --flag",
+    # The interpreter payload writes through a RELATIVE path, under the directory the `cd` set.
+    "cd /usr/share/doc && python -c \"open('w.gguf', 'w').write('x')\"",
+    # `gcc -o FILE` truncates that file; `make -C DIR` runs recipes that write there;
+    # `git init DIR` creates the repository in it.
+    "gcc -E input.c -o /media/alice/private.txt",
+    "make -C /usr/share/doc clean",
+    "git init /usr/share/doc/repo",
+    # A permission change modifies the file it names; the mode or owner is not a path.
+    "chmod 000 /media/alice/report.txt",
+    "chown alice /media/alice/report.txt",
+    # `fd --ignore-file <path>` reads that file as a custom ignore list.
+    "fd --ignore-file=/media/alice/private.rules needle .",
+    # GNU long options accept unambiguous abbreviations, so `--targ=` is the destination.
+    "cp --targ=/usr/share/doc payload",
+    # Short options cluster, so `-ni` edits in place exactly as `-i` does.
+    "sed -ni 's/x/y/p' /usr/share/doc/notes",
+    # `xargs` forwards the paths to ANOTHER command, whose mode is the one that counts.
+    "printf '%s\\n' /usr/share/doc/new.txt | xargs touch",
+    "ls | xargs -I {} cp {} /usr/share/doc/",
+    # A `cd` to an absolute directory moves where every later RELATIVE write lands.
+    f"cd {_OUTSIDE_DIR} && touch weights.gguf",
+    f"cd {_OUTSIDE_DIR} && echo hi > out.txt",
+    # `tar --add-file=FILE` adds that file, so it is read.
+    f"tar -cf out.tar --add-file={_OUTSIDE_FILE}",
+    # `date --help`: `-r, --reference=FILE` displays that file's modification time.
+    f"date --reference={_OUTSIDE_FILE}",
+    # `tar --help`: `--delete` removes members and `-A` appends archives, both mutating `-f`.
+    f"tar --delete -f {_OUTSIDE_DIR}/a.tar member",
+    f"tar -A -f {_OUTSIDE_DIR}/a.tar b.tar",
+    # `7z a` creates or updates the archive named first after the command word.
+    f"7z a {_OUTSIDE_DIR}/out.7z local.txt",
+    f"7z a out.7z {_OUTSIDE_DIR}/src",
+    # `-c` only stops the operand being REWRITTEN; it is still opened.
+    f"gzip -c {_OUTSIDE_DIR}/x",
+    f"zstd {_OUTSIDE_DIR}/x",
+    # `zcat` and friends uncompress the file they are given to stdout.
+    f"zcat {_OUTSIDE_DIR}/private.gz",
+    f"zstdcat {_OUTSIDE_DIR}/private.zst",
+    # A substitution nested inside a process substitution.
+    f"cat <(cat $(echo {_OUTSIDE_FILE}))",
+    # `<( ... )` runs its body as a command of its own, under an outer command this scan does not model.
+    f"pr <(cat {_OUTSIDE_FILE})",
+    f"comm <(sort {_OUTSIDE_FILE}) <(sort b)",
+    f"tee >(gzip > {_OUTSIDE_DIR}/out.gz) < notes.txt",
+    # `env --help`: a mere `-` implies `-i`, so the command still follows it.
+    f"env - FOO=bar cat {_OUTSIDE_FILE}",
+    # A file operator of `test`/`[` still stats what it is given, including through a substitution.
+    f"[ -f {_OUTSIDE_FILE} ]",
+    f"test -r {_OUTSIDE_FILE}",
+    f'[ -e "$(echo {_OUTSIDE_FILE})" ]',
+    f"test {_OUTSIDE_FILE} -nt ./local.txt",
+    # One token carrying both a live `>` and a quoted target with a space in it.
+    f'echo CHANGED>"{_OUTSIDE_DIR} host/notes.txt"',
+    # A here-string word is DATA, but a substitution inside it runs before the data is handed over.
+    f'cat <<< "$(cat {_OUTSIDE_FILE})"',
+    # `curl --help all`: `-K, --config <file>` reads a config from a file; the attached spelling was
+    # discarded whole rather than exposing its value.
+    f"curl --config={_OUTSIDE_FILE} https://example.com",
+    # `jq --help`: `-L directory` searches modules there, so the filter includes a file from
+    # outside the sandbox without ever naming it.
+    f"jq -n -L {_OUTSIDE_DIR} 'include \"report\"; rows'",
+    f"jq --library-path {_OUTSIDE_DIR} '.a' data.json",
+    # Windows spellings a POSIX lexer destroys or a drive-letter pattern misses: root-relative on
+    # the current drive, and drive-relative against THAT drive's own directory.
+    r"cat \\Users\\alice\\notes.txt",
+    "cat C:notes.txt",
+    # `/dev/fd/<n>` is the kernel link `/proc/self/fd/<n>` is, so it is not a property of /dev.
+    "cat /dev/fd/3",
+    # `make --help`: `-f FILE` reads that makefile and `-C DIR` changes to it first.
+    f"make -f {_OUTSIDE_DIR}/Makefile",
+    f"make -C {_OUTSIDE_DIR}",
+    # A multicall binary dispatches to the applet named first, so that is the command to classify.
+    f"busybox cat {_OUTSIDE_FILE}",
+    f"toybox cat {_OUTSIDE_FILE}",
+    # `help test`: the unary expressions examine the status of a file.
+    f"test -e {_OUTSIDE_FILE}",
+    f"[ -r {_OUTSIDE_FILE} ]",
+    # `ln` hands the sandbox a name that WRITES to its target, so a relative write through the link
+    # lands outside afterwards.
+    f"ln -s {_OUTSIDE_FILE} local.md",
+    f"ln {_OUTSIDE_FILE} local.md",
+    # tmpfs the user's own processes own: their contents are user data, not machine state.
+    "cat /dev/shm/private",
+    "cat /run/user/1000/app/session.json",
+    # `mv --help`: "Rename SOURCE to DEST", so the source is gone afterwards; `cp` leaves it.
+    f"mv {_OUTSIDE_FILE} ./local.md",
+    # `tar --help`: `-r` appends to the archive and `-u` updates it, both writes of the `-f` file.
+    f"tar -rf {_OUTSIDE_DIR}/archive.tar local",
+    f"tar -uf {_OUTSIDE_DIR}/archive.tar local",
+    # The same word twice, once as data and once as syntax: a membership test found the quoted
+    # spelling and left the live redirection of the second command unsplit.
+    f"echo 'x>{_OUTSIDE_FILE}'; echo x>{_OUTSIDE_FILE}",
+    # `/proc/<pid>/task/<tid>/root` resolves through the same kernel link as the process spelling.
+    f"cat /proc/$$/task/$$/root{_OUTSIDE_FILE}",
+    f"cat /proc/self/task/12/root{_OUTSIDE_FILE}",
+    # A command substitution runs inside DOUBLE quotes too, and the quoted body arrives as one
+    # token, so the command at its head was not read as a command at all.
+    f'echo "`cat {_OUTSIDE_FILE}`"',
+    # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", and `-o, --output=FILE` writes.
+    f"iconv {_OUTSIDE_FILE}",
+    f"iconv -o {_OUTSIDE_DIR}/out.txt local.txt",
+    # A control word ends one command and begins another, so the read below was grouped under
+    # `then` / `do` / `{`, none of which is a command any table knows.
+    f"if true; then cat {_OUTSIDE_FILE}; fi",
+    f"for f in a b; do cat {_OUTSIDE_FILE}; done",
+    f"while true; do cat {_OUTSIDE_FILE}; done",
+    f"{{ cat {_OUTSIDE_FILE}; }}",
+    # A backtick substitution is a command of its own, but the lexer keeps the backticks inside
+    # ordinary tokens, so the read arrived as an argument of `echo` and was dropped with it.
+    f"echo `cat {_OUTSIDE_FILE}`",
+    # `wget --help`: `-o, --output-file=FILE` logs there and `-a, --append-output=FILE` appends.
+    f"wget --output-file={_OUTSIDE_FILE} https://example.com",
+    f"wget -o {_OUTSIDE_FILE} https://example.com",
+    # `git clone -h`: `--[no-]separate-git-dir <gitdir>` puts the repository metadata there.
+    f"git clone --separate-git-dir={_OUTSIDE_DIR}/repo repo checkout",
+    # `sort --help`: "--random-source=FILE  get random bytes from FILE". Attached, it was discarded
+    # as an unknown option and the host file it named was read without a word.
+    f"sort -R --random-source={_OUTSIDE_FILE} input.txt",
+    f"sort -R --random-source {_OUTSIDE_FILE} input.txt",
+    f"cd {_OUTSIDE_DIR} && cat memory.md",  # chdir re-points every relative path that follows
+    f"cd {_OUTSIDE_DIR}; cat memory.md",
+    f"(cd {_OUTSIDE_DIR} && cat memory.md)",
+    f"pushd {_OUTSIDE_DIR}",
+    f"echo {_OUTSIDE_FILE} | xargs cat",  # the path arrives through the pipeline, not an operand
+    f"tar cf - {_OUTSIDE_DIR}",
+    f"D={_OUTSIDE_DIR}; cat $D/memory.md",  # assembled from an assignment
+    # tar's legacy option word is only the FIRST argument. The ordinary hyphenated spelling has no
+    # such word, so a blanket positional skip ate the real operand and the whole tree read silently.
+    f"tar -cf local.tar {_OUTSIDE_DIR}",
+    f"tar -czf local.tgz {_OUTSIDE_DIR}",
+    # -g/--listed-incremental names a snapshot file tar CREATES, in both spellings.
+    f"tar --listed-incremental={_OUTSIDE_DIR}/state.snar -cf local.tar src",
+    f"tar -g {_OUTSIDE_DIR}/state.snar -cf local.tar src",
+    # -C is where the operation HAPPENS: extracting creates and overwrites members under it, so a
+    # directory that is only READ-silent (a scan folder, /usr/share) is still being written here.
+    "tar -C /usr/share -xf local.tar",
+    f"tar -C {_OUTSIDE_DIR} -xf local.tar",
+    # shlex keeps a command substitution as ONE non-absolute token, so the operand scan saw nothing
+    # while the shell handed the command the real path.
+    f'cat "$(printf {_OUTSIDE_FILE})"',
+    f"cat `echo {_OUTSIDE_FILE}`",
+    f'cp local.txt "$(echo {_OUTSIDE_DIR}/out)"',
+    # A flag supplied the pattern, so no positional is owed to one and the first input file is a
+    # real operand. Keeping the skip discarded it and the read went unclassified.
+    f"grep -f patterns.txt {_OUTSIDE_FILE}",
+    f"sed -f prog.sed {_OUTSIDE_FILE}",
+    f"grep -e needle {_OUTSIDE_FILE}",
+    f"sed -e s/a/b/ {_OUTSIDE_FILE}",
+    f"grep --exclude-from={_OUTSIDE_DIR}/filters needle local.txt",
+    f"grep --exclude-from {_OUTSIDE_DIR}/filters needle local.txt",
+    # bash accepts several redirections before the command word. Kept whole, the token read as one
+    # silent /dev read and the write past it was never seen.
+    f"</dev/null>{_OUTSIDE_DIR}/out printf payload",
+    # A doubled separator inside ONE literal is just a separator; the OS collapses it. Treating it
+    # as a second root read /usr out of the path and the real file went silent.
+    "cat /home/alice//usr/report.txt",
+    # A cluster whose value is ATTACHED to its last letter, which GNU tar accepts.
+    f"tar -cf{_OUTSIDE_DIR}/out.tar src",
+    # The long spelling of create carries the same mode as -c.
+    "tar --create --file=/usr/share/out.tar src",
+    # /proc is read-silent, but /proc/<pid>/root is a kernel symlink to the process root, so the
+    # kernel resolves it before the rest and this opens the very file the plain path does.
+    "cat /proc/self/root/home/alice/report.txt",
+    "head -n 5 /proc/1234/cwd/../../home/alice/report.txt",
+    # diff compares --from-file to every operand, so it reads a file nothing occupies an operand
+    # position for.
+    "diff --from-file=/home/alice/private.txt local.txt",
+    "diff --to-file /home/alice/private.txt local.txt",
+    # An interpreter READS the file it is handed, and then runs it.
+    "python /home/alice/private.py",
+    "bash /home/alice/job.sh",
+    "sqlite3 /home/alice/private.db 'select 1'",
+    # `rg --files [PATH ...]` takes no pattern, so the skip was eating the enumerated tree.
+    "rg --files /media/kuser/MEDIA_SSD/private",
+    # git carries its working directory on a flag, so nothing sits in an operand position.
+    "git -C /media/kuser/MEDIA_SSD/private-repo show HEAD:secret.txt",
+    "git --git-dir=/media/kuser/MEDIA_SSD/r/.git log",
+    # A `file:` URI names the same file the bare path does.
+    'sqlite3 file:/media/kuser/MEDIA_SSD/x.db?mode=ro "select 1"',
+    # `stdbuf -o L` takes its value as a separate token, so the scan stopped on `L`.
+    "stdbuf -o L cat /media/kuser/MEDIA_SSD/private.txt",
+    "unzip /media/kuser/MEDIA_SSD/private.zip",
+    "unzip a.zip -d /media/kuser/MEDIA_SSD/out",
+    # curl reads and writes local files through the file scheme.
+    "curl file:///media/kuser/MEDIA_SSD/private.txt",
+    "curl -o /media/kuser/MEDIA_SSD/out.txt https://example.com",
+    # sqlite3 creates the database when absent, so the operand is a write by default.
+    "sqlite3 /usr/share/catalog.db 'DELETE FROM entries'",
+    # A POSIX lexer eats the backslash, so every Windows absolute path was invisible to the gate.
+    # Asserted on every host, because what a path text means must not depend on the classifier's OS.
+    r"cat C:\Users\alice\Documents\private.txt",
+    r"type \\server\share\private.txt",
+    # `wget -P DIR` saves into DIR; a duplicate table key had dropped that classification.
+    "wget -P /usr/share/models https://example.com/m.bin",
+    # `date -f DATEFILE` reads every line and echoes an invalid one back.
+    "date -f /media/kuser/MEDIA_SSD/private.txt",
+    # ripgrep's own path option, absent from the grep spec it inherits.
+    "rg --ignore-file=/media/kuser/MEDIA_SSD/private.rules needle .",
+    # `install -d DIR...` CREATES every operand, so the destination-last rule does not apply.
+    "install -d /dev/shm/tool-output",
+    # `git archive --add-file` reads an untracked file into the archive; `--output` writes it.
+    "git archive --add-file=/media/kuser/MEDIA_SSD/private.txt -o out.tar HEAD",
+    "git archive --output=/media/kuser/MEDIA_SSD/out.tar HEAD",
+    # `--output-dir` is where `-O` puts the download, and `-O` itself contributes no operand.
+    "curl --output-dir=/media/kuser/MEDIA_SSD/private -O https://example.com/payload",
+    "wget --directory-prefix=/media/kuser/MEDIA_SSD/private https://example.com/payload",
+)
+
+_OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # The filesystem root is silent for a LISTING, not for a walk that descends the whole host.
+    "import os\nfor r, d, f in os.walk('/'):\n    print(f)",
+    # `tempfile` creators write into `dir` when it is given.
+    "import tempfile\ntempfile.mkstemp(dir = '/media/alice')",
+    "import tempfile\ntempfile.TemporaryDirectory(dir = '/usr/share/doc')",
+    # The constructor's mode applies to the keyword spelling of the path too.
+    "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'w')",
+    # `sqlite3.Connection` is the public constructor `connect` returns; it opens the same file.
+    "import sqlite3\nsqlite3.Connection('/media/alice/private.db')",
+    "import apsw\napsw.Connection(filename = '/media/alice/private.db')",
+    # `h5py.File(path, "w")` truncates the file the constructor names.
+    "import h5py\nh5py.File('/usr/share/doc/model.h5', 'w')",
+    "import netCDF4\nnetCDF4.Dataset('/usr/share/doc/grid.nc', mode = 'a')",
+    # A relative operand handed to a child process lands wherever the `chdir` moved it.
+    "import os, subprocess\nos.chdir('/usr/share/doc')\nsubprocess.run(['touch', 'new.gguf'])",
+    # `pandas.read_excel(io = ...)` is the documented name of its first parameter.
+    f"import pandas as pd\nprint(pd.read_excel(io = {_OUTSIDE_FILE!r}))",
+    # The same names on a Path-like receiver, and their qualified forms, are the filesystem calls.
+    f"import os\nos.replace({_OUTSIDE_FILE!r}, 'b')",
+    f"import os\nos.remove({_OUTSIDE_FILE!r})",
+    f"from pathlib import Path\np = Path('x')\np.replace({_OUTSIDE_FILE!r})",
+    # `h5py.File(path, "r")` opens the file it is handed.
+    f"import h5py\nprint(h5py.File({_OUTSIDE_FILE!r}, 'r')['d'][:])",
+    # An interpreter's `-c` payload is CODE, so it is classified as code.
+    f"import subprocess\nsubprocess.run(['python', '-c', \"open({_OUTSIDE_FILE!r}, 'w')\"])",
+    # A `chdir` to an absolute directory moves where every later RELATIVE write lands.
+    f"import os\nos.chdir({_OUTSIDE_DIR!r})\nopen('weights.gguf', 'w').write('x')",
+    # A quoted path with a space in a `shell = True` command line.
+    f"import subprocess\nsubprocess.run(\"cat '{_OUTSIDE_DIR}/My Documents/private.txt'\", shell = True)",
+    # `io.open_code` opens its argument in binary mode, which is a read of that path.
+    f"import io\nprint(io.open_code({_OUTSIDE_FILE!r}).read())",
+    # `ZipFile.write` / `TarFile.add` name a SOURCE on disk and copy it into the archive.
+    f"import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write({_OUTSIDE_FILE!r})",
+    f"import tarfile\nwith tarfile.open('out.tar', 'w') as t:\n    t.add({_OUTSIDE_FILE!r})",
+    # `shutil.unpack_archive` creates the members under its destination.
+    f"import shutil\nshutil.unpack_archive('local.zip', {_OUTSIDE_DIR!r})",
+    f"import shutil\nshutil.unpack_archive('local.zip', extract_dir = {_OUTSIDE_DIR!r})",
+    # `make_archive` takes `root_dir` third and `base_dir` fourth, positionally too.
+    f"import shutil\nshutil.make_archive('backup', 'zip', {_OUTSIDE_DIR!r})",
+    f"import shutil\nshutil.make_archive('backup', 'zip', 'src', {_OUTSIDE_DIR!r})",
+    # `from tarfile import open as topen` resolves to the name `open`, so the MODULE identifies it.
+    f"from tarfile import open as topen\nt = topen('o.tar', 'w')\nt.add({_OUTSIDE_FILE!r})",
+    # A constructor imported under an alias binds the same archive object.
+    f"from zipfile import ZipFile as Z\nz = Z('local.zip', 'w')\nz.write({_OUTSIDE_FILE!r})",
+    # A literal splat hands the reader the same path the plain call does.
+    f"import pandas as pd\npd.read_csv(*[{_OUTSIDE_FILE!r}])",
+    # `shutil.make_archive` writes `base_name` and reads the directory it packs.
+    f"import shutil\nshutil.make_archive({_OUTSIDE_DIR!r} + '/backup', 'zip', 'src')",
+    f"import shutil\nshutil.make_archive('backup', 'zip', root_dir = {_OUTSIDE_DIR!r})",
+    # argv[0] IS the binary that runs, even when a later word is a command name this scan knows.
+    f"import subprocess\nsubprocess.run([{_OUTSIDE_FILE!r}, 'cat'])",
+    # `sqlite3.connect(database = ...)` is the documented keyword spelling of the same argument.
+    f"import sqlite3\nsqlite3.connect(database = {_OUTSIDE_FILE!r})",
+    # `str.join` concatenates: `"/".join(["/a", "/usr/b"])` is `/a//usr/b`, not `/usr/b`.
+    f"print(open('/'.join([{_OUTSIDE_DIR!r}, '/usr/share/doc/readme'])).read())",
+    # The same reader under its documented keyword name.
+    f"from PIL import Image\nprint(Image.open(fp = {_OUTSIDE_FILE!r}).size)",
+    # `executable` is what LAUNCHES; argv[0] is only the name the child sees.
+    f"import subprocess\nsubprocess.run(['echo'], executable = {_OUTSIDE_FILE!r})",
+    # The call itself creates the escape: a name in the sandbox that writes to the target.
+    f"import os\nos.symlink({_OUTSIDE_DIR!r}, 'local')",
+    f"import os\nos.link({_OUTSIDE_FILE!r}, 'local')",
+    # The constructor opens the workbook; the later `parse` never names it again.
+    f"import pandas as pd\nbook = pd.ExcelFile({_OUTSIDE_FILE!r})\nprint(book.parse(0))",
+    # The predicate family answers existence and type, the same disclosure `test -e` makes.
+    f"import os\nprint(os.path.exists({_OUTSIDE_FILE!r}))",
+    f"import os\nprint(os.path.isfile({_OUTSIDE_FILE!r}))",
+    f"import pathlib\nprint(pathlib.Path({_OUTSIDE_DIR!r}).is_dir())",
+    # `os.popen` runs a command line through a shell exactly as `os.system` does.
+    f"import os\nos.popen('cat {_OUTSIDE_FILE}').read()",
+    # Archive members are written UNDER the destination, so it is a write of a whole tree.
+    f"import zipfile\nzipfile.ZipFile('local.zip').extractall({_OUTSIDE_DIR!r})",
+    f"import tarfile\ntarfile.open('local.tar').extractall({_OUTSIDE_DIR!r})",
+    f"import tarfile\ntarfile.open('local.tar').extract('m', path = {_OUTSIDE_DIR!r})",
+    # Imported by name, so the call is a bare `Name` rather than a qualified one.
+    f"from fileinput import input as read\nprint(next(read({_OUTSIDE_FILE!r})))",
+    f"from fileinput import FileInput\nprint(FileInput({_OUTSIDE_FILE!r}))",
+    # Past the candidate cap, and reached by a constant index.
+    f"paths = ['/usr/a', '/usr/b', '/usr/c', '/usr/d', '/usr/e', '/usr/f', '/usr/g', '/usr/h', {_OUTSIDE_FILE!r}]\nopen(paths[8]).read()",
+    # Existence, size, ownership and timestamps of a path outside the sandbox.
+    f"import os\nprint(os.stat({_OUTSIDE_FILE!r}))",
+    f"import os\nprint(os.lstat({_OUTSIDE_FILE!r}))",
+    f"import pathlib\nprint(pathlib.Path({_OUTSIDE_FILE!r}).stat())",
+    # A move REMOVES its source, so the source side is a write wherever it sits.
+    f"import os\nos.rename({_OUTSIDE_FILE!r}, 'stolen.txt')",
+    f"import pathlib\npathlib.Path({_OUTSIDE_FILE!r}).rename('stolen.txt')",
+    f"import shutil\nshutil.move({_OUTSIDE_FILE!r}, 'stolen.txt')",
+    # A literal sequence held in a NAME is the same list the inline form passes.
+    f"import configparser\ncfg = configparser.ConfigParser()\npaths = [{_OUTSIDE_FILE!r}]\ncfg.read(paths)",
+    f"import fileinput\npaths = [{_OUTSIDE_FILE!r}]\nfor line in fileinput.input(files = paths):\n    print(line)",
+    # A literal `**{...}` passes the path under its own parameter name, and the splat arrives as a
+    # keyword whose `arg` is None, so the name was never matched.
+    f"import pandas as pd\npd.read_csv(**{{'filepath_or_buffer': {_OUTSIDE_FILE!r}}})",
+    # The aliased receiver and the constructor `input` returns, which iterates the same files.
+    f"import fileinput as fi\nfor line in fi.input({_OUTSIDE_FILE!r}):\n    print(line)",
+    f"import fileinput\nfor line in fileinput.FileInput({_OUTSIDE_FILE!r}):\n    print(line)",
+    # Nothing dynamic in either: the container, the index and the path are all literals.
+    f"paths = [{_OUTSIDE_FILE!r}]\nopen(paths[0]).read()",
+    f"cfg = {{'db': {_OUTSIDE_FILE!r}}}\nopen(cfg['db']).read()",
+    f"open({{'p': {_OUTSIDE_FILE!r}}}['p']).read()",
+    # `io.FileIO(p)` opens the path exactly as `io.open(p)` does.
+    f"import io\nio.FileIO({_OUTSIDE_FILE!r}).read()",
+    # An annotated instance assignment binds the reader exactly as the plain form does.
+    f"import configparser\ncfg: configparser.ConfigParser = configparser.ConfigParser()\ncfg.read({_OUTSIDE_FILE!r})",
+    # Called BEFORE the rebinding, so dropping the alias outright let the read through.
+    f"reader = open\nprint(reader({_OUTSIDE_FILE!r}).read())\nreader = None",
+    # The rebound name sits inside a larger expression, where only its first binding was folded.
+    f"base = 'local'\nbase = {_OUTSIDE_DIR!r}\nopen(base + '/report').read()",
+    f"import os\nbase = 'local'\nbase = {_OUTSIDE_DIR!r}\nopen(os.path.join(base, 'report')).read()",
+    # Parameter names only these callables use, so the shared keyword list never carried them.
+    f"import configparser\nc = configparser.ConfigParser()\nc.read(filenames = {_OUTSIDE_FILE!r})",
+    f"import configparser\nc = configparser.ConfigParser()\nc.read(filenames = ['a.ini', {_OUTSIDE_FILE!r}])",
+    f"import glob\nprint(glob.glob(pathname = {_OUTSIDE_DIR!r} + '/*.txt'))",
+    f"import glob\nprint(glob.glob('*.txt', root_dir = {_OUTSIDE_DIR!r}))",
+    f"import os\nos.chdir({_OUTSIDE_DIR!r})\nprint(open('memory.md').read())",
+    f"import subprocess\nsubprocess.run(['cat', {_OUTSIDE_FILE!r}])",  # a child process this scan cannot follow
+    f"import subprocess\nsubprocess.check_output('cat {_OUTSIDE_FILE}', shell = True)",
+    f"import fileinput\nfor line in fileinput.input({_OUTSIDE_FILE!r}):\n    print(line)",
+    f"import zipfile\nzipfile.ZipFile({_OUTSIDE_DIR!r} + '/a.zip', 'w')",
+    f"import pathlib\npathlib.Path({_OUTSIDE_FILE!r}).open().read()",  # the path is the receiver
+    # Spelled as an attribute, but these are MODULE functions taking the path first, so treating the
+    # receiver as the path folded the bare module name and the read escaped.
+    f"import io\nio.open({_OUTSIDE_FILE!r}).read()",
+    f"import gzip\ngzip.open({_OUTSIDE_DIR!r} + '/data.gz', 'rb').read()",
+    f"import os\nos.open({_OUTSIDE_FILE!r}, os.O_CREAT | os.O_WRONLY)",
+    # A chained assignment has more than one target; skipping the statement left the name unfoldable.
+    f"source = backup = {_OUTSIDE_FILE!r}\nprint(open(source).read())",
+    f"a, b = c, d = {_OUTSIDE_FILE!r}, 'local.txt'\nprint(open(c).read())",
+    # An aliased import leaves a receiver that is in no table, so the call read as a Path-style
+    # method and its first argument was never looked at.
+    f"import io as stream\nstream.open({_OUTSIDE_FILE!r}).read()",
+    f"import gzip as gz\ngz.open({_OUTSIDE_DIR!r} + '/d.gz', 'rb').read()",
+    # `from io import open as fopen` leaves a plain Name in no table.
+    f"from io import open as fopen\nfopen({_OUTSIDE_FILE!r}).read()",
+    f"from gzip import open as gopen\ngopen({_OUTSIDE_DIR!r} + '/d.gz', 'rb').read()",
+    # A DERIVED binding has to carry every value its dependency ever held, or the rebinding is lost
+    # the moment the path is assembled rather than used directly.
+    f"base = 'local'\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()",
+    f"import os\nb = 'local'\nb = {_OUTSIDE_DIR!r}\np = os.path.join(b, 'r.txt')\nopen(p).read()",
+    # A module function spelled as an attribute puts BOTH paths in its arguments; reading the
+    # receiver as the source folded the bare module name and lost the destination entirely.
+    f"import os\nos.rename('local.txt', {_OUTSIDE_DIR!r} + '/out.txt')",
+    f"import shutil\nshutil.copy('local.txt', {_OUTSIDE_DIR!r} + '/out.txt')",
+    # tarfile.open takes the path first like the other module opens.
+    f"import tarfile\ntarfile.open({_OUTSIDE_DIR!r} + '/a.tar', 'w')",
+    # The serializer receiver has to be resolved through the alias, or the call falls through to a
+    # branch that never looks at the second argument.
+    f"import torch as t\nt.save(m, {_OUTSIDE_DIR!r} + '/model.pt')",
+    # Any MODELED path call is reachable under an alias, not just the open-like ones.
+    f"from pandas import read_csv as rc\nrc({_OUTSIDE_DIR!r} + '/report.csv')",
+    f"from shutil import copy as cp\ncp('a.txt', {_OUTSIDE_DIR!r} + '/out.txt')",
+    # A command string recovered from a variable has to be split like a literal one.
+    f"import subprocess\ncmd = 'cat {_OUTSIDE_FILE}'\nsubprocess.run(cmd, shell = True)",
+    f"open('/home/alice//usr/report.txt').read()",
+    # The alternate cap is ranked by what needs APPROVAL: nine read-silent rebindings must not
+    # crowd out the one value that does.
+    (
+        "\n".join(f"base = '/usr/a{i}'" for i in range(9))
+        + f"\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()"
+    ),
+    # The alternate cap must bound WORK, not coverage: eight benign reassignments ahead of the
+    # absolute one must not hide it.
+    (
+        "base = 'local'\n"
+        + "\n".join(f"base = 'r{i}'" for i in range(9))
+        + f"\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()"
+    ),
+    # A plain assignment binds the same identity an import alias does.
+    f"reader = open\nprint(reader({_OUTSIDE_FILE!r}).read())",
+    "import pandas as pd\nrc = pd.read_csv\nrc('/media/kuser/MEDIA_SSD/report.csv')",
+    # /usr/share is read-silent and write-gated, so ranking the alternates as reads dropped it and
+    # the write that followed overwrote a system directory in silence.
+    (
+        "\n".join(f"base = 'sub{i}'" for i in range(9))
+        + "\nbase = '/usr/share'\np = base + '/out'\nopen(p, 'w').write('x')"
+    ),
+    # The builtin under a qualified name, and under an alias of the module.
+    'import builtins\nbuiltins.open("/media/kuser/MEDIA_SSD/x", "w").write("y")',
+    'import builtins as b\nb.open("/media/kuser/MEDIA_SSD/x").read()',
+    # A module-level open whose receiver is not a path.
+    "from PIL import Image\nImage.open('/media/kuser/MEDIA_SSD/photo.png')",
+    "import PIL.Image\nPIL.Image.open('/media/kuser/MEDIA_SSD/photo.png')",
+    # An alias of an alias binds the same function.
+    "reader = open\nreader2 = reader\nreader2('/media/kuser/MEDIA_SSD/x').read()",
+    # joinpath drops everything left of an absolute piece, exactly as `/` and os.path.join do.
+    "from pathlib import Path\nPath('/usr').joinpath('/media/kuser/MEDIA_SSD/x.txt').read_text()",
+    # numpy.load takes a FILENAME, unlike every other `load` in these tables.
+    "import numpy as np\nnp.load('/media/kuser/MEDIA_SSD/private.npy')",
+    # A constructor or a join under an import alias builds the same path.
+    "from pathlib import Path as P\nP('/media/kuser/MEDIA_SSD/private.txt').read_text()",
+    "from os.path import join as j\nopen(j('/media/kuser/MEDIA_SSD', 'private.txt')).read()",
+    # numpy.load is modelled on its module, so a from-import has to carry that provenance.
+    "from numpy import load\nload('/media/kuser/MEDIA_SSD/private.npy')",
+    "from numpy import load as read_array\nread_array('/media/kuser/MEDIA_SSD/x.npy')",
+    # `Image` is itself a modelled receiver, so an aliased from-import has to resolve back to it.
+    "from PIL import Image as I\nI.open('/media/kuser/MEDIA_SSD/private.png')",
+    # A constructor bound by assignment, which is the same binding an import alias makes.
+    "from pathlib import Path\nP = Path\nP('/media/kuser/MEDIA_SSD/private.txt').read_text()",
+    "import os.path\nj = os.path.join\nopen(j('/media/kuser/MEDIA_SSD', 'x.txt')).read()",
+    # A module copied through an assignment is the same module.
+    "import io\nstream = io\nstream.open('/media/kuser/MEDIA_SSD/private.txt').read()",
+    # A reader reached through an INSTANCE: the constructor is what identifies it.
+    "import configparser\nc = configparser.ConfigParser()\nc.read('/media/kuser/MEDIA_SSD/p.ini')",
+    "import configparser\nconfigparser.ConfigParser().read('/media/kuser/MEDIA_SSD/p.ini')",
+    # The keyword spelling of fileinput's argument, and its sequence form.
+    "import fileinput\nfor line in fileinput.input(files = '/media/kuser/MEDIA_SSD/p.txt'):\n    print(line)",
+    # An annotated binding is the same binding.
+    "reader: object = open\nreader('/media/kuser/MEDIA_SSD/private.txt').read()",
+)
+
+# The same indirections pointed somewhere ordinary: these must stay silent.
+_INDIRECT_BENIGN_TERMINAL = (
+    "/usr/bin/python3 script.py",
+    'cd /usr/share/doc && python -c "print(1)"',
+    "gcc -o out main.c",
+    "make -C ./sub all",
+    "git init ./repo",
+    "chmod 644 notes.txt",
+    "cp --targ=./staged payload",
+    "cp --preserve=mode notes.txt copy.txt",
+    # Reading through the same spellings stays silent under a read-silent root.
+    "sed -n '1,5p' /usr/share/doc/notes",
+    "find /usr/share/doc -name '*.txt' | xargs cat",
+    "ls /usr/share | xargs -n 1 echo",
+    "env - FOO=bar cat notes.txt",
+    "pr <(cat notes.txt)",
+    # `basename` / `dirname` print components of a NAME; they open nothing.
+    "basename /media/alice/private.txt",
+    "dirname /media/alice/private.txt",
+    "zcat archive.gz",
+    # `-c` keeps the original unchanged, so a system-root read stays a read.
+    "gzip -dc /usr/share/doc/archive.gz",
+    "gunzip -c /usr/share/doc/archive.gz",
+    "zstd out.txt",
+    "7z a out.7z src",
+    "7z x out.7z",
+    # A `cd` with nothing writing after it, and a relative one, are both ordinary.
+    "cd /usr/share/doc && ls",
+    "cd /usr/share/doc && grep -rn TODO .",
+    "cd build && touch x",
+    "tar -cf out.tar --add-file=local.txt",
+    "date --reference=./notes.txt",
+    "date +%s",
+    # `zip archive src`: the archive is written, the sources are read.
+    "zip local.zip /usr/share/doc/file",
+    "cat <(cat $(echo notes.txt))",
+    "diff <(sort a) <(sort b)",
+    # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
+    'while [ "$d" != "/" ]; do d=$(dirname "$d"); done',
+    '[ "$root" = "/" ] && echo top',
+    # The filesystem root itself is covered by no silent root, but reading it shows only the
+    # top-level names.
+    "ls /",
+    "echo 'a<b' > out.txt",
+    'cat <<< "$(date)"',
+    "curl --config=./local.conf https://example.com",
+    "jq -L ./modules '.a' data.json",
+    "jq -r '.items[] | .name' out.json",
+    "p=hello; cat notes/${p:0:3}",
+    "echo a:b:c",
+    "git commit -m 'fix: thing'",
+    "make -j4",
+    "make -f Makefile.dev install",
+    "busybox cat notes.txt",
+    "test -e ./notes.txt",
+    "[ -d build ]",
+    "test -e /usr/bin/python3",
+    "ln -s ./a ./b",
+    "cat /dev/urandom",
+    "cat /run/systemd/resolve/resolv.conf",
+    "cp /usr/share/doc/x.txt ./local.txt",
+    "mv build/a.txt build/b.txt",
+    "tar -xf /usr/share/doc/archive.tar",
+    "cat /proc/self/status",
+    'echo "`ls`"',
+    "iconv -f utf8 -t ascii local.txt",
+    "iconv -o out.txt local.txt",
+    "if true; then cat notes.txt; fi",
+    "for f in *.txt; do wc -l $f; done",
+    "echo `ls`",
+    # Quoted, so the backticks are literal and nothing runs.
+    f"echo 'a `cat {_OUTSIDE_FILE}` b'",
+    # Quoted, so the shell prints it and opens nothing.
+    f"printf 'see >{_OUTSIDE_FILE}'",
+    f'echo "a > {_OUTSIDE_FILE}"',
+    "wget -o log.txt https://example.com",
+    "git clone --separate-git-dir=.git repo checkout",
+    # No shell opens either of these: `<<` names a here-document delimiter and `<<<` is the data.
+    f"cat <<< {_OUTSIDE_FILE}",
+    f"cat << {_OUTSIDE_DIR}/END",
+    "cat <<EOF\nhello\nEOF",
+    "sort -R input.txt",
+    "cd build && make",
+    "cd /usr/lib && ls",
+    "echo notes.txt | xargs cat",
+    "tar czf out.tgz .",
+    "cat /proc/cpuinfo",
+    "cat /proc/self/status",
+    "diff -u a.txt b.txt",
+    "diff -W 80 --label /before a.txt b.txt",
+    "python train.py",
+    "python -m pytest -q",
+    "python -c 'print(1)'",
+    "bash scripts/build.sh",
+    "python /usr/lib/python3/dist-packages/x.py",
+    "sqlite3 data.db 'select 1'",
+    "rg --files src",
+    "rg pattern src",
+    "git status",
+    "git -C src log",
+    'git -c user.name=x commit -m "y"',
+    'sqlite3 file:local.db "select 1"',
+    "curl https://example.com/x",
+    "curl file:///usr/share/doc/x.txt",
+    "date",
+    "date -d yesterday",
+    "rg --ignore-file=.rgignore needle .",
+    "wget https://example.com/x",
+    "install -d out",
+    "install a.txt b.txt",
+    "git archive -o out.tar HEAD",
+    "curl --output-dir=out -O https://example.com/payload",
+    "wget --directory-prefix=downloads https://example.com/payload",
+    "tar -cf out.tar /usr/share/doc",
+    # A read-only sqlite invocation under a read-silent root. Without `-readonly` the database is a
+    # write, which /usr is not silent for.
+    'sqlite3 -readonly file:/usr/share/x.db "select 1"',
+    "stdbuf -o L cat notes.txt",
+    # The archive is READ, so a listing under the read-silent /usr must not ask.
+    "unzip -l /usr/share/doc/example.zip",
+    "unzip a.zip",
+    "cat ~/notes.txt",
+    "mkdir ~/.config/myapp",
+)
+
+_INDIRECT_BENIGN_PYTHON = (
+    "import os\nprint(os.listdir('/'))",
+    "import os\nfor r, d, f in os.walk('/usr/share/doc'):\n    print(f)",
+    "import tempfile\ntempfile.mkstemp()",
+    "import tempfile\ntempfile.mkdtemp(dir = './scratch')",
+    "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'r')",
+    "import h5py\nh5py.File('/usr/share/doc/model.h5', 'r')",
+    "import os, subprocess\nos.chdir('/usr/share/doc')\nsubprocess.run(['ls', '-la'])",
+    "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
+    "import io\nprint(io.open_code('local.py').read())",
+    "import pandas as pd\nprint(pd.read_excel(io = 'book.xlsx'))",
+    "import subprocess\nsubprocess.run(['python', '-c', 'print(1)'])",
+    "import h5py\nprint(h5py.File('local.h5', 'r')['d'][:])",
+    # A `chdir` with only reads after it, and a relative one, are both ordinary.
+    "import os\nos.chdir('/usr/share/doc')\nprint(open('x').read())",
+    "import os\nos.chdir('build')\nopen('x', 'w').write('y')",
+    # `replace` and `remove` on a str, a list or a DataFrame touch no file.
+    "text = 'a'\nprint(text.replace('/media/alice', 'x'))",
+    "import pandas as pd\ndf = pd.DataFrame()\ndf.replace('/media/alice', 'x')",
+    "items = ['/media/alice']\nitems.remove('/media/alice')",
+    # A gzip/bz2/lzma object takes DATA, exactly like an ordinary file handle.
+    "import gzip\nf = gzip.GzipFile('out.gz', 'w')\nf.write(b'/home/alice/x')",
+    "import shutil\nshutil.unpack_archive('local.zip', 'build')",
+    "import shutil\nshutil.make_archive('backup', 'zip', 'src')",
+    "from zipfile import ZipFile as Z\nz = Z('local.zip', 'w')\nz.write('notes.txt')",
+    "from tarfile import open as topen\nt = topen('o.tar', 'w')\nt.add('notes.txt')",
+    # An ordinary handle's write is DATA, whatever it looks like.
+    "f = open('a.txt', 'w')\nf.write('/home/alice/x')",
+    "import pandas as pd\npd.read_csv(*['local.csv'])",
+    # A splat of something dynamic stays the documented residual rather than a guess.
+    "import pandas as pd\npd.read_csv(*args)",
+    "import subprocess\nsubprocess.run(['/usr/bin/python3', 'train.py'])",
+    "import sqlite3\nsqlite3.connect(database = 'local.db')",
+    "from PIL import Image\nprint(Image.open(fp = 'local.png').size)",
+    "import subprocess\nsubprocess.run(['echo'], executable = '/bin/sh')",
+    "import os\nos.symlink('models', 'local')",
+    "import pandas as pd\nbook = pd.ExcelFile('book.xlsx')\nprint(book.parse(0))",
+    "import os\nprint(os.path.exists('notes.txt'))",
+    "import pathlib\nprint(pathlib.Path('build').is_dir())",
+    "import os\nos.popen('ls').read()",
+    "import zipfile\nzipfile.ZipFile('local.zip').extractall('out')",
+    "from fileinput import input as read\nprint(next(read('notes.txt')))",
+    "paths = ['/usr/share/a', '/usr/share/b']\nopen(paths[1]).read()",
+    "import os\nprint(os.stat('notes.txt'))",
+    "import pathlib\nprint(pathlib.Path('notes.txt').stat())",
+    "import shutil\nshutil.copy('/usr/share/doc/x.txt', 'copy.txt')",
+    "import os\nos.rename('a.txt', 'b.txt')",
+    "import configparser\ncfg = configparser.ConfigParser()\npaths = ['a.ini']\ncfg.read(paths)",
+    "import pandas as pd\npd.read_csv(**{'filepath_or_buffer': 'data.csv'})",
+    "import fileinput as fi\nfor line in fi.input('notes.txt'):\n    print(line)",
+    "value = input('/data directory: ')",
+    "paths = ['notes.txt', 'data.csv']\nopen(paths[0]).read()",
+    "import io\nio.FileIO('notes.txt').read()",
+    # A child command the scan DOES classify, and one that takes no path operand at all: prompting
+    # here and not on the identical terminal command was a difference with no reason behind it.
+    "import subprocess\nsubprocess.run(['echo', '/home/alice/private.txt'])",
+    "import subprocess\nsubprocess.run(['printf', '%s', '/home/alice/private.txt'])",
+    "import configparser\ncfg: configparser.ConfigParser = configparser.ConfigParser()\ncfg.read('settings.ini')",
+    "base = 'local'\nbase = 'other'\nopen(base + '/report').read()",
+    "import configparser\nc = configparser.ConfigParser()\nc.read(filenames = 'settings.ini')",
+    "import glob\nprint(glob.glob(pathname = '*.txt'))",
+    "import glob\nprint(glob.glob('*.txt', root_dir = 'data'))",
+    "import os\nos.chdir('subdir')",
+    "import subprocess\nsubprocess.run(['ls', '-la'])",
+    "import subprocess\nsubprocess.run(['python', 'train.py'])",
+    "import zipfile\nzipfile.ZipFile('out.zip', 'w')",
+    "reader = open\nprint(reader('notes.txt').read())",
+    "import pandas as pd\nrc = pd.read_csv\nrc('data.csv')",
+    # Bound twice, so which function it holds at the call is not answerable.
+    "reader = open\nreader = None\nprint(reader)",
+    'import builtins\nbuiltins.open("notes.txt").read()',
+    "from PIL import Image\nImage.open('local.png')",
+    "reader = open\nreader2 = reader\nreader2('notes.txt').read()",
+    "from pathlib import Path\nPath('/usr').joinpath('share', 'x.txt').read_text()",
+    "open('~/notes.txt').read()",
+    "import numpy as np\nnp.load('data.npy')",
+    "import json\njson.load(open('cfg.json'))",
+    "from pathlib import Path as P\nP('data.csv').read_text()",
+    "from pathlib import Path\nP = Path\nP('data.csv').read_text()",
+    "import io\nstream = io\nstream.open('notes.txt').read()",
+    "import configparser\nc = configparser.ConfigParser()\nc.read('app.ini')",
+    "f = open('x')\nf.read()",
+    "import fileinput\nfor line in fileinput.input(files = 'notes.txt'):\n    print(line)",
+    "reader: object = open\nreader('notes.txt').read()",
+    "Foo().read('/media/kuser/MEDIA_SSD/x')",
+    "stream = something\nstream.open('/media/kuser/MEDIA_SSD/x')",
+    "from numpy import load\nload('data.npy')",
+    "from json import load\nload(open('cfg.json'))",
+    "from PIL import Image as I\nI.open('local.png')",
+)
+
+
+@pytest.mark.parametrize("command", _OUTSIDE_SANDBOX_INDIRECT_TERMINAL)
+def test_auto_mode_prompts_on_indirect_out_of_sandbox_terminal(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+
+
+@pytest.mark.parametrize("code", _OUTSIDE_SANDBOX_INDIRECT_PYTHON)
+def test_auto_mode_prompts_on_indirect_out_of_sandbox_python(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize("command", _INDIRECT_BENIGN_TERMINAL)
+def test_indirect_forms_stay_silent_inside_the_sandbox_terminal(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is False
+
+
+@pytest.mark.parametrize("code", _INDIRECT_BENIGN_PYTHON)
+def test_indirect_forms_stay_silent_inside_the_sandbox_python(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
+@pytest.mark.parametrize("command", _OUTSIDE_SANDBOX_TERMINAL)
+def test_auto_mode_prompts_on_out_of_sandbox_terminal_paths(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+
+
+@pytest.mark.parametrize("code", _OUTSIDE_SANDBOX_PYTHON)
+def test_auto_mode_prompts_on_out_of_sandbox_python_paths(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize("command", _ALLOWLISTED_TERMINAL)
+def test_auto_mode_stays_silent_inside_allowlisted_roots_terminal(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is False
+
+
+@pytest.mark.parametrize("code", _ALLOWLISTED_PYTHON)
+def test_auto_mode_stays_silent_inside_allowlisted_roots_python(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
+def test_configured_cache_reads_stay_silent():
+    """A read under THIS install's own sandbox / model cache is ordinary work, unlike the same path
+    shape under someone else's home."""
+    from core.inference import tool_path_approval as path_gate
+
+    read_roots, write_roots = path_gate._silent_roots()
+    assert read_roots, "no silent roots resolved; every absolute read would prompt"
+    for root in read_roots:
+        assert path_gate._path_needs_approval(os.path.join(root, "model", "config.json")) is False
+    for root in write_roots:
+        assert path_gate._path_needs_approval(os.path.join(root, "out.bin"), writing = True) is False
+
+
+def test_credential_paths_outrank_the_allowlist():
+    """The allowlist must never turn a credential read silent: /etc is read-silent, /etc/shadow is
+    not."""
+    from core.inference import tool_path_approval as path_gate
+    for path in (
+        "/etc/shadow",
+        "/etc/ssh/ssh_host_rsa_key",
+        "~/.ssh/id_rsa",
+        "~/.aws/credentials",
+        "/proc/self/environ",
+    ):
+        assert path_gate._path_needs_approval(path) is True, path
+
+
+def test_relative_paths_never_prompt():
+    """Relative paths resolve inside the per-session workdir, which is the whole reason ordinary
+    in-sandbox work stays silent."""
+    from core.inference import tool_path_approval as path_gate
+    for path in ("out.txt", "./data/train.csv", "build/artifacts/model.gguf", "-", ""):
+        assert path_gate._path_needs_approval(path, writing = True) is False, path
+
+
+def test_windows_spellings_are_treated_as_absolute():
+    """Path syntax is judged on every host, so a Windows-only classifier bug cannot hide behind a
+    Linux test run."""
+    from core.inference import tool_path_approval as path_gate
+    for path in ("C:\\Users\\kuser\\Documents\\taxes.xlsx", "\\\\fileserver\\share\\secret.docx"):
+        assert path_gate._path_needs_approval(path) is True, path
+
+
+def test_unresolved_dynamic_paths_do_not_prompt():
+    """A path the folder could not resolve carries the NUL sentinel; it is not a decidable path, and
+    the dynamic-alias checks cover those separately."""
+    from core.inference import tool_path_approval as path_gate
+    assert path_gate._path_needs_approval("/media/\x00/file") is False
+
+
+def test_parent_escape_sentinel_asks():
+    """\x02 marks a pathlib .parent walking OUT of its root. It is an escape marker, so grouping it
+    with the unresolved marker would turn the signal into a pass."""
+    from core.inference import tool_path_approval as path_gate
+    assert path_gate._path_needs_approval("\x02/file") is True
+
+
+# Every payload below reached a host path with no approval prompt in the first cut of the
+# out-of-sandbox gate, and was found by reviewing it. They are kept as regressions because each one
+# is a DIFFERENT way of losing the path or its access mode, not a variation on one mistake.
+_REVIEWED_BYPASS_PYTHON = (
+    # The write mode was re-derived from a table that does not list `open`, so keyword writes were
+    # checked against the READ allowlist and every read-silent root became silently writable.
+    'open(file = "/etc/evil.conf", mode = "w").write("pwn")',
+    'open(file = "/usr/lib/evil.py", mode = "w")',
+    'import zipfile\nzipfile.ZipFile(file = "/usr/lib/evil.zip", mode = "w")',
+    # Path(p).open("w") carries the mode in the FIRST argument, because the receiver is the path.
+    'from pathlib import Path\nPath("/etc/new_service.conf").open("w").write("payload")',
+    'from pathlib import Path\nPath("/etc/evil.conf").open("w")',
+    # A name rebound later must not reclassify the read that already happened.
+    'p = "/media/x/report.txt"\nprint(open(p).read())\np = "local.txt"',
+    # Binding forms the first pass did not fold.
+    'print(open(p := "/media/x/report.txt").read())',
+    'p: str = "/media/alice/notes.txt"\nprint(open(p).read())',
+    'p, _ = "/media/x/memory.md", 1\nopen(p).read()',
+    # A later absolute component discards the earlier one, so the /usr prefix is not protection.
+    'import os\nopen(os.path.join("/usr", "/media/x/report.txt")).read()',
+    'from pathlib import Path\n(Path("/usr") / "/media/x/report.txt").read_text()',
+    # A child process is not bound by this scan, and its argv carries the access mode.
+    'import subprocess\nsubprocess.run(["touch", "/etc/evil.conf"])',
+    'import subprocess\nsubprocess.run(["cp", "./payload", "/etc/evil.conf"])',
+    'import subprocess\nsubprocess.run("echo evil > /etc/app.conf", shell = True)',
+    # Serializers put the destination second.
+    'import torch\ntorch.save(model, "/media/kuser/model.pt")',
+    'import torch\ntorch.save(model, f = "/media/kuser/model.pt")',
+    'import joblib\njoblib.dump(data, "/media/kuser/data.joblib")',
+    # As a method, the receiver is the source being moved away.
+    'from pathlib import Path\nPath("/media/x/memory.md").rename("stolen.md")',
+    # A single leading backslash is root-relative on Windows, not sandbox-relative.
+    'open(r"\\Users\\alice\\report.txt").read()',
+    # .parent walking out of its root is an escape marker, not an unresolved path.
+    'from pathlib import Path\np = Path("/media/x/sub/file").parent\nopen(p / "memory.md").read()',
+)
+
+_REVIEWED_BYPASS_TERMINAL = (
+    # shlex is not given < and > as punctuation, so the redirect target hid inside one token.
+    "echo CHANGED>/media/review/report.txt",
+    "cat</media/alice/notes.txt",
+    "printf changed>/media/alice/notes.txt",
+    "echo CLOBBERED >| /media/report.txt",
+    # A wrapper brings its own options, so skipping only its name left `5` reading as the command.
+    "timeout 5 cat /media/review/report.txt",
+    "nice -n 5 cat /media/review/report.txt",
+    "env -u UNUSED cat /media/alice/notes.txt",
+    "env -i cat /home/review/Documents/note.txt",
+    # A path can arrive as a flag VALUE, with the flag deciding read or write.
+    "cp --target-directory=/media/review payload.txt",
+    "cp -t /usr/share/review payload.txt",
+    "sort --output=/media/alice/notes.txt local.txt",
+    "sort -o/media/alice/notes.txt local.txt",
+    "sort -o /usr/local/share/note.txt local.txt",
+    "grep -f /media/alice/patterns.txt local.txt",
+    "grep --file=/media/report.txt local.txt",
+    "awk -f /media/kuser/script.awk file.txt",
+    "jq -f /media/kuser/filter.jq file.json",
+    # Creating an archive writes it; only extracting reads it.
+    "tar -cf /media/alice/out.tar local.txt",
+    "tar cf /media/x/out.tar .",
+    "tar -cf /etc/evil.tar .",
+    "tar -C /media/kuser -xf archive.tar",
+)
+
+# Flag values that merely LOOK like paths. A delimiter is data, and prompting on it would nag on
+# ordinary text processing.
+_FLAG_VALUE_NOT_A_PATH = (
+    "cut -d '/' -f 1 data.txt",
+    "sort -t / -k 2 data.txt",
+    "column -s / -t input.txt",
+    "paste -d / a.txt b.txt",
+    "echo a/b | cut -d '/' -f1",
+    "echo hello/world | tr '/' '_'",
+    "grep -e '/pattern' list.txt",
+    "sed -e '/foo/d' -e '/bar/d' file.txt",
+    "head -n 5 data.csv",
+    "tail -c 200 notes.txt",
+    "tar -xf archive.tar",
+    "tar czf out.tgz .",
+    "timeout 5 python train.py",
+    "nice -n 5 make",
+    "env -u FOO python train.py",
+    "sort -o out.txt in.txt",
+    "grep -f patterns.txt list.txt",
+)
+
+
+@pytest.mark.parametrize("code", _REVIEWED_BYPASS_PYTHON)
+def test_reviewed_python_bypasses_now_ask(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize("command", _REVIEWED_BYPASS_TERMINAL)
+def test_reviewed_terminal_bypasses_now_ask(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+
+
+@pytest.mark.parametrize("command", _FLAG_VALUE_NOT_A_PATH)
+def test_flag_values_that_look_like_paths_stay_silent(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        # The first argument is CONTENT; only the receiver is a path.
+        'from pathlib import Path\nPath("route.txt").write_text("/api/v1/items")',
+        'from pathlib import Path\nPath("manifest.txt").write_text("/media/alice/model.gguf")',
+        'from pathlib import Path\nPath("paths.txt").write_bytes(b"/home/review/Documents")',
+        # The builtin prompt is not a filename (the read entry exists for fileinput.input).
+        'val = input("/home/user/data directory: ")',
+        # numpy.save takes the path FIRST, unlike torch.save.
+        "import numpy as np\nnp.save('embeddings.npy', np.zeros(3))",
+        "import torch\ntorch.save(model, 'ckpt.pt')",
+        # C:relative.txt is relative to the drive's current directory, not rooted.
+        'open("C:relative.txt").read()',
+        "import subprocess\nsubprocess.run(['ls', '-la'])",
+    ),
+)
+def test_reviewed_false_positives_stay_silent(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
+def test_high_risk_implies_potentially_unsafe():
+    """The stricter gate must stay a superset of the looser one. Gating the out-of-sandbox check on
+    a leading / or ~ broke that: every Windows spelling skipped the stricter classifier."""
+    for command in (*_REVIEWED_BYPASS_TERMINAL, "cat 'C:\\Users\\alice\\notes.txt'"):
+        if is_high_risk_tool_call("terminal", {"command": command}):
+            assert (
+                is_potentially_unsafe_tool_call("terminal", {"command": command}) is True
+            ), command
+
+
+def test_credentials_inside_a_silent_root_still_ask():
+    """A relocated cache is allowlisted wholesale, so the token store inside it needs a name-based
+    rule: the path no longer contains the directory name the credential regex looks for."""
+    from core.inference import tool_path_approval as path_gate
+
+    read_roots, _ = path_gate._silent_roots()
+    hf_roots = [root for root in read_roots if "huggingface" in root]
+    for root in hf_roots:
+        assert path_gate._path_needs_approval(os.path.join(root, "token")) is True
+        assert path_gate._path_needs_approval(os.path.join(root, "stored_tokens")) is True
+        assert (
+            path_gate._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
+        )
+    for path in ("/etc/gshadow", "/etc/krb5.keytab", "/etc/security/opasswd"):
+        assert path_gate._path_needs_approval(path) is True, path
+
+
+def test_studio_own_state_is_never_silent():
+    """The studio home holds studio.db (chat history, provider and MCP configuration) and auth/
+    next to the sandbox. Several root producers fall back to that directory when their own
+    subdirectory is unset, and one such fallback would grant a tool everything Studio owns."""
+    from core.inference import tool_path_approval as path_gate
+    from utils.paths.storage_roots import studio_root
+
+    home = str(studio_root())
+    for path in (os.path.join(home, "studio.db"), os.path.join(home, "auth", "auth.db")):
+        assert path_gate._path_needs_approval(path) is True, path
+        assert path_gate._path_needs_approval(path, writing = True) is True, path
+    assert is_high_risk_tool_call("terminal", {"command": f"cat {home}/studio.db"}) is True
+    assert is_high_risk_tool_call("terminal", {"command": f"echo x > {home}/studio.db"}) is True
+    # The output subdirectories under it stay silent, or ordinary tool work would prompt.
+    for path in (os.path.join(home, "sandbox", "out.txt"), os.path.join(home, "cache", "m.bin")):
+        assert path_gate._path_needs_approval(path, writing = True) is False, path
+
+
+def test_classification_does_not_create_the_studio_database(tmp_path, monkeypatch):
+    # A classification asks the roots where the model folders and the HF cache are, and both are
+    # stored in `studio.db`. Opening it CREATES it and initialises the schema, so on a first run the
+    # very first tool call was creating the database as a side effect of deciding whether to prompt.
+    # Both root sources skip the lookup when the file is not there, which is the same answer an
+    # empty table gives.
+    import core.inference.tool_path_approval as gate
+
+    home = tmp_path / "studio-home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(gate, "_silent_roots_cache", None)
+    try:
+        before = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file())
+        assert is_high_risk_tool_call("terminal", {"command": "cat /media/review/document.txt"})
+        assert not is_high_risk_tool_call("terminal", {"command": "cat notes.txt"})
+        after = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file())
+        assert before == after, after
+    finally:
+        gate._silent_roots_cache = None
+
+
+def test_a_symlink_inside_a_silent_root_does_not_make_its_target_silent(tmp_path, monkeypatch):
+    # Lexical containment alone allowed `<silent root>/link/secret.txt`, which the kernel opens
+    # outside that root. Resolved only where the answer would otherwise be silence, so the stat is
+    # paid on the paths about to be allowed.
+    import pathlib
+
+    import core.inference.tool_path_approval as gate
+
+    home = tmp_path / "studio-home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(gate, "_silent_roots_cache", None)
+    try:
+        # Roots are case-folded on a case-insensitive platform, so the raw path is not a prefix.
+        folded_home = gate._normalized_fs_text(str(home))
+        root = next((r for r in gate._silent_roots()[0] if r.startswith(folded_home)), None)
+        assert root, "no silent root under the test studio home"
+        pathlib.Path(root).mkdir(parents = True, exist_ok = True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("s")
+        link = pathlib.Path(root) / "link"
+        try:
+            link.symlink_to(outside, target_is_directory = True)
+        except OSError:  # Windows needs a privilege this runner may not hold
+            pytest.skip("this platform does not allow creating a symlink here")
+        assert gate._path_needs_approval(str(link / "secret.txt")) is True
+        assert gate._path_needs_approval(str(link / "secret.txt"), writing = True) is True
+        # A link that stays INSIDE the silent roots but lands on a credential: containment passes
+        # on the resolved path, so the credential check has to run on it too.
+        secret = pathlib.Path(root) / "token"
+        secret.write_text("k")
+        alias = pathlib.Path(root) / "public"
+        alias.symlink_to(secret)
+        assert gate._path_needs_approval(str(alias)) is True
+        # An ordinary path under the same root is unaffected.
+        assert gate._path_needs_approval(str(pathlib.Path(root) / "ok.txt")) is False
+    finally:
+        gate._silent_roots_cache = None
+
+
+def test_a_revoked_root_is_not_served_from_the_cache(tmp_path, monkeypatch):
+    # Scan folders and the configured cache root live in `studio.db`, so removing one has to
+    # invalidate the roots. Keyed on the account and environment only, the old root stayed silent
+    # for up to the 60 second TTL.
+    import core.inference.tool_path_approval as gate
+    from storage.studio_db import studio_db_path
+
+    home = tmp_path / "studio-home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(gate, "_silent_roots_cache", None)
+    builds = []
+
+    def one():
+        builds.append(1)
+        return (("/old",), ("/old",))
+
+    def two():
+        builds.append(1)
+        return (("/new",), ("/new",))
+
+    try:
+        monkeypatch.setattr(gate, "_build_silent_roots", one)
+        assert gate._silent_roots() == (("/old",), ("/old",))
+        assert gate._silent_roots() == (("/old",), ("/old",))
+        assert len(builds) == 1, "the cache did not serve the second call"
+        path = studio_db_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+        monkeypatch.setattr(gate, "_build_silent_roots", two)
+        assert gate._silent_roots() == (("/new",), ("/new",))
+        assert len(builds) == 2
+
+        # The server runs a WAL keeper, so a committed change lands in `studio.db-wal` and leaves
+        # the main file's mtime alone. Read on its own, the revoked root stayed silent until the TTL.
+        def three():
+            builds.append(1)
+            return (("/wal",), ("/wal",))
+
+        path.with_name(path.name + "-wal").write_bytes(b"wal")
+        monkeypatch.setattr(gate, "_build_silent_roots", three)
+        assert gate._silent_roots() == (("/wal",), ("/wal",))
+        assert len(builds) == 3
+    finally:
+        gate._silent_roots_cache = None
