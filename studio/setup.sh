@@ -1932,6 +1932,29 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     fi
+    # Failures and timeouts keep the fast path, as for the ROCm probe below.
+    _fpe_missing_torch=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --missing-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _fpe_missing_torch=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --missing-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _fpe_missing_torch=true
+    fi
+    if [ "$_fpe_missing_torch" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            # Silent once another escape forced the pass: torch comes back with it.
+            if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+                substep "PyTorch is not installed but UV_OFFLINE is set -- left for the next online update"
+            fi
+        else
+            substep "PyTorch is not installed -- forcing dependency pass to reinstall it..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+    unset _fpe_missing_torch
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
