@@ -11743,7 +11743,8 @@ class LlamaCppBackend:
         """Free and total memory per NVIDIA GPU from NVML (studio/nvidia_probe.py in a child
         with a deadline), for a host whose nvidia-smi is absent, stale or hung: read as "no
         GPU", it pinned the embedding server to the CPU. Physical indices, masked like the
-        nvidia-smi rows; rows without a memory reading fall through to the torch probe."""
+        nvidia-smi rows; a visible row without a memory reading voids the answer, so the
+        torch probe decides."""
         if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
             return []
         script = LlamaCppBackend._nvidia_probe_script()
@@ -11774,9 +11775,11 @@ class LlamaCppBackend:
                 free_mib = int(row.get("memory_free_mib") or 0)
                 total_mib = int(row.get("memory_total_mib") or 0)
             except (KeyError, TypeError, ValueError):
-                continue
+                return []
             if free_mib <= 0:
-                continue
+                # One visible GPU without a reading voids the answer: a partial list would
+                # place and split across fewer GPUs than the child enumerates.
+                return []
             gpus.append((idx, free_mib, total_mib))
         gpus.sort(key = lambda g: g[0])
         return gpus
