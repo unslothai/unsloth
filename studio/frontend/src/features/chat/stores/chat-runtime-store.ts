@@ -2291,7 +2291,7 @@ type ChatRuntimeStore = {
    *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
-    { approvalId: string; sessionId: string; autoAllowKey: string }
+    { approvalId: string; sessionId: string; autoAllowKey: string; imageDisclosure?: import("../api/mcp-image-privacy").ImageDisclosure }
   >;
   /** Fetch pill state, independent of `toolsEnabled` (Search). Read only when the provider
    *  supports builtin web_fetch. */
@@ -2548,6 +2548,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    imageDisclosure?: import("../api/mcp-image-privacy").ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -5217,11 +5218,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next.set(sessionId, new Set(current ?? []).add(toolName));
       return { alwaysAllowToolsBySession: next };
     }),
-  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey, imageDisclosure) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
       },
     })),
   clearToolConfirmation: (toolCallId) =>

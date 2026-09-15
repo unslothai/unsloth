@@ -59,6 +59,7 @@ import urllib.parse
 import urllib.request
 
 from core.inference.mcp_client import (
+    MCP_MODEL_TOOL_NAME_RE,
     MCP_TOOL_PREFIX,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
@@ -67,6 +68,8 @@ from core.inference.mcp_client import (
     in_failure_cooloff,
     is_stdio,
     list_tools_async,
+    mcp_model_tool_name,
+    mcp_tool_model_visible,
     parse_server_headers,
     probe_timeout,
     record_probe_failure,
@@ -12253,29 +12256,6 @@ DEEP_RESEARCH_TOOL = {
 }
 
 
-# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so validate up front and skip
-# with a warning.
-_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-
-def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for MCP Apps tools marked app-only (_meta.ui.visibility without "model"): those exist
-    for a server-rendered widget to call, not the LLM."""
-    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
-    for key in ("meta", "_meta"):
-        meta = tool.get(key)
-        if not isinstance(meta, dict):
-            continue
-        ui = meta.get("ui")
-        visibility = ui.get("visibility") if isinstance(ui, dict) else None
-        if visibility is None:
-            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
-            visibility = meta.get("ui/visibility")
-        if isinstance(visibility, (list, tuple)):
-            return "model" in visibility
-    return True
-
-
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
@@ -12286,14 +12266,14 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not _mcp_tool_model_visible(tool):
+        if not mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
+        name = mcp_model_tool_name(server_key, raw_name)
         # Bad chars or oversized names would 400 the whole request; skip + warn
         # so the rest of the tools still ship.
-        if not _OPENAI_FN_NAME_RE.fullmatch(name):
+        if not MCP_MODEL_TOOL_NAME_RE.fullmatch(name):
             logger.warning(
                 "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
                 "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",
@@ -12451,6 +12431,7 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    mcp_image_context = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -12605,6 +12586,32 @@ def execute_tool(
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
+        config_revision = server.get("config_revision")
+
+        # A private reference is a selector, never a grant. Direct callers must
+        # not bypass the interactive disclosure gate or send it as raw input.
+        from .mcp_image_disclosure import stored_image_input_mappings
+
+        image_mapping = next(
+            (
+                mapping
+                for mapping in stored_image_input_mappings(server)
+                if isinstance(mapping, dict) and mapping.get("tool") == tool_name
+            ),
+            None,
+        )
+        mapped_image_tool = image_mapping is not None
+        mapped_field = image_mapping.get("field") if mapped_image_tool else None
+        private_selector = mapped_image_tool and any(
+            isinstance(value, str) and value.startswith("mcp-image-ref-")
+            for value in arguments.values()
+        )
+        private_enabled = mapped_image_tool and bool(server.get("allow_image_attachments"))
+        mapped_argument = isinstance(mapped_field, str) and mapped_field in arguments
+        if (
+            private_selector or (private_enabled and mapped_argument)
+        ) and mcp_image_context is None:
+            return "Error: Sharing this image requires a new explicit image approval."
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -12615,11 +12622,19 @@ def execute_tool(
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
+                and (mcp_image_context is None or bool(row.get("allow_image_attachments")))
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and row.get("config_revision") == config_revision
             )
 
+        private_kwargs = {}
+        if mcp_image_context is not None:
+            from .mcp_image_redaction import McpImageCallContext, PRIVATE_CALL_ERROR
+            if not isinstance(mcp_image_context, McpImageCallContext) or not mapped_image_tool:
+                return PRIVATE_CALL_ERROR
+            private_kwargs["disclosure_context"] = mcp_image_context
         return _fit_result_to_room(
             call_tool_sync(
                 url = url,
@@ -12631,6 +12646,7 @@ def execute_tool(
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
+                **private_kwargs,
             ),
             name,
         )

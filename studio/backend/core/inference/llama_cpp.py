@@ -460,6 +460,7 @@ from state.tool_approvals import (
     new_approval_id,
     wait_tool_decision,
 )
+from core.inference.mcp_image_tool_loop import mcp_image_run_lifetime
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 
@@ -32461,6 +32462,7 @@ class LlamaCppBackend:
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
+    @mcp_image_run_lifetime
     def generate_chat_completion_with_tools(
         self,
         messages: list[dict],
@@ -32490,6 +32492,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        mcp_image_run = None,
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
@@ -34734,13 +34737,28 @@ class LlamaCppBackend:
                         needs_confirm = is_high_risk_tool_call(
                             decision.tool_name, decision.arguments
                         )
-                    approval_id = new_approval_id() if needs_confirm else ""
-                    decision_slot = (
-                        begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                    from core.inference.mcp_image_tool_loop import (
+                        abort_call_decision,
+                        begin_call_decision,
+                        wait_call_decision,
                     )
-                    start_event = decision.tool_start_event()
-                    start_event["approval_id"] = approval_id
-                    start_event["awaiting_confirmation"] = needs_confirm
+
+                    image_approval = (
+                        mcp_image_run.prepare_call(
+                            decision.tool_name, decision.arguments, decision.card_id
+                        )
+                        if mcp_image_run is not None
+                        else None
+                    )
+                    needs_confirm = needs_confirm or image_approval is not None
+                    approval_id, decision_slot, start_event = begin_call_decision(
+                        decision,
+                        image_approval,
+                        needs_confirm,
+                        session_id,
+                        new_approval_id,
+                        begin_tool_decision,
+                    )
 
                     try:
                         # Gated calls are not running yet; a "Running ..." badge
@@ -34756,10 +34774,12 @@ class LlamaCppBackend:
                         yield start_event
 
                         _decision = (
-                            wait_tool_decision(
+                            wait_call_decision(
+                                image_approval,
                                 decision_slot,
                                 approval_id,
                                 cancel_event = cancel_event,
+                                ordinary_wait = wait_tool_decision,
                             )
                             if decision_slot is not None
                             else None
@@ -34817,7 +34837,9 @@ class LlamaCppBackend:
                         decision_slot = None
                     finally:
                         if decision_slot is not None:
-                            abort_tool_decision(decision_slot, approval_id)
+                            abort_call_decision(
+                                image_approval, decision_slot, approval_id, abort_tool_decision
+                            )
 
                     # Can the turn this call is part of still be SERVED once it returns?
                     # Everything below prices what a result may add; nothing asked whether
@@ -35346,6 +35368,8 @@ class LlamaCppBackend:
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
+                            if image_approval is not None:
+                                kwargs["mcp_image_context"] = image_approval.context
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,

@@ -1,18 +1,39 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import json
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+import routes.mcp_servers as routes_mcp
+from models.mcp_servers import McpImageInputMapping, McpServerCreate, McpServerUpdate
 from storage import mcp_servers_db
 
 
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+
+
+def _mapping(
+    field = "picture",
+    encoding = "base64",
+    tool = "inspect",
+):
+    return {"tool": tool, "field": field, "encoding": encoding}
+
+
+def _image_tool(name = "inspect", *fields):
+    return {
+        "name": name,
+        "inputSchema": {
+            "type": "object",
+            "properties": {field: {"type": "string"} for field in fields},
+        },
+    }
 
 
 # ── storage: mcp_servers_db ─────────────────────────────────────────
@@ -35,6 +56,10 @@ def test_create_and_get_server(tmp_path, monkeypatch):
     assert row["headers_json"] == '{"Authorization": "Bearer x"}'
     assert row["is_enabled"] == 1
     assert row["use_oauth"] == 0
+    assert row["allow_image_attachments"] == 0
+    assert json.loads(row["image_input_mappings_json"]) == []
+    assert row["image_input_schema_digest"] is None
+    assert row["config_revision"] == 1
 
 
 def test_list_servers_ordered_by_created_at(tmp_path, monkeypatch):
@@ -48,10 +73,109 @@ def test_list_servers_ordered_by_created_at(tmp_path, monkeypatch):
 def test_update_server_coerces_bools(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a/m")
-    assert mcp_servers_db.update_server("srv1", {"is_enabled": False, "use_oauth": True})
+    assert mcp_servers_db.update_server(
+        "srv1", {"is_enabled": False, "use_oauth": True, "allow_image_attachments": True}
+    )
     row = mcp_servers_db.get_server("srv1")
     assert row["is_enabled"] == 0
     assert row["use_oauth"] == 1
+    assert row["allow_image_attachments"] == 1
+    assert row["config_revision"] == 2
+
+
+def test_create_route_validates_and_round_trips_image_mapping(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+
+    async def tools(**_):
+        tool = _image_tool("inspect_picture", "picture_blob", "threshold")
+        tool["inputSchema"]["properties"]["threshold"] = {"type": "number"}
+        return [tool]
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", tools)
+    monkeypatch.setattr(routes_mcp, "_validate_private_image_endpoint", lambda *_: asyncio.sleep(0))
+    created = asyncio.run(
+        routes_mcp.create_mcp_server(
+            McpServerCreate(
+                display_name = "Images",
+                url = "https://example.com/mcp",
+                allow_image_attachments = True,
+                image_input_mappings = [
+                    McpImageInputMapping(**_mapping("picture_blob", tool = "inspect_picture"))
+                ],
+            ),
+            current_subject = "u",
+        )
+    )
+    assert [mapping.model_dump() for mapping in created.image_input_mappings] == [
+        _mapping("picture_blob", tool = "inspect_picture")
+    ]
+    assert created.allow_image_attachments is True
+    row = mcp_servers_db.get_server(created.id)
+    assert row["image_input_schema_digest"]
+    assert row["config_revision"] == 1
+
+    monkeypatch.setattr(
+        routes_mcp, "get_cached_tools", lambda _: [_image_tool("inspect", "picture", "frame")]
+    )
+    for revision, mappings in enumerate(
+        ([_mapping()], [_mapping("frame", "data_url")], []),
+        start = 2,
+    ):
+        response = asyncio.run(
+            routes_mcp.update_mcp_server(
+                created.id,
+                McpServerUpdate(image_input_mappings = mappings),
+                current_subject = "user",
+            )
+        )
+        assert [mapping.model_dump() for mapping in response.image_input_mappings] == mappings
+        row = mcp_servers_db.get_server(created.id)
+        assert row["config_revision"] == revision
+        assert bool(row["image_input_schema_digest"]) is bool(mappings)
+
+    async def unexpected_probe(**_):
+        raise AssertionError("permission revocation must not contact the server")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", unexpected_probe)
+    updated = asyncio.run(
+        routes_mcp.update_mcp_server(
+            created.id,
+            McpServerUpdate(
+                url = "https://example.com/mcp",
+                headers = None,
+                use_oauth = False,
+                allow_image_attachments = False,
+            ),
+            current_subject = "user",
+        )
+    )
+    assert updated.allow_image_attachments is False
+
+
+@pytest.mark.parametrize(
+    ("url", "use_oauth", "detail"),
+    [
+        ("https://example.test/mcp", True, "OAuth"),
+        ("https://example.test/sse", False, "legacy SSE"),
+    ],
+)
+def test_image_mapping_rejects_unsupported_private_transport(url, use_oauth, detail):
+    with pytest.raises(HTTPException, match = detail):
+        asyncio.run(
+            routes_mcp._validated_image_mappings(
+                [_mapping("image")],
+                url = url,
+                headers = None,
+                use_oauth = use_oauth,
+                model_server_key = "server",
+            )
+        )
+
+
+def test_private_image_endpoint_rejects_redirect(monkeypatch):
+    monkeypatch.setattr(routes_mcp, "prepare_mcp_image_recipient", lambda *_: int("redirect"))
+    with pytest.raises(HTTPException, match = "non-redirecting"):
+        asyncio.run(routes_mcp._validate_private_image_endpoint("https://example.test/mcp", None))
 
 
 def test_update_server_empty_changes_returns_false(tmp_path, monkeypatch):

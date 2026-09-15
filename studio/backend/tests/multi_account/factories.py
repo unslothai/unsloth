@@ -100,6 +100,17 @@ def seed_mcp(account) -> dict[str, str]:
     return {"server_id": SERVER_ID}
 
 
+@seeder("mcp-tools")
+def seed_mcp_tools(account) -> dict[str, str]:
+    from core.inference.mcp_client import cache_tools
+
+    params = seed_mcp(account)
+    run_as(
+        account, cache_tools, SERVER_ID, [{"name": "inspect", "inputSchema": {"type": "object"}}]
+    )
+    return params
+
+
 SKILL_NAME = "matrix-skill"
 
 
@@ -152,6 +163,7 @@ CORE_FACTORIES = {
     "routes.mcp_servers:PUT:/{server_id}": Factory(
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
+    "routes.mcp_servers:GET:/{server_id}/tools": Factory("mcp-tools", fragment = "inspect"),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
     "routes.skills:PUT:/{name}/enabled": Factory(
         "skill", {"enabled": False}, fragment = SKILL_NAME, absent = SENTINEL

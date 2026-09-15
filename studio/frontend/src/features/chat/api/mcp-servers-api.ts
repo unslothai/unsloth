@@ -11,7 +11,16 @@ import {
   trackMcpServerMutation,
 } from "./mcp-server-mutation-tracker";
 
+export type McpImageInputMapping = {
+  tool: string;
+  field: string;
+  encoding: "base64" | "data_url";
+};
+
 export interface McpServerConfig {
+  allow_image_attachments: boolean;
+  image_input_mappings?: McpImageInputMapping[];
+  config_revision?: number;
   id: string;
   builtin_id: string | null;
   display_name: string;
@@ -169,6 +178,8 @@ export function createMcpServer(payload: {
   headers?: Record<string, string>;
   isEnabled?: boolean;
   useOauth?: boolean;
+  allowImageAttachments?: boolean;
+  imageInputMappings?: McpImageInputMapping[];
 }): Promise<McpServerConfig> {
   return trackMcpServerMutation(
     mcpRequest("/", {
@@ -179,6 +190,8 @@ export function createMcpServer(payload: {
         headers: payload.headers ?? null,
         is_enabled: payload.isEnabled ?? true,
         use_oauth: payload.useOauth ?? false,
+        allow_image_attachments: payload.allowImageAttachments ?? false,
+        image_input_mappings: payload.imageInputMappings ?? [],
       },
     }),
   );
@@ -193,15 +206,20 @@ export function updateMcpServer(
     headers?: Record<string, string> | null;
     isEnabled?: boolean;
     useOauth?: boolean;
+    allowImageAttachments?: boolean;
+    imageInputMappings?: McpImageInputMapping[];
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
+  if (payload.imageInputMappings !== undefined) body.image_input_mappings = payload.imageInputMappings;
   if (payload.displayName !== undefined)
     body.display_name = payload.displayName;
   if (payload.url !== undefined) body.url = payload.url;
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;
   if (payload.useOauth !== undefined) body.use_oauth = payload.useOauth;
+  if (payload.allowImageAttachments !== undefined)
+    body.allow_image_attachments = payload.allowImageAttachments;
   return trackMcpServerMutation(
     mcpRequest(`/${serverId}`, { method: "PUT", body }),
   );

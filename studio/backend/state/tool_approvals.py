@@ -12,6 +12,7 @@ The slot is registered with ``begin_tool_decision`` *before* the loop yields ``t
 
 import secrets
 import threading
+from dataclasses import dataclass
 from typing import Optional
 
 # Generous ceiling so a user can deliberate; the stop button or a disconnect still breaks the wait early via cancel_event.
@@ -23,6 +24,41 @@ TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
 _lock = threading.Lock()
 # approval_id -> {"event": threading.Event, "decision": str|None, "session": str}
 _pending: dict[str, dict] = {}
+
+
+@dataclass(frozen = True)
+class McpImageDisclosureBinding:
+    """Public, immutable facts covered by one image disclosure decision.
+
+    Private bytes and encoded payloads must never be stored in approval state.
+    The transport compares this complete value again when it consumes the grant.
+    """
+
+    subject: str
+    session_id: str
+    thread_id: str
+    generation_id: str
+    call_id: str
+    attachment_ref: str
+    message_id: str
+    attachment_id: str
+    attachment_sha256: str
+    mime_type: str
+    size_bytes: int
+    server_id: str
+    config_revision: int
+    tool_name: str
+    field: str
+    encoding: str
+    schema_digest: str
+    public_arguments_digest: str
+    recipient: str
+
+
+# Image disclosure decisions deliberately use a separate namespace and state
+# machine. Ordinary tool confirmations, including remembered/automatic allows,
+# cannot resolve or consume these records.
+_mcp_image_pending: dict[str, dict] = {}
 
 
 def new_approval_id() -> str:
@@ -101,3 +137,134 @@ def resolve_tool_decision(
         slot["decision"] = decision
         slot["event"].set()
     return True
+
+
+def begin_mcp_image_disclosure(
+    binding: McpImageDisclosureBinding, approval_id: Optional[str] = None
+) -> tuple[str, dict]:
+    """Register a purpose-specific, one-use image disclosure decision."""
+    approval_id = approval_id or new_approval_id()
+    slot = {
+        "event": threading.Event(),
+        "decision": None,
+        "state": "pending",
+        "binding": binding,
+    }
+    with _lock:
+        if approval_id in _pending or approval_id in _mcp_image_pending:
+            raise ValueError("approval id is already in use")
+        _mcp_image_pending[approval_id] = slot
+    return approval_id, slot
+
+
+def resolve_mcp_image_disclosure(
+    approval_id: Optional[str],
+    decision: str,
+    *,
+    current_subject: str,
+    session_id: Optional[str] = None,
+) -> bool:
+    """Resolve only a matching authenticated image disclosure prompt."""
+    if not approval_id or decision not in {"allow", "deny"}:
+        return False
+    with _lock:
+        slot = _mcp_image_pending.get(approval_id)
+        if not slot or slot["state"] != "pending":
+            return False
+        binding = slot["binding"]
+        if binding.subject != current_subject:
+            return False
+        if session_id is not None and binding.session_id != (session_id or ""):
+            return False
+        slot["decision"] = decision
+        slot["state"] = "allowed" if decision == "allow" else "denied"
+        slot["event"].set()
+        if decision == "deny":
+            _mcp_image_pending.pop(approval_id, None)
+    return True
+
+
+def wait_mcp_image_disclosure(
+    slot: dict,
+    approval_id: str,
+    cancel_event = None,
+    timeout: float = _DECISION_TIMEOUT,
+) -> str:
+    """Wait for an explicit decision while retaining an allowed grant for commit."""
+    waited = 0.0
+    while not slot["event"].wait(timeout = 0.5):
+        if cancel_event is not None and cancel_event.is_set():
+            abort_mcp_image_disclosure(slot, approval_id)
+            return "deny"
+        waited += 0.5
+        if waited >= timeout:
+            abort_mcp_image_disclosure(slot, approval_id)
+            return "deny"
+    with _lock:
+        current = _mcp_image_pending.get(approval_id)
+        if current is not slot or slot["state"] != "allowed":
+            return "deny"
+        return "allow"
+
+
+def consume_mcp_image_disclosure(
+    approval_id: str, expected_binding: McpImageDisclosureBinding, recipient: str
+) -> bool:
+    """Atomically spend an allowed grant at the transport dispatch boundary."""
+    with _lock:
+        slot = _mcp_image_pending.get(approval_id)
+        if not slot or slot["state"] != "allowed":
+            return False
+        binding = slot["binding"]
+        if binding != expected_binding or binding.recipient != recipient:
+            return False
+        slot["state"] = "committed"
+        _mcp_image_pending.pop(approval_id, None)
+        return True
+
+
+def abort_mcp_image_disclosure(slot: dict, approval_id: str) -> None:
+    """Revoke a pending or allowed-but-uncommitted disclosure."""
+    with _lock:
+        if _mcp_image_pending.get(approval_id) is slot:
+            slot["state"] = "revoked"
+            slot["decision"] = "deny"
+            slot["event"].set()
+            _mcp_image_pending.pop(approval_id, None)
+
+
+def revoke_mcp_image_disclosures(
+    *,
+    subject: Optional[str] = None,
+    server_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+    attachment_id: Optional[str] = None,
+    generation_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> int:
+    """Revoke every uncommitted disclosure matching all supplied selectors."""
+    selectors = {
+        "subject": subject,
+        "server_id": server_id,
+        "thread_id": thread_id,
+        "message_id": message_id,
+        "attachment_id": attachment_id,
+        "generation_id": generation_id,
+        "session_id": session_id,
+    }
+    revoked = 0
+    with _lock:
+        for approval_id, slot in list(_mcp_image_pending.items()):
+            binding = slot["binding"]
+            if any(
+                value is not None and getattr(binding, name) != value
+                for name, value in selectors.items()
+            ):
+                continue
+            slot["state"] = "revoked"
+            slot["decision"] = "deny"
+            slot["event"].set()
+            _mcp_image_pending.pop(approval_id, None)
+            revoked += 1
+    return revoked

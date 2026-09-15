@@ -522,6 +522,31 @@ def test_a_raising_config_check_fails_closed(clients):
     assert mcp_client._mcp_sessions == {}
 
 
+@pytest.mark.parametrize(
+    "cached,oauth",
+    [(False, False), (False, True), (True, False)],
+    ids = ["one-shot", "oauth", "cached"],
+)
+def test_http_rechecks_configuration_after_connect_or_probe(clients, monkeypatch, cached, oauth):
+    current = [True]
+    method = "list_tools_mcp" if cached else "__aenter__"
+    original = getattr(RecordingClient, method)
+    kwargs = {"scope": SCOPE} if cached else {"use_oauth": oauth}
+    if cached:
+        _call(HTTP_URL, scope = SCOPE)
+        next(iter(mcp_client._mcp_sessions.values())).dirty = True
+
+    async def revoke_after_boundary(self):
+        result = await original(self)
+        current[0] = False
+        return result
+
+    monkeypatch.setattr(RecordingClient, method, revoke_after_boundary)
+    out = _call(HTTP_URL, config_check = lambda: current[0], **kwargs)
+    assert "updated or removed" in out
+    assert sum(len(client.calls) for client in clients) == int(cached)
+
+
 # --------------------------------------------------------------------------
 # Failure handling
 # --------------------------------------------------------------------------

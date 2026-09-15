@@ -84,15 +84,27 @@ function sourceBetween(path: string, start: string, end: string): string {
 }
 
 test("attachment and send gates forward projector fallback state", () => {
+  const provider = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(provider, /modelLoaded && !state\.supportsTools/);
   const attachmentGate = sourceBetween(
     "../src/features/chat/runtime-provider.tsx",
     "const unavailableReason = getImageInputUnavailableReason({",
-    "if (unavailableReason)",
+    "const mcpToolOnly = await this.mcpToolOnlyEnabled();",
   );
   assert.match(
     attachmentGate,
     /mmprojFallbackReason:\s*state\.mmprojFallbackReason/,
   );
+  const mcpSendGate = sourceBetween(
+    "../src/features/chat/runtime-provider.tsx",
+    "const toolOnly =",
+    "const image = await this.fileToBase64DataURL",
+  );
+  assert.match(mcpSendGate, /currentToolOnly = await this\.mcpToolOnlyEnabled\(\)/);
+  assert.match(mcpSendGate, /currentToolOnly !== toolOnly/);
 
   const sendGate = sourceBetween(
     "../src/features/chat/api/chat-adapter.ts",

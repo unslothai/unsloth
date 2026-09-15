@@ -4046,6 +4046,51 @@ def test_an_mlx_count_prices_the_tools_the_completion_would_render(
     assert backend.messages[-1]["content"] == "sure  done", "stale markup the completion removes"
 
 
+def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(monkeypatch):
+    from core.inference import mcp_image_tool_loop
+    from routes import inference as route
+    from state import tool_policy
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "image_payload": {
+                "type": "string",
+                "default": "data:image/png;base64,PRIVATE_MLX_COUNT_CANARY",
+            }
+        },
+    }
+    tool = {
+        "function": {"name": "mcp__mlx-image__lookup", "parameters": schema},
+    }
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(
+        mcp_image_tool_loop,
+        "_mapping_for_name",
+        lambda _: ({}, {"field": "image_payload"}, schema, "digest"),
+    )
+
+    async def _no_builtin_tools(_payload, *, tools_on, mcp_allowed):
+        assert (tools_on, mcp_allowed) == (True, False)
+        return [tool]
+
+    monkeypatch.setattr(route, "_select_request_tools", _no_builtin_tools)
+    backend = _RenderRecordingBackend()
+    response = _count_hi(
+        monkeypatch,
+        backend,
+        mcp_image_attachment = {"message_id": "message-1", "attachment_id": "image-1"},
+    )
+
+    assert json.loads(response.body)["input_tokens"] == 11
+    public = backend.tools[0]["function"]["parameters"]
+    image_field = public["properties"]["image_payload"]
+    assert image_field["title"] == "Image attachment reference"
+    assert image_field["enum"][0].startswith("mcp-image-ref-")
+    assert "PRIVATE" not in json.dumps(public)
+    assert schema["properties"]["image_payload"]["default"].endswith("PRIVATE_MLX_COUNT_CANARY")
+
+
 def test_an_mlx_count_prices_the_relay_the_tool_loop_did_not_claim(monkeypatch):
     """A declined request carrying tool history goes to the relay, which keeps the
     structured tool_calls the extraction flattens away."""

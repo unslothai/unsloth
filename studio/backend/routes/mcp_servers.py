@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
+from fastmcp.mcp_config import infer_transport_type_from_url
 from integrations.blender import service as blender
 from models.mcp_servers import BlenderSettings, BlenderSetup, McpBuiltinResponse
 
@@ -23,13 +24,16 @@ from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     clear_oauth_tokens_async,
+    close_mcp_image_recipient,
     close_mcp_sessions,
+    get_cached_tools,
     invalidate_tool_cache,
     is_stdio,
     join_stdio_command,
     list_tools_async,
     parse_server_headers,
     parse_stdio_command,
+    prepare_mcp_image_recipient,
     probe_timeout,
     record_probe_failure,
     serialize_mcp_server_mutation,
@@ -37,6 +41,11 @@ from core.inference.mcp_client import (
     stdio_mcp_enabled,
 )
 from core.inference.mcp_config_import import parse_mcp_config
+from core.inference.mcp_image_disclosure import (
+    McpImageDisclosureError,
+    stored_image_input_mappings,
+    validate_image_input_mappings,
+)
 from models.mcp_servers import (
     BlenderTest,
     McpServerCreate,
@@ -161,9 +170,76 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
+        allow_image_attachments = bool(row.get("allow_image_attachments")),
+        image_input_mappings = stored_image_input_mappings(row),
+        config_revision = int(row.get("config_revision") or 1),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
+
+
+async def _validate_private_image_endpoint(url: str, headers: dict[str, str] | None) -> None:
+    if is_stdio(url):
+        return
+    identity = None
+    try:
+        identity = await asyncio.to_thread(
+            prepare_mcp_image_recipient,
+            url,
+            headers,
+            timeout = probe_timeout(url, False),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Could not validate private image delivery. Use the final non-redirecting endpoint.",
+        ) from exc
+    finally:
+        if identity is not None:
+            close_mcp_image_recipient(identity)
+
+
+async def _validated_image_mappings(
+    mappings,
+    *,
+    url: str,
+    headers: dict[str, str] | None,
+    use_oauth: bool,
+    model_server_key: str,
+    server_id: str | None = None,
+) -> tuple[list[dict[str, str]], str | None]:
+    if not mappings:
+        return [], None
+    if use_oauth:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image attachments are not supported for OAuth MCP servers.",
+        )
+    if not is_stdio(url) and infer_transport_type_from_url(url) == "sse":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image attachments require Streamable HTTP; legacy SSE is not supported.",
+        )
+    tools = get_cached_tools(server_id) if server_id else None
+    if tools is None:
+        try:
+            tools = await list_tools_async(
+                url = url,
+                headers = headers,
+                timeout = probe_timeout(url, use_oauth),
+                use_oauth = use_oauth,
+            )
+        except Exception as exc:  # noqa: BLE001 - fixed safe mapping error
+            raise HTTPException(
+                status_code = 400,
+                detail = "Could not validate image mappings against this server's tools.",
+            ) from exc
+    try:
+        validated = validate_image_input_mappings(mappings, tools, server_key = model_server_key)
+    except McpImageDisclosureError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    await _validate_private_image_endpoint(url, headers)
+    return validated
 
 
 def _blender_row():
@@ -312,6 +388,51 @@ def list_mcp_servers(
     return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 
 
+@router.get("/{server_id}/tools")
+async def list_mcp_server_tools(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    """Return exact discovered tool names and schemas for explicit mapping UI."""
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
+    tools = get_cached_tools(server_id)
+    if tools is None:
+        try:
+            tools = await list_tools_async(
+                url = server["url"],
+                headers = parse_server_headers(server),
+                timeout = probe_timeout(server["url"], bool(server.get("use_oauth"))),
+                use_oauth = bool(server.get("use_oauth")),
+            )
+        except Exception as exc:  # noqa: BLE001 - fixed safe discovery error
+            raise HTTPException(
+                status_code = 400,
+                detail = "Could not discover tools for image input configuration.",
+            ) from exc
+        current = mcp_servers_db.get_server(server_id)
+        if current is None or any(
+            current.get(key) != server.get(key) for key in TOOL_CACHE_INVALIDATING_FIELDS
+        ):
+            raise HTTPException(status_code = 409, detail = "MCP server configuration changed")
+        cache_tools(server_id, tools)
+    public_tools = []
+    for tool in tools:
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            continue
+        schema = tool.get("inputSchema")
+        if not isinstance(schema, dict):
+            schema = tool.get("input_schema")
+        public_tools.append(
+            {"name": tool["name"], "inputSchema": schema if isinstance(schema, dict) else {}}
+        )
+    return {"tools": public_tools}
+
+
 @router.post("/", response_model = McpServerResponse, status_code = 201)
 async def create_mcp_server(
     payload: McpServerCreate,
@@ -328,8 +449,15 @@ async def create_mcp_server(
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
-
     server_id = uuid.uuid4().hex[:16]
+    mappings, schema_digest = await _validated_image_mappings(
+        payload.image_input_mappings,
+        url = url,
+        headers = headers,
+        use_oauth = use_oauth,
+        model_server_key = server_id,
+    )
+
     mcp_servers_db.create_server(
         id = server_id,
         display_name = display_name,
@@ -337,6 +465,9 @@ async def create_mcp_server(
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
+        allow_image_attachments = payload.allow_image_attachments,
+        image_input_mappings_json = json.dumps(mappings, sort_keys = True),
+        image_input_schema_digest = schema_digest,
     )
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
@@ -355,14 +486,16 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
     if "headers" in sent:
         headers = _normalize_headers(payload.headers)
         changes["headers_json"] = json.dumps(headers) if headers else None
-    if "is_enabled" in sent:
-        if payload.is_enabled is None:
-            raise HTTPException(status_code = 400, detail = "is_enabled must be true or false")
-        changes["is_enabled"] = payload.is_enabled
-    if "use_oauth" in sent:
-        if payload.use_oauth is None:
-            raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
-        changes["use_oauth"] = payload.use_oauth
+    for field in ("is_enabled", "use_oauth", "allow_image_attachments"):
+        if field in sent:
+            value = getattr(payload, field)
+            if value is None:
+                raise HTTPException(status_code = 400, detail = f"{field} must be true or false")
+            changes[field] = value
+    if "image_input_mappings" in sent and payload.image_input_mappings is None:
+        raise HTTPException(
+            status_code = 400, detail = "image_input_mappings must be a list; use [] to clear it"
+        )
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
         changes["use_oauth"] = False
@@ -389,7 +522,8 @@ async def update_mcp_server(
                 status_code = 400,
                 detail = "Use the managed integration setup to configure or enable this server.",
             )
-    if not changes:
+    mapping_sent = "image_input_mappings" in payload.model_fields_set
+    if not changes and not mapping_sent:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
     # env/name/enabled flag. Before every side effect, so a refusal leaves the row, its OAuth tokens, cache and
@@ -404,6 +538,45 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
+    proposed_url = changes.get("url", old["url"])
+    proposed_headers_json = changes.get("headers_json", old.get("headers_json"))
+    try:
+        proposed_headers = json.loads(proposed_headers_json) if proposed_headers_json else None
+    except (TypeError, ValueError):
+        proposed_headers = None
+    proposed_oauth = bool(changes.get("use_oauth", old.get("use_oauth")))
+    proposed_image_permission = bool(
+        changes.get("allow_image_attachments", old.get("allow_image_attachments"))
+    )
+    proposed_mappings = (
+        payload.image_input_mappings if mapping_sent else stored_image_input_mappings(old)
+    )
+    mapping_transport_changed = any(
+        key in changes and changes[key] != old.get(key)
+        for key in ("url", "headers_json", "use_oauth")
+    )
+    mapping_inputs_changed = mapping_sent or (
+        proposed_image_permission
+        and (mapping_transport_changed or not bool(old.get("allow_image_attachments")))
+    )
+    if proposed_mappings and mapping_inputs_changed:
+        mappings, schema_digest = await _validated_image_mappings(
+            proposed_mappings,
+            url = proposed_url,
+            headers = proposed_headers,
+            use_oauth = proposed_oauth,
+            server_id = (
+                server_id
+                if not any(key in changes for key in TOOL_CACHE_INVALIDATING_FIELDS)
+                else None
+            ),
+            model_server_key = "blender" if old.get("builtin_id") == "blender" else server_id,
+        )
+        changes["image_input_mappings_json"] = json.dumps(mappings, sort_keys = True)
+        changes["image_input_schema_digest"] = schema_digest
+    elif mapping_sent:
+        changes["image_input_mappings_json"] = "[]"
+        changes["image_input_schema_digest"] = None
     # Clear persisted OAuth tokens when the URL changes or OAuth is disabled
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
@@ -419,6 +592,9 @@ async def update_mcp_server(
     invalidates_tools = any(
         changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
     )
+    from state.tool_approvals import revoke_mcp_image_disclosures
+
+    revoke_mcp_image_disclosures(subject = current_subject, server_id = server_id)
     mcp_servers_db.update_server(server_id, changes)
     if invalidates_tools:
         invalidate_tool_cache(server_id)
@@ -441,6 +617,9 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
         )
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
+    from state.tool_approvals import revoke_mcp_image_disclosures
+
+    revoke_mcp_image_disclosures(subject = current_subject, server_id = server_id)
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
@@ -482,21 +661,44 @@ async def refresh_mcp_server_tools(
             exc_info = True,
         )
         current = mcp_servers_db.get_server(server_id)
-        if current is not None and not any(
-            current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
-        ):
+        if current == server:
             # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row changed
             # while the probe was awaiting, the FAILURE belongs to the old config and must not park the newly edited
             # server.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
+    # The revision makes a change followed by a revert stale too. Discovery must
+    # never restore the mapping that existed before its network await.
     current = mcp_servers_db.get_server(server_id)
-    if current is not None and not any(
-        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
-    ):
+    if current == server:
         cache_tools(server_id, tools)
-    return McpServerProbeResult(ok = True, tool_count = len(tools))
+    image_mapping_errors: list[str] = []
+    try:
+        mappings = json.loads(server.get("image_input_mappings_json") or "[]")
+        if not isinstance(mappings, list):
+            mappings = []
+        if mappings:
+            server_key = "blender" if server.get("builtin_id") == "blender" else server_id
+            normalized, schema_digest = validate_image_input_mappings(
+                mappings, tools, server_key = server_key
+            )
+            current = mcp_servers_db.get_server(server_id)
+            if current == server and schema_digest != current.get("image_input_schema_digest"):
+                from state.tool_approvals import revoke_mcp_image_disclosures
+                revoke_mcp_image_disclosures(subject = current_subject, server_id = server_id)
+                mcp_servers_db.update_server(
+                    server_id,
+                    {
+                        "image_input_mappings_json": json.dumps(normalized, sort_keys = True),
+                        "image_input_schema_digest": schema_digest,
+                    },
+                )
+    except (McpImageDisclosureError, TypeError, ValueError) as exc:
+        image_mapping_errors.append(str(exc))
+    return McpServerProbeResult(
+        ok = True, tool_count = len(tools), image_mapping_errors = image_mapping_errors
+    )
 
 
 @router.post("/import", response_model = McpServerImportResult)

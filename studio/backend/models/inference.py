@@ -1976,6 +1976,26 @@ def _normalize_permission_mode(value: Any) -> Any:
     return value
 
 
+class McpImageAttachmentSelection(BaseModel):
+    """Server-resolved private image selected from the current user message."""
+
+    model_config = {"extra": "forbid"}
+    message_id: str = Field(..., min_length = 1, max_length = 256)
+    attachment_id: str = Field(..., min_length = 1, max_length = 256)
+
+
+class McpImagePolicyServerRevision(BaseModel):
+    model_config = {"extra": "forbid"}
+    server_id: str = Field(..., min_length = 1, max_length = 256)
+    config_revision: int = Field(..., ge = 1)
+
+
+class McpImagePolicySnapshot(BaseModel):
+    model_config = {"extra": "forbid"}
+    tool_only: bool
+    servers: list[McpImagePolicyServerRevision] = Field(default_factory = list, max_length = 256)
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -2179,6 +2199,17 @@ class ChatCompletionRequest(BaseModel):
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
+    )
+    mcp_image_attachment: Optional[McpImageAttachmentSelection] = Field(
+        None,
+        description = (
+            "[x-unsloth] Private MCP image selected from the current persisted user message. "
+            "Studio resolves it and gives the model only an opaque reference."
+        ),
+    )
+    mcp_image_policy: Optional[McpImagePolicySnapshot] = Field(
+        None,
+        description = "[x-unsloth] Studio's checked per-server image-policy revisions for this submission.",
     )
     deep_research_armed: Optional[bool] = Field(
         None,
@@ -2619,6 +2650,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         None,
         description = "[x-unsloth] Append tools from every enabled MCP server",
     )
+    mcp_image_attachment: Optional[McpImageAttachmentSelection] = Field(
+        None,
+        description = "[x-unsloth] Private MCP image selection used to price rewritten MCP schemas.",
+    )
     deep_research_armed: Optional[bool] = Field(
         None,
         description = (
@@ -2707,6 +2742,7 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+    purpose: Literal["tool", "mcp_image_disclosure"] = "tool"
 
 
 class OpenAIContainerRequest(BaseModel):

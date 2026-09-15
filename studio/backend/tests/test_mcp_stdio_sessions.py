@@ -125,6 +125,24 @@ def test_stdio_call_without_scope_is_one_shot(fake_clients):
     assert all(client.entered == 1 and _settled(client) == 1 for client in fake_clients)
 
 
+def test_cached_stdio_rechecks_configuration_after_probe(fake_clients, monkeypatch):
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "private-probe-test")
+    next(iter(mcp_client._mcp_sessions.values())).dirty = True
+    current, original = [True], FakeClient.list_tools_mcp
+
+    async def probe_then_revoke(self):
+        result = await original(self)
+        current[0] = False
+        return result
+
+    monkeypatch.setattr(FakeClient, "list_tools_mcp", probe_then_revoke)
+    result = call_tool_sync(
+        STDIO_URL, None, "t", {}, scope = "private-probe-test", config_check = lambda: current[0]
+    )
+    assert "updated or removed" in result
+    assert len(fake_clients[0].calls) == 1
+
+
 def test_stdio_sessions_keyed_by_url_and_env(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {})
     call_tool_sync("npx other-server", None, "t", {})

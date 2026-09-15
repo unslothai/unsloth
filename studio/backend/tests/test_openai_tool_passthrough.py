@@ -9406,11 +9406,17 @@ class TestApiMonitorSafetensorsUsage:
 
         asyncio.run(_run())
 
-    def test_non_streaming_safetensors_tool_task_cancel_finalizes_monitor(self, monkeypatch):
+    @pytest.mark.parametrize("mcp_enabled", [False, True])
+    def test_non_streaming_safetensors_tool_task_cancel_finalizes_monitor(
+        self, monkeypatch, mcp_enabled
+    ):
         import routes.inference as inf_mod
+        from core.inference import tools as tools_mod
+
         async def _run():
             reset_tool_policy()
             reset_called = False
+            cancelled_hops = []
 
             class DummyBackend:
                 active_model_name = "safe-model"
@@ -9431,16 +9437,23 @@ class TestApiMonitorSafetensorsUsage:
                 *_args,
                 **_kwargs,
             ):
-                # Only the generation hop should cancel; resolution runs before the row opens.
+                if _kwargs.get("cancel_event", 0) is None:
+                    return func(*_args, **_kwargs)
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
                 # Resolving what is already serving is pre-row work too, offloaded for the
                 # same reason: _loaded_satisfies reaches the singleton, whose build detects.
                 if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
                     return func(*_args, **_kwargs)
+                cancelled_hops.append(getattr(func, "__name__", ""))
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
+
+            async def no_mcp_tools():
+                return []
+
+            monkeypatch.setattr(tools_mod, "get_enabled_mcp_tools", no_mcp_tools)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod.asyncio, "to_thread", fake_to_thread)
             monkeypatch.setattr(
@@ -9465,6 +9478,7 @@ class TestApiMonitorSafetensorsUsage:
                 enable_tools = True,
                 enabled_tools = ["web_search"],
                 cancel_id = "safe-cancel",
+                mcp_enabled = mcp_enabled,
             )
 
             with pytest.raises(asyncio.CancelledError):
@@ -9478,6 +9492,8 @@ class TestApiMonitorSafetensorsUsage:
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
             assert reset_called is True
+            expected = "prepare_image_tool_request" if mcp_enabled else "_drain_to_text"
+            assert cancelled_hops == [expected]
 
         asyncio.run(_run())
 

@@ -56,6 +56,7 @@ function liftAdapterFunction(opener: string): string {
 
 const privateContentPredicateJs = ts.transpileModule(
   [
+    "function modelVisibleMessage(message) { return message; }",
     liftAdapterFunction("export function messagesContainImage("),
     liftAdapterFunction("function isPrivateMediaPart("),
     liftAdapterFunction("export function messagesUsePrivateContent("),
