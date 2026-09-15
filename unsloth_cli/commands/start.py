@@ -4717,10 +4717,44 @@ def _pi_settings_entries(
     return result
 
 
+def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
+    """Undo what an earlier launch linked and copied, leaving session state alone."""
+    targets = [agent_dir / name for name in _PI_USER_RESOURCE_DIRS]
+    targets.append(home / ".agents" / "skills")
+    for target in targets:
+        if target.is_symlink() or _is_junction(target):
+            _remove_overlay_entry(target)
+    manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
+    previous = _read_json_object(manifest_path)
+    if not previous:
+        return
+    settings_path = agent_dir / "settings.json"
+    settings = _read_json_object(settings_path)
+    if settings is None:
+        return
+    before = json.dumps(settings, sort_keys = True)
+    for key, copied in previous.items():
+        own = settings.get(key)
+        if isinstance(copied, list) and isinstance(own, list):
+            rest = [item for item in own if item not in copied]
+            if rest:
+                settings[key] = rest
+            else:
+                settings.pop(key, None)
+        elif own == copied:
+            settings.pop(key, None)
+    if json.dumps(settings, sort_keys = True) != before:
+        _write_private_json(settings_path, settings)
+    manifest_path.unlink(missing_ok = True)
+
+
 def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
     """Expose selected user Pi resources inside an isolated session."""
     if _wsl_windows_executable(["pi"]):
-        # Windows Pi cannot reliably follow WSL links into mounted drives.
+        # Windows Pi cannot reliably follow WSL links into mounted drives. A persisted
+        # session set up by an earlier Linux pi still holds them, so drop those rather
+        # than hand Windows Pi the very resources this branch exists to withhold.
+        _clear_pi_user_resources(agent_dir, home)
         return
     user_home = Path.home()
     configured = os.environ.get("PI_CODING_AGENT_DIR")

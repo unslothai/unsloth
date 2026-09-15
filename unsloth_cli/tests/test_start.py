@@ -5647,6 +5647,37 @@ def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypa
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, monkeypatch):
+    # Switching a persisted session from a Linux pi to a Windows one must not hand
+    # Windows Pi the WSL-backed links the skip exists to withhold.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"packages": ["npm:user-pkg"], "extensions": ["extensions/mine.ts"]})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert (agent_dir / "extensions").is_symlink()
+    # Something the session set for itself, which must survive.
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    settings["packages"].append("npm:session-only")
+    (agent_dir / "settings.json").write_text(json.dumps(settings))
+
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert not (agent_dir / "extensions").exists()
+    assert json.loads((agent_dir / "settings.json").read_text()) == {
+        "packages": ["npm:session-only"],
+    }
+    assert not (agent_dir / start._PI_USER_RESOURCES_MANIFEST).exists()
+    # The user's own directory is untouched either way.
+    assert (user_agent_dir / "extensions").is_dir()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_link(
     tmp_path, monkeypatch
 ):
