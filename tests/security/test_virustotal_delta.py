@@ -60,9 +60,9 @@ def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
     # CI lane that collects tests/security -- so without this, the single assertion tying the
     # baseline to real history would be green locally and silently absent everywhere that matters.
     assert len(vtd.BASELINE_SHA256) == 64, "the baseline is not a SHA-256"
-    assert all(c in "0123456789abcdef" for c in vtd.BASELINE_SHA256), (
-        "the baseline is not lowercase hex, so it can never match a VirusTotal lookup"
-    )
+    assert all(
+        c in "0123456789abcdef" for c in vtd.BASELINE_SHA256
+    ), "the baseline is not lowercase hex, so it can never match a VirusTotal lookup"
 
     result = subprocess.run(
         ["git", "show", "1ad44677d:install.ps1"],
@@ -309,7 +309,9 @@ def test_the_workflow_reads_the_secret_this_repository_actually_has() -> None:
     )
     # And the history check the lane performs needs full depth, or it reverifies nothing.
     data = _yaml.safe_load(body)
-    checkout = next(s for s in data["jobs"]["delta"]["steps"] if "checkout" in str(s.get("uses", "")))
-    assert checkout.get("with", {}).get("fetch-depth") == 0, (
-        "the baseline is reverified against 1ad44677d, which a shallow clone does not contain"
+    checkout = next(
+        s for s in data["jobs"]["delta"]["steps"] if "checkout" in str(s.get("uses", ""))
     )
+    assert (
+        checkout.get("with", {}).get("fetch-depth") == 0
+    ), "the baseline is reverified against 1ad44677d, which a shallow clone does not contain"
