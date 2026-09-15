@@ -125,6 +125,7 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 _PI_USER_RESOURCE_DIRS = ("extensions", "skills", "prompts", "themes", "npm", "git")
 _PI_USER_RESOURCE_SETTINGS = ("packages", "extensions", "skills", "prompts", "themes")
+_PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
 _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
@@ -2981,6 +2982,10 @@ def _is_junction(path: Path) -> bool:
 def _remove_overlay_entry(path: Path) -> None:
     if _is_junction(path):
         path.rmdir()
+    elif os.name == "nt" and path.is_symlink() and path.is_dir():
+        # A Windows directory symlink is a directory entry, so DeleteFileW (what
+        # unlink maps to) refuses it with WinError 5. rmdir drops the link only.
+        path.rmdir()
     elif path.is_symlink() or path.is_file():
         path.unlink()
     elif path.is_dir():
@@ -4602,24 +4607,30 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def _link_user_dir(source: Path, target: Path) -> None:
+def _link_user_dir(source: Path, target: Path) -> bool:
+    """Expose source at target. True once target resolves to source."""
     # Refresh links, but preserve real session directories.
     if target.is_symlink() or _is_junction(target):
         _remove_overlay_entry(target)
     if target.exists() or not source.is_dir():
-        return
+        return False
     target.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     try:
         target.symlink_to(source, target_is_directory = True)
     except OSError:
         if not _create_directory_junction(source, target):
             typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
+            return False
+    return True
 
 
-def _pi_local_entry(entry: str, source: Path, home: Path) -> str:
+def _pi_local_entry(
+    entry: str, source: Path, home: Path, linked: frozenset, agents_skills = None,
+) -> str:
     """Re-anchor a user path from the original Pi agent directory."""
     value = entry.strip()
-    if value.startswith("file:"):
+    if not value or value == "." or value.startswith("file:"):
+        # Nothing to anchor: "" and "." would name the whole agent directory.
         return entry
     if value == "~" or value.startswith(("~/", "~" + os.sep)):
         target = os.path.join(home, value[2:])
@@ -4627,17 +4638,33 @@ def _pi_local_entry(entry: str, source: Path, home: Path) -> str:
         # Pi stores local packages relative to its agent directory.
         target = os.path.join(source, value)
     target = os.path.normpath(target)
+    if agents_skills is not None:
+        # Pi reads ~/.agents/skills through HOME, which moved, so paths naming the
+        # user's copy must follow it or an entry disabling a skill stops matching.
+        user_root, session_root = agents_skills
+        try:
+            inside = os.path.relpath(target, user_root)
+        except ValueError:  # on another Windows drive
+            inside = os.pardir
+        if inside == os.curdir:
+            return session_root
+        if inside != os.pardir and not inside.startswith(os.pardir + os.sep):
+            return os.path.join(session_root, inside)
     try:
         relative = os.path.relpath(target, source)
     except ValueError:  # on another Windows drive
         return target
-    # Keep paths into linked resource directories session-relative.
-    if relative.split(os.sep)[0] in _PI_USER_RESOURCE_DIRS:
+    # Keep paths session-relative only where the link really landed; a real
+    # session directory blocks the link, and a relative entry would then point
+    # into that empty directory instead of at the user's resource.
+    if relative.split(os.sep)[0] in linked:
         return relative
     return target
 
 
-def _pi_settings_entries(key: str, entries, source: Path, home: Path) -> list:
+def _pi_settings_entries(
+    key: str, entries, source: Path, home: Path, linked: frozenset, agents_skills = None,
+) -> list:
     if not isinstance(entries, list):
         return []
     result = []
@@ -4648,17 +4675,19 @@ def _pi_settings_entries(key: str, entries, source: Path, home: Path) -> list:
             if isinstance(spec, str) and not spec.strip().startswith(
                 ("npm:", "git:", "github:", "http:", "https:", "ssh:")
             ):
-                spec = _pi_local_entry(spec, source, home)
+                spec = _pi_local_entry(spec, source, home, linked, agents_skills)
                 entry = {**entry, "source": spec} if isinstance(entry, dict) else spec
         elif isinstance(entry, str):
             prefix = entry[:1] if entry.startswith(("!", "+", "-")) else ""
             pattern = entry[len(prefix) :]
             if not prefix and "*" not in entry and "?" not in entry:
-                entry = _pi_local_entry(entry, source, home)
+                entry = _pi_local_entry(entry, source, home, linked, agents_skills)
             elif not pattern.strip().startswith("~"):  # Pi does not expand ~ in patterns
                 # Pi matches patterns against paths relative to the agent directory, which moved.
                 # Keep the original too: it still matches basenames and linked directories.
-                anchored = prefix + _pi_local_entry(pattern, source, home)
+                anchored = prefix + _pi_local_entry(
+                    pattern, source, home, linked, agents_skills,
+                )
                 if anchored != entry:
                     result.append(entry)
                     entry = anchored
@@ -4673,6 +4702,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         return
     user_home = Path.home()
     configured = os.environ.get("PI_CODING_AGENT_DIR")
+    configured = configured.strip() if configured else ""
     # Pi resolves a relative override from the launch directory.
     source = (
         Path(os.path.abspath(os.path.expanduser(configured)))
@@ -4682,10 +4712,26 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
     if source.resolve(strict = False) == agent_dir.resolve(strict = False):
         # Do not treat this session as its own resource source.
         source = user_home / ".pi" / "agent"
-    for name in _PI_USER_RESOURCE_DIRS:
-        _link_user_dir(source / name, agent_dir / name)
+    if configured and not source.is_dir():
+        # Otherwise this looks exactly like the bug this function exists to fix.
+        typer.echo(
+            f"Warning: PI_CODING_AGENT_DIR points at {source}, which is not a directory; "
+            "no Pi extensions or packages will load in this session.",
+            err = True,
+        )
+    # Only entries under a directory that really got linked may stay session-relative.
+    linked = frozenset(
+        name for name in _PI_USER_RESOURCE_DIRS
+        if _link_user_dir(source / name, agent_dir / name)
+    )
     # HOME is relocated, so link Pi's other global skill directory too.
-    _link_user_dir(user_home / ".agents" / "skills", home / ".agents" / "skills")
+    user_skills = user_home / ".agents" / "skills"
+    session_skills = home / ".agents" / "skills"
+    agents_skills = (
+        (str(user_skills), str(session_skills))
+        if _link_user_dir(user_skills, session_skills)
+        else None
+    )
 
     user_settings_path = source / "settings.json"
     user_settings = _read_json_object(user_settings_path)
@@ -4705,21 +4751,56 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         )
         return
     manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
-    previous = _read_json_object(manifest_path) or {}
+    previous = _read_json_object(manifest_path)
+    if previous is None:
+        # Provenance is lost, so entries the user has since removed cannot be reconciled.
+        typer.echo(
+            f"Warning: couldn't parse {manifest_path}; Pi resources copied by an earlier "
+            "launch stay in this session even if you removed them since.",
+            err = True,
+        )
+        previous = {}
     before = json.dumps(settings, sort_keys = True)
     copied = {}
     for key in _PI_USER_RESOURCE_SETTINGS:
-        entries = _pi_settings_entries(key, user_settings.get(key), source, user_home)
+        entries = _pi_settings_entries(
+            key, user_settings.get(key), source, user_home, linked, agents_skills,
+        )
         # Refresh copied entries while preserving settings added inside the session.
         stale = previous.get(key) if isinstance(previous.get(key), list) else []
-        own = settings.get(key) if isinstance(settings.get(key), list) else []
-        own = [item for item in own if item not in stale and item not in entries]
+        own = settings.get(key)
+        if own is not None and not isinstance(own, list):
+            # Pi types every one of these keys as an array. Leave a shape we do not
+            # understand alone rather than deleting whatever the session put there.
+            typer.echo(
+                f"Warning: {settings_path} has a non-list {key!r}; "
+                "leaving it as is, so your Pi entries for it won't load in this session.",
+                err = True,
+            )
+            continue
+        own = [item for item in own or [] if item not in stale and item not in entries]
         if entries or own:
-            settings[key] = entries + own
+            # Pi de-dupes packages by identity and keeps the FIRST entry, so anything
+            # the session configured for a package has to come before the user's copy
+            # of it. Patterns are applied in order instead, so those stay user-first.
+            settings[key] = own + entries if key == "packages" else entries + own
         else:
             settings.pop(key, None)
         if entries:
             copied[key] = entries
+    for key in _PI_USER_VERBATIM_SETTINGS:
+        # Copied whole: Pi runs every package lookup and install through npmCommand,
+        # so a session that inherits the package list without it falls back to plain
+        # npm and cannot find, or reinstall, what the user already has.
+        value = user_settings.get(key)
+        own = settings.get(key)
+        if own is not None and own != previous.get(key):
+            continue  # changed inside the session, so the session owns it now
+        if isinstance(value, list) and value and all(isinstance(arg, str) for arg in value):
+            settings[key] = value
+            copied[key] = value
+        else:
+            settings.pop(key, None)
     if json.dumps(settings, sort_keys = True) != before:
         _write_private_json(settings_path, settings)
     if copied != previous:

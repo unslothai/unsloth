@@ -5528,8 +5528,9 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
 
     start.write_pi_user_resources(agent_dir, session_home)
 
+    # Pi keeps the first entry per package identity, so session-owned packages lead.
     assert json.loads(settings_path.read_text()) == {
-        "packages": ["npm:kept", "npm:new", "npm:session-only"],
+        "packages": ["npm:session-only", "npm:kept", "npm:new"],
         "theme": "dark",
     }
     assert not (agent_dir / "extensions").exists() and not (agent_dir / "extensions").is_symlink()
@@ -5643,6 +5644,132 @@ def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypa
     start.write_pi_user_resources(agent_dir, session_home)
 
     assert not agent_dir.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_link(
+    tmp_path, monkeypatch,
+):
+    # Pi creates <agent dir>/npm the first time a package is installed, so a
+    # persisted session can already own that directory. The link is then skipped
+    # and a session-relative entry would point into it instead of at the user's.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "npm").mkdir()
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"packages": ["npm/pkg"], "extensions": ["extensions/mine.ts"]})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents = True)
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    assert not (agent_dir / "npm").is_symlink()  # the session's own directory survives
+    assert settings["packages"] == [str(user_agent_dir / "npm" / "pkg")]
+    # extensions was linked, so entries under it stay relative and resolve through it.
+    assert settings["extensions"] == ["extensions/mine.ts"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_keeps_a_disabled_global_skill_disabled(tmp_path, monkeypatch):
+    # ~/.agents/skills is reached through HOME, which moved, so a rule naming the
+    # user's copy has to follow it or Pi re-enables the skill inside the session.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    user_home = user_agent_dir.parent.parent
+    disabled = user_home / ".agents" / "skills" / "off" / "SKILL.md"
+    disabled.parent.mkdir(parents = True)
+    disabled.write_text("disabled\n")
+    (user_agent_dir / "settings.json").write_text(json.dumps({"skills": [f"-{disabled}"]}))
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    session_skill = session_home / ".agents" / "skills" / "off" / "SKILL.md"
+    assert session_skill.exists()
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    # The original rule is kept and an alias for the session path is added beside it.
+    assert settings["skills"] == [f"-{disabled}", f"-{session_skill}"]
+
+
+def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
+    # Pi runs every package lookup and install through npmCommand, so a session
+    # that inherits the package list without it falls back to plain npm.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    command = ["mise", "exec", "node@20", "--", "npm"]
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"packages": ["npm:pi-mine"], "npmCommand": command})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == command
+    # A command set inside the session is not overwritten on the next launch.
+    settings_path = agent_dir / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["npmCommand"] = ["pnpm"]
+    settings_path.write_text(json.dumps(settings))
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert json.loads(settings_path.read_text())["npmCommand"] == ["pnpm"]
+
+
+def test_write_pi_user_resources_warns_on_an_unusable_agent_dir_override(
+    tmp_path, monkeypatch, capsys,
+):
+    # Otherwise this looks exactly like the bug write_pi_user_resources exists to fix.
+    _pi_user_agent_dir(tmp_path, monkeypatch)
+    missing = tmp_path / "not-a-directory"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", f"  {missing}  ")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    agent_dir.mkdir(parents = True)
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert "PI_CODING_AGENT_DIR" in capsys.readouterr().err
+
+
+def test_write_pi_user_resources_keeps_a_non_list_setting(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "settings.json").write_text(json.dumps({"themes": ["npm:user-theme"]}))
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    agent_dir.mkdir(parents = True)
+    (agent_dir / "settings.json").write_text(json.dumps({"themes": {"name": "dark"}}))
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    # Not a shape we understand, so it is left alone rather than deleted.
+    assert json.loads((agent_dir / "settings.json").read_text())["themes"] == {"name": "dark"}
+
+
+@pytest.mark.parametrize("entry", ["", "   ", "."])
+def test_pi_local_entry_leaves_degenerate_entries_alone(tmp_path, entry):
+    # Anchoring these would name the user's whole agent directory.
+    assert start._pi_local_entry(entry, tmp_path, tmp_path, frozenset()) == entry
+
+
+def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(tmp_path, monkeypatch):
+    # unlink maps to DeleteFileW, which refuses a directory symlink with WinError 5.
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "keep.txt").write_text("keep\n")
+    target = tmp_path / "link"
+    target.symlink_to(source, target_is_directory = True)
+    # rmdir on a link is POSIX-invalid, so record the routing instead of running it.
+    monkeypatch.setattr(start.os, "name", "nt")
+    calls = []
+    monkeypatch.setattr(start.Path, "unlink", lambda self, **kw: calls.append("unlink"))
+    monkeypatch.setattr(start.Path, "rmdir", lambda self: calls.append("rmdir"))
+
+    start._remove_overlay_entry(target)
+
+    assert calls == ["rmdir"]
+    assert (source / "keep.txt").read_text() == "keep\n"
 
 
 @pytest.mark.parametrize("yolo", [False, True])
