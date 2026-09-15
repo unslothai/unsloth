@@ -3314,7 +3314,12 @@ def patch_checkpoint_rng_state(model):
             continue
 
         @functools.wraps(fn)
-        def checkpoint(function, *args, _fn = fn, **kwargs):
+        def checkpoint(
+            function,
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
             kwargs.setdefault("preserve_rng_state", False)
             return _fn(function, *args, **kwargs)
 
@@ -3441,8 +3446,10 @@ def patch_gradient_accumulation_fix(Trainer):
     patch_fla_autotuner_fast_path()
 
     # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
-    if hasattr(Trainer, "floating_point_ops") and \
-            getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops":
+    if (
+        hasattr(Trainer, "floating_point_ops")
+        and getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops"
+    ):
         Trainer.floating_point_ops = _unsloth_floating_point_ops
 
     # Settle any deferred compile-mode switch at the start of every step: on recompile-limit
