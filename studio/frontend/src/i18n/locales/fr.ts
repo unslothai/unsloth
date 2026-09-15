@@ -1052,6 +1052,13 @@ export const fr = {
         minimal: "Minimale",
       },
       custom: {
+        chatWidth: {
+          label: "Largeur du chat",
+          description: "Réglez la largeur des messages et de la zone de saisie. La pleine largeur utilise l’espace entre les barres latérales.",
+          standard: "Standard",
+          wide: "Large",
+          full: "Pleine largeur",
+        },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
         preferencesTitle: "Préférences",
