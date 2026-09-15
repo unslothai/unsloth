@@ -118,6 +118,18 @@ def test_catalog_and_resolver_are_read_only_and_share_the_public_id(store, monke
     assert len(rows) == 1
 
 
+def test_a_tag_being_loaded_stays_in_the_inventory(store):
+    """A load holds the tag's lease for its whole run, and a picker that loses the row hides it."""
+    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
+    lease = ollama.acquire_ollama_model_ref(ref)
+    try:
+        rows = models_route._scan_ollama_dir(store, materialize_links = True)
+    finally:
+        lease.release()
+    assert [row.path for row in rows] == [lease.path]
+    assert Path(lease.path).is_file()
+
+
 def _resident(ref: str, *, advertised: str = "") -> _FakeBackend:
     from core.inference.llama_cpp import LlamaCppBackend
 

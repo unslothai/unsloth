@@ -277,6 +277,7 @@ def _ollama_model_info_from_manifest(
     materialize_links: bool = False,
     links_root: Optional[Path] = None,
     reject_unsupported_layers: bool = False,
+    existing_links_only: bool = False,
     manifest: Optional[dict] = None,
 ) -> Optional[LocalModelInfo]:
     manifests_root = ollama_dir / "manifests"
@@ -383,7 +384,16 @@ def _ollama_model_info_from_manifest(
     if model_blob is None:
         return invalid_manifest("model blob is missing")
 
-    if materialize_links:
+    if materialize_links and existing_links_only:
+        link = (
+            _contained_link_path(model_link_dir, f"{safe_name}-{tag}.gguf")
+            if model_link_dir is not None
+            else None
+        )
+        if link is None or not _safe_is_file(link):
+            return None
+        gguf_link_path = str(link)
+    elif materialize_links:
         if model_link_dir is None:
             return invalid_manifest("link directory is unavailable")
         link_name = f"{safe_name}-{tag}.gguf"
@@ -522,18 +532,19 @@ def scan_ollama_dir(
                 continue
 
             lock = _materialization_lock(tag_file, ollama_dir) if materialize_links else None
-            if lock is not None and not lock.acquire(blocking = False):
-                # A load holds this tag and its lease promises the link stays put; skip, do not block.
-                continue
+            # A load holds this tag, and its lease promises the link it made stays put: report that
+            # link rather than dropping the model for the length of the load. Never block.
+            leased = lock is not None and not lock.acquire(blocking = False)
             try:
                 info = _ollama_model_info_from_manifest(
                     ollama_dir,
                     tag_file,
                     materialize_links = materialize_links,
                     links_root = links_root,
+                    existing_links_only = leased,
                 )
             finally:
-                if lock is not None:
+                if lock is not None and not leased:
                     lock.release()
             if info is None:
                 continue
