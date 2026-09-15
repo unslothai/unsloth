@@ -551,9 +551,9 @@ def test_an_engine_that_did_not_answer_has_not_cleared_us() -> None:
         "Microsoft": {"category": "undetected", "result": None},
     }
     delta = vtd.compare(baseline, _snap(silent))
-    assert not any("no longer flag" in row for row in delta.better), (
-        f"an engine that never answered was reported as having cleared the candidate: {delta.better}"
-    )
+    assert not any(
+        "no longer flag" in row for row in delta.better
+    ), f"an engine that never answered was reported as having cleared the candidate: {delta.better}"
     assert any("NOT cleared" in row for row in delta.same), delta.same
 
     # And the real improvement still reads as one: Skyhigh answered, and answered undetected.
@@ -565,3 +565,30 @@ def test_an_engine_that_did_not_answer_has_not_cleared_us() -> None:
     delta = vtd.compare(baseline, _snap(cleared))
     assert any("no longer flag" in row for row in delta.better), delta.better
     assert any("Skyhigh" in row for row in delta.better), delta.better
+
+
+@pytest.mark.parametrize("category", ["timeout", "confirmed-timeout", "failure", "type-unsupported"])
+def test_an_inconclusive_result_does_not_clear_a_prior_detection(category: str) -> None:
+    """An engine that timed out has not cleared us any more than one that never ran.
+
+    The responder set was built on the truthiness of `category`, so these four entries counted as
+    answers while `parse_detections` correctly excluded them from the flagging list. The engine then
+    appeared in neither set and was reported as having stopped flagging the candidate.
+    """
+    base_payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    base_payload["data"]["attributes"]["last_analysis_results"] = {
+        "Skyhigh": {"category": "malicious", "result": "BehavesLike.PS.Suspicious.gr"},
+        "Microsoft": {"category": "undetected", "result": None},
+    }
+    baseline = _snap(base_payload, "baseline", "a" * 64)
+
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["last_analysis_results"] = {
+        "Skyhigh": {"category": category, "result": None},
+        "Microsoft": {"category": "undetected", "result": None},
+    }
+    delta = vtd.compare(baseline, _snap(payload))
+    assert not any("no longer flag" in row for row in delta.better), (
+        f"a {category!r} result was treated as Skyhigh clearing the candidate: {delta.better}"
+    )
+    assert any("NOT cleared" in row for row in delta.same), delta.same

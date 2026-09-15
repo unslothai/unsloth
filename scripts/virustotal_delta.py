@@ -109,14 +109,22 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+# The only categories that mean "this engine looked and did not object". `timeout`,
+# `confirmed-timeout`, `failure` and `type-unsupported` are all entries an engine can return without
+# having reached a verdict, and treating them as answers is the same mistake as treating absence as
+# one: it lets a detection be reported as cleared by an engine that never decided.
+CONCLUSIVE_CLEAN = ("undetected", "harmless")
+
+
 def responding_engines(raw: object) -> set[str]:
-    """Names of every engine that returned a verdict, flagging or not."""
+    """Names of every engine that reached a conclusive verdict, flagging or clean."""
     if not isinstance(raw, dict):
         return set()
+    conclusive = set(CONCLUSIVE_CLEAN) | {"malicious", "suspicious"}
     return {
         str(engine)
         for engine, result in raw.items()
-        if isinstance(result, dict) and result.get("category")
+        if isinstance(result, dict) and result.get("category") in conclusive
     }
 
 
