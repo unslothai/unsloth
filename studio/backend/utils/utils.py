@@ -5,6 +5,8 @@
 
 import os
 import structlog
+import urllib.parse
+import urllib.request
 import threading
 from contextvars import ContextVar
 import time
@@ -115,6 +117,36 @@ def hf_proxy_usable_by_urllib(proxy: Optional[str]) -> bool:
 def hf_proxy_configured() -> bool:
     """True when egress goes through a proxy: it resolves the hub host, so local DNS proves nothing about reachability and must not declare the hub offline."""
     return hf_proxy_for_endpoint() is not None
+
+
+class AuthSafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect policy for requests carrying a Hub token over urllib.
+
+    urllib's default ``HTTPRedirectHandler`` forwards the request headers to the
+    redirect target, so a mirror answering ``/resolve/`` with a cross-host 302 —
+    or an HTTPS-to-HTTP downgrade — would hand the user's token to a host the
+    operator never configured. Pass this to ``build_opener`` (which replaces
+    the default redirect handler): the Authorization header is dropped as soon
+    as scheme, host or port changes, and a TLS downgrade is not followed at
+    all — the 3xx stands as the response, which every probe here already
+    treats as "reachable".
+    """
+
+    @staticmethod
+    def _origin(url):
+        parts = urllib.parse.urlsplit(url)
+        scheme = parts.scheme.lower()
+        port = parts.port or (443 if scheme == "https" else 80)
+        return scheme, (parts.hostname or "").lower(), port
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = self._origin(req.full_url)
+        new = self._origin(newurl)
+        if old[0] == "https" and new[0] == "http":
+            return None  # no TLS downgrade, whatever the target is
+        if new != old:
+            req.headers.pop("Authorization", None)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def call_with_deadline(

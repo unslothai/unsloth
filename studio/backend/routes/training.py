@@ -2856,12 +2856,17 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
     ):
         return
     from utils.hf_endpoint import get_hf_endpoint
+    from utils.utils import AuthSafeRedirectHandler
 
     url = f"{get_hf_endpoint()}/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     req = urllib.request.Request(url, method = "HEAD", headers = headers)
+    # A mirror can answer /resolve/ with a cross-host 302; urllib's default
+    # redirect carries the Authorization header along, which would hand the
+    # Hub token to a host the operator never configured.
+    opener = urllib.request.build_opener(AuthSafeRedirectHandler())
     try:
-        urllib.request.urlopen(req, timeout = 5)
+        opener.open(req, timeout = 5)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise HTTPException(
