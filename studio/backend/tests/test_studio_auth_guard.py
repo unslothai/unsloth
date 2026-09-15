@@ -2168,6 +2168,18 @@ def test_an_escaped_space_in_the_root_still_matches(monkeypatch):
     )
 
 
+def test_the_root_spellings_cache_follows_a_changed_home(studio_home, tmp_path, monkeypatch):
+    # The spellings are memoized per command, so a home that changes has to invalidate them or the
+    # guard keeps answering for the previous install.
+    assert tools._references_studio_credential_here(f'cp -a "{studio_home}" ./leak', None)
+    other = tmp_path / "other-home"
+    (other / "auth").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(other))
+    tools._studio_auth_markers_cache = None
+    assert tools._references_studio_credential_here(f'cp -a "{other}" ./leak', None)
+    assert not tools._references_studio_credential_here(f'cp -a "{studio_home}" ./leak', None)
+
+
 def test_a_windows_root_is_matched_through_the_same_fold(monkeypatch):
     # `_folded_word` turns a backslash root into forward slashes, so the spellings it is compared
     # against have to be folded the same way. This shape only occurs on Windows, so it is driven

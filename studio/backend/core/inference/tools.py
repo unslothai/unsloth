@@ -3008,6 +3008,9 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
     return rebinds
 
 
+_studio_root_spellings_cache: "tuple | None" = None
+
+
 def _studio_root_spellings() -> "list[str]":
     """Every lowered spelling of the Studio root: the literal path and its environment variables.
 
@@ -3015,11 +3018,23 @@ def _studio_root_spellings() -> "list[str]":
     other directory: `STUDIO_HOME` is a generic name another application can own, and registering it
     unconditionally refused `find "$STUDIO_HOME" ...` against that application's tree.
     """
+    global _studio_root_spellings_cache
+    markers = _studio_auth_dir_markers()[0]
+    if _studio_root_spellings_cache is not None and _studio_root_spellings_cache[0] is markers:
+        return _studio_root_spellings_cache[1]
     root = _studio_home_for_guard()
     if not root:
         return []
+    # Both separator styles of the literal, because how the root is STORED must not decide whether
+    # the text naming it matches: a Windows root reaches source as `c:\\dir` and as `c:/dir`.
+    folded = _folded_word(root)
     spellings = [root.lower()]
+    if os.sep == "\\":
+        spellings += [folded, folded.replace("/", "\\")]
     spellings.extend(spelling.lower() for spelling in _studio_home_variable_spellings(root))
+    spellings = list(dict.fromkeys(spellings))
+    # Rebuilt for every command otherwise, and this runs on every one of them.
+    _studio_root_spellings_cache = (markers, spellings)
     return spellings
 
 
@@ -3030,7 +3045,10 @@ def _text_names_the_studio_root(text: str) -> bool:
     if any(spelling in lowered for spelling in spellings):
         return True
     # The escaped spellings name the same directory: a shell escapes a space as `\\ `, and a python
-    # literal doubles every separator of a Windows path.
+    # literal doubles every separator of a Windows path. Both need a backslash to exist at all, and
+    # rewriting the text is worth paying for only then.
+    if "\\" not in lowered:
+        return False
     for unescaped in (lowered.replace("\\ ", " "), lowered.replace("\\\\", "\\")):
         if unescaped != lowered and any(spelling in unescaped for spelling in spellings):
             return True
@@ -4607,10 +4625,12 @@ def _studio_home_spellings_lowered() -> "tuple[str, ...]":
     global _studio_home_lowered_cache
     markers = _studio_auth_dir_markers()[0]
     if _studio_home_lowered_cache is None or _studio_home_lowered_cache[0] is not markers:
-        root = (_studio_home_for_guard() or "\x00").lower()
+        # Built from the FOLDED root, so the separators the root happens to be stored with do not
+        # decide the answer: only the ones the source text spells do.
+        base = _folded_word(_studio_home_for_guard() or "\x00")
         _studio_home_lowered_cache = (
             markers,
-            tuple({root, root.replace("\\", "\\\\"), root.replace("\\", "/")}),
+            tuple({base, base.replace("/", "\\"), base.replace("/", "\\\\")}),
         )
     return _studio_home_lowered_cache[1]
 
