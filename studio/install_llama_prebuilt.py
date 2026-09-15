@@ -1018,6 +1018,36 @@ def synthetic_checksums_for_release(
     )
 
 
+def _masked_nvidia_selection_host(host: HostInfo) -> HostInfo | None:
+    """The host to select CUDA for when CUDA_VISIBLE_DEVICES hides its NVIDIA GPU, else None.
+
+    physical-without-usable means exactly one thing: the GPU is there and the mask is empty
+    or -1. The mask is scoped to this process; the install tree is not, so one masked run
+    (a container build, a scheduler, the backend pinning GPUs for itself) left a CUDA
+    machine on the CPU bundle for good. Select CUDA as if unmasked: nvidia-smi is NVML and
+    still answers under the mask, and at run time the CUDA build sees no devices and runs
+    on CPU exactly as the CPU bundle would. Against the PHYSICAL caps: the visible ones are
+    empty by construction, which is the selector's unknown-SM path, so a masked sm_61 host
+    would accept an sm_70 floor and offload nothing once unmasked.
+    None with usable ROCm (that host keeps ROCm) and for an explicit CPU request, which
+    never arrives here because _apply_host_overrides has cleared has_physical_nvidia.
+    """
+    if host.has_usable_nvidia or not host.has_physical_nvidia or host.has_rocm:
+        return None
+    log(
+        "NVIDIA GPU present but hidden by CUDA_VISIBLE_DEVICES="
+        f"{host.visible_cuda_devices!r}; selecting the CUDA bundle for the hardware "
+        "rather than installing the CPU bundle over it"
+    )
+    if host.physical_compute_caps and not host.compute_caps:
+        log(
+            "selecting against the physical compute caps "
+            f"{','.join(host.physical_compute_caps)} the mask hid"
+        )
+        return dataclasses_replace(host, compute_caps = list(host.physical_compute_caps))
+    return host
+
+
 def direct_upstream_release_plan(
     release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
 ) -> InstallReleasePlan | None:
@@ -1034,18 +1064,23 @@ def direct_upstream_release_plan(
     assets = release_asset_map(release)
     attempts: list[AssetChoice] = []
     if host.is_windows and host.is_x86_64:
-        if host.has_usable_nvidia:
-            torch_preference = detect_torch_cuda_runtime_preference(host)
+        # A masked NVIDIA host too, as on Linux: it fell through to the CPU attempt.
+        masked_host = _masked_nvidia_selection_host(host)
+        if host.has_usable_nvidia or masked_host is not None:
+            selection_host = masked_host or host
+            torch_preference = detect_torch_cuda_runtime_preference(
+                selection_host, gpu_hidden_by_mask = masked_host is not None
+            )
             attempts.extend(
                 windows_cuda_attempts(
-                    host,
+                    selection_host,
                     release_tag,
                     assets,
                     torch_preference.runtime_line,
                     torch_preference.selection_log,
                 )
             )
-            attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
+            attempts[:] = _drop_blackwell_incapable_windows_cuda(selection_host, attempts)
         elif host.has_rocm:
             hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
             hip_url = assets.get(hip_asset)
@@ -3758,16 +3793,26 @@ def resolve_release_asset_choice(
     release: PublishedReleaseBundle,
     checksums: ApprovedReleaseChecksums,
 ) -> list[AssetChoice]:
-    if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
-        torch_preference = detect_torch_cuda_runtime_preference(host)
+    # A masked NVIDIA host too, as on Linux: it fell through to windows-cpu below, and
+    # with no CUDA match it source-builds with CUDA (PrebuiltFallback), never CPU.
+    masked_host = (
+        _masked_nvidia_selection_host(host) if host.is_windows and host.is_x86_64 else None
+    )
+    if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
+        selection_host = masked_host or host
+        torch_preference = detect_torch_cuda_runtime_preference(
+            selection_host, gpu_hidden_by_mask = masked_host is not None
+        )
         published_attempts = published_windows_cuda_attempts(
-            host,
+            selection_host,
             release,
             torch_preference.runtime_line,
             torch_preference.selection_log,
         )
         if published_attempts:
-            pin_attempts = _drop_blackwell_incapable_windows_cuda(host, published_attempts)
+            pin_attempts = _drop_blackwell_incapable_windows_cuda(
+                selection_host, published_attempts
+            )
             try:
                 return apply_approved_hashes(pin_attempts, checksums)
             except PrebuiltFallback as exc:
@@ -3777,8 +3822,8 @@ def resolve_release_asset_choice(
                 )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
         upstream_attempts = _drop_blackwell_incapable_windows_cuda(
-            host,
-            resolve_windows_cuda_choices(host, llama_tag, upstream_assets),
+            selection_host,
+            resolve_windows_cuda_choices(selection_host, llama_tag, upstream_assets),
         )
         return apply_approved_hashes(upstream_attempts, checksums)
 
@@ -6486,33 +6531,9 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
-        # physical-without-usable means exactly one thing: the GPU is there and
-        # CUDA_VISIBLE_DEVICES is empty or -1. The mask is scoped to this process;
-        # activate_install_tree is not, so one masked run would leave a CUDA machine on the
-        # CPU bundle for good. Select CUDA as if unmasked -- nvidia-smi is NVML and still
-        # answers under the mask. The mask still bites at RUN time, where the CUDA build
-        # sees no devices and runs on CPU exactly as the CPU bundle would.
-        # Below ROCm and Vulkan on purpose: a masked NVIDIA host with usable ROCm keeps ROCm,
-        # and an explicit CPU request never arrives here at all because _apply_host_overrides
-        # has already cleared has_physical_nvidia.
-        if host.has_physical_nvidia:
-            log(
-                "NVIDIA GPU present but hidden by CUDA_VISIBLE_DEVICES="
-                f"{host.visible_cuda_devices!r}; selecting the CUDA bundle for the hardware "
-                "rather than installing the CPU bundle over it"
-            )
-            # Select against the PHYSICAL caps: host.compute_caps is empty here by
-            # construction, which is the selector's unknown-SM path, so a masked sm_61 host
-            # would accept an sm_70 floor and still have no offload once unmasked.
-            selection_host = host
-            if host.physical_compute_caps and not host.compute_caps:
-                selection_host = dataclasses_replace(
-                    host, compute_caps = list(host.physical_compute_caps)
-                )
-                log(
-                    "selecting against the physical compute caps "
-                    f"{','.join(selection_host.compute_caps)} the mask hid"
-                )
+        # Below ROCm and Vulkan on purpose: a masked NVIDIA host with usable ROCm keeps ROCm.
+        selection_host = _masked_nvidia_selection_host(host)
+        if selection_host is not None:
             torch_preference = detect_torch_cuda_runtime_preference(
                 selection_host, gpu_hidden_by_mask = True
             )
