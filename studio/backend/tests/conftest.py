@@ -42,36 +42,20 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-# Settle the real ``loggers`` package before any test module is imported. ~83 test files
-# keep a bare ``ModuleType("loggers")`` stub for it, installed with
-# ``sys.modules.setdefault`` to dodge loggers.handlers (which pulls in structlog and
-# friends). A bare ModuleType has no ``__path__``, so it is a module and not a package:
-# once it has taken the "loggers" slot, any later ``from loggers.media_progress import
-# ...`` (routes/inference.py does exactly that at module level) dies with
-# "ModuleNotFoundError: ... 'loggers' is not a package". Invisible under the repo's own
-# CI, which runs pytest from studio/backend and imports the real package before any stub
-# can land -- but fatal to collection the moment pytest is invoked from the repo root
-# with PYTHONPATH=studio/backend and a stub-first file is collected ahead of an
-# inference-routes file. Importing the real package here makes every later setdefault a
-# no-op under ANY launch directory, which is what the individual stubs already assume. The
-# package is thin (handlers import structlog and one shared util); any sub-module the
-# suite reaches beyond the stub's get_logger keeps importing the real thing.
+# Settle the real ``loggers`` package before any test module is imported. 84 test files
+# stub it with a bare ``ModuleType``, which has no ``__path__`` and so is not a package: once
+# one wins the slot, ``from loggers.media_progress import ...`` (routes/inference.py, at module
+# level) dies with "'loggers' is not a package". Only bites when pytest is invoked from the
+# repo root, which is why the repo's own CI, run from studio/backend, never saw it.
 try:
     import loggers  # noqa: E402
 except ImportError:
-    # Not fatal, and deliberately not forced. `loggers.handlers` imports structlog, and a few
-    # test modules stub structlog themselves to stay runnable from a bare checkout without it
-    # (test_model_picker_regression.py says so in as many words). Making the preload mandatory
-    # would take that away for no gain: where structlog is missing, the `from
-    # loggers.media_progress import ...` this preload protects would die on structlog anyway,
-    # so there is no collection to save. Those files reach only the stub's get_logger.
+    # loggers.handlers needs structlog, and some tests stub structlog to run without it. Where
+    # it is missing, the import this protects would die on structlog anyway.
     pass
 else:
-    # A stub would satisfy the import too, and silently: what makes the difference is whether
-    # the slot holds a package. So check the one attribute the failure is about, rather than
-    # trusting that the line above won the race. This also keeps the name used, which is what
-    # scripts/verify_import_hoist.py reads a module-level import for; suppressing it there
-    # would cost the rename-clash signal on this file for a line whose job is a side effect.
+    # A stub satisfies the import too: ``__path__`` is the whole difference. Also keeps the
+    # name used, which is what verify_import_hoist.py reads a module-level import for.
     assert hasattr(loggers, "__path__"), (
         f"the 'loggers' slot holds a non-package ({loggers!r}); a ModuleType stub from some "
         "test module got there first, so `from loggers.media_progress import ...` will fail"
