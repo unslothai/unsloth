@@ -130,8 +130,14 @@ def _skipif_calls(tree: ast.AST):
                 yield decorator
 
 
+# Both recorded-answer probes gate: has_real_accelerator() for a test that just needs somewhere
+# to put a tensor, has_real_cuda() for one that names cuda. Either settles the CPU-only case,
+# which is what short-circuiting ahead of a spoofed probe requires.
+_REAL_PROBES = ("has_real_accelerator", "has_real_cuda")
+
+
 def _is_real_accelerator_call(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and _dotted(node.func)[-1:] == ("has_real_accelerator",)
+    return isinstance(node, ast.Call) and _dotted(node.func)[-1:] in {(p,) for p in _REAL_PROBES}
 
 
 def _is_negated_real_accelerator(node: ast.AST) -> bool:
@@ -293,9 +299,10 @@ _SURVIVES_THE_SPOOF_PROBE = textwrap.dedent(
     sys.path.insert(0, {tests_root!r})
     sys.path.insert(0, {shared_dir!r})
 
-    from real_accelerator import has_real_accelerator
+    from real_accelerator import has_real_accelerator, has_real_cuda
 
     before = has_real_accelerator()
+    before_cuda = has_real_cuda()
 
     import _zoo_aggressive_cuda_spoof as spoof
 
@@ -306,6 +313,8 @@ _SURVIVES_THE_SPOOF_PROBE = textwrap.dedent(
     print("SPOOF_PROBE " + json.dumps({{
         "before": before,
         "after": has_real_accelerator(),
+        "before_cuda": before_cuda,
+        "after_cuda": has_real_cuda(),
         "spoof_patched_is_available": bool(torch.cuda.is_available()),
     }}))
     """
@@ -365,6 +374,14 @@ def test_the_recorded_answer_survives_the_spoof():
         "has_real_accelerator() moved after the spoof was applied, which is the whole "
         f"thing it is supposed to be immune to: {verdict}"
     )
+    assert verdict["after_cuda"] == verdict["before_cuda"], (
+        "has_real_cuda() moved after the spoof was applied. It is the gate for the tests that "
+        f"name cuda, so it is the one the spoof most directly targets: {verdict}"
+    )
+    assert not (verdict["before_cuda"] and not verdict["before"]), (
+        "has_real_cuda() is true where has_real_accelerator() is false, so the narrow probe is "
+        f"no longer a subset of the broad one: {verdict}"
+    )
 
 
 def test_this_file_never_applies_the_spoof_in_process():
@@ -408,7 +425,8 @@ def test_the_scanner_would_catch_a_regression(probe, tmp_path):
 
 def _offenders_in(condition: str) -> list[str]:
     tree = ast.parse(
-        "import pytest\nimport torch\nfrom real_accelerator import has_real_accelerator\n\n\n"
+        "import pytest\nimport torch\n"
+        "from real_accelerator import has_real_accelerator, has_real_cuda\n\n\n"
         f"@pytest.mark.skipif({condition}, reason = 'x')\n"
         "def test_x():\n    pass\n"
     )
@@ -426,6 +444,9 @@ def _offenders_in(condition: str) -> list[str]:
         # spoof never gets to answer. Both polarities, and nested one level down.
         "not has_real_accelerator() or torch.cuda.device_count() < 2",
         "has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12",
+        # has_real_cuda() gates on the same terms: it is recorded pre-spoof too.
+        "not has_real_cuda() or torch.cuda.device_count() < 2",
+        "has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12",
         "not has_real_accelerator() or (torch.cuda.device_count() < 2 or x)",
         "has_real_accelerator() and not torch.cuda.is_bf16_supported()",
     ],
@@ -449,3 +470,84 @@ def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
 def test_a_gate_that_does_not_short_circuit_is_still_an_offender(condition):
     expression, why = condition
     assert _offenders_in(expression), f"missed: {why}"
+
+
+def _names_a_cuda_device(node: ast.AST) -> list[int]:
+    """Lines where the body asks for a cuda device by name.
+
+    Only the device string itself, so a test that merely mentions cuda in a message is not
+    swept up: `device = "cuda"`, `.to("cuda:1")`, `torch.device("cuda")`.
+    """
+    return [
+        child.lineno
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant)
+        and isinstance(child.value, str)
+        and (child.value == "cuda" or child.value.startswith("cuda:"))
+    ]
+
+
+def _gated_only_on_the_broad_probe(func: ast.AST) -> bool:
+    probes = {
+        _dotted(call.func)[-1]
+        for decorator in func.decorator_list
+        if isinstance(decorator, ast.Call) and _dotted(decorator.func)[-1:] == ("skipif",)
+        for call in ast.walk(decorator)
+        if isinstance(call, ast.Call) and _dotted(call.func)[-1:] in {(p,) for p in _REAL_PROBES}
+    }
+    return probes == {"has_real_accelerator"}
+
+
+def test_no_cuda_only_test_is_gated_on_the_broad_accelerator_probe():
+    """has_real_accelerator() is true on an XPU-only or Ascend NPU-only host.
+
+    A test that allocates on "cuda" and gates on it therefore un-skips on those machines and
+    dies in torch, or, when the decorator itself calls into torch.cuda, raises during
+    collection. Unsloth supports both backends, so this is a host somebody runs. Caught on
+    tests/test_stopping_criteria_device.py, which named cuda three times behind the broad gate.
+    """
+    offenders = []
+    for path in _python_test_files():
+        try:
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not _gated_only_on_the_broad_probe(node):
+                continue
+            for lineno in _names_a_cuda_device(node):
+                offenders.append(f"{path.relative_to(_TESTS_ROOT)}:{lineno}: in {node.name}")
+    assert not offenders, (
+        "these tests ask for a cuda device but gate on has_real_accelerator(), which is also "
+        "true on an XPU-only or Ascend NPU-only host. Gate them on has_real_cuda() instead:"
+        "\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_cuda_gate_scanner_would_catch_a_regression():
+    """Not vacuous, and not over-broad: the narrow gate and a non-device string both pass."""
+    def offenders(source):
+        tree = ast.parse(source)
+        return [
+            lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and _gated_only_on_the_broad_probe(node)
+            for lineno in _names_a_cuda_device(node)
+        ]
+
+    head = (
+        "import pytest\n"
+        "import torch\n"
+        "from real_accelerator import has_real_accelerator, has_real_cuda\n\n\n"
+    )
+    bad = "@pytest.mark.skipif(not has_real_accelerator(), reason = 'x')\ndef test_x():\n    torch.tensor([1], device = 'cuda')\n"
+    assert len(offenders(head + bad)) == 1
+
+    fixed = bad.replace("has_real_accelerator", "has_real_cuda")
+    assert offenders(head + fixed) == []
+
+    # A cuda mention that is not a device string must not be swept up.
+    prose = "@pytest.mark.skipif(not has_real_accelerator(), reason = 'x')\ndef test_x():\n    assert True, 'cuda is not required here'\n"
+    assert offenders(head + prose) == []
