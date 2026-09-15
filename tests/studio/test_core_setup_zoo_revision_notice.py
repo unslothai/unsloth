@@ -243,9 +243,7 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
         git_stdout = "1111111111111111111111111111111111111111\trefs/heads/main\n",
     )
     combined = proc.stdout + proc.stderr
-    warning = next(
-        (line for line in combined.splitlines() if "::warning" in line), None
-    )
+    warning = next((line for line in combined.splitlines() if "::warning" in line), None)
     assert warning is not None, combined[-2000:]
     lowered = warning.lower()
     assert "pinned" in lowered or "deliberate" in lowered, (
@@ -255,12 +253,12 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
     # A first attempt can mismatch too: resolve-zoo-ref pins main in the gating job, and
     # this step asks again only after the whole install, so main advancing in between is
     # enough. Calling that a --failed re-run would be a wrong diagnosis, not a vague one.
-    assert "advanced" in lowered, (
-        f"the warning does not allow for main moving after the resolve job:\n{warning}"
-    )
-    assert "re-run all jobs" in lowered, (
-        f"the warning no longer names the remedy for the stale-re-run case:\n{warning}"
-    )
+    assert (
+        "advanced" in lowered
+    ), f"the warning does not allow for main moving after the resolve job:\n{warning}"
+    assert (
+        "re-run all jobs" in lowered
+    ), f"the warning no longer names the remedy for the stale-re-run case:\n{warning}"
 
 
 def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
@@ -277,9 +275,7 @@ def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
     must also list the actions its TESTS read.
     """
     workflow = yaml.safe_load(
-        (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(
-            encoding = "utf-8"
-        )
+        (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(encoding = "utf-8")
     )
     triggers = workflow.get(True) or workflow.get("on") or {}
     paths = (triggers.get("pull_request") or {}).get("paths") or []
@@ -287,7 +283,8 @@ def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
 
     action = _ACTION.relative_to(_REPO).parent.as_posix()
     covered = [
-        p for p in paths
+        p
+        for p in paths
         if action.startswith(p.rstrip("*").rstrip("/")) and p.rstrip().endswith("**")
     ]
     assert covered, (
