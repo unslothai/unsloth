@@ -11,6 +11,7 @@ fingerprint helpers run against the real torch on this box.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import types
 
@@ -554,3 +555,200 @@ def test_atomic_write_replaces_in_place(tmp_path):
     cc._atomic_write(target, b"second")
     assert target.read_bytes() == b"second"
     assert list(tmp_path.iterdir()) == [target]  # no temp files left behind
+
+
+# ------------------------------------------------- interrupted saves and bundle collection
+# The manifest is the single commit point and the bundle is content-addressed, so whatever a save is killed in the
+# middle of, what is left on disk is a MATCHING pair. These drive each window of that directly.
+@pytest.fixture
+def mutable_megacache(monkeypatch):
+    """Like ``fake_megacache`` but the artifact bytes can change between saves."""
+    import torch
+
+    state = {"bytes": b"ARTIFACT-ONE"}
+    monkeypatch.setattr(
+        torch.compiler, "save_cache_artifacts", lambda: (state["bytes"], None), raising = False
+    )
+    monkeypatch.setattr(
+        torch.compiler,
+        "load_cache_artifacts",
+        lambda data: object() if data else None,
+        raising = False,
+    )
+    return state
+
+
+def _cold_pair(monkeypatch, tmp_path):
+    """A committed manifest/bundle pair, saved synchronously."""
+    monkeypatch.setenv(cc._ENV_MODE, "on")
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    return ctx
+
+
+def test_bundles_are_content_addressed_and_named_by_the_manifest(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    digest = hashlib.sha256(b"ARTIFACT-ONE").hexdigest()
+    assert ctx.bundle.name == cc._bundle_name(digest)
+    manifest = json.loads(ctx.manifest_path.read_text())
+    assert manifest["bundle"] == ctx.bundle.name
+    assert manifest["sha256"] == digest
+    # The fixed legacy name is never written any more.
+    assert not (ctx.dir / cc._BUNDLE_NAME).exists()
+
+
+def test_an_interrupted_bundle_write_leaves_the_previous_pair_loadable(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    """Window 1: the manifest is committed and the NEW bundle is only half written."""
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    live, live_bytes = ctx.bundle, ctx.bundle.read_bytes()
+
+    mutable_megacache["bytes"] = b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
+    doomed = ctx.dir / cc._bundle_name(hashlib.sha256(mutable_megacache["bytes"]).hexdigest())
+    real_replace = cc.os.replace
+
+    def die_publishing_the_bundle(src, dst):
+        raise OSError("killed mid-write")
+
+    monkeypatch.setattr(cc.os, "replace", die_publishing_the_bundle)
+    ctx.saved = False
+    assert cc.save(ctx) is False
+    monkeypatch.setattr(cc.os, "replace", real_replace)  # not undo(): the env must survive
+
+    # Nothing half written is visible under a name anything reads, and no temp file is left over.
+    assert not doomed.exists()
+    assert [p.name for p in ctx.dir.iterdir() if p.name.endswith(".tmp")] == []
+    # The previous pair is untouched and still a real warm start.
+    assert live.read_bytes() == live_bytes
+    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert reopened.hit is True
+    assert reopened.bundle == live
+
+
+def test_a_bundle_published_without_its_manifest_leaves_the_previous_pair_loadable(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    """Window 2: the NEW bundle landed and the manifest never committed.
+
+    This is the case a single fixed ``cache.bin`` got wrong: it left the old manifest describing a file that had
+    already been overwritten, so the sha256 check discarded a warm start that was fine.
+    """
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    live, live_bytes = ctx.bundle, ctx.bundle.read_bytes()
+
+    mutable_megacache["bytes"] = b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
+    orphan = ctx.dir / cc._bundle_name(hashlib.sha256(mutable_megacache["bytes"]).hexdigest())
+    real_atomic = cc._atomic_write
+
+    def die_before_committing_the_manifest(path, data):
+        if path.name == cc._MANIFEST_NAME:
+            raise OSError("killed before the manifest committed")
+        return real_atomic(path, data)
+
+    monkeypatch.setattr(cc, "_atomic_write", die_before_committing_the_manifest)
+    ctx.saved = False
+    assert cc.save(ctx) is False
+    monkeypatch.setattr(cc, "_atomic_write", real_atomic)
+
+    # The new bundle is on disk but nothing names it; the committed manifest still names the old one, intact.
+    assert orphan.exists() and orphan.read_bytes() == b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
+    assert live.read_bytes() == live_bytes
+    assert json.loads(ctx.manifest_path.read_text())["bundle"] == live.name
+    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert reopened.hit is True
+    assert reopened.bundle == live
+
+    # And orphans do not accumulate. A save of the SAME artifacts adopts the orphan rather than rewriting it
+    # (that is what content addressing buys), retiring the old bundle instead...
+    monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", -1.0)
+    reopened.saved = False
+    assert cc.save(reopened) is True
+    assert reopened.bundle == orphan and orphan.exists()
+    assert not live.exists()
+
+    # ...and a save of DIFFERENT artifacts collects it like any other superseded bundle.
+    mutable_megacache["bytes"] = b"ARTIFACT-THREE"
+    reopened.saved = False
+    assert cc.save(reopened) is True
+    assert not orphan.exists()
+    assert [p.name for p in reopened.dir.iterdir() if p.name.startswith(cc._BUNDLE_PREFIX)] == [
+        reopened.bundle.name
+    ]
+
+
+def test_a_superseded_bundle_is_collected_and_the_live_pair_still_loads(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    """Window 3: a committed new pair retires the old bundle, and what is left still loads."""
+    monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", -1.0)
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    first = ctx.bundle
+
+    mutable_megacache["bytes"] = b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
+    ctx.saved = False
+    assert cc.save(ctx) is True
+    second = ctx.bundle
+
+    assert second != first
+    assert second.exists() and not first.exists()
+    assert [p.name for p in ctx.dir.iterdir() if p.name.startswith(cc._BUNDLE_PREFIX)] == [
+        second.name
+    ]
+    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert reopened.hit is True
+    assert reopened.bundle == second
+
+
+def test_collection_never_removes_the_live_bundle_or_one_a_racing_process_just_wrote(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    import os as _os
+
+    ctx = _cold_pair(monkeypatch, tmp_path)
+
+    # A bundle another process has written but not yet committed a manifest for is named by nothing. Deleting it
+    # there would hand that process the broken pair this layout exists to prevent, so the grace window spares it.
+    stray = ctx.dir / cc._bundle_name("f" * 64)
+    stray.write_bytes(b"written by another process, manifest still pending")
+    assert cc._collect_superseded(ctx.dir, None) == []
+    assert stray.exists()
+
+    # Once it is old enough to not be anybody's in-flight save, it goes.
+    _os.utime(stray, (0, 0))
+    assert cc._collect_superseded(ctx.dir, None) == [stray.name]
+    assert not stray.exists()
+
+    # The bundle the manifest ON DISK names is never a candidate, however old it is.
+    _os.utime(ctx.bundle, (0, 0))
+    assert cc._collect_superseded(ctx.dir, None) == []
+    assert ctx.bundle.exists()
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+
+
+def test_a_manifest_from_before_content_addressing_still_hits(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    """Bundles written by the old layout name no "bundle" key, so they resolve to cache.bin and keep hitting."""
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    legacy = ctx.dir / cc._BUNDLE_NAME
+    ctx.bundle.rename(legacy)
+    manifest = json.loads(ctx.manifest_path.read_text())
+    manifest.pop("bundle")
+    ctx.manifest_path.write_text(json.dumps(manifest))
+
+    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert reopened.hit is True
+    assert reopened.bundle == legacy
+
+    # And the legacy file is collected only once a new pair supersedes it.
+    monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", -1.0)
+    mutable_megacache["bytes"] = b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
+    reopened.saved = False
+    assert cc.save(reopened) is True
+    assert not legacy.exists()
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True

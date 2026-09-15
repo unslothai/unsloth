@@ -37,6 +37,18 @@ the NEXT process, so making a user wait on it buys them nothing. Measured on a B
 docstring's batched-GGUF bundles are far larger than either. ``save`` itself is unchanged
 and still synchronous, for tests and for anyone who needs the write to have happened by
 the time the call returns.
+
+ON-DISK LAYOUT, per key dir: ``manifest.json`` plus one or more ``bundle-<sha16>.bin``.
+The bundle is CONTENT-ADDRESSED and the manifest names the one it is paired with, so the
+manifest is the single commit point: a save writes a file no reader is using, then
+publishes the manifest naming it, then collects the bundles no manifest names. Killed
+anywhere in between, what is on disk is still a matching pair, either the old one (the
+new bundle is an orphan) or the new one. That matters because a save runs on a daemon
+thread that interpreter exit can kill mid-write: writing one fixed ``cache.bin`` in place
+would leave the old manifest paired with a new bundle, and the sha256 check on load would
+then throw away a warm start that was perfectly good. Manifests without a ``bundle`` key
+are pre-content-addressing and name ``cache.bin``, so old bundles keep hitting; the format
+version is deliberately NOT bumped, since bumping it is what would invalidate them.
 """
 
 from __future__ import annotations
@@ -66,8 +78,37 @@ _ENV_SYNC = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC"
 _DEFAULT_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
 
 _MANIFEST_NAME = "manifest.json"
+# The pre-content-addressing bundle name. Still read (a manifest without a "bundle" key names it, which is every
+# bundle written before this scheme) and still collected once a newer pair supersedes it, never written.
 _BUNDLE_NAME = "cache.bin"
+_BUNDLE_PREFIX = "bundle-"
+_BUNDLE_SUFFIX = ".bin"
 _FORMAT_VERSION = 1
+
+# A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
+# published it and not yet committed its manifest, and the whole point of the split is that the loser of that race
+# keeps a loadable pair. Only ever delays a delete.
+_GC_GRACE_SECONDS = 60.0
+
+
+def _bundle_name(digest: str) -> str:
+    """Content-addressed file name, so writing a bundle can never damage the live one."""
+    return f"{_BUNDLE_PREFIX}{digest[:16]}{_BUNDLE_SUFFIX}"
+
+
+def _manifest_bundle(cdir: Path, manifest: dict[str, Any]) -> Path:
+    """The bundle file a manifest names. Absent "bundle" means a pre-content-addressing manifest."""
+    name = str(manifest.get("bundle") or _BUNDLE_NAME)
+    # Defence against a manifest naming something outside its own directory.
+    return cdir / Path(name).name
+
+
+def _read_manifest(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        loaded = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - unreadable/absent/half-written reads as "no manifest"
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def cache_mode() -> str:
@@ -277,8 +318,14 @@ def begin(
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
 
+    # The MANIFEST decides which bundle is live: it is published last and only ever names a bundle that was
+    # completely written, so an interrupted save leaves the previous pair addressed and loadable.
+    published = _read_manifest(ctx.manifest_path)
+    if published is not None:
+        ctx.bundle = _manifest_bundle(cdir, published)
+
     # Try an exact-match load. A miss/mismatch is normal and non-fatal.
-    if ctx.bundle.exists() and ctx.manifest_path.exists():
+    if published is not None and ctx.bundle.exists():
         ctx.hit = _try_load(ctx, logger)
         if ctx.hit and mode != "on":
             # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape re-dirties via
@@ -356,11 +403,11 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
 def _atomic_write(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` via a temp file in the SAME directory plus ``os.replace``.
 
-    A save runs on a daemon thread, so interpreter exit can kill it anywhere: a plain
-    write would leave a half-length ``cache.bin`` on disk. The load path does reject one
-    (the manifest's sha256 will not match), but only by discarding a bundle that WAS
-    good, silently costing the next process its warm start. Renaming a fully written
-    temp file over it means the bundle a reader can see is always one somebody finished.
+    A save runs on a daemon thread, so interpreter exit can kill it anywhere. Renaming a
+    fully written temp file into place means a half-written file is never visible under a
+    name anything reads. Paired with the content-addressed bundle names above, that is
+    what makes an interrupted save leave a matching manifest/bundle pair rather than a
+    good bundle the sha256 check has to reject.
     """
     tmp: Optional[str] = None
     try:
@@ -377,6 +424,44 @@ def _atomic_write(path: Path, data: bytes) -> None:
                 os.unlink(tmp)
             except OSError:
                 pass
+
+
+def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
+    """Delete bundles no manifest names any more. Returns the names removed. Never raises.
+
+    Two rules keep this from deleting a bundle somebody is about to need:
+
+    1. The live name is re-read from the manifest ON DISK, not from the context that just wrote it, so a manifest
+       another process committed in between decides what survives rather than our stale idea of it.
+    2. A file younger than the grace window is spared regardless. Between a racing process publishing its bundle
+       and committing its manifest, that bundle is named by nothing; deleting it there would hand the loser of the
+       race exactly the broken pair this whole scheme exists to prevent.
+    """
+    removed: list[str] = []
+    try:
+        manifest = _read_manifest(cdir / _MANIFEST_NAME)
+        live = _manifest_bundle(cdir, manifest).name if manifest is not None else None
+        cutoff = time.time() - _GC_GRACE_SECONDS
+        for path in cdir.iterdir():
+            name = path.name
+            if name == live or not path.is_file():
+                continue
+            if not (
+                name == _BUNDLE_NAME
+                or (name.startswith(_BUNDLE_PREFIX) and name.endswith(_BUNDLE_SUFFIX))
+            ):
+                continue
+            try:
+                if path.stat().st_mtime > cutoff:
+                    continue
+                path.unlink()
+                removed.append(name)
+            except OSError:
+                # Another process got there first, or it is busy on Windows. Next save tries again.
+                continue
+    except Exception as exc:  # noqa: BLE001 - housekeeping must never fail a save
+        _warn(logger, f"compile-cache: could not collect superseded bundles: {exc}")
+    return removed
 
 
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
@@ -401,24 +486,34 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     data = result[0]
     try:
         ctx.dir.mkdir(parents = True, exist_ok = True)
+        digest = hashlib.sha256(data).hexdigest()
+        bundle = ctx.dir / _bundle_name(digest)
         manifest = {
             "format": _FORMAT_VERSION,
             "key": ctx.key,
             "created": time.time(),
             "bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
+            "sha256": digest,
+            # The bundle THIS manifest is paired with. Content-addressed, so a save writes a file no reader is
+            # using and the previous pair stays whole and addressed until the manifest below commits.
+            "bundle": bundle.name,
             "env": ctx.env_fp,
             "model": ctx.model_fp,
             # Static-compile shape coverage (register_shape); unused by dynamic compiles.
             "shapes": shapes,
         }
-        # Bundle first: the manifest is the commit record and names the bundle's digest, so a manifest published
-        # over a bundle that never landed is the one pairing the load path reads as corruption.
-        _atomic_write(ctx.bundle, data)
+        # Bundle first, under its own name, THEN the manifest: the manifest is the single commit point, and it only
+        # ever names a bundle already fully on disk. An exit between the two leaves the OLD manifest still naming
+        # the OLD bundle, which is untouched, so the previous warm start survives and the new file is just an
+        # orphan the next successful save collects.
+        if not bundle.exists():
+            _atomic_write(bundle, data)
         _atomic_write(
             ctx.manifest_path,
             json.dumps(manifest, indent = 2, sort_keys = True, default = str).encode("utf-8"),
         )
+        ctx.bundle = bundle
+        _collect_superseded(ctx.dir, logger)
         with _dirty_lock:
             # A shape registered while this ran is NOT in the bundle just written, so leave the context dirty for
             # the save its own register_shape queued.
