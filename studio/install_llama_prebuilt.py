@@ -3332,10 +3332,8 @@ def published_windows_cuda_attempts(
     else:
         detected, _ = detected_windows_runtime_lines()
         compatible = compatible_windows_runtime_lines(host)
-        # Lines whose runtime DLLs are on disk first, then the rest of the driver-compatible
-        # lines: the app bundle ships its own runtime, so the driver major is the real
-        # constraint. Detection only orders; a host with CUDA 13 DLLs and a Pascal card still
-        # needs the cuda12-legacy bundle, which filtering on detection dropped.
+        # Detected runtime lines first, then the rest the driver runs: the bundle ships its own
+        # runtime, and a Pascal card beside CUDA 13 DLLs still needs cuda12-legacy.
         ordered_lines = [line for line in compatible if line in detected] + [
             line for line in compatible if line not in detected
         ]
@@ -3403,8 +3401,7 @@ def published_windows_cuda_attempts(
                     ),
                 )[0]
             )
-        # The portable bundle follows the targeted one as its fallback attempt, as on Linux;
-        # choosing one OR the other left a failed targeted download with nothing to try.
+        # The portable bundle follows the targeted one as its fallback attempt, as on Linux.
         if portable is not None:
             picks.append(portable)
         for artifact, asset_url, am in picks:
