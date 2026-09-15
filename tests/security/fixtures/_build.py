@@ -173,8 +173,12 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
 
 
 def build_all() -> dict[str, Path]:
-    os.environ["SOURCE_DATE_EPOCH"] = str(SOURCE_DATE_EPOCH)
-
+    # Deliberately does NOT set os.environ["SOURCE_DATE_EPOCH"]. Nothing here reads it: every writer
+    # below is handed the fixed timestamp directly, and zipfile takes the 1980 DOS tuple. It used to
+    # be assigned anyway, with no teardown, which was harmless while this ran as a script and is not
+    # harmless now that a session fixture calls it inside a broader pytest run: it overwrote any
+    # caller-provided value for the rest of the worker, and every later test and subprocess
+    # inherited the false epoch.
     outputs: dict[str, Path] = {}
 
     # Malicious wheel: payload setup.py that embeds the May-12 IOC.

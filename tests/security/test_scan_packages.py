@@ -2682,3 +2682,34 @@ def test_the_fixtures_are_published_atomically() -> None:
             f"committed before they were generated; a change here means the archives are no longer "
             f"deterministic and the atomic publish above no longer guarantees equivalence."
         )
+
+
+def test_building_the_fixtures_leaves_the_callers_environment_alone() -> None:
+    """`build_all()` runs inside a session fixture now, so anything it leaks outlives it.
+
+    It used to assign `SOURCE_DATE_EPOCH` with no teardown. That was harmless while this file was
+    run as a script, and is not harmless when a session fixture calls it partway through a broader
+    pytest run: the value persists for the rest of the worker and every later test and subprocess
+    inherits it. Nothing in the builder reads it either -- each writer is handed the fixed timestamp
+    directly -- so the assignment was doing no work in exchange for that reach.
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "fixtures"))
+    import _build  # noqa: PLC0415
+
+    sentinel = "1234567890"
+    previous = os.environ.get("SOURCE_DATE_EPOCH")
+    os.environ["SOURCE_DATE_EPOCH"] = sentinel
+    try:
+        _build.build_all()
+        assert os.environ["SOURCE_DATE_EPOCH"] == sentinel, (
+            "build_all() overwrote the caller's SOURCE_DATE_EPOCH, which now leaks into every later "
+            "test in this worker"
+        )
+    finally:
+        if previous is None:
+            os.environ.pop("SOURCE_DATE_EPOCH", None)
+        else:
+            os.environ["SOURCE_DATE_EPOCH"] = previous
