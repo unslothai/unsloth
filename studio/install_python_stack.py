@@ -17,6 +17,7 @@ import glob
 import importlib
 import importlib.util
 import json
+import locale
 import os
 import platform
 import re
@@ -38,6 +39,17 @@ for _dir in (_BACKEND_DIR, _STUDIO_DIR):
 
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
+
+try:
+    import nvidia_probe as _nvidia_probe  # noqa: E402
+except Exception:  # an older checkout beside a newer setup script
+    _nvidia_probe = None
+
+
+def _nvidia_library_inventory():
+    """The NVML / CUDA driver inventory, or None. A seam, so tests can hide the real host."""
+    return _nvidia_probe.probe() if _nvidia_probe is not None else None
+
 
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
@@ -547,8 +559,8 @@ def _pytorch_whl_leaf_url(leaf: str) -> "str | None":
 
     No URL shape pins a query-auth mirror -- pip joins the project name as text, so the token
     swallows either the leaf or the name (see _warn_query_index_unusable). Constructing one
-    anyway is worse than declining: --index-url makes _install_env_for_cmd strip pip.conf and
-    ~/.netrc, the only channel that can carry that credential.
+    anyway is worse than declining: --index-url makes _install_env_for_cmd strip pip.conf's
+    index keys and ~/.netrc, the only channel that can carry that credential.
     """
     if "?" in _PYTORCH_WHL_BASE or "#" in _PYTORCH_WHL_BASE:
         _warn_query_index_unusable(_PYTORCH_WHL_BASE)
@@ -2515,48 +2527,14 @@ def _has_usable_nvidia_gpu() -> bool:
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
 
-    def _lists_a_gpu(exe: str) -> bool:
-        try:
-            result = subprocess.run(
-                [exe, "-L"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
-            )
-        except Exception:
-            return False
-        return result.returncode == 0 and "GPU " in result.stdout
-
     # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
     # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
     # on the GPU check failing, not on the PATH lookup missing.
-    candidates = []
     _path_exe = shutil.which("nvidia-smi")
-    if _path_exe:
-        candidates.append(_path_exe)
-    if IS_WINDOWS:
-        candidates.extend(
-            (
-                os.path.join(
-                    os.environ.get("ProgramFiles", r"C:\Program Files"),
-                    "NVIDIA Corporation",
-                    "NVSMI",
-                    "nvidia-smi.exe",
-                ),
-                os.path.join(
-                    os.environ.get("SystemRoot", r"C:\Windows"),
-                    "System32",
-                    "nvidia-smi.exe",
-                ),
-            )
-        )
-    for _candidate in candidates:
+    for _candidate in _nvidia_smi_candidates():
         if _candidate != _path_exe and not os.path.isfile(_candidate):
             continue
-        if _lists_a_gpu(_candidate):
+        if _nvidia_smi_lists_a_gpu(_candidate):
             return True
     # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU whatever nvidia-smi does.
     if sys.platform != "win32":
@@ -2566,7 +2544,18 @@ def _has_usable_nvidia_gpu() -> bool:
                 return True
         except OSError:
             pass
-    return False
+    # Last: the driver's own libraries, which ship without the nvidia-smi utility.
+    inventory = _nvidia_library_inventory()
+    if inventory is None or not inventory.devices:
+        return False
+    if inventory.source != "nvml" or cvd is None:
+        return True  # the CUDA driver rows already honour the mask
+    # NVML rows are physical: an explicit index or GPU- UUID mask must name one of them.
+    # A mask they cannot name (a MIG UUID) is left usable, as the probes above leave it.
+    tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+    if not all(t.isdigit() or t.startswith("gpu-") for t in tokens):
+        return True
+    return any(row["index"] in tokens or row["uuid"].lower() in tokens for row in inventory.devices)
 
 
 # Which probe answered the last _detect_amd_gfx_codes() call: only rocminfo is subject
@@ -3345,13 +3334,83 @@ def _install_bnb_windows_rocm() -> bool:
     return True
 
 
-def _nvidia_smi_path() -> "str | None":
-    """nvidia-smi from PATH, falling back to the canonical Linux install path a
-    stripped-down PATH (systemd units, cron) can miss."""
+def _nvidia_smi_candidates() -> "list[str]":
+    """Every place nvidia-smi is worth looking for, PATH first.
+
+    One list, because two callers that disagree about where nvidia-smi lives disagree
+    about the host: _has_usable_nvidia_gpu would find the driver through the Windows
+    fixed locations while _detect_cuda_torch_index_url, reading PATH only, fell back to
+    its cu126 default and recorded a family the driver never reported.
+    """
+    candidates = []
     exe = shutil.which("nvidia-smi")
-    if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
-        exe = "/usr/bin/nvidia-smi"
-    return exe
+    if exe:
+        candidates.append(exe)
+    if IS_WINDOWS:
+        # The locations install.ps1 / setup.ps1 use; nvidia-smi.exe is routinely off PATH.
+        candidates.extend(
+            (
+                os.path.join(
+                    os.environ.get("ProgramFiles", r"C:\Program Files"),
+                    "NVIDIA Corporation",
+                    "NVSMI",
+                    "nvidia-smi.exe",
+                ),
+                os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32",
+                    "nvidia-smi.exe",
+                ),
+            )
+        )
+    else:
+        # The canonical Linux path a stripped-down PATH (systemd units, cron) can miss.
+        candidates.append("/usr/bin/nvidia-smi")
+    return candidates
+
+
+def _nvidia_smi_lists_a_gpu(exe: str) -> bool:
+    """Whether this nvidia-smi actually enumerates a GPU.
+
+    The predicate both probes have to agree on. A stale copy can exit 0 and print a
+    perfectly parseable "CUDA Version:" banner while `-L` lists nothing, which is the
+    state setup.ps1's Test-NvidiaSmiHasGpu rejects.
+    """
+    try:
+        result = subprocess.run(
+            [exe, "-L"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "GPU " in result.stdout
+
+
+def _nvidia_smi_usable_candidates() -> "list[str]":
+    """Candidates worth actually running: the PATH result plus every file that exists.
+
+    `shutil.which` already proved its result runnable, so it is kept without an
+    os.path.isfile check -- that would reject a bare "nvidia-smi" relative to a CWD it
+    does not live in, which is both what a stubbed test double looks like and what a
+    GPU-free runner would turn into a silent cu126 default.
+    """
+    path_exe = shutil.which("nvidia-smi")
+    return [
+        candidate
+        for candidate in _nvidia_smi_candidates()
+        if candidate == path_exe or os.path.isfile(candidate)
+    ]
+
+
+def _nvidia_smi_path() -> "str | None":
+    """The first nvidia-smi worth running, or None."""
+    candidates = _nvidia_smi_usable_candidates()
+    return candidates[0] if candidates else None
 
 
 def _nvidia_compute_sms(exe: str) -> "list[int] | None":
@@ -3415,21 +3474,27 @@ def _span_covers(span: "tuple[int, int]", sms: "list[int]") -> bool:
     return all(span[0] <= sm <= span[1] for sm in sms)
 
 
-def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
+def _cap_cuda_family_for_pre_turing(
+    family: str,
+    exe: "str | None",
+    sms: "list[int] | None" = None,
+) -> str:
     """Use cu126 when it covers every physical GPU missed by the selected family.
 
     CUDA_VISIBLE_DEVICES is intentionally ignored. Non-x86_64 hosts retain the
-    driver-derived family because their wheel matrices differ.
+    driver-derived family because their wheel matrices differ. `sms` is the inventory
+    already in hand (the library probe); otherwise it is read from `exe`.
     """
     if platform.machine().lower() not in ("x86_64", "amd64"):
         return family
     span = _cuda_family_sm_range(family)
-    if span is None or exe is None:
+    if span is None or (exe is None and sms is None):
         return family
     if span[0] <= _CU126_SM_RANGE[0]:
         return family  # nothing lower to fall back to
     floor = span[0]
-    sms = _nvidia_compute_sms(exe)
+    if sms is None:
+        sms = _nvidia_compute_sms(exe)
     if not sms or all(sm >= floor for sm in sms):
         return family  # no GPU here sits under the family's floor
     if not _span_covers(_CU126_SM_RANGE, sms):
@@ -3445,6 +3510,21 @@ def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
         f"PyTorch 2.11's {family} wheels ship no kernels for them"
     )
     return "cu126"
+
+
+def _torch_family_for_cuda_version(major: int, minor: int) -> str:
+    """install.sh::get_torch_index_url's CUDA ladder, from the driver's CUDA version."""
+    if major >= 13:
+        return "cu130"
+    if major == 12 and minor >= 8:
+        return "cu128"
+    if major == 12 and minor >= 6:
+        return "cu126"
+    if major >= 12:
+        return "cu124"
+    if major >= 11:
+        return "cu118"
+    return "cpu"  # ancient driver: no usable CUDA wheels
 
 
 def _detect_cuda_torch_index_url() -> str:
@@ -3464,9 +3544,19 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    exe = _nvidia_smi_path()
     tag = "cu126"  # default when the driver CUDA version cannot be read
-    if exe:
+    # Every candidate until one ANSWERS, the way _has_usable_nvidia_gpu does. Taking the
+    # first that merely exists loses to a stale nvidia-smi on PATH: the presence probe
+    # walks past it to the working Program Files copy and confirms the GPU, while this one
+    # stopped at the stale binary, read no version, and defaulted to cu126. On Blackwell
+    # that wheel has no kernels, so a repair would install one the GPU cannot use.
+    for exe in _nvidia_smi_usable_candidates():
+        # The same predicate the presence probe uses. A stale copy that exits 0 with a
+        # parseable banner but lists no GPU must not decide the family: _has_usable_nvidia_gpu
+        # walks past it to the working copy, and setup.ps1 keeps the executable that passes
+        # Test-NvidiaSmiHasGpu, so accepting it here picks a family off the wrong driver.
+        if not _nvidia_smi_lists_a_gpu(exe):
+            continue
         try:
             result = subprocess.run(
                 [exe],
@@ -3477,26 +3567,41 @@ def _detect_cuda_torch_index_url() -> str:
                 errors = "replace",
                 timeout = 10,
             )
-            if result.returncode == 0:
-                m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
-                if m:
-                    major, minor = int(m.group(1)), int(m.group(2))
-                    if major >= 13:
-                        tag = "cu130"
-                    elif major == 12 and minor >= 8:
-                        tag = "cu128"
-                    elif major == 12 and minor >= 6:
-                        tag = "cu126"
-                    elif major >= 12:
-                        tag = "cu124"
-                    elif major >= 11:
-                        tag = "cu118"
-                    else:
-                        tag = "cpu"  # ancient driver: no usable CUDA wheels
         except Exception:
-            pass
-        tag = _cap_cuda_family_for_pre_turing(tag, exe)
+            continue
+        if result.returncode != 0:
+            continue
+        m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
+        if m is None:
+            continue
+        tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
+        return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
+    # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
+    # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
+    # default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
+    inventory = _nvidia_library_inventory()
+    if inventory is not None and inventory.cuda_driver_version:
+        sms = []
+        for row in inventory.devices:
+            m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
+            if m is None:
+                sms = []
+                break
+            sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+        if sms:
+            family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
+            return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
+
+
+def _driver_cuda_torch_flavor_tag() -> str:
+    """The CUDA wheel family this driver can actually run, or "" if it can run none.
+
+    _detect_cuda_torch_index_url mirrors setup.ps1::Get-PytorchCudaTag, ancient-driver "cpu"
+    and pre-Turing cap included, so reading its leaf asks the same question the handover did.
+    """
+    leaf = _detect_cuda_torch_index_url().rstrip("/").rsplit("/", 1)[-1].strip().lower()
+    return leaf if _is_cuda_family_leaf(leaf) else ""
 
 
 def _explicit_torch_index_url() -> "str | None":
@@ -3986,7 +4091,7 @@ def _ensure_xpu_triton() -> None:
     """
     if NO_TORCH or IS_MACOS:
         return
-    if IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+    if IS_WINDOWS and _handover_torch_flavor_tag():
         return
     pin = _explicit_xpu_torch_index_url()
     if pin is None:
@@ -4296,6 +4401,15 @@ def _torch_build_is_gpu() -> bool:
     return (not label) or _is_gpu_torch_label(label)
 
 
+def _handover_torch_flavor_tag() -> str:
+    """The flavor setup.sh / setup.ps1 published for this run, lowercased, or "".
+
+    Named rather than read inline: the invariant has to tell a handover apart from the other
+    sources of the same string.
+    """
+    return os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+
+
 def _expected_torch_flavor_tag() -> str:
     """The torch flavor this venv is SUPPOSED to hold, or "" when nothing can say.
 
@@ -4317,8 +4431,36 @@ def _expected_torch_flavor_tag() -> str:
          Only an NVIDIA host, or an explicit pin, can expect a GPU build -- otherwise
          return "" rather than invent an expectation from an absent GPU.
     """
-    env = os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+    env = _handover_torch_flavor_tag()
     if env:
+        # One exception. The setup scripts publish "cpu" both when the user asked for it and
+        # when their GPU probe came back empty, and honouring the second reading is what let an
+        # update report a venv rebuilt as 2.11.0+cpu as a success. Unpinned, "cpu" is a probe
+        # ANSWER and does not outrank a CUDA manifest while the GPU is still there; both facts
+        # must hold, or a host that really lost its GPU gets a wheel it cannot load. Resolved
+        # here rather than in _ensure_expected_torch_flavor so the caller records the enforced
+        # tag too, instead of repairing the venv and then writing "cpu" to the manifest.
+        if env == "cpu" and not _explicit_cpu_torch_index_pin():
+            recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
+            if _is_cuda_family_leaf(recorded) and _has_usable_nvidia_gpu():
+                # The driver's OWN family, not the recorded one. setup.ps1 also answers "cpu"
+                # legitimately, from Get-PytorchCudaTag, when the driver tops out below CUDA 11
+                # or Get-CudaFamilyCappedForPreTuring lowers the family; reinstating the record
+                # there would install a wheel this driver cannot load. Same probe as setup.ps1,
+                # mirrored in _detect_cuda_torch_index_url, so the two cannot disagree.
+                # An explicit CUDA pin outranks the probe: the repair helpers install from
+                # the pinned URL, so expecting anything else would flag the venv they just
+                # built correctly. _explicit_cpu_torch_index_pin already took the CPU pin.
+                pinned = _torch_index_leaf(_explicit_torch_index_url() or "")
+                driver = pinned if _is_cuda_family_leaf(pinned) else _driver_cuda_torch_flavor_tag()
+                if not driver:
+                    return env
+                _safe_print(
+                    f"   [WARN] the installer handed over a CPU torch expectation, but this venv "
+                    f"was recorded as {recorded} and an NVIDIA GPU is still present; "
+                    f"enforcing {driver}."
+                )
+                return driver
         return env
     pin = _explicit_torch_index_url()
     if pin is not None:
@@ -4366,7 +4508,7 @@ def _expected_torch_flavor_is_explicit() -> bool:
     False when only the live hardware probe can answer, which is the one case a
     visibility mask has any business overruling.
     """
-    if os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+    if _handover_torch_flavor_tag():
         return True
     if _explicit_torch_index_url() is not None:
         return True
@@ -4895,6 +5037,36 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     if expected != "cpu" and not _torch_build_is_gpu():
         return _warn_still_cpu(expected)
     return _warn_wrong_flavor(expected, _now)
+
+
+def _missing_torch_needs_dependency_pass() -> bool:
+    """Missing torch that the dependency pass can actually reinstall, read from metadata.
+
+    Gated on a live core requirement, so Apple Silicon (unsloth-zoo's torch marker is
+    false there) does not run a useless pass on every update.
+    """
+    if NO_TORCH or _installed_distribution_version("torch") is not None:
+        return False
+    try:
+        from importlib.metadata import PackageNotFoundError, requires
+        from packaging.requirements import Requirement
+    except ImportError:
+        return False
+    for package in _core_package_names(os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")):
+        try:
+            lines = requires(package) or []
+        except PackageNotFoundError:
+            continue
+        for line in lines:
+            try:
+                req = Requirement(line)
+            except Exception:  # noqa: BLE001 - ignore malformed requirements
+                continue
+            if req.name.lower() == "torch" and (
+                req.marker is None or req.marker.evaluate({"extra": ""})
+            ):
+                return True
+    return False
 
 
 def _amd_torch_needs_dependency_pass() -> bool:
@@ -6136,21 +6308,29 @@ def _progress(label: str) -> None:
         pass
 
 
+_ENV_FOR_CMD = object()
+
+
 def run(
     label: str,
     cmd: list[str],
     *,
     quiet: bool = True,
     check: bool = True,
+    env: "dict[str, str] | None | object" = _ENV_FOR_CMD,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a command; on failure print output and exit, unless ``check`` is False."""
+    """Run a command; on failure print output and exit, unless ``check`` is False.
+
+    ``env`` is for a caller that already derived argv from the environment: see
+    _pinned_cmd_and_env.
+    """
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE if quiet else None,
         stderr = subprocess.STDOUT if quiet else None,
-        env = _install_env_for_cmd(cmd),
+        env = _install_env_for_cmd(cmd) if env is _ENV_FOR_CMD else env,
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -7299,6 +7479,64 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     return cmd
 
 
+def _pinned_cmd_and_env(cmd: "list[str]") -> "tuple[list[str], dict[str, str] | None]":
+    """A command with its pinned binary-policy arguments, and the env it runs with, from ONE read.
+
+    A failed read is not memoised, so a second one can succeed: the policy would then reach
+    the environment but not the argv that carries it (uv) or exempts from it (both).
+    """
+    env = _install_env_for_cmd(cmd)
+    return cmd + _pinned_binary_policy_args(cmd, env), env
+
+
+# Wheel-less dependencies of AMD's per-arch (gfx*) indexes: every torch there requires
+# rocm[libraries], which AMD publishes only as an sdist (7.9 through 7.13). Exempted on those
+# pins alone, so no other index can use the name to get a build past the operator's policy.
+_AMD_ARCH_INDEX_SDIST_ONLY_PACKAGES = ("rocm",)
+
+
+def _pins_amd_arch_index(cmd: "list[str]") -> bool:
+    """True when the index ``cmd`` pins has a gfx leaf, the shape of every AMD per-arch index."""
+    for flag, value in zip(cmd, cmd[1:]):
+        if flag in ("--index-url", "--default-index"):
+            return bool(re.match(r"gfx\d", _torch_index_leaf(value)))
+    return False
+
+
+def _pinned_binary_policy_args(cmd: "list[str]", env: "dict[str, str] | None") -> "list[str]":
+    """The re-asserted only-binary as argv for a pinned command, plus its package exemptions.
+
+    uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
+    UV_NO_CONFIG=1 since a discovered uv.toml outranks the CLI pin (#6898), so the
+    environment alone leaves the policy unenforced on the leg that runs. Measured on uv
+    0.10.7: a pinned install builds the sdist with PIP_ONLY_BINARY=:all: set and refuses it
+    given --only-binary. Pinned only: others keep their config file and uv applies it.
+
+    Only when a policy is in force, so an unconfigured host's argv is unchanged, and never for a
+    package the operator named: a CLI --no-binary overrides their rule for it (pip 26.2).
+    """
+    if not _is_pinned_index_cmd(cmd):
+        return []
+    parts = [part.strip() for part in (env or {}).get("PIP_ONLY_BINARY", "").split(",")]
+    parts = [part for part in parts if part]
+    if not parts:
+        return []
+    args: list[str] = []
+    if cmd[:1] == ["uv"]:
+        # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
+        for part in parts:
+            args.extend(["--only-binary", part])
+    if not _pins_amd_arch_index(cmd):
+        return args
+    named = {_canonical_package_name(part) for part in parts}
+    exempt = [
+        name
+        for name in _AMD_ARCH_INDEX_SDIST_ONLY_PACKAGES
+        if _canonical_package_name(name) not in named
+    ]
+    return args + _sdist_only_build_args(*exempt)
+
+
 # uv ranks --index-url LOWEST, so inherited index vars defeat a pinned repair; neutralise them.
 _UV_INDEX_ENV_VARS = (
     "UV_CONFIG_FILE",
@@ -7322,42 +7560,98 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
-# Restrictive policy a pinned install must not inherit from the ENVIRONMENT. The pinned
-# branch neutralises the config FILES (UV_NO_CONFIG=1 + PIP_CONFIG_FILE=devnull), but an
-# env var outranks a config file, so a hardened shell could still fail a torch repair the
-# pin was supposed to make deterministic (#8530).
-_PM_POLICY_ENV_VARS = (
-    "UV_NO_BUILD",
-    "UV_NO_BUILD_PACKAGE",
-    "UV_NO_BINARY",
-    "UV_NO_BINARY_PACKAGE",
+# Unsatisfiable, not relaxed: every requirements file we ship is unhashed, so
+# require-hashes can only abort (#8530). Env beats config, so the variables go too.
+_PM_HASH_ENV_VARS = (
     "UV_REQUIRE_HASHES",
-    "UV_EXCLUDE_NEWER",
-    "PIP_ONLY_BINARY",
-    "PIP_NO_BINARY",
     "PIP_REQUIRE_HASHES",
 )
 
+# no-binary would FORCE a source build of a pinned wheel: clearing it is less build-time
+# execution, not more. UV_EXCLUDE_NEWER because only uv reads it, so honouring it on the uv
+# leg alone would let the pip fallback install past the cutoff.
+_PM_FORCE_SOURCE_ENV_VARS = (
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "PIP_NO_BINARY",
+    "UV_EXCLUDE_NEWER",
+)
+
+# PIP_ONLY_BINARY stays in force: the pinned indexes serve wheels, rocm aside (see
+# _AMD_ARCH_INDEX_SDIST_ONLY_PACKAGES), so it costs the pin nothing. Measured on uv 0.10.7, UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
+# environment variables at all, so no uv.toml no-build can reach a pinned command.
+
 
 def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
-    """Overrides that stop a hardened user pip config failing the installer's own pip.
+    """Hash mode off for one pip install / download / wheel, and nothing else relaxed.
 
-    Empty for anything that is not a `pip install` / `pip download` / `pip wheel` this
-    module drives, every `uv` command included, so the "non-pinned installs inherit the
-    caller env unchanged" contract holds on a machine with no hostile pip config.
-    `wheel` is in that set because the duplicate-metadata repair stages its replacement
-    with `pip wheel`, where require-hashes applies exactly as it does to install: an
-    unpinned name is rejected before anything is built, so the repair would abort on a
-    hardened machine and leave the conflict it exists to remove.
-
-    `require-hashes = true` makes pip reject any requirement without a --hash, which is
-    every requirements file we ship; that is what took the pip FALLBACK down in #8530
-    once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
-    overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
+    pip applies env vars AFTER config files, so this wins while pip.conf's index-url, cert,
+    proxy and only-binary stay in force; the wheel-less requirements go through the
+    package-scoped --no-binary in _sdist_only_build_args(). `wheel` is in the set because
+    the duplicate-metadata repair stages with it, and require-hashes rejects that too
+    (#8530).
     """
-    if cmd[:1] == ["uv"] or not any(arg in ("install", "download", "wheel") for arg in cmd):
+    if not _is_pip_subcommand(cmd, ("install", "download", "wheel")):
         return {}
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+def _executable_stem(path: str) -> str:
+    """argv[0] as a bare program name, on either platform's spelling.
+
+    Both separators, because os.path.basename does not split a backslash off-Windows and
+    the same argv reaches here from a Windows host, a test, or WSL interop.
+    """
+    leaf = re.split(r"[\\/]", path)[-1]
+    return leaf.split(".")[0].lower()
+
+
+def _is_pip_subcommand(cmd: "list[str]", subcommands: "tuple[str, ...]") -> bool:
+    """True when ``cmd`` is a pip invocation whose SUBCOMMAND is one of ``subcommands``.
+
+    Structural, so the relaxation cannot ride along on a requirements path, a package
+    named ``wheel``, or a uv command that merely contains the word.
+    """
+    args = list(cmd)
+    if args[:1] == ["uv"]:
+        return False
+    if len(args) >= 3 and args[1] == "-m" and args[2] in ("pip", "pip3"):
+        args = args[3:]
+    elif args and _executable_stem(args[0]) in ("pip", "pip3"):
+        args = args[1:]
+    else:
+        return False
+    # The first token that NAMES a subcommand, not the first without a dash:
+    # `pip --cache-dir /tmp/c install x` puts a bare path before it.
+    for arg in args:
+        if arg in _PIP_SUBCOMMANDS:
+            return arg in subcommands
+    return False
+
+
+# pip 26.2 `pip --help`; only marks where the options stop, so a missing future one is free.
+_PIP_SUBCOMMANDS = frozenset(
+    (
+        "install",
+        "download",
+        "uninstall",
+        "freeze",
+        "inspect",
+        "list",
+        "show",
+        "check",
+        "config",
+        "search",
+        "cache",
+        "index",
+        "wheel",
+        "hash",
+        "completion",
+        "debug",
+        "help",
+        "lock",
+    )
+)
 
 
 def _uv_is_offline() -> bool:
@@ -7517,13 +7811,16 @@ def _pip_config_without_sources(directory: str) -> str:
             [sys.executable, "-m", "pip", "config", "list"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
+            # Dictate the child's encoding; see _decode_pip_output for why sniffing it
+            # afterwards does not work. A non-ASCII cert path must survive this read.
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
             **_windows_hidden_subprocess_kwargs(),
         )
     except OSError:
         result = None
     sections: dict[str, list[tuple[str, str]]] = {}
     if result is not None and result.returncode == 0:
-        for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+        for line in _decode_pip_output(result.stdout or b"").splitlines():
             name, separator, raw = line.partition("=")
             if not separator or name.startswith(":env:"):
                 continue
@@ -7652,13 +7949,13 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
     None (inherit env) when the command does NOT pin an index, so ordinary installs honour
-    the user's mirror. For pinned commands, the uv index/backend vars are removed,
-    UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
-    pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
+    the user's mirror. Pinned ones also get UV_NO_CONFIG=1, since a discovered uv.toml
+    outranks the CLI pin (#6898), and no blanket amnesty from the operator's policy: only
+    the hash and no-binary variables go, for the reasons at their definitions.
 
-    A non-pinned `pip` command also gets hash-required mode switched off, the one
-    relaxation with no command-line equivalent; the wheel-less requirements go through
-    the package-scoped --no-binary in _sdist_only_build_args() instead.
+    PIP_CONFIG_FILE stays at os.devnull, the ONLY way to stop a site or global pip.conf
+    contributing (measured on pip 26.2: naming a real file suppresses the per-user file
+    alone). What that removes is put back key by key by _pinned_pip_config_overrides().
     """
     if not _is_pinned_index_cmd(cmd):
         relaxed = _relaxed_pip_policy_env(cmd)
@@ -7670,11 +7967,174 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)
-    for name in _PM_POLICY_ENV_VARS:
+    for name in _PM_HASH_ENV_VARS + _PM_FORCE_SOURCE_ENV_VARS:
         env.pop(name, None)
+    # Both config files go for the pin, so re-assert what they carried that it does not
+    # conflict with, from the section belonging to THIS command.
+    for name, value in _pinned_pip_config_overrides(_pip_subcommand_of(cmd)).items():
+        # Not setdefault: pip ignores an EMPTY environment value and falls through to the
+        # config file (verified with `pip config debug`), which devnull has just removed.
+        if not env.get(name):
+            env[name] = value
+        elif name in _PINNED_PIP_ENV_ACCUMULATING:
+            # pip adds the environment's entries after the file's, in that order (pip 26.2:
+            # file :all: then env :none: allows an sdist), so an env value must not replace it.
+            env[name] = f"{value},{env[name]}"
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
     return env
+
+
+# What devnull must not take with it: transport, without which a private index cannot be
+# reached, plus only-binary. An ALLOWLIST: a config file holds options for any subcommand.
+# Absent on purpose: the source keys, no-binary and require-hashes.
+_PINNED_PIP_CONFIG_KEEP_KEYS = (
+    "cert",
+    "client-cert",
+    "proxy",
+    "trusted-host",
+    "timeout",
+    "retries",
+    "keyring-provider",
+    "only-binary",
+)
+
+# pip config is per subcommand: measured on pip 26.2, `[download] no-index` stops a
+# `pip download` and leaves `pip install` alone. A PIP_ variable is command-wide, so the
+# only faithful translation reads `[global]` plus the section for the command being run.
+# A uv command defaults to install, since the PIP_ vars only reach its pip fallback.
+_PINNED_PIP_CONFIG_GLOBAL_SECTION = "global"
+_PINNED_PIP_CONFIG_DEFAULT_SECTION = "install"
+
+# Keys pip reads as a LIST, and the separator each is spelled with in the environment.
+# Only these: elsewhere the newline `pip config list` renders is part of one value, and
+# collapsing it would corrupt a path like `C:\Program  Files\ca.pem`.
+_PINNED_PIP_CONFIG_SEPARATORS = {"trusted-host": " ", "only-binary": ","}
+
+# ...and of those, the one pip ACCUMULATES across sections instead of overriding. Asked of
+# pip 26.2's parser with both sections set, `trusted_hosts` holds the install value alone
+# (assigned per section) while `format_control` holds both (a callback that mutates in
+# place). Accumulating trusted-host would re-trust a host install dropped, a TLS decision.
+_PINNED_PIP_CONFIG_ACCUMULATING = frozenset({"only-binary"})
+_PINNED_PIP_ENV_ACCUMULATING = frozenset(
+    f"PIP_{option.upper().replace('-', '_')}" for option in _PINNED_PIP_CONFIG_ACCUMULATING
+)
+
+_PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
+
+# Failures are NOT memoised: a transient miss must not cost the operator their cert for the
+# whole run, and a venv with no pip YET must be able to answer once it has one. Only a HANG
+# is budgeted, which would otherwise pay the timeout once per pinned command.
+_PINNED_PIP_CONFIG_TIMEOUT = 30
+_PINNED_PIP_CONFIG_ATTEMPTS = 2
+
+
+def _pip_subcommand_of(cmd: "list[str]") -> str:
+    """The pip subcommand ``cmd`` runs, or the default when it is not a pip command."""
+    for name in ("install", "download", "wheel"):
+        if _is_pip_subcommand(cmd, (name,)):
+            return name
+    return _PINNED_PIP_CONFIG_DEFAULT_SECTION
+
+
+def _pinned_pip_config_overrides(
+    subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION,
+) -> "dict[str, str]":
+    """pip's configured transport and binary policy, as PIP_ environment variables.
+
+    ONLY a successful read is memoised, or a transient miss would cost the operator their
+    cert and proxy for the rest of the run, and a venv with no pip yet could never answer
+    once it has one. A HANG is budgeted instead, so a wedged pip costs the run one timeout
+    budget rather than one per pinned command. Empty when pip cannot answer, the normal
+    case early in a fresh venv. `:env:` rows are skipped: the child inherits those.
+    """
+    global _PINNED_PIP_CONFIG_LISTING, _PINNED_PIP_CONFIG_ATTEMPTS
+    if _PINNED_PIP_CONFIG_LISTING is not None:
+        return _parse_pinned_pip_config(_PINNED_PIP_CONFIG_LISTING, subcommand)
+    if _PINNED_PIP_CONFIG_ATTEMPTS <= 0:
+        return {}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            # Dictate the child's encoding; see _decode_pip_output. Guessing loses a
+            # non-ASCII cert path, and pip then fails rather than dropping the setting.
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
+            timeout = _PINNED_PIP_CONFIG_TIMEOUT,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        _PINNED_PIP_CONFIG_ATTEMPTS -= 1
+        return {}
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    _PINNED_PIP_CONFIG_LISTING = result.stdout or b""
+    return _parse_pinned_pip_config(_PINNED_PIP_CONFIG_LISTING, subcommand)
+
+
+def _decode_pip_output(raw: bytes) -> str:
+    r"""`pip config list` bytes as text.
+
+    The child is told to write UTF-8 (see PYTHONIOENCODING above). The fallback covers a
+    listing produced some other way, a pip old enough to ignore that variable among them,
+    where the locale codec is the child's encoding since both share a locale. Sniffing
+    replaces neither: cp1252 bytes can form valid UTF-8, so it is not recoverable after.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getpreferredencoding(False), "replace")
+
+
+def _parse_pinned_pip_config(
+    stdout: bytes, subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION
+) -> "dict[str, str]":
+    """`pip config list` output, filtered to the allowlist, as PIP_ variables.
+
+    Reads `[global]` plus `[<subcommand>]`, the two sections pip itself would apply to that
+    command, with the command section winning. Resolved by position rather than by the
+    order the listing prints in. An unparseable line is skipped, never fatal.
+    """
+    sections = (_PINNED_PIP_CONFIG_GLOBAL_SECTION, subcommand)
+    found: dict[str, dict[str, str]] = {}
+    for line in _decode_pip_output(stdout).splitlines():
+        name, separator, raw = line.partition("=")
+        if not separator or name.startswith(":env:"):
+            continue
+        section, _, option = name.strip().rpartition(".")
+        if section not in sections:
+            continue
+        if option not in _PINNED_PIP_CONFIG_KEEP_KEYS:
+            continue
+        try:
+            value = ast.literal_eval(raw.strip())
+        except (ValueError, SyntaxError):
+            continue
+        separator_for_key = _PINNED_PIP_CONFIG_SEPARATORS.get(option)
+        if separator_for_key is None:
+            text = str(value).strip()
+        else:
+            text = separator_for_key.join(str(value).split())
+        if text:
+            found.setdefault(option, {})[section] = text
+    overrides: dict[str, str] = {}
+    for option, by_section in found.items():
+        separator_for_key = _PINNED_PIP_CONFIG_SEPARATORS.get(option)
+        present = [by_section[name] for name in sections if name in by_section]
+        if option not in _PINNED_PIP_CONFIG_ACCUMULATING:
+            value = present[-1]  # the command's section overrides global
+        else:
+            # Accumulates across sections, and pip applies the entries IN ORDER, so a
+            # re-add outranks the `:none:` that empties the set. Measured on pip 26.2:
+            # [global] a,b plus [install] :none:,a keeps a. Deduplicating left `:none:`
+            # last instead, letting a pinned install build the forbidden sdist.
+            parts = [part for chunk in present for part in chunk.split(separator_for_key) if part]
+            value = separator_for_key.join(parts)
+        overrides[f"PIP_{option.upper().replace('-', '_')}"] = value
+    return overrides
 
 
 def pip_install_try(
@@ -7698,9 +8158,9 @@ def pip_install_try(
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
     if USE_UV and not force_pip:
-        cmd = _build_uv_cmd(args) + constraint_args_uv
+        cmd, env = _pinned_cmd_and_env(_build_uv_cmd(args) + constraint_args_uv)
     else:
-        cmd = _build_pip_cmd(args) + constraint_args_pip
+        cmd, env = _pinned_cmd_and_env(_build_pip_cmd(args) + constraint_args_pip)
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
@@ -7708,7 +8168,7 @@ def pip_install_try(
         cmd,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
-        env = _install_env_for_cmd(cmd),
+        env = env,
     )
     if result.returncode == 0:
         # As pip_install below: `nobuild` only catches a build that reaches the log.
@@ -7753,14 +8213,16 @@ def pip_install(
 
     try:
         if USE_UV:
-            uv_cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+            uv_cmd, uv_env = _pinned_cmd_and_env(
+                _build_uv_cmd(args) + constraint_args_uv + req_args_uv
+            )
             if VERBOSE:
                 _safe_print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
-                env = _install_env_for_cmd(uv_cmd),
+                env = uv_env,
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0:
@@ -7777,9 +8239,11 @@ def pip_install(
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
 
-        pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+        pip_cmd, pip_env = _pinned_cmd_and_env(
+            _build_pip_cmd(args) + constraint_args_pip + req_args_pip
+        )
         pip_label = f"{label} (pip)" if USE_UV else label
-        result = run(pip_label, pip_cmd, check = False)
+        result = run(pip_label, pip_cmd, check = False, env = pip_env)
         if result.returncode != 0:
             # Retry once, and only after clearing something pip named as
             # unremovable: a blind retry of a failing install just doubles the wait.
@@ -7787,7 +8251,7 @@ def pip_install(
             if not cleared:
                 _report_failed_command(pip_label, result)
             _step(_LABEL, f"cleared half-written {', '.join(cleared)}, retrying...", _dim)
-            run(pip_label, pip_cmd)
+            run(pip_label, pip_cmd, env = pip_env)
     finally:
         for temp_req in temp_reqs:
             temp_req.unlink(missing_ok = True)
@@ -9789,6 +10253,9 @@ if __name__ == "__main__":
             f"probe={_TORCH_RUNTIME_PROBE!r}"
         )
         sys.exit(0 if _needs_pass else 1)
+    if sys.argv[1:] == ["--missing-torch-needs-dependency-pass"]:
+        # Exit 0 forces the dependency pass; exit 1 keeps the fast path.
+        sys.exit(0 if _missing_torch_needs_dependency_pass() else 1)
     if any(_arg.startswith("-") for _arg in sys.argv[1:]):
         # Never let a malformed probe call fall through into a multi-gigabyte install.
         _safe_print(f"Unknown argument: {' '.join(sys.argv[1:])}")

@@ -1029,6 +1029,13 @@ export const ar = {
         minimal: "بسيطة",
       },
       custom: {
+        chatWidth: {
+          label: "عرض المحادثة",
+          description: "حدّد عرض الرسائل وحقل الكتابة. يستخدم العرض الكامل المساحة بين الشريطين الجانبيين.",
+          standard: "قياسي",
+          wide: "واسع",
+          full: "العرض الكامل",
+        },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
         preferencesTitle: "التفضيلات",
@@ -1078,6 +1085,10 @@ export const ar = {
           errorStorageFull:
             "لا توجد مساحة تخزين محلية كافية لهذا الخط. أزل خطًا مستوردًا أولًا.",
           errorFailed: "تعذّر تحميل ملف الخط هذا.",
+        },
+        interfaceScale: {
+          label: "مقياس الواجهة",
+          description: "غيّر حجم جميع عناصر الواجهة.",
         },
         uiFontSize: {
           label: "حجم خط الواجهة",

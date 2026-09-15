@@ -5910,7 +5910,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.temperature !== false
                 ? { temperature: params.temperature }
                 : {}),
-              ...(externalCapabilities?.topP !== false
+              ...(externalCapabilities?.topP !== false && params.topP < 1
                 ? { top_p: params.topP }
                 : {}),
               // Floor at the provider's documented min (Kimi thinking needs >=16k); clamp at the per-model max.
@@ -6109,7 +6109,7 @@ export function createOpenAIStreamAdapter(
                         }
                   : {
                       thinking: {
-                        type: reasoningEnabled ? "enabled" : "disabled",
+                        type: externalReasoningEnabled ? "enabled" : "disabled",
                       },
                     }
                 : {}),

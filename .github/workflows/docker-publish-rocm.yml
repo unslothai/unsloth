@@ -251,8 +251,13 @@ jobs:
           file: ./docker/Dockerfile.rocm
           platforms: linux/amd64
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=build-rocm-amd64
-          cache-to:   type=gha,scope=build-rocm-amd64,mode=max
+          # No cache-from / cache-to. mode=max on the GHA backend would export a
+          # 21.4GB image's intermediate layers into the repo-wide Actions cache,
+          # which already holds 40GB across 45 entries serving the notebooks pip
+          # and GGUF fixtures, and would evict them by LRU. This job also runs
+          # weekly while GHA drops entries unused for 7 days, so the cache would
+          # usually be cold on arrival. Measured cold: 8 min of layer work plus
+          # 5.6 min exporting layers.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             ROCM_VERSION=${{ needs.prepare.outputs.rocm_version }}
