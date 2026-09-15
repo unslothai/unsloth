@@ -2604,6 +2604,66 @@ class DiffusionBackend:
                 failures_out.append(exc)
         return total, base_files
 
+    @staticmethod
+    def _unresolved_checkpoint_plan(
+        repo_id: str,
+        gguf_filename: Optional[str],
+        hf_token: Optional[str],
+    ) -> dict[str, Any]:
+        """The plan for a pick whose family could not be resolved: its checkpoint, and nothing else.
+
+        Not ``plan_failed``: nothing failed. An unrecognised repo has no companion set to discover,
+        so the selected file is the whole plan, and marking it incomplete would make the media
+        auto-switch refuse a pick it can size perfectly well.
+
+        Best-effort, like every other sizing lookup in this planner: a Hub failure downgrades the
+        declared size to zero rather than failing the pick, and a local path names no download.
+        """
+        if not gguf_filename or Path(repo_id).expanduser().exists():
+            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+        size, revision = 0, None
+        try:
+            from huggingface_hub import HfApi
+
+            info = HfApi(token = hf_token or None).model_info(
+                repo_id, files_metadata = True, token = hf_token
+            )
+            size = int(
+                next(
+                    (
+                        sibling.size or 0
+                        for sibling in (info.siblings or [])
+                        if sibling.rfilename == gguf_filename
+                    ),
+                    0,
+                )
+            )
+            revision = getattr(info, "sha", None) or None
+        except Exception as exc:  # noqa: BLE001 - sizing is best-effort, the pick is not
+            logger.warning("diffusion.unresolved_plan_size_failed: %s", exc)
+        cached = DiffusionBackend._hub_file_is_cached(
+            repo_id, gguf_filename, revision, size or None
+        )
+        entries = (
+            []
+            if cached
+            else [
+                {
+                    "repo_id": repo_id,
+                    "files": [gguf_filename],
+                    "bytes": size,
+                    "gguf_filename": gguf_filename,
+                    "checkpoint": True,
+                }
+            ]
+        )
+        return {
+            "entries": entries,
+            "total_bytes": sum(entry["bytes"] for entry in entries),
+            "required_bytes": size,
+            "checkpoint_bytes": size,
+        }
+
     def download_plan(
         self,
         repo_id: str,
@@ -2641,10 +2701,11 @@ class DiffusionBackend:
             base = repo_id  # the full pipeline IS the repo
         elif fam is None and not (base_repo or "").strip():
             # An unrecognised GGUF (a neutral repo whose id and filename match no family) has no companion set to
-            # resolve, and the family fallback would raise. The pick still loads: an empty plan just means nothing to
-            # pre-stage. The picker asks for a plan on EVERY hub pick, so raising here would 500 the route rather than
-            # plan no work.
-            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+            # resolve, and the family fallback would raise. The picker asks for a plan on EVERY hub pick, so raising
+            # here would 500 the route rather than plan no work. The CHECKPOINT itself is still knowable, and it is
+            # the one file this pick names, so it is planned: a caller that downloads WITHOUT loading gets the
+            # selected model rather than nothing at all.
+            return self._unresolved_checkpoint_plan(repo_id, gguf_filename, hf_token)
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         # Reported, not raised. The images page falls back to /images/load on ANY plan failure, so a 400 here would
