@@ -726,6 +726,8 @@ _PATH_FLAG_SPECS = {
         "-o": "write",
         "--output": "write",
         "--files0-from": "read",
+        # `sort --help`: "get random bytes from FILE", read whenever -R is in play.
+        "--random-source": "read",
         "-t": "skip",
         "--field-separator": "skip",
         "-k": "skip",
@@ -946,7 +948,14 @@ _SED_INPLACE_FLAGS = ("-i", "--in-place")
 _REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
 
 
-_REDIR_READ_RE = re.compile(r"^\d*<<?<?$")
+# A single `<` only. `<<` introduces a here-document whose next token is its DELIMITER, and `<<<` a
+# here-string whose next token is literal data: no shell opens either as a file, so reading them as
+# operands asked for approval on `cat <<< /media/x` when nothing is opened at all.
+_REDIR_READ_RE = re.compile(r"^\d*<$")
+
+
+# The here-document and here-string forms, matched only to skip the word that follows them.
+_REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 
 
 # A whole token that is a NAME=value prefix, as opposed to _SHELL_ASSIGN_RE which finds them inside a command string.
@@ -980,7 +989,13 @@ def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
             segment.clear()
 
     pending_redirect = None
+    pending_heredoc = False
     for token in tokens:
+        if pending_heredoc:
+            # The word after `<<` names the delimiter and the word after `<<<` is the data itself.
+            pending_heredoc = False
+            if not _looks_separator_for_paths(token):
+                continue
         if pending_redirect is not None:
             # `>| /abs` lexes as `>` then `|`: the punctuation is part of the operator, so keep waiting for the
             # target rather than consuming the pipe as one.
@@ -993,11 +1008,17 @@ def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
         if _looks_separator_for_paths(token):
             flush()
             continue
+        if _REDIR_HEREDOC_RE.match(token):
+            pending_heredoc = True
+            continue
         if _REDIR_WRITE_RE.match(token) or _REDIR_READ_RE.match(token):
             pending_redirect = bool(_REDIR_WRITE_RE.match(token))
             continue
         prefix = _REDIR_PREFIX_RE.match(token)
         if prefix:
+            # `<<END` and `<<<data` carry their word in the same token, and neither is opened.
+            if _REDIR_HEREDOC_RE.match(prefix.group(0)):
+                continue
             target = token[prefix.end() :]
             if target and _looks_absolute(target):
                 operands.append((target, ">" in prefix.group(0)))
@@ -1547,6 +1568,18 @@ _PY_PATH_KWARGS = (
 )
 
 
+# Path parameters named by one callable only, which is why they are not in the shared list above: a
+# bare `filenames = ` or `pathname = ` elsewhere is not necessarily a path this scan should open.
+_PY_PATH_KWARGS_BY_CALL = {
+    "read": ("filenames",),
+    "glob": ("pathname", "root_dir"),
+    "iglob": ("pathname", "root_dir"),
+    "listdir": ("path",),
+    "scandir": ("path",),
+    "walk": ("top",),
+}
+
+
 # Every call name the path tables model, so an alias of any of them resolves back. Built from the
 # tables themselves rather than repeated by hand, so a name added to one is aliasable at once.
 _PY_ALIASABLE_PATH_CALLS = (
@@ -2054,7 +2087,13 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         else:
             continue
         for keyword in node.keywords:
-            if keyword.arg in _PY_PATH_DEST_KWARGS:
+            if keyword.arg in _PY_PATH_KWARGS_BY_CALL.get(name, ()):
+                # A parameter name only this callable uses, so it is read per call rather than from the
+                # shared list: `ConfigParser.read(filenames = ...)` takes a sequence as readily as a str.
+                value = keyword.value
+                for element in (value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]):
+                    add(element, False)
+            elif keyword.arg in _PY_PATH_DEST_KWARGS:
                 add(keyword.value, True)
             elif keyword.arg in _PY_PATH_KWARGS:
                 # `open(file = p, mode = "w")` is the same write the positional form is: carry the mode decided

@@ -3374,6 +3374,10 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `sort --help`: "--random-source=FILE  get random bytes from FILE". Attached, it was discarded
+    # as an unknown option and the host file it named was read without a word.
+    f"sort -R --random-source={_OUTSIDE_FILE} input.txt",
+    f"sort -R --random-source {_OUTSIDE_FILE} input.txt",
     f"cd {_OUTSIDE_DIR} && cat memory.md",  # chdir re-points every relative path that follows
     f"cd {_OUTSIDE_DIR}; cat memory.md",
     f"(cd {_OUTSIDE_DIR} && cat memory.md)",
@@ -3464,6 +3468,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # Parameter names only these callables use, so the shared keyword list never carried them.
+    f"import configparser\nc = configparser.ConfigParser()\nc.read(filenames = {_OUTSIDE_FILE!r})",
+    f"import configparser\nc = configparser.ConfigParser()\nc.read(filenames = ['a.ini', {_OUTSIDE_FILE!r}])",
+    f"import glob\nprint(glob.glob(pathname = {_OUTSIDE_DIR!r} + '/*.txt'))",
+    f"import glob\nprint(glob.glob('*.txt', root_dir = {_OUTSIDE_DIR!r}))",
     f"import os\nos.chdir({_OUTSIDE_DIR!r})\nprint(open('memory.md').read())",
     f"import subprocess\nsubprocess.run(['cat', {_OUTSIDE_FILE!r}])",  # a child process this scan cannot follow
     f"import subprocess\nsubprocess.check_output('cat {_OUTSIDE_FILE}', shell = True)",
@@ -3562,6 +3571,11 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    # No shell opens either of these: `<<` names a here-document delimiter and `<<<` is the data.
+    f"cat <<< {_OUTSIDE_FILE}",
+    f"cat << {_OUTSIDE_DIR}/END",
+    "cat <<EOF\nhello\nEOF",
+    "sort -R input.txt",
     "cd build && make",
     "cd /usr/lib && ls",
     "echo notes.txt | xargs cat",
@@ -3606,6 +3620,9 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import configparser\nc = configparser.ConfigParser()\nc.read(filenames = 'settings.ini')",
+    "import glob\nprint(glob.glob(pathname = '*.txt'))",
+    "import glob\nprint(glob.glob('*.txt', root_dir = 'data'))",
     "import os\nos.chdir('subdir')",
     "import subprocess\nsubprocess.run(['ls', '-la'])",
     "import subprocess\nsubprocess.run(['python', 'train.py'])",
