@@ -9755,7 +9755,8 @@ def test_a_whisper_checkpoint_is_switchable(tmp_path):
     path = _local_checkpoint(tmp_path, "whisper-large-v3")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text(
-        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
+        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper",'
+        ' "is_encoder_decoder": true}'
     )
     assert resolver.local_servable_model(info) == (False, ())
     assert resolver._model_type_is_audio("whisper") is True
@@ -9789,7 +9790,8 @@ def test_an_mlx_host_does_not_advertise_an_asr_checkpoint(tmp_path, monkeypatch)
     path = _local_checkpoint(tmp_path, "whisper-large-v3")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text(
-        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"}'
+        '{"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper",'
+        ' "is_encoder_decoder": true}'
     )
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
     assert resolver.local_servable_model(info) is None
@@ -9799,6 +9801,135 @@ def test_an_mlx_host_does_not_advertise_an_asr_checkpoint(tmp_path, monkeypatch)
         ' "audio_config": {}}'
     )
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_conditional_checkpoint_with_no_vision_sub_config_is_switchable(tmp_path, monkeypatch):
+    """A conversion that drops the vision tower keeps the parent's multimodal architecture name
+    but loses the sub-config, so demanding one withheld a checkpoint both workers load. Shape
+    taken from ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit, whose weights hold only language_model.*
+    and whose config carries image_token_id and text_config but no vision_config at all."""
+    path = _local_checkpoint(tmp_path, "Ornith-MLX-4bit")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3_5MoeForConditionalGeneration"],'
+        ' "model_type": "qwen3_5_moe", "image_token_id": 151655, "text_config": {}}'
+    )
+    for mlx_host in (True, False):
+        monkeypatch.setattr(resolver, "_host_serves_mlx", lambda mlx_host = mlx_host: mlx_host)
+        assert resolver.local_servable_model(info) == (False, ()), mlx_host
+    # The marker is matched by shape, not against a list of names, which is what the fixed list
+    # got wrong: the checkpoint spells it image_token_id and the list named image_token_index.
+    for marker in (
+        '"image_token_id": 151655',  # the spelling the reported checkpoint uses, alone
+        '"image_token_index": 1',
+        '"vision_config": {}',
+        '"video_token_id": 2',
+        '"img_processor": {}',  # matched on the word, so a shortened spelling still counts
+    ):
+        (path / "config.json").write_text(
+            '{"architectures": ["Qwen3_5MoeForConditionalGeneration"],'
+            ' "model_type": "qwen3_5_moe", %s}' % marker
+        )
+        assert resolver.local_servable_model(info) == (False, ()), marker
+    # A terse config with no modality marker at all reads exactly like a text seq2seq, so it stays
+    # refused rather than being guessed at.
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3_5MoeForConditionalGeneration"], "model_type": "qwen3_5_moe"}'
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_multimodal_encoder_decoder_is_not_switchable(tmp_path):
+    """Declaring a modality does not make a checkpoint servable here: microsoft/udop-large is an
+    encoder-decoder carrying image_size, and the serving path has no AutoModelForSeq2SeqLM branch.
+    The flag is what refuses it, since the modality marker is satisfied."""
+    path = _local_checkpoint(tmp_path, "udop-large")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["UdopForConditionalGeneration"], "model_type": "udop",'
+        ' "is_encoder_decoder": true, "image_size": 224}'
+    )
+    assert resolver.local_servable_model(info) is None
+    # The flag is what refuses it: the same shape without one is indistinguishable from a served
+    # VLM and the marker decides. Not spelled udop, so this turns on the flag rather than on the
+    # shared classifier's current view of that family.
+    (path / "config.json").write_text(
+        '{"architectures": ["SomeVlmForConditionalGeneration"], "model_type": "some_vlm",'
+        ' "image_size": 224}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_revision_key_does_not_pass_as_a_modality_marker(tmp_path):
+    """The marker is matched on whole words: `revision` ends in one, is common in a saved config,
+    and would otherwise admit every text seq2seq that carries it."""
+    path = _local_checkpoint(tmp_path, "t5-with-revision")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        '{"architectures": ["T5ForConditionalGeneration"], "model_type": "t5",'
+        ' "revision": "main"}'
+    )
+    assert resolver.local_servable_model(info) is None
+
+
+@pytest.mark.parametrize("mlx_host", [True, False])
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "Qwen3_5MoeForConditionalGeneration"])
+def test_a_config_declaring_model_file_is_not_switchable(
+    tmp_path, monkeypatch, architecture, mlx_host
+):
+    """model_file is the other key that runs code out of the checkpoint, and unlike auto_map it
+    does not pass through trust_remote_code at all: mlx_lm/utils.py and mlx_vlm/utils.py both
+    exec_module the named file before dispatching on model_type. An unattended switch grants no
+    approval, so it is refused on the same boundary as auto_map."""
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: mlx_host)
+    path = _local_checkpoint(tmp_path, "CustomModelFile")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "custom.py").write_text("raise SystemExit('should never be executed')")
+    base = (
+        '{"architectures": ["%s"], "model_type": "qwen3_5_moe", "vision_config": {}%%s}'
+        % architecture
+    )
+    (path / "config.json").write_text(base % "")
+    assert resolver.local_servable_model(info) == (False, ())
+    (path / "config.json").write_text(base % ', "model_file": "custom.py"')
+    assert resolver.local_servable_model(info) is None
+    # Empty names no file, so it runs nothing, like the auto_map rule just below.
+    (path / "config.json").write_text(base % ', "model_file": ""')
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_conditional_family_the_model_picker_refuses_is_not_switchable(tmp_path):
+    """The resolver used to re-derive the category from architecture strings and drifted from the
+    classifier behind the picker's can_chat, which is how an installed checkpoint could be offered
+    in the UI and be unknown to the API. The conditional branch defers to that classifier now, so
+    the families it refuses are refused here without being restated.
+
+    Only that branch. The resolver is deliberately not a subset overall: the causal fast path does
+    not consult the classifier, and the audio branch serves whisper on a Transformers host though
+    the classifier calls it unchattable."""
+    from hub.services.models.common import _local_transformers_can_chat
+
+    path = _local_checkpoint(tmp_path, "Shared")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    refused_by_picker = 0
+    for config in (
+        '{"architectures": ["Qwen3_5MoeForConditionalGeneration"], "model_type": "qwen3_5_moe",'
+        ' "vision_config": {}}',
+        '{"architectures": ["MusicgenForConditionalGeneration"], "model_type": "musicgen",'
+        ' "audio_encoder": {}}',
+        '{"architectures": ["BlipForConditionalGeneration"], "model_type": "blip",'
+        ' "vision_config": {}}',
+        '{"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3",'
+        ' "vision_config": {}}',
+    ):
+        (path / "config.json").write_text(config)
+        picker_can_chat = _local_transformers_can_chat(path) is True
+        servable = resolver.local_servable_model(info) is not None
+        if not picker_can_chat:
+            refused_by_picker += 1
+            assert not servable, config
+    # musicgen and blip, so the subset assertion above is not vacuous.
+    assert refused_by_picker == 2
 
 
 def test_an_empty_auto_map_is_not_remote_code(tmp_path):
