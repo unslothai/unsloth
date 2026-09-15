@@ -2097,45 +2097,33 @@ exit 1
 
     function Enable-StudioVirtualTerminal {
         if ($env:NO_COLOR) { return $false }
-        # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle,
-        # so the block below could only return $false anyway. install.rs spawns us with a pipe,
-        # so that is the path the desktop app is on.
+        # A redirected stdout is not a console, so there is no virtual terminal to speak of.
+        # install.rs spawns us with a pipe, so that is the path the desktop app is on, and it is
+        # decided here before anything else is consulted.
         if ($script:StudioStdoutRedirected) { return $false }
-        # Emitted rather than compiled, for the reason New-StudioEmittedNativeType
-        # gives: -MemberDefinition runs csc.exe just as -TypeDefinition does, and the
-        # guard above only keeps the desktop app off it, so the console path
-        # (including `irm | iex`) reached the compiler here every run.
-        # Same gate as the resolver, since colour is not worth a risk that cannot be
-        # caught; failure is just a plain banner.
-        # The published type first, the gate only if there is nothing published: a
-        # type this session already emitted proves emit works here, and asking a
-        # child instead lets one failed probe throw away a usable console helper.
-        if (-not ("StudioVTNative" -as [type]) -and -not (Test-StudioCanDefineNativeTypes)) {
-            return $false
-        }
-        try {
-            if (-not ("StudioVTNative" -as [type])) {
-                $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
-                    @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]
-                       Args = @([int])
-                       Ansi = $true },
-                    @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                       Args = @([IntPtr], [uint32].MakeByRefType())
-                       Ansi = $true
-                       Out = @(2) },
-                    @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                       Args = @([IntPtr], [uint32])
-                       Ansi = $true }
-                )
-            }
-            $h = [StudioVTNative]::GetStdHandle(-11)
-            [uint32]$mode = 0
-            if (-not [StudioVTNative]::GetConsoleMode($h, [ref]$mode)) { return $false }
-            $mode = $mode -bor 0x0004
-            return [StudioVTNative]::SetConsoleMode($h, $mode)
-        } catch {
-            return $false
-        }
+
+        # Windows PowerShell's console host already does the GetStdHandle / GetConsoleMode /
+        # SetConsoleMode sequence this function used to do by hand, at startup, and reports
+        # the outcome through this property, and it is STRICTER than what this replaced:
+        # ConsoleHostUserInterface.TryTurnOnVirtualTerminal re-reads the mode after setting it, because
+        # older systems accept the call and ignore the flag. The deleted code trusted SetConsoleMode's
+        # return value. So the property cannot read True while VT is actually off.
+        #
+        # Measured on Windows PowerShell 5.1.26100 attached to a real console: the property answers True,
+        # the native call answers True, and the console mode read BEFORE touching it is already 0x7 --
+        # which contains 0x4, ENABLE_VIRTUAL_TERMINAL_PROCESSING. The SetConsoleMode this replaced was
+        # re-setting a bit the host had already set. It was a no-op. The measurement and the lane that
+        # produced it are in PR #10984; the record that travels with this repo is in
+        # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD).
+        #
+        # This removes three of the script's native imports, and with them the only reason the
+        # console path (including `irm | iex`) ever reached the type emitter at all -- for colour.
+        #
+        # [bool] rather than a bare return: the property is virtual with a base of $false, so a host
+        # that does not override it answers $false already -- but a host with no UI at all yields $null,
+        # and the cast makes that $false too. The try/catch is for Set-StrictMode in a caller's profile,
+        # where reading an absent property raises PropertyNotFoundException rather than returning $null.
+        try { return [bool]$Host.UI.SupportsVirtualTerminal } catch { return $false }
     }
     $script:StudioVtOk = Enable-StudioVirtualTerminal
 
