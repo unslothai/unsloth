@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # The same word twice, once as data and once as syntax: a membership test found the quoted
+    # spelling and left the live redirection of the second command unsplit.
+    f"echo 'x>{_OUTSIDE_FILE}'; echo x>{_OUTSIDE_FILE}",
     # `/proc/<pid>/task/<tid>/root` resolves through the same kernel link as the process spelling.
     f"cat /proc/$$/task/$$/root{_OUTSIDE_FILE}",
     f"cat /proc/self/task/12/root{_OUTSIDE_FILE}",

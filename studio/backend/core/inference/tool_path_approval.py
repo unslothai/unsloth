@@ -1091,6 +1091,24 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
 
 
+def _token_is_always_quoted(token: str, text: "str | None", *, double: bool = True) -> bool:
+    """Whether EVERY occurrence of *token* in *text* is a quoted one.
+
+    Counted rather than searched: the same word can appear twice, once as data and once as syntax.
+    `echo 'x>/media/x'; echo x>/media/x` lexes to that token twice, and a membership test found the
+    quoted spelling and left the live redirection of the second command unsplit.
+    """
+    if not text or not token:
+        return False
+    occurrences = text.count(token)
+    if not occurrences:
+        return False
+    quoted = text.count(f"'{token}'")
+    if double:
+        quoted += text.count(f'"{token}"')
+    return occurrences == quoted
+
+
 def _split_backticks(tokens, text = None) -> "list[str]":
     """Break a token carrying a backtick substitution into its own command.
 
@@ -1107,7 +1125,7 @@ def _split_backticks(tokens, text = None) -> "list[str]":
     for token in tokens:
         # SINGLE quotes only: a command substitution still runs inside double quotes, so
         # `echo "`cat /media/x`"` executes the read exactly as the unquoted form does.
-        if "`" not in token or (text and f"'{token}'" in text):
+        if "`" not in token or _token_is_always_quoted(token, text, double = False):
             out.append(token)
             continue
         for index, piece in enumerate(token.split("`")):
@@ -1137,9 +1155,7 @@ def _split_attached_redirections(tokens, text = None) -> "list[str]":
         if "<" not in token and ">" not in token:
             out.append(token)
             continue
-        if any(ch.isspace() for ch in token) or (
-            text and (f"'{token}'" in text or f'"{token}"' in text)
-        ):
+        if any(ch.isspace() for ch in token) or _token_is_always_quoted(token, text):
             out.append(token)
             continue
         prefix = _REDIR_PREFIX_RE.match(token)
