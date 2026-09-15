@@ -461,6 +461,98 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm,
     ), "the healthy parent was evicted; only the failed subtree should go"
 
 
+def test_the_parent_and_child_import_locks_are_never_held_together(warm, monkeypatch, restore_diffusers_modules):
+    """Holding both would invert CPython's own lock order and deadlock a concurrent import.
+
+    ``import diffusers.hooks`` makes CPython take the CHILD lock first and import the parent from
+    inside it (``_find_and_load`` -> ``_ModuleLockManager(name)`` -> ``_find_and_load_unlocked``
+    -> import parent). A prewarm holding parent-then-child inverts that against any concurrent
+    ``from diffusers.hooks import ...``, and the resulting cycle surfaces as the ``_DeadlockError``
+    that ``_lock_unlock_module`` swallows, which is the partially initialised module this whole
+    change exists to prevent.
+    """
+    from importlib._bootstrap import _get_module_lock
+
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
+
+    me = threading.get_ident()
+    both_held = []
+
+    def _owned(name):
+        return getattr(_get_module_lock(name), "owner", None) == me
+
+    real_import = builtins.__import__
+
+    def _watching_import(name, *args, **kwargs):
+        if name.startswith("diffusers"):
+            both_held.append((name, _owned("diffusers"), _owned("diffusers.hooks")))
+            return types.ModuleType(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _watching_import)
+
+    warm.prewarm_diffusers_if_image_models_exist()
+    monkeypatch.undo()
+
+    assert both_held, "the prewarm imported nothing; this test would be vacuous"
+    offenders = [(n, p, c) for n, p, c in both_held if p and c]
+    assert not offenders, (
+        f"parent and child import locks held at the same time: {offenders}"
+    )
+
+
+def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(warm, monkeypatch, restore_diffusers_modules):
+    """The failure mode from the other side, with two real threads and the real locks.
+
+    One thread takes the hooks lock and then reaches for the parent, which is the order CPython
+    uses for ``from diffusers.hooks import ...``. The prewarm runs concurrently. With sequential
+    scopes both finish; with the locks nested this is the cycle.
+    """
+    from importlib._bootstrap import _ModuleLockManager as LM
+
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
+    _stub_diffusers(monkeypatch)
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _importer():
+        # CPython's order for a submodule import: child lock, then the parent.
+        with LM("diffusers.hooks"):
+            started.set()
+            release.wait(10)
+            with LM("diffusers"):
+                pass
+        finished.set()
+
+    t = threading.Thread(target = _importer, daemon = True)
+    t.start()
+    assert started.wait(10), "the helper thread never took the hooks lock"
+
+    done = threading.Event()
+
+    def _prewarm():
+        try:
+            warm.prewarm_diffusers_if_image_models_exist()
+        finally:
+            done.set()
+
+    p = threading.Thread(target = _prewarm, daemon = True)
+    p.start()
+    # The prewarm must not be blocked behind a lock the other thread is holding while that
+    # thread waits on one the prewarm holds.
+    release.set()
+    assert done.wait(20), "the prewarm deadlocked against a concurrent submodule import"
+    assert finished.wait(20), "the concurrent submodule import deadlocked against the prewarm"
+    t.join(5)
+    p.join(5)
+
+
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
     """The case presence alone gets wrong. A CPU or MPS host with a runnable native binary, or
     UNSLOTH_DIFFUSION_ENGINE=sd_cpp, serves a supported GGUF through sd.cpp and imports no

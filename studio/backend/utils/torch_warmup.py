@@ -531,47 +531,52 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             return False
 
         started = time.perf_counter()
-        # Held across the import AND its cleanup, the way _held_import_lock does for the bare
-        # warm stages, because releasing between the two is the whole bug: CPython drops the
-        # `diffusers` lock the moment __init__ raises, so a request already waiting on it would
-        # wake up, re-import against the submodules that import left behind, and republish the
-        # malformed parent -- at which point purge_partial_import deliberately declines, since
-        # those leftovers now belong to a live importer. Reentrant per thread, so the nested
-        # acquire inside purge_partial_import is free.
+        # One lock at a time, never both. Each scope holds that package's own lock across its
+        # import AND its cleanup, the way _held_import_lock does for the bare warm stages,
+        # because releasing between the two is the bug: CPython drops the lock the moment the
+        # import raises, so a request already waiting on it wakes up, re-imports against the
+        # submodules that import left behind, and republishes the malformed package -- at which
+        # point purge_partial_import declines, since those leftovers now belong to a live
+        # importer. Reentrant per thread, so the nested acquire inside the purge is free.
         #
-        # Both locks, because these are two imports with two locks and the subpackage has the
-        # same gap: `import diffusers.hooks` drops the hooks lock when it raises, and with the
-        # healthy parent already published a waiting request can rebuild diffusers.hooks from
-        # its stale submodules before the purge reacquires. Parent then child, which is the order
-        # CPython's own import takes, so a concurrent importer cannot invert it.
-        with _ModuleLockManager("diffusers"), _ModuleLockManager("diffusers.hooks"):
-            try:
+        # NOT nested, which is the part that is easy to get backwards. `import diffusers.hooks`
+        # makes CPython take the CHILD lock first and import the parent from inside it
+        # (_find_and_load -> _ModuleLockManager(name) -> _find_and_load_unlocked -> import
+        # parent). Holding parent-then-child here would invert that against any concurrent
+        # `from diffusers.hooks import ...` and produce a lock cycle, which surfaces as the
+        # _DeadlockError that _lock_unlock_module swallows -- i.e. exactly the partially
+        # initialised module this whole change exists to prevent. Sequential scopes have no
+        # cycle: by the time the hooks scope runs, the parent is published, so importing the
+        # child acquires nothing else.
+        try:
+            with _ModuleLockManager("diffusers"):
                 import diffusers  # noqa: F401, PLC0415
+        except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+            logger.debug("diffusers prewarm skipped: %r", exc)
+            with _ModuleLockManager("diffusers"):
+                purge_partial_import("diffusers")
+            return False
+
+        try:
+            with _ModuleLockManager("diffusers.hooks"):
                 import diffusers.hooks  # noqa: F401, PLC0415
 
-                # diffusers hard-codes _tqdm_active = True at import and honours no env var, so a
-                # prewarm that skipped this would let "Loading pipeline components..." draw
-                # straight onto the structlog stream, mid-record. The load path calls the same
-                # helper; it is idempotent and cheap.
-                from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
+            # diffusers hard-codes _tqdm_active = True at import and honours no env var, so a
+            # prewarm that skipped this would let "Loading pipeline components..." draw straight
+            # onto the structlog stream, mid-record. The load path calls the same helper; it is
+            # idempotent and cheap. Outside the lock: it imports nothing under diffusers.
+            from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
 
-                quiet_third_party_progress_bars()
-            except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
-                logger.debug("diffusers prewarm skipped: %r", exc)
-                # A failed package import leaves its executed submodules in sys.modules, and the
-                # load path's own `import diffusers` would then re-run __init__ against that
-                # cache and come back missing attributes. The prewarm swallows the failure, so
-                # the retry would be a user's request: hand it a clean slate instead.
-                # Both, and the subpackage FIRST. These are two separate imports and either can
-                # be the one that fails. When `import diffusers` succeeded and
-                # `import diffusers.hooks` did not, purging the parent is a no-op by design (it
-                # is still in sys.modules and belongs to nobody), while the hooks submodules that
-                # did execute stay cached for the load path to rebuild an incomplete package
-                # from. purge_partial_import takes the subpackage's own module lock, and is a
-                # no-op when there is nothing of that shape to collect.
+            quiet_third_party_progress_bars()
+        except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+            logger.debug("diffusers prewarm skipped: %r", exc)
+            # The parent stays: it imported cleanly and purging it would be a no-op anyway, since
+            # it is in sys.modules and belongs to nobody. What has to go is the hook submodules
+            # that did execute, or the load path's own `from diffusers.hooks import ...` rebuilds
+            # an incomplete package from them (the #7580 shape, one level down).
+            with _ModuleLockManager("diffusers.hooks"):
                 purge_partial_import("diffusers.hooks")
-                purge_partial_import("diffusers")
-                return False
+            return False
         _diffusers_prewarmed = True
         logger.info(
             "diffusers prewarmed in %.0fms; the first image load skips that import",
