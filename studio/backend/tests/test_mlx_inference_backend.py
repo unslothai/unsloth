@@ -2460,51 +2460,6 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
         next(backend.generate_audio_input_response(**args))
 
 
-def test_mlx_audio_input_turns_keep_participant_names(monkeypatch):
-    from core.inference import mlx_inference
-    from core.inference.mlx_inference import MLXInferenceBackend
-
-    calls = {}
-    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 1, generation_tps = 1.0)
-
-    def _fake_stream(model, processor, prompt, **kwargs):
-        yield SimpleNamespace(text = "ok", **stats)
-
-    def _fake_render(
-        processor,
-        model,
-        messages,
-        num_images = 0,
-        num_audios = 0,
-    ):
-        calls["messages"] = messages
-        return "P<audio>"
-
-    fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.stream_generate = _fake_stream
-    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
-    monkeypatch.setattr(mlx_inference, "_render_registered_vlm_prompt", _fake_render)
-
-    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
-    backend._generation_lock = __import__("threading").Lock()
-    backend._model, backend._processor = _audio_model(), _audio_processor()
-    backend.active_model_name = "m"
-    backend.last_generation_stats = None
-    backend.models = {"m": {"audio_type": "audio_vlm"}}
-    list(
-        backend.generate_audio_input_response(
-            messages = [{"role": "user", "name": "alice", "content": "what is said?"}],
-            system_prompt = "be brief",
-            audio_array = [0.0, 0.1],
-            max_new_tokens = 8,
-        )
-    )
-    assert [(m["role"], m.get("name")) for m in calls["messages"]] == [
-        ("system", None),
-        ("user", "alice"),
-    ]
-
-
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend

@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict
 from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Optional, Generator
-from core.inference.message_content import content_to_text, named_turn
+from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -3750,26 +3750,19 @@ class MLXInferenceBackend:
 
         # Only the CURRENT user turn may caption the audio; never older history.
         user_text = ""
-        user_turn = None
         for msg in reversed(messages or []):
             if isinstance(msg, dict) and msg.get("role") == "user":
                 user_text = content_to_text(msg.get("content") or "").strip()
-                user_turn = msg
                 break
         if not user_text:
             user_text = "Please transcribe this audio."
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
+        # No name: mlx-vlm rebuilds non-tool turns from role and text, dropping anything else.
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            named_turn(
-                {
-                    "role": "user",
-                    "content": [{"type": "audio"}, {"type": "text", "text": user_text}],
-                },
-                user_turn,
-            ),
+            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
         ]
         prompt = _render_registered_vlm_prompt(
             self._processor,
