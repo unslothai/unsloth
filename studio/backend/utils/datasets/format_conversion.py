@@ -186,6 +186,15 @@ def convert_chatml_to_alpaca(
 ):
     """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
     is_iterable = is_streaming_dataset(dataset)
+    roles = {
+        "system": "system",
+        "user": "user",
+        "human": "user",
+        "input": "user",
+        "assistant": "assistant",
+        "gpt": "assistant",
+        "output": "assistant",
+    }
 
     def _convert(examples):
         chatml_data = examples.get(chat_column) if chat_column else None
@@ -202,28 +211,40 @@ def convert_chatml_to_alpaca(
         inputs = []
 
         for convo in chatml_data:
-            instruction = ""
-            output = ""
-
-            for msg in convo:
-                role = msg.get("role") or msg.get("from")
+            turns = []
+            for msg in convo or []:
+                role = roles.get(msg.get("role") or msg.get("from"))
                 content = msg.get("content") or msg.get("value")
+                if role is None or not content:
+                    continue
+                if turns and turns[-1][0] == role:
+                    turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
+                else:
+                    turns.append([role, content])
 
-                if role in ["user", "human", "input"] and not instruction:
+            system = ""
+            context = []
+            instruction = None
+            for role, content in turns:
+                if role == "system":
+                    system = f"{system}\n\n{content}" if system else content
+                elif role == "user":
                     instruction = content
-                elif role in ["assistant", "gpt", "output"] and not output:
-                    output = content
-                    break
-
-            instructions.append(instruction)
-            inputs.append("")
-            outputs.append(output)
+                elif instruction is not None:
+                    instructions.append(instruction)
+                    inputs.append(
+                        "\n\n".join(part for part in (system, "\n".join(context)) if part)
+                    )
+                    outputs.append(content)
+                    context += [f"User: {instruction}", f"Assistant: {content}"]
+                    instruction = None
 
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
     dataset_map_kwargs = {
         "batched": True,
         "batch_size": batch_size,
+        "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
 
     if not is_iterable:
