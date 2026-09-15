@@ -27,11 +27,14 @@ def test_the_key_tuple_lives_in_one_place():
     # Every multimodal key is read off the shared mapping, in both the logprob pass and
     # compute_loss, so the tuple in unsloth_zoo is the only list of names.
     assert src.count("vision_inputs.get(") >= 10
-    # The one remaining direct probe is the old-zoo guard, which only needs pixel_values.
-    assert src.count('kwargs.get("pixel_values", None)') == 1
+    # And one collector for both paths, so the fallback names cannot be written twice.
+    assert src.count("def _unsloth_grpo_vision_inputs(") == 1
+    assert src.count("_unsloth_grpo_vision_inputs(kwargs)") == 1
+    assert src.count("_unsloth_grpo_vision_inputs(inputs)") == 1
     for gone in (
         'kwargs.get("image_grid_thw", None)',
         'kwargs.get("num_images", None)',
+        'kwargs.get("pixel_values", None)',
     ):
         assert gone not in src, gone
 
@@ -128,7 +131,7 @@ def test_legacy_fallback_list_matches_the_zoo_tuple():
 
     src = _read_source()
     match = re.search(
-        r"_vision_inputs = \{\s*key: inputs\.get\(key, None\)\s*for key in (\([^)]*\))",
+        r"key: get\(key, None\)\s*for key in (\([^)]*\))",
         src,
         re.DOTALL,
     )
@@ -199,3 +202,134 @@ def test_num_tiles_survives_the_output_dict_rewrite():
     assert num_images_at < num_tiles_at < except_at
     # And it must still be nested inside `if images is not None:`, at 12 spaces.
     assert lines[num_tiles_at].startswith(" " * 16)
+
+
+def test_the_trl_1_0_spelling_of_the_gemma_4_position_ids_is_forwarded():
+    """TRL 1.0.x emits `pixel_position_ids`; 1.1.0 renamed it `image_position_ids`.
+
+    Both are real keys in released TRLs an installed Unsloth can sit next to, and the
+    model kwarg carries the same name as the inputs key, so each has to leave under the
+    name it arrived with. Reading only one of the two drops the metadata for the other
+    half of the version range, which is the very fault this change exists to close.
+    """
+    import torch
+    from unsloth_zoo.rl_replacements import (
+        GRPO_VISION_KEYS,
+        grpo_get_vision_inputs,
+        grpo_vision_chunks,
+    )
+
+    assert "pixel_position_ids" in GRPO_VISION_KEYS
+    assert "image_position_ids" in GRPO_VISION_KEYS
+
+    for key in ("pixel_position_ids", "image_position_ids"):
+        inputs = {
+            "pixel_values": torch.randn(4, 3, 16, 16),
+            key: torch.arange(4).unsqueeze(-1),
+            "num_images": [1, 1, 1, 1],
+        }
+        chunks = grpo_vision_chunks(grpo_get_vision_inputs(inputs), 4, 2)
+        assert [tuple(c) for c in chunks] == [("pixel_values", key)] * 2, chunks
+        assert [c["pixel_values"].shape[0] for c in chunks] == [2, 2]
+        assert [c[key].shape[0] for c in chunks] == [2, 2]
+        # And the other spelling never appears: a model taking one rejects the other.
+        other = "image_position_ids" if key == "pixel_position_ids" else "pixel_position_ids"
+        assert all(other not in c for c in chunks)
+
+
+def test_a_multi_image_row_indexes_the_position_ids_by_image():
+    """Two images on one row: both tensors are image indexed, not sample indexed."""
+    import torch
+    from unsloth_zoo.rl_replacements import grpo_get_vision_inputs, grpo_vision_chunks
+
+    inputs = {
+        "pixel_values": torch.randn(3, 3, 16, 16),
+        "image_position_ids": torch.arange(3).unsqueeze(-1),
+        "num_images": [2, 1],
+    }
+    chunks = grpo_vision_chunks(grpo_get_vision_inputs(inputs), 2, 1)
+    assert [c["pixel_values"].shape[0] for c in chunks] == [2, 1]
+    assert [c["image_position_ids"].tolist() for c in chunks] == [[[0], [1]], [[2]]]
+
+
+def test_an_old_zoo_still_forwards_the_sample_indexed_keys():
+    """Without the shared chunker only the image indexed slicing is unavailable.
+
+    A text run carrying token_type_ids used to be sliced by this path itself, so an
+    unsloth_zoo predating the chunker must not cost it those keys; only the vision case
+    is refused, and loudly.
+    """
+    from unsloth.models.rl_replacements import grpo_trainer__get_per_token_logps_and_entropies
+
+    patched = grpo_trainer__get_per_token_logps_and_entropies(
+        "_get_per_token_logps_and_entropies", ""
+    )
+    assert "_unsloth_grpo_vision_inputs(kwargs)" in patched
+    fallback = patched.split("if _grpo_vision_chunks is None:")[-1]
+    assert '"token_type_ids", "mm_token_type_ids"' in fallback
+    assert "vision_chunks = [{} for _ in input_ids_chunks]" not in patched
+
+
+def test_the_wrapper_keeps_trls_logits_to_keep_probe_answerable():
+    """TRL reads `inspect.signature(model.forward)` once, in GRPOTrainer.__init__, to decide
+    whether the model accepts `logits_to_keep` (SmolVLM and Idefics3 do not).
+
+    A bare (*args, **kwargs) wrapper answered "no" for every model, so no model was ever
+    given the limiter. Restoring the signature restores the per model answer, which also
+    means a text only run starts passing `logits_to_keep` again: same loss to five
+    decimals, not bit for bit.
+    """
+    import inspect as _inspect
+
+    import torch
+
+    from unsloth.models.rl import _install_grpo_hidden_states_forward_wrapper
+
+    class _Takes(torch.nn.Module):
+        config = type("cfg", (), {"is_encoder_decoder": False})()
+
+        def forward(
+            self,
+            input_ids = None,
+            logits_to_keep = 0,
+            **kwargs,
+        ):
+            return input_ids
+
+    class _Refuses(torch.nn.Module):
+        config = type("cfg", (), {"is_encoder_decoder": False})()
+
+        def forward(
+            self,
+            input_ids = None,
+            pixel_values = None,
+            **kwargs,
+        ):
+            return input_ids
+
+    takes, refuses = _Takes(), _Refuses()
+    assert _install_grpo_hidden_states_forward_wrapper(takes)
+    assert _install_grpo_hidden_states_forward_wrapper(refuses)
+    assert "logits_to_keep" in _inspect.signature(takes.forward).parameters
+    assert "logits_to_keep" not in _inspect.signature(refuses.forward).parameters
+
+
+def test_the_multi_image_zoo_probe_does_not_rest_on_a_local_variable():
+    """The "upgrade unsloth_zoo" gate for multi image GRPO.
+
+    It used to answer by grepping `inspect.getsource(grpo_accumulated_loss)` for the
+    string "num_images". Once that function delegates its slicing to the shared chunker
+    the name survives there only as a local nobody reads, so removing it, which is what
+    any linter asks for, silently turned a working multi image run into a false
+    "Please upgrade unsloth_zoo". The gate now probes for the helper that actually does
+    the work.
+    """
+    from unsloth.models.rl_replacements import grpo_trainer_compute_loss
+
+    patched = grpo_trainer_compute_loss("compute_loss", "")
+    gate = patched.split("_unsloth_requires_multi_image_zoo(num_images)")[1]
+    gate = gate.split("Please upgrade ")[0]
+    assert "from unsloth_zoo.rl_replacements import grpo_vision_chunks" in gate
+    # The import probe has to be consulted before the source grep, or the grep still
+    # decides the answer on a current zoo.
+    assert gate.index("grpo_vision_chunks") < gate.index("inspect.getsource")
