@@ -147,7 +147,9 @@ def _low_disk_hub(
     *,
     snap: Path | None = None,
     served: str | None = None,
+    sizes: dict[str, int] | None = None,
 ):
+    sizes = sizes or _LOW_DISK_SIZES
     downloaded: list[str] = []
 
     def fake_get_paths_info(
@@ -159,8 +161,7 @@ def _low_disk_hub(
     ):
         on_disk = snap is not None and revision == snap.name
         return [
-            _types.SimpleNamespace(path = path, size = 4 if on_disk else _LOW_DISK_SIZES[path])
-            for path in paths
+            _types.SimpleNamespace(path = path, size = 4 if on_disk else sizes[path]) for path in paths
         ]
 
     def fake_download(_repo, filename, *_args, **_kwargs):
@@ -169,7 +170,7 @@ def _low_disk_hub(
 
     usage = _types.SimpleNamespace(total = 100 * GIB, used = 100 * GIB - free, free = free)
     with (
-        patch("huggingface_hub.list_repo_files", lambda *_a, **_k: list(_LOW_DISK_SIZES)),
+        patch("huggingface_hub.list_repo_files", lambda *_a, **_k: list(sizes)),
         patch("huggingface_hub.get_paths_info", fake_get_paths_info),
         patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
         patch("shutil.disk_usage", lambda *_a, **_k: usage),
@@ -620,6 +621,19 @@ class TestLoadReusesCachedCopy:
             backend._download_gguf(hf_repo = REPO, hf_variant = "Q6_K")
 
         assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+
+    def test_low_disk_fallback_stays_on_the_requested_checkpoint(self, hf_cache):
+        backend = LlamaCppBackend()
+        sizes = {
+            "gemma-test-Q4_K_M.gguf": 2 * GIB,
+            "gemma-test-Q8_0.gguf": 16 * GIB,
+            "distilled/gemma-test-distilled-Q6_K.gguf": 6 * GIB,
+        }
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 13 * GIB // 2, sizes = sizes) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-Q4_K_M.gguf"]
+        assert backend._gguf_variant_fallback[0] == "Q4_K_M"
 
     def test_low_disk_fallback_ignores_a_truncated_cached_variant(self, hf_cache):
         backend = LlamaCppBackend()

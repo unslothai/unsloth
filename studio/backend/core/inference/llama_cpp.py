@@ -15252,6 +15252,7 @@ class LlamaCppBackend:
         free_bytes: int,
         requested_bytes: int,
         hf_token: Optional[str] = None,
+        requested_file: Optional[str] = None,
     ) -> Optional[tuple[str, int, list[str]]]:
         """Find a GGUF variant (including all shards) smaller than the requested one.
 
@@ -15267,7 +15268,7 @@ class LlamaCppBackend:
             from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
             files = list_repo_files(hf_repo, token = hf_token)
-            from hub.utils.gguf import drop_shadowed_appledouble_names
+            from hub.utils.gguf import drop_shadowed_appledouble_names, gguf_checkpoint_family
 
             gguf_files = [
                 f
@@ -15276,6 +15277,11 @@ class LlamaCppBackend:
                 and not _is_companion_gguf_path(f)
                 and not _is_big_endian_gguf_path(f)
             ]
+            # A repo can publish several checkpoints; a smaller quant of another one is
+            # different weights, not a fallback.
+            if requested_file is not None:
+                checkpoint = gguf_checkpoint_family(requested_file)
+                gguf_files = [f for f in gguf_files if gguf_checkpoint_family(f) == checkpoint]
             if not gguf_files:
                 return None
 
@@ -16651,6 +16657,7 @@ class LlamaCppBackend:
                         free_bytes,
                         total_bytes,
                         hf_token,
+                        requested_file = gguf_filename,
                     )
                     if smaller:
                         fallback_file, fallback_size, fallback_shards = smaller
