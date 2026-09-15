@@ -4084,8 +4084,8 @@ _print_llama_gpu_notes() {
         printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "re-run the installer once the download works to update it"
     fi
     if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
-        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback had no GPU toolkit (nvcc or hipcc) to build with, so GGUF inference will run on the CPU"
-        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "install the toolkit, or fix the download failure above, then re-run this installer to restore the GPU"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback could only build for the CPU (no GPU toolkit, or the GPU build failed above), so GGUF inference will run on the CPU"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "fix the cause named above, then re-run this installer to restore the GPU"
     fi
 }
 
