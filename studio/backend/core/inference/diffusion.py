@@ -2348,7 +2348,12 @@ class DiffusionBackend:
             return {}
 
     def _dit_prequant_plan_source(
-        self, fam: Any, kind: str, hf_token: Optional[str], kwargs: dict[str, Any]
+        self,
+        fam: Any,
+        kind: str,
+        hf_token: Optional[str],
+        kwargs: dict[str, Any],
+        failures_out: Optional[list] = None,
     ) -> Optional[tuple[str, str, int]]:
         """The hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the base repo's dense
         shards, as ``(repo, filename, declared_size)``, or None when no such artifact is used.
@@ -2442,9 +2447,25 @@ class DiffusionBackend:
                 for name in (source.filename, source.fallback_filename):
                     if name and name in sizes:
                         return (source.location, name, int(sizes[name]))
+                # The repo answered and holds NEITHER name. Not "no prequant is used" -- this pick
+                # is configured to use one and the dense shards are already excluded for it, so the
+                # plan names no transformer source at all and must say it is partial.
+                if failures_out is not None:
+                    failures_out.append(
+                        RuntimeError(
+                            f"prequant artifact missing from {source.location}: "
+                            f"{source.filename!r} / {source.fallback_filename!r}"
+                        )
+                    )
                 return None
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
+            # Best-effort for the UI, but NOT for a caller that must not download afterwards: the
+            # dense shards are already excluded for this pick, so a swallowed lookup leaves a plan
+            # naming neither transformer source and calling itself complete. Download only would
+            # then report success and the load would still pull multi-GB inline, or fail offline.
+            if failures_out is not None:
+                failures_out.append(exc)
             return None
 
     @staticmethod
@@ -2761,7 +2782,9 @@ class DiffusionBackend:
         # footprint the plan would otherwise never report. Sized against the RESOLVED base, as the load passes it: a
         # variant base picks its own prequant repo.
         dit_prequant = (
-            self._dit_prequant_plan_source(fam, kind, hf_token, {**load_kwargs, "base_repo": base})
+            self._dit_prequant_plan_source(
+                fam, kind, hf_token, {**load_kwargs, "base_repo": base}, plan_failures
+            )
             if allow_device_probe
             else None
         )

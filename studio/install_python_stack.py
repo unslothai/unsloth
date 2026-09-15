@@ -1922,9 +1922,14 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
     # RDNA 3 iGPU (Phoenix / Hawk Point)
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
+    # RDNA 2 refresh numbers (6950 / 6850M / 6550M) matched nothing and took CPU torch (#10468).
+    # 6850M XT is Navi 22, filed here like 6750 / 6700: every RDNA 2 row resolves to gfx103X-all.
+    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
-    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),  # Navi 24
+    (
+        r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
+        "gfx1034",
+    ),  # Navi 24
 ]
 
 
@@ -2741,6 +2746,11 @@ _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
     "gfx950": (7, 0),
     "gfx1150": (7, 0),
     "gfx1151": (7, 0),
+    # gfx1102 (Navi 33 / RX 7600): rocm6.3 is the first family whose rocBLAS / hipBLASLt
+    # Tensile libraries carry it (rocm6.0-6.2 stop at gfx1030/gfx1100/gfx1101). Without an
+    # entry here the tag check reads "support unknown" and leaves an RX 7600 on a wheel that
+    # has no kernels for it.
+    "gfx1102": (6, 3),
     "gfx1200": (6, 4),
     "gfx1201": (6, 4),
 }
