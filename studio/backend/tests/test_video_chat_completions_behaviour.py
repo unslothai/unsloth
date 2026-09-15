@@ -779,3 +779,32 @@ def test_the_measured_verdict_agrees_on_the_cap_boundary():
             inference_route._video_size_rejection(clip)
             == (inference_route._video_b64_rejection(clip)[1])
         )
+
+
+def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
+    """main shrinks the clip before llama-server samples it, but only on the legacy field's
+    path. Without the same pass over the parts, the same clip would reach llama-server at a
+    different resolution depending on which spelling carried it."""
+    seen = []
+
+    def _shrink(
+        clip,
+        cap,
+        *,
+        sampled_fps = None,
+    ):
+        seen.append(clip)
+        return "SHRUNK"
+
+    monkeypatch.setattr(inference_route, "shrink_video_for_llama", _shrink)
+
+    part_backend = _VideoGguf()
+    with _client(monkeypatch, part_backend) as client:
+        assert client.post("/v1/chat/completions", json = _part_body(_DATA_URI)).status_code == 200
+    field_backend = _VideoGguf()
+    with _client(monkeypatch, field_backend) as client:
+        assert client.post("/v1/chat/completions", json = _field_body()).status_code == 200
+
+    assert seen == [_CLIP_B64, _CLIP_B64], "both spellings must reach the transcoder"
+    assert _sent_media(part_backend) == _sent_media(field_backend)
+    assert _sent_media(part_backend) == [{"type": "input_video", "input_video": {"data": "SHRUNK"}}]

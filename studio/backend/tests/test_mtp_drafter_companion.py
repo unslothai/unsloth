@@ -176,6 +176,34 @@ def test_variant_plan_keeps_root_mtp_sidecar_until_metadata_is_available():
     assert plan.download_size_bytes == 4_600
 
 
+def test_variant_plan_keeps_every_nested_mtp_shard_or_none():
+    main = _sib("Qwen3.8-Flash-Next-Q4_K_M.gguf", 100, "main")
+    first = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        20,
+        "mtp-1",
+    )
+    second = _sib(
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+        20,
+        "mtp-2",
+    )
+
+    complete = build_gguf_variant_plans([main, first, second])["q4_k_m"]
+    assert complete.target_filenames == (
+        "Qwen3.8-Flash-Next-Q4_K_M.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00001-of-00002.gguf",
+        "MTP/mtp-Qwen3.8-Flash-Next-Q8_0-00002-of-00002.gguf",
+    )
+    assert complete.companion_hashes == frozenset({"mtp-1", "mtp-2"})
+    assert complete.download_size_bytes == 140
+
+    incomplete = build_gguf_variant_plans([main, first])["q4_k_m"]
+    assert incomplete.target_filenames == ("Qwen3.8-Flash-Next-Q4_K_M.gguf",)
+    assert incomplete.companion_hashes == frozenset()
+    assert incomplete.download_size_bytes == 100
+
+
 def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.

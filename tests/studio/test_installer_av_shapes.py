@@ -149,6 +149,20 @@ ALLOWED_PINVOKES = {
     "QueryFullProcessImageNameW",
     # Closing the handles CreateFileW and OpenProcess opened.
     "CloseHandle",
+    # The NVIDIA driver's own inventory (Get-NvidiaLibraryInventory) for a host whose nvidia-smi is absent, stale
+    # or hangs: the CUDA driver version and one compute capability per GPU. No PowerShell or .NET equivalent
+    # exists; nvidia-smi is the thing being worked around, and reading the registry names no driver version.
+    "nvmlInit_v2",
+    "nvmlShutdown",
+    "nvmlSystemGetCudaDriverVersion_v2",
+    "nvmlDeviceGetCount_v2",
+    "nvmlDeviceGetHandleByIndex_v2",
+    "nvmlDeviceGetCudaComputeCapability",
+    "cuInit",
+    "cuDriverGetVersion",
+    "cuDeviceGetCount",
+    "cuDeviceGet",
+    "cuDeviceGetAttribute",
 }
 
 
