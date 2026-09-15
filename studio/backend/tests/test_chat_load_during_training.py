@@ -59,6 +59,7 @@ def _model_cfg(**overrides):
             "is_vision": False,
             "path": None,
             "base_model": None,
+            "gguf_file": None,
             **overrides,
         }
     )

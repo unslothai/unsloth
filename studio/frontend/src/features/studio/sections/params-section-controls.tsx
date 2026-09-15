@@ -84,7 +84,8 @@ export function ParamsSliderRow({
           min={min}
           max={max}
           step={step}
-          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
+          // w-12 fits 11px mono, not the 16px coarse-pointer focus-zoom floor.
+          className="w-12 pointer-coarse:w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
         />
       </div>
     </ParamsRow>
