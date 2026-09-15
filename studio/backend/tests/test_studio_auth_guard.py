@@ -278,6 +278,27 @@ def test_mcp_call_at_the_auth_dir_is_refused():
     assert is_high_risk_tool_call(name, args) is True
 
 
+def test_an_mcp_call_at_the_auth_dir_never_reaches_the_server(monkeypatch):
+    # Through `execute_tool`, so the refusal is asserted where it has to happen: BEFORE dispatch.
+    # Deleting the refusal from that function left every test here passing, because the test above
+    # checks the predicate and the classifier and never the dispatch.
+    name = f"{MCP_TOOL_PREFIX}fs__read_file"
+    reached = []
+
+    def _never(*args, **kwargs):
+        reached.append(args)
+        raise AssertionError("the MCP server was reached for a credential path")
+
+    for attribute in ("_mcp_server_for_tool", "_call_mcp_tool", "call_mcp_tool"):
+        if hasattr(tools, attribute):
+            monkeypatch.setattr(tools, attribute, _never, raising = False)
+    result = tools.execute_tool(
+        name, {"path": "~/.unsloth/studio/auth/.cli_api_key_cli_99bb88401742"}, _SESSION
+    )
+    assert result == tools._STUDIO_CREDENTIAL_BLOCKED
+    assert not reached
+
+
 def test_auto_mode_prompts_on_studio_credential_reads():
     assert is_high_risk_tool_call("terminal", {"command": _CREDENTIAL_COMMANDS[0]}) is True
     assert is_high_risk_tool_call("python", {"code": _CREDENTIAL_CODE[0]}) is True
@@ -404,6 +425,42 @@ def _stream_chunks(chunks):
         carry = combined[split:]
     out.append(redact_studio_credentials(carry))
     return "".join(out)
+
+
+def test_the_real_stream_generator_masks_a_key_across_chunk_boundaries():
+    # Driven through `stream_tool_execution` itself, not through a copy of its masking. A reviewer
+    # deleted the redaction from both of that generator's `_masked` return paths and all 94 tests
+    # here still passed, because the test below re-implements the loop instead of running it.
+    from core.inference.tool_stream_exec import stream_tool_execution
+
+    key = "sk-unsloth-0123456789abcdef0123456789abcdef"
+    for chunks in (
+        [key],
+        [key[:15], key[15:]],
+        ["sk-unslo", key[8:]],
+        ["out ", key[:20], key[20:], " tail"],
+    ):
+
+        def invoke(emit, _chunks = chunks):
+            for chunk in _chunks:
+                emit(chunk)
+            return "".join(_chunks)
+
+        generator = stream_tool_execution(invoke, tool_name = "terminal", tool_call_id = "c1")
+        streamed = []
+        try:
+            while True:
+                event = next(generator)
+                if event.get("type") == "tool_output":
+                    streamed.append(event.get("text") or "")
+        except StopIteration as stop:
+            returned = stop.value
+        rendered = "".join(streamed)
+        assert key not in rendered, chunks
+        assert "[redacted]" in rendered, chunks
+        # The RETURNED result is what the card and the model get; it is masked by the loop
+        # controller, so this asserts only that the generator hands back what the tool produced.
+        assert isinstance(returned, str)
 
 
 def test_a_key_is_masked_in_the_live_stream_however_it_is_chunked():
@@ -2150,5 +2207,98 @@ def test_an_invoked_lambda_moves_and_so_does_the_platform_os_module(monkeypatch,
             assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
                 tools._STUDIO_CREDENTIAL_BLOCKED
             ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_ordinary_directory_work_is_not_read_as_a_move_to_the_studio_root(monkeypatch, tmp_path):
+    # Four false refusals, all of them ordinary work: a `&&` chain only reaches its second `cd` when
+    # the first succeeded, `cd -` and `popd` go BACK, a directory whose path merely embeds the
+    # studio path is not the studio directory, and a case-sensitive filesystem tells `Auth` from
+    # `auth`. Each read below is the project's OWN auth file, not Studio's.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "Auth").mkdir()
+    (home / "sandbox" / _SESSION / "subdir").mkdir(parents = True)
+    (tmp_path / "backup").mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = [
+            "cd subdir && cd ../.. && cat auth/config.json",
+            "cd ../..; cd - >/dev/null; cat auth/config.json",
+            "pushd ../.. >/dev/null; popd >/dev/null; cat auth/config.json",
+            f"cat /mnt/backup{home}/auth/config.json",
+        ]
+        if tools._CASE_SENSITIVE_PATHS:
+            ordinary.append(f"cat {home}/Auth/notes.txt")
+        for command in ordinary:
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # The moves themselves still land where they always did.
+        for command in (
+            "cd ../..; cat auth/auth.db",
+            "cd ../.. && cat auth/auth.db",
+            "cd ../..; cd -; cd ../..; cat auth/auth.db",
+            "cd -- ../..; cat auth/auth.db",
+            f"cat {home}/auth/auth.db",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_enumerating_the_studio_root_for_a_credential_name_is_refused(monkeypatch, tmp_path):
+    # `find "$UNSLOTH_STUDIO_HOME" -name auth.db -exec cat {} \;` hands the directory to a tool that
+    # walks it, so no single token of the command is a path to the database. Naming the ROOT and a
+    # credential BASENAME is the shape, however they are joined.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'find "$UNSLOTH_STUDIO_HOME" -name auth.db -exec cat {} \;',
+            f'find {home} -name ".desktop_secret" -exec cat {{}} \;',
+            'grep -r sk-unsloth "$UNSLOTH_STUDIO_HOME" --include=auth.db',
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            'find . -name "*.py" -exec wc -l {} \;',
+            "find data -name notes.txt",
+            # A command that BINDS the generic variable means its own directory by it.
+            'STUDIO_HOME=/opt/app cat "$STUDIO_HOME/auth/config.json"',
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_long_run_of_escapes_is_a_decision_rather_than_a_crash(monkeypatch, tmp_path):
+    # Unescaping recursed once per backslash, so 550 of them raised RecursionError out of the guard,
+    # before the command was classified at all.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        workdir = str(home / "sandbox" / _SESSION)
+        assert tools._references_studio_credential_here("echo " + "\\" * 1100 + "a", workdir) is (
+            False
+        )
+        # The one level it needs still works.
+        assert tools._references_studio_credential_here(
+            'c\\d ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"', workdir
+        ) is True
     finally:
         tools._studio_auth_markers_cache = None

@@ -2675,6 +2675,11 @@ _BARE_AUTH_SEGMENT_RE = re.compile(
 )
 
 # Prefilter: a new pattern needs a hint here or it never runs.
+# Whether this host distinguishes `auth` from `Auth`. `os.path.normcase` is identity on POSIX other
+# than macOS, which is the same test the path comparisons elsewhere in this file rely on.
+_CASE_SENSITIVE_PATHS = os.path.normcase("A") == "A" and sys.platform != "darwin"
+
+
 _STUDIO_CREDENTIAL_HINTS = (
     "auth",
     ".cli_api_key",
@@ -2792,7 +2797,10 @@ def _studio_auth_dir_markers() -> tuple:
             if not name:
                 continue
             lowered = name.lower()
-            out.append((lowered, _canonical_path_text(lowered)))
+            # The ORIGINAL spelling travels with the folded ones: on a case-sensitive filesystem
+            # `<home>/Auth` is a different directory from `<home>/auth`, and folding alone refused
+            # an ordinary read under it.
+            out.append((lowered, _canonical_path_text(lowered), name))
         return tuple(out)
 
     _studio_auth_markers_cache = (pairs(auth_markers), pairs(variable_markers), cd_re)
@@ -2879,6 +2887,44 @@ def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
     )
 
 
+# The files inside the auth directory, by basename alone. A command that names the studio ROOT and
+# one of these is enumerating for it, however it joins them.
+_CREDENTIAL_BASENAME_RE = re.compile(
+    r"(?<![\w.-])(?:auth\.db|\.desktop_secret|\.bootstrap_password|\.cli_api_key[\w.-]*"
+    r"|llama_api_key[\w.-]*|agent_api_key[\w.-]*)(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+# An assignment to one of the studio home variables, anywhere in the command.
+_STUDIO_HOME_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|(\s])(?:export\s+|set\s+)?(" + "|".join(_STUDIO_HOME_ENV_VARS) + r")\s*=",
+    re.IGNORECASE,
+)
+
+
+def _binds_an_unset_studio_home(text: str) -> bool:
+    """True when *text* assigns a studio home variable the backend does not itself set."""
+    for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
+        if not (os.environ.get(match.group(1).upper()) or "").strip():
+            return True
+    return False
+
+
+def _text_names_the_studio_root(text: str) -> bool:
+    """True when *text* names the Studio root directory, literally or by one of its variables."""
+    root = _studio_home_for_guard()
+    if not root:
+        return False
+    lowered = text.lower()
+    spellings = [root.lower()]
+    for variable in _STUDIO_HOME_ENV_VARS:
+        spellings.extend(
+            (f"${variable}".lower(), f"${{{variable}}}".lower(), f"%{variable}%".lower())
+        )
+    return any(spelling in lowered for spelling in spellings)
+
+
 def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
     """True when ``marker`` appears in ``lowered`` as a whole path, not merely as a prefix.
 
@@ -2888,7 +2934,16 @@ def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
     start = lowered.find(marker)
     while start != -1:
         end = start + len(marker)
-        if end == len(lowered) or lowered[end] in "/\\'\" \t\r\n;:&|)":
+        ends_here = end == len(lowered) or lowered[end] in "/\\'\" \t\r\n;:&|)"
+        # The LEADING boundary matters too for an absolute marker: `/mnt/backup<home>/auth` embeds
+        # the configured path inside another directory and is not it, and checking only the end
+        # refused an ordinary read under a backup copy.
+        begins_here = (
+            start == 0
+            or not marker.startswith(("/", "\\"))
+            or lowered[start - 1] in "'\" \t\r\n;:&|(=,"
+        )
+        if ends_here and begins_here:
             return True
         start = lowered.find(marker, start + 1)
     return False
@@ -2903,7 +2958,7 @@ def _glob_text_can_name_the_auth_dir(lowered: str) -> bool:
     candidates = {lowered, _canonical_path_text(lowered)}
     return any(
         _glob_can_name_the_marker(candidate, canonical_marker)
-        for _marker, canonical_marker in markers
+        for _marker, canonical_marker, _original in markers
         for candidate in candidates
     )
 
@@ -2954,15 +3009,31 @@ def _references_studio_credential(text: str) -> bool:
     lowered_canonicals = {lowered_canonical} | {c.lower() for c in canonical_candidates}
     if unescaped is not text:
         lowered_raw.add(unescaped.lower())
-    if any(
-        _marker_is_a_path_segment(candidate, marker)
-        for marker, _ in auth_markers
-        for candidate in lowered_raw
-    ) or any(
-        _marker_is_a_path_segment(candidate, canonical_marker)
-        for _, canonical_marker in auth_markers
-        for candidate in lowered_canonicals
-    ):
+    matched = [
+        original
+        for marker, canonical_marker, original in auth_markers
+        if any(_marker_is_a_path_segment(candidate, marker) for candidate in lowered_raw)
+        or any(
+            _marker_is_a_path_segment(candidate, canonical_marker)
+            for candidate in lowered_canonicals
+        )
+    ]
+    if matched:
+        # On a case-sensitive filesystem the folded match is not enough on its own: `<home>/Auth` is
+        # a different directory from `<home>/auth`, and refusing a read under it is a false refusal.
+        # The check is only applied where the ORIGINAL marker is an ordinary literal path, so a
+        # variable or `~` spelling (which the shell expands, and whose case the shell decides) keeps
+        # the folded answer.
+        raw_candidates = {text, normalized, unescaped, canonical}
+        if _CASE_SENSITIVE_PATHS and not any(
+            original in candidate
+            for original in matched
+            if original[:1] not in ("$", "~", "%")
+            for candidate in raw_candidates
+        ):
+            literal = [o for o in matched if o[:1] not in ("$", "~", "%")]
+            if literal and len(literal) == len(matched):
+                return False
         return True
     # Once more as a glob, gated on a wildcard being there at all. Per path-shaped TOKEN, not on
     # the whole text: the segments of `sqlite3 <home>/a?th/auth.db` start at `sqlite3 <home>`, so
@@ -2972,7 +3043,7 @@ def _references_studio_credential(text: str) -> bool:
         glob_tokens.update(lowered_canonicals)
         if any(
             _glob_can_name_the_marker(token, canonical_marker)
-            for _, canonical_marker in auth_markers
+            for _marker, canonical_marker, _original in auth_markers
             for token in glob_tokens
             if _GLOB_META_RE.search(token)
         ):
@@ -3004,6 +3075,21 @@ _CD_TARGET_RE = re.compile(
     r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
     re.IGNORECASE,
 )
+# `cd`/`pushd` with a target, or one of the moves that RETURNS: `cd -` goes back to the previous
+# directory and `popd` pops the stack `pushd` built. Matched in one pass so the order is kept.
+_DIRECTORY_MOVE_RE = re.compile(
+    r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:(?P<back>cd\s+-(?![\w/\\-])|popd\b)"
+    r"|(?:cd|pushd)\s+(?:(?:-[LPe@]+|--|/d)\s+)*(?P<target>[^\s;&|)]+))",
+    re.IGNORECASE,
+)
+
+
+# `&&` immediately after a move: the next command runs only if that move succeeded.
+_CHAINED_ON_SUCCESS_RE = re.compile(r"\s*&&")
+
+
 # Distinct directories, not `cd` commands: padding with repeats must not spend the budget.
 _MAX_TRACKED_CWDS = 64
 # Hard ceiling on the directories reported, well past any real command.
@@ -3157,6 +3243,20 @@ def _token_spellings(token: str) -> "list[str]":
     return list(dict.fromkeys([token.replace("\\", "/"), token.replace("\\", "")]))
 
 
+def _path_tokens_containing(text: str, wanted: str):
+    """Whole path tokens of *text* holding any character of *wanted* (or the substring `..`).
+
+    One linear pass, then a substring test per token. The equivalent patterns put the interesting
+    characters in the MIDDLE, so their leading `[^...]*` backtracks over every position of a long
+    token that does not contain one: a fifth of a second for a single 8 KB token, and a command
+    carries many.
+    """
+    for match in _PATH_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if ".." in token if wanted == ".." else any(ch in token for ch in wanted):
+            yield match
+
+
 def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
     """Every working directory *text* walks into via `cd`, as `(offset, limit, directory)` in order.
 
@@ -3178,8 +3278,28 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
     walked: "list[tuple[int, int, str]]" = []
     seen: "set[tuple[str, int]]" = set()
     inert = _uncalled_function_spans(text) if "(" in text or "function" in text else []
-    for match in _CD_TARGET_RE.finditer(text):
-        target = match.group(1).strip("'\"")
+    # Where each move came FROM. `cd -` and `popd` go back there, and reading them as no move at all
+    # kept the studio root live: `cd ../..; cd -; cat auth/config.json` is back in the sandbox
+    # reading the project's own file, and it was refused in every mode.
+    history: "list[list[tuple[str, int]]]" = []
+    for match in _DIRECTORY_MOVE_RE.finditer(text):
+        returning = match.group("back")
+        if returning:
+            if any(start <= match.start() <= end for start, end in inert):
+                continue
+            states = history.pop() if history else [(workdir, len(text))]
+            # The directories walked so far stop being where a later path opens from, so every span
+            # still open ends HERE. Without this the earlier move still covered the rest of the
+            # command and the return changed nothing.
+            walked = [
+                (offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked
+            ]
+            # Those spans are closed, so the SAME directory walked into again afterwards is a new
+            # span rather than a repeat: `cd ../..; cd -; cd ../..` reaches the root twice, and the
+            # dedup that stops padding from spending the budget hid the second one.
+            seen.clear()
+            continue
+        target = (match.group("target") or "").strip("'\"")
         if not target or target.startswith("-"):
             continue
         # A `cd` in a function body that nothing invokes never runs.
@@ -3209,26 +3329,50 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
             + [(c, u) for c, u in states if c != workdir]
             + [(m, limit) for m in moved]
         )
+        # `cd x && cd ../..` only reaches the second move when the first SUCCEEDED, so the
+        # unmoved state is not live afterwards. Keeping it modelled a branch no shell can take, and
+        # `cd subdir && cd ../.. && cat auth/config.json` was refused as a read of the studio root
+        # when it reads the project's own file.
+        if _CHAINED_ON_SUCCESS_RE.match(text, match.end()):
+            ordered = [(m, limit) for m in moved]
+        history.append(states)
         states = list(dict.fromkeys(ordered))[:_MAX_TRACKED_CWDS]
         if len(walked) >= _MAX_WALKED_CWDS:
             break
     return walked
 
 
-def _references_studio_credential_here(text: str, workdir: "str | None") -> bool:
+def _references_studio_credential_here(
+    text: str, workdir: "str | None", _unescaped: bool = False
+) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
     The tool cwd is `<studio home>/sandbox/<session>`, a sibling of the auth directory, so
     `open('../../auth/auth.db')` reads the protected database while naming neither the directory
     nor a credential basename. Resolving only the `..` tokens keeps this to the one shape that can
     leave the sandbox at all."""
+    # A command that BINDS one of these variables itself means its own directory by it, and the
+    # generic `STUDIO_HOME` is registered as this install's root even when the backend does not
+    # set it. Resolving the local binding first stops `STUDIO_HOME=/opt/app cat
+    # "$STUDIO_HOME/auth/config.json"` from being refused as a read of Studio's own auth directory.
+    if "=" in text and _binds_an_unset_studio_home(text):
+        text = _expand_shell_assignments(text)
     if _references_studio_credential(text):
+        return True
+    # Naming the studio ROOT and a credential BASENAME is enough, even with nothing joining them:
+    # `find "$UNSLOTH_STUDIO_HOME" -name auth.db -exec cat` hands the directory to a tool that
+    # walks it, and no single token of it is a path to the database.
+    if _CREDENTIAL_BASENAME_RE.search(text) and _text_names_the_studio_root(text):
         return True
     # `c\d ../..` runs the `cd` builtin: bash removes the backslash before a word is a command name
     # at all, so the escaped spelling has to be folded away before the cwd walk reads it.
-    if "\\" in text:
+    if "\\" in text and not _unescaped:
+        # One level only: `\\` repeated 550 times drops a backslash per pass, and recursing per pass
+        # was a RecursionError raised out of the guard rather than a decision.
         unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
-        if unescaped != text and _references_studio_credential_here(unescaped, workdir):
+        if unescaped != text and _references_studio_credential_here(
+            unescaped, workdir, _unescaped = True
+        ):
             return True
     if "[" in text:
         # A one-character class is deterministic: `[a][u][t][h]/auth.db` is the auth directory
@@ -3279,7 +3423,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
             # sandbox.
             if _references_studio_credential(cwd) and text[offset:limit].strip(" \t\n;&|()"):
                 return True
-            for match in _RELATIVE_PATH_TOKEN_RE.finditer(text):
+            for match in _path_tokens_containing(text, "/\\"):
                 # Only what comes AFTER that `cd`: a path written before it opens from the old
                 # directory, so resolving `cat auth/auth.db; cd ../..` against the root refused a
                 # read that never left the sandbox.
@@ -3295,7 +3439,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
                     return True
     if not workdir or ".." not in text:
         return False
-    for token in _TRAVERSAL_TOKEN_RE.findall(text):
+    for token in (m.group(0) for m in _path_tokens_containing(text, "..")):
         if "/" not in token and "\\" not in token:
             continue
         if any(
