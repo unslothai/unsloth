@@ -231,12 +231,12 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
         "the WSL lane never enables process creation auditing, so the 4688 half of the watch is "
         "dead and an empty compiler list means unmeasured rather than clean"
     )
-    assert "ProcessCreationIncludeCmdLine_Enabled" in earlier, (
-        "without the command line, 4688 cannot tell csc.exe ran for us from csc.exe ran"
-    )
-    assert "Process Creation\\s+Success" in earlier, (
-        "the audit policy is set but never verified, and machine policy can silently override it"
-    )
+    assert (
+        "ProcessCreationIncludeCmdLine_Enabled" in earlier
+    ), "without the command line, 4688 cannot tell csc.exe ran for us from csc.exe ran"
+    assert (
+        "Process Creation\\s+Success" in earlier
+    ), "the audit policy is set but never verified, and machine policy can silently override it"
     assert "$control.Compilers" in earlier, (
         "nothing proves the detector fires on this runner, so a clean verdict is indistinguishable "
         "from a detector that never attached"
