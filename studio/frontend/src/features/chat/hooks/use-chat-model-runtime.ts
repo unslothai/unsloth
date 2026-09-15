@@ -156,6 +156,11 @@ export type SelectedModelInput = {
   loadingDescription?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  downloadPresentation?: {
+    label: string;
+    filename: string;
+    expectedBytes: number;
+  };
   forceReload?: boolean;
   nativePathToken?: string;
   nativePathExpiresAtMs?: number | null;
