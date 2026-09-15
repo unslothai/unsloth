@@ -2429,10 +2429,19 @@ _cvd_hides_nvidia() {
 }
 
 # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API) for a host whose nvidia-smi is absent, stale or hangs (#9255): "<cuda major>.<minor> <cap>,<cap>" or exit 1. Inline rather than studio/nvidia_probe.py, which is not on disk yet when the torch index is chosen; the two read the same calls.
+# Memoised for the run: the presence check and the torch index must read the same answer,
+# and a wedged driver pays its deadline once.
+_NVIDIA_LIBRARY_INVENTORY_STATE=""
+_NVIDIA_LIBRARY_INVENTORY_VALUE=""
 _nvidia_library_inventory() {
     [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
+    case "${_NVIDIA_LIBRARY_INVENTORY_STATE:-}" in
+        found) printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"; return 0 ;;
+        none) return 1 ;;
+    esac
+    _NVIDIA_LIBRARY_INVENTORY_STATE="none"
     command -v python3 >/dev/null 2>&1 || return 1
-    _run_bounded python3 -I - 2>/dev/null <<'PY'
+    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded python3 -I - 2>/dev/null <<'PY'
 import ctypes, sys
 
 def load(*names):
@@ -2489,6 +2498,9 @@ if not found or not found[1]:
 version, caps = found
 print(f"{version // 1000}.{version % 1000 // 10} {','.join(caps)}")
 PY
+) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
+    _NVIDIA_LIBRARY_INVENTORY_STATE="found"
+    printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
 }
 
 # ── NVIDIA usable-GPU helper ──

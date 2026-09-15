@@ -290,6 +290,16 @@ _result=$(run_func "$_dir")
 assert_eq "no nvidia-smi, library says 12.9 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
+# 8f) The inventory is read once per run: the presence check's answer feeds the torch
+# index even when a second probe would fail, and the probe is not launched again.
+_dir=$(mktemp -d)
+printf '#!/bin/sh\ncat >/dev/null\nn=$(cat "%s/calls" 2>/dev/null || echo 0)\necho $((n + 1)) > "%s/calls"\n[ "$n" = 0 ] && echo "12.9 8.9"\n' "$_dir" "$_dir" > "$_dir/python3"
+chmod +x "$_dir/python3"
+_result=$(PATH="$_dir:$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; . '$_FUNC_FILE'; _has_usable_nvidia_gpu && get_torch_index_url" 2>/dev/null)
+assert_eq "memoised inventory -> cu128 from the first answer" "https://download.pytorch.org/whl/cu128" "$_result"
+assert_eq "memoised inventory -> one probe launch" "1" "$(cat "$_dir/calls")"
+rm -rf "$_dir"
+
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func "$_dir")
