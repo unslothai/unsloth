@@ -385,7 +385,8 @@ def test_root_union_branches_are_the_root_and_stay_bare():
     assert relax_nested_object_key_order(root_ref) is root_ref
 
 
-def test_passthrough_healer_types_arguments_against_the_original_schema():
+@pytest.mark.parametrize("forced", [False, True])
+def test_passthrough_healer_types_arguments_against_the_original_schema(forced):
     import json
 
     from core.inference.passthrough_healing import heal_openai_message
@@ -404,15 +405,19 @@ def test_passthrough_healer_types_arguments_against_the_original_schema():
     tool = _tool({"type": "object", "properties": {"data": data}, "required": ["data"]}, name = "q")
     body = _build_passthrough_payload(
         [{"role": "user", "content": "hi"}],
-        [tool],
+        [tool, _tool({"type": "object", "properties": {}}, name = "other")],
         temperature = 0.7,
         top_p = 0.9,
         top_k = 40,
         stream = False,
-        tool_choice = "auto",
+        tool_choice = {"type": "function", "function": {"name": "q"}} if forced else "auto",
         max_tokens = 16,
         stop = None,
         backend_ctx = 4096,
+    )
+    assert body["tool_choice"] == ("required" if forced else "auto")
+    assert [tool["function"]["name"] for tool in body["tools"]] == (
+        ["q"] if forced else ["q", "other"]
     )
     assert body["tools"][0]["function"]["parameters"]["properties"]["data"] == _relaxed(data)
 

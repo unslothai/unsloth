@@ -6304,6 +6304,27 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("wanted", [True, False])
+def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monkeypatch, wanted):
+    """Verbose alone would attach the whole prompt, so it travels with the narrowing."""
+    final = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    final["__verbose"] = {"id_slot": 3}
+    stream = [_sse({"content": "done"}), "data: " + json.dumps(final) + "\n", _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
+    seen = []
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hi"}],
+        _render_html_tools(),
+        on_decode_slot = (lambda url, slot: seen.append((url, slot))) if wanted else None,
+    )
+
+    assert seen == ([(backend.base_url, 3)] if wanted else [])
+    assert payloads[0].get("verbose") is (True if wanted else None)
+    assert payloads[0].get("response_fields") == (["id_slot"] if wanted else None)
+
+
 @pytest.mark.parametrize(
     "held",
     [
