@@ -2020,7 +2020,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         ):
             # `cfg = ConfigParser(); cfg.read(p)`, the chained `ConfigParser().read(p)`, and the
             # list form `cfg.read([a, b])`.
-            for element in (first.elts if isinstance(first, (ast.List, ast.Tuple)) else [first]):
+            for element in first.elts if isinstance(first, (ast.List, ast.Tuple)) else [first]:
                 add(element, False)
         elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()) or (
             not is_method and name in qualified_readers
