@@ -952,23 +952,46 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif (
-                    output_path
-                    and Path(output_path).is_dir()
-                    and (is_compressed or is_torchao or save_dir_was_empty)
-                ):
+                elif output_path and Path(output_path).is_dir():
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
                     # redo the expensive merge and quantization.
-                    hf_api = HfApi(token = hf_token)
-                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    repo_id = getattr(repo_url, "repo_id", repo_id)
-                    if private:
-                        _ensure_hub_repo_private(hf_api, repo_id)
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
-                    )
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = output_path
+                        if not (is_compressed or is_torchao or save_dir_was_empty):
+                            # A reused folder can hold leftovers, so upload a clean second save instead.
+                            upload_dir = stack.enter_context(
+                                tempfile.TemporaryDirectory(
+                                    prefix = ".hub-upload-", dir = Path(output_path).parent
+                                )
+                            )
+                            self.current_model.save_pretrained_merged(
+                                upload_dir,
+                                self.current_tokenizer,
+                                save_method = save_method,
+                                **merged_token_kw,
+                            )
+                            self._write_export_metadata(upload_dir)
+                        # A Kaggle merge can be redirected to /tmp without saying where; never push a
+                        # folder with no weights.
+                        if not any(Path(upload_dir).glob("*.safetensors")) and not any(
+                            Path(upload_dir).glob("*.bin")
+                        ):
+                            return (
+                                False,
+                                f"The merged model was not written to {upload_dir}, so nothing was "
+                                "pushed. Check the export log for the directory the save actually used.",
+                                None,
+                            )
+                        hf_api = HfApi(token = hf_token)
+                        repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = getattr(repo_url, "repo_id", repo_id)
+                        if private:
+                            _ensure_hub_repo_private(hf_api, repo_id)
+                        hf_api.upload_folder(
+                            folder_path = upload_dir,
+                            repo_id = repo_id,
+                            repo_type = "model",
+                        )
                     # Last and best-effort like the GGUF card; an existing card is kept, as
                     # push_to_hub_merged does.
                     try:

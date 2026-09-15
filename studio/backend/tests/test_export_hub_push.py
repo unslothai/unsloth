@@ -204,8 +204,10 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
 
     assert success is True, message
     assert output_path == str(export_dir.resolve())
-    assert backend.current_model.merges == ["merged_16bit", "push_to_hub_merged"]
-    assert "upload_folder" not in calls
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+    assert seen["uploaded"] == ["export_metadata.json", "model.safetensors"]
 
 
 def test_merged_export_push_keeps_the_card_of_an_existing_repo(tmp_path, monkeypatch):
@@ -241,6 +243,27 @@ def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypa
     assert success is True, message
     assert seen["folder"] == output_path
     assert seen["uploaded"] == ["export_metadata.json", "model.safetensors"]
+
+
+def test_merged_export_push_refuses_a_folder_without_weights(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    backend.current_model.save_pretrained_merged = (
+        lambda save_directory, tokenizer, save_method = None, token = None: None
+    )
+
+    success, message, _ = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is False
+    assert "nothing was pushed" in message
+    assert "create_repo" not in calls
+    assert "upload_folder" not in calls
 
 
 def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monkeypatch):
