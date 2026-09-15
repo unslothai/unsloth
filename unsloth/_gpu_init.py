@@ -225,6 +225,7 @@ from .device_type import arch_lacks_bf16, hip_visible_archs
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
     fix_transformers_fully_masked_rows,
+    fix_transformers_rope_scaling_drops_theta,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -265,6 +266,10 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+# Probe-gated: no-ops unless replacing config.rope_scaling on this transformers really loses the
+# RoPE base frequency. Ordered here, before any config is built, so the object-style delegation
+# retry in models/llama.py sees a config that kept its base (#2405).
+fix_transformers_rope_scaling_drops_theta()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -312,6 +317,7 @@ fix_peft_stale_torchao_import_error()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers_rope_scaling_drops_theta
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
@@ -393,11 +399,43 @@ elif DEVICE_TYPE == "npu":
 
 # For Gradio HF Spaces?
 # if "SPACE_AUTHOR_NAME" not in os.environ and "SPACE_REPO_NAME" not in os.environ:
-import triton
+# `triton` is optional here, like bitsandbytes below. The PyPI `triton` project publishes no
+# Windows wheel (Windows is served by the separate `triton-windows` package), so a CPU only
+# Windows install has no `triton` at all, and an unconditional import here killed
+# `import unsloth` with a bare ModuleNotFoundError from a line whose only job is to resolve
+# `libcuda_dirs` on CUDA hosts. Everything below treats `triton is None` as "no Triton
+# kernels", which is already the state of a CPU only install.
+try:
+    import triton
+except Exception as _triton_import_exception:
+    triton = None
+    TRITON_IMPORT_ERROR = f"{type(_triton_import_exception).__name__}: {_triton_import_exception}"
+    del _triton_import_exception
+else:
+    TRITON_IMPORT_ERROR = None
+
+if TRITON_IMPORT_ERROR is not None:
+    if DEVICE_TYPE in ("cuda", "hip") and torch.cuda.is_available():
+        # A real accelerator with no Triton: the fused kernels are gone, so say so loudly.
+        warnings.warn(
+            f"Unsloth: `triton` could not be imported ({TRITON_IMPORT_ERROR}), so the fused Triton "
+            "kernels are unavailable and training will be slower or may fail.\n"
+            "On Windows install `triton-windows`, on Linux reinstall `triton`.",
+            stacklevel = 2,
+        )
+    else:
+        # No usable accelerator anyway (CPU only install, or UNSLOTH_ALLOW_CPU=1): expected state.
+        print(
+            f"Unsloth: `triton` is not available ({TRITON_IMPORT_ERROR}) - continuing without the "
+            "fused Triton kernels, which a CPU only install does not use.\n"
+            "On Windows, Triton is published as the separate `triton-windows` package."
+        )
 
 if DEVICE_TYPE == "cuda":
     libcuda_dirs = lambda: None
-    if Version(triton.__version__) >= Version("3.0.0"):
+    if triton is None:
+        pass
+    elif Version(triton.__version__) >= Version("3.0.0"):
         # Try loading bitsandbytes and triton
         try:
             from triton.backends.nvidia.driver import libcuda_dirs
@@ -456,11 +494,16 @@ if DEVICE_TYPE == "cuda":
 
             if bnb is not None:
                 importlib.reload(bnb)
-            importlib.reload(triton)
+            if triton is not None:
+                importlib.reload(triton)
             # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.
+            # No triton either means there is nothing to re-resolve here, and the missing Triton was
+            # already reported above, so do not re-report it as a CUDA linking failure.
             try:
                 libcuda_dirs = lambda: None
-                if Version(triton.__version__) >= Version("3.0.0"):
+                if triton is None:
+                    pass
+                elif Version(triton.__version__) >= Version("3.0.0"):
                     try:
                         from triton.backends.nvidia.driver import libcuda_dirs
                     except:

@@ -542,3 +542,70 @@ def test_object_style_rope_scaling_on_config_delegates_correctly():
         "(issue #2405)."
     )
     assert torch.allclose(inv_freq.float().cpu(), expected, rtol = 1e-4, atol = 1e-6)
+
+
+def _linear_inv_freq(base, factor):
+    """transformers' linear RoPE, written out, so a base can be asserted directly."""
+    inv_freq = 1.0 / (base ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM))
+    return inv_freq / factor
+
+
+def test_replacing_rope_scaling_keeps_the_base_frequency():
+    # The mechanism behind #2405 on transformers 5: rope_theta lives INSIDE
+    # config.rope_parameters and rope_scaling is an alias that replaces that whole dict, so
+    # assigning a normalized scaling dict drops the base. That assignment is exactly what
+    # _compute_config_rope_inv_freq's object-style retry does, and with the base gone
+    # transformers computes `None ** positions` and unsloth falls back to unscaled RoPE.
+    import unsloth  # noqa: F401  -- installs the import fixes this test is about
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    scaling = {"rope_type": "linear", "factor": 4.0}
+    expected = _reference_inv_freq(_make_config(dict(scaling)), "linear")
+    # Guard against a vacuous test: the scaled base must not equal the 10000.0 default.
+    assert not torch.allclose(
+        expected, _linear_inv_freq(10000.0, 4.0), rtol = 1e-4
+    ), "test setup error: rope_theta 500000 must not match the default base"
+
+    replaced = _make_config(dict(scaling))
+    replaced.rope_scaling = dict(scaling)
+    inv_freq, _attention_factor = ROPE_INIT_FUNCTIONS["linear"](replaced, torch.device("cpu"))
+    assert torch.allclose(inv_freq.float().cpu(), expected.float().cpu(), rtol = 1e-4, atol = 1e-6), (
+        "replacing config.rope_scaling lost the RoPE base frequency, so scaled models "
+        "run with the wrong inverse frequencies (issue #2405).\n"
+        f"got[:6]={inv_freq[:6].tolist()}\nexpected[:6]={expected[:6].tolist()}"
+    )
+
+
+def test_reassigning_the_configs_own_rope_parameters_changes_nothing():
+    # The healthy path, so carrying a base forward cannot alter a replacement that
+    # already carries everything transformers needs: writing a config's own parameters
+    # back must leave the inverse frequencies bit-identical, on 4.x and on 5.x alike.
+    import unsloth  # noqa: F401
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    scaling = {"rope_type": "linear", "factor": 4.0}
+    expected = _reference_inv_freq(_make_config(dict(scaling)), "linear")
+
+    subject = _make_config(dict(scaling))
+    own = getattr(subject, "rope_parameters", None)
+    if not isinstance(own, dict):
+        own = subject.rope_scaling
+    subject.rope_scaling = dict(own)
+    inv_freq, _attention_factor = ROPE_INIT_FUNCTIONS["linear"](subject, torch.device("cpu"))
+    assert torch.equal(inv_freq.float().cpu(), expected.float().cpu()), (
+        "writing a config's own rope parameters back changed the inverse frequencies.\n"
+        f"got[:6]={inv_freq[:6].tolist()}\nexpected[:6]={expected[:6].tolist()}"
+    )
+
+
+def test_clearing_rope_scaling_keeps_the_base_frequency():
+    # Unscaled is not the same as unbased. Clearing the scaling must leave the base
+    # readable, or every rotary rebuilt from this config silently falls back to 10000.
+    from unsloth.models.llama import _get_rope_theta
+
+    config = _make_config(LLAMA3_ROPE_SCALING)
+    config.rope_scaling = None
+    assert _get_rope_theta(config, default = 10000.0) == ROPE_THETA, (
+        "clearing config.rope_scaling dropped rope_theta, so the base frequency fell back "
+        f"to the 10000.0 default (issue #2405); got {_get_rope_theta(config, default = 10000.0)}"
+    )
