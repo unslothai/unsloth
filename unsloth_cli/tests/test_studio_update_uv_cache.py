@@ -1234,3 +1234,28 @@ def test_a_folded_lookalike_is_still_not_a_bucket(tmp_path, monkeypatch):
     (cache / "Archive-V0.backup" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
     _simulate_case_folding(monkeypatch)
     assert studio._uv_cache_has_packages(cache) is False
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_no_cache_mode_removes_a_blank_inherited_cache_dir(monkeypatch, tmp_path, caches, blank):
+    """uv parses an exported EMPTY UV_CACHE_DIR as `--cache-dir ''` even under --no-cache, and
+    exits 2 with "a value is required for '--cache-dir'" (measured on uv 0.10.7, both `uv cache
+    dir` and `uv pip install`). setup.sh unsets it in its own no-cache branch; setup.ps1 has no
+    cache handling at all, so on Windows the blank reached uv and failed the update."""
+    studio = _studio()
+    monkeypatch.setenv("UV_CACHE_DIR", blank)
+    monkeypatch.setenv("UV_NO_CACHE", "1")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"] is not None, "inheriting os.environ would keep the blank value"
+    assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
+
+
+def test_no_cache_mode_still_leaves_a_real_caller_value_alone(monkeypatch, tmp_path, caches):
+    """--no-cache outranks --cache-dir inside uv; a caller's explicit path is still not ours
+    to strip, and uv accepts the pair."""
+    studio = _studio()
+    chosen = str(tmp_path / "caller cache")
+    monkeypatch.setenv("UV_CACHE_DIR", chosen)
+    monkeypatch.setenv("UV_NO_CACHE", "1")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"] is None or seen["env"]["UV_CACHE_DIR"] == chosen

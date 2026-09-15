@@ -3437,7 +3437,13 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     if _uv_no_cache_requested():
-        return env
+        # Removed, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` even
+        # under --no-cache and exits 2, "a value is required for '--cache-dir'". setup.sh unsets
+        # it in its own no-cache branch; setup.ps1 has no cache handling at all, so on Windows a
+        # blank inherited value reached uv and failed the update before no-cache took effect.
+        no_cache = {**(env or os.environ)}
+        no_cache.pop("UV_CACHE_DIR", None)
+        return no_cache
     studio_cache = STUDIO_HOME / "cache" / "uv"
     recorded = _recorded_install_uv_cache()
     if (
