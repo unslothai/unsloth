@@ -3162,7 +3162,10 @@ def _folded_path(
                     and isinstance(node.args[0], (ast.List, ast.Tuple))
                 ):
                     pieces = [(fold(e) or "\x00") for e in node.args[0].elts]
-                    return _posix_join(pieces) if sep == "/" else sep.join(pieces)
+                    # `str.join` CONCATENATES, whatever the separator: `"/".join(["/a", "/usr/b"])`
+                    # is `/a//usr/b`, not `/usr/b`. Only os.path.join and pathlib let a later
+                    # absolute piece discard the earlier ones.
+                    return sep.join(pieces)
                 parts = [(fold(a) or "\x00") for a in node.args]
                 return _posix_join(parts)
             # A bare os.path.join alias (from os.path import join): join(*pieces).

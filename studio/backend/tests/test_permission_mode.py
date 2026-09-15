@@ -3374,6 +3374,8 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # One token carrying both a live `>` and a quoted target with a space in it.
+    f'echo CHANGED>"{_OUTSIDE_DIR} host/notes.txt"',
     # A here-string word is DATA, but a substitution inside it runs before the data is handed over.
     f'cat <<< "$(cat {_OUTSIDE_FILE})"',
     # `curl --help all`: `-K, --config <file>` reads a config from a file; the attached spelling was
@@ -3530,6 +3532,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `str.join` concatenates: `"/".join(["/a", "/usr/b"])` is `/a//usr/b`, not `/usr/b`.
+    f"print(open('/'.join([{_OUTSIDE_DIR!r}, '/usr/share/doc/readme'])).read())",
+    # The same reader under its documented keyword name.
+    f"from PIL import Image\nprint(Image.open(fp = {_OUTSIDE_FILE!r}).size)",
     # `executable` is what LAUNCHES; argv[0] is only the name the child sees.
     f"import subprocess\nsubprocess.run(['echo'], executable = {_OUTSIDE_FILE!r})",
     # The call itself creates the escape: a name in the sandbox that writes to the target.
@@ -3685,6 +3691,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "echo 'a<b' > out.txt",
     'cat <<< "$(date)"',
     "curl --config=./local.conf https://example.com",
     "jq -L ./modules '.a' data.json",
@@ -3767,6 +3774,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "from PIL import Image\nprint(Image.open(fp = 'local.png').size)",
     "import subprocess\nsubprocess.run(['echo'], executable = '/bin/sh')",
     "import os\nos.symlink('models', 'local')",
     "import pandas as pd\nbook = pd.ExcelFile('book.xlsx')\nprint(book.parse(0))",

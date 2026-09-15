@@ -272,14 +272,11 @@ def _hf_cache_dirs() -> "tuple[str, ...]":
 
     if not _studio_db_exists():
         from utils.hf_cache_settings import get_hf_cache_paths
-
         try:
             paths = get_hf_cache_paths()
         except Exception:  # noqa: BLE001 - best effort, as every root here is
             return ()
-        return tuple(
-            str(p) for p in (paths.cache_home, paths.hub_cache, paths.xet_cache) if p
-        )
+        return tuple(str(p) for p in (paths.cache_home, paths.hub_cache, paths.xet_cache) if p)
     return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
 
 
@@ -287,7 +284,6 @@ def _studio_db_revision() -> int:
     """The database's modification time, or 0 when there is none. Changes whenever a root that is
     stored in it does."""
     from storage.studio_db import studio_db_path
-
     try:
         return os.stat(studio_db_path()).st_mtime_ns
     except Exception:  # noqa: BLE001 - no database is a stable revision of its own
@@ -302,7 +298,6 @@ def _studio_db_exists() -> bool:
     side effect of deciding whether to ask about a path.
     """
     from storage.studio_db import studio_db_path
-
     try:
         return studio_db_path().exists()
     except Exception:  # noqa: BLE001 - an unresolvable path is no stored setting either
@@ -352,7 +347,11 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         account = ""
     # The database's mtime too: registered scan folders and the configured cache root live in it, so
     # removing a folder revoked a root that stayed silent for up to the TTL otherwise.
-    account = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS), _studio_db_revision())
+    account = (
+        account,
+        tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS),
+        _studio_db_revision(),
+    )
     now = time.monotonic()
     cached = _silent_roots_cache
     if cached is not None and cached[1] == account and now - cached[0] < _SILENT_ROOT_TTL_S:
@@ -1174,6 +1173,12 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     tokens = _split_attached_redirections(tokens, text)
     operands: "list[tuple[str, bool]]" = []
     segment: "list[str]" = []
+    # Redirections are read from the RAW text when there is one: quoting is the thing being decided,
+    # and `echo CHANGED>"/media/x host/a"` lexes to one token carrying both a live `>` and a space.
+    # The token pass below still covers a bare word list (a subprocess argv); duplicates are
+    # harmless, since these are candidates rather than a count.
+    if text and ("<" in text or ">" in text):
+        operands.extend(_raw_redirection_targets(text))
 
     def flush() -> None:
         if segment:
@@ -1190,9 +1195,7 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
             # got wrong when it was added.
             pending_heredoc = False
             if not _looks_separator_for_paths(token):
-                operands.extend(
-                    (path, False) for path in _substitution_operand_paths(token)
-                )
+                operands.extend((path, False) for path in _substitution_operand_paths(token))
                 continue
         if pending_redirect is not None:
             # `>| /abs` lexes as `>` then `|`: the punctuation is part of the operator, so keep waiting for the
@@ -1242,6 +1245,64 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
 
 
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
+
+
+def _raw_redirection_targets(text: str) -> "list[tuple[str, bool]]":
+    """`(target, writing)` for each redirection whose OPERATOR is unquoted in *text*.
+
+    Read from the raw command rather than the lexed tokens: any rule based on the token alone gets
+    either the quoted-data case or the attached-target case wrong. A here-document or here-string
+    takes a delimiter or literal data, never a file, so those operators are skipped.
+    """
+    out: "list[tuple[str, bool]]" = []
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and quote != "'":
+            index += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            index += 1
+            continue
+        if char not in "<>":
+            index += 1
+            continue
+        start = index
+        while index < len(text) and text[index] in "<>":
+            index += 1
+        operator = text[start:index]
+        if operator.startswith("<<"):
+            continue
+        writing = ">" in operator
+        while index < len(text) and text[index] in " \t":
+            index += 1
+        word = ""
+        while index < len(text) and (quote or text[index] not in " \t\n;&|()"):
+            char = text[index]
+            if char == "\\" and quote != "'" and index + 1 < len(text):
+                word += text[index + 1]
+                index += 2
+                continue
+            if quote:
+                if char == quote:
+                    quote = ""
+                else:
+                    word += char
+            elif char in "'\"":
+                quote = char
+            else:
+                word += char
+            index += 1
+        if word and _looks_absolute(word):
+            out.append((word, writing))
+    return out
 
 
 def _token_is_always_quoted(
@@ -1660,9 +1721,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
 # A drive-qualified path, a UNC share, or a ROOT-relative one: `cat \\Users\\alice\\notes.txt` opens
 # `\\Users\\alice\\notes.txt` on the current drive, and a POSIX lex turns it into `Usersalicenotes.txt`
 # with nothing absolute left to see.
-_WINDOWS_SPELLING_RE = re.compile(
-    r"(?:^|[\s'\"=])[A-Za-z]:(?![:\s])|\\\\[^\\/]|(?:^|\s)\\[^\\/\s]"
-)
+_WINDOWS_SPELLING_RE = re.compile(r"(?:^|[\s'\"=])[A-Za-z]:(?![:\s])|\\\\[^\\/]|(?:^|\s)\\[^\\/\s]")
 
 
 def _lex_keeping_backslashes(text: str) -> "list[str] | None":
@@ -1927,6 +1986,10 @@ _PY_PATH_KWARGS = (
 # bare `filenames = ` or `pathname = ` elsewhere is not necessarily a path this scan should open.
 _PY_PATH_KWARGS_BY_CALL = {
     "read": ("filenames",),
+    # Pillow's `Image.open(fp = ...)`, and the stdlib spellings that name the file differently.
+    "open": ("fp",),
+    "imread": ("fname",),
+    "load": ("file",),
     "glob": ("pathname", "root_dir"),
     "iglob": ("pathname", "root_dir"),
     "listdir": ("path",),
