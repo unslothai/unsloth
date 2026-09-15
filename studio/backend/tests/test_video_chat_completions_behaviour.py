@@ -78,6 +78,21 @@ def _client(
     return TestClient(app, raise_server_exceptions = False)
 
 
+@pytest.fixture(autouse = True)
+def _hosts_resolve_publicly(monkeypatch):
+    """A remote clip's host is resolved now, and conftest blocks the real lookup.
+
+    Default every name to one public address so each test below still asserts its own subject;
+    the tests about the destination guard install their own resolver over this one.
+    """
+    import socket
+
+    def _resolve(host, port, *_a, **_k):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _resolve)
+
+
 def _part_body(
     *urls,
     text = "what happens here?",
@@ -762,3 +777,102 @@ def test_a_public_numeric_host_is_still_allowed(monkeypatch):
     assert _sent_media(backend) == [
         {"type": "input_video", "input_video": {"url": "http://8.8.8.8/c.mp4"}}
     ]
+
+
+def _fake_resolver(mapping):
+    """getaddrinfo shaped like socket's, answering from a dict of host -> addresses."""
+    import socket
+
+    def _resolve(host, port, *a, **k):
+        if host not in mapping:
+            raise socket.gaierror(-2, "Name or service not known")
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))
+            for address in mapping[host]
+        ]
+
+    return _resolve
+
+
+@pytest.mark.parametrize(
+    "address", ["127.0.0.1", "169.254.169.254", "10.1.2.3", "192.168.0.9", "::1"]
+)
+def test_a_hostname_resolving_somewhere_private_is_refused(monkeypatch, address):
+    """The literal checks never see a name, and a name the caller controls can answer loopback."""
+    import socket
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _fake_resolver({"clips.example": [address]})
+    )
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post(
+            "/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4")
+        )
+    assert response.status_code == 400
+    assert "must point at a public host" in _detail(response)
+
+
+def test_a_hostname_with_one_private_answer_among_public_ones_is_refused(monkeypatch):
+    """Checking only the first answer would let a name volunteer a public address and still
+    hand llama-server a private one."""
+    import socket
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _fake_resolver({"clips.example": ["93.184.216.34", "127.0.0.1"]})
+    )
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post(
+            "/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4")
+        )
+    assert response.status_code == 400
+
+
+def test_a_hostname_resolving_publicly_is_still_forwarded(monkeypatch):
+    import socket
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _fake_resolver({"clips.example": ["93.184.216.34"]})
+    )
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post(
+            "/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4")
+        )
+    assert response.status_code == 200
+    assert _sent_media(backend) == [
+        {"type": "input_video", "input_video": {"url": "http://clips.example/clip.mp4"}}
+    ]
+
+
+def test_a_host_that_cannot_be_resolved_is_refused_by_name(monkeypatch):
+    """llama-server would fail the fetch too; saying so beats letting it try."""
+    import socket
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_resolver({}))
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post(
+            "/v1/chat/completions", json = _part_body("http://nowhere.example/clip.mp4")
+        )
+    assert response.status_code == 400
+    assert "could not be resolved" in _detail(response)
+
+
+def test_the_lookup_does_not_run_on_the_event_loop(monkeypatch):
+    """A blocking getaddrinfo in the request path would stall every other request."""
+    import asyncio
+    import socket
+
+    seen = {}
+
+    def _resolve(host, port, *a, **k):
+        try:
+            asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _resolve)
+    with _client(monkeypatch, _VideoGguf()) as client:
+        client.post("/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4"))
+    assert seen == {"on_loop": False}

@@ -342,12 +342,17 @@ def test_an_uppercase_scheme_is_still_a_remote_url():
 
 
 def test_message_parts_are_translated_where_the_legacy_clip_is_injected():
-    """Both spellings reach llama-server from one place, after the capability gate."""
+    """Both spellings reach llama-server from one place, after the capability gate.
+
+    The legacy clip is injected first and the translation is the last thing before dispatch, so
+    one call covers both. Asserted as order rather than adjacency: the destination guard runs
+    between them, and pinning the exact neighbouring line only broke on that.
+    """
     source = _inference_source()
-    assert (
-        "            _inject_video_part(gguf_messages, video_b64)\n"
-        "        _translate_video_parts(gguf_messages)\n"
-    ) in source
+    inject = source.index("_inject_video_part(gguf_messages, video_b64)")
+    translate = source.index("_translate_video_parts(gguf_messages)")
+    assert inject < translate
+    assert source.count("_translate_video_parts(gguf_messages)") == 1
 
 
 def test_every_data_uri_part_is_sized_not_only_the_first():
