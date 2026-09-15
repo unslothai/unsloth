@@ -716,8 +716,14 @@ _PATH_FLAG_SPECS = {
     "cp": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
     "mv": {"-t": "write", "--target-directory": "write", "-S": "skip", "--suffix": "skip"},
     # `iconv -o, --output=FILE` writes the converted text there; the rest name encodings, not paths.
-    "iconv": {"-o": "write", "--output": "write", "-f": "skip", "--from-code": "skip",
-              "-t": "skip", "--to-code": "skip"},
+    "iconv": {
+        "-o": "write",
+        "--output": "write",
+        "-f": "skip",
+        "--from-code": "skip",
+        "-t": "skip",
+        "--to-code": "skip",
+    },
     "install": {
         "-t": "write",
         "--target-directory": "write",
