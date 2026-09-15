@@ -1032,6 +1032,13 @@ export const hi = {
         minimal: "मिनिमल",
       },
       custom: {
+        chatWidth: {
+          label: "चैट की चौड़ाई",
+          description: "संदेशों और इनपुट बॉक्स की चौड़ाई तय करें। पूरी चौड़ाई साइडबार के बीच की जगह का उपयोग करती है।",
+          standard: "मानक",
+          wide: "चौड़ा",
+          full: "पूरी चौड़ाई",
+        },
         reset: "रीसेट करें",
         resetAll: "कस्टमाइज़ेशन रीसेट करें",
         preferencesTitle: "प्राथमिकताएं",
@@ -1081,6 +1088,10 @@ export const hi = {
           errorStorageFull:
             "इस फ़ॉन्ट के लिए पर्याप्त लोकल स्टोरेज नहीं है। पहले कोई आयातित फ़ॉन्ट हटाएं।",
           errorFailed: "यह फ़ॉन्ट फ़ाइल लोड नहीं हो सकी।",
+        },
+        interfaceScale: {
+          label: "इंटरफ़ेस स्केल",
+          description: "सभी इंटरफ़ेस तत्वों का आकार बदलें।",
         },
         uiFontSize: {
           label: "UI फ़ॉन्ट का आकार",

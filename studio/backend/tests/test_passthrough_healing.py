@@ -465,6 +465,11 @@ LOOKUP_TOOL = {
     "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
 }
 LOOKUP_XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+OTHER_TOOL = {
+    "type": "function",
+    "function": {"name": "other", "parameters": {"type": "object", "properties": {}}},
+}
+OTHER_XML = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
 
 
 def _payload(**kwargs):
@@ -695,6 +700,25 @@ class TestOpenaiNonStreamingRoute:
             )
             message = data["choices"][0]["message"]
             assert message["content"] == LOOKUP_XML
+            assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
+    def test_forced_function_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(
+                    tools = [LOOKUP_TOOL, OTHER_TOOL],
+                    tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                ),
+                [_upstream_message(OTHER_XML)],
+            )
+            (body,) = client.posts
+            assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+            assert body["tool_choice"] == "required"
+            message = data["choices"][0]["message"]
+            assert message["content"] == OTHER_XML
             assert "tool_calls" not in message
 
         asyncio.run(_run())
@@ -982,6 +1006,37 @@ class TestNudgeRetryAnthropic:
             assert len(client.posts) == 1
 
         asyncio.run(_run())
+
+
+class TestAnthropicForcedToolChoice:
+    def test_forced_tool_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        import routes.inference as inf_mod
+        from routes.inference import _anthropic_passthrough_non_streaming
+
+        client = ScriptedClient([_upstream_message(OTHER_XML)])
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        async def _run():
+            response = await _anthropic_passthrough_non_streaming(
+                _llama_backend(),
+                [{"role": "user", "content": "hi"}],
+                [LOOKUP_TOOL, OTHER_TOOL],
+                0.7,
+                0.95,
+                None,
+                256,
+                "msg_test",
+                "gguf",
+                tool_choice = {"type": "function", "function": {"name": "lookup"}},
+            )
+            return json.loads(response.body)
+
+        data = asyncio.run(_run())
+
+        (body,) = client.posts
+        assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+        assert body["tool_choice"] == "required"
+        assert "tool_use" not in [block["type"] for block in data["content"]]
 
 
 class TestAnthropicPassthroughHealingText:

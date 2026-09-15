@@ -63,6 +63,13 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # splits the halves so the save can be gated on the default branch.
 PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated"),
+    # The unsloth_zoo half of Core, split out so its 418s suite runs beside the rest
+    # instead of after it. It runs the same install as `consolidated` (both call
+    # .github/actions/core-cpu-setup), which is exactly the torch/transformers-class
+    # download this allowlist exists for, and it needs its OWN name rather than sharing
+    # `consolidated`'s: the save is gated on `cache-hit != 'true'`, so a shared key means
+    # whichever job finishes first on main writes it and the other never saves.
+    ("consolidated-tests-ci.yml", "consolidated-zoo"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
     ("notebooks-ci.yml", "api-introspect"),

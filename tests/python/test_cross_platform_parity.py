@@ -830,6 +830,12 @@ class TestPinnedIndexClearsUvEnvParity:
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
         )
+        # devnull is all or nothing, so the transport and only-binary it removes are put
+        # back key by key.
+        assert "_pinned_pip_config_overrides()" in stack, (
+            "the pinned scrub must re-assert the operator's transport and binary policy "
+            "that PIP_CONFIG_FILE=devnull removes"
+        )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
             "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
