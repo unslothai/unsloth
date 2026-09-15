@@ -138,6 +138,27 @@ def test_a_partial_ffmpeg_is_not_reported_as_ffmpeg_being_present():
     assert _probe(partial + same_error) == "ffmpeg"
 
 
+def test_windows_dll_names_on_a_posix_path_do_not_count(tmp_path):
+    # WSL appends the Windows PATH to the Linux one, so a full-shared FFmpeg for Windows
+    # is visible there. Its DLLs cannot load into a Linux torchcodec, so they must not
+    # turn "install FFmpeg" into "FFmpeg is already on the loader path".
+    for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
+        (tmp_path / f"{lib}-60.dll").touch()
+    dlls = textwrap.dedent(
+        f"""
+        import ctypes.util, os
+        ctypes.util.find_library = lambda n: None
+        os.environ['PATH'] = {str(tmp_path)!r}
+        os.name = 'posix'
+        """
+    )
+    same_error = _raising(
+        "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
+    )
+    assert _probe(dlls + same_error) == "ffmpeg"
+    assert _probe(dlls.replace("'posix'", "'nt'") + same_error) == "native"
+
+
 @pytest.mark.parametrize("probe", [_shipped_sh_probe, _shipped_ps1_probe], ids = ["sh", "ps1"])
 def test_both_installers_require_every_ffmpeg_library(probe):
     # Otherwise the copies drift: one installer keeps calling a partial FFmpeg present.

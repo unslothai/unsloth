@@ -4413,7 +4413,8 @@ def _ffmpeg_on_loader_path():
         if ctypes.util.find_library(name):
             continue
         # find_library does not glob, so walk PATH for Windows names like avutil-59.dll.
-        if any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
+        # Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
+        if os.name == "nt" and any(glob.glob(os.path.join(d, name + "-*.dll")) for d in dirs):
             continue
         return False
     return True
