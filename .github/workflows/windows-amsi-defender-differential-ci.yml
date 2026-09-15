@@ -177,10 +177,29 @@ jobs:
                 $noResult += "$side/$($file.Name) [the probe wrote no result]"
                 continue
               }
+              # Parsed under -ErrorAction Stop and then checked for the shape this lane reads. The
+              # step runs with $ErrorActionPreference = 'Continue', so a truncated or otherwise
+              # invalid file made ConvertFrom-Json emit a non-terminating error and return nothing,
+              # and the row went in with a null payload. Such a row iterates no results, so it is
+              # neither a block nor an unmeasured candidate: the file simply left the measured set,
+              # and any other process whose control fired then carried the job to a clean verdict.
+              $parsed = $null
+              try {
+                $parsed = Get-Content -Raw -LiteralPath $json -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+              } catch {
+                Write-Host "::warning::the probe's result for $side/$($file.Name) could not be parsed: $($_.Exception.Message)"
+                $noResult += "$side/$($file.Name) [the probe's result could not be parsed]"
+                continue
+              }
+              if ($null -eq $parsed -or -not $parsed.PSObject.Properties.Name.Contains('results') -or @($parsed.results).Count -eq 0) {
+                Write-Host "::warning::the probe's result for $side/$($file.Name) carries no results"
+                $noResult += "$side/$($file.Name) [the probe's result carries no results]"
+                continue
+              }
               $rows += [pscustomobject]@{
                 side = $side
                 name = $file.Name
-                data = (Get-Content -Raw $json | ConvertFrom-Json)
+                data = $parsed
               }
             }
           }
@@ -232,6 +251,14 @@ jobs:
           }
 
           Write-Host ''
+          # Derived before any verdict is chosen, so whichever exit is taken can still report what
+          # the other axis saw. The compile-failure exit below used to run before these existed, and
+          # a run with one unparseable script and one genuinely refused script reported only the
+          # parse failure while the real detection went unmentioned.
+          $headUnmeasured = @($unmeasured | Where-Object { $_ -like 'head/*' })
+          $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
+          $baseBlocked = @($blocked | Where-Object { $_ -like 'base/*' })
+
           # Ahead of the control gate below, for the same reason the per-row loop classifies parse
           # errors before it: whether a script compiles is a property of the script. With this after
           # the gate, a candidate with a syntax error on a runner where no control fired anywhere
@@ -240,6 +267,10 @@ jobs:
           $headDidNotCompile = @($didNotCompile | Where-Object { $_ -like 'head/*' })
           if ($headDidNotCompile.Count) {
             foreach ($c in $headDidNotCompile) { Write-Host "::error::the candidate did not compile: $c" }
+            # Both outcomes, not just the one that decides the exit code. A refusal by a live
+            # provider is the finding this lane exists to surface, and losing it because another
+            # file failed to parse would hide the more important of the two.
+            foreach ($b in $headBlocked) { Write-Host "::error::AMSI also refused the candidate: $b" }
             Write-Host '::error::A shipped script that does not parse is a defect in its own right, and it also means AMSI never got to judge it. Not clean, and not merely unmeasured.'
             "verdict=broken" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 1
@@ -258,10 +289,6 @@ jobs:
           }
 
           Write-Host 'control: the AMSI test sample was refused, so a provider is live and this process can answer.'
-
-          $headUnmeasured = @($unmeasured | Where-Object { $_ -like 'head/*' })
-          $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
-          $baseBlocked = @($blocked | Where-Object { $_ -like 'base/*' })
 
           # Incomplete coverage is a warning, never a reason to stop. Returning early on it meant a
           # script that a live provider genuinely REFUSED went unreported whenever some other

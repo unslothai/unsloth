@@ -626,3 +626,52 @@ def test_cloud_readiness_requires_block_at_first_sight_to_be_on() -> None:
     assert gate.index("DisableBlockAtFirstSeen") < gate.index(
         "$cloudReady = $true"
     ), "the preference is read after readiness is already decided"
+
+
+def test_a_real_block_is_still_reported_when_another_script_fails_to_parse(tmp_path: Path) -> None:
+    """The compile-failure exit was taken before the blocks were even derived.
+
+    Moving the compile verdict ahead of the control gate was right, but it then ran before
+    `$headBlocked` existed, so a run with one unparseable candidate and one candidate genuinely
+    refused by a live provider printed only the parse failure. The refusal is the finding this lane
+    exists to surface, and it went unmentioned in the log and in the verdict.
+    """
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = True, result = _SYNTAX)
+        + ", "
+        + _row("head", "setup.ps1", control = True, result = _BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, text
+    assert "verdict=broken" in text, text
+    assert "AMSI also refused the candidate" in text, (
+        "a genuine AMSI refusal was suppressed because another script failed to parse:\n" + text
+    )
+
+
+def test_an_unparseable_probe_result_is_not_silently_dropped() -> None:
+    """A row with a null payload is neither a block nor an unmeasured candidate.
+
+    The step runs under `$ErrorActionPreference = 'Continue'`, so an existing but truncated JSON
+    file made `ConvertFrom-Json` emit a non-terminating error and return nothing, and the row was
+    appended with `data = $null`. That row iterates no results at all, so the file quietly left the
+    measured set while any other process whose control fired carried the job to a clean verdict.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    start = body.index("$json = Join-Path $out")
+    end = body.index("if ($rows.Count -eq 0)", start)
+    collection = body[start:end]
+    assert "ConvertFrom-Json -ErrorAction Stop" in collection, (
+        "the probe result is still parsed without erroring, so an invalid file yields a null row"
+    )
+    assert "could not be parsed" in collection, (
+        "a parse failure is not routed into the no-result list, so it shrinks the measured set "
+        "instead of being accounted for"
+    )
+    assert "carries no results" in collection, (
+        "a payload that parses but has no results is still accepted as a measured row"
+    )
