@@ -284,7 +284,31 @@ def _hf_cache_dirs() -> "tuple[str, ...]":
     return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
 
 
-def _studio_db_revision() -> int:
+_studio_db_path_cache: "tuple | None" = None
+
+
+def _studio_db_path_for(identity) -> "str | None":
+    """`studio.db`'s path, memoized on the account and environment the roots cache is keyed on.
+
+    `studio_db_path()` re-resolves the studio root on every call, which measured at ~28us here and
+    was most of the cost of VALIDATING an already cached root set. The memo key is the same one the
+    roots cache uses, so a changed home still re-resolves; only the repeated lookup is saved.
+    """
+    global _studio_db_path_cache
+    cached = _studio_db_path_cache
+    if cached is not None and cached[0] == identity:
+        return cached[1]
+    from storage.studio_db import studio_db_path
+
+    try:
+        path = str(studio_db_path())
+    except Exception:  # noqa: BLE001 - an unresolvable path is no database
+        path = None
+    _studio_db_path_cache = (identity, path)
+    return path
+
+
+def _studio_db_revision(identity = ()) -> int:
     """The database's modification time, or 0 when there is none. Changes whenever a root that is
     stored in it does.
 
@@ -292,12 +316,10 @@ def _studio_db_revision() -> int:
     folder or a cache setting lands in `studio.db-wal` and leaves the main file's mtime alone. Read
     on its own, a revoked folder stayed read-silent until the TTL expired.
     """
-    from storage.studio_db import studio_db_path
-
-    revision = 0
-    path = None
+    path = _studio_db_path_for(identity)
+    if path is None:
+        return 0
     try:
-        path = studio_db_path()
         revision = os.stat(path).st_mtime_ns
     except Exception:  # noqa: BLE001 - no database is a stable revision of its own
         return 0
@@ -367,11 +389,8 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
         account = ""
     # The database's mtime too: registered scan folders and the configured cache root live in it, so
     # removing a folder revoked a root that stayed silent for up to the TTL otherwise.
-    account = (
-        account,
-        tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS),
-        _studio_db_revision(),
-    )
+    identity = (account, tuple(os.environ.get(k) for k in _SILENT_ROOT_ENV_KEYS))
+    account = identity + (_studio_db_revision(identity),)
     now = time.monotonic()
     cached = _silent_roots_cache
     if cached is not None and cached[1] == account and now - cached[0] < _SILENT_ROOT_TTL_S:
