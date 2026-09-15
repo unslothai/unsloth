@@ -2178,10 +2178,103 @@ STUB_EOF
         done
         _css_wsl_ico_win_ps=$(printf '%s' "$_css_wsl_ico_win" | sed "s/'/''/g")
 
-        # Create shortcuts via a temp PowerShell script to avoid escaping issues
-        _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
-        if [ -n "$_css_ps1_tmp" ]; then
-            cat > "$_css_ps1_tmp" << WSLPS1_EOF
+        # Create shortcuts via a temp PowerShell script to avoid escaping issues.
+        #
+        # On the WINDOWS side of the interop, not in WSL's /tmp. wslpath maps a WSL path to a
+        # \\wsl.localhost\<distro>\... UNC path, and PowerShell treats a script on a UNC path as
+        # remote: RemoteSigned refuses an unsigned one, which is the only reason this launch used to
+        # relax the execution policy. A script under the Windows %TEMP% is on a local volume, so it
+        # is MyComputer-zone and RemoteSigned loads it unsigned, and the relaxed policy stops being
+        # necessary. Behaviour is otherwise identical: same generated script, same launch.
+        _css_win_temp=""
+        if command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
+            # cmd.exe rather than powershell.exe: one fewer interpreter start, and it cannot be the
+            # thing a policy blocks. The trailing CR is cmd's, not ours.
+            #
+            # /d, because without it cmd runs the AutoRun command out of
+            # HKCU\Software\Microsoft\Command Processor before anything else, on the same stdout.
+            # Clink sets one, so Cmder does, and so do plenty of corporate images; its banner would
+            # be glued to the front of the path, wslpath would reject that and the whole shortcut
+            # would be skipped. Those users got a shortcut before this block existed, so leaving
+            # AutoRun enabled would be a regression that only shows up on their machines.
+            #
+            # Last line rather than the whole stream for whatever still prints (an AutoRun invoked
+            # some other way, a login banner), and trailing blanks go because Win32 strips them
+            # from a path while [ -d ] does not. The || is not dead code: this file runs under
+            # set -e, where a failed substitution would end the install.
+            #
+            # Quoted inside cmd, and the quotes stripped back off here. cmd expands %TEMP% BEFORE
+            # it parses metacharacters, so an unquoted `echo %TEMP%` on a profile holding a valid
+            # path character like & ("C:\Users\A&B\AppData\Local\Temp") turns into two commands:
+            # the echo prints a truncated path and the rest is run as a command. & is legal in a
+            # Windows account name, so this is reachable. Inside double quotes it is literal.
+            # Three candidates, most preferred first, each on its own line. %TEMP% can be
+            # redirected onto a share, and a script there is a REMOTE script: RemoteSigned refuses
+            # an unsigned one, so the shortcut would silently stop being created for exactly the
+            # roaming-profile users who had one before. Rather than relax the policy back to Bypass,
+            # fall through to a directory that is local by construction. install.ps1:3419-3432
+            # solves the same problem for the launcher, which cannot move, by relaxing the policy;
+            # this script CAN move, so it does that instead.
+            #
+            # The & separators are ours and deliberate: each value is quoted, so an & inside a value
+            # stays literal and only these three separators split the line.
+            _css_win_temp_list=$(cmd.exe /d /c 'echo "%TEMP%"&echo "%LOCALAPPDATA%\Temp"&echo "%SystemRoot%\Temp"' 2>/dev/null \
+                | tr -d '\r') || _css_win_temp_list=""
+            # Mapped network drives too, not only UNC spellings. Z:\Temp is the same share and the
+            # same remote zone as \\server\share\Temp -- install.ps1:3419-3431 treats
+            # DriveType.Network as remote for exactly this reason -- and a candidate on one would
+            # otherwise be accepted and then refused by RemoteSigned at launch. `net use` lists the
+            # mapped letters; if it cannot be read the set is empty and only the UNC check applies,
+            # which is the previous behaviour rather than a new failure.
+            _css_net_drives=$(cmd.exe /d /c 'net use' 2>/dev/null | tr -d '\r' \
+                | awk '/\\\\/ { for (i = 1; i <= NF; i++) if ($i ~ /^[A-Za-z]:$/) print substr($i, 1, 1) }' \
+                | tr 'a-z' 'A-Z') || _css_net_drives=""
+
+            _css_old_ifs=$IFS
+            IFS='
+'
+            for _css_cand in $_css_win_temp_list; do
+                IFS=$_css_old_ifs
+                # Quotes off FIRST, blanks second. Win32 strips trailing spaces from a path while
+                # [ -d ] does not, so they have to go; but with the closing quote still the last
+                # character there is no trailing blank to find, and trimming first silently did
+                # nothing for a %TEMP% like "C:\Temp   ".
+                _css_cand=${_css_cand#\"}
+                _css_cand=${_css_cand%\"}
+                _css_cand=$(printf '%s' "$_css_cand" | sed 's/[[:space:]]*$//')
+                case "$_css_cand" in
+                    # Unexpanded (the variable is unset), or a UNC path. A dotted FQDN, a DFS root
+                    # and an IP literal all arrive in this same \\server\share form, and all three
+                    # are the remote zone.
+                    ""|'%'*'%'*|'\\'*) continue ;;
+                esac
+                # Drive letter against the mapped-network set, before anything else looks at it.
+                _css_cand_letter=$(printf '%s' "$_css_cand" | cut -c1 | tr 'a-z' 'A-Z')
+                _css_is_net=0
+                for _css_nd in $_css_net_drives; do
+                    [ "$_css_nd" = "$_css_cand_letter" ] && _css_is_net=1 && break
+                done
+                [ "$_css_is_net" = 1 ] && continue
+                _css_cand_unix=$(wslpath -u "$_css_cand" 2>/dev/null) || continue
+                [ -d "$_css_cand_unix" ] || continue
+                _css_win_temp=$_css_cand_unix
+                break
+            done
+            IFS=$_css_old_ifs
+            if [ -n "$_css_win_temp" ] && [ ! -d "$_css_win_temp" ]; then
+                _css_win_temp=""
+            fi
+        fi
+        # No fallback to WSL's /tmp. That would put the script back on a UNC path and need Bypass
+        # again, and this whole branch is best-effort already: the population where %TEMP% cannot be
+        # read through interop is very nearly the population where interop is broken, which lands on
+        # the same "couldn't create the Windows shortcut" notice below.
+        _css_ps1_tmp=""
+        if [ -n "$_css_win_temp" ]; then
+            _css_ps1_tmp=$(mktemp "$_css_win_temp/unsloth-shortcut-XXXXXX.ps1" 2>/dev/null) || _css_ps1_tmp=""
+        fi
+        if [ -n "$_css_sc_target" ]; then
+            _css_ps1_body=$(cat << WSLPS1_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
@@ -2245,14 +2338,56 @@ if (\$hasIcon) {
 # immediately instead of a stale/blank (generic) icon. The reliable fix (no
 # explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
 # <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
+#
+# Emitted, not compiled. Add-Type -MemberDefinition writes C# to %TEMP% and runs
+# csc.exe on Windows PowerShell 5.1, and security software blocks the DLL that comes
+# out. install.ps1 carries the same reflection-emit form for the same reason; this
+# copy was missed when that one changed. Reflection emit builds the identical stub in
+# memory: no compiler process, no source on disk, no DLL.
+# Which product blocked what: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 try {
-    Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int e, uint f, string a, System.IntPtr b);' -ErrorAction SilentlyContinue
-    foreach (\$p in \$created) { try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
-    [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
+    \$refreshType = 'UnslothShellIconRefresh' -as [type]
+    if (-not \$refreshType) {
+        \$asmName = New-Object System.Reflection.AssemblyName 'UnslothShellIconRefreshAsm'
+        # Both spellings, matching New-StudioDynamicAssembly in install.ps1. The static
+        # AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
+        # 4.8.1, so the 5.1 host this script is launched under should take the first branch; it
+        # is tried rather than assumed because the outer catch here is empty, so guessing wrong
+        # costs the icon refresh with nothing printed. AppDomain.CurrentDomain is the .NET
+        # Framework spelling and is absent on .NET Core, so it is the fallback and not the lead.
+        \$access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+        try {
+            \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(\$asmName, \$access)
+        } catch [System.Management.Automation.MethodException] {
+            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+        } catch [System.Management.Automation.RuntimeException] {
+            # Some hosts surface a missing static as RuntimeException rather than
+            # MethodException. Both mean "no such method here", and a real emit failure throws
+            # from the AppDomain call too, so a genuine refusal still reaches the outer catch.
+            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+        }
+        \$module = \$asm.DefineDynamicModule('UnslothShellIconRefreshMod')
+        \$typeBuilder = \$module.DefineType('UnslothShellIconRefresh',
+            'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
+        \$method = \$typeBuilder.DefinePInvokeMethod(
+            'SHChangeNotify', 'shell32.dll', 'SHChangeNotify',
+            'Public, Static, PinvokeImpl',
+            [System.Reflection.CallingConventions]::Standard,
+            [System.Void],
+            @([int], [uint32], [string], [IntPtr]),
+            [System.Runtime.InteropServices.CallingConvention]::Winapi,
+            [System.Runtime.InteropServices.CharSet]::Unicode)
+        \$method.SetImplementationFlags(
+            \$method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
+        \$refreshType = \$typeBuilder.CreateType()
+    }
+    foreach (\$p in \$created) { try { \$refreshType::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
+    \$refreshType::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
 } catch {}
 # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
 # (preserve start2.bin) only on first install or a real icon change, so a no-op
-# WSL reinstall does not run a dropper-like clear-cache + kill cluster each time.
+# WSL reinstall does not purge caches and kill a shell process for nothing.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
     try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
     try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
@@ -2266,13 +2401,32 @@ if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
     } catch {}
 }
 WSLPS1_EOF
+)
 
-            # Convert WSL path to Windows path for powershell.exe
-            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
-            if [ -n "$_css_ps1_win" ]; then
-                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            if [ -n "$_css_ps1_tmp" ]; then
+                printf '%s\n' "$_css_ps1_body" > "$_css_ps1_tmp"
+                # Convert WSL path to Windows path for powershell.exe
+                _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
+                if [ -n "$_css_ps1_win" ]; then
+                    # RemoteSigned, not Bypass: the script above was written to the Windows %TEMP%
+                    # on a local volume, so it is not a remote script and RemoteSigned loads it
+                    # unsigned. Pairing a relaxed policy with a PowerShell launch is a scored shape,
+                    # and this one was buying nothing once the path stopped being a UNC path.
+                    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+                fi
+                rm -f "$_css_ps1_tmp"
+            else
+                # No Windows directory is reachable as a Linux path. That is a real configuration --
+                # [automount] enabled=false leaves interop working while exposing no drive -- and
+                # before the move off /tmp those users still got a shortcut, so losing it here would
+                # be a regression rather than a gap. Hand the script to powershell on STDIN instead:
+                # there is no file, so there is no zone and no execution policy to satisfy (policy
+                # applies to -File, not to -Command), and nothing has to be mounted.
+                #
+                # Our own pipe, not the installer's: `curl | sh` leaves this script's stdin pointing
+                # at the download, and powershell reading that would drink the rest of it (#7548).
+                printf '%s\n' "$_css_ps1_body" | powershell.exe -NoProfile -Command - >/dev/null 2>&1 && _css_created=1
             fi
-            rm -f "$_css_ps1_tmp"
         fi
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
@@ -2428,8 +2582,101 @@ _cvd_hides_nvidia() {
     [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
 }
 
+# NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API) for a host whose nvidia-smi is absent, stale or hangs (#9255): "<cuda major>.<minor> <cap>,<cap>" or exit 1. Inline rather than studio/nvidia_probe.py, which is not on disk yet when the torch index is chosen; the two read the same calls.
+# Memoised for the run: the presence check and the torch index must read the same answer,
+# and a wedged driver pays its deadline once.
+_NVIDIA_LIBRARY_INVENTORY_STATE=""
+_NVIDIA_LIBRARY_INVENTORY_VALUE=""
+_nvidia_library_inventory() {
+    [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
+    case "${_NVIDIA_LIBRARY_INVENTORY_STATE:-}" in
+        found) printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"; return 0 ;;
+        none) return 1 ;;
+    esac
+    # The system python3, else the managed venv's once it exists. No interpreter yet is
+    # not an answer to remember: the venv arrives later in this run.
+    if command -v python3 >/dev/null 2>&1; then _nli_py=python3
+    elif [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/python" ]; then _nli_py="$VENV_DIR/bin/python"
+    else return 1
+    fi
+    _NVIDIA_LIBRARY_INVENTORY_STATE="none"
+    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded "$_nli_py" -I - 2>/dev/null <<'PY'
+import ctypes, os, sys
+
+def load(*names):
+    for name in names:
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            pass
+
+def sym(lib, name):  # an older NVML exports the unversioned entry point only
+    return getattr(lib, name, None) or getattr(lib, name.replace("_v2", ""))
+
+def nvml():
+    lib = load("libnvidia-ml.so.1", "libnvidia-ml.so")
+    if lib is None or sym(lib, "nvmlInit_v2")() != 0:
+        return None
+    try:
+        count, version = ctypes.c_uint(), ctypes.c_int()
+        if sym(lib, "nvmlDeviceGetCount_v2")(ctypes.byref(count)) != 0 or not count.value:
+            return None
+        if sym(lib, "nvmlSystemGetCudaDriverVersion_v2")(ctypes.byref(version)) != 0 or version.value < 1000:
+            return None
+        caps = []
+        for i in range(count.value):
+            dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
+            if sym(lib, "nvmlDeviceGetHandleByIndex_v2")(i, ctypes.byref(dev)) != 0 or \
+               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return None  # one unreadable GPU voids the source
+            caps.append(f"{major.value}.{minor.value}")
+        return version.value, caps
+    finally:
+        lib.nvmlShutdown()
+
+def cuda():
+    # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one, so a
+    # hidden pre-Turing card still caps the family (studio/nvidia_probe.py does the same).
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    lib = load("libcuda.so.1", "libcuda.so")
+    if lib is None or lib.cuInit(0) != 0:
+        return None
+    count, version = ctypes.c_int(), ctypes.c_int()
+    if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or not count.value:
+        return None
+    if lib.cuDriverGetVersion(ctypes.byref(version)) != 0 or version.value < 1000:
+        return None
+    caps = []
+    for i in range(count.value):
+        dev, major, minor = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+        # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+        if lib.cuDeviceGet(ctypes.byref(dev), i) != 0 or \
+           lib.cuDeviceGetAttribute(ctypes.byref(major), 75, dev) != 0 or \
+           lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, dev) != 0:
+            return None
+        caps.append(f"{major.value}.{minor.value}")
+    return version.value, caps
+
+found = None
+for reader in (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
+    try:
+        found = reader()
+    except Exception:
+        found = None
+    if found and found[1]:
+        break
+if not found or not found[1]:
+    sys.exit(1)
+version, caps = found
+print(f"{version // 1000}.{version % 1000 // 10} {','.join(caps)}")
+PY
+) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
+    _NVIDIA_LIBRARY_INVENTORY_STATE="found"
+    printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
+}
+
 # ── NVIDIA usable-GPU helper ──
-# nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback; a hidden GPU is NOT usable.
+# nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback, driver library last; a hidden GPU is NOT usable.
 _has_usable_nvidia_gpu() {
     if _cvd_hides_nvidia; then
         return 1
@@ -2449,6 +2696,7 @@ _has_usable_nvidia_gpu() {
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
+    _nvidia_library_inventory >/dev/null 2>&1 && return 0
     return 1
 }
 
@@ -2969,7 +3217,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     _uv_refreshed=true
     # download() exits the shell outright when neither curl nor wget is present, which an `if` cannot catch, so probe first: a minimal image with uv copied in but no downloader must keep the install it had before the floor moved.
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
-        # Pinned release first: a digest-checked data file scores far lower than download-run-delete, which is the literal shape of a dropper.
+        # Pinned release first: fetch a digest-checked data file rather than download-run-delete a remote script. See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
         if _uv_install_pinned; then
             :
         else
@@ -3759,8 +4007,13 @@ _probe_amd_gfx_arch() {
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
 _nvidia_cu126_verdict() {
-    [ -n "$1" ] || return 0
-    _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    # $2: capabilities already read from the driver library, one per line, when nvidia-smi cannot.
+    if [ -n "${2:-}" ]; then
+        _ncv_caps=$2
+    else
+        [ -n "$1" ] || return 0
+        _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    fi
     printf '%s\n' "$_ncv_caps" | awk '
         { gsub(/^[[:space:]]+|[[:space:]]+$/, "") }   # match the .Trim()/.strip() siblings
         /^[0-9]+\.[0-9]+$/ {
@@ -3789,7 +4042,7 @@ _cap_cuda_family_for_pre_turing() {
         cu128|cu130) ;;
         *) printf '%s\n' "$1"; return ;;
     esac
-    case "$(_nvidia_cu126_verdict "$2")" in
+    case "$(_nvidia_cu126_verdict "$2" "${3:-}")" in
         cu126)
             echo "[WARN] Pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $1 wheels start at sm_75." >&2
             printf '%s\n' "cu126"
@@ -4081,9 +4334,16 @@ get_torch_index_url() {
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
+    _inventory_caps=""
     if [ -z "$_cuda_ver" ]; then
-        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-        echo "$_base/cu126"; return
+        # nvidia-smi absent, stale or hung: the driver library knows both; cu126 is the last resort.
+        if _inventory=$(_nvidia_library_inventory) && [ -n "$_inventory" ]; then
+            _cuda_ver=${_inventory%% *}
+            _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
+        else
+            echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+            echo "$_base/cu126"; return
+        fi
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
@@ -4093,7 +4353,7 @@ get_torch_index_url() {
     elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
     elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
     else echo "$_base/cpu"; return; fi
-    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
+    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
@@ -4593,6 +4853,12 @@ if [ -n "$_te_trim" ]; then
     fi
 fi
 
+# The NVIDIA presence check runs here first: get_torch_index_url runs in a command substitution,
+# whose library inventory memo would not outlive it, and the later checks would probe again.
+# Not for a pinned index or no torch at all: the selection does not read the GPU then.
+if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then
+    _has_usable_nvidia_gpu >/dev/null 2>&1 || true
+fi
 TORCH_INDEX_URL=$(get_torch_index_url)
 
 # Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (unslothai#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.

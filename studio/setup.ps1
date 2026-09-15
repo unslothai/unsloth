@@ -159,6 +159,10 @@ if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
+$script:LlamaKeptGpuPrebuilt = $null
+$script:NvidiaSmiRejected = $false
+$script:NvidiaLibraryInventoryProbed = $false
+$script:NvidiaLibraryInventory = $null
 # Set by the offline keep, read unconditionally by the sidecar and legacy-migration blocks:
 # initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
@@ -565,6 +569,67 @@ function Exit-PathAccessDenied {
         -UserSupplied:$UserSupplied -OwnershipUnverified:$OwnershipUnverified)
 }
 
+# Why the prebuilt update failed, for the keep message. Twin of setup.sh _llama_update_fail_reason.
+function Get-LlamaUpdateFailReason {
+    param([string]$Output)
+    if ($Output -match '(?i)429|rate limit') { return "GitHub rate limit" }
+    if ($Output -match '(?i)timed out|timeout|connection|resol|network|unreachable|50[234]') { return "network error" }
+    return "download failed"
+}
+
+# The marker's backend as setup.sh _installed_prebuilt_backend reads it: backend, then the
+# llama_backend request, then the asset name of a marker from before the field existed.
+function Get-PrebuiltMarkerBackend {
+    param([string]$Marker)
+    if (-not (Test-PathQuiet $Marker "Leaf")) { return "" }
+    try { $payload = Get-Content -LiteralPath $Marker -Raw | ConvertFrom-Json } catch { return "" }
+    if ($null -eq $payload -or $payload -isnot [System.Management.Automation.PSCustomObject]) { return "" }
+    $field = {
+        param($name)
+        if ($payload.PSObject.Properties.Name -ccontains $name -and $payload.$name -is [string]) {
+            $value = $payload.$name.Trim().ToLowerInvariant()
+            if ($value -eq "hip") { "rocm" } else { $value }
+        } else { "" }
+    }
+    $answer = & $field "backend"
+    if (-not $answer -and (& $field "llama_backend") -in @("cuda", "rocm", "vulkan", "cpu")) { $answer = & $field "llama_backend" }
+    if (-not $answer) {
+        $asset = & $field "asset"
+        foreach ($value in @("cuda", "rocm", "vulkan", "cpu")) {
+            if ($asset -like "*-$value*" -or ($value -eq "rocm" -and $asset -like "*-hip*")) { $answer = $value; break }
+        }
+    }
+    return $answer
+}
+
+# The backend of an installed GPU prebuilt that still runs on a host that still has that GPU,
+# else "" (nothing to keep, GPU gone, or this run asked for something else). Twin of setup.sh.
+function Get-GpuPrebuiltToKeepOverSourceBuild {
+    param([string]$InstallDir)
+    if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1" -or $LlamaPr -or $explicitLlamaSourceBackend) { return "" }
+    if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { return "" }
+    # "master" is a branch, never a release: it asks for a source build, so nothing is kept.
+    if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest")) { return "" }
+    $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
+    if (-not $backend) { return "" }
+    $nvidia = $HasNvidiaSmi
+    $amd = $HasROCm -or [bool]$script:ROCmGfxArch
+    $present = switch ($backend) {
+        "cuda"   { $nvidia }
+        "rocm"   { $amd }
+        # Any Intel adapter runs the Vulkan bundle (windows_intel_gpu_in_registry), not only an XPU part.
+        "vulkan" { $nvidia -or $amd -or [bool]$script:IsIntelXpu -or (@(Get-IntelRegistryAdapterNames).Count -gt 0) }
+        default  { $false }
+    }
+    if (-not $present) { return "" }
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { $null = & python "$PSScriptRoot\install_llama_prebuilt.py" --check-installed $InstallDir 2>&1 } catch { return "" }
+    finally { $ErrorActionPreference = $prevEAP }
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return $backend
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -686,25 +751,26 @@ function Write-CudaDriverToolkitMismatch {
 }
 
 function Get-CudaComputeCapability {
-    # $NvidiaSmiExe is an absolute path that survives Refresh-Environment.
-    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+    # $NvidiaSmiExe is an absolute path that survives Refresh-Environment. Not rediscovered
+    # once detection rejected nvidia-smi: the driver library answered, and asking a wedged
+    # binary again costs a deadline per call.
+    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } elseif ($script:NvidiaSmiRejected) { $null } else {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($cmd) { $cmd.Source } else { $null }
     }
-    if (-not $smiExe) { return $null }
-
-    try {
-        $raw = Invoke-NvidiaSmiBounded $smiExe @('--query-gpu=compute_cap', '--format=csv,noheader')
-        if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
-
-        $cap = ($raw -split "`n")[0].Trim()
-        if ($cap -match '^(\d+)\.(\d+)$') {
-            $major = $Matches[1]
-            $minor = $Matches[2]
-            return "$major$minor"
-        }
-    } catch { }
-
+    $cap = $null
+    if ($smiExe) {
+        try {
+            $raw = Invoke-NvidiaSmiBounded $smiExe @('--query-gpu=compute_cap', '--format=csv,noheader')
+            if ($LASTEXITCODE -eq 0 -and $raw) { $cap = ($raw -split "`n")[0].Trim() }
+        } catch { }
+    }
+    if (-not $cap) {
+        # Without it the source build turns CUDA off (#5854); the driver library has it.
+        $inventory = Get-NvidiaLibraryInventory
+        if ($inventory) { $cap = $inventory.ComputeCaps[0] }
+    }
+    if ($cap -match '^(\d+)\.(\d+)$') { return "$($Matches[1])$($Matches[2])" }
     return $null
 }
 
@@ -800,10 +866,13 @@ function Get-LlamaBuildJobs {
 # the host. Mirrors _nvidia_cu126_verdict in install.sh.
 function Get-NvidiaCu126Verdict {
     # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
-    param([string]$SmiExe, [int]$LegacyFloorSm = 75)
-    if (-not $SmiExe) { return '' }
-    $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
-    if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+    param([string]$SmiExe, [int]$LegacyFloorSm = 75, [string[]]$ComputeCaps = @())
+    if ($ComputeCaps.Count -gt 0) {
+        $raw = $ComputeCaps -join "`n"
+    } elseif ($SmiExe) {
+        $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+    } else { return '' }
     $legacy = $false
     $outsideCu126 = $false
     $seen = $false
@@ -822,11 +891,11 @@ function Get-NvidiaCu126Verdict {
 }
 
 function Get-CudaFamilyCappedForPreTuring {
-    param([string]$Family, [string]$SmiExe)
+    param([string]$Family, [string]$SmiExe, [string[]]$ComputeCaps = @())
     if ($Family -notin @('cu128', 'cu130')) { return $Family }
     # torch 2.11.0+cu128 dropped Volta, so cu128 now strands a pre-Turing host as cu130 does.
     $legacyFloorSm = 75
-    $verdict = Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm
+    $verdict = Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm $ComputeCaps
     if (-not $verdict) { return $Family }
     # This runs twice per setup; announce once without polluting pipeline output.
     $announce = -not $script:PreTuringCapAnnounced
@@ -844,35 +913,183 @@ function Get-CudaFamilyCappedForPreTuring {
     return $Family
 }
 
+# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
+# name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+function Get-NvidiaNvmlLibraryPath {
+    $dirs = @()
+    if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+    if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+    foreach ($dir in $dirs) {
+        $candidate = Join-Path $dir "nvml.dll"
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    return "nvml.dll"
+}
+
+# The driver's libraries as P/Invoke methods, emitted rather than compiled: the installer must
+# not spawn csc.exe (New-StudioEmittedNativeType). $null when the type cannot be built. A
+# missing library throws at the first call, not here.
+function Get-NvidiaLibraryProbeType {
+    $name = "UnslothNvidiaProbeV2"
+    $existing = $name -as [type]
+    if ($existing) { return $existing }
+    # Dynamic Code Security can kill the process on an emitted load rather than throw: the
+    # same gate every other emitted type checks first, and no inventory when it says no.
+    if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
+    $windows = ($env:OS -eq "Windows_NT")
+    $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
+    $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
+    $int = [int]; $uint = [uint32]; $refInt = [int].MakeByRefType()
+    $refUInt = [uint32].MakeByRefType(); $refPtr = [IntPtr].MakeByRefType()
+    try {
+        $null = New-StudioEmittedNativeType -TypeName $name -Imports @(
+            @{ Name = "nvmlInit_v2"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
+            @{ Name = "nvmlShutdown"; Library = $nvml; Return = $int; Args = @(); Ansi = $true },
+            @{ Name = "nvmlSystemGetCudaDriverVersion_v2"; Library = $nvml; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+            @{ Name = "nvmlDeviceGetCount_v2"; Library = $nvml; Return = $int; Args = @($refUInt); Out = @(1); Ansi = $true },
+            @{ Name = "nvmlDeviceGetHandleByIndex_v2"; Library = $nvml; Return = $int; Args = @($uint, $refPtr); Out = @(2); Ansi = $true },
+            @{ Name = "nvmlDeviceGetCudaComputeCapability"; Library = $nvml; Return = $int; Args = @([IntPtr], $refInt, $refInt); Out = @(2, 3); Ansi = $true },
+            @{ Name = "cuInit"; Library = $cuda; Return = $int; Args = @($uint); Ansi = $true },
+            @{ Name = "cuDriverGetVersion"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+            @{ Name = "cuDeviceGetCount"; Library = $cuda; Return = $int; Args = @($refInt); Out = @(1); Ansi = $true },
+            @{ Name = "cuDeviceGet"; Library = $cuda; Return = $int; Args = @($refInt, $int); Out = @(1); Ansi = $true },
+            @{ Name = "cuDeviceGetAttribute"; Library = $cuda; Return = $int; Args = @($refInt, $int, $int); Out = @(1); Ansi = $true }
+        )
+    } catch { return $null }
+    return ($name -as [type])
+}
+
+# "source;cudaMajor;cudaMinor;cap,cap" from NVML, else the CUDA driver API; "" when neither
+# answers. Versions are major*1000 + minor*10. Read in a runspace of its own under a deadline:
+# a wedged driver can block inside the library, and the deadline leaves that runspace behind.
+function Read-NvidiaLibraryRaw {
+    param([int]$TimeoutMs = 10000)
+    $type = Get-NvidiaLibraryProbeType
+    if (-not $type) { return "" }
+    $reader = {
+        param($T)
+        function Read-Nvml {
+            if ($T::nvmlInit_v2() -ne 0) { return "" }
+            try {
+                [uint32]$count = 0
+                if ($T::nvmlDeviceGetCount_v2([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+                [int]$ver = 0
+                if ($T::nvmlSystemGetCudaDriverVersion_v2([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+                $caps = @()
+                for ([uint32]$i = 0; $i -lt $count; $i++) {
+                    [IntPtr]$dev = [IntPtr]::Zero; [int]$major = 0; [int]$minor = 0
+                    # One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+                    if ($T::nvmlDeviceGetHandleByIndex_v2($i, [ref]$dev) -ne 0) { return "" }
+                    if ($T::nvmlDeviceGetCudaComputeCapability($dev, [ref]$major, [ref]$minor) -ne 0) { return "" }
+                    $caps += "$major.$minor"
+                }
+                return "nvml;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+            } finally { $null = $T::nvmlShutdown() }
+        }
+        function Read-Cuda {
+            # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one,
+            # so a hidden pre-Turing card still caps the family. cuInit reads the mask once.
+            $saved = $env:CUDA_VISIBLE_DEVICES
+            Remove-Item Env:CUDA_VISIBLE_DEVICES -ErrorAction SilentlyContinue
+            try { $init = $T::cuInit([uint32]0) } finally { if ($null -ne $saved) { $env:CUDA_VISIBLE_DEVICES = $saved } }
+            if ($init -ne 0) { return "" }
+            [int]$count = 0
+            if ($T::cuDeviceGetCount([ref]$count) -ne 0 -or $count -eq 0) { return "" }
+            [int]$ver = 0
+            if ($T::cuDriverGetVersion([ref]$ver) -ne 0 -or $ver -lt 1000) { return "" }
+            $caps = @()
+            for ($i = 0; $i -lt $count; $i++) {
+                [int]$dev = 0; [int]$major = 0; [int]$minor = 0
+                if ($T::cuDeviceGet([ref]$dev, $i) -ne 0) { return "" }
+                # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+                if ($T::cuDeviceGetAttribute([ref]$major, 75, $dev) -ne 0) { return "" }
+                if ($T::cuDeviceGetAttribute([ref]$minor, 76, $dev) -ne 0) { return "" }
+                $caps += "$major.$minor"
+            }
+            return "cuda;$([int][math]::Floor($ver / 1000));$([int][math]::Floor(($ver % 1000) / 10));$($caps -join ',')"
+        }
+        $r = ""
+        try { $r = Read-Nvml } catch { $r = "" }
+        if (-not $r) { try { $r = Read-Cuda } catch { $r = "" } }
+        return "$r"
+    }
+    $ps = $null; $handle = $null
+    try {
+        $ps = [powershell]::Create()
+        $null = $ps.AddScript($reader.ToString()).AddArgument($type)
+        $handle = $ps.BeginInvoke()
+        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMs)) { return "" }
+        return "$(@($ps.EndInvoke($handle)) | Select-Object -Last 1)"
+    } catch { return "" }
+    finally { if ($ps -and $handle -and $handle.IsCompleted) { $ps.Dispose() } }
+}
+
+# NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
+# host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
+# Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
+function Get-NvidiaLibraryInventory {
+    param([int]$TimeoutSec = 10)
+    if ($script:NvidiaLibraryInventoryProbed) { return $script:NvidiaLibraryInventory }
+    $script:NvidiaLibraryInventoryProbed = $true
+    $script:NvidiaLibraryInventory = $null
+    if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
+    try { $raw = Read-NvidiaLibraryRaw -TimeoutMs ($TimeoutSec * 1000) } catch { return $null }
+    $parts = "$raw".Split(";")
+    if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
+    $caps = @($parts[3].Split(","))
+    if (@($caps | Where-Object { $_ -notmatch '^\d+\.\d+$' }).Count -gt 0) { return $null }
+    $script:NvidiaLibraryInventory = @{
+        Source      = $parts[0]
+        CudaMajor   = [int]$parts[1]
+        CudaMinor   = [int]$parts[2]
+        ComputeCaps = $caps
+        Count       = $caps.Count
+    }
+    return $script:NvidiaLibraryInventory
+}
+# ── END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+
 # Detect driver's max CUDA version from nvidia-smi and return the highest
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
 # https://download.pytorch.org/whl/<tag>. The tag must not exceed the driver's
 # capability: e.g. driver "CUDA Version: 12.9" → cu128 (not cu130).
 function Get-PytorchCudaTag {
-    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } else {
+    # Not rediscovered once detection rejected nvidia-smi (see Get-CudaComputeCapability).
+    $smiExe = if ($script:NvidiaSmiExe) { $script:NvidiaSmiExe } elseif ($script:NvidiaSmiRejected) { $null } else {
         $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($cmd) { $cmd.Source } else { $null }
     }
-    if (-not $smiExe) { return "cu126" }
-
-    try {
-        $output = Invoke-NvidiaSmiBounded $smiExe
-        if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
-            $major = [int]$Matches[1]
-            $minor = [int]$Matches[2]
-            # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-            if ($major -ge 13)                        { $family = "cu130" }
-            elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
-            elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
-            elseif ($major -ge 12) { $family = "cu124" }
-            elseif ($major -ge 11) { $family = "cu118" }
-            else { return "cpu" }
-            return (Get-CudaFamilyCappedForPreTuring $family $smiExe)
-        }
-    } catch { }
-
-    return "cu126"
+    $major = $null
+    $minor = $null
+    $caps = @()
+    if ($smiExe) {
+        try {
+            $output = Invoke-NvidiaSmiBounded $smiExe
+            if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
+                $major = [int]$Matches[1]
+                $minor = [int]$Matches[2]
+            }
+        } catch { }
+    }
+    if ($null -eq $major) {
+        # nvidia-smi absent, stale or hung: the driver library knows the version. With neither,
+        # "" means unknown; guessing cu126 replaced a working cu130 venv every update (#9255).
+        $inventory = Get-NvidiaLibraryInventory
+        if (-not $inventory) { return "" }
+        $major = $inventory.CudaMajor
+        $minor = $inventory.CudaMinor
+        $caps = $inventory.ComputeCaps
+    }
+    # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
+    if ($major -ge 13)                        { $family = "cu130" }
+    elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+    elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+    elseif ($major -ge 12) { $family = "cu124" }
+    elseif ($major -ge 11) { $family = "cu118" }
+    else { return "cpu" }
+    return (Get-CudaFamilyCappedForPreTuring $family $smiExe $caps)
 }
 
 function Trim-IndexPathSlashes {
@@ -1606,10 +1823,10 @@ $Rule = [string]::new([char]0x2500, 52)
 
 # Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
 # in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
-# csc.exe, and behavioural antivirus blocks the result, because a windowless PowerShell launching
-# a compiler and writing executable content to %TEMP% is a dropper's shape whatever the code says.
-# Reflection emit builds the same stub in memory: no compiler process, no source, no DLL, empty
-# assembly Location. install.ps1 carries the same helper for the same reason.
+# csc.exe, and security software blocks the result. Reflection emit builds the same stub in
+# memory: no compiler process, no source, no DLL, empty assembly Location. install.ps1 carries
+# the same helper for the same reason, and which product blocked what is recorded in
+# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # See install.ps1: App Control's Dynamic Code Security always blocks loading unsigned
 # System.Reflection.Emit assemblies by usually stopping or crashing the parent rather than
 # raising, so this has to be a gate and not a catch.
@@ -1862,39 +2079,30 @@ function New-StudioEmittedNativeType {
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
-    # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle, so the
-    # block below could only return $false anyway. The CLI and the desktop app both pipe us, so
-    # that is the path they are on.
+    # A redirected stdout is not a console, so there is no virtual terminal to speak of. The CLI and
+    # the desktop app both pipe us, so that is the path they are on, and it is decided here before
+    # anything else is consulted.
     if ($script:StudioStdoutRedirected) { return $false }
-    # The published type first, the gate only if there is nothing published: a
-    # type this session already emitted proves emit works here, and asking a
-    # child instead lets one failed probe throw away a usable console helper.
-    if (-not ("StudioVTNative" -as [type]) -and -not (Test-StudioCanDefineNativeTypes)) {
-        return $false
-    }
-    try {
-        if (-not ("StudioVTNative" -as [type])) {
-            $null = New-StudioEmittedNativeType -TypeName "StudioVTNative" -Imports @(
-                @{ Name = "GetStdHandle"; Library = "kernel32.dll"; Return = [IntPtr]
-                   Args = @([int])
-                   Ansi = $true },
-                @{ Name = "GetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr], [uint32].MakeByRefType())
-                   Ansi = $true
-                   Out = @(2) },
-                @{ Name = "SetConsoleMode"; Library = "kernel32.dll"; Return = [bool]
-                   Args = @([IntPtr], [uint32])
-                   Ansi = $true }
-            )
-        }
-        $h = [StudioVTNative]::GetStdHandle(-11)
-        [uint32]$mode = 0
-        if (-not [StudioVTNative]::GetConsoleMode($h, [ref]$mode)) { return $false }
-        $mode = $mode -bor 0x0004
-        return [StudioVTNative]::SetConsoleMode($h, $mode)
-    } catch {
-        return $false
-    }
+
+    # Windows PowerShell's console host already does the GetStdHandle / GetConsoleMode /
+    # SetConsoleMode sequence this function used to do by hand, at startup, and reports
+    # the outcome through this property, and it is STRICTER than what this replaced:
+    # ConsoleHostUserInterface.TryTurnOnVirtualTerminal re-reads the mode after setting it, because
+    # older systems accept the call and ignore the flag. The deleted code trusted SetConsoleMode's
+    # return value. So the property cannot read True while VT is actually off.
+    #
+    # Measured on Windows PowerShell 5.1.26100 attached to a real console: the property answers True,
+    # the native call answers True, and the console mode read BEFORE touching it is already 0x7 --
+    # which contains 0x4, ENABLE_VIRTUAL_TERMINAL_PROCESSING. The SetConsoleMode this replaced was
+    # re-setting a bit the host had already set. It was a no-op. The measurement and the lane that
+    # produced it are in PR #10984; the record that travels with this repo is in
+    # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD).
+    #
+    # [bool] rather than a bare return: the property is virtual with a base of $false, so a host
+    # that does not override it answers $false already -- but a host with no UI at all yields $null,
+    # and the cast makes that $false too. The try/catch is for Set-StrictMode in a caller's profile,
+    # where reading an absent property raises PropertyNotFoundException rather than returning $null.
+    try { return [bool]$Host.UI.SupportsVirtualTerminal } catch { return $false }
 }
 $script:StudioVtOk = Enable-StudioVirtualTerminal
 
@@ -2368,6 +2576,13 @@ if (-not $HasNvidiaSmi) {
             } catch {}
         }
     }
+}
+if (-not $HasNvidiaSmi -and (Get-NvidiaLibraryInventory)) {
+    # The driver lists a GPU nvidia-smi cannot: the gates below read this as "GPU present",
+    # and the consumers stop asking nvidia-smi, absent or rejected, for the rest of the run.
+    $HasNvidiaSmi = $true
+    $script:NvidiaSmiRejected = $true
+    Write-StudioLine "   NVIDIA GPU found through the driver library; nvidia-smi is unavailable" -ForegroundColor Gray
 }
 # amd-smi auto-elevates to read GPU memory, popping a DiskPart UAC prompt; RunAsInvoker stops it.
 function Invoke-AmdSmiNoElevate {
@@ -3192,7 +3407,9 @@ function Resolve-CudaToolkit {
 $DriverMaxCuda = $null
 try {
     # test_resolve_cuda_toolkit.ps1 extracts this function alone, without Invoke-NvidiaSmiBounded.
-    $smiOut = if (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
+    $smiOut = if (-not $NvidiaSmiExe) {
+        ""
+    } elseif (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue) {
         Invoke-NvidiaSmiBounded $NvidiaSmiExe
     } else {
         & $NvidiaSmiExe 2>&1 | Out-String
@@ -3202,6 +3419,14 @@ try {
         substep "driver supports up to CUDA $DriverMaxCuda"
     }
 } catch {}
+if (-not $DriverMaxCuda -and (Get-Command Get-NvidiaLibraryInventory -ErrorAction SilentlyContinue)) {
+    # No nvidia-smi answer: the driver library names the same ceiling, so the toolkit filter holds.
+    $inventory = Get-NvidiaLibraryInventory
+    if ($inventory) {
+        $DriverMaxCuda = "$($inventory.CudaMajor).$($inventory.CudaMinor)"
+        substep "driver supports up to CUDA $DriverMaxCuda (driver library)"
+    }
+}
 
 # Detect compute capability early so we can validate toolkit support
 $CudaArch = Get-CudaComputeCapability
@@ -4312,6 +4537,11 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             }
         } elseif ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag
+            if (-not $expectedTorchTag) {
+                # No driver version from anywhere: not evidence the venv is stale.
+                $_expectedKnown = $false
+                $expectedTorchTag = $installedTorchTag
+            }
         } elseif ($script:IsIntelXpu) {
             # Arc / Data Center host: the install below selects the xpu index. BEFORE the AMD
             # arm -- both can be true on an unmapped-arch AMD box, where xpu is what gets
@@ -4605,8 +4835,9 @@ function Assert-VenvActivated {
 
 # Mirrors install.ps1's Install-UvFromRelease: same archive, destination priority and user-PATH
 # prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
-# running remote script text in-process, which is what AMSI scores hardest. Bumping the version
-# means bumping all 3 hashes:
+# running remote script text in-process.
+# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
+# Bumping the version means bumping all 3 hashes:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
 $UvPinnedVersion = "0.12.1"
 $UvPinnedAssets = @{
@@ -5296,6 +5527,11 @@ if ($PinnedTorchIndexUrl) {
     $CuTag = if (Test-CudaFamilyLeaf $script:PreservedInstallerTorchTag) { $script:PreservedInstallerTorchTag } else { "cpu" }
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+    if (-not $CuTag) {
+        # Unknown driver version: the installed family, else the widest wheel.
+        $CuTag = if (Test-CudaFamilyLeaf $installedTorchTag) { $installedTorchTag } else { "cu126" }
+        substep "could not read the CUDA driver version; installing torch $CuTag" "Yellow"
+    }
 } elseif ($script:IsIntelXpu) {
     # XPU (SYCL) wheels ship under the /xpu leaf, so $TorchInstallIndexUrl below resolves to
     # <mirror>/xpu. A pin above still wins; the AMD reroute below needs $CuTag -eq "cpu".
@@ -6547,6 +6783,14 @@ if ($LocalLlamaCppLinked) {
             substep "Check the error above, choose another backend, or retry" "Yellow"
             Exit-SetupFailure "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
         } elseif ($prebuiltExit -eq 2) {
+            $keptBackend = Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $LlamaCppDir
+            if ($keptBackend) {
+                # The source fallback needs MSVC and nvcc and builds for the CPU without a
+                # compute capability, so it must not replace a working GPU prebuilt (#9255).
+                $script:LlamaKeptGpuPrebuilt = $keptBackend
+                step "llama.cpp" "update failed ($(Get-LlamaUpdateFailReason $prebuiltOutput)); keeping the installed $keptBackend prebuilt, the next update will retry" "Yellow"
+                Write-LlamaFailureLog -Output $prebuiltOutput
+            } else {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
@@ -6557,6 +6801,7 @@ if ($LocalLlamaCppLinked) {
             # which this script cannot see -- exits 5 above instead.
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
+            }
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -7346,6 +7591,9 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         Write-StudioLine "  $DoneLabel" -ForegroundColor Green
     }
     Write-StudioLine "  $Rule" -ForegroundColor DarkGray
+}
+if ($script:LlamaKeptGpuPrebuilt) {
+    step "llama.cpp" "update failed; the installed $($script:LlamaKeptGpuPrebuilt) prebuilt was kept and the next update will retry" "Yellow"
 }
 step "launch" "unsloth studio -p 8888"
 substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
