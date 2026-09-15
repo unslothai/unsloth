@@ -784,14 +784,16 @@ test("steering during loading leaves the queued prompt pending until loading fin
   assert.deepEqual(w.appended, ["steer next"]);
 });
 
-for (const phase of ["preparing", "loading", "unloading"] as const) {
+for (const phase of ["legacy", "preparing", "loading", "unloading"] as const) {
   for (const local of [true, false]) {
     for (const boundaryChanges of [0, 1, 2]) {
       test(`hydration: ${phase}, local=${local}, boundaries=${boundaryChanges}`, async () => {
         const w = world();
         const target = makeTarget("chat");
         target.usesLocalModel = local;
-        const lease = chatModelLifecycleGate.tryAcquire(phase)!;
+        const lease = chatModelLifecycleGate.tryAcquire(
+          phase === "legacy" ? undefined : phase,
+        )!;
         let resolve!: (target: Target) => void;
         try {
           const accept = hydratedFactory(

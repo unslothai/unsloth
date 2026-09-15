@@ -10,7 +10,7 @@ export class ModelLifecycleGate {
   private nextLease = 1;
 
   tryAcquire(
-    phase: ModelLifecyclePhase = "loading",
+    phase: ModelLifecyclePhase = "preparing",
   ): ModelLifecycleLease | null {
     if (this.activeLease !== null) {
       return null;

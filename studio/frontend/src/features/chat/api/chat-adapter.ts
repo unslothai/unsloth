@@ -3829,11 +3829,12 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   loadFailureReported?: boolean;
   modelRuntime: QueuedResolvedModelRuntime | null;
 }> {
-  let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+  // Auto-load does not sweep queues, so follow-ups can be accepted immediately.
+  let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading("loading");
   while (lifecycleLease === null) {
     await waitForModelReady(abortSignal);
     abortSignal.throwIfAborted();
-    lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+    lifecycleLease = useChatRuntimeStore.getState().beginModelLoading("loading");
   }
 
   try {

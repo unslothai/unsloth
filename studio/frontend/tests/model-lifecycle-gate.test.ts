@@ -42,16 +42,34 @@ test("queue acceptance follows the owning lifecycle phase", () => {
   }
 });
 
-test("failure blocks new drafts throughout rollback and rejects stale callbacks", () => {
+test("legacy lifecycle callers keep drafts blocked until release or an explicit loading boundary", () => {
   const gate = new ModelLifecycleGate();
   const lease = gate.tryAcquire()!;
+  assert.equal(gate.canQueue(), false);
+  assert.equal(gate.markLoading(lease + 1), false);
+  assert.equal(gate.canQueue(), false);
+  assert.equal(gate.markLoading(lease), true);
+  assert.equal(gate.canQueue(), true);
+  gate.release(lease);
+
+  const next = gate.tryAcquire()!;
+  assert.equal(gate.canQueue(), false);
+  assert.equal(gate.markLoading(lease), false);
+  assert.equal(gate.canQueue(), false);
+  gate.release(next);
+  assert.equal(gate.canQueue(), true);
+});
+
+test("failure blocks new drafts throughout rollback and rejects stale callbacks", () => {
+  const gate = new ModelLifecycleGate();
+  const lease = gate.tryAcquire("loading")!;
   assert.equal(gate.markFailed(lease + 1), false);
   assert.equal(gate.canQueue(), true);
   assert.equal(gate.markFailed(lease), true);
   assert.equal(gate.canQueue(), false);
   assert.equal(gate.markFailed(lease), false);
   gate.release(lease);
-  const next = gate.tryAcquire()!;
+  const next = gate.tryAcquire("loading")!;
   assert.equal(gate.markFailed(lease), false);
   assert.equal(gate.canQueue(), true);
   gate.release(next);
