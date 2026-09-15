@@ -15436,14 +15436,17 @@ async def _load_model_impl(
         )
         if custom_compiled is not None:
             # Custom mode ignores managed placement, including a saved CPU-only
-            # choice. Only explicit native CPU placement can skip the handoff.
+            # choice. Explicit native CPU placement can skip the handoff only when
+            # every retained projector is also pinned to host memory.
+            custom_tuning = dict(custom_compiled.tuning)
+            custom_projector_needs_gpu = (
+                _load_keeps_a_projector(config, disable_vision = request.disable_vision)
+                if config.is_vision
+                else bool(getattr(config, "gguf_mmproj_file", None))
+            ) and custom_tuning.get("mmproj_offload") is not False
             chat_load_needs_gpu = not (
                 custom_compiled.explicit_cpu_only
-                and not (
-                    _load_keeps_a_projector(config, disable_vision = request.disable_vision)
-                    if config.is_vision
-                    else bool(getattr(config, "gguf_mmproj_file", None))
-                )
+                and not custom_projector_needs_gpu
             )
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own

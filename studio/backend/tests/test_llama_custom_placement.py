@@ -37,6 +37,7 @@ def route_probe(
     device = "none",
     vision = False,
     projector = None,
+    mmproj_offload = None,
     inherited_config = False,
 ):
     events = []
@@ -98,10 +99,15 @@ def route_probe(
         return p
 
     device_line = f"\ndevice={device}" if device is not None else ""
+    mmproj_offload_line = (
+        ""
+        if mmproj_offload is None
+        else f"\nmmproj-offload={'true' if mmproj_offload else 'false'}"
+    )
     source = {
         "version": 1,
         "mode": "custom",
-        "ini": f"[*]\nnp=1\nngl={ini_layers}\nfit=off{device_line}",
+        "ini": f"[*]\nnp=1\nngl={ini_layers}\nfit=off{device_line}{mmproj_offload_line}",
         "section": None,
     }
     request = LoadRequest(
@@ -193,3 +199,17 @@ def test_auto_selected_variant_replaces_early_bare_custom_override():
 @pytest.mark.parametrize("vision,projector", [(True, None), (False, "audio-projector.gguf")])
 def test_custom_cpu_main_does_not_skip_companion_handoff(vision, projector):
     assert route_probe("manual", 0, 0, vision = vision, projector = projector) == ["acquire_gpu"]
+
+
+@pytest.mark.parametrize(
+    "vision,projector", [(True, "vision-projector.gguf"), (False, "audio-projector.gguf")]
+)
+def test_custom_cpu_main_and_cpu_projector_skip_gpu_handoff(vision, projector):
+    assert route_probe(
+        "manual",
+        0,
+        0,
+        vision = vision,
+        projector = projector,
+        mmproj_offload = False,
+    ) == ["drain_without_acquire"]
