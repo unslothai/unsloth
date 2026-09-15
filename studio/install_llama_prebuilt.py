@@ -7783,22 +7783,16 @@ def _torch_runtime_preference_for_marker(host: "HostInfo | None") -> "str | None
 
 
 def _runtime_line_selectable(host: HostInfo, line: str) -> bool:
-    """Whether the CUDA selectors could pick *line* here: its runtime is on disk and the
-    driver can run it, the two filters they apply before ordering. The Windows selector
-    falls back to every driver-compatible line when no runtime DLL is found at all
-    (a bundle carries its own), so an empty detected set does not veto there."""
+    """Whether the CUDA selectors could pick *line* here. Linux filters on the runtime being
+    on disk and the driver running it; the Windows selector only orders by detected DLLs (a
+    bundle carries its own runtime), so every driver-compatible line is selectable there."""
     try:
         if host.is_linux:
             detected = detected_linux_runtime_lines()[0]
-            compatible = compatible_linux_runtime_lines(host)
-        else:
-            detected = detected_windows_runtime_lines()[0]
-            compatible = compatible_windows_runtime_lines(host)
-            if not detected:
-                detected = list(compatible)
+            return line in detected and line in compatible_linux_runtime_lines(host)
+        return line in compatible_windows_runtime_lines(host)
     except Exception:  # noqa: BLE001 - an unreadable host answers "cannot tell", which is not movement
         return False
-    return line in detected and line in compatible
 
 
 def _expected_release_tag_without_plan(

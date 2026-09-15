@@ -142,6 +142,20 @@ class TestDetectedRuntimeDllsOnlyOrderTheLines:
         assert profiles(ada) == ["cuda12-older", "cuda13-older", "cuda13-portable"]
 
 
+class TestTheFastPathAgreesWithTheOrdering:
+    def test_every_driver_compatible_windows_line_is_selectable(self, monkeypatch):
+        # torch prefers CUDA 12 while only CUDA 13 DLLs are detected: the selector now moves the
+        # cuda12 bundle to the front, so the fast path must call that line selectable too.
+        monkeypatch.setattr(m, "detected_windows_runtime_lines", lambda: (["cuda13"], {}))
+        win = host(caps = ("89",))
+        assert m._runtime_line_selectable(win, "cuda12") is True
+        assert m._runtime_line_selectable(win, "cuda13") is True
+        assert m._runtime_line_selectable(host(caps = ("89",), driver = (12, 8)), "cuda13") is False
+        # Linux still needs the runtime on disk.
+        monkeypatch.setattr(m, "detected_linux_runtime_lines", lambda: (["cuda13"], {}))
+        assert m._runtime_line_selectable(host("Linux", caps = ("89",)), "cuda12") is False
+
+
 class TestThePortableBundleIsTheFallbackAttempt:
     def test_it_follows_the_targeted_bundle_instead_of_replacing_it(self):
         attempts = m.published_windows_cuda_attempts(host(caps = ("89",)), BUNDLE, None)
