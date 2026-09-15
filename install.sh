@@ -2456,20 +2456,23 @@ def load(*names):
         except OSError:
             pass
 
+def sym(lib, name):  # an older NVML exports the unversioned entry point only
+    return getattr(lib, name, None) or getattr(lib, name.replace("_v2", ""))
+
 def nvml():
     lib = load("libnvidia-ml.so.1", "libnvidia-ml.so")
-    if lib is None or lib.nvmlInit_v2() != 0:
+    if lib is None or sym(lib, "nvmlInit_v2")() != 0:
         return None
     try:
         count, version = ctypes.c_uint(), ctypes.c_int()
-        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or not count.value:
+        if sym(lib, "nvmlDeviceGetCount_v2")(ctypes.byref(count)) != 0 or not count.value:
             return None
-        if lib.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(version)) != 0 or version.value < 1000:
+        if sym(lib, "nvmlSystemGetCudaDriverVersion_v2")(ctypes.byref(version)) != 0 or version.value < 1000:
             return None
         caps = []
         for i in range(count.value):
             dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
-            if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(dev)) != 0 or \
+            if sym(lib, "nvmlDeviceGetHandleByIndex_v2")(i, ctypes.byref(dev)) != 0 or \
                lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) != 0:
                 return None  # one unreadable GPU voids the source
             caps.append(f"{major.value}.{minor.value}")
@@ -2497,7 +2500,14 @@ def cuda():
         caps.append(f"{major.value}.{minor.value}")
     return version.value, caps
 
-found = nvml() or cuda()
+found = None
+for reader in (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
+    try:
+        found = reader()
+    except Exception:
+        found = None
+    if found and found[1]:
+        break
 if not found or not found[1]:
     sys.exit(1)
 version, caps = found
@@ -4514,6 +4524,9 @@ fi
 _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null) \
     && _ROCM_TAG_MEMO="$_ROCM_TAG_MEMO_DIR/tag" || _ROCM_TAG_MEMO=""
 
+# The NVIDIA presence check runs here first: get_torch_index_url runs in a command substitution,
+# whose library inventory memo would not outlive it, and the later checks would probe again.
+_has_usable_nvidia_gpu >/dev/null 2>&1 || true
 TORCH_INDEX_URL=$(get_torch_index_url)
 
 # Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (unslothai#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.

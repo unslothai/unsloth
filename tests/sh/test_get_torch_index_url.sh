@@ -312,6 +312,13 @@ _result=$(PATH="$_TOOLS_DIR" bash -c "unset CUDA_VISIBLE_DEVICES; _ARCH=x86_64; 
 assert_eq "no interpreter yet is not memoised -> cu128 once the venv exists" "https://download.pytorch.org/whl/cu128" "$_result"
 rm -rf "$_dir"
 
+# 8h) The memo lives in the parent shell: the presence check runs there before the
+# torch index is read in a command substitution, so the later checks do not probe again.
+_prime=$(grep -n '^_has_usable_nvidia_gpu >/dev/null 2>&1 || true$' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_assign=$(grep -n -F 'TORCH_INDEX_URL=$(get_torch_index_url)' "$INSTALL_SH" | head -1 | cut -d: -f1)
+if [ -n "$_prime" ] && [ -n "$_assign" ] && [ "$_prime" -lt "$_assign" ]; then _result=ordered; else _result="prime=$_prime assign=$_assign"; fi
+assert_eq "presence check primes the inventory before the index substitution" "ordered" "$_result"
+
 # 9) ROCm 6.3 (no nvidia-smi) -> rocm6.3
 _dir=$(make_mock_amd_smi "6.3")
 _result=$(run_func "$_dir")
