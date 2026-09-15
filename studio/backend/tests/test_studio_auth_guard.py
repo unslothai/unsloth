@@ -2504,3 +2504,91 @@ def test_a_long_run_of_escapes_is_a_decision_rather_than_a_crash(monkeypatch, tm
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_bare_cd_is_a_move_back_to_the_sandbox(monkeypatch, tmp_path):
+    # Both sandbox environments set HOME to the tool workdir, so a bare `cd` returns there and the
+    # commands after it open from the sandbox again. Reading it as no move at all kept the studio
+    # root live and refused `cd ../..; cd; cat auth/config.json`, which reads the project's own file.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        workdir = str(home / "sandbox" / _SESSION)
+        for ordinary in (
+            "cd ../..; cd; cat auth/config.json",
+            "cd ../..; cd --; ls -a auth",
+            "cd; cat notes.txt",
+            "cd ../..; cd; cd auth; cat auth.db",
+        ):
+            assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
+        # ...and the return must not cost the real reads. A bare `cd` inside a subshell moves only
+        # that subshell, and `cd -` after it goes back to the root.
+        for refused in (
+            "cd ../..; cat auth/auth.db",
+            "cd ../..; (cd); cat auth/auth.db",
+            "cd ../..; cd; cd -; cat auth/auth.db",
+            "cd ../..; cd; cat ../../auth/auth.db",
+        ):
+            assert tools._references_studio_credential_here(refused, workdir) is True, refused
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_return_reopens_the_directory_it_lands_in(monkeypatch, tmp_path):
+    # `cd -` and `popd` land somewhere, and that is where every later relative path opens from.
+    # Restoring the state without re-opening its span left nothing covering the read, so
+    # `cd ../..; cd sandbox; cd -; cat auth/auth.db` walked back to the root unnoticed.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        workdir = str(home / "sandbox" / _SESSION)
+        for refused in (
+            "cd ../..; cd sandbox; cd -; cat auth/auth.db",
+            "cd ../..; pushd /tmp; popd; cat auth/auth.db",
+        ):
+            assert tools._references_studio_credential_here(refused, workdir) is True, refused
+        # A return that lands back in the sandbox is ordinary work.
+        for ordinary in (
+            "cd sub; cd -; cat auth/config.json",
+            "pushd sub; popd; ls -a auth",
+        ):
+            assert tools._references_studio_credential_here(ordinary, workdir) is False, ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_every_home_variable_is_checked_before_the_expansion(monkeypatch, tmp_path):
+    # The expansion rewrites all of the studio-home names from their last assignment, so one name
+    # that is only assigned must not authorize rewriting another whose assignment comes AFTER its
+    # use: the shell expands that use to the INHERITED home, which is this install's own.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        workdir = str(home / "sandbox" / _SESSION)
+        assert (
+            tools._references_studio_credential_here(
+                'STUDIO_HOME=/tmp/p; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"; '
+                "UNSLOTH_STUDIO_HOME=/tmp/p",
+                workdir,
+            )
+            is True
+        )
+        # A genuine rebind before the use still names the caller's own directory, not this install's.
+        assert (
+            tools._references_studio_credential_here(
+                'UNSLOTH_STUDIO_HOME=/tmp/project; cat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
+                workdir,
+            )
+            is False
+        )
+    finally:
+        tools._studio_auth_markers_cache = None

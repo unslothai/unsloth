@@ -2953,6 +2953,12 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
         # the first use has to come after: `H=$H; cat "$H/auth/auth.db"; H=/tmp` reads the real
         # database and then rebinds, and rewriting every use to `/tmp` erased the marker.
         assignments[match.group(1).lower()] = match.end()
+    # EVERY assigned name has to be safe, not just one of them: the expansion that follows rewrites
+    # all of them from their last assignment, so one name that is only assigned (`STUDIO_HOME=/tmp;`)
+    # used to authorize rewriting another whose assignment comes AFTER its use, and
+    # `STUDIO_HOME=/tmp; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"; UNSLOTH_STUDIO_HOME=/tmp` read the
+    # real database under a rewritten path.
+    rebinds = False
     for name, position in assignments.items():
         uses = [
             found
@@ -2963,9 +2969,10 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
             )
             if found != -1
         ]
-        if not uses or min(uses) >= position:
-            return True
-    return False
+        if uses and min(uses) < position:
+            return False
+        rebinds = True
+    return rebinds
 
 
 def _studio_root_spellings() -> "list[str]":
@@ -3194,6 +3201,10 @@ _DIRECTORY_MOVE_RE = re.compile(
     r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
     r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
     r"(?:(?P<back>cd\s+-(?![\w/\\-])|popd\b)"
+    # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir, so the commands
+    # after it open from the sandbox again: `cd ../..; cd; cat auth/config.json` reads the
+    # project's own file and was refused as a read of the studio root.
+    r"|(?P<home>cd(?:\s+(?:-[LPe@]+|--))*\s*(?=[;&|)\n]|$))"
     r"|(?:cd|pushd)\s+(?:(?:-[LPe@]+|--|/d)\s+)*(?P<target>[^\s;&|)]+))",
     re.IGNORECASE,
 )
@@ -3408,6 +3419,30 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
             # Those spans are closed, so the SAME directory walked into again afterwards is a new
             # span rather than a repeat: `cd ../..; cd -; cd ../..` reaches the root twice, and the
             # dedup that stops padding from spending the budget hid the second one.
+            seen.clear()
+            # Where the return LANDS is where the commands after it open from, so those directories
+            # get spans of their own: `cd ../..; cd sandbox; cd -; cat auth/auth.db` is back at the
+            # studio root reading the real database, and restoring the state without re-opening its
+            # span left nothing covering the `cat`.
+            for cwd, until in states:
+                if cwd == workdir or until <= match.end() or (cwd, until) in seen:
+                    continue
+                seen.add((cwd, until))
+                walked.append((match.end(), until, cwd))
+            continue
+        if match.group("home"):
+            # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir. Unlike a
+            # `cd <path>` it cannot land anywhere else, so it RETURNS the way `cd -` does and the
+            # spans still open end here: `cd ../..; cd; cat auth/config.json` reads the project's
+            # own file. Only outside a subshell, where the move lasts to the end of the command; a
+            # bare `cd` inside `( ... )` leaves the outer directory alone.
+            if any(start <= match.start() <= end for start, end in inert):
+                continue
+            if _subshell_end(text, match.end()) != len(text):
+                continue
+            history.append(states)
+            states = [(workdir, len(text))]
+            walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
             seen.clear()
             continue
         target = (match.group("target") or "").strip("'\"")
