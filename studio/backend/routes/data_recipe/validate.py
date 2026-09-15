@@ -13,6 +13,7 @@ from auth.authentication import (
     authenticated_via_api_key,
     require_ui_session_for_local_commands,
 )
+from core.data_recipe.export_columns import filter_studio_validation_violations
 from core.data_recipe.service import (
     build_config_builder,
     create_data_designer,
@@ -106,6 +107,11 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
             columns = config.columns,
             processor_configs = config.processors or [],
             allowed_references = _get_allowed_references(config),
+        )
+        violations = filter_studio_validation_violations(
+            violations,
+            columns = config.columns,
+            processor_configs = config.processors or [],
         )
     except (TypeError, ValueError, AttributeError):
         return []
