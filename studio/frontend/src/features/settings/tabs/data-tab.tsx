@@ -539,9 +539,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -568,9 +568,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -641,9 +641,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -669,9 +669,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             type="button"
             onClick={() => setSubpage("main")}
             aria-label={t("settings.data.backToData")}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <ChevronLeftIcon className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
