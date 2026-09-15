@@ -1523,17 +1523,17 @@ jobs:
       # reaction routinely outlasts a week, at which point the evidence for the detection we are
       # disputing is gone and the dispute has to start from a different build.
       #
-      # The Microsoft submission packet assembled below travels with them. It used to be written to
-      # $RUNNER_TEMP and discarded with the runner, so the one artefact meant for a vendor held the
-      # flagged bundles and nothing describing them.
+      # The Microsoft submission packet that describes them is uploaded by its own step further
+      # down, NOT here. It cannot be added to this step's path: the packet is assembled ~60 lines
+      # below, and steps run top to bottom, so at this point the file does not exist yet. That was
+      # the first version of this change, and `if-no-files-found: ignore` would have hidden it
+      # forever -- an artefact silently missing the one document it exists to carry.
       - name: Preserve flagged Windows bundles
         if: failure() && matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: flagged-windows-bundles-${{ matrix.artifact }}
-          path: |
-            ${{ runner.temp }}/defender-scan/*
-            ${{ runner.temp }}/ms-submission-packet.md
+          path: ${{ runner.temp }}/defender-scan/*
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 90
@@ -1593,6 +1593,22 @@ jobs:
           $md -join "`n" | Out-File $out -Encoding utf8
           $md -join "`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           Write-Host ($md -join "`n")
+
+      # Here, and not on the bundle-preserving step above, because the packet is written by the step
+      # immediately before this one. A job summary is ephemeral: it goes with the run, so the one
+      # document written for the purpose of disputing a detection was being discarded along with the
+      # detection it disputes. 90 days for the same reason the bundles get 90 -- clearance is per
+      # hash, and a vendor round trip outlasts a week.
+      - name: Preserve the Microsoft submission packet
+        if: always() && matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ms-submission-packet-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/ms-submission-packet.md
+          # ignore, not warn: the packet is only assembled when there is something to submit, so its
+          # absence on a clean release is the normal case and must not add an annotation.
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Stage release assets
         shell: bash

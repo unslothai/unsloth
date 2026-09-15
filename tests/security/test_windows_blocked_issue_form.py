@@ -153,3 +153,25 @@ def test_the_collection_script_only_reads() -> None:
         ("Start-Process", "a diagnostic must not launch anything"),
     ):
         assert banned not in snippet, f"the collection script uses {banned}: {why}"
+
+
+def test_the_labels_the_form_declares_are_real() -> None:
+    """GitHub drops an unknown label silently rather than erroring.
+
+    All three of these were absent when the form was first written, so every issue filed through it
+    would have arrived with `bug` only -- losing exactly the two triage labels the form exists to
+    attach, with nothing anywhere reporting the loss.
+
+    Checked against a checked-in list rather than the GitHub API, because a test that needs the
+    network is a test that gets skipped. The list is the contract: if someone adds a label here they
+    must create it on the repository too.
+    """
+    KNOWN_REPOSITORY_LABELS = {"bug", "windows", "antivirus-false-positive"}
+    declared = set(_form().get("labels") or [])
+    assert declared, "the form declares no labels, so nothing routes it to triage"
+    unknown = declared - KNOWN_REPOSITORY_LABELS
+    assert not unknown, (
+        f"the form declares {sorted(unknown)}, which are not in the known-label list. Create them "
+        f"on the repository with `gh label create` and add them here; GitHub will otherwise drop "
+        f"them without a word and the issue will arrive unlabelled."
+    )
