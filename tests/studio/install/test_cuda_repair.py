@@ -269,7 +269,11 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_deliberate_cpu_wheel_no_repair(self):
-        mock_pip = _run_cuda_repair(torch_state = "cpu")
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
+            mock_pip = _run_cuda_repair(torch_state = "cpu")
         mock_pip.assert_not_called()
 
     def test_backend_rocm_skips(self):
@@ -737,15 +741,29 @@ class TestACpuWheelTheInstallRecordedAsCudaIsRepaired:
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
 
-    def test_a_recorded_cpu_choice_or_an_explicit_cpu_pin_is_respected(self):
-        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"):
-            _run_cuda_repair(torch_state = "cpu").assert_not_called()
-        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", ""):
+    def test_a_cpu_wheel_nobody_chose_is_repaired_on_an_nvidia_host(self):
+        # No record (an older manifest) and an automatic cpu record (the GPU was not detected
+        # at install time) are both accidents once an NVIDIA GPU is visible.
+        for recorded, pinned in ((None, False), ("", False), ("cpu", False)):
+            with (
+                patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
+                patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", pinned),
+            ):
+                mock_pip = _run_cuda_repair(torch_state = "cpu", cuda_version = "13.0")
+            assert mock_pip.call_count == 1, (recorded, pinned)
+            assert "cu130" in _index_url(mock_pip)
+
+    def test_a_named_cpu_choice_or_an_explicit_cpu_pin_is_respected(self):
+        with (
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),
+            patch.object(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True),
+        ):
             _run_cuda_repair(torch_state = "cpu").assert_not_called()
         with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
             _run_cuda_repair(torch_state = "cpu", index_family = "cpu").assert_not_called()
             _run_cuda_repair(torch_state = "cpu", backend = "cpu").assert_not_called()
             _run_cuda_repair(torch_state = "cpu", nvidia = False).assert_not_called()
+            _run_cuda_repair(torch_state = "cpu", cvd = "").assert_not_called()
 
 
 _ensure_expected_torch_flavor = stack_mod._ensure_expected_torch_flavor

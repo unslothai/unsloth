@@ -3809,6 +3809,14 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return url
 
 
+def _deliberate_cpu_torch() -> bool:
+    """Someone chose CPU torch: an explicit CPU index pin, or a manifest that recorded cpu
+    as NAMED rather than selected. An unproven cpu record is not a choice."""
+    return _explicit_cpu_torch_index_pin() or (
+        _RECORDED_TORCH_TAG == "cpu" and bool(_RECORDED_TORCH_TAG_PINNED)
+    )
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -3923,15 +3931,14 @@ def _ensure_cuda_torch() -> None:
             f"torch is {_family} but this host has GPUs outside its "
             f"sm_{_span[0]}-{_span[1]} range"
         )
-    elif (
-        _marker == "cpu"
-        and _is_cuda_family_leaf(_RECORDED_TORCH_TAG or "")
-        and not _explicit_cpu_torch_index_pin()
-    ):
-        # The last completed install chose a CUDA wheel and nobody asked for CPU since: a
-        # dependency step resolved torch from PyPI. The Windows flavour invariant catches
-        # this; Linux only recorded the expectation.
-        _why = f"torch is a CPU build but this install recorded {_RECORDED_TORCH_TAG}"
+    elif _marker == "cpu" and not _deliberate_cpu_torch():
+        # A CPU wheel nobody asked for on an NVIDIA host: a dependency step resolved torch
+        # from PyPI, or the GPU was not detected at install time. The Windows flavour
+        # invariant catches this; Linux only recorded the expectation.
+        _recorded = _RECORDED_TORCH_TAG or ""
+        _why = "torch is a CPU build on an NVIDIA host" + (
+            f" although this install recorded {_recorded}" if _is_cuda_family_leaf(_recorded) else ""
+        )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
