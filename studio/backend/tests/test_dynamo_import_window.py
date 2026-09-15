@@ -218,6 +218,51 @@ def test_the_rewrite_finds_the_failure_through_an_exception_chain():
         assert dynamo_partial_init_message(outer) is not None
 
 
+def test_a_suppressed_context_is_not_followed():
+    """``raise ... from None`` means the raiser deliberately hid the inner error, so following
+    __context__ past it would answer a visible, unrelated failure with restart advice that does
+    not apply. Same walk as _gated_in_chain, which is what this file's neighbour already does."""
+    from core.inference.diffusion import dynamo_partial_init_message
+
+    try:
+        try:
+            raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
+        except AttributeError:
+            raise RuntimeError("Model weights are corrupt: checksum mismatch") from None
+    except RuntimeError as visible:
+        assert visible.__suppress_context__ is True
+        assert dynamo_partial_init_message(visible) is None, (
+            "a hidden dynamo error replaced an unrelated visible failure"
+        )
+
+
+def test_an_explicit_cause_is_still_followed():
+    """``raise ... from inner`` sets __suppress_context__ too, but the cause is explicit: the
+    raiser is pointing AT the inner error, so the rewrite must still find it."""
+    from core.inference.diffusion import dynamo_partial_init_message
+
+    try:
+        try:
+            raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
+        except AttributeError as inner:
+            raise RuntimeError("Failed to import diffusers.hooks") from inner
+    except RuntimeError as outer:
+        assert outer.__suppress_context__ is True
+        assert dynamo_partial_init_message(outer) is not None
+
+
+def test_a_cyclic_exception_chain_terminates():
+    """The walk is guarded by identity, not a depth counter, so a self-referential chain
+    cannot spin."""
+    from core.inference.diffusion import dynamo_partial_init_message
+
+    a = RuntimeError("a")
+    b = RuntimeError("b")
+    a.__cause__ = b
+    b.__cause__ = a
+    assert dynamo_partial_init_message(a) is None
+
+
 def test_an_unrelated_load_failure_keeps_its_own_text():
     """Same contract as hub_access_message: rewrite only what it recognises, or a real error
     would be replaced by advice that does not apply to it."""

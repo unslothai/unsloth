@@ -271,17 +271,19 @@ def dynamo_partial_init_message(exc: BaseException) -> Optional[str]:
     the model, while the actual remedy is a restart and nothing else. Measured on torch 2.10:
     once a process loses this import race the state does not recover, so retrying the load in
     the same process fails the same way (0 of 14 retries resolved)."""
-    seen = exc
-    for _ in range(10):  # __cause__/__context__ chain, bounded against a cycle
-        if seen is None:
-            break
-        if _DYNAMO_PARTIAL_RE.search(str(seen)):
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if _DYNAMO_PARTIAL_RE.search(str(exc)):
             return (
                 "PyTorch's compiler module (torch._dynamo) ended up half-initialised in this "
                 "process, so the image model could not finish loading. Restart Unsloth and load "
                 "it again; this state does not clear on its own."
             )
-        seen = seen.__cause__ or seen.__context__
+        # Same walk as _gated_in_chain: `raise ... from None` means the raiser deliberately hid
+        # the inner error, so following __context__ past it would answer a visible, unrelated
+        # failure (corrupt weights, say) with restart advice that does not apply to it.
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
     return None
 
 
