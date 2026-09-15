@@ -243,32 +243,43 @@ def test_stop_still_reports_nothing_to_cancel_on_an_idle_backend(backend):
 
 
 def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
-    """An eject drops _loading the moment it is accepted, but the worker keeps reading those files
-    until its constructor unwinds. The delete-cached guard reads loading_repo_ids(): reporting
-    nothing through that window let it pull blobs out from under the still-running build."""
+    """An eject drops _loading the moment it is accepted, but the load's own thread keeps reading
+    those files. The delete-cached guard reads loading_repo_ids(): reporting nothing through that
+    window let it pull blobs out from under a live download.
+
+    The window does not end when the teardown takes _lock. _prefetch_files deliberately runs
+    WITHOUT it, so its downloader outlives the eject; only the load thread unwinding ends it."""
+    worker = object()
+    backend._load_accounts[worker] = (backend._load_token, ALICE)
     backend._loading = _LoadingState(
         repo_id = "org/model-GGUF",
         base_repo = "org/base",
         account_id = ALICE,
         fetch_repo = "mirror/base",
     )
-    assert set(backend.loading_repo_ids()) == {"org/model-GGUF", "org/base", "mirror/base"}
+    everything = {"org/model-GGUF", "org/base", "mirror/base"}
+    assert set(backend.loading_repo_ids()) == everything
 
-    seen = {}
-
-    def slow_teardown():
-        # Where the real worker is still reading: the eject has _lock, _loading is already gone.
-        seen["during"] = set(backend.loading_repo_ids())
-        backend._state = None
-
-    backend._unload_locked = slow_teardown
     backend.unload(expected_account = ALICE)
 
+    # The eject is over and _loading is gone, but the worker has not unwound.
     assert backend._loading is None
-    assert seen["during"] == {"org/model-GGUF", "org/base", "mirror/base"}
-    # Drained once the teardown has taken _lock, which is what proves the constructor let go.
+    assert set(backend.loading_repo_ids()) == everything, "deletable while still being read"
+
+    # What _account_owned_load's finally does when the load thread finally returns.
+    with backend._load_cancel_lock:
+        backend._load_accounts.pop(worker)
+        backend._draining_repos.pop(backend._load_token - 1, None)
     assert backend.loading_repo_ids() == ()
-    assert backend._draining_repos == set()
+
+
+def test_an_eject_with_no_live_worker_holds_nothing(backend):
+    """Nothing is reading, so holding ids would only block deletes for the life of the process."""
+    backend._loading = _LoadingState(
+        repo_id = "org/model-GGUF", base_repo = "org/base", account_id = ALICE
+    )
+    backend.unload(expected_account = ALICE)
+    assert backend._draining_repos == {} and backend.loading_repo_ids() == ()
 
 
 def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):

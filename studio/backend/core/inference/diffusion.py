@@ -920,6 +920,10 @@ def _account_owned_load(method):
         finally:
             with self._load_cancel_lock:
                 self._load_accounts.pop(request, None)
+                # The last worker on this epoch has unwound, so whatever a cancelled load of it was
+                # still reading is finally safe for the delete-cached guard to remove.
+                if not any(t == token for t, _account in self._load_accounts.values()):
+                    self._draining_repos.pop(token, None)
 
     return wrapped
 
@@ -1245,9 +1249,11 @@ class DiffusionBackend:
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
-        # Repos a CANCELLED load is still reading: held from the moment the eject drops _loading
-        # until the teardown has taken _lock, which is what proves the constructor let it go.
-        self._draining_repos: set[str] = set()
+        # Repos a CANCELLED load is still reading, per load epoch. Held from the moment the eject
+        # drops _loading until that load's own thread unwinds. NOT until the teardown takes _lock:
+        # _prefetch_files deliberately runs without it, so its downloader outlives the eject and the
+        # degraded path only checks the cancel event either side of the blocking Hub call.
+        self._draining_repos: dict[int, set[str]] = {}
         # Set when no eject holds the load fence. Its own event, not _teardown_drained: the fence goes
         # up as soon as the eject is accepted, and the teardown is only RESERVED once construction
         # releases _lock, which can be minutes later. Waiting on the teardown event through that gap
@@ -2362,7 +2368,8 @@ class DiffusionBackend:
             # An eject drops _loading the moment it is accepted, but the worker keeps READING those
             # files until its constructor unwinds, which can be minutes. Reporting nothing through
             # that window let the delete-cached guard pull blobs out from under it.
-            ids += tuple(sorted(self._draining_repos))
+            for repos in self._draining_repos.values():
+                ids += tuple(sorted(repos))
             return tuple(dict.fromkeys(r for r in ids if r))
 
     @staticmethod
@@ -6467,16 +6474,24 @@ class DiffusionBackend:
                 self._unload_waiters += 1
                 self._unload_fence_clear.clear()
                 fenced = True
-                if self._loading is not None and self._loading.error is None:
-                    self._draining_repos.update(
+                # This epoch is the one the load being cancelled carries; _load_token is bumped just
+                # below. Only worth holding while a worker of that epoch is still registered: with
+                # none, there is nothing reading and a leaked entry would block deletes forever.
+                cancelled_token = self._load_token
+                loading = self._loading
+                draining = (
+                    {
                         r
-                        for r in (
-                            self._loading.repo_id,
-                            self._loading.base_repo,
-                            self._loading.fetch_repo,
-                        )
+                        for r in (loading.repo_id, loading.base_repo, loading.fetch_repo)
                         if r
-                    )
+                    }
+                    if loading is not None and loading.error is None
+                    else set()
+                )
+                if draining and any(
+                    token == cancelled_token for token, _account in self._load_accounts.values()
+                ):
+                    self._draining_repos.setdefault(cancelled_token, set()).update(draining)
                 self._cancel_event.set()
                 self._load_token += 1
                 self._loading = None
@@ -6503,9 +6518,6 @@ class DiffusionBackend:
                     self._unload_waiters -= 1
                     if not self._unload_waiters:
                         self._unload_fence_clear.set()
-                        # Only once no eject is in flight: a second one may still be draining the
-                        # same worker, and dropping the ids early reopens the delete window.
-                        self._draining_repos.clear()
         return self.status()
 
     def _unload_locked(self) -> None:
