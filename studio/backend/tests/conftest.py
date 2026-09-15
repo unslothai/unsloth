@@ -42,6 +42,22 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# Settle the real ``loggers`` package before any test module is imported. ~83 test files
+# keep a bare ``ModuleType("loggers")`` stub for it, installed with
+# ``sys.modules.setdefault`` to dodge loggers.handlers (which pulls in structlog and
+# friends). A bare ModuleType has no ``__path__``, so it is a module and not a package:
+# once it has taken the "loggers" slot, any later ``from loggers.media_progress import
+# ...`` (routes/inference.py does exactly that at module level) dies with
+# "ModuleNotFoundError: ... 'loggers' is not a package". Invisible under the repo's own
+# CI, which runs pytest from studio/backend and imports the real package before any stub
+# can land -- but fatal to collection the moment pytest is invoked from the repo root
+# with PYTHONPATH=studio/backend and a stub-first file is collected ahead of an
+# inference-routes file. Importing the real package here makes every later setdefault a
+# no-op under ANY launch directory, which is what the individual stubs already assume. The
+# package is thin (handlers import structlog and one shared util); any sub-module the
+# suite reaches beyond the stub's get_logger keeps importing the real thing.
+import loggers  # noqa: E402
+
 # tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
 # a test module imports from it at collection, before any fixture runs.
 for _up in Path(__file__).resolve().parents:
