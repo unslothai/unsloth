@@ -182,7 +182,7 @@ def test_composer_only_queues_behind_the_current_chat():
     # share it. Assert the delegation here and the queueing there, rather than
     # expecting the call inline, so this stays a contract on behaviour instead
     # of on where the code happens to sit.
-    assert "queueComposerText(liveThreadIsRunning || livePreStreamRunActive)" in submit
+    assert re.search(r"queueComposerText\(\s*liveThreadIsRunning \|\| livePreStreamRunActive,\s*behavior,?\s*\)", submit)
 
     queue_composer_text = _between(
         THREAD,
@@ -201,7 +201,7 @@ def test_composer_only_queues_behind_the_current_chat():
     # Read out of the guard that actually dispatches, not out of the file: the
     # abort and cleanup branches beside it hold the same comparison, so a
     # whole-file search stays green while the dispatch alone regresses to `.has`.
-    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
+    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun, behavior);")
     assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
     assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
     # The other two are load-bearing as well. Abort without the identity check reports the successor's start as this
@@ -339,9 +339,9 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
 
     # The gate on the queue branches, which is the fix itself: an active run governs the release, not the
     # Cmd/Ctrl+Enter intent.
-    running = code.index("if (waitForCurrentRun) {")
-    branch = code[running : code.index("if (forceQueue && !disableQueue) {")]
-    assert "queueComposerText(true);" in branch, (
+    running = code.index("if (waitForCurrentRun || queueAlreadyActive) {")
+    branch = code[running : code.index("clearStoredDraft();")]
+    assert "queueComposerText(waitForCurrentRun, behavior);" in branch, (
         "the release no longer queues behind the run that started while the "
         "send was parked, so the prompt goes back to being dropped silently"
     )
@@ -380,12 +380,11 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     # clears it from its own onStarted callback, so clearing it up front loses
     # the text whenever the queue does not start -- a null target, an
     # invalidated start -- and after the composer is replaced it is gone.
-    assert code.index("clearStoredDraft();") > code.index("if (forceQueue && !disableQueue) {"), (
+    assert code.index("clearStoredDraft();") > running, (
         "the stored draft is cleared before the queue and refusal paths, so a "
         "prompt that is neither queued nor sent cannot be recovered"
     )
-    # Unchanged: with nothing running the chord still queues, and an ordinary send still sends. A fix that stopped
-    # sending would strand that case.
+    # With nothing running, both shortcuts send normally.
     assert "sendReservedComposer();" in code
 
 

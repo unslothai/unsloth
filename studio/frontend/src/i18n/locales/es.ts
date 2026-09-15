@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const es = {
+  composerSettings: {
+    title: "Redacción de mensajes",
+    plainText: "Redactor de texto sin formato",
+    plainTextDescription: "Mantener el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    showContext: "Mostrar uso de la ventana de contexto",
+    sendShortcut: "Atajo para enviar",
+    sendDescription: "Elige si Intro envía un mensaje o inserta una línea nueva.",
+    followUp: "Mensajes de seguimiento",
+    followUpDescription: "Elige qué ocurre al enviar durante una respuesta. Pulsa {shortcut} para hacer lo contrario con un mensaje.",
+    queue: "En cola",
+    steer: "Redirigir",
+    steerDescription: "Redirigir detiene la respuesta actual y envía tu mensaje de seguimiento a continuación.",
+    settings: "Ajustes del redactor",
+    preview: "Vista previa con formato",
+  },
   picker: {
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",

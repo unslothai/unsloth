@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const hi = {
+  composerSettings: {
+    title: "संदेश लिखना",
+    plainText: "सादा टेक्स्ट इनपुट",
+    plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
+    showContext: "कॉन्टेक्स्ट विंडो का उपयोग दिखाएँ",
+    sendShortcut: "भेजने का शॉर्टकट",
+    sendDescription: "चुनें कि Enter से संदेश भेजना है या नई पंक्ति जोड़नी है।",
+    followUp: "अगले संदेश का व्यवहार",
+    followUpDescription: "उत्तर के दौरान संदेश भेजने पर क्या होगा, चुनें। एक संदेश के लिए विपरीत विकल्प इस्तेमाल करने हेतु {shortcut} दबाएँ।",
+    queue: "कतार में जोड़ें",
+    steer: "दिशा बदलें",
+    steerDescription: "दिशा बदलने से वर्तमान उत्तर रुक जाता है और आपका अगला संदेश पहले भेजा जाता है।",
+    settings: "संदेश इनपुट की सेटिंग",
+    preview: "फ़ॉर्मैट किया हुआ पूर्वावलोकन",
+  },
   picker: {
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",

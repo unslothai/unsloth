@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ko = {
+  composerSettings: {
+    title: "메시지 입력",
+    plainText: "일반 텍스트 입력",
+    plainTextDescription: "코드, Markdown, 링크를 원문 그대로 표시합니다. 끄면 서식 미리보기를 표시합니다.",
+    showContext: "컨텍스트 창 사용량 표시",
+    sendShortcut: "전송 단축키",
+    sendDescription: "Enter 키로 메시지를 보내거나 줄을 바꿀지 선택합니다.",
+    followUp: "후속 메시지 동작",
+    followUpDescription: "응답 중에 전송할 때의 동작을 선택합니다. {shortcut}을 누르면 해당 메시지만 반대로 처리합니다.",
+    queue: "대기열",
+    steer: "방향 변경",
+    steerDescription: "현재 응답을 중지하고 후속 메시지를 다음에 전송합니다.",
+    settings: "메시지 입력 설정",
+    preview: "서식 미리보기",
+  },
   picker: {
     onDevice: "기기",
     huggingFace: "Hugging Face",

@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ptBR = {
+  composerSettings: {
+    title: "Composição de mensagens",
+    plainText: "Composição em texto simples",
+    plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",
+    showContext: "Mostrar uso da janela de contexto",
+    sendShortcut: "Atalho de envio",
+    sendDescription: "Escolha se Enter envia uma mensagem ou insere uma nova linha.",
+    followUp: "Mensagens de acompanhamento",
+    followUpDescription: "Escolha o que acontece ao enviar durante uma resposta. Pressione {shortcut} para fazer o contrário em uma mensagem.",
+    queue: "Enfileirar",
+    steer: "Redirecionar",
+    steerDescription: "Redirecionar interrompe a resposta atual e envia sua mensagem de acompanhamento em seguida.",
+    settings: "Configurações de composição",
+    preview: "Prévia formatada",
+  },
   picker: {
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",

@@ -13,6 +13,13 @@ import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
+import {
+  composerSubmitIntent,
+  composerShortcutLabels,
+} from "./utils/composer-preferences";
+import { useT } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon } from "@/lib/mic-icon";
@@ -43,6 +50,8 @@ import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
   useShortcut,
+  useSettingsDialogStore,
+  isMacPlatform,
 } from "@/features/settings";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
@@ -78,6 +87,7 @@ import {
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
+  SlidersHorizontalIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -558,6 +568,9 @@ export function SharedComposer({
   sendUnavailableReason?: string;
   requireStableCheckpoint?: boolean;
 }): ReactElement {
+  const t = useT();
+  const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform());
   const navigate = useNavigate();
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
@@ -1912,7 +1925,7 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (composerSubmitIntent(e, sendShortcut)) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2240,6 +2253,7 @@ export function SharedComposer({
         </div>
       )}
       {skillMentions.popover}
+      <ComposerDraftPreview text={text} />
 
       <textarea
         {...skillMentions.inputProps}
@@ -2451,6 +2465,15 @@ export function SharedComposer({
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
               ) : null}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={() => useSettingsDialogStore.getState().openDialog("chat", {
+                  scrollTarget: "chat-composer",
+                })}
+              >
+                <SlidersHorizontalIcon className="size-4" />
+                {t("composerSettings.settings")}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -2842,7 +2865,7 @@ export function SharedComposer({
             </Button>
           ) : (
             <TooltipIconButton
-              tooltip={sendUnavailableReason ?? "Send message"}
+              tooltip={sendUnavailableReason ?? `Send message (${shortcutLabels.send})`}
               side="bottom"
               variant="default"
               size="icon"

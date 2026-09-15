@@ -6,6 +6,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ja = {
+  composerSettings: {
+    title: "入力欄",
+    plainText: "プレーンテキスト入力",
+    plainTextDescription: "コード、Markdown、リンクをそのままのテキストで表示します。オフにすると書式付きプレビューを表示します。",
+    showContext: "コンテキストウィンドウの使用量を表示",
+    sendShortcut: "送信ショートカット",
+    sendDescription: "Enter キーで送信するか改行するかを選択します。",
+    followUp: "追加メッセージの動作",
+    followUpDescription: "応答中に送信した場合の動作を選択します。{shortcut} を押すと、そのメッセージだけ逆の動作になります。",
+    queue: "キューに追加",
+    steer: "方向を変更",
+    steerDescription: "現在の応答を停止し、追加メッセージを次に送信します。",
+    settings: "入力欄の設定",
+    preview: "書式付きプレビュー",
+  },
   picker: {
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
