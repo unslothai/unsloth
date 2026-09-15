@@ -31,9 +31,17 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
-  const reasoningBudget = useChatRuntimeStore((s) => s.reasoningBudget);
+  // preserve inherited launch intent until the corresponding control changes.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
   const reasoningBudgetMessage = useChatRuntimeStore(
-    (s) => s.reasoningBudgetMessage,
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
   );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
