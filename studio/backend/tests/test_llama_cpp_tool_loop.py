@@ -337,6 +337,85 @@ def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
     assert "cache_prompt" not in payloads[0]
 
 
+def test_reuse_prompt_cache_keeps_fixed_seed_without_disabling_slot_reuse():
+    """Tool-loop continuations opt out of #9979's cold-cache pin (#10698)."""
+    from core.inference.llama_cpp import _apply_seeded_llama_request
+
+    cold: dict = {}
+    _apply_seeded_llama_request(cold, 3407)
+    assert cold == {"seed": 3407, "cache_prompt": False}
+
+    warm: dict = {}
+    _apply_seeded_llama_request(warm, 3407, reuse_prompt_cache = True)
+    assert warm == {"seed": 3407}
+    assert "cache_prompt" not in warm
+
+
+def test_seeded_tool_loop_keeps_prompt_cache_after_the_first_round(monkeypatch):
+    """#10698: a fixed Seed must not force a full re-prefill after every tool call.
+
+    Round 0 still disables cache reuse for reproducibility (#9979). Round 1+ and the
+    synthesised final answer keep the seed but leave ``cache_prompt`` unset so the
+    growing prefix can reuse the slot KV.
+    """
+    streams = [
+        _structured_tool_call("web_search", {"query": "kernel"}, "call_search"),
+        [_sse({"content": "Linux 6.10."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search then answer"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            seed = 3407,
+            max_tool_iterations = 5,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) >= 2
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+    for later in payloads[1:]:
+        assert later["seed"] == 3407
+        assert "cache_prompt" not in later, later
+
+
+def test_seeded_zero_tool_iterations_keeps_cold_cache_on_the_final_pass(monkeypatch):
+    """max_tool_iterations=0 never sends an in-loop request; the final pass is round 0."""
+    backend, payloads = _backend_and_payloads(
+        monkeypatch,
+        [[_sse({"content": "no tools this turn"}), _done()]],
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "just answer"}],
+            tools = [],
+            seed = 3407,
+            max_tool_iterations = 0,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+
+
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
     stream = [
         _progress(processed = 512, cached = 0, time_ms = 64),
