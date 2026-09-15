@@ -1620,6 +1620,7 @@ def test_a_shortcut_argument_change_is_not_normalised_away(tmp_path: Path) -> No
     the command line are the launch contract, not download noise, and `normalise_line` rewrote both
     sides to the same token so the lane reported every field equal.
     """
+
     def _sc(arguments: str) -> list[dict]:
         return [
             {
@@ -1631,15 +1632,23 @@ def test_a_shortcut_argument_change_is_not_normalised_away(tmp_path: Path) -> No
             }
         ]
 
-    base = _write(tmp_path / "base", shortcuts = _sc("-File launcher.ps1 --limit 10MB --timeout 10.0s"))
-    head = _write(tmp_path / "head", shortcuts = _sc("-File launcher.ps1 --limit 20MB --timeout 30.0s"))
+    base = _write(
+        tmp_path / "base", shortcuts = _sc("-File launcher.ps1 --limit 10MB --timeout 10.0s")
+    )
+    head = _write(
+        tmp_path / "head", shortcuts = _sc("-File launcher.ps1 --limit 20MB --timeout 30.0s")
+    )
     result = _run(base, head)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "arguments" in result.stdout and "20MB" in result.stdout, result.stdout
     # The control: what really does vary between two installs of two commits still goes, or the lane
     # would report a difference on every clean run.
-    same_base = _write(tmp_path / "sb", shortcuts = _sc("-File C:\\Temp\\unsloth-probe-0a1b2c3d\\l.ps1"))
-    same_head = _write(tmp_path / "sh", shortcuts = _sc("-File C:\\Temp\\unsloth-probe-9f8e7d6c\\l.ps1"))
+    same_base = _write(
+        tmp_path / "sb", shortcuts = _sc("-File C:\\Temp\\unsloth-probe-0a1b2c3d\\l.ps1")
+    )
+    same_head = _write(
+        tmp_path / "sh", shortcuts = _sc("-File C:\\Temp\\unsloth-probe-9f8e7d6c\\l.ps1")
+    )
     assert _run(same_base, same_head).returncode == 0
 
 
