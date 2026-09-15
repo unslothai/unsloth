@@ -26,10 +26,20 @@ _REAL_FINDER = LlamaCppBackend.__dict__["_find_llama_server_binary"]
 
 
 def _payload(rows, source = "nvml"):
-    return {"source": source, "cuda_driver_version": [13, 0], "driver_version": "580.65.06", "devices": rows}
+    return {
+        "source": source,
+        "cuda_driver_version": [13, 0],
+        "driver_version": "580.65.06",
+        "devices": rows,
+    }
 
 
-def _row(index, free, total = 24576, uuid = None):
+def _row(
+    index,
+    free,
+    total = 24576,
+    uuid = None,
+):
     return {
         "index": str(index),
         "uuid": uuid or f"GPU-{index:04d}",
@@ -64,7 +74,9 @@ def _no_other_probes(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/opt/llama-server")
     )
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_amd_smi", staticmethod(lambda *a, **k: []))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory_amd_smi", staticmethod(lambda *a, **k: [])
+    )
     monkeypatch.setitem(sys.modules, "torch", None)
     for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
@@ -98,7 +110,9 @@ class TestTheMemoryProbeFallsBackToNvml:
 
     def test_a_uuid_mask_selects_by_the_rows_own_uuid(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
-        probe_script(_payload([_row(0, 8000, uuid = "GPU-aaaa1111-0"), _row(1, 20000, uuid = "GPU-bbbb2222-1")]))
+        probe_script(
+            _payload([_row(0, 8000, uuid = "GPU-aaaa1111-0"), _row(1, 20000, uuid = "GPU-bbbb2222-1")])
+        )
         # A full uuid, a prefix, mask order, and a mixed index + uuid mask, as the CUDA runtime reads them.
         for mask, expected in (
             ("GPU-bbbb2222-1", [(1, 20000, 24576)]),
@@ -169,18 +183,27 @@ class TestTheEmbeddingServerKeepsTheGpu:
     def test_windows_embeddings_get_the_same_dll_search_path_as_chat(self, monkeypatch, tmp_path):
         monkeypatch.setattr(embed_mod.sys, "platform", "win32")
         monkeypatch.setattr(mod.sys, "platform", "win32")
-        monkeypatch.setattr(embed_mod, "child_env_without_native_path_secret", lambda: {"PATH": "inherited"})
+        monkeypatch.setattr(
+            embed_mod, "child_env_without_native_path_secret", lambda: {"PATH": "inherited"}
+        )
         monkeypatch.setattr(LlamaCppBackend, "_sanitize_p2p_env", staticmethod(lambda env: None))
-        monkeypatch.setattr(LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda b: []), raising = False)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda b: []), raising = False
+        )
         monkeypatch.setattr(
             LlamaCppBackend,
             "_build_windows_path_dirs",
-            staticmethod(lambda binary_dir, prefix, cuda_path: [binary_dir, "C:\\venv\\nvidia\\cu13\\bin"]),
+            staticmethod(
+                lambda binary_dir, prefix, cuda_path: [binary_dir, "C:\\venv\\nvidia\\cu13\\bin"]
+            ),
         )
         monkeypatch.setattr(mod, "_llama_lib_dir", lambda binary: Path("C:/llama/build/bin"))
         server = embed_mod.LlamaServerBackend.__new__(embed_mod.LlamaServerBackend)
         env = server._build_env("C:/llama/llama-server.exe", use_gpu = True)
-        assert env["PATH"].split(";")[:2] == [str(Path("C:/llama/build/bin")), "C:\\venv\\nvidia\\cu13\\bin"]
+        assert env["PATH"].split(";")[:2] == [
+            str(Path("C:/llama/build/bin")),
+            "C:\\venv\\nvidia\\cu13\\bin",
+        ]
         assert env["PATH"].endswith(";inherited")
 
 
@@ -222,7 +245,9 @@ class TestAGpuCapableBuildIsPreferred:
         assert ps.binary_gpu_verdict(made["build"]) == "cpu"
         assert ps.binary_gpu_verdict(made["build-cuda"]) == "gpu"
 
-    def test_a_stale_cuda_build_does_not_shadow_the_build_this_host_can_run(self, tmp_path, monkeypatch):
+    def test_a_stale_cuda_build_does_not_shadow_the_build_this_host_can_run(
+        self, tmp_path, monkeypatch
+    ):
         from utils import llama_cpp_path_settings as ps
 
         made = self._tree(
@@ -235,9 +260,15 @@ class TestAGpuCapableBuildIsPreferred:
                 "build-vulkan": ["libggml-vulkan.so", "libggml-cpu.so"],
             },
         )
-        for vendors, winner in (({"amd"}, "build-hip"), ({"nvidia"}, "build-cuda"), (None, "build-cuda")):
+        for vendors, winner in (
+            ({"amd"}, "build-hip"),
+            ({"nvidia"}, "build-cuda"),
+            (None, "build-cuda"),
+        ):
             monkeypatch.setattr(ps, "host_gpu_vendors", lambda v = vendors: v)
-            assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made[winner], vendors
+            assert (
+                ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made[winner]
+            ), vendors
         # A vendor no build targets still gets the vendor-agnostic Vulkan build.
         monkeypatch.setattr(ps, "host_gpu_vendors", lambda: {"intel"})
         assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-vulkan"]
@@ -256,14 +287,19 @@ class TestAGpuCapableBuildIsPreferred:
 
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps
-
         made = self._tree(tmp_path, "linux", {"build": [], "build-cuda": ["libggml-cuda.so"]})
         # A static build or the installer's wrapper: not proven CPU-only, so search order holds.
         assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build"]
 
-    @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason = "needs a real permission denial")
-    def test_a_denied_candidate_ahead_of_the_gpu_build_still_stops_discovery(self, tmp_path, monkeypatch):
-        made = self._tree(tmp_path, "linux", {"build": ["libggml-cpu.so"], "build-cuda": ["libggml-cuda.so"]})
+    @pytest.mark.skipif(
+        sys.platform == "win32" or os.geteuid() == 0, reason = "needs a real permission denial"
+    )
+    def test_a_denied_candidate_ahead_of_the_gpu_build_still_stops_discovery(
+        self, tmp_path, monkeypatch
+    ):
+        made = self._tree(
+            tmp_path, "linux", {"build": ["libggml-cpu.so"], "build-cuda": ["libggml-cuda.so"]}
+        )
         monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", _REAL_FINDER)
         monkeypatch.setattr(mod.sys, "platform", "linux")
         monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
@@ -312,7 +348,9 @@ class TestTheLinuxLibrarySearchPath:
         monkeypatch.setattr(mod, "_llama_lib_dir", lambda binary: Path("/opt/llama"))
         monkeypatch.setattr(mod, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(mod, "_native_linux_system_rocm_lib_dirs", lambda binary_dir: [])
-        monkeypatch.setattr(LlamaCppBackend, "_prefers_bundle_only_rocm", staticmethod(lambda b: True))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_prefers_bundle_only_rocm", staticmethod(lambda b: True)
+        )
         chat_env = LlamaCppBackend._llama_server_env_for_binary("/opt/llama/llama-server")
         chat_parts = chat_env["LD_LIBRARY_PATH"].split(":")
         assert str(cu) in chat_parts and str(torch_lib) in chat_parts

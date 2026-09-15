@@ -11664,7 +11664,6 @@ class LlamaCppBackend:
     def _nvidia_probe_script() -> Optional[Path]:
         """studio/nvidia_probe.py, the installers' NVML / CUDA driver reader (UNSLOTH_NVIDIA_PROBE wins)."""
         from utils.prebuilt.update_flow import find_installer_script
-
         return find_installer_script(env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py")
 
     @staticmethod

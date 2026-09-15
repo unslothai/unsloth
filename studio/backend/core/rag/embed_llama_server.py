@@ -754,7 +754,6 @@ class LlamaServerBackend:
             if sys.platform == "win32":
                 # Chat's DLL search path: without it a venv-hosted cudart is never found and the CUDA build runs on the CPU.
                 from core.inference.llama_cpp import _llama_lib_dir
-
                 path_dirs = LlamaCppBackend._build_windows_path_dirs(
                     str(_llama_lib_dir(binary)), sys.prefix, os.environ.get("CUDA_PATH", "")
                 )

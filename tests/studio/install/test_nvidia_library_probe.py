@@ -82,7 +82,10 @@ class TestProbeModule:
         assert inv.cuda_driver_version == (13, 1)
         assert inv.devices == payload["devices"]
         # An older payload without the memory fields still reads; they come back empty.
-        old = {**payload, "devices": [{"index": "0", "uuid": "GPU-x", "name": "B200", "compute_cap": "10.0"}]}
+        old = {
+            **payload,
+            "devices": [{"index": "0", "uuid": "GPU-x", "name": "B200", "compute_cap": "10.0"}],
+        }
         assert PROBE._from_payload(old).devices[0]["memory_free_mib"] == ""
         assert PROBE._from_payload(None) is None
         assert PROBE._from_payload({"source": "other"}) is None
@@ -213,7 +216,9 @@ class TestProbeModule:
         assert inv.cuda_driver_version is not None and inv.cuda_driver_version[0] >= 11
         # The memory reading the runtime probe needs; a busy card may legitimately have none free.
         assert all(int(d["memory_total_mib"]) > 0 for d in inv.devices)
-        assert all(0 <= int(d["memory_free_mib"]) <= int(d["memory_total_mib"]) for d in inv.devices)
+        assert all(
+            0 <= int(d["memory_free_mib"]) <= int(d["memory_total_mib"]) for d in inv.devices
+        )
 
 
 # ── detect_host ──

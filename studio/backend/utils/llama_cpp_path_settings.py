@@ -153,7 +153,9 @@ def _fits_host(backends: set[str], vendors: Optional[set[str]]) -> bool:
 
 
 def prefer_gpu_capable(
-    candidates: Iterable[Path], usable: Callable[[Path], bool], vendors: Any = _HOST
+    candidates: Iterable[Path],
+    usable: Callable[[Path], bool],
+    vendors: Any = _HOST,
 ) -> list[Path]:
     """Search order, except that a first hit proven CPU-only yields to a later usable build
     shipping a GPU backend this host's vendor runs (#5941: a CPU build/ beside build-cuda/;

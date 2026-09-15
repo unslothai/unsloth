@@ -72,7 +72,11 @@ def _split_cuda_version(packed: int) -> tuple[int, int] | None:
 
 class _NvmlMemory(ctypes.Structure):
     # nvmlMemory_t (v1): bytes, in this order.
-    _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+    _fields_ = [
+        ("total", ctypes.c_ulonglong),
+        ("free", ctypes.c_ulonglong),
+        ("used", ctypes.c_ulonglong),
+    ]
 
 
 def _probe_nvml() -> dict | None:
