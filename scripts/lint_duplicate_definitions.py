@@ -73,14 +73,7 @@ from typing import NamedTuple
 
 
 class Finding(NamedTuple):
-    """`key` identifies WHICH duplicate this is, independently of where it sits.
-
-    Compare mode needs that. Gating on "is this line new" is not sound: a merge that inserts
-    the FIRST copy above an existing definition reports on the SECOND, unchanged line, and a
-    duplicate alias added to a multi-line import reports at the statement's opening line.
-    Both are the exact bug this gate exists for, and both would read as pre-existing. So the
-    before and after revisions are scanned and their finding keys compared.
-    """
+    """`key` identifies WHICH duplicate this is, independently of where it sits. Compare mode needs that: gating on "is this line new" is not sound, since a merge that inserts the FIRST copy above an existing definition reports on the SECOND, unchanged line, and a duplicate alias added to a multi-line import reports at the statement's opening line. Both are the exact bug this gate exists for, and both would read as pre-existing, so the before and after revisions are scanned and their finding keys compared."""
 
     line: int
     key: str
@@ -107,33 +100,12 @@ def _decorator_name(node) -> str:
 
 
 def _overload_names(tree) -> set:
-    """Every spelling of `typing.overload` this module actually binds.
-
-    The exact-name set alone reads the decorator as written, so `import typing as t` with
-    `@t.overload`, or `from typing import overload as ov` with `@ov`, was not recognised and
-    the overload signatures were reported as duplicate definitions. That is the wrong way for
-    a gate to be wrong: a conventional typing pattern would block CI on correct code.
-
-    MODULE-SCOPED, and not by a whole-tree walk. An alias bound INSIDE a function is not in
-    effect at module level, so collecting it globally let a local `import typing as t` exempt
-    module-level `@t.overload` definitions where `t` is something else entirely -- widening the
-    exemption is the one direction that hides merge damage.
-
-    Nested statements are still descended into, because the conventional spellings are wrapped:
-    `try: from typing import overload / except ImportError: from typing_extensions import ...`
-    is an ast.Try at module level. Function and class bodies are what get skipped.
-    """
+    """Every spelling of `typing.overload` this module actually binds. The exact-name set alone reads the decorator as written, so `import typing as t` with `@t.overload`, or `from typing import overload as ov` with `@ov`, was not recognised and the overload signatures were reported as duplicate definitions, which is the wrong way for a gate to be wrong: a conventional typing pattern would block CI on correct code. MODULE-SCOPED, and not by a whole-tree walk: an alias bound INSIDE a function is not in effect at module level, so collecting it globally let a local `import typing as t` exempt module-level `@t.overload` definitions where `t` is something else entirely, and widening the exemption is the one direction that hides merge damage. Nested statements are still descended into, because the conventional spellings are wrapped (`try: from typing import overload / except ImportError: from typing_extensions import ...` is an ast.Try at module level); function and class bodies are what get skipped."""
     return _overload_names_in(tree.body, OVERLOAD_DECORATORS)
 
 
 def _overload_names_in(body, base) -> set:
-    """`base` plus every overload spelling bound directly by THIS body.
-
-    Called once for the module and again for each class body, because a class that does its own
-    `import typing as t` binds `t` in the class namespace, where its `@t.overload` methods resolve
-    it. Collecting only module-level aliases reported those valid overloads as duplicates, which
-    blocks CI on correct code.
-    """
+    """`base` plus every overload spelling bound directly by THIS body. Called once for the module and again for each class body, because a class that does its own `import typing as t` binds `t` in the class namespace, where its `@t.overload` methods resolve it; collecting only module-level aliases reported those valid overloads as duplicates, which blocks CI on correct code."""
     names: set = set(base)
     modules = {"typing", "typing_extensions"}
 
@@ -153,8 +125,7 @@ def _overload_names_in(body, base) -> set:
                 visit(getattr(node, field, []) or [])
             for handler in getattr(node, "handlers", []) or []:
                 visit(handler.body)
-            # Same blind spot as _branch_bodies, mirrored: an alias bound inside a match case would go unseen and its
-            # @t.overload defs would read as a duplicate.
+            # Same blind spot as _branch_bodies, mirrored: an alias bound inside a match case would go unseen and its @t.overload defs would read as a duplicate.
             for case in getattr(node, "cases", []) or []:
                 visit(case.body)
 
@@ -163,16 +134,7 @@ def _overload_names_in(body, base) -> set:
 
 
 def _branch_bodies(node):
-    """Each nested statement body of a control-flow node, to be scanned INDEPENDENTLY.
-
-    One definition per branch of an if/else, or a fallback import in try/except, is the normal
-    conditional idiom, so the branches are never compared with each other or with the body around
-    them. But two copies of one def inside ONE branch is the same merge damage as anywhere else,
-    and skipping the branch entirely meant never looking.
-
-    Functions and classes are excluded: a function body is a scope this gate does not scan, and a
-    class body is recursed into separately so it gets its own name prefix and its own aliases.
-    """
+    """Each nested statement body of a control-flow node, to be scanned INDEPENDENTLY. One definition per branch of an if/else, or a fallback import in try/except, is the normal conditional idiom, so the branches are never compared with each other or with the body around them; but two copies of one def inside ONE branch is the same merge damage as anywhere else, and skipping the branch entirely meant never looking. Functions and classes are excluded: a function body is a scope this gate does not scan, and a class body is recursed into separately so it gets its own name prefix and its own aliases."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return
     for field in ("body", "orelse", "finalbody"):
@@ -182,8 +144,7 @@ def _branch_bodies(node):
     for handler in getattr(node, "handlers", []) or []:
         if handler.body:
             yield handler.body
-    # A match keeps its branches in `cases[*].body`, so the loop above walked straight past them and two copies of one
-    # def inside a SINGLE case scanned clean.
+    # A match keeps its branches in `cases[*].body`, so the loop above walked straight past them and two copies of one def inside a SINGLE case scanned clean.
     for case in getattr(node, "cases", []) or []:
         if case.body:
             yield case.body
@@ -197,12 +158,7 @@ def _is_overload_def(node, overloads) -> bool:
 
 
 def _accessor_kind(node) -> str:
-    """`setter` / `deleter` / `getter` for the accessor form, else "".
-
-    `@property` itself is NOT one of them. It is the FIRST binding of the name, so exempting it
-    hid two complete copies of a property in one class, which is the same merge damage as any
-    other duplicated def. What legitimately rebinds is `@v.setter` / `@v.deleter` / `@v.getter`.
-    """
+    """`setter` / `deleter` / `getter` for the accessor form, else "". `@property` itself is NOT one of them: it is the FIRST binding of the name, so exempting it hid two complete copies of a property in one class, which is the same merge damage as any other duplicated def. What legitimately rebinds is `@v.setter` / `@v.deleter` / `@v.getter`."""
     for decorator in getattr(node, "decorator_list", []):
         name = _decorator_name(decorator)
         if name.count(".") == 1 and name.split(".")[1] in PROPERTY_ATTRS:
@@ -211,12 +167,7 @@ def _accessor_kind(node) -> str:
 
 
 def _constant_targets(target):
-    """The uppercase names a single assignment target binds.
-
-    A tuple target is not one binding but several: `B, H, N, D = 1, 16, 50345, 128` is a
-    shape this repo declares module constants with, and duplicating that line rebinds
-    every one of them at once.
-    """
+    """The uppercase names a single assignment target binds. A tuple target is not one binding but several: `B, H, N, D = 1, 16, 50345, 128` is a shape this repo declares module constants with, and duplicating that line rebinds every one of them at once."""
     if isinstance(target, ast.Name):
         return [target.id] if target.id.isupper() else []
     if isinstance(target, (ast.Tuple, ast.List)):
@@ -229,48 +180,33 @@ def _defined_names(node, overloads):
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         if _is_overload_def(node, overloads):
             return []
-        # ONE ACCESSOR OF EACH KIND IS LEGITIMATE; A SECOND OF THE SAME KIND IS NOT. Discarding every accessor meant a
-        # getter followed by two copies of the same `@value.setter` scanned clean, with the later setter silently
-        # replacing the earlier one -- which is exactly the merge damage this gate is for. Keying on the KIND keeps the
-        # getter and the setter apart while making two setters collide.
+        # ONE ACCESSOR OF EACH KIND IS LEGITIMATE; A SECOND OF THE SAME KIND IS NOT. Discarding every accessor meant a getter followed by two copies of the same `@value.setter` scanned clean, with the later setter silently replacing the earlier one, exactly the merge damage this gate is for. Keying on the KIND keeps the getter and the setter apart while making two setters collide.
         kind = _accessor_kind(node)
         if kind:
             return [(f"{node.name}.{kind}", f"{kind} accessor")]
         return [(node.name, "def")]
     if isinstance(node, ast.ClassDef):
         return [(node.name, "class")]
-    # `X: int = 1` is an AnnAssign, not an Assign, and a typed module-level constant is common in this repo
-    # (MAX_FUSED_SIZE: int = 65536).
-    # EVERY target, not a lone one: a chained `N = K = 256` (which this repo writes, in
-    # tests/test_grouped_gemm_optional_gather_indices.py) parks two names in one statement, and requiring exactly one
-    # target dropped both, so duplicating the line rebound both while the scan reported clean.
+    # `X: int = 1` is an AnnAssign, not an Assign, and a typed module-level constant is common in this repo (MAX_FUSED_SIZE: int = 65536). EVERY target, not a lone one: a chained `N = K = 256` (which this repo writes, in tests/test_grouped_gemm_optional_gather_indices.py) parks two names in one statement, and requiring exactly one target dropped both, so duplicating the line rebound both while the scan reported clean.
     if isinstance(node, ast.Assign):
         targets, value = node.targets, node.value
     elif isinstance(node, ast.AnnAssign) and node.value is not None:
         targets, value = [node.target], node.value
     else:
         return []
-    # `X = frozenset(X)` / `X = X + (...)` transforms a constant rather than redefining it.
-    # Only a value computed WITHOUT the old one replaces it, decided per name so that `A, B = B, A` exempts both while
-    # `A, B = 1, 2` exempts neither.
+    # `X = frozenset(X)` / `X = X + (...)` transforms a constant rather than redefining it. Only a value computed WITHOUT the old one replaces it, decided per name so that `A, B = B, A` exempts both while `A, B = 1, 2` exempts neither.
     referenced = {sub.id for sub in ast.walk(value) if isinstance(sub, ast.Name)}
     names = []
     for target in targets:
         for name in _constant_targets(target):
-            # One statement binding a name twice (`X = X = 1`) still binds it once, so it is not the two-copies damage
-            # this looks for.
+            # One statement binding a name twice (`X = X = 1`) still binds it once, so it is not the two-copies damage this looks for.
             if name not in referenced and name not in names:
                 names.append(name)
     return [(name, "constant") for name in names]
 
 
 def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
-    """Names bound twice as direct children of one body; recurses into class bodies.
-
-    `overloads` is what a decorator in THIS body resolves to; `module_overloads` is what a
-    decorator in a fresh class body resolves to. They differ because a class body is not part
-    of the scope chain of a class nested inside it.
-    """
+    """Names bound twice as direct children of one body; recurses into class bodies. `overloads` is what a decorator in THIS body resolves to; `module_overloads` is what a decorator in a fresh class body resolves to. They differ because a class body is not part of the scope chain of a class nested inside it."""
     seen = {}
     for node in body:
         for name, kind in _defined_names(node, overloads):
@@ -287,12 +223,7 @@ def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            # The class gets the MODULE's aliases plus any it binds itself, never the enclosing class's. "The scope of
-            # names defined in a class block is limited to the class block", and a class body resolves an unbound name
-            # in the GLOBAL namespace, so a nested class does not see `import typing as t` from the class around it.
-            # Passing the outer set down exempted `@t.overload` in the inner class where `t` is whatever the MODULE
-            # bound it to, and two copies of one def scanned clean; widening the exemption is the one direction that
-            # hides merge damage.
+            # The class gets the MODULE's aliases plus any it binds itself, never the enclosing class's. "The scope of names defined in a class block is limited to the class block", and a class body resolves an unbound name in the GLOBAL namespace, so a nested class does not see `import typing as t` from the class around it. Passing the outer set down exempted `@t.overload` in the inner class where `t` is whatever the MODULE bound it to, and two copies of one def scanned clean; widening the exemption is the one direction that hides merge damage.
             _scope_duplicates(
                 node.body,
                 f"{scope}{node.name}.",
@@ -301,19 +232,12 @@ def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
                 module_overloads,
             )
         for nested in _branch_bodies(node):
-            # A control-flow branch is not a scope, so it keeps the aliases of the body it sits in -- only a class body
-            # starts over.
+            # A control-flow branch is not a scope, so it keeps the aliases of the body it sits in; only a class body starts over.
             _scope_duplicates(nested, scope, out, overloads, module_overloads)
 
 
 def _import_duplicates(body, scope, out) -> None:
-    """A name imported twice within one statement, or twice from the same module.
-
-    Keyed on the name each alias BINDS, not on the name it comes from: `from m import x as v`
-    followed by `from m import y as v` binds `v` twice and the second silently wins, which is
-    the dead-binding this is here to catch. Plain `import a.b` keeps the full dotted path in
-    its key too, since `import urllib.parse` beside `import urllib.request` is correct.
-    """
+    """A name imported twice within one statement, or twice from the same module. Keyed on the name each alias BINDS, not on the name it comes from: `from m import x as v` followed by `from m import y as v` binds `v` twice and the second silently wins, which is the dead-binding this is here to catch. Plain `import a.b` keeps the full dotted path in its key too, since `import urllib.parse` beside `import urllib.request` is correct."""
     seen_implicit: dict = {}  # (bound name, source) -> line; a name nobody chose
     seen_explicit: dict = {}  # bound name -> line; a name the author wrote after `as`
     for node in body:
@@ -323,33 +247,21 @@ def _import_duplicates(body, scope, out) -> None:
         elif isinstance(node, ast.Import):
             module = None  # the source is per-alias for a plain import, not per-statement
         else:
-            # Class bodies are scanned too: two `from m import x` inside one class bind x twice in that scope exactly
-            # as they would at module level.
+            # Class bodies are scanned too: two `from m import x` inside one class bind x twice in that scope exactly as they would at module level.
             if isinstance(node, ast.ClassDef):
                 _import_duplicates(node.body, f"{scope}{node.name}.", out)
-            # Each control-flow branch on its own: `try: import x / except: import x` is the fallback idiom and stays
-            # clean, while two of the same import INSIDE one branch is the ordinary duplicate this looks for and used
-            # to be skipped with the branch.
+            # Each control-flow branch on its own: `try: import x / except: import x` is the fallback idiom and stays clean, while two of the same import INSIDE one branch is the ordinary duplicate this looks for and used to be skipped with the branch.
             for nested in _branch_bodies(node):
                 _import_duplicates(nested, scope, out)
             continue
         for alias in node.names:
             if alias.name == "*":
                 continue
-            # `import a.b` binds `a`, not `a.b`; only an `as` clause binds the dotted name.
-            # Using `alias.asname` raw here instead missed `import urllib.parse` followed by `import urllib.parse as
-            # urllib`, which silently repoints `urllib` from the package to the submodule.
+            # `import a.b` binds `a`, not `a.b`; only an `as` clause binds the dotted name. Using `alias.asname` raw here instead missed `import urllib.parse` followed by `import urllib.parse as urllib`, which silently repoints `urllib` from the package to the submodule.
             source = module if module is not None else alias.name
             bound = alias.asname or (alias.name if module is not None else alias.name.split(".")[0])
             implicit = alias.asname is None
-            # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first. Keeping one entry per
-            # bound name and skipping the legitimate different-source case left `seen` pointing
-            # at the first source forever, so in `from a import x` / `from b import x` /
-            # `from b import x` the third was compared with `a`, looked like the legitimate
-            # shape again, and the exact repeat of `b` went unreported.
-            #
-            # So an implicit binding collides with the SAME source, and an explicit one -- a name
-            # the author chose -- collides with any earlier binding of that name at all.
+            # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first: keeping one entry per bound name and skipping the legitimate different-source case left `seen` pointing at the first source forever, so in `from a import x` / `from b import x` / `from b import x` the third was compared with `a`, looked like the legitimate shape again, and the exact repeat of `b` went unreported. So an implicit binding collides with the SAME source, and an explicit one, a name the author chose, collides with any earlier binding of that name at all.
             first = seen_explicit.get(bound)
             if implicit:
                 first = seen_implicit.get((bound, source), first)
@@ -367,12 +279,7 @@ def _import_duplicates(body, scope, out) -> None:
                 out.append(
                     Finding(
                         node.lineno,
-                        # The emitted identity must mirror the detection key. Keyed on the bound name alone, two
-                        # DIFFERENT plain-import duplicates both read as `import:None:x`, so compare mode charged a
-                        # newly introduced one against a pre-existing counter entry and passed. DELIMITED, because
-                        # `scope` ends in a dot and `source` may contain them: a module-level `from A.m import x` and
-                        # a `from m import x` inside `class A` both spelled `import:A.m:x`, so compare mode let a
-                        # branch swap one for the other and charged the new one to the old.
+                        # The emitted identity must mirror the detection key. Keyed on the bound name alone, two DIFFERENT plain-import duplicates both read as `import:None:x`, so compare mode charged a newly introduced one against a pre-existing counter entry and passed. DELIMITED, because `scope` ends in a dot and `source` may contain them: a module-level `from A.m import x` and a `from m import x` inside `class A` both spelled `import:A.m:x`, so compare mode let a branch swap one for the other and charged the new one to the old.
                         f"import:{scope}|{source}:{bound}",
                         f"{scope}{bound} is imported {where}",
                     )
@@ -401,13 +308,7 @@ def _git(args, cwd = None):
 
 
 def _decode_source(data: bytes) -> str:
-    """Decode Python source by ITS OWN declared encoding, the way the parser would.
-
-    `text = True` decodes with the runner's locale, so a valid `# coding: cp1252` file holding
-    a non-UTF-8 byte raised UnicodeDecodeError out of `subprocess` and took the whole run down
-    -- on an unrelated edit, and on a file `compileall` and ruff both accept. PEP 263 says the
-    declaration decides, and `tokenize.detect_encoding` is the parser's own reader for it.
-    """
+    """Decode Python source by ITS OWN declared encoding, the way the parser would. `text = True` decodes with the runner's locale, so a valid `# coding: cp1252` file holding a non-UTF-8 byte raised UnicodeDecodeError out of `subprocess` and took the whole run down, on an unrelated edit and on a file `compileall` and ruff both accept. PEP 263 says the declaration decides, and `tokenize.detect_encoding` is the parser's own reader for it."""
     try:
         encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
     except SyntaxError:
@@ -428,17 +329,8 @@ def _revision_findings(revision: str, path: str):
 
 
 def _rename_map(before: str, after: str):
-    """{new path: old path} for the renames in this range.
-
-    The changed-file sweep reports a renamed file under its NEW name, so looking the before
-    side up under that name finds nothing and every finding in it reads as introduced. A
-    branch that only moves a file carrying one of the duplicates already on main would then
-    be blocked for a duplicate it did not write.
-    """
-    # -z, because git quotes and backslash-escapes any non-ASCII path by default (core.quotePath), and the escaped
-    # spelling matches nothing.
-    # Under -z each rename is three NUL-terminated records, "R100", old, new -- the status is its own field
-    # rather than tab-joined to the paths.
+    """{new path: old path} for the renames in this range. The changed-file sweep reports a renamed file under its NEW name, so looking the before side up under that name finds nothing and every finding in it reads as introduced, which would block a branch that only moves a file carrying one of the duplicates already on main."""
+    # -z, because git quotes and backslash-escapes any non-ASCII path by default (core.quotePath), and the escaped spelling matches nothing. Under -z each rename is three NUL-terminated records, "R100", old, new: the status is its own field rather than tab-joined to the paths.
     listed = _git(["diff", "--name-status", "-z", "-M", "--diff-filter=R", before, after])
     if listed.returncode != 0:
         return {}
@@ -478,8 +370,7 @@ _SELF_TEST_CASES = [
     (1, "<<<<<<< HEAD\ndef go():\n    pass\n"),
     (1, "MAX_FUSED_SIZE: int = 65536\nMAX_FUSED_SIZE: int = 131072\n"),
     (1, "REGISTRY: dict = {}\nOTHER = 1\nREGISTRY = {'a': 1}\n"),
-    # Two aliases from one module landing on the same bound name: the second wins and the first is dead, which is the
-    # silent half of this bug.
+    # Two aliases from one module landing on the same bound name: the second wins and the first is dead, which is the silent half of this bug.
     (1, "from m import x as value\nfrom m import y as value\n"),
     (1, "from m import x as value, y as value\n"),
     # A class body is a scope too, for imports as well as for defs.
@@ -495,11 +386,9 @@ _SELF_TEST_CASES = [
         "    def v(self):\n        return 1\n\n    @functools.cached_property\n"
         "    def v(self):\n        return 2\n",
     ),
-    # Constants declared together in one tuple target: duplicating the line rebinds every one of them, so each is its
-    # own finding.
+    # Constants declared together in one tuple target: duplicating the line rebinds every one of them, so each is its own finding.
     (4, "B, H, N, D = 1, 16, 50345, 128\nB, H, N, D = 2, 3, 4, 5\n"),
-    # A plain import binds the ROOT of its dotted path, so this repoints `urllib` from the package to the submodule and
-    # the first binding is dead.
+    # A plain import binds the ROOT of its dotted path, so this repoints `urllib` from the package to the submodule and the first binding is dead.
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
     # Negative controls: each of these is correct code and must report nothing.
     (0, "if FAST:\n    def go():\n        pass\nelse:\n    def go():\n        pass\n"),
@@ -528,14 +417,11 @@ _SELF_TEST_CASES = [
     (0, "import urllib.parse as parse\nimport urllib.request as request\n"),
     (0, "value = 1\nvalue = 2\n"),
     (0, "import os\nfrom a import b\n\nX = 1\n\n\ndef go():\n    return os, b, X\n"),
-    # A chained assignment binds every name in the chain, so duplicating the line rebinds every one of them. `N = K =
-    # 256` is written in this repo; requiring a single target dropped the whole statement and the duplicate went
-    # unreported.
+    # A chained assignment binds every name in the chain, so duplicating the line rebinds every one of them. `N = K = 256` is written in this repo; requiring a single target dropped the whole statement and the duplicate went unreported.
     (2, "N = K = 256\nN = K = 512\n"),
     (0, "N = K = 256\nM = 512\n"),
     (0, "X = X = 1\n"),  # one statement, one live binding
-    # Overload signatures reached through an import alias are still overloads. Reporting them is a FALSE POSITIVE that
-    # blocks CI on a conventional typing pattern.
+    # Overload signatures reached through an import alias are still overloads. Reporting them is a FALSE POSITIVE that blocks CI on a conventional typing pattern.
     (
         0,
         "import typing as t\n@t.overload\ndef f(x: int) -> int: ...\n"
@@ -548,25 +434,20 @@ _SELF_TEST_CASES = [
     ),
     # ...but the alias has to be typing's.
     (1, "import types as t\n@t.overload\ndef f(x): ...\n@t.overload\ndef f(x): ...\n"),
-    # One explicit alias, two sources: the second silently replaces the first, so the first is a dead binding. Keying
-    # on the source made the two look unrelated.
+    # One explicit alias, two sources: the second silently replaces the first, so the first is a dead binding. Keying on the source made the two look unrelated.
     (1, "import urllib.parse as client\nimport urllib.request as client\n"),
     (1, "from os import path as v\nfrom sys import modules as v\n"),
-    # The shape that legitimately binds one name twice, and must stay legitimate: two plain imports of different
-    # submodules, both binding the package root.
+    # The shape that legitimately binds one name twice, and must stay legitimate: two plain imports of different submodules, both binding the package root.
     (0, "import urllib.parse\nimport urllib.request\n"),
     # Still caught: the same package root rebound from the package to a submodule.
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
-    # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first.
-    # Keeping one entry per bound name compared the third statement with the FIRST source, which looked like the
-    # legitimate different-source shape again, so an exact repeat went unreported.
+    # EVERY IMPLICIT SOURCE IS REMEMBERED, not just the first: keeping one entry per bound name compared the third statement with the FIRST source, which looked like the legitimate different-source shape again, so an exact repeat went unreported.
     (1, "from a import x\nfrom b import x\nfrom b import x\n"),
     (1, "import urllib.parse\nimport urllib.request\nimport urllib.request\n"),
     (0, "from a import x\nfrom b import x\nfrom c import x\n"),
     # An explicit alias collides with a name already bound implicitly, in either order.
     (1, "import urllib.parse as urllib\nimport urllib.request\n"),
-    # A typing alias bound INSIDE a function is not in effect at module level, so it may not exempt a module-level
-    # decorator. Widening the exemption is what hides merge damage.
+    # A typing alias bound INSIDE a function is not in effect at module level, so it may not exempt a module-level decorator. Widening the exemption is what hides merge damage.
     (
         1,
         "import types as t\n\n\ndef helper():\n    import typing as t\n    return t\n\n\n"
@@ -599,9 +480,7 @@ _SELF_TEST_CASES = [
         "    @t.overload\n    def f(self, x: int): ...\n"
         "    @t.overload\n    def f(self, x: str): ...\n    def f(self, x):\n        return x\n",
     ),
-    # ...but that alias stops at ITS OWN class body.
-    # A class nested inside it resolves an unbound name in the MODULE namespace, not in the class around it, so
-    # `@t.overload` in the inner class is `types.overload` here and the two copies are ordinary merge damage.
+    # ...but that alias stops at ITS OWN class body: a class nested inside it resolves an unbound name in the MODULE namespace, not in the class around it, so `@t.overload` in the inner class is `types.overload` here and the two copies are ordinary merge damage.
     (
         1,
         "import types as t\n\n\nclass Outer:\n    import typing as t\n\n    class Inner:\n"
@@ -615,16 +494,14 @@ _SELF_TEST_CASES = [
         "        @t.overload\n        def f(self, x: int): ...\n"
         "        @t.overload\n        def f(self, x: str): ...\n",
     ),
-    # ...and a MODULE-level alias reaches every class body at every depth, so narrowing the inner class to its own
-    # bindings alone would be a false positive on correct code.
+    # ...and a MODULE-level alias reaches every class body at every depth, so narrowing the inner class to its own bindings alone would be a false positive on correct code.
     (
         0,
         "import typing as t\n\n\nclass Outer:\n    class Inner:\n"
         "        @t.overload\n        def f(self, x: int): ...\n"
         "        @t.overload\n        def f(self, x: str): ...\n",
     ),
-    # Each control-flow branch scanned on its own: duplicated INSIDE one branch is merge damage, one per branch is the
-    # conditional idiom.
+    # Each control-flow branch scanned on its own: duplicated INSIDE one branch is merge damage, one per branch is the conditional idiom.
     (
         1,
         "import os\nif os.name:\n    def go():\n        return 1\n    def go():\n        return 2\n",
@@ -638,8 +515,7 @@ _SELF_TEST_CASES = [
     (1, "try:\n    import json\n    import json\nexcept ImportError:\n    pass\n"),
 ]
 
-# Guarded, not inlined above: `match` is 3.10 syntax and this tool supports 3.9, where ast.parse raises SyntaxError and
-# every case below would report a parse finding instead.
+# Guarded, not inlined above: `match` is 3.10 syntax and this tool supports 3.9, where ast.parse raises SyntaxError and every case below would report a parse finding instead.
 if sys.version_info >= (3, 10):
     _SELF_TEST_CASES += [
         (
@@ -709,14 +585,11 @@ def main() -> int:
     renames = _rename_map(args.before, args.after) if args.before else {}
     for path in paths:
         if args.before:
-            # Read both revisions out of git rather than the working tree.
-            # On a pull_request event the checkout is refs/pull/N/merge, which is neither end of the range being judged.
+            # Read both revisions out of git rather than the working tree: on a pull_request event the checkout is refs/pull/N/merge, which is neither end of the range being judged.
             after = _revision_findings(args.after, str(path))
             if after is None:
                 continue  # not present at the head revision (deleted, or renamed away)
-            # Only follow a rename back to a path that was ITSELF Python. Renaming `mod.txt` to
-            # `mod.py` is what makes those definitions active code, so the duplicates in it are
-            # introduced by this branch, not inherited.
+            # Only follow a rename back to a path that was ITSELF Python. Renaming `mod.txt` to `mod.py` is what makes those definitions active code, so the duplicates in it are introduced by this branch, not inherited.
             old = renames.get(str(path), str(path))
             before = _revision_findings(args.before, old) if old.endswith(".py") else None
             # A file the branch ADDS has no before side, so every finding in it is new.

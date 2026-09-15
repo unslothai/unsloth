@@ -209,7 +209,7 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     Only on CUDA (incl. ROCm), for a bf16 transformer, on a compile-friendly family, in a process
     that can run inductor. ``is_gguf`` no longer disqualifies (GGUF compiles fine and ~2.3x
     faster); the param is kept for compat."""
-    del is_gguf  # GGUF is compile-eligible now; param kept for call-site compat
+    del is_gguf
     if not torch_compile_runtime_available():
         return False
     if not bool(getattr(target, "supports_default_torch_compile", False)):
@@ -263,7 +263,6 @@ def apply_speed_optims(
         "cuda_graph": False,
     }
     mode = normalize_speed_mode(speed_mode)
-    # TF32 (max) and cudnn.benchmark are process-global
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
@@ -283,8 +282,7 @@ def apply_speed_optims(
             family, logger, dtype = getattr(target, "dtype", None), speed_mode = mode
         )
 
-    # default = LIGHT: GGUF compiles ONLY the dequant op chain (cheap, VRAM-free, resolution-invariant)
-    # --- the compile lever, per tier --- default = LIGHT: GGUF compiles ONLY the dequant op chain (cheap, VRAM-free,
+    # The compile lever, per tier. default = LIGHT: GGUF compiles ONLY the dequant op chain (cheap, VRAM-free,
     # resolution-invariant); dense falls back to the regional block compile. max = FULL: regional max-autotune compile
     # of the repeated block. eager = no compile.
     if mode == SPEED_DEFAULT:
@@ -452,7 +450,6 @@ def _compile_repeated_blocks(
         _warn(logger, "compile_repeated_blocks", exc)
         return False
     if unet is not None:
-        # dynamic is ALWAYS False here, so each new (height, width, batch) pays its own compile
         # Whole-module static compile for the U-Net classes above. fullgraph mirrors the regional decision; dynamic is
         # ALWAYS False, so each new (height, width, batch) pays its own compile. ``Module.compile`` keeps the module
         # identity.

@@ -10,6 +10,7 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
+  accounts: ["settings.accounts.title", "settings.accounts.create"],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -40,9 +41,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    // avatarShape lives inside the avatar edit popover, so it has no
-    // always-rendered label for search to scroll to.
-    // The stats heading and highlight tiles render for every profile; the
+    // avatarShape lives inside the avatar edit popover, so it has no always-rendered label for
+    // search to scroll to. The stats heading and highlight tiles render for every profile; the
     // insight and training cards are conditional, so they stay out.
     "settings.profile.stats.title",
     "settings.profile.stats.lifetimeTokens",
@@ -60,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.uiFont.label",
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
+    "settings.appearance.custom.chatWidth.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
@@ -267,6 +268,10 @@ export function createSettingsSearchIndex({
       // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
+    ],
+    appearance: [
+      ...SETTINGS_SEARCH_INDEX.appearance,
+      "settings.appearance.custom.interfaceScale.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

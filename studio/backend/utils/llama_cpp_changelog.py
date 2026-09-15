@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""New carried changes between two published llama.cpp prebuilts.
-
-The release body is cumulative, so the banner must diff the installed and target
-bodies; showing the target body alone relabels old carried PRs as new.
-"""
+"""New carried changes between two published llama.cpp prebuilts. The release body is cumulative, so the banner must diff the installed and target bodies; showing the target body alone relabels old carried PRs as new."""
 
 from __future__ import annotations
 
@@ -29,9 +25,7 @@ from utils.prebuilt.freshness_flow import (
 logger = structlog.get_logger(__name__)
 
 MAX_CHANGES = 50
-# The only repo whose notes this module can read: generated, cumulative, one
-# bullet per carried PR. --published-repo can point elsewhere, and a per-release
-# body says nothing about what is still carried.
+# The only repo whose notes this module can read: generated, cumulative, one bullet per carried PR. --published-repo can point elsewhere, and a per-release body says nothing about what is still carried.
 CUMULATIVE_NOTES_REPO = "unslothai/llama.cpp"
 # A release body is a few KB; the cap only bounds a far side that misbehaves.
 MAX_RELEASE_BYTES = 4 * 1024 * 1024
@@ -59,8 +53,7 @@ def _valid_repo(repo: str) -> bool:
 
 
 def _is_cumulative_repo(repo: str) -> bool:
-    """Case-folded: GitHub owner/name is case-insensitive and --published-repo
-    persists whatever spelling was typed."""
+    """Case-folded: GitHub owner/name is case-insensitive and --published-repo persists whatever spelling was typed."""
     return repo.casefold() == CUMULATIVE_NOTES_REPO.casefold()
 
 
@@ -128,8 +121,7 @@ def _release_for_tag(
 ) -> Optional[dict]:
     """Exact release with 24h success and 60s failure memoization."""
     key = (repo, tag)
-    # Memory-only, so monotonic throughout: a backward clock step must not be able
-    # to extend the TTL. freshness_flow uses wall time because it persists to disk.
+    # Memory-only, so monotonic throughout: a backward clock step must not be able to extend the TTL. freshness_flow uses wall time because it persists to disk.
     now = time.monotonic()
     if force_refresh:
         forced_at = _release_forced_at.get(key)
@@ -149,8 +141,7 @@ def _release_for_tag(
     release = _fetch_release(repo, tag)
     if release is None:
         _release_failed_at[key] = time.monotonic()
-        # Last-good fallback only within the TTL, or an unreachable release keeps
-        # answering stale and the panel presents that as matched.
+        # Last-good fallback only within the TTL, or an unreachable release keeps answering stale and the panel presents that as matched.
         cached = _release_memo.get(key)
         if cached and time.monotonic() - cached[0] < RELEASE_CACHE_TTL_SECONDS:
             return cached[1]
@@ -168,9 +159,7 @@ def _plain_text(markdown: str) -> str:
 
 
 def _entry(markdown: str) -> dict:
-    # Metadata starts at " ([", so a title keeps its parens: GLM-5-Next (GLM-5.3-Flash).
-    # rfind, not find: metadata is the LAST parenthesised group, and a title may
-    # contain " ([" -- "vulkan: handle ([a],[b]) tuples ([#5](...))".
+    # Metadata starts at " ([", so a title keeps its parens: GLM-5-Next (GLM-5.3-Flash). rfind, not find: metadata is the LAST parenthesised group, and a title may contain " ([" as in "vulkan: handle ([a],[b]) tuples ([#5](...))".
     metadata_at = markdown.rfind(" ([")
     summary_markdown = markdown[:metadata_at] if metadata_at >= 0 else markdown
     links = []
@@ -183,11 +172,9 @@ def _entry(markdown: str) -> dict:
 
 
 def _identities(markdown: str) -> set[str]:
-    """Stable aliases for one carried change: a patch migrated to an Unsloth carry
-    PR links that PR but still says ``ggml-org#24423``, and both must match."""
+    """Stable aliases for one carried change: a patch migrated to an Unsloth carry PR links that PR but still says ``ggml-org#24423``, and both must match."""
     identities = set()
-    # One namespace: GitHub numbers issues and PRs together, so ``/issues/900``,
-    # ``/pull/900`` and ``repo#900`` are the same object. Separate prefixes only miss.
+    # One namespace: GitHub numbers issues and PRs together, so ``/issues/900``, ``/pull/900`` and ``repo#900`` are the same object. Separate prefixes only miss.
     for _label, url in _LINK.findall(markdown):
         match = _PR_URL.match(url) or _ISSUE_URL.match(url)
         if match:
@@ -209,20 +196,14 @@ def _bullets(body: object) -> list[str]:
 
 
 def release_page_url(repo: str, tag: str) -> Optional[str]:
-    """The human release page, so a failed comparison can still offer a way to
-    read the notes on GitHub. None when the repo is not a safe ``owner/name``."""
+    """The human release page, so a failed comparison can still offer a way to read the notes on GitHub. None when the repo is not a safe ``owner/name``."""
     if not _valid_repo(repo) or not tag:
         return None
     return f"https://github.com/{repo}/releases/tag/{urllib.parse.quote(tag, safe = '')}"
 
 
 def unavailable_reason(repo: str, installed_tag: str, latest_tag: str) -> str:
-    """Why a comparison could not be made, for a caller holding ``None``.
-
-    ``notes_not_itemised`` (predates the bullet format) and
-    ``notes_not_comparable`` (non-cumulative repo) are permanent;
-    ``release_notes_unavailable`` may succeed later, so it keeps its Retry.
-    """
+    """Why a comparison could not be made, for a caller holding ``None``. ``notes_not_itemised`` (predates the bullet format) and ``notes_not_comparable`` (non-cumulative repo) are permanent; ``release_notes_unavailable`` may succeed later, so it keeps its Retry."""
     if not _valid_repo(repo) or not installed_tag or not latest_tag:
         return "release_notes_unavailable"
     if not _is_cumulative_repo(repo):
@@ -231,8 +212,7 @@ def unavailable_reason(repo: str, installed_tag: str, latest_tag: str) -> str:
     installed = _release_for_tag(repo, installed_tag)
     if installed is None:
         return "release_notes_unavailable"
-    # Only the INSTALLED side is permanent: it shipped before the bullet format and
-    # will never gain one. A bad target is the newest release, so it may yet be fixed.
+    # Only the INSTALLED side is permanent: it shipped before the bullet format and will never gain one. A bad target is the newest release, so it may yet be fixed.
     if not _bullets(installed.get("body")):
         return "notes_not_itemised"
     return "release_notes_unavailable"
@@ -245,10 +225,7 @@ def changelog_for_update(
     *,
     force_refresh: bool = False,
 ) -> Optional[dict]:
-    """Return only target bullets absent from the installed release.
-
-    None means no comparison was possible; do not fall back to the cumulative body.
-    """
+    """Return only target bullets absent from the installed release. None means no comparison was possible; do not fall back to the cumulative body."""
     if not repo or not installed_tag or not latest_tag or installed_tag == latest_tag:
         return None
     if not _is_cumulative_repo(repo):
@@ -258,13 +235,11 @@ def changelog_for_update(
     if installed is None or latest is None:
         return None
 
-    # Releases before b9625-mix-2d6bd50 (2026-06-14) name carries in prose, so no
-    # bullets means unknown, not "carries nothing".
+    # Releases before b9625-mix-2d6bd50 (2026-06-14) name carries in prose, so no bullets means unknown, not "carries nothing".
     installed_bullets = _bullets(installed.get("body"))
     if not installed_bullets:
         return None
-    # A prose-only target says "carries nothing"; a missing or blank one says
-    # nothing at all, and "no new changes" would claim a comparison never made.
+    # A prose-only target says "carries nothing"; a missing or blank one says nothing at all, and "no new changes" would claim a comparison never made.
     latest_body = latest.get("body")
     if not isinstance(latest_body, str) or not latest_body.strip():
         return None

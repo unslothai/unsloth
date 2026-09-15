@@ -202,11 +202,10 @@ export function LoadedModelsIndicator({
   const { position, panelRef, startDrag, dragging, justDragged } =
     useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
 
-  // A new load brings a closed card back: closing it means "not now", not "stop
-  // telling me", which is what the Settings toggle is for. Subscribed above the
-  // early return, so a dismissed card is still listening for the load that
-  // reopens it. On the start of the load, not the end, so it is up for the whole
-  // time the toast is.
+  // A new load brings a closed card back: closing it means "not now", not "stop telling me", which
+  // is what the Settings toggle is for. Subscribed above the early return, so a dismissed card is
+  // still listening for the load that reopens it. On the start of the load, not the end, so it is
+  // up for the whole time the toast is.
   useEffect(
     () =>
       subscribeModelLifecycle(({ loading }) => {
@@ -217,14 +216,12 @@ export function LoadedModelsIndicator({
     [],
   );
 
-  // A load started outside this tab raises no lifecycle event at all: the
-  // OpenAI-compatible API and auto-switch go nowhere near the frontend wrappers
-  // that announce one. The poll is the only witness, so a row appearing while
-  // the card is closed reopens it too, which is what the tooltip promises.
-  //
-  // The first poll after closing is the baseline, never a reopen: the ids are
-  // read fresh on mount, and a dismissal survives a reload, so treating what is
-  // already resident as new would make the card impossible to close.
+  // A load started outside this tab raises no lifecycle event at all: the OpenAI-compatible API and
+  // auto-switch go nowhere near the frontend wrappers that announce one. The poll is the only
+  // witness, so a row appearing while the card is closed reopens it too, which is what the tooltip
+  // promises. The first poll after closing is the baseline, never a reopen: the ids are read fresh
+  // on mount, and a dismissal survives a reload, so treating what is already resident as new would
+  // make the card impossible to close.
   const idsWhileClosedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!dismissed) {
@@ -307,9 +304,8 @@ export function LoadedModelsIndicator({
               <TooltipTrigger asChild={true}>
                 <div
                   aria-label="Drag to move"
-                  // Not a button, so no click follows to consume the drag
-                  // sentinel: say so, or the collapsed pill's next click reads
-                  // this drag as its own and refuses to expand.
+                  // Not a button, so no click follows to consume the drag sentinel: say so, or the
+                  // collapsed pill's next click reads this drag as its own and refuses to expand.
                   onPointerDown={startDrag}
                   className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-foreground/[0.07] hover:text-foreground active:cursor-grabbing"
                 >

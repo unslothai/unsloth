@@ -39,6 +39,8 @@ from core.inference.tool_call_parser import (
     _strip_mistral_closed_calls,
 )
 
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
+
 from typing import Optional as _Optional
 
 _ns = {
@@ -446,25 +448,29 @@ def test_gdpval_parameter_orphans_get_stripped(leak):
 
 
 def test_no_catastrophic_backtracking_on_open_bracket_spam():
-    # 256KB of '<' must fail fast (literal mismatch char 2), not backtrack.
-    import time
+    """'<' spam must fail fast on the literal mismatch at char 2, not backtrack.
 
-    adv = "<" * (1024 * 256) + "X"
-    t0 = time.perf_counter()
-    _TOOL_XML_RE.sub("", adv)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.5, f"regex took {elapsed*1000:.0f}ms on 256KB '<' spam"
+    Asked as growth rather than as a deadline. Backtracking here is superlinear by
+    definition, so 4x the spam costing ~4x the time IS the property; `elapsed < 0.5`
+    was a budget that said as much about the runner as about the regex.
+    """
+    assert_linear(
+        lambda text: _TOOL_XML_RE.sub("", text),
+        lambda n: "<" * n + "X",
+        "'<' spam",
+        64 * 1024,
+    )
 
 
 def test_no_catastrophic_backtracking_on_orphan_opening_spam():
-    # 1000 unclosed openings: first alt must consume them all greedily.
-    import time
-
-    adv = "<tool_call>X" * 1000
-    t0 = time.perf_counter()
-    cleaned = _TOOL_XML_RE.sub("", adv)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
+    """1000 unclosed openings: the first alternative must consume them all greedily."""
+    cleaned = assert_linear(
+        lambda text: _TOOL_XML_RE.sub("", text),
+        lambda n: "<tool_call>X" * n,
+        "orphan opens",
+        # 250, so the big leg is the 1000 openings this was previously measured at.
+        250,
+    )
     assert "<tool_call>" not in cleaned
 
 
@@ -480,7 +486,7 @@ def test_route_strip_two_level_nested_bracket_keeps_trailing_prose():
 
 
 def test_route_strip_two_level_nested_rehearsal_keeps_trailing_prose():
-    text = 'note python[ARGS]{"a":{"b":{"c":1}}} done'
+    text = 'note web_search[ARGS]{"a":{"b":{"c":1}}} done'
     cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert cleaned == "note  done"
     assert "[ARGS]" not in cleaned
@@ -923,10 +929,10 @@ def test_chained_bare_json_strip_consumes_all_calls():
     # would be replayed alongside the structured tool_calls.
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
-    enabled = {"web_search", "python"}
+    enabled = {"web_search", "get_weather"}
     chained = (
         '{"name":"web_search","parameters":{"q":"first"}};'
-        '{"name":"python","parameters":{"code":"x"}}'
+        '{"name":"get_weather","parameters":{"code":"x"}}'
     )
     assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
     assert (
