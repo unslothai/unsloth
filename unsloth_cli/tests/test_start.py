@@ -5648,7 +5648,7 @@ def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypa
 
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_link(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch
 ):
     # Pi creates <agent dir>/npm the first time a package is installed, so a
     # persisted session can already own that directory. The link is then skipped
@@ -5718,7 +5718,7 @@ def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
 
 
 def test_write_pi_user_resources_warns_on_an_unusable_agent_dir_override(
-    tmp_path, monkeypatch, capsys,
+    tmp_path, monkeypatch, capsys
 ):
     # Otherwise this looks exactly like the bug write_pi_user_resources exists to fix.
     _pi_user_agent_dir(tmp_path, monkeypatch)

@@ -4625,7 +4625,11 @@ def _link_user_dir(source: Path, target: Path) -> bool:
 
 
 def _pi_local_entry(
-    entry: str, source: Path, home: Path, linked: frozenset, agents_skills = None,
+    entry: str,
+    source: Path,
+    home: Path,
+    linked: frozenset,
+    agents_skills = None,
 ) -> str:
     """Re-anchor a user path from the original Pi agent directory."""
     value = entry.strip()
@@ -4663,7 +4667,12 @@ def _pi_local_entry(
 
 
 def _pi_settings_entries(
-    key: str, entries, source: Path, home: Path, linked: frozenset, agents_skills = None,
+    key: str,
+    entries,
+    source: Path,
+    home: Path,
+    linked: frozenset,
+    agents_skills = None,
 ) -> list:
     if not isinstance(entries, list):
         return []
@@ -4686,7 +4695,11 @@ def _pi_settings_entries(
                 # Pi matches patterns against paths relative to the agent directory, which moved.
                 # Keep the original too: it still matches basenames and linked directories.
                 anchored = prefix + _pi_local_entry(
-                    pattern, source, home, linked, agents_skills,
+                    pattern,
+                    source,
+                    home,
+                    linked,
+                    agents_skills,
                 )
                 if anchored != entry:
                     result.append(entry)
@@ -4721,8 +4734,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         )
     # Only entries under a directory that really got linked may stay session-relative.
     linked = frozenset(
-        name for name in _PI_USER_RESOURCE_DIRS
-        if _link_user_dir(source / name, agent_dir / name)
+        name for name in _PI_USER_RESOURCE_DIRS if _link_user_dir(source / name, agent_dir / name)
     )
     # HOME is relocated, so link Pi's other global skill directory too.
     user_skills = user_home / ".agents" / "skills"
@@ -4764,7 +4776,12 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
     copied = {}
     for key in _PI_USER_RESOURCE_SETTINGS:
         entries = _pi_settings_entries(
-            key, user_settings.get(key), source, user_home, linked, agents_skills,
+            key,
+            user_settings.get(key),
+            source,
+            user_home,
+            linked,
+            agents_skills,
         )
         # Refresh copied entries while preserving settings added inside the session.
         stale = previous.get(key) if isinstance(previous.get(key), list) else []
