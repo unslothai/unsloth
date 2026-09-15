@@ -114,6 +114,8 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("model_card")
             seen["card_repo"] = repo_id
+            if seen.get("card_error"):
+                raise seen["card_error"]
 
     return _HfApi, _ModelCard
 

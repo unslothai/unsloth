@@ -98,6 +98,11 @@ def _expected_calls(private):
     return ["create_repo", *visibility, "model_card", "upload_folder"]
 
 
+def _expected_merged_calls(private):
+    visibility = ["update_repo_settings"] if private else []
+    return ["create_repo", *visibility, "upload_folder", "model_card"]
+
+
 @pytest.mark.parametrize("private", [True, False])
 def test_base_export_push_creates_the_repo_without_push_to_hub_mixin(
     tmp_path, monkeypatch, private
@@ -144,7 +149,7 @@ def test_merged_torchao_export_push_creates_the_repo_without_push_to_hub_mixin(
     assert output_path == str(Path(f"{tmp_path / 'export'}-torchao-fp8").resolve())
     assert seen["token"] == "hf_fake"
     assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
-    assert calls == _expected_calls(private)
+    assert calls == _expected_merged_calls(private)
     assert seen["card_repo"] == "owner/model"
     assert seen["folder"] == output_path
     assert "model.safetensors" in seen["uploaded"]
@@ -175,7 +180,7 @@ def test_merged_export_push_uploads_the_saved_folder_instead_of_merging_again(
     assert backend.current_model.merges == [save_method]
     assert output_path == str((tmp_path / "export").resolve())
     assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
-    assert calls == _expected_calls(private)
+    assert calls == _expected_merged_calls(private)
     assert f"# Uploaded finetuned {format_type} model" in seen["card"]
     assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
     assert seen["folder"] == output_path
@@ -218,6 +223,23 @@ def test_merged_export_push_keeps_the_card_of_an_existing_repo(tmp_path, monkeyp
     assert success is True, message
     assert calls == ["create_repo", "upload_folder"]
     assert "card" not in seen
+    assert seen["uploaded"] == ["export_metadata.json", "model.safetensors"]
+
+
+def test_merged_export_push_still_uploads_when_the_card_fails(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {"card_error": RuntimeError("validate-yaml unreachable")}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["folder"] == output_path
     assert seen["uploaded"] == ["export_metadata.json", "model.safetensors"]
 
 
