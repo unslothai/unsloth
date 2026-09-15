@@ -355,3 +355,28 @@ rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
+
+# ---------------------------------------------------------------------------
+# The launch path, statically. [automount] enabled=false leaves interop working while exposing no
+# Windows drive as a Linux directory, so no candidate can be allocated and the file-based launch
+# cannot run at all. Before the move off /tmp those users still got a shortcut, so silently losing
+# it is a regression rather than a pre-existing gap.
+# ---------------------------------------------------------------------------
+BODY_ALL=$(cat "$INSTALL_SH")
+assert_contains "the generated script is captured once, not written straight to a file" \
+    "$BODY_ALL" '_css_ps1_body=$(cat << WSLPS1_EOF'
+assert_contains "there is a stdin launch for when no Windows directory is reachable" \
+    "$BODY_ALL" 'powershell.exe -NoProfile -Command -'
+# Execution policy applies to -File and not to -Command, so the fallback needs no relaxation and
+# must not acquire one.
+STDIN_LINE=$(printf '%s' "$BODY_ALL" | grep -- 'powershell.exe -NoProfile -Command -')
+case "$STDIN_LINE" in
+    *ExecutionPolicy*) bad "the stdin launch carries an execution policy flag it does not need: $STDIN_LINE" ;;
+    *) ok "the stdin launch relaxes no execution policy" ;;
+esac
+# It must be fed from our own pipe, never from the installer's stdin, which under `curl | sh` is
+# still the download (#7548).
+case "$STDIN_LINE" in
+    *printf*"|"*powershell.exe*) ok "the stdin launch is fed from its own pipe" ;;
+    *) bad "the stdin launch does not pipe the body in: $STDIN_LINE" ;;
+esac

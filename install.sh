@@ -2273,8 +2273,8 @@ STUB_EOF
         if [ -n "$_css_win_temp" ]; then
             _css_ps1_tmp=$(mktemp "$_css_win_temp/unsloth-shortcut-XXXXXX.ps1" 2>/dev/null) || _css_ps1_tmp=""
         fi
-        if [ -n "$_css_ps1_tmp" ]; then
-            cat > "$_css_ps1_tmp" << WSLPS1_EOF
+        if [ -n "$_css_sc_target" ]; then
+            _css_ps1_body=$(cat << WSLPS1_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
@@ -2401,17 +2401,32 @@ if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
     } catch {}
 }
 WSLPS1_EOF
+)
 
-            # Convert WSL path to Windows path for powershell.exe
-            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
-            if [ -n "$_css_ps1_win" ]; then
-                # RemoteSigned, not Bypass: the script above was written to the Windows %TEMP% on a
-                # local volume, so it is not a remote script and RemoteSigned loads it unsigned.
-                # Pairing a relaxed policy with a PowerShell launch is a scored shape, and this one
-                # was buying nothing once the path stopped being a UNC path.
-                powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            if [ -n "$_css_ps1_tmp" ]; then
+                printf '%s\n' "$_css_ps1_body" > "$_css_ps1_tmp"
+                # Convert WSL path to Windows path for powershell.exe
+                _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
+                if [ -n "$_css_ps1_win" ]; then
+                    # RemoteSigned, not Bypass: the script above was written to the Windows %TEMP%
+                    # on a local volume, so it is not a remote script and RemoteSigned loads it
+                    # unsigned. Pairing a relaxed policy with a PowerShell launch is a scored shape,
+                    # and this one was buying nothing once the path stopped being a UNC path.
+                    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+                fi
+                rm -f "$_css_ps1_tmp"
+            else
+                # No Windows directory is reachable as a Linux path. That is a real configuration --
+                # [automount] enabled=false leaves interop working while exposing no drive -- and
+                # before the move off /tmp those users still got a shortcut, so losing it here would
+                # be a regression rather than a gap. Hand the script to powershell on STDIN instead:
+                # there is no file, so there is no zone and no execution policy to satisfy (policy
+                # applies to -File, not to -Command), and nothing has to be mounted.
+                #
+                # Our own pipe, not the installer's: `curl | sh` leaves this script's stdin pointing
+                # at the download, and powershell reading that would drink the rest of it (#7548).
+                printf '%s\n' "$_css_ps1_body" | powershell.exe -NoProfile -Command - >/dev/null 2>&1 && _css_created=1
             fi
-            rm -f "$_css_ps1_tmp"
         fi
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
