@@ -527,44 +527,41 @@ def test_sdk_sse_readers_ignore_the_keepalive_comment(module_name):
     assert events == [], f"{module_name} SSE reader must ignore a comment; got {events}"
 
 
-def test_the_in_body_keepalive_never_ends_an_sse_block():
-    """A tick must not insert a frame boundary into upstream's own framing.
+def test_the_tick_is_a_whole_comment_frame_not_a_bare_line():
+    """The tick must be a complete SSE comment frame, blank line included.
 
-    A blank line ends an SSE block. Both the openai and the anthropic Python
-    decoders dispatch an EMPTY event for a data-less block once an `id:` has
-    been seen, because a retained last-event-id satisfies their "anything to
-    dispatch" test; openai's higher level stream then calls .json() on it and
-    raises. llama-server is not known to send `id:`, but this relay forwards
-    upstream bytes verbatim, so the tick has to be safe against framing it did
-    not produce. A comment line with no blank line is: it still puts bytes on
-    the wire, which is the whole point, without closing a block.
+    A bare `: keep-alive\\n` looks tempting: it puts bytes on the wire without
+    closing a block, which avoids an SDK decoder bug where a data-less block
+    dispatches an empty event once an `id:` has been seen. But a bare line rides
+    at the head of the NEXT frame, and a reader that classifies a frame by its
+    first character -- comment if it starts with ":", data if it starts with
+    "data:" -- then files the whole frame as a comment and DROPS THE CHUNK. Raw
+    curl and Node undici readers both do exactly that, and both lose the token.
+
+    So the frame form is deliberate: it costs an ignorable empty event on two
+    Python decoders, and only when the upstream sends `id:`, which llama-server
+    does not. Losing a token is much worse than emitting an ignorable one.
     """
-    source = SRC
-    assert '_OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE = ": keep-alive\\n"' in source
-    assert '_OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\\n\\n"' in source
+    assert '_OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\\n\\n"' in SRC
+    assert (
+        "_OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE" not in SRC
+    ), "the bare-line form drops a chunk for frame-prefix readers"
+    emitters = SRC.count("yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE")
+    assert emitters >= 4, f"expected at least the 4 tick emitters, found {emitters}"
 
-    # Every site that relays a tick must emit the LINE form.
-    emit_sites = source.count("yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE")
-    assert emit_sites == 4, f"expected 4 in-body tick emitters, found {emit_sites}"
+    # A frame-prefix reader, which is what curl and undici consumers do.
+    def frame_prefix_reader(stream):
+        text = []
+        for frame in stream.split("\n\n"):
+            if frame.startswith(":") or not frame.strip():
+                continue
+            if frame.startswith("data: "):
+                text.append(frame[6:])
+        return text
 
-    openai_streaming = pytest.importorskip("openai._streaming")
-    anthropic_streaming = pytest.importorskip("anthropic._streaming")
-
-    def decoded(decoder, raw):
-        out = []
-        for line in raw.split("\n"):
-            event = decoder.decode(line)
-            if event is not None:
-                out.append(event.data)
-        return out
-
-    clean = 'id: sticky\ndata: {"n":1}\n\ndata: {"n":2}\n\n'
-    with_line = 'id: sticky\ndata: {"n":1}\n\n: keep-alive\ndata: {"n":2}\n\n'
-    with_block = 'id: sticky\ndata: {"n":1}\n\n: keep-alive\n\ndata: {"n":2}\n\n'
-
-    for module in (openai_streaming, anthropic_streaming):
-        decoder = module.SSEDecoder
-        baseline = decoded(decoder(), clean)
-        assert decoded(decoder(), with_line) == baseline, module.__name__
-        # The form this test exists to keep out of the relay.
-        assert decoded(decoder(), with_block) != baseline, module.__name__
+    tick_frame = "data: a\n\n: keep-alive\n\ndata: b\n\n"
+    tick_line = "data: a\n\n: keep-alive\ndata: b\n\n"
+    assert frame_prefix_reader(tick_frame) == ["a", "b"]
+    assert frame_prefix_reader(tick_line) == [
+        "a"
+    ], "this is the data loss the frame form exists to avoid"

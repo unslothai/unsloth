@@ -1736,16 +1736,16 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
-# The same comment WITHOUT the blank line, for ticks emitted once upstream bytes
-# are already flowing. A blank line ends an SSE block, and both the openai and
-# anthropic Python decoders dispatch an empty event for a block that carries no
-# data once an `id:` has been seen, because a retained last-event-id satisfies
-# their "is there anything to dispatch" test. openai's stream then calls .json()
-# on it and raises JSONDecodeError. Verified against both installed decoders: a
-# bare comment line leaves the parsed event sequence byte-identical, a comment
-# plus blank line inserts an empty event. This relay is verbatim, so it must not
-# introduce a frame boundary into framing it did not produce.
-_OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE = ": keep-alive\n"
+# Deliberately a whole SSE comment FRAME, blank line included, not a bare comment
+# line. A bare line would ride at the head of the next frame, and a client that
+# classifies a frame by its first character -- `startswith(":")` is a comment,
+# else `startswith("data:")` -- then files the whole frame as a comment and drops
+# the chunk. Measured: raw curl and Node undici readers lose the token that way.
+# The cost of the blank line is that openai's and anthropic's Python decoders
+# dispatch one empty event per tick IF the upstream has sent an SSE `id:`, since
+# a retained last-event-id satisfies their "anything to dispatch" test; that is a
+# decoder conformance bug, it costs an ignorable event rather than data, and
+# llama-server does not send `id:`. Losing a token is the worse failure.
 
 
 class _LlamaStreamKeepalive:
@@ -27613,7 +27613,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 async for chunk in items_iter:
                     # Out of `buffer`: the split below would hand it to the monitor.
                     if chunk is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE.encode()
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
                         continue
                     buffer += chunk
                     while b"\n\n" in buffer:
@@ -29972,7 +29972,7 @@ async def _responses_stream(
             )
             async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if not raw_line:
                     continue
@@ -33542,7 +33542,7 @@ async def _anthropic_passthrough_stream(
             )
             async for raw_line in items_iter:
                 if raw_line is _LLAMA_STREAM_KEEPALIVE:
-                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if not raw_line or not raw_line.startswith("data: "):
                     continue
@@ -35169,7 +35169,7 @@ async def _openai_passthrough_stream_admitted(
                 )
                 async for raw_line in items_iter:
                     if raw_line is _LLAMA_STREAM_KEEPALIVE:
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE_LINE
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if not raw_line:
                         continue
