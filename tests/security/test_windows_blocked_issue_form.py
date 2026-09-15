@@ -316,7 +316,7 @@ def test_a_localised_defender_message_still_reports_its_details(tmp_path: Path) 
                 'Write-Output "OUT:$fields"',
             ]
         ),
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     done = run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
@@ -324,9 +324,9 @@ def test_a_localised_defender_message_still_reports_its_details(tmp_path: Path) 
         text = True,
         timeout = 120,
     )
-    assert "Schweregrad" in done.stdout and "Pfad" in done.stdout, (
-        f"a German Defender message lost its severity and path: {done.stdout.strip()!r}"
-    )
+    assert (
+        "Schweregrad" in done.stdout and "Pfad" in done.stdout
+    ), f"a German Defender message lost its severity and path: {done.stdout.strip()!r}"
 
 
 def test_the_screenshot_field_is_not_a_rendered_textarea() -> None:
@@ -346,9 +346,9 @@ def test_the_screenshot_field_is_not_a_rendered_textarea() -> None:
         "inside a code block"
     )
     error_description = fields["error-text"]["attributes"]["description"]
-    assert "a screenshot is fine" not in error_description, (
-        "the rendered error field still invites a screenshot it cannot display"
-    )
+    assert (
+        "a screenshot is fine" not in error_description
+    ), "the rendered error field still invites a screenshot it cannot display"
 
 
 def test_the_required_error_field_warns_about_its_own_paths() -> None:
