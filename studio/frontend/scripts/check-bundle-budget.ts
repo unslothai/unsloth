@@ -49,10 +49,10 @@ export const BUDGET = {
   // together instead of each dragging main red on its own.
   //
   // Re-measured for the chat audio-upload control at 56d19467: main was already over this
-  // raw ceiling at 5,377.3 KiB, while the feature branch measured 5,383.3 KiB after its
-  // settings-only imports were kept out of the shared barrel. The 6.0 KiB delta is the
-  // intentional always-visible composer control and its upload lifecycle; 5,520,000 bytes
-  // covers that measured branch without changing the still-comfortable transfer ceiling.
+  // raw ceiling at 5,377.3 KiB, while the feature branch measured 5,383.3 KiB. The 6.0 KiB
+  // delta is the intentional always-visible composer control and its upload lifecycle;
+  // 5,520,000 bytes covers that measured branch without changing the still-comfortable
+  // transfer ceiling.
   transferBytes: 1_690_000,
   rawBytes: 5_520_000,
 };
