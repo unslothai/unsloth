@@ -179,9 +179,9 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
     assert "ensure_dynamo_imported" in lines, "the load path never closes the dynamo window"
     for consumer in ("begin", "apply_speed_optims", "apply_memory_plan"):
         assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
-        assert lines["ensure_dynamo_imported"] < lines[consumer], (
-            f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
-        )
+        assert (
+            lines["ensure_dynamo_imported"] < lines[consumer]
+        ), f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
 
 
 def test_load_failure_is_logged_with_a_traceback():
