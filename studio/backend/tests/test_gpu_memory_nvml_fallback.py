@@ -410,6 +410,11 @@ class TestAGpuCapableBuildIsPreferred:
         assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         assert ps.host_gpu_vendors() == {"amd"}
+        # The two ROCm masks stack: an empty ROCR_ under a set HIP_ still hides every agent.
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
+        assert ps.host_gpu_vendors() == set()
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
+        assert ps.host_gpu_vendors() == {"amd"}
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
         assert ps.host_gpu_vendors() == set()
         assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True

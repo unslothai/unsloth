@@ -132,6 +132,15 @@ def _mask_hides_all(*names: str) -> bool:
     return mask.strip() in ("", "-1")
 
 
+def _amd_mask_hides_all() -> bool:
+    """HIP_ and ROCR_VISIBLE_DEVICES stack (ROCR filters the agents HIP then indexes), so an
+    empty one at either layer hides everything; CUDA_VISIBLE_DEVICES stands in only when
+    neither is set (_active_gpu_visibility_mask)."""
+    if any(n in os.environ for n in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")):
+        return _mask_hides_all("HIP_VISIBLE_DEVICES") or _mask_hides_all("ROCR_VISIBLE_DEVICES")
+    return _mask_hides_all("CUDA_VISIBLE_DEVICES")
+
+
 def host_gpu_vendors() -> Optional[set[str]]:
     """GPU vendors this process can reach: DRM sysfs vendors whose device node is present and
     whose visibility mask is not empty on Linux, the vendors' driver DLLs on Windows. None when
@@ -171,12 +180,8 @@ def host_gpu_vendors() -> Optional[set[str]]:
             or _mask_hides_all("CUDA_VISIBLE_DEVICES")
         ):
             vendors.discard("nvidia")
-        # HIP reads HIP_, then ROCR_, then CUDA_VISIBLE_DEVICES (_active_gpu_visibility_mask).
         if "amd" in vendors and (
-            not (os.path.exists("/dev/kfd") or wsl_amd)
-            or _mask_hides_all(
-                "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"
-            )
+            not (os.path.exists("/dev/kfd") or wsl_amd) or _amd_mask_hides_all()
         ):
             vendors.discard("amd")
         return vendors if detected else None
