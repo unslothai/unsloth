@@ -3067,6 +3067,7 @@ def _command_words(text: str) -> "list[str]":
 
 # Separators that start a new command, so the word after one is in command position again.
 _COMMAND_SEPARATOR_RE = re.compile(r"[;&|()\n]+|&&|\|\|")
+_STUDIO_WALK_NAME_HINTS = frozenset(_STUDIO_WALK_COMMANDS | _STUDIO_WALK_FLAG_COMMANDS | {"find"})
 _WRAPPER_VALUE_OPTIONS = frozenset(
     {"-u", "--unset", "-n", "-c", "-i", "-p", "-C", "--chdir", "-k", "--kill-after", "-s"}
 )
@@ -3094,6 +3095,11 @@ _WALK_TRANSPARENT_WRAPPERS = frozenset(
 
 def _walks_a_tree_reading_it(text: str) -> bool:
     """True when the command recursively reads or copies a whole directory tree."""
+    lowered = text.lower()
+    # Splitting into command positions costs a lexer pass, so skip it when no walker is named at
+    # all: that is the case for almost every command that mentions the studio root.
+    if not any(name in lowered for name in _STUDIO_WALK_NAME_HINTS):
+        return False
     names = set(_command_words(text))
     if not names:
         return False
