@@ -281,7 +281,11 @@ def test_format_tag_follows_the_rotation():
     assert pq.prequant_format_for({"scheme": "int8"}) == pq.PREQUANT_FORMAT
     assert pq.prequant_format_for(_meta(["a"])) == pq.PREQUANT_FORMAT_ROTATED
     assert pq.PREQUANT_FORMAT_ROTATED != pq.PREQUANT_FORMAT
-    assert set(pq.PREQUANT_FORMATS) == {pq.PREQUANT_FORMAT, pq.PREQUANT_FORMAT_ROTATED}
+    assert set(pq.PREQUANT_FORMATS) == {
+        pq.PREQUANT_FORMAT,
+        pq.PREQUANT_FORMAT_ROTATED,
+        pq.PREQUANT_FORMAT_POLICY,
+    }
 
 
 @pytest.mark.parametrize(
