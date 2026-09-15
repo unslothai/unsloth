@@ -2695,6 +2695,32 @@ class TestAnthropicMessagesToolRouting:
         assert path == expected_path
         assert kwargs["seed"] == 3407
 
+    def test_custom_sampling_defaults_reach_anthropic_generation(self, monkeypatch):
+        backend = _mock_backend(
+            monkeypatch,
+            llama_cpp_config_summary = {
+                "mode": "custom",
+                "request_defaults": {
+                    "temperature": 0.25,
+                    "top_k": 180,
+                    "repeat_penalty": 0.9,
+                },
+            },
+        )
+
+        _drive(
+            anthropic_messages(
+                _basic_payload(temperature = 0),
+                request = self._Request(),
+                current_subject = "t",
+            )
+        )
+
+        [(_path, kwargs)] = backend.calls
+        assert kwargs["temperature"] == 0
+        assert kwargs["top_k"] == 180
+        assert kwargs["repetition_penalty"] == 0.9
+
     @pytest.mark.parametrize("stream", [False, True])
     def test_seed_reaches_anthropic_client_tool_passthrough(self, monkeypatch, stream):
         import routes.inference as inf_mod

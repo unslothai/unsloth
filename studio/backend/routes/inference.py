@@ -32330,6 +32330,9 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
+        preset_defaults = _custom_request_defaults(
+            getattr(llama_backend, "model_identifier", None) or model_name
+        ),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
