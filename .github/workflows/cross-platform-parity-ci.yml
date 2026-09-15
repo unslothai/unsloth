@@ -85,6 +85,7 @@ on:
       # above is only the entrypoint; these two are the rest of what it loads.
       - 'tests/studio/install/test_keep_install_backcompat_9979.py'
       - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
@@ -162,6 +163,7 @@ on:
       # above is only the entrypoint; these two are the rest of what it loads.
       - 'tests/studio/install/test_keep_install_backcompat_9979.py'
       - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
       - 'studio/backend/utils/prebuilt/llama_backend.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'

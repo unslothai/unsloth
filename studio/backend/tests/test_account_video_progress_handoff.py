@@ -150,7 +150,37 @@ def test_progress_does_not_follow_a_reservation_that_changed_hands(monkeypatch):
 
     assert backend.job_account == BOB.account_id
     assert body.get("video_id") != "bob-clip", "alice received bob's job progress"
-    assert body == {"loaded": True, "yours": False}
+    assert body["yours"] is False, body
+    assert body["active"] is False and body["phase"] is None, body
+    assert body.get("video") is None, body
+
+
+def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
+    """Hiding a job must not change the OBJECT the poller gets back.
+
+    ``/video/generate-progress`` declares ``VideoGenerateProgressResponse``, but a
+    returned ``Response`` bypasses that model, so answering the loaded/yours pair here
+    handed callers something with no ``active`` at all. The Video page polls this on a
+    timer and reads ``active`` unconditionally; so did the suite, which is how an
+    unrelated test came to die on ``KeyError: 'active'`` whenever an earlier test left
+    ``routes.video._generation_account`` set.
+    """
+    from models.inference import VideoGenerateProgressResponse
+
+    backend = HandoffVideoBackend(hand_off = True)
+    _install(monkeypatch, backend)
+
+    with _client(ALICE) as client:
+        body = client.get(PROGRESS).json()
+
+    for field in VideoGenerateProgressResponse.model_fields:
+        assert field in body, f"hidden poll dropped {field!r} from the declared shape: {body}"
+    # Every declared field is at its idle default, so the shape costs no privacy.
+    assert body == {
+        **VideoGenerateProgressResponse().model_dump(mode = "json"),
+        "loaded": True,
+        "yours": False,
+    }
 
 
 def test_progress_still_returns_the_owners_own_terminal_record(monkeypatch):

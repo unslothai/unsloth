@@ -278,27 +278,46 @@ def _load_active_generations():
     return module
 
 
-def _load_registry_module():
+_REGISTRY_SOURCE = None
+
+
+def _registry_source():
+    """The `_WANTED` top-level definitions, verbatim, joined in file order.
+
+    `ast.get_source_segment` re-splits the whole 1.72 MB source on every call, so
+    asking it for all 1011 top-level nodes took ~13s, once per test that loads the
+    registry. Two changes, neither of which alters a byte of the result: the
+    membership test now runs before the segment is cut, so only the nodes that are
+    kept are ever cut, and the joined text is built once per process. The `exec`
+    stays per call, so every test still gets its own fresh `_CANCEL_REGISTRY`.
+    """
+    global _REGISTRY_SOURCE
+    if _REGISTRY_SOURCE is not None:
+        return _REGISTRY_SOURCE
     chunks = []
     for n in _TREE.body:
+        if isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+            wanted = n.name in _WANTED
+        elif isinstance(n, ast.Assign):
+            wanted = any(t.id in _WANTED for t in n.targets if isinstance(t, ast.Name))
+        elif isinstance(n, ast.AnnAssign):
+            wanted = isinstance(n.target, ast.Name) and n.target.id in _WANTED
+        else:
+            wanted = False
+        if not wanted:
+            continue
         seg = ast.get_source_segment(SRC, n)
         if seg is None:
             continue
-        if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in _WANTED:
-            chunks.append(seg)
-        elif isinstance(n, ast.Assign):
-            names = [t.id for t in n.targets if isinstance(t, ast.Name)]
-            if any(name in _WANTED for name in names):
-                chunks.append(seg)
-        elif (
-            isinstance(n, ast.AnnAssign)
-            and isinstance(n.target, ast.Name)
-            and n.target.id in _WANTED
-        ):
-            chunks.append(seg)
+        chunks.append(seg)
+    _REGISTRY_SOURCE = "\n\n".join(chunks)
+    return _REGISTRY_SOURCE
+
+
+def _load_registry_module():
     mod = {"active_generations": _load_active_generations()}
     exec(
-        "import threading, time\n_account_cancel_key = lambda key: key\n" + "\n\n".join(chunks), mod
+        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(), mod
     )
     return mod
 
@@ -954,26 +973,27 @@ def test_audio_stream_stays_responsive_under_blocking_next():
     async def _run(loop_coro):
         return await asyncio.gather(loop_coro, _fire_early())
 
+    # Counted in chunks: the blocking loop never lets _fire_early run, so it drains all
+    # eight before seeing a cancel that arrived at 50ms; the awaiting loop stops at the first.
     cancel_event.clear()
     t0 = time.monotonic()
     prefix_seen, _ = asyncio.run(_run(_prefix_loop()))
     prefix_elapsed = time.monotonic() - t0
-    assert prefix_elapsed >= 0.13, (
-        f"pre-fix pattern should block event loop for >=1 chunk time "
-        f"(~150ms); got {prefix_elapsed:.3f}s, {len(prefix_seen)} chunks"
+    assert len(prefix_seen) == 8, (
+        "pre-fix pattern let the cancel through, so it is no longer modelling a blocked "
+        f"event loop; got {len(prefix_seen)} chunks"
     )
 
     cancel_event.clear()
-    t0 = time.monotonic()
     postfix_seen, _ = asyncio.run(_run(_postfix_loop()))
-    postfix_elapsed = time.monotonic() - t0
-    assert postfix_elapsed < prefix_elapsed, (
-        f"post-fix pattern must exit faster than pre-fix (blocking) "
-        f"pattern; post={postfix_elapsed:.3f}s vs pre={prefix_elapsed:.3f}s"
-    )
     assert (
         len(postfix_seen) < 8
     ), f"post-fix loop must not drain all chunks; got {len(postfix_seen)}"
+    assert len(postfix_seen) < len(prefix_seen), (
+        f"post-fix pattern saw as much as the blocking one: post={len(postfix_seen)} "
+        f"vs pre={len(prefix_seen)}"
+    )
+    assert prefix_elapsed < 30.0, f"the blocking loop never returned: {prefix_elapsed:.3f}s"
 
 
 def test_unsloth_stream_loop_emits_zero_tokens_on_preset_cancel():

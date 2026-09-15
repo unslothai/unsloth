@@ -11,6 +11,10 @@ import {
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
 import { fetchDeviceType } from "./config/env";
+import {
+  applyInterfaceScaleBeforeFirstPaint,
+  useInterfaceScaleStore,
+} from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
@@ -59,8 +63,13 @@ function renderApp(): void {
 }
 
 const localeInitialization = initializeLocale();
-if (typeof localeInitialization !== "string") {
-  localeInitialization.then(renderApp);
+const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
+  useInterfaceScaleStore.getState().scale,
+);
+if (typeof localeInitialization !== "string" || isTauri) {
+  Promise.all([localeInitialization, interfaceScaleInitialization]).then(
+    renderApp,
+  );
 } else {
   renderApp();
 }
