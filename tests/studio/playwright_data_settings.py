@@ -31,6 +31,10 @@ FIXTURE = """(() => {
             if (fixture.listFail) { status = 503; body = { detail: 'Chat list unavailable' }; }
             else body = { threads: fixture.rows };
         } else if (url.pathname === '/api/chat/projects') body = { projects: [] };
+        else if (url.pathname === '/api/chat/export') {
+            if (fixture.holdExport) await new Promise(resolve => { fixture.releaseExport = resolve; });
+            body = { threads: fixture.rows, messages: [], projects: [] };
+        }
         else if (url.pathname === '/api/chat' && method === 'DELETE') {
             if (fixture.hold) await new Promise(resolve => { fixture.release = resolve; });
             if (fixture.fail) { status = 503; body = { detail: 'Deletion unavailable' }; }
@@ -60,7 +64,7 @@ def run(page):
         page.evaluate(
             """options => {
             const f = window.__dataFixture;
-            Object.assign(f, { requests: [], hold: false, fail: false, listFail: false }, options);
+            Object.assign(f, { requests: [], hold: false, holdExport: false, fail: false, listFail: false }, options);
             f.rows = Array.from({ length: options.count ?? 3 }, (_, i) => ({
                 id: crypto.randomUUID(), title: `Chat ${i}`, modelType: 'base', modelId: 'test',
                 createdAt: 1700000000000 + i, updatedAt: 1700000000000 + i,
@@ -162,6 +166,74 @@ def run(page):
         button.click()
         page.get_by_role("button", name = "Back to Data", exact = True).click()
         checks.append(f"archive-{label}")
+
+    for source, target in itertools.product(
+        [
+            "Manage chats",
+            "Uploaded files",
+            "Archived chats",
+            "Archived images",
+            "Archived videos",
+            "Archived audio",
+        ],
+        [
+            "Archived chats",
+            "Archived images",
+            "Archived videos",
+            "Archived audio",
+            "Chat sandbox files",
+            "Uploaded files",
+        ],
+    ):
+        reset()
+        if source.startswith("Archived"):
+            page.get_by_role("button", name = source, exact = True).click()
+        else:
+            page.locator(f'[data-settings-label="{source}"]').get_by_role(
+                "button", name = "Manage", exact = True
+            ).click()
+        expect(page.get_by_role("button", name = "Back to Data", exact = True)).to_be_visible()
+        page.locator("aside input").fill(target)
+        page.locator("aside").get_by_role("button", name = target, exact = True).click()
+        expect(page.locator(".settings-search-hit")).to_have_attribute(
+            "data-settings-label", target
+        )
+        expect(page.get_by_role("button", name = "Back to Data", exact = True)).to_have_count(0)
+        assert not deletes()
+        checks.append(f"search-{source}-to-{target}")
+
+    for shelf in ["chats", "images", "videos", "audio"]:
+        page.evaluate("shelf => window.__settingsSmoke.openArchived(shelf)", shelf)
+        expect(page.get_by_role("heading", name = f"Archived {shelf}", exact = True)).to_be_visible()
+        page.locator("aside input").fill("Chat sandbox files")
+        page.locator("aside").get_by_role("button", name = "Chat sandbox files", exact = True).click()
+        expect(page.locator(".settings-search-hit")).to_have_attribute(
+            "data-settings-label", "Chat sandbox files"
+        )
+        expect(page.get_by_role("button", name = "Back to Data", exact = True)).to_have_count(0)
+        checks.append(f"archive-request-after-search-{shelf}")
+
+    reset(holdExport = True)
+    export_row = page.locator('[data-settings-label="Export chat history"]')
+    export_row.get_by_role("button", name = "Export", exact = True).click()
+    page.wait_for_function("typeof window.__dataFixture.releaseExport === 'function'")
+    page.locator("aside input").fill("Chat sandbox files")
+    page.locator("aside").get_by_role("button", name = "Chat sandbox files", exact = True).click()
+    expect(page.locator(".settings-search-hit")).to_have_attribute(
+        "data-settings-label", "Chat sandbox files"
+    )
+    expect(export_row.get_by_role("button", name = "Exporting...", exact = True)).to_be_disabled()
+    with page.expect_download():
+        page.evaluate("window.__dataFixture.releaseExport()")
+    expect(export_row.get_by_role("button", name = "Export", exact = True)).to_be_enabled()
+    assert (
+        page.evaluate(
+            "window.__dataFixture.requests.filter(r => r.path === '/api/chat/export').length"
+        )
+        == 1
+    )
+    checks.append("search-preserves-in-flight-export")
+
     errors = page.evaluate("window.__settingsSmoke.errors()")
     resize_notice = "ResizeObserver loop completed with undelivered notifications."
     failures = [error for error in errors if error != resize_notice]

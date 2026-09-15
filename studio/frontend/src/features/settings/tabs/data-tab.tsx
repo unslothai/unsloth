@@ -110,7 +110,7 @@ const SUBPAGE_FOR_SHELF = {
   audio: "archived-audio",
 } as const;
 
-export function DataTab() {
+export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const navigate = useNavigate();
@@ -132,7 +132,11 @@ export function DataTab() {
     | "archived-videos"
     | "archived-audio"
     | "files"
-  >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
+  >(
+    searchEntry
+      ? "main"
+      : archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main",
+  );
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
@@ -167,20 +171,24 @@ export function DataTab() {
     chatOnly && restoredAction === "train" ? "export" : restoredAction;
   // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
-  // Requests can arrive after Data is already mounted (for example from the
-  // archive-all toast), so always switch before consuming the flag.
+  // Search needs the main-page anchors even when a subpage is already open.
   useEffect(() => {
-    if (!archivedRequested) return;
+    const next = searchEntry
+      ? "main"
+      : archivedRequested
+        ? SUBPAGE_FOR_SHELF[archivedRequested]
+        : null;
+    if (!next) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setSubpage(SUBPAGE_FOR_SHELF[archivedRequested]);
+      setSubpage(next);
       consumeArchivedChatsRequest();
     });
     return () => {
       cancelled = true;
     };
-  }, [archivedRequested, consumeArchivedChatsRequest]);
+  }, [archivedRequested, searchEntry, consumeArchivedChatsRequest]);
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
