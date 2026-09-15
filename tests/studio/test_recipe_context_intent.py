@@ -3,9 +3,9 @@
 
 """The context intent the recipe load gates compare, executed rather than restated.
 
-`contextIntent` sits in a module that reaches the chat API and through it into `.tsx`, so it
-cannot be imported on its own; it is sliced out of the real source and run. Restating the
-predicate here would pass just as happily with the source deleted.
+`contextIntent` lives in a module that cannot be imported on its own, so
+it is sliced out of the real source and run. Restating the predicate here would pass
+just as happily with the source deleted.
 
 The rule it encodes: an unpinned MLX load sends 0, so a positive `requested_context_length`
 from MLX is an explicit pin. llama.cpp is ambiguous, because a same-model reload echoes the

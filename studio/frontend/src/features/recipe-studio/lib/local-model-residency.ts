@@ -62,8 +62,7 @@ async function localSelectionMatchesResident(input: {
       model_path: input.target,
       // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
-      // Only `resident` is read here, and these are what /validate assumes of a caller that
-      // sends no intended load settings.
+      // Only `resident` is read; these are what /validate assumes when a caller sends none.
       // biome-ignore lint/style/useNamingConvention: api schema
       max_seq_length: 0,
       // biome-ignore lint/style/useNamingConvention: api schema
