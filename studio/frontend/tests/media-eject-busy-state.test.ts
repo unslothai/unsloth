@@ -13,9 +13,9 @@
 // navigating away and back does not reset it either -- only a reload did.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+
+import { readText } from "./helpers/kit.ts";
 
 // The runtime name is singular ("image"), the page is not: keep them apart, or
 // the listener lookup silently finds nothing and every check passes vacuously.
@@ -24,12 +24,8 @@ const PAGES = [
   ["Video", "video", "../src/features/video/video-page.tsx"],
 ] as const;
 
-function read(path: string): string {
-  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-}
-
 for (const [page, runtime, path] of PAGES) {
-  const SOURCE = read(path);
+  const SOURCE = readText(path);
   const listener = SOURCE.slice(
     SOURCE.indexOf(`subscribeModelEjected("${runtime}"`),
     // Wide enough for the pending-start fence the listener grew around that clear.

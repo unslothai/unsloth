@@ -5,6 +5,13 @@
 
 import re
 from pathlib import Path
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    boolean_table,
+    expand_bindings,
+    gates_the_markup,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -513,7 +520,7 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    assert "{isTauri && isOwner ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
     # A password change rotates credentials outside the polling requests.
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
@@ -537,7 +544,14 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
-    assert 'const showApp = status === "running" && desktopAuthReady;' in source
+    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
+    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
+    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
+    assert gate, "no binding requires both a running status and desktopAuthReady"
+    assert gates_the_markup(
+        source, gate
+    ), f"{gate} is computed but does not condition the mount in the markup"
     assert "Preparing Unsloth" not in source
     assert "Signing in to desktop session" not in source
     assert "desktopBooting" not in source
@@ -725,8 +739,28 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
+    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
+    # named const and giving it a peek exception: a refactor that changed nothing this
+    # contract protects, and it left main and every open PR red for a day. What must hold is
+    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
+    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    # Asking only that the held-out condition still appears would accept dropping the peek
+    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
+    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
+    # the accessibility tree, over every combination of the four inputs, and let any
+    # spelling that admits exactly those states pass.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
@@ -929,6 +963,16 @@ def test_compact_media_link_keeps_accessible_name_and_truncation():
     assert "aria-label={label}" in button
     assert 'cn("min-w-0 truncate", labelClassName)' in button
     assert "arrowClassName" in button
+
+
+def test_media_page_link_tooltip_drops_below_titlebar_controls():
+    """unslothai/unsloth#10226: Images/Video park this link in the top-right header beside
+    Windows controls; a top tooltip blocks minimize/maximize/close."""
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    tooltip = source.split("<TooltipContent", 1)[1].split("</TooltipContent>", 1)[0]
+
+    assert 'side="bottom"' in tooltip
+    assert "sideOffset={6}" in tooltip
 
 
 def test_media_page_headers_out_stack_the_mac_drag_region():

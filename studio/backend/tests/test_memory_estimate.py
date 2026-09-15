@@ -158,6 +158,32 @@ def _write_gguf(
     return str(path)
 
 
+def _write_gguf_with_embeddings(
+    tmp_path: Path,
+    arch: str,
+    fields: dict,
+    name: str = "model.gguf",
+) -> str:
+    """A weight file carrying ``token_embd.weight``, as every real one does.
+
+    ``_make_gguf_bytes`` writes metadata and no tensors, which is a file the launch
+    would refuse to pass as ``--model-draft`` and the estimate therefore never charges.
+    """
+    import numpy as np
+    from gguf import GGUFWriter
+
+    path = tmp_path / name
+    writer = GGUFWriter(str(path), arch)
+    for key, value in fields.items():
+        writer.add_uint32(f"{arch}.{key}", int(value))
+    writer.add_tensor("token_embd.weight", np.zeros((64, 64), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return str(path)
+
+
 @pytest.fixture
 def gqa_gguf(tmp_path) -> str:
     return _write_gguf(tmp_path, "qwen3", _GQA_FIELDS)
@@ -961,7 +987,6 @@ class TestEstimateMemoryRoute:
         # function the interpreter can switch out of: a concurrent pop makes it raise
         # KeyError, a concurrent insert RuntimeError, and neither is caught between
         # there and the worker, so it surfaces as a 500 on a slider drag.
-        import inspect
         for source in (
             inspect.getsource(ri._gguf_resident_file_gb),
             inspect.getsource(ri._cached_estimate_config),
@@ -987,7 +1012,6 @@ class TestEstimateMemoryRoute:
         # so 50 estimates were 250 /proc scans and 250 retained atexit handlers at
         # 120 ms each. Pricing a load must not be able to kill a server.
         import atexit
-        import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -1026,7 +1050,6 @@ class TestEstimateMemoryRoute:
     def test_the_inert_probe_mode_is_opt_in(self):
         # Default True, so every existing caller -- above all the real backend that
         # owns the llama-server child -- keeps exactly the behaviour it has today.
-        import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -2225,7 +2248,7 @@ class TestSpeculationOffChargesNoDrafter:
 
     @pytest.fixture
     def config_with_a_sidecar(self, tmp_path):
-        target = _write_gguf(tmp_path, "qwen3", _GQA_FIELDS, name = "target.gguf")
+        target = _write_gguf_with_embeddings(tmp_path, "qwen3", _GQA_FIELDS, name = "target.gguf")
         sidecar = tmp_path / "mtp.gguf"
         sidecar.write_bytes(Path(target).read_bytes())
         return SimpleNamespace(
@@ -2254,6 +2277,62 @@ class TestSpeculationOffChargesNoDrafter:
         auto = ri._gguf_resident_file_gb(config_with_a_sidecar, speculative_type = "auto")
         assert with_mtp is not None and auto is not None
         assert with_mtp == auto
+
+
+class TestAnUnloadableSidecarIsNotCharged:
+    """A drafter the launch drops must not be priced, or the guard refuses a load that fits.
+
+    ``load_model`` drops a ``mtp-*.gguf`` carrying neither ``token_embd.weight`` nor
+    ``nextn_shared_target_tensors``, since llama-server opens a draft model as a
+    complete model. Charging it here is VRAM the launch never asks for, and the
+    chat-load admission guard turns that into a 409 against a running training job.
+    """
+
+    def _config(self, tmp_path, sidecar):
+        # A target per case: the files cache keys on the main weight's path, not the
+        # sidecar's, so one directory would serve the first answer twice.
+        home = tmp_path / sidecar.stem
+        home.mkdir()
+        return SimpleNamespace(
+            identifier = "local/target",
+            gguf_file = _write_gguf_with_embeddings(home, "qwen3", _GQA_FIELDS, name = "target.gguf"),
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = str(sidecar),
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+
+    def test_a_head_only_sidecar_is_uncharged_and_a_complete_one_is_not(self, tmp_path):
+        import numpy as np
+        from gguf import GGUFWriter
+
+        def drafter(name, tensors):
+            path = tmp_path / name
+            writer = GGUFWriter(str(path), "qwen3")
+            for tensor in tensors:
+                writer.add_tensor(tensor, np.zeros((512, 512), dtype = np.float32))
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file()
+            writer.close()
+            return path
+
+        heads = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+        head_only = drafter("mtp-head.gguf", heads)
+        complete = drafter("mtp-full.gguf", ["token_embd.weight", *heads])
+        assert head_only.stat().st_size > 1024 * 1024
+
+        without = ri._gguf_resident_file_gb(
+            self._config(tmp_path, head_only), speculative_type = "mtp"
+        )
+        with_it = ri._gguf_resident_file_gb(
+            self._config(tmp_path, complete), speculative_type = "mtp"
+        )
+        assert without is not None and with_it is not None
+        assert with_it > without
+        assert without == pytest.approx(with_it - complete.stat().st_size / (1024**3), rel = 0.02)
 
 
 class TestAProjectorOverrideIsTheOneCharged:

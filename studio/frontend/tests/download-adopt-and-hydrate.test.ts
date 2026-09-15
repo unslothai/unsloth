@@ -4,17 +4,18 @@
 // Two decisions the download manager makes from a single reading, both of which used to be
 // wrong in the same way: treating a zero byte count as evidence of something it is not.
 
-import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
 const { carriesOverSeed, idleProbeVerdict, seededMeasuredTransfer } = await import(
   "../src/features/hub/download-manager/adopt-rules.ts"
 );
+
+const POLL_LOOP = readSrc("features/hub/download-manager/poll-loop.ts");
 
 test("adopting a new generation drops the previous run's byte seed", () => {
   // The persisted job describes generation 4; the backend reports 5 in flight. Seeding 4's bytes
@@ -99,16 +100,9 @@ test("a scan that never happened does not retire a job", () => {
 });
 
 test("live idle polls retire an explicitly missing target before the grace period", () => {
-  const src = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/poll-loop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const start = src.indexOf("function handleIdleAfterProgress");
-  const end = src.indexOf("\nfunction handleTickError", start);
-  const handler = src.slice(start, end);
+  const start = POLL_LOOP.indexOf("function handleIdleAfterProgress");
+  const end = POLL_LOOP.indexOf("\nfunction handleTickError", start);
+  const handler = POLL_LOOP.slice(start, end);
 
   assert.match(
     handler,
@@ -116,7 +110,7 @@ test("live idle polls retire an explicitly missing target before the grace perio
     "an authoritative missing-target response must bypass the idle grace period",
   );
   assert.match(
-    src,
+    POLL_LOOP,
     /handleIdleAfterProgress\(rt, key, madeProgress, progressResp\)/,
     "the live poll must pass its progress response to the idle verdict",
   );
@@ -136,15 +130,8 @@ test("the held-transfer marker travels with the counters it describes", () => {
 test("the adoption path actually seeds the marker onto the job", () => {
   // The helper above is pure, so it cannot catch the seed being computed and
   // then left off the rebuilt job, which is how the marker was lost once.
-  const src = readFileSync(
-    new URL(
-      "../src/features/hub/download-manager/poll-loop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    src,
+    POLL_LOOP,
     /measuredTransfer:\s*seedMeasuredTransfer/,
     "startJob computes the seeded held-transfer marker but no longer puts it on "
       + "the job, so an adopted run restores it as undefined (measured) and "

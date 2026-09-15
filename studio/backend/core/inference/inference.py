@@ -13,6 +13,7 @@ from peft import PeftModel, PeftModelForCausalLM
 import contextlib
 import json
 import sys
+import threading
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
@@ -29,7 +30,10 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
-from core.inference.runtime_context import runtime_context_length
+from core.inference.runtime_context import (
+    generation_budget_within_context,
+    runtime_context_length,
+)
 from core.inference.message_content import content_to_text
 from core.inference.chat_eos import (
     chat_eos_repair,
@@ -51,6 +55,14 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    closes_an_open_envelope,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+    stop_token_text,
+)
+from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -103,20 +115,15 @@ class HarmonyTextStreamer:
         self._is_first_put: bool = True
         self._stop: bool = False
 
-        # Stateful channel tracking avoids delta-on-transformed bugs
         self._emitted_think_open: bool = False
         self._emitted_think_close: bool = False
-        self._analysis_emitted: int = 0  # chars of analysis content emitted
-        self._final_emitted: int = 0  # chars of final content emitted
-
-    # put / end — called from the generation thread
+        self._analysis_emitted: int = 0
+        self._final_emitted: int = 0
 
     def put(self, value):
-        """Receive new token IDs from model.generate()."""
         import torch
 
         if isinstance(value, torch.Tensor):
-            # shape (batch, seq) — take first batch element
             ids = value[0].tolist() if value.dim() > 1 else value.tolist()
         elif isinstance(value, (list, tuple)):
             ids = list(value)
@@ -124,7 +131,6 @@ class HarmonyTextStreamer:
             ids = [value]
 
         if self._is_first_put and self.skip_prompt:
-            # First call is the full prompt; remember its length.
             self._prompt_len = len(ids)
             self._token_ids = list(ids)
             self._is_first_put = False
@@ -132,28 +138,22 @@ class HarmonyTextStreamer:
 
         self._token_ids.extend(ids)
 
-        # Decode only the generated part (after the prompt).
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
         self._process_incremental(raw)
 
     def end(self):
-        """Signal generation is complete."""
-        # Final decode to capture remaining content.
         gen_ids = self._token_ids[self._prompt_len :]
         if gen_ids:
             raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
             self._process_incremental(raw)
 
-        # Close any open think tags.
         if self._emitted_think_open and not self._emitted_think_close:
             self._queue.put("</think>")
             self._emitted_think_close = True
 
         self._stop = True
-        self._queue.put(None)  # sentinel
-
-    # Iterator interface — consumed by the streaming loop
+        self._queue.put(None)
 
     def __iter__(self):
         return self
@@ -171,16 +171,12 @@ class HarmonyTextStreamer:
                 raise StopIteration
             return val
 
-    # Stateful incremental harmony protocol parsing
-
     def _process_incremental(self, raw: str) -> None:
         """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff)."""
-        # If raw has <|channel|> but no complete channel+message pair yet, buffer.
         has_channel_token = "<|channel|>" in raw
         matches = list(self._HARMONY_RE.finditer(raw))
 
         if has_channel_token and not matches:
-            # Partial harmony markup still building — wait for more tokens.
             return
 
         if not has_channel_token and not matches:
@@ -226,7 +222,12 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
-        super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
+        stream_tokenizer = NativeToolTokenDecoder(
+            tokenizer, preserved_tokens = reasoning_control_tokens(markers)
+        )
+        super().__init__(
+            stream_tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
+        )
         self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
@@ -259,6 +260,217 @@ class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
 
 
+# What clean_up_tokenization_spaces deletes a space before. Every rule is a space plus
+# one of these, and the longest is three characters, so a rule spans at most four.
+_CLEANUP_TAILS = (".", "?", "!", ",", "' ", "n't", "'m", "'s", "'ve", "'re")
+_CLEANUP_SPAN_CHARS = 4
+# Tokens, not characters: those four characters can arrive as four one-character tokens,
+# and eight leaves room for tokens that decode to "".
+_CLEANUP_SPAN_TOKENS = 8
+
+
+def _cleanup_join_pending(text: str) -> bool:
+    """Could a cleanup rule still be completed at the end of ``text``?
+
+    Only the last few characters can matter, and only after a space: a rule whose space is
+    further back than that is already settled either way. A trailing space counts, since the
+    next token can start any of the rules.
+    """
+    window = text[-_CLEANUP_SPAN_CHARS:]
+    for i, char in enumerate(window):
+        if char != " ":
+            continue
+        rest = window[i + 1 :]
+        if not rest or any(tail.startswith(rest) for tail in _CLEANUP_TAILS):
+            return True
+    return False
+
+
+def _decoder_cleans_up(streamer) -> bool:
+    """Does this streamer's decode apply clean_up_tokenization_spaces?
+
+    Read once, because the widened re-decode below is pure cost for the tokenizers that do
+    not (Qwen, Gemma, Mistral, gpt-oss ship it off, and transformers 5.17 ignores it for
+    every BPE tokenizer). The streamer's own kwargs win, then the tokenizer's default,
+    unwrapping NativeToolTokenDecoder to reach it.
+    """
+    kwargs = getattr(streamer, "decode_kwargs", None) or {}
+    if "clean_up_tokenization_spaces" in kwargs:
+        return bool(kwargs["clean_up_tokenization_spaces"])
+    tokenizer = getattr(streamer, "tokenizer", None)
+    for _ in range(4):
+        if tokenizer is None:
+            break
+        flag = getattr(tokenizer, "clean_up_tokenization_spaces", None)
+        if flag is not None:
+            return bool(flag)
+        tokenizer = getattr(tokenizer, "tokenizer", None)
+    return False
+
+
+class _StopSequenceStreamer:
+    def __init__(self, streamer, stop):
+        self.streamer = streamer
+        self.sequences = _mlx_stop_sequences(stop)
+        self.matched = threading.Event()
+        self.token_ids = []
+        self.text = ""
+        self.settled = ""
+        self.prefix_offset = 0
+        self.read_offset = 0
+        self.scan_from = 0
+        self.longest = max((len(s) for s in self.sequences), default = 0)
+        self.released = 0
+        self.cut = 0
+        self.finished = False
+        self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
+        self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
+        self.cleans_up = _decoder_cleans_up(streamer)
+
+    def __next__(self):
+        return next(self.streamer)
+
+    def __iter__(self):
+        return self
+
+    def put(self, value):
+        if not self.sequences:
+            return self.streamer.put(value)
+        if self.finished or self.matched.is_set():
+            return
+        # Matches the supported batch-one TextIteratorStreamer protocol.
+        if len(value.shape) > 1:
+            if value.shape[0] > 1:
+                raise ValueError("TextStreamer only supports batch size 1")
+            value = value[0]
+        if self.next_tokens_are_prompt:
+            self.next_tokens_are_prompt = False
+            return
+        self.token_ids.extend(value.tolist())
+        self._decode_new_tokens()
+        # Earlier text was already scanned; only a stop overlapping new text can match.
+        start = self.scan_from
+        cut, matched = _mlx_stop_cut(self.text[start:], self.sequences)
+        self.cut = start + cut
+        if matched:
+            # This runs in the producer, before model.generate checks criteria.
+            self.matched.set()
+        else:
+            self.scan_from = max(start, len(self.settled) - self.longest + 1)
+        cut = self.cut
+        if not matched and not self.is_harmony and cut > self.released:
+            # Keep the word-buffering stability guarantee for displayed text.
+            # Stop detection above must still inspect every decoded token.
+            if not self.streamer._is_chinese_char(ord(self.text[cut - 1])):
+                cut = (
+                    max(
+                        self.text.rfind(" ", self.released, cut),
+                        self.text.rfind("\n", self.released, cut),
+                    )
+                    + 1
+                )
+        self._publish(cut)
+
+    def _decode(self, token_ids):
+        decode_kwargs = (
+            {"skip_special_tokens": False} if self.is_harmony else self.streamer.decode_kwargs
+        )
+        return self.streamer.tokenizer.decode(token_ids, **decode_kwargs)
+
+    def _decode_new_tokens(self):
+        # Re-decoding the whole reply each token is quadratic; decode a short window
+        # and settle its text once it no longer ends in unresolved bytes.
+        prefix = self._decode(self.token_ids[self.prefix_offset : self.read_offset])
+        window = self._decode(self.token_ids[self.prefix_offset :])
+        if (
+            self.cleans_up
+            and window.startswith(prefix)
+            and _cleanup_join_pending(self.settled + window[len(prefix) :])
+        ):
+            # A cleanup rewrite that spans the join is invisible from this window: split
+            # across tokens (" ", "'", "v", "e") each half decodes unchanged, so
+            # ``startswith`` holds and the concatenation keeps a space the full decode
+            # drops. Settled text then diverges permanently and a stop written across the
+            # join never matches. Re-read the few tokens behind the join while a rule could
+            # still complete there, so ordinary text keeps the short window.
+            wider = max(0, self.read_offset - _CLEANUP_SPAN_TOKENS)
+            if wider < self.prefix_offset:
+                wide_prefix = self._decode(self.token_ids[wider : self.read_offset])
+                # Splicing onto text this prefix does not end is worse than the divergence
+                # it repairs, so fall back to the short window rather than guess.
+                if self.settled.endswith(wide_prefix):
+                    prefix = wide_prefix
+                    window = self._decode(self.token_ids[wider:])
+        if window.endswith("\ufffd"):
+            # Bytes still arriving can rewrite the whole window (byte-fallback tokenizers
+            # show an unfinished emoji as replacement characters), so wait for them.
+            tail = window[len(prefix) :] if window.startswith(prefix) else ""
+            self.text = self.settled + tail
+            return
+        if not window.startswith(prefix):
+            # The new tokens rewrote settled text (e.g. space cleanup turning " ." into
+            # "."), so rebuild it once from every token and rescan it for stops.
+            self.settled = self._decode(self.token_ids)
+            self.prefix_offset = max(0, len(self.token_ids) - 4)
+            self.read_offset = len(self.token_ids)
+            self.scan_from = 0
+        elif len(window) > len(prefix):
+            self.settled += window[len(prefix) :]
+            self.prefix_offset = self.read_offset
+            self.read_offset = len(self.token_ids)
+        self.text = self.settled
+
+    def _publish(self, cut):
+        if cut <= self.released:
+            return
+        if self.is_harmony:
+            # Harmony consumes cumulative raw text and synthesizes tags itself.
+            self.streamer._process_incremental(self.text[:cut])
+        else:
+            # The reasoning subclass normalizes here; plain text just queues it.
+            self.streamer.on_finalized_text(self.text[self.released : cut])
+        self.released = cut
+
+    def end(self):
+        if not self.sequences:
+            return self.streamer.end()
+        if self.finished:
+            return
+        self.finished = True
+        if not self.matched.is_set() and self.read_offset < len(self.token_ids):
+            # Bytes that never resolved still belong to the reply, as a full decode shows.
+            self.text = self._decode(self.token_ids)
+        # A natural end releases a partial unmatched stop and unresolved bytes.
+        self._publish(self.cut if self.matched.is_set() else len(self.text))
+        # Their token caches are empty: put() above feeds raw decoded text, so
+        # end() only finishes reasoning framing and sends the queue sentinel.
+        self.streamer.end()
+
+    def abort(self):
+        abort = getattr(self.streamer, "abort", None)
+        if abort is not None:
+            abort()
+
+
+def _prompt_already_has_bos(tokenizer, prompt):
+    """Did the rendered chat template emit BOS itself?
+
+    Most do, so the tokenizer must not add a second. Some do not (zephyr, tinyllama-chat), and
+    suppressing special tokens there drops BOS entirely.
+    """
+    tok = getattr(tokenizer, "tokenizer", tokenizer)
+    bos_token_id = getattr(tok, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        ids = tok(prompt, add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+    while isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+        ids = ids[0]
+    return bool(len(ids)) and ids[0] == bos_token_id
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -270,7 +482,7 @@ class InferenceBackend:
         self.models = {}
         self.active_model_name = None
         self.loading_models = set()
-        self.loaded_local_models = []  # [(display_name, path), ...]
+        self.loaded_local_models = []
         from core.inference.defaults import get_default_models
 
         self.default_models = get_default_models()
@@ -294,21 +506,19 @@ class InferenceBackend:
         return 0 if top_k < 0 else top_k
 
     def _resolve_chat_eos(self, model_name: str) -> None:
-        """Resolve this chat model's assistant-turn-end stop tokens once at load,
-        cache them in model_info, and repair generation_config so every
-        ``.generate()`` path stops at the turn boundary.
+        """Resolve this chat model's assistant-turn-end stop tokens once at load, cache them in
+        model_info, and repair generation_config.
 
-        Some checkpoints (e.g. Qwen3.5 / Qwen3.6 small chat models) end turns with
-        ``<|im_end|>`` but ship ``config.eos_token_id = <|endoftext|>`` and no
-        ``generation_config.json``, so paths that read ``generation_config`` (the
-        vision path, tool loops) run past the turn and loop. Turn-end markers are
-        derived from the chat_template (see chat_eos.resolve_chat_turn_end_eos_ids),
-        so base/coder models and harmony templates are left untouched.
+        Some checkpoints (Qwen3.5 / Qwen3.6 small chat models) end turns with ``<|im_end|>`` but
+        ship ``config.eos_token_id = <|endoftext|>`` and no ``generation_config.json``, so paths
+        that read ``generation_config`` (the vision path, tool loops) run past the turn and loop.
+        Markers are derived from the chat_template (chat_eos.resolve_chat_turn_end_eos_ids), so
+        base/coder models and harmony templates are left untouched.
         """
         info = self.models.get(model_name) or {}
         model = info.get("model")
         container = info.get("tokenizer")
-        tokenizer = getattr(container, "tokenizer", container)  # unwrap processors
+        tokenizer = getattr(container, "tokenizer", container)
         if model is None or tokenizer is None:
             return
         # Vision models carry the chat_template on the processor, not the inner
@@ -359,7 +569,6 @@ class InferenceBackend:
         try:
             model_name = config.identifier
 
-            # Already loaded?
             if model_name in self.models and self.models[model_name].get("model"):
                 logger.info(f"Model {model_name} already loaded")
                 if hf_token:
@@ -367,7 +576,6 @@ class InferenceBackend:
                 self.active_model_name = model_name
                 return True
 
-            # Currently loading?
             if model_name in self.loading_models:
                 logger.info(f"Model {model_name} is already being loaded")
                 return False
@@ -398,7 +606,6 @@ class InferenceBackend:
                 "active_adapter": None,
             }
 
-            # ── Audio model loading path ──────────────────────────
             if config.is_audio:
                 audio_type = config.audio_type
                 adapter_info = " (LoRA adapter)" if config.is_lora else ""
@@ -463,7 +670,6 @@ class InferenceBackend:
                             f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
                         )
                     else:
-                        # Base model: download full HF repo, load from /LLM subfolder
                         abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
                             config.path, hf_token = hf_token
                         )
@@ -473,8 +679,6 @@ class InferenceBackend:
                         )
 
                     if not (config.is_lora and config.base_model):
-                        # Shared by the merged-export and repo-root branches above: both resolve
-                        # an llm_path and then load it the same way.
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,
                             dtype = torch.float32,
@@ -506,7 +710,6 @@ class InferenceBackend:
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
                 elif audio_type == "whisper":
-                    # Whisper ASR — uses FastModel with WhisperForConditionalGeneration
                     from unsloth import FastModel
                     from transformers import WhisperForConditionalGeneration
 
@@ -523,7 +726,6 @@ class InferenceBackend:
                     FastModel.for_inference(model)
                     model.eval()
 
-                    # ASR pipeline (per notebook)
                     from transformers import pipeline as hf_pipeline
 
                     whisper_pipe = hf_pipeline(
@@ -562,7 +764,6 @@ class InferenceBackend:
                         audio_type, self.device, model_repo_path = model_repo_path
                     )
 
-                # Reject CPU/disk offload for audio models too
                 raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
                 self.models[model_name]["context_length"] = runtime_context_length(
                     self.models[model_name].get("model"),
@@ -580,11 +781,9 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
-            # Same load path for base models and LoRA adapters
             if config.is_vision:
-                # Vision model (or vision LoRA adapter)
                 model, processor = FastVisionModel.from_pretrained(
-                    model_name = config.path,  # Can be base model OR LoRA adapter path
+                    model_name = config.path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
@@ -631,9 +830,8 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                # Text model (or text LoRA adapter)
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = config.path,  # Can be base model OR LoRA adapter path
+                    model_name = config.path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
@@ -667,7 +865,6 @@ class InferenceBackend:
             logger.error(f"Failed to load model: {e}")
             error_msg = format_error_message(e, config.identifier)
 
-            # Cleanup on failure
             if model_name in self.models:
                 del self.models[model_name]
             self.loading_models.discard(model_name)
@@ -678,14 +875,12 @@ class InferenceBackend:
         """Remove a model from the registry and clear GPU memory."""
         if model_name in self.models:
             try:
-                # Clean up codecs for audio models
                 if self.models[model_name].get("is_audio"):
                     self._audio_codec_manager.unload()
 
                 logger.info(f"Unloading model '{model_name}' from memory.")
                 del self.models[model_name]
 
-                # Clear the active model if it was the one unloaded
                 if self.active_model_name == model_name:
                     self.active_model_name = None
 
@@ -711,15 +906,14 @@ class InferenceBackend:
             return True
 
     def revert_to_base_model(self, base_model_name: str) -> bool:
-        """Revert the model to its pristine base state by unloading and
-        deleting all adapter configurations."""
+        """Revert the model to its pristine base state by unloading and deleting all adapter
+        configurations."""
         if base_model_name not in self.models:
             return False
 
         model = self.models[base_model_name].get("model")
 
         try:
-            # Unload adapter weights if model is a PeftModel.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Unloading LoRA adapters from '{base_model_name}'...")
                 unwrapped_base_model = model.unload()
@@ -750,9 +944,7 @@ class InferenceBackend:
         hf_token: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Ensure the base model and the given adapter are loaded.
-        Idempotent and handles all states correctly.
-        """
+        """Ensure the base model and the given adapter are loaded. Idempotent."""
         try:
             from utils.models import ModelConfig
 
@@ -762,7 +954,6 @@ class InferenceBackend:
 
             base_model_name = lora_config.base_model
 
-            # 1. Load the base model if not already in memory
             if base_model_name not in self.models or not self.models[base_model_name].get("model"):
                 logger.info(f"Base model '{base_model_name}' not loaded, loading now.")
                 base_config = ModelConfig.from_ui_selection(base_model_name, None, is_lora = False)
@@ -778,11 +969,9 @@ class InferenceBackend:
 
             self.active_model_name = base_model_name
 
-            # 2. Derive adapter name from the user's selection
             adapter_name = lora_path.split("/")[-1].replace(".", "_")
 
-            # 3. Ensure this adapter is loaded (load_adapter only reads from
-            # disk if the model doesn't already have it).
+            # load_adapter only reads from disk if the model does not already have this adapter.
             adapter_success = self.load_adapter(
                 base_model_name = base_model_name,
                 adapter_path = lora_path,
@@ -791,7 +980,6 @@ class InferenceBackend:
             if not adapter_success:
                 return False, base_model_name, None
 
-            # 4. Return the verified adapter name for the UI.
             return True, base_model_name, adapter_name
 
         except Exception as e:
@@ -818,7 +1006,6 @@ class InferenceBackend:
             )
             model.load_adapter(adapter_path, adapter_name = adapter_name)
 
-            # Update the registry only after a successful load.
             if "loaded_adapters" not in self.models[base_model_name]:
                 self.models[base_model_name]["loaded_adapters"] = {}
             self.models[base_model_name]["loaded_adapters"][adapter_name] = adapter_path
@@ -833,7 +1020,6 @@ class InferenceBackend:
             return False
 
     def set_active_adapter(self, base_model_name: str, adapter_name: str) -> bool:
-        """Set the active adapter for generation."""
         model = self.models[base_model_name].get("model")
         try:
             logger.info(f"Setting active adapter to: '{adapter_name}'")
@@ -841,16 +1027,14 @@ class InferenceBackend:
             self.models[base_model_name]["active_adapter"] = adapter_name
             return True
         except Exception as e:
-            # Catches "adapter not found" if something goes wrong.
             logger.error(f"Failed to set active adapter to '{adapter_name}': {e}")
             return False
 
     def _apply_adapter_state(self, use_adapter: Optional[Union[bool, str]]) -> None:
         """Apply adapter state before generation (must hold _generation_lock).
 
-        Toggles PEFT enable/disable_adapter_layers (non-destructive, no reload).
-        use_adapter: None = no change, False = base model, True = current adapter,
-        str = named adapter.
+        Toggles PEFT enable/disable_adapter_layers, so nothing is reloaded. use_adapter: None = no
+        change, False = base model, True = current adapter, str = named adapter.
         """
         if use_adapter is None:
             return
@@ -865,7 +1049,6 @@ class InferenceBackend:
             return
 
         if use_adapter is False:
-            # Disable LoRA layers -> base model output.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(
                     f"Compare mode: disabling adapters on '{base}' for base model generation"
@@ -875,7 +1058,6 @@ class InferenceBackend:
                 logger.info(f"Compare mode: model '{base}' is not a PeftModel, already base")
 
         elif use_adapter is True:
-            # Re-enable LoRA layers -> adapter output.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Compare mode: enabling adapters on '{base}' for LoRA generation")
                 model.base_model.enable_adapter_layers()
@@ -883,7 +1065,6 @@ class InferenceBackend:
                 logger.warning("use_adapter=true but model is not a PeftModel")
 
         elif isinstance(use_adapter, str):
-            # Enable adapters and set the named one active.
             if isinstance(model, (PeftModel, PeftModelForCausalLM)):
                 logger.info(f"Compare mode: enabling adapter '{use_adapter}' on '{base}'")
                 model.base_model.enable_adapter_layers()
@@ -899,9 +1080,9 @@ class InferenceBackend:
     ) -> Generator[str, None, None]:
         """Thread-safe generation with optional adapter toggling.
 
-        Adapter toggle + model.generate() are serialized by _generation_lock in
-        the background thread, avoiding the RLock-reentrant race when two async
-        SSE handlers share one event-loop thread. use_adapter: see _apply_adapter_state.
+        Adapter toggle and model.generate() are serialized by _generation_lock in the background
+        thread, avoiding the RLock-reentrant race when two async SSE handlers share one event-loop
+        thread. use_adapter: see _apply_adapter_state.
         """
         yield from self._generate_chat_response_inner(
             cancel_event = cancel_event, _adapter_state = use_adapter, **gen_kwargs
@@ -916,7 +1097,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 2048,
+        max_new_tokens: Optional[int] = 2048,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         enable_thinking: Optional[bool] = None,
@@ -951,7 +1132,12 @@ class InferenceBackend:
         # turn that failed or reported nothing leaves it empty rather than stale.
         _turn_stats: dict = {}
 
-        def _single_turn(conv: list, *, active_tools: Optional[list[dict]] = None):
+        def _single_turn(
+            conv: list,
+            *,
+            active_tools: Optional[list[dict]] = None,
+            tool_protocol_active: Optional[bool] = None,
+        ):
             # conv already has the system message -- avoid double-prepend.
             # `active_tools` is supplied by run_safetensors_tool_loop so one-shot
             # tools such as render_html can be removed from later same-response prompts.
@@ -976,6 +1162,7 @@ class InferenceBackend:
                     # result, so later turns render as ordinary new turns.
                     continue_final_message = continue_final_message,
                     presence_penalty = presence_penalty,
+                    tool_protocol_active = tool_protocol_active,
                 )
             finally:
                 _turn_stats["stats"] = self.last_generation_stats
@@ -1036,7 +1223,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         tools: Optional[list] = None,
@@ -1045,13 +1232,15 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
-        ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking``
-        are forwarded into ``apply_chat_template`` so templates that understand them
-        (Qwen3, Llama 3.1+, gpt-oss harmony) advertise tool schemas / reasoning controls.
-        ``presence_penalty`` matches the GGUF sampling path (0 disables it).
+        ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking`` are forwarded
+        into ``apply_chat_template`` so templates that understand them (Qwen3, Llama 3.1+, gpt-oss
+        harmony) advertise tool schemas and reasoning controls. ``presence_penalty`` matches the
+        GGUF sampling path (0 disables it).
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
@@ -1069,7 +1258,9 @@ class InferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
+            tool_protocol_active = tool_protocol_active,
             presence_penalty = presence_penalty,
+            stop = stop,
         )
 
     def _generate_chat_response_inner(
@@ -1081,7 +1272,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
@@ -1091,12 +1282,17 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
+        tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Inner generation logic, called by generate_chat_response and
-        generate_with_adapter_control.
+        """Inner generation logic.
 
-        _adapter_state is passed to generate_stream/vision so the background
-        thread can toggle adapters under the generation lock.
+        tool_protocol_active overrides the bool(tools) default for native tool token preservation:
+        the loop's unrestricted mode accepts any tool name with an EMPTY tools list, so bool(tools)
+        would strip the very tokens it is about to parse.
+
+        _adapter_state is passed to generate_stream/vision so the background thread can toggle
+        adapters under the generation lock.
         """
         if not self.active_model_name:
             raise RuntimeError("No active model")
@@ -1104,7 +1300,6 @@ class InferenceBackend:
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
-        # Unwrap processor -> raw tokenizer for VLMs on the text path.
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
@@ -1132,6 +1327,8 @@ class InferenceBackend:
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
                     tools = tools,
+                    tool_protocol_active = tool_protocol_active,
+                    stop = stop,
                 )
                 return
             else:
@@ -1143,7 +1340,6 @@ class InferenceBackend:
 
         # Text path: messages are already in ChatML format from eval.py.
 
-        # Step 1: apply get_chat_template if model is in mapper.
         try:
             from utils.datasets import (
                 MODEL_TO_TEMPLATE_MAPPER,
@@ -1184,12 +1380,12 @@ class InferenceBackend:
         except Exception as e:
             logger.warning(f"Could not apply get_chat_template: {e}")
 
-        # Step 2: format with tokenizer.apply_chat_template().
         if system_prompt:
             template_messages = [{"role": "system", "content": system_prompt}] + messages
         else:
             template_messages = messages
         reasoning_channel_markers_resolved = False
+        add_special_tokens = True
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1234,18 +1430,18 @@ class InferenceBackend:
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
+            # Suppress the tokenizer's BOS only when the template already emitted one.
+            add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")
-            # Fall back to manual formatting
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
             reasoning_channel_markers = None
             reasoning_channel_markers_resolved = True
 
-        # Step 3: generate
         yield from self.generate_stream(
             formatted_prompt,
             temperature,
@@ -1260,6 +1456,11 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            preserve_tool_tokens = bool(tools)
+            if tool_protocol_active is None
+            else tool_protocol_active,
+            add_special_tokens = add_special_tokens,
+            stop = stop,
         )
 
     def _generate_vision_response(
@@ -1277,6 +1478,8 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
         tools: Optional[list] = None,
+        tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1307,7 +1510,6 @@ class InferenceBackend:
         if not user_message:
             user_message = "Describe this image." if image else "Hello"
 
-        # Prepare vision messages
         if image:
             # Ordinary vision turns keep the historic collapse; full history is unbounded.
             has_tool_history = messages_have_tool_history(messages)
@@ -1455,19 +1657,30 @@ class InferenceBackend:
             ).to(model.device)
             prompt_text = input_text
         else:
-            # Text-only path for a vision model
             formatted_prompt = self.format_chat_prompt(
                 messages, system_prompt, continue_final_message = continue_final_message
             )
-            inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            inputs = raw_tokenizer(
+                formatted_prompt,
+                return_tensors = "pt",
+                add_special_tokens = not _prompt_already_has_bos(raw_tokenizer, formatted_prompt),
+            ).to(model.device)
             prompt_text = formatted_prompt
 
-        # Stream with TextIteratorStreamer + background thread
         try:
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
+            # An image request carries client tools too, so the wrapper survives here as well.
+            _preserve_tool_tokens = (
+                bool(tools) if tool_protocol_active is None else tool_protocol_active
+            )
             think_prefix = detect_think_prefill(
-                prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
+                prompt_text,
+                getattr(raw_tokenizer, "all_special_tokens", None),
+                # Ask the decoder, not the policy: with no usable all_special_ids it falls back
+                # to skip_special_tokens=True and drops the closer anyway.
+                preserves_think_close = _preserve_tool_tokens
+                and decoder_preserves_token(raw_tokenizer, "</think>"),
             )
             import threading
 
@@ -1488,6 +1701,13 @@ class InferenceBackend:
                 timeout = 0.2,
                 cancel_event = cancel_event,
                 use_harmony = self._is_gpt_oss_model(),
+                preserve_tool_tokens = _preserve_tool_tokens,
+            )
+
+            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len or 0, max_new_tokens
             )
 
             generation_kwargs = dict(
@@ -1502,8 +1722,6 @@ class InferenceBackend:
                 min_p = min_p,
             )
             # Presence penalty (GGUF parity) for VLM chat.
-            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
             _pp = (
                 _make_presence_penalty_processor(presence_penalty, prompt_len)
                 if _vision_input_ids is not None
@@ -1511,7 +1729,10 @@ class InferenceBackend:
             )
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
-            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            stop_streamer = _StopSequenceStreamer(streamer, stop)
+            if stop_streamer.sequences:
+                generation_kwargs["streamer"] = stop_streamer
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
@@ -1529,13 +1750,12 @@ class InferenceBackend:
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
-                        if hasattr(streamer, "abort"):
-                            streamer.abort()
+                        stop_streamer.abort()
                         logger.error(f"Vision generation error in thread: {e}")
                     finally:
                         timer.finish()
                         try:
-                            streamer.end()
+                            stop_streamer.end()
                         except Exception:
                             pass
 
@@ -1560,7 +1780,7 @@ class InferenceBackend:
                         elif time.monotonic() >= cancel_deadline:
                             break
                     try:
-                        new_token = next(streamer)
+                        new_token = next(stop_streamer)
                     except StopIteration:
                         generation_complete = True
                         break
@@ -1568,7 +1788,7 @@ class InferenceBackend:
                         if not thread.is_alive():
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         if cancel_deadline is not None:
@@ -1580,7 +1800,7 @@ class InferenceBackend:
                                 break
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         continue
@@ -1608,9 +1828,8 @@ class InferenceBackend:
                         model, gen_outputs["sequences"], prompt_len
                     ),
                     max_new_tokens = max_new_tokens,
-                    ended_on_stop_token = self._ended_on_stop_token(
-                        gen_outputs["sequences"], active_stop_token_ids
-                    ),
+                    ended_on_stop_token = stop_streamer.matched.is_set()
+                    or self._ended_on_stop_token(gen_outputs["sequences"], active_stop_token_ids),
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
@@ -1655,7 +1874,6 @@ class InferenceBackend:
         processor = model_info.get("processor") or model_info.get("tokenizer")
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        # Last user text; default matches the notebook prompt
         user_text = "Please transcribe this audio."
         if messages:
             for msg in reversed(messages):
@@ -1663,7 +1881,6 @@ class InferenceBackend:
                     user_text = content_to_text(msg["content"])
                     break
 
-        # ASR-specific default system prompt if none set
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
@@ -1687,7 +1904,6 @@ class InferenceBackend:
             audio_messages, None, markup_for_tokenizer(processor)
         )
 
-        # apply_chat_template does audio embedding + tokenization in one step
         inputs = processor.apply_chat_template(
             audio_messages,
             add_generation_prompt = True,
@@ -1708,6 +1924,12 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len or 0, max_new_tokens
+            )
+
             # Notebook uses do_sample=False (greedy) for ASR accuracy
             generation_kwargs = dict(
                 **inputs,
@@ -1717,8 +1939,6 @@ class InferenceBackend:
                 do_sample = False,
             )
 
-            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
@@ -1808,10 +2028,8 @@ class InferenceBackend:
         audio_array,
         cancel_event = None,
     ) -> Generator[str, None, None]:
-        """Whisper ASR: takes an audio numpy array, yields transcribed text.
-
-        Uses the pre-built transformers pipeline created at model load.
-        """
+        """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
+        built at model load."""
         # The pipeline reports no token counts, so clear rather than let gen_done
         # ship a chat turn's stats as this one's.
         self.last_generation_stats = None
@@ -1851,6 +2069,7 @@ class InferenceBackend:
         timeout: float = 0.2,
         cancel_event = None,
         use_harmony: bool = False,
+        preserve_tool_tokens: bool = False,
     ):
         """Create the streamer matching this model's native response protocol."""
         if use_harmony:
@@ -1884,10 +2103,11 @@ class InferenceBackend:
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
+        stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
         return TextIteratorStreamer(
-            tokenizer,
+            stream_tokenizer,
             skip_prompt = skip_prompt,
-            skip_special_tokens = True,
+            skip_special_tokens = not preserve_tool_tokens,
             timeout = timeout,
         )
 
@@ -1928,7 +2148,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
@@ -1936,12 +2156,18 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        preserve_tool_tokens: bool = False,
+        add_special_tokens: bool = True,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
-        _adapter_state: if not None, the background thread toggles adapters
-        before model.generate(), under _generation_lock.
-        ``presence_penalty`` matches the GGUF sampling path via a logits processor (0 disables it).
+        Rendered chat prompts pass add_special_tokens=False; raw prompts keep the tokenizer
+        defaults, including BOS insertion for base models.
+
+        _adapter_state: if not None, the background thread toggles adapters before model.generate(),
+        under _generation_lock. ``presence_penalty`` matches the GGUF sampling path via a logits
+        processor (0 disables it).
         """
         if not self.active_model_name:
             raise RuntimeError("No active model")
@@ -1958,7 +2184,9 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 
         try:
-            inputs = tokenizer(prompt, return_tensors = "pt").to(model.device)
+            inputs = tokenizer(
+                prompt, return_tensors = "pt", add_special_tokens = add_special_tokens
+            ).to(model.device)
 
             import threading
 
@@ -1968,7 +2196,16 @@ class InferenceBackend:
             think_prefix = (
                 ""
                 if self._is_gpt_oss_model()
-                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
+                else detect_think_prefill(
+                    prompt,
+                    getattr(tokenizer, "all_special_tokens", None),
+                    # Both streamers keep </think> through NativeToolTokenDecoder, so the
+                    # opener has to be re-emitted.
+                    preserves_think_close = (
+                        preserve_tool_tokens or reasoning_channel_markers is not None
+                    )
+                    and decoder_preserves_token(tokenizer, "</think>"),
+                )
             )
 
             streamer = self._make_text_streamer(
@@ -1982,7 +2219,11 @@ class InferenceBackend:
                 timeout = 0.2,
                 cancel_event = cancel_event,
                 use_harmony = self._is_gpt_oss_model(),
+                preserve_tool_tokens = preserve_tool_tokens,
             )
+
+            prompt_len = int(inputs["input_ids"].shape[1])
+            max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens)
 
             generation_kwargs = dict(
                 **inputs,
@@ -2001,12 +2242,14 @@ class InferenceBackend:
                 else tokenizer.pad_token_id,
             )
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
-            prompt_len = int(inputs["input_ids"].shape[1])
             # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
             _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
-            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            stop_streamer = _StopSequenceStreamer(streamer, stop)
+            if stop_streamer.sequences:
+                generation_kwargs["streamer"] = stop_streamer
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
@@ -2022,13 +2265,12 @@ class InferenceBackend:
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
-                        if hasattr(streamer, "abort"):
-                            streamer.abort()
+                        stop_streamer.abort()
                         logger.error(f"Generation error: {e}")
                     finally:
                         timer.finish()
                         try:
-                            streamer.end()
+                            stop_streamer.end()
                         except Exception:
                             pass
 
@@ -2055,7 +2297,7 @@ class InferenceBackend:
                         elif time.monotonic() >= cancel_deadline:
                             break
                     try:
-                        new_token = next(streamer)
+                        new_token = next(stop_streamer)
                     except StopIteration:
                         generation_complete = True
                         break
@@ -2063,7 +2305,7 @@ class InferenceBackend:
                         if not thread.is_alive():
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         if cancel_deadline is not None:
@@ -2075,7 +2317,7 @@ class InferenceBackend:
                                 break
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         continue
@@ -2105,9 +2347,8 @@ class InferenceBackend:
                         model, gen_outputs["sequences"], prompt_len
                     ),
                     max_new_tokens = max_new_tokens,
-                    ended_on_stop_token = self._ended_on_stop_token(
-                        gen_outputs["sequences"], active_stop_token_ids
-                    ),
+                    ended_on_stop_token = stop_streamer.matched.is_set()
+                    or self._ended_on_stop_token(gen_outputs["sequences"], active_stop_token_ids),
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
@@ -2122,9 +2363,6 @@ class InferenceBackend:
             logger.error(f"Error during generation: {e}")
             raise
 
-    # ── Audio (TTS) Generation ────────────────────────────────────
-
-    # ── Audio (TTS) Generation ────────────────────────────────────
     def generate_audio_response(
         self,
         text: str,
@@ -2140,9 +2378,7 @@ class InferenceBackend:
         language: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
-        """Generate audio from text for TTS models.
-        Returns (wav_bytes, sample_rate). Blocking — full audio before return.
-        """
+        """Generate audio from text for TTS models. Returns (wav_bytes, sample_rate). Blocking."""
         # Reserved for native audio architectures; codec-backed TTS models do
         # not currently expose scene instructions or deterministic seeding.
         del instructions, language, seed
@@ -2386,10 +2622,8 @@ class InferenceBackend:
 
     @classmethod
     def _patch_repetition_penalty_processor(cls):
-        """Monkey-patch transformers' RepetitionPenaltyLogitsProcessor with a
-        64-token sliding-window variant (from the OuteTTS notebook).
-        Applied once per process.
-        """
+        """Monkey-patch transformers' RepetitionPenaltyLogitsProcessor with the OuteTTS notebook's
+        64-token sliding-window variant. Applied once per process."""
         if cls._repetition_penalty_patched:
             return
         cls._repetition_penalty_patched = True
@@ -2440,11 +2674,9 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
     ) -> str:
-        """Render the chat prompt, peeling kwargs the template doesn't
-        understand. Delegates to the dependency-light helper module so the
-        fallback chain is unit-testable without pulling unsloth / torch into
-        the test sandbox.
-        """
+        """Render the chat prompt, peeling kwargs the template does not understand. Delegates to the
+        dependency-light helper module so the fallback chain is unit-testable without pulling
+        unsloth / torch into the test sandbox."""
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
         )
@@ -2577,16 +2809,7 @@ class InferenceBackend:
         return f"{manual_prompt}{partial}" if partial else manual_prompt
 
     def _format_chat_manual(self, messages: list, template_type: str, special_tokens: dict) -> str:
-        """Manual chat-formatting fallback when the tokenizer template fails.
-
-        Args:
-            messages: List of message dictionaries
-            template_type: Detected template type
-            special_tokens: Dictionary of special tokens
-
-        Returns:
-            str: Manually formatted prompt
-        """
+        """Manual chat-formatting fallback when the tokenizer template fails."""
         if template_type == "llama3":
             return self._format_llama3_template(messages, special_tokens)
         elif template_type == "mistral":
@@ -2599,7 +2822,6 @@ class InferenceBackend:
             return self._format_generic_template(messages, special_tokens)
 
     def _format_llama3_template(self, messages: list, special_tokens: dict) -> str:
-        """Format messages using Llama 3 template"""
         bos_token = special_tokens.get("bos_token", "<|begin_of_text|>")
         formatted = bos_token
 
@@ -2612,7 +2834,6 @@ class InferenceBackend:
         return formatted
 
     def _format_mistral_template(self, messages: list, special_tokens: dict) -> str:
-        """Format messages using Mistral template"""
         bos_token = special_tokens.get("bos_token", "<s>")
         formatted = bos_token
 
@@ -2647,7 +2868,6 @@ class InferenceBackend:
         return formatted
 
     def _format_chatml_template(self, messages: list, special_tokens: dict) -> str:
-        """Format messages using ChatML template"""
         formatted = ""
 
         for msg in messages:
@@ -2659,7 +2879,6 @@ class InferenceBackend:
         return formatted
 
     def _format_alpaca_template(self, messages: list, special_tokens: dict) -> str:
-        """Format messages using Alpaca template"""
         formatted = ""
         system_msg = None
 
@@ -2679,7 +2898,6 @@ class InferenceBackend:
         return formatted
 
     def _format_generic_template(self, messages: list, special_tokens: dict) -> str:
-        """Generic fallback formatting"""
         formatted = ""
 
         for msg in messages:
@@ -2691,7 +2909,6 @@ class InferenceBackend:
         return formatted
 
     def check_vision_model_compatibility(self) -> bool:
-        """Whether the current model supports vision."""
         current_model = self.get_current_model()
         if current_model and current_model in self.models:
             return self.models[current_model].get("is_vision", False)
@@ -2707,7 +2924,6 @@ class InferenceBackend:
             return
 
         try:
-            # Common pattern for Unsloth/Hugging Face models
             if hasattr(model, "past_key_values"):
                 model.past_key_values = None
             if hasattr(model, "generation_config"):
@@ -2719,14 +2935,13 @@ class InferenceBackend:
             logger.warning(f"Could not fully reset model state for {model_name}: {e}")
 
     def reset_generation_state(self, caller_cancel_event = None):
-        """Reset any cached generation state to prevent hanging after errors
+        """Reset any cached generation state to prevent hanging after errors.
 
-        ``caller_cancel_event`` is accepted for signature parity with the
-        orchestrator, which uses it to drop a reset from a request that never
-        started. Nothing here cancels a live generation, so it is unused.
+        ``caller_cancel_event`` is accepted for signature parity with the orchestrator, which uses
+        it to drop a reset from a request that never started. Nothing here cancels a live
+        generation, so it is unused.
         """
         try:
-            # Clear cached state for ALL loaded models
             for model_name in self.models.keys():
                 self._reset_model_generation_state(model_name)
 
@@ -2771,9 +2986,9 @@ class InferenceBackend:
     def _generated_token_count(self, model, outputs, prompt_len) -> Optional[int]:
         """New tokens ``generate`` produced, or None when the shape says nothing.
 
-        ``generate`` returns prompt + completion for decoder-only models and
-        decoder-start + completion for encoder-decoder ones. Anything else yields
-        None, so the caller never reports a count it did not measure.
+        ``generate`` returns prompt + completion for decoder-only models and decoder-start +
+        completion for encoder-decoder ones. Anything else yields None, so the caller never reports
+        a count it did not measure.
         """
         sequences = getattr(outputs, "sequences", outputs)
         shape = getattr(sequences, "shape", None)
@@ -2787,11 +3002,9 @@ class InferenceBackend:
         return total - int(prompt_len)
 
     def _ended_on_stop_token(self, outputs, stop_token_ids) -> bool:
-        """Whether the final token is a stop token rather than one cut off by the cap.
-
-        A response landing exactly on ``max_new_tokens`` ended naturally; only one
-        that did NOT emit a stop token ran out of budget.
-        """
+        """Whether the final token is a stop token rather than one cut off by the cap. A response
+        landing exactly on ``max_new_tokens`` ended naturally; only one that did NOT emit a stop
+        token ran out of budget."""
         sequences = getattr(outputs, "sequences", outputs)
         if isinstance(stop_token_ids, int):
             stop_token_ids = (stop_token_ids,)
@@ -2813,11 +3026,10 @@ class InferenceBackend:
     ) -> None:
         """Latch usage, timings and budget exhaustion for the worker's gen_done stats channel.
 
-        Left at None when the token count is unknown, so a path that cannot count
-        reports what it did before. ``truncated`` becomes finish_reason "length";
-        a cancelled run stopped by request, not at the cap, so it never sets it.
-        ``timer`` carries the prefill/decode split behind the prompt and generation
-        speeds; a path that does not measure one reports usage alone.
+        Left at None when the token count is unknown, so a path that cannot count reports what it
+        did before. ``truncated`` becomes finish_reason "length"; a cancelled run stopped by
+        request, not at the cap, so it never sets it. ``timer`` carries the prefill/decode split
+        behind the prompt and generation speeds.
         """
         if completion_tokens is None:
             return
@@ -2846,9 +3058,10 @@ class InferenceBackend:
             stats["timings"] = timings
         self.last_generation_stats = stats
 
-    def _cancel_stopping_criteria(self, cancel_event):
+    def _cancel_stopping_criteria(self, *events):
         """Build a Transformers stopping criteria list for user cancellation."""
-        if cancel_event is None:
+        events = [ev for ev in events if ev is not None]
+        if not events:
             return None
         from transformers.generation.stopping_criteria import (
             StoppingCriteria,
@@ -2862,7 +3075,7 @@ class InferenceBackend:
             def __call__(self, input_ids, scores, **kwargs):
                 return self.ev.is_set()
 
-        return StoppingCriteriaList([_CancelCriteria(cancel_event)])
+        return StoppingCriteriaList([_CancelCriteria(ev) for ev in events])
 
     def _clean_generated_text(
         self,
@@ -2889,11 +3102,13 @@ class InferenceBackend:
             if isinstance(stop_token_ids, int):
                 stop_token_ids = (stop_token_ids,)
             for token_id in stop_token_ids or ():
-                try:
-                    token = tokenizer.convert_ids_to_tokens(int(token_id))
-                except Exception:
-                    token = None
+                token = stop_token_text(tokenizer, token_id)
                 if isinstance(token, str) and token and text.endswith(token):
+                    if closes_an_open_envelope(text, token):
+                        # A native CLOSER that is also the stop token still closes the envelope
+                        # strict parsing is about to read. Its opener must be present, or an
+                        # orphan closer stays on screen.
+                        continue
                     text = text[: -len(token)]
                 elif (
                     isinstance(token, str)
@@ -2941,8 +3156,6 @@ class InferenceBackend:
 
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
-
-            # Exact match first
             model_name_lower = model_name.lower()
             if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
                 chat_template_info["template_name"] = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
@@ -3014,11 +3227,9 @@ class InferenceBackend:
         return self.active_model_name
 
     def is_model_loading(self) -> bool:
-        """Whether any model is currently loading."""
         return len(self.loading_models) > 0
 
     def get_loading_model(self) -> Optional[str]:
-        """Name of the currently loading model."""
         return next(iter(self.loading_models)) if self.loading_models else None
 
     def load_model_simple(
@@ -3028,18 +3239,8 @@ class InferenceBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
     ) -> bool:
-        """Simple model-loading wrapper for the chat interface. Takes a string
-        path and builds the ModelConfig internally.
-
-        Args:
-            model_path: Model name or path (e.g., "unsloth/llama-3-8b")
-            hf_token: HuggingFace token for gated models
-            max_seq_length: Maximum sequence length
-            load_in_4bit: Whether to use 4-bit quantization
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
+        """Simple model-loading wrapper for the chat interface: takes a string path and builds the
+        ModelConfig internally."""
         try:
             config = ModelConfig.from_ui_selection(
                 model_path,
@@ -3050,7 +3251,7 @@ class InferenceBackend:
             return self.load_model(
                 config = config,
                 max_seq_length = max_seq_length,
-                dtype = None,  # Auto-detect
+                dtype = None,
                 load_in_4bit = load_in_4bit,
                 hf_token = hf_token,
             )
@@ -3060,7 +3261,6 @@ class InferenceBackend:
             return False
 
 
-# Global inference backend instance
 inference_backend = InferenceBackend()
 
 

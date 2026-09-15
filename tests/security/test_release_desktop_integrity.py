@@ -581,3 +581,52 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
         "$controlPassed = $true"
     ), "the control passes without first confirming the sample is gone"
+
+
+def test_cloud_block_level_is_verified_against_highplus():
+    """A refused HighPlus leaves the previous level, not zero, so -eq 0 passes a
+    runner still on High. 4 is HighPlus per the Defender Policy CSP."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    assert "-CloudBlockLevel HighPlus" in scan
+    check = [line for line in scan.splitlines() if "$pref.CloudBlockLevel" in line]
+    assert len(check) == 1, f"expected one CloudBlockLevel check, found {check}"
+    assert "-ne 4" in check[0], (
+        "the CloudBlockLevel check no longer compares against 4 (HighPlus), so a "
+        "runner left on High passes as fully configured"
+    )
+
+
+def test_asr_verification_checks_the_action_not_just_the_rule_id():
+    """Add-MpPreference is additive, so a rule a policy set to Disabled or Block
+    keeps that action and an id-only check calls it applied."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    verify = scan.split("Add-MpPreference -AttackSurfaceReductionRules_Ids", 1)[1]
+    verify = verify.split("$scanStart = Get-Date", 1)[0]
+    assert "AttackSurfaceReductionRules_Actions" in verify, (
+        "the ASR verification reads only the rule ids, so a rule stuck in Block "
+        "or Disabled still reports as applied in audit mode"
+    )
+    assert "-ne 2" in verify, "the ASR verification no longer requires AuditMode (2)"
+    assert (
+        "[Math]::Min(" in verify
+    ), "the ASR arrays are zipped without guarding a truncated Actions read"
+
+
+def test_asr_audit_events_are_reported_as_runner_activity_only():
+    """All four rules fire on process launch and this step only copies and scans
+    the bundle, so a 1121/1122 here is runner activity, not a verdict on it."""
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    report = scan.split("$asrEvents = @(Get-WinEvent", 1)[1]
+    assert (
+        "$_.TimeCreated -ge $scanStart" in report
+    ), "the ASR event query is no longer bounded to this step's own window"
+    assert "::error::" not in report.split("if ($detected -or $unscanned)", 1)[0], (
+        "ASR audit events became fatal; 01443614 fires on low prevalence, which "
+        "every freshly built binary has, so this would block every release"
+    )
+    assert (
+        "not attributable" in report or "not a finding against it" in report
+    ), "the ASR warning reads as a verdict on the bundle, which is never executed"

@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = (path: string) =>
-  readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+import { readSrc } from "./helpers/kit.ts";
+
 const PORTALLED_NATIVE_TITLEBAR_PATTERN =
   /"--studio-window-chrome-top",[\s\S]*?NATIVE_MAC_TITLEBAR_HEIGHT_VAR/;
 
 test("mac titlebar navigation shifts buttons with centered glyphs", async () => {
   const [titlebar, provider] = await Promise.all([
-    source("components/tauri/window-titlebar.tsx"),
-    source("app/provider.tsx"),
+    readSrc("components/tauri/window-titlebar.tsx"),
+    readSrc("app/provider.tsx"),
   ]);
   const macStyle = provider.match(
     /const MAC_NATIVE_CHROME_STYLE = \{[\s\S]*?\} as CSSProperties;/,
@@ -30,10 +29,10 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
 
 test("mac chat and media headers share the lowered control row", async () => {
   const [provider, chat, images, video] = await Promise.all([
-    source("app/provider.tsx"),
-    source("features/chat/chat-page.tsx"),
-    source("features/images/images-page.tsx"),
-    source("features/video/video-page.tsx"),
+    readSrc("app/provider.tsx"),
+    readSrc("features/chat/chat-page.tsx"),
+    readSrc("features/images/images-page.tsx"),
+    readSrc("features/video/video-page.tsx"),
   ]);
 
   const macStyle = provider.match(
@@ -51,8 +50,8 @@ test("mac chat and media headers share the lowered control row", async () => {
 // fallback string is built from the same constant rather than retyped.
 test("mac native chrome clearance stays fixed across interface scales", async () => {
   const [provider, runtime] = await Promise.all([
-    source("app/provider.tsx"),
-    source("features/settings/lib/interface-scale-runtime.ts"),
+    readSrc("app/provider.tsx"),
+    readSrc("features/settings/lib/interface-scale-runtime.ts"),
   ]);
   assert.match(
     runtime,

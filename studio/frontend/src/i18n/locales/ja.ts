@@ -184,6 +184,34 @@ export const ja = {
     },
   },
   settings: {
+    accounts: {
+      title: "アカウント",
+      description: "個別の Studio アカウントを作成します。新しいユーザーは一度きりのセットアップコードでサインインし、パスワードを設定します。",
+      username: "ユーザー名",
+      create: "アカウントを作成",
+      setupCode: "セットアップコード",
+      setupFor: "{username} のセットアップコード",
+      shownOnce: "このコードを今すぐコピーしてアカウントの持ち主に渡してください。ここにしか表示されず、60 分以内に一度だけ使えます。",
+      expires: "有効期限: {expiry}",
+      copy: "セットアップコードをコピー",
+      copied: "コピーしました",
+      copyFailed: "コピーできませんでした。上のセットアップコードを選択してコピーしてください。",
+      dismiss: "完了",
+      owner: "インストールの所有者",
+      active: "有効",
+      inactive: "無効",
+      regenerate: "セットアップコードを再発行",
+      resetTitle: "{username} のパスワードをリセットしますか?",
+      resetDescription: "セットアップコードを再発行すると {username} のパスワードが置き換えられ、セッションは終了し、API キーは失効します。新しいコードを渡して、もう一度パスワードを選んでもらってください。",
+      deactivate: "無効化",
+      reactivate: "再有効化",
+      delete: "アカウントを削除",
+      deleteTitle: "{username} を削除しますか?",
+      deleteDescription: "{username} のセッションを取り消し、実行中の作業をキャンセルします。チャット、設定、認証情報、アップロード、データセット、学習の実行、出力、エクスポート、ギャラリー、サンドボックス、プロジェクト、一時ファイルは退避されます。ディレクトリは名前を変えて脇に置かれ、削除はされません。同じユーザー名を再び作成すると、これらのデータを持たない新しいアカウントになります。",
+      cancel: "キャンセル",
+      retry: "アカウントを再読み込み",
+      failed: "アカウントの要求に失敗しました。",
+    },
     title: "設定",
     dialog: {
       title: "設定",
@@ -195,6 +223,7 @@ export const ja = {
       panelReload: "再読み込み",
     },
     tabs: {
+      accounts: "アカウント",
       general: "一般",
       profile: "プロフィール",
       appearance: "外観",
@@ -467,6 +496,17 @@ export const ja = {
       droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
       morePending: "さらに行を読み込み中です。次回の更新時に表示されます。",
       staleSession: "ファイルへのログ出力が無効なため、これは以前のセッションであり更新されません。",
+      downloadAllLogs: "すべてのログをダウンロード (.zip)",
+      downloadingAllLogs: "ログをまとめています...",
+      exportMaskedNote: "書き出したファイルでは認証情報をマスクします。非常に大きなログは直近の行だけを残し、一部のログはまったく含まれないことがあります。アーカイブ内の EXPORT_WARNINGS.txt を確認してください。",
+      downloadedTo: "{path} に保存しました",
+      downloadedToBrowser: "ダウンロードを開始しました。",
+      showInFolder: "フォルダーで表示",
+      openLogsFolder: "ログフォルダーを開く",
+      openLogsFolderFailed: "ログフォルダーを開けませんでした。",
+      exportFailed: "ログをダウンロードできませんでした。",
+      exportTooOld: "実行中の Unsloth バックエンドが古すぎるため、ログを書き出せません。バックエンドを更新して再起動してください。",
+      exportForbidden: "すべてのログをダウンロードするには、サインイン済みの Studio セッションが必要です。API キーだけでは実行できません。",
       keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {
@@ -904,7 +944,11 @@ export const ja = {
         currentStreak: "現在の連続日数",
         longestStreak: "最長の連続日数",
         activityTitle: "トークンの推移",
-        activityDescription: "直近{weeks}で{total}",
+        activityDescription: {
+          daily: "直近{weeks}で{total}",
+          weekly: "ピーク週 {total} · 直近{weeks}",
+          cumulative: "直近{weeks}で累計{total}",
+        },
         mode: {
           daily: "日次",
           weekly: "週次",
@@ -1181,8 +1225,8 @@ export const ja = {
         keepResidentDescription: "プロンプト間も VRAM に常駐します。",
         keepResidentHint: "モデルがロードされている間、重みをシステム RAM に戻しません。アイドル時の自動アンロードを無効にし、重みが実際にホスト RAM 上にある場合（ユニファイドメモリ、または GPU への部分オフロード）は --mlock も渡すため、OS が重みをページアウトして次のプロンプトで再アップロードすることがなくなります。",
         noRamReserve: "モデル用にシステム RAM を確保しない",
-        noRamReserveDescription: "RAM に完全なコピーを保持しません。",
-        noRamReserveHint: "RAM に完全なコピーを保持せず、重みを VRAM へ転送します。llama.cpp のメモリマップ読み込みを維持し、--no-mmap と --mlock を除去します。",
+        noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
+        noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
         memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
@@ -1241,6 +1285,7 @@ export const ja = {
       copy: "コピー",
       copied: "コピーしました",
       commandBuilder: "コマンドビルダー",
+      commandShell: "すべてのコマンドに使用するシェル",
       agent: "コーディングエージェント",
       model: "モデル",
       searchModels: "GGUF モデルを検索...",
@@ -1258,9 +1303,8 @@ export const ja = {
       docs: "ドキュメント",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1369,6 +1413,7 @@ export const ja = {
           "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
         chatWithFiles: "ファイルとチャット (RAG)",
         mcp: "MCP",
+        skills: "エージェントスキル",
         savedPrompts: "保存済みプロンプト",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
@@ -1681,7 +1726,7 @@ export const ja = {
         desktopCheckingDescription: "通常は数秒で完了します。",
         desktopAvailable: "デスクトップアプリ {version} を利用できます",
         desktopAvailableDescription:
-          "今すぐアップデートすると、バックグラウンドで準備されます。作業を続けたまま、準備ができたら再起動してください。",
+          "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
           "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
         desktopManualInstall:
@@ -1692,19 +1737,11 @@ export const ja = {
         desktopCurrent: "デスクトップアプリは最新です",
         desktopCurrentDescription:
           "Unsloth は今後も自動的にアップデートを確認します。",
-        desktopPreparingDescription: "アップデートをバックグラウンドで準備しています。作業を続けられます。",
-        desktopReadyToRestartDescription:
-          "準備が完了しました。再起動するとアップデートのインストールが完了します。",
-        desktopReadyToInstallDescription:
-          "アプリのアップデートをダウンロードしました。インストールするにはバックエンドのアップデートを完了してください。",
         checkForUpdates: "アップデートを確認",
         checkAgain: "もう一度確認",
         retryCheck: "再試行",
         checking: "確認中...",
-        preparing: "準備中...",
         updateNow: "今すぐアップデート",
-        restartToUpdate: "再起動して更新",
-        finishUpdate: "アップデートを完了",
         openReleasePage: "リリースページを開く",
         unknownInstall: "Unsloth がどのようにインストールされたか検出できませんでした。インストーラーまたは PyPI インストールの場合は、上記のコマンドを使用してください。",
         localCheckout:
@@ -1841,6 +1878,7 @@ export const ja = {
       sourceHfCache: "HF キャッシュ",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "カスタムフォルダ",
       sourceLocalModel: "ローカルモデル",
       scanningLocal: "ローカルモデルをスキャン中…",
@@ -2108,6 +2146,7 @@ export const ja = {
       memoryEfficient: "メモリ効率化",
       weightDecomposed: "重み分解",
       notSupportedAppleSilicon: "Apple Silicon ではサポートされていません",
+      doraNeedsVisionLayersOff: "DoRA を使うにはビジョンレイヤーの学習をオフにしてください",
       optimization: "最適化",
       schedule: "スケジュール",
       memory: "メモリ",
@@ -2398,5 +2437,23 @@ export const ja = {
     kvRate: "KV は事前確保、約 {rate}/トークン",
     oomLikely: "現在の設定ではメモリ不足になる可能性があります",
     tooLarge: "VRAM を超えるため CPU にオフロードされます。より小さい量子化の方が高速です",
+  },
+  skills: {
+    title: "エージェントスキル",
+    description: "スキルは標準のエージェントフォルダーから検出されます。ここで有効にし、チャットで @ を入力して呼び出します。",
+    precedence: "~/.agents/skills は ~/.claude/skills より優先されます。",
+    refresh: "更新",
+    empty: "エージェントスキルが見つかりません。~/.agents/skills または ~/.claude/skills に SKILL.md のフォルダーを追加して更新してください。",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "同梱",
+    shadowed: "上書き",
+    invalid: "無効",
+    compatibility: "互換性: {value}",
+    shadowedBy: "同名の別のスキル ({source}) が優先されます。",
+    enable: "{name} を有効化",
+    disable: "{name} を無効化",
+    updateError: "エージェントスキルを更新できませんでした",
+    mentions: "エージェントスキル",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

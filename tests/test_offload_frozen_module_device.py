@@ -28,6 +28,9 @@ card is testable on any box, including CI runners with no GPU.
 
 import types
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 
@@ -180,7 +183,7 @@ def test_a_module_without_modules_to_save_is_untouched():
     assert plain.to_calls == []
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "needs a CUDA device")
 def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
     class _Real:
         def __init__(self):
