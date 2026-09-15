@@ -330,7 +330,16 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
     lines = [
         "### VirusTotal delta against the reported baseline",
         "",
-        f"Baseline recorded as: {BASELINE_NOTE}",
+        # Only when the baseline really IS the recorded one. A dispatch can override the hash, and
+        # printing the recorded identity beside an override's live numbers produced an artifact that
+        # combined someone else's file with install.ps1's historical scores, which is a delta built
+        # to be misattributed.
+        (
+            f"Baseline recorded as: {BASELINE_NOTE}"
+            if baseline.sha256.lower() == BASELINE_SHA256.lower()
+            else f"Baseline OVERRIDDEN to `{baseline.sha256[:16]}...`, so the recorded "
+            f"install.ps1 scores do not apply and no historical comparison is implied."
+        ),
         "",
         "| | baseline | candidate |",
         "|---|---|---|",

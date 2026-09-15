@@ -409,3 +409,25 @@ def test_third_party_text_cannot_break_the_job_summary() -> None:
     assert (
         "Evil\\|Engine" in report or "Evil|Engine" not in report
     ), "the engine name's pipe was not escaped, so it opens a new table cell"
+
+
+def test_an_overridden_baseline_is_not_labelled_as_the_recorded_one() -> None:
+    """The report identified every baseline as install.ps1 at 1ad44677d, override or not.
+
+    A dispatch can supply `baseline_sha256`, and the lookup and comparison then use that hash while
+    the header still claimed the recorded identity and printed that file's historical scores. The
+    resulting artifact combines one file's live table with another's name, which is a delta built
+    to be misread.
+    """
+    # The real recorded hash, not the placeholder the other helpers use: the label is chosen by
+    # comparing against it, so a stand-in would test nothing.
+    real = _snap(copy.deepcopy(vtd._BASELINE_FIXTURE), "baseline", vtd.BASELINE_SHA256)
+    recorded = vtd.render(real, _snap(copy.deepcopy(vtd._BASELINE_FIXTURE)), vtd.Delta())
+    assert vtd.BASELINE_NOTE in recorded, "the recorded baseline lost its provenance note"
+
+    other = _snap(copy.deepcopy(vtd._BASELINE_FIXTURE), "baseline", "c" * 64)
+    overridden = vtd.render(other, _snap(copy.deepcopy(vtd._BASELINE_FIXTURE)), vtd.Delta())
+    assert vtd.BASELINE_NOTE not in overridden, (
+        "an overridden baseline is still labelled as install.ps1 at the recorded commit"
+    )
+    assert "OVERRIDDEN" in overridden, overridden.splitlines()[:4]
