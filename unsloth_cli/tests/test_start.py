@@ -1612,6 +1612,33 @@ def test_connect_prints_the_running_models_load_warning(fake_studio, monkeypatch
     assert f"Warning: {notice}" in result.output
 
 
+def test_connect_skips_the_load_warning_of_another_active_model(fake_studio, monkeypatch):
+    http_json = start._http_json
+
+    def other_model_warns(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {
+                "is_gguf": True,
+                "active_model": "unsloth/Other-GGUF",
+                "model_identifier": "unsloth/Other-GGUF",
+                "memory_warning": "Not enough disk space to download BF16, so Q4_1 was loaded instead.",
+            }
+        return http_json(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", other_model_warns)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: Not enough disk space" not in result.output
+
+
 def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
     forwarded = json.dumps({"env": {"CLAUDE_CODE_USE_FOUNDRY": "1"}})
     result = CliRunner().invoke(
