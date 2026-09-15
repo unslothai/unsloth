@@ -3275,7 +3275,7 @@ _CD_TARGET_RE = re.compile(
     # that only knows the bare name resolves everything after them against the wrong directory.
     # `!` and `time` are reserved words, not commands, so they can precede the builtin directly:
     # `! cd ../..` and `time cd ../..` both move the shell exactly as the bare form does.
-    r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
     # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
     r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
     r"(?:cd|pushd)\s+"
@@ -3285,7 +3285,7 @@ _CD_TARGET_RE = re.compile(
 # `cd`/`pushd` with a target, or one of the moves that RETURNS: `cd -` goes back to the previous
 # directory and `popd` pops the stack `pushd` built. Matched in one pass so the order is kept.
 _DIRECTORY_MOVE_RE = re.compile(
-    r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
     r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
     r"(?:(?P<back>cd\s+-(?![\w/\\-])|popd\b)"
     # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir, so the commands

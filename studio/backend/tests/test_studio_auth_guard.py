@@ -1458,6 +1458,8 @@ def test_command_positions_explicit_bases_and_chdir_aliases(studio_home):
     home = studio_home
     for command in (
         "cd ../..; cat auth/auth.db",
+        # An indented command line moves the shell exactly as an unindented one does.
+        "  cd ../..; cat auth/auth.db",
         "x=1 && cd ../.. && cat auth/auth.db",
         "if true; then cd ../..; cat auth/auth.db; fi",
     ):
