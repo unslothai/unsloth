@@ -72,11 +72,16 @@ INDEXED_DEVICES_CONSTRUCTIBLE = _device_or_none(0) is not None
 class _Layer(torch.nn.Module):
     """A decoder layer stand-in carrying whatever unsloth_zoo published."""
 
-    def __init__(self, device=None, index="absent", parameter_device="cpu"):
+    def __init__(
+        self,
+        device = None,
+        index = "absent",
+        parameter_device = "cpu",
+    ):
         super().__init__()
         self.weight = torch.nn.Parameter(
-            torch.zeros(2, device=torch.device(parameter_device)),
-            requires_grad=False,
+            torch.zeros(2, device = torch.device(parameter_device)),
+            requires_grad = False,
         )
         if device is not None:
             self._per_layer_device = device
@@ -87,7 +92,7 @@ class _Layer(torch.nn.Module):
 def test_current_unsloth_zoo_device_wins():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(device=torch.device("cuda:2"), index=2)
+    layer = _Layer(device = torch.device("cuda:2"), index = 2)
     device, buffer_index = per_layer_device(layer)
     assert device == torch.device("cuda:2")
     assert buffer_index == 2
@@ -97,19 +102,19 @@ def test_cpu_offloaded_layer_resolves_to_cpu_not_cuda_zero():
     """The #3538 case as current unsloth_zoo publishes it."""
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(device=torch.device("cpu"), index="cpu")
+    layer = _Layer(device = torch.device("cpu"), index = "cpu")
     device, buffer_index = per_layer_device(layer)
     assert device == torch.device("cpu")
-    assert isinstance(buffer_index, int), (
-        "gemma, gemma2 and cohere subscript a per-device tuple with this"
-    )
+    assert isinstance(
+        buffer_index, int
+    ), "gemma, gemma2 and cohere subscript a per-device tuple with this"
 
 
 def test_older_unsloth_zoo_integer_index_is_unchanged():
     """An unsloth_zoo that publishes only the index still works."""
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index=1, parameter_device="cpu")
+    layer = _Layer(index = 1, parameter_device = "cpu")
     device, buffer_index = per_layer_device(layer)
     if INDEXED_DEVICES_CONSTRUCTIBLE:
         assert device == torch.device(1)
@@ -122,7 +127,7 @@ def test_older_unsloth_zoo_none_index_reads_the_layer_instead():
     """The exact #3538 state: `_per_layer_device_index = None` and nothing else."""
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index=None, parameter_device="cpu")
+    layer = _Layer(index = None, parameter_device = "cpu")
     device, buffer_index = per_layer_device(layer)
     assert device == torch.device("cpu"), (
         "a None index must not resolve to cuda:0, which would move a CPU layer's "
@@ -147,7 +152,7 @@ def test_a_layer_with_no_attributes_keeps_the_historical_default():
 def test_a_garbage_index_falls_back_rather_than_raising():
     from unsloth.models._utils import per_layer_device
 
-    layer = _Layer(index="not a device")
+    layer = _Layer(index = "not a device")
     device, buffer_index = per_layer_device(layer)
     assert isinstance(device, torch.device)
     if INDEXED_DEVICES_CONSTRUCTIBLE:
@@ -171,7 +176,7 @@ def test_move_to_device_accepts_every_resolution(device, index):
     """The contract that broke: move_to_device only takes int, str or torch.device."""
     from unsloth.models._utils import move_to_device, per_layer_device
 
-    layer = _Layer(device=device, index=index)
+    layer = _Layer(device = device, index = index)
     resolved, buffer_index = per_layer_device(layer)
     assert isinstance(resolved, torch.device)
 
@@ -190,16 +195,16 @@ def test_cpu_offloaded_layer_no_longer_raises_invalid_target_device():
     """The verbatim #3538 failure, driven through move_to_device."""
     from unsloth.models._utils import move_to_device, per_layer_device
 
-    layer = _Layer(device=torch.device("cpu"), index="cpu")
+    layer = _Layer(device = torch.device("cpu"), index = "cpu")
     resolved, _ = per_layer_device(layer)
     hidden_states = torch.zeros(1, 2, 4)
-    position_ids = torch.zeros(1, 2, dtype=torch.long)
+    position_ids = torch.zeros(1, 2, dtype = torch.long)
     hidden_states, position_ids = move_to_device(resolved, hidden_states, position_ids)
     assert hidden_states.device == torch.device("cpu")
     assert position_ids.device == torch.device("cpu")
 
     # And the shape that used to reach move_to_device is still rejected loudly.
-    with pytest.raises(ValueError, match="Invalid target device"):
+    with pytest.raises(ValueError, match = "Invalid target device"):
         move_to_device(None, hidden_states)
 
 
@@ -223,24 +228,24 @@ def test_unsloth_zoo_setter_and_reader_agree():
 def test_every_reader_goes_through_the_helper(path):
     """Wiring check: no reader may index with the raw attribute again."""
     source = (REPOSITORY_ROOT / path).read_text()
-    assert 'getattr(decoder_layer, "_per_layer_device_index"' not in source, (
-        f"{path} reads the raw index again; a None there is #3538"
-    )
-    assert "per_layer_device(decoder_layer)" in source, (
-        f"{path} no longer resolves the layer device through per_layer_device"
-    )
-    assert re.search(r"move_to_device\(\s*layer_device", source), (
-        f"{path} does not hand the resolved device to move_to_device"
-    )
+    assert (
+        'getattr(decoder_layer, "_per_layer_device_index"' not in source
+    ), f"{path} reads the raw index again; a None there is #3538"
+    assert (
+        "per_layer_device(decoder_layer)" in source
+    ), f"{path} no longer resolves the layer device through per_layer_device"
+    assert re.search(
+        r"move_to_device\(\s*layer_device", source
+    ), f"{path} does not hand the resolved device to move_to_device"
 
 
 @pytest.mark.parametrize("path", sorted(READERS))
 def test_every_reader_imports_the_helper_explicitly(path):
     """Do not rely on `from .llama import *` to carry the name across."""
     source = (REPOSITORY_ROOT / path).read_text()
-    assert re.search(r"^from \._utils import .*per_layer_device", source, re.MULTILINE), (
-        f"{path} must import per_layer_device from ._utils explicitly"
-    )
+    assert re.search(
+        r"^from \._utils import .*per_layer_device", source, re.MULTILINE
+    ), f"{path} must import per_layer_device from ._utils explicitly"
 
 
 def _reader_scopes(source: str, path: str):
@@ -249,8 +254,7 @@ def _reader_scopes(source: str, path: str):
 
     tree = ast.parse(source)
     functions = [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     found = []
     for node in ast.walk(tree):
@@ -259,11 +263,12 @@ def _reader_scopes(source: str, path: str):
         if getattr(node.func, "id", None) != "per_layer_device":
             continue
         enclosing = [
-            function for function in functions
+            function
+            for function in functions
             if function.lineno <= node.lineno <= (function.end_lineno or function.lineno)
         ]
         assert enclosing, f"{path}: per_layer_device call at module level?"
-        innermost = max(enclosing, key=lambda function: function.lineno)
+        innermost = max(enclosing, key = lambda function: function.lineno)
         found.append((innermost.name, innermost.lineno))
     return found
 
@@ -311,9 +316,9 @@ def test_no_reader_reads_a_name_it_never_binds(path):
                 continue
             unbound.append(name)
 
-    assert len(checked) == len(wanted), (
-        f"{path}: located {wanted} from the call sites but symtable matched {checked}"
-    )
+    assert len(checked) == len(
+        wanted
+    ), f"{path}: located {wanted} from the call sites but symtable matched {checked}"
     assert not unbound, (
         f"{path}:{checked} reads {sorted(set(unbound))} without binding it and "
         f"without {module.__name__} defining it, so generation raises NameError"
@@ -332,7 +337,7 @@ def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
         assert "layer_device, device_index = per_layer_device(decoder_layer)" in source
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a real GPU")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a real GPU")
 def test_cuda_layer_path_is_unchanged():
     from unsloth.models._utils import move_to_device, per_layer_device
 

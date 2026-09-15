@@ -2593,7 +2593,7 @@ def per_layer_device(module, default = 0):
     on an indexed accelerator, which has no per-device buffer of its own.
     """
     device = getattr(module, "_per_layer_device", None)
-    index  = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+    index = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
 
     if not isinstance(device, torch.device):
         device = None
@@ -2607,11 +2607,7 @@ def per_layer_device(module, default = 0):
         # what every reader's `getattr(layer, ..., 0)` resolved to. It falls back
         # to the layer itself because `torch.device(default)` is not guaranteed to
         # be constructible, and to cpu because a device is still owed.
-        device = (
-            _as_torch_device(default)
-            or _device_of_parameters(module)
-            or torch.device("cpu")
-        )
+        device = _as_torch_device(default) or _device_of_parameters(module) or torch.device("cpu")
 
     buffer_index = device.index
     if buffer_index is None:
