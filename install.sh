@@ -2542,6 +2542,13 @@ _nv_banner_fields() {
     # same answer anyway. Otherwise naming one is a guess, and the AMD path above already
     # refuses that rather than name a card the mask did not select. Compared on name and
     # compute_cap, not the driver, which is host-wide and identical on every row.
+    # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+    # row exposes NO device at all. The awk above clamps to row 0 so the driver still
+    # reads, but row 0 is not the selected card -- nothing is.
+    _nv_rowcount=$(printf '%s\n' "$_nv_all" | awk 'NF { n++ } END { print n+0 }')
+    if [ -n "$_nv_by_ordinal" ] && [ "$_nv_idx" -ge "$_nv_rowcount" ]; then
+        _nv_ambiguous=1
+    fi
     if [ -n "$_nv_by_ordinal" ]; then
         _nv_order=$(printf '%s' "${CUDA_DEVICE_ORDER:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
         _nv_models=$(printf '%s\n' "$_nv_all" \

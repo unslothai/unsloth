@@ -2454,6 +2454,10 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
             # identifies an nvidia-smi row only when the order is pinned to PCI_BUS_ID, or
             # when the cards are interchangeable and every row gives the same answer
             # anyway. Compared on name and compute_cap, not the driver, which is host-wide.
+            # CUDA stops enumerating at the first invalid index, so an ordinal past the last
+            # row exposes NO device. The row pick below clamps to 0 so the driver still
+            # reads, but row 0 is not the selected card -- nothing is.
+            if ($nvByOrdinal -and $nvIdx -ge $nvRows.Count) { $nvUnresolved = $true }
             $nvAmbiguous = $nvUnresolved
             if ($nvByOrdinal -and -not $nvAmbiguous) {
                 $nvOrder = (("$env:CUDA_DEVICE_ORDER") -replace '\s', '').ToUpperInvariant()
