@@ -366,9 +366,45 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monk
     monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
-    assert held_during_purge == [True], (
+    # One entry per purge call (the hooks subtree and the parent); every one must be under lock.
+    assert held_during_purge and all(held_during_purge), (
         "the diffusers import lock was released before the purge ran, so a waiting importer "
         f"could take it in the gap (observed: {held_during_purge})"
+    )
+
+
+def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm, monkeypatch):
+    """The half of the failure the parent purge cannot reach.
+
+    ``import diffusers`` and ``import diffusers.hooks`` are two imports and either can fail. When
+    the parent succeeded and the subpackage did not, purging "diffusers" is a no-op by design (it
+    is in sys.modules and belongs to nobody), so the hook submodules that already executed stay
+    cached and the load path's own ``from diffusers.hooks import ...`` rebuilds an incomplete
+    package from them. That is the #7580 shape, one level down.
+    """
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    parent = types.ModuleType("diffusers")
+    monkeypatch.setitem(sys.modules, "diffusers", parent)
+    monkeypatch.setitem(
+        sys.modules, "diffusers.hooks.group_offloading",
+        types.ModuleType("diffusers.hooks.group_offloading"),
+    )
+    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
+
+    class _Boom:
+        def find_spec(self, name, path = None, target = None):
+            if name == "diffusers.hooks":
+                raise ImportError("simulated half-built diffusers.hooks")
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+    assert "diffusers.hooks.group_offloading" not in sys.modules, (
+        "the executed hook submodules survived, so the load path can rebuild a partial package"
+    )
+    assert sys.modules.get("diffusers") is parent, (
+        "the healthy parent was evicted; only the failed subtree should go"
     )
 
 

@@ -556,6 +556,14 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
                 # load path's own `import diffusers` would then re-run __init__ against that
                 # cache and come back missing attributes. The prewarm swallows the failure, so
                 # the retry would be a user's request: hand it a clean slate instead.
+                # Both, and the subpackage FIRST. These are two separate imports and either can
+                # be the one that fails. When `import diffusers` succeeded and
+                # `import diffusers.hooks` did not, purging the parent is a no-op by design (it
+                # is still in sys.modules and belongs to nobody), while the hooks submodules that
+                # did execute stay cached for the load path to rebuild an incomplete package
+                # from. purge_partial_import takes the subpackage's own module lock, and is a
+                # no-op when there is nothing of that shape to collect.
+                purge_partial_import("diffusers.hooks")
                 purge_partial_import("diffusers")
                 return False
         _diffusers_prewarmed = True
