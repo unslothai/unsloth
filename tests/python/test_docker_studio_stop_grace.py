@@ -77,10 +77,64 @@ def test_a_number_of_seconds_passes(value: str):
     assert res.returncode == 0, res.stderr
 
 
-def test_run_sh_gives_docker_stop_the_same_budget():
+def _run_sh(tmp_path: Path, budget: "str | None") -> "tuple[subprocess.CompletedProcess, list[str]]":
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv = tmp_path / "argv"
+    stubs = {
+        "docker": 'if [ "$1" = "info" ]; then echo " Runtimes: runc"; exit 0; fi\n'
+        f'printf "%s\\n" "$@" > {argv}\nexit 0\n',
+        "nvidia-smi": "exit 1\n",
+    }
+    for name, body in stubs.items():
+        (bindir / name).write_text("#!/usr/bin/env bash\n" + body)
+        (bindir / name).chmod(0o755)
+    (tmp_path / "root" / "dev").mkdir(parents = True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "HF_TOKEN", "WANDB_"))}
+    env.update(
+        PATH = f"{bindir}:/usr/bin:/bin",
+        HOME = str(tmp_path / "home"),
+        UNSLOTH_DEV_ROOT = str(tmp_path / "root"),
+        UNSLOTH_WORKDIR = str(tmp_path),
+        UNSLOTH_STUDIO_VOLUME = "",
+    )
+    if budget is not None:
+        env["UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S"] = budget
+    res = subprocess.run(
+        [shutil.which("bash"), str(DOCKER / "run.sh"), "true"],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 120,
+    )
+    return res, argv.read_text().splitlines() if argv.exists() else []
+
+
+_posix_only = pytest.mark.skipif(os.name != "posix", reason = "run.sh needs a POSIX shell")
+
+
+@_posix_only
+@pytest.mark.parametrize(
+    "budget, expected",
+    [(None, "150"), ("120", "150"), ("0", "30"), ("0600", "630"), ("08", "38")],
+)
+def test_run_sh_gives_docker_stop_the_launchers_budget(tmp_path, budget, expected):
+    res, argv = _run_sh(tmp_path, budget)
+    assert res.returncode == 0, res.stderr
+    assert argv[argv.index("--stop-timeout") + 1] == expected
+
+
+@_posix_only
+@pytest.mark.parametrize("budget", ["soon", "-1", "1.5"])
+def test_run_sh_refuses_a_budget_that_is_not_a_number_of_seconds(tmp_path, budget):
+    res, argv = _run_sh(tmp_path, budget)
+    assert res.returncode != 0
+    assert f"UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S={budget}" in res.stderr, res.stderr
+    assert argv == []
+
+
+def test_run_sh_forwards_the_budget_into_the_container():
     body = (DOCKER / "run.sh").read_text(encoding = "utf-8")
-    assert "STOP_TIMEOUT=$(( ${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120} + 30 ))" in body
-    assert '--stop-timeout "$STOP_TIMEOUT"' in body
     assert "ENV_FORWARD+=(-e UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S)" in body
 
 

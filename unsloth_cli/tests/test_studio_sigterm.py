@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SIGTERM (docker stop, systemd, a desktop quit) takes the same path as Ctrl+C.
+"""SIGTERM (docker stop through supervisord, `unsloth studio stop`) takes the same path as Ctrl+C.
 
 The `unsloth studio` and `unsloth start` commands run the server in-process and only
 caught KeyboardInterrupt, so a SIGTERM killed the process with Python's default action:

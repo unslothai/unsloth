@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SIGTERM and Ctrl+C reach the same stop-and-save path as the Stop button.
+"""A SIGTERM to the Studio process alone (docker stop through supervisord, `unsloth studio stop`)
+reaches the same stop-and-save path as the Stop button.
 
 The save has to finish before uvicorn's lifespan teardown starts: measured on the
 published Docker image, a save that overlapped the teardown lost the worker mid-write.
