@@ -1069,6 +1069,7 @@ def test_a_rollback_between_the_two_reads_is_not_read_as_nothing_to_do(tmp_path,
     assert split, "the caller never split its reads across the rollback"
     assert (workdir / "data.csv").is_file(), f"{workdir} lost its files across the rollback"
 
+
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
     file that always 404s."""
