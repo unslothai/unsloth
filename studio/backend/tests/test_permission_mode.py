@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # A file operator of `test`/`[` still stats what it is given, including through a substitution.
+    f"[ -f {_OUTSIDE_FILE} ]",
+    f"test -r {_OUTSIDE_FILE}",
+    f'[ -e "$(echo {_OUTSIDE_FILE})" ]',
+    f"test {_OUTSIDE_FILE} -nt ./local.txt",
     # One token carrying both a live `>` and a quoted target with a space in it.
     f'echo CHANGED>"{_OUTSIDE_DIR} host/notes.txt"',
     # A here-string word is DATA, but a substitution inside it runs before the data is handed over.
@@ -3691,6 +3696,12 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
+    'while [ "$d" != "/" ]; do d=$(dirname "$d"); done',
+    '[ "$root" = "/" ] && echo top',
+    # The filesystem root itself is covered by no silent root, but reading it shows only the
+    # top-level names.
+    "ls /",
     "echo 'a<b' > out.txt",
     'cat <<< "$(date)"',
     "curl --config=./local.conf https://example.com",

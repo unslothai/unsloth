@@ -480,6 +480,12 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
         candidate = _normalized_fs_text(text)
     except Exception:  # noqa: BLE001
         return True
+    # The filesystem root ITSELF, which no silent root can cover (`_silent_root_list` drops a root
+    # that folds to `os.sep`, or everything would be silent). Reading it yields the top-level names
+    # and nothing else, so `ls /` asked for approval while `ls /usr` did not. Exact match only:
+    # anything UNDER it is still decided by the roots below.
+    if not writing and candidate == os.sep:
+        return False
     # `/proc/<pid>/root`, `/cwd` and `/fd/<n>` are kernel magic symlinks: the kernel resolves them
     # before anything that follows, so `/proc/self/root/home/alice/report.txt` opens the very file
     # `/home/alice/report.txt` does while reading, lexically, as an ordinary `/proc` path. `/proc` is
@@ -829,6 +835,52 @@ _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
         "pd",
     }
 )
+
+
+# `test`/`[` reach the filesystem ONLY through their file operators (`help test`); every other
+# operand is a string being compared. `[ "$d" != "/" ]` names no path at all.
+_TEST_COMMANDS = frozenset({"test", "[", "[["})
+_TEST_FILE_UNARY_FLAGS = frozenset(
+    {
+        "-a",
+        "-b",
+        "-c",
+        "-d",
+        "-e",
+        "-f",
+        "-g",
+        "-h",
+        "-k",
+        "-p",
+        "-r",
+        "-s",
+        "-u",
+        "-w",
+        "-x",
+        "-G",
+        "-L",
+        "-N",
+        "-O",
+        "-S",
+    }
+)
+_TEST_FILE_BINARY_OPS = frozenset({"-nt", "-ot", "-ef"})
+
+
+def _test_command_operands(args) -> "list[str]":
+    """The tokens `test`/`[` actually stat: the operand of a unary file test and both sides of
+    `-nt`/`-ot`/`-ef`."""
+    paths: "list[str]" = []
+    for index, arg in enumerate(args):
+        if arg in _TEST_FILE_UNARY_FLAGS:
+            if index + 1 < len(args):
+                paths.append(args[index + 1])
+        elif arg in _TEST_FILE_BINARY_OPS:
+            if index:
+                paths.append(args[index - 1])
+            if index + 1 < len(args):
+                paths.append(args[index + 1])
+    return paths
 
 
 # Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
@@ -1467,6 +1519,14 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if command.endswith(".exe"):
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
+    if command in _TEST_COMMANDS:
+        operands = []
+        for arg in _test_command_operands(args):
+            if _looks_absolute(arg):
+                operands.append((arg, False))
+            else:
+                operands.extend((path, False) for path in _substitution_operand_paths(arg))
+        return operands
     # `sqlite3 FILE 'DELETE ...'` CREATES the file when absent and modifies it otherwise, so the
     # database is a write unless the invocation is explicitly read-only (`sqlite3 --help` documents
     # `-readonly`). Classifying it as a read let a delete against a read-silent-but-not-write-silent
