@@ -1669,6 +1669,7 @@ pythonpath = ["."]
 markers = [
     "gpu: needs a real accelerator, and usually downloads a checkpoint to use it",
     "slow: minutes rather than seconds, and covered again more cheaply elsewhere",
+    "reads_real_pip_config: opts out of the hermetic pip config stub, for the few tests that drive that read themselves",
 ]
 
 # Deselected by default, not deleted: CI runs them in their own leg with
