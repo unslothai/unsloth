@@ -1702,7 +1702,7 @@ class ImageContentPart(BaseModel):
 
 
 class VideoUrl(BaseModel):
-    """Video URL object — a data URI, or a remote URL llama-server fetches itself."""
+    """Video URL object: a data URI, or a remote URL llama-server fetches itself."""
 
     url: str = Field(..., description = "data:video/mp4;base64,... or https://...")
 
