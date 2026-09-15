@@ -258,6 +258,19 @@ _nvcc_meets_llama_minimum() {
 # UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
 # ($1). Empty means "no arch detected", so the caller builds CPU instead of a
 # PTX-only binary that fails on an old driver (#5854).
+# Every GPU's capability from nvidia_probe.py, one per line; nothing when the probe is off or
+# absent, or when one listed GPU has no readable capability (a partial list would build kernels
+# for part of the machine).
+_probe_compute_caps() {
+    [ -f "$SCRIPT_DIR/nvidia_probe.py" ] && command -v python3 >/dev/null 2>&1 || return 0
+    _setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" 2>/dev/null | awk '
+        /^GPU [0-9]+:/ {
+            if (match($0, /\(compute [0-9]+\.[0-9]+\)$/)) caps = caps substr($0, RSTART + 9, RLENGTH - 10) "\n"
+            else bad = 1
+        }
+        END { if (!bad) printf "%s", caps }' || true
+}
+
 _resolve_cuda_archs() {
     local _raw_caps=$1
     local _arch_override=$2
@@ -3230,6 +3243,33 @@ _has_local_llama_server() {
 
 # The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
 # `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
+# Whether the install marker's $2 names the pinned ref $3: exact, or ($4 = refs) the installer's
+# own alias and commit-prefix matching (a short commit pin matches the recorded full one). A
+# published release tag is a name, not a ref, so it compares exactly.
+_installed_prebuilt_ref_matches() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" "${4:-exact}" <<'PY' 2>/dev/null
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+sys.modules["installer"] = installer  # the module's dataclasses resolve through sys.modules
+spec.loader.exec_module(installer)
+try:
+    marker = json.load(open(sys.argv[2], encoding="utf-8"))
+except Exception:
+    marker = {}
+values = [marker.get(f) for f in sys.argv[3].split(",")] if isinstance(marker, dict) else []
+values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+same = any(
+    v == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(v, sys.argv[4])) for v in values
+)
+sys.exit(0 if same else 1)
+PY
+}
+
 _installed_prebuilt_backend() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
     python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
@@ -3292,9 +3332,17 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     local install_dir=$1 backend
     [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
     [ -z "$_LLAMA_PR" ] || return 1
-    # An explicit version pin asked for that version, which the old install is not.
-    [ -z "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ] || return 1
-    case "${UNSLOTH_LLAMA_TAG:-}" in ""|latest|master) ;; *) return 1 ;; esac
+    # An explicit version pin asked for that version; the old install satisfies it only
+    # when its marker records the same one.
+    if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
+        _installed_prebuilt_ref_matches "$install_dir" release_tag "$UNSLOTH_LLAMA_RELEASE_TAG" || return 1
+    fi
+    case "${UNSLOTH_LLAMA_TAG:-}" in
+        ""|latest|master) ;;
+        # A commit pin is recorded beside the build tag, in the source ref fields.
+        *) _installed_prebuilt_ref_matches "$install_dir" \
+               tag,requested_source_ref,resolved_source_ref,source_commit "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
+    esac
     _has_local_llama_server "$install_dir" || return 1
     backend="$(_installed_prebuilt_backend "$install_dir")"
     case "$backend" in
@@ -3974,6 +4022,10 @@ else
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
                         CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
+                        # nvidia-smi absent, stale or answering N/A: the driver library lists the capabilities.
+                        if [ -z "$CUDA_ARCHS" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ]; then
+                            CUDA_ARCHS="$(_resolve_cuda_archs "$(_probe_compute_caps)" "")"
+                        fi
 
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
