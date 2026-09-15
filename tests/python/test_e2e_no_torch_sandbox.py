@@ -925,10 +925,8 @@ def _server_port() -> int:
 
 server = pytest.mark.server
 
-# Simulate missing torch packages for imports, find_spec(), and distribution metadata.
-# from_name is patched too, not just discover: only 3.11+ routes named lookups through
-# discover, so on 3.9/3.10 version("torch") would still answer. Names come from the
-# metadata because Distribution.name does not exist on 3.9.
+# Hide torch from imports, find_spec() and metadata. from_name as well as discover: only
+# 3.11+ routes named lookups through discover, and Distribution.name is absent on 3.9.
 _HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
     """
     import importlib.metadata as _metadata
@@ -988,8 +986,7 @@ class TestLiveServerStartup:
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join([str(hide_dir), str(backend_dir)])
 
-        # Prove the shim took before blaming the server: a sitecustomize that never loaded
-        # otherwise surfaces as a puzzling chat_only failure.
+        # A sitecustomize that never loaded otherwise reads as a puzzling chat_only failure.
         hidden = subprocess.run(
             [
                 str(py),
