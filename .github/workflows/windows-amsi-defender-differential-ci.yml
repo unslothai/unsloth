@@ -483,7 +483,7 @@ jobs:
           Write-Host 'control: EICAR fired, so the file scanner is live and its verdicts mean something.'
 
           # EICAR proves the LOCAL engine scans, and nothing more. This lane stamps mark-of-the-web
-          # on every candidate specifically so block-at-first-sight consults the cloud, and a
+          # on every candidate specifically so the cloud is consulted, and a
           # zero-prevalence script is judged by cloud heuristics rather than by a local signature --
           # which is the condition the #10805 reporter was under. With MAPS off or unreachable that
           # half is simply absent, and an exit-0 scan would still read as clean.
@@ -517,7 +517,8 @@ jobs:
             $cloudNote = "could not read Defender preferences: $($_.Exception.Message)"
           }
           if ($cloudReady) {
-            Write-Host "control: cloud-delivered protection is reachable ($cloudNote), so block-at-first-sight can act on the mark of the web."
+            Write-Host "control: cloud-delivered protection is reachable ($cloudNote), so the on-demand scan below can consult the cloud rather than local signatures alone."
+            Write-Host 'note: this is an ON-DEMAND cloud scan, not block-at-first-sight. BAFS only consults the cloud on an on-access OPEN (release-desktop.yml:1301-1305), and this lane never opens the copies -- it also exempts them from on-access scanning so a detection cannot quarantine the evidence before it is measured. The low-prevalence cloud verdicts this lane is aimed at still reach an on-demand scan through MAPS.'
           } else {
             Write-Host "::warning::cloud-delivered protection is NOT available ($cloudNote)."
             Write-Host '::warning::Any clean Defender result below is LOCAL SIGNATURES ONLY. The mark of the web is still stamped, but nothing consults the cloud, so the low-prevalence heuristics this lane is aimed at were not exercised.'
@@ -528,7 +529,7 @@ jobs:
           $unscanned = @()
           foreach ($side in 'base', 'head') {
             foreach ($file in (Get-UnslothExpected $side)) {
-              # Mark of the web, so block-at-first-sight consults the cloud rather than treating a
+              # Mark of the web, so the cloud is consulted rather than treating a
               # local file as trusted. A zero-prevalence script from the Internet zone is exactly what
               # the reporter in #10805 had, and it is the condition the heuristics are harshest under.
               #
@@ -550,7 +551,7 @@ jobs:
               if (-not $stamped) {
                 # Said out loud rather than swallowed. A scan of a MyComputer-zone file is a weaker
                 # test than the one this lane claims to run, and a reader has to know which they got.
-                Write-Host "::warning::$side/$($file.Name) was scanned WITHOUT mark-of-the-web, so block-at-first-sight did not consult the cloud. This is a weaker scan than intended."
+                Write-Host "::warning::$side/$($file.Name) was scanned WITHOUT mark-of-the-web, so the scan did not carry the zone information that makes the cloud treat it as downloaded content. This is a weaker scan than intended."
               }
               # -DisableRemediation, or a detection deletes the file and the next step reports it
               # missing rather than flagged.

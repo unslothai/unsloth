@@ -123,7 +123,13 @@ foreach ($file in @($Path) | Where-Object { $_ }) {
     }
     $text = $null
     try {
-        $text = Get-Content -Raw -LiteralPath $file -ErrorAction Stop
+        # Decoded as UTF-8 explicitly, never by Get-Content's default. Under Windows PowerShell
+        # 5.1 -- which is the host this probe exists to reproduce -- Get-Content assumes the system
+        # ANSI code page for a file with no BOM, and the shipped installers are BOM-less UTF-8 with
+        # non-ASCII text in them. That turns the bytes into mojibake before AMSI ever sees them, so
+        # the provider would be judging a string no user ever runs. It also does not match the
+        # documented `irm ... | iex` path, where the response is decoded as Unicode.
+        $text = [System.IO.File]::ReadAllText($file, [System.Text.UTF8Encoding]::new($false))
     } catch {
         [void]$results.Add([ordered]@{
             label = $file; blocked = $false; reason = "could not read: $($_.Exception.Message)"

@@ -750,3 +750,65 @@ def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
     # And a vanished file has to reach both verdicts, not just be printed.
     assert "$noResult += \"$v" in body, "a vanished copy never reaches the AMSI verdict"
     assert "$unscanned += \"$v" in body, "a vanished copy never reaches the Defender verdict"
+
+
+def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
+    """Windows PowerShell 5.1 reads a BOM-less file as ANSI, and the installers are BOM-less UTF-8.
+
+    That is the host this probe exists to reproduce, so `Get-Content` without an encoding handed
+    AMSI a mojibake version of any non-ASCII text in the script. The provider would then be judging
+    a string no user ever runs, and it does not match `irm ... | iex` either, where the response is
+    decoded as Unicode.
+    """
+    body = PROBE.read_text(encoding = "utf-8")
+    assert "Get-Content -Raw -LiteralPath $file" not in body, (
+        "the probe still reads the candidate with Get-Content's default encoding"
+    )
+    assert "UTF8Encoding" in body, "the probe does not decode the candidate as UTF-8"
+
+    # And the decode really is lossless for the bytes we ship: driven through pwsh rather than
+    # asserted about, so a future rewrite is judged on what it produces.
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    sample = tmp_path / "sample.ps1"
+    sample.write_bytes("Write-Host 'café — 中文'\n".encode("utf-8"))
+    probe = (
+        "$t = [System.IO.File]::ReadAllText($env:UNSLOTH_SAMPLE, "
+        "[System.Text.UTF8Encoding]::new($false)); "
+        "if ($t -match 'café' -and $t -match '中文') { 'OK' } else { 'MOJIBAKE'; exit 1 }"
+    )
+    import os as _os
+
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = {**_os.environ, "UNSLOTH_SAMPLE": str(sample)},
+    )
+    assert done.returncode == 0 and "OK" in done.stdout, f"{done.stdout}\n{done.stderr}"
+
+
+def test_the_defender_lane_does_not_claim_block_at_first_sight() -> None:
+    """The exclusion that protects the evidence also removes the on-access path BAFS needs.
+
+    `release-desktop.yml:1301-1305` records that block-at-first-sight only consults the cloud on an
+    on-access open. This lane never opens the copies and now exempts them from on-access scanning
+    so a detection cannot quarantine the evidence before it is measured, so it cannot exercise that
+    path at all. What it does get, and what the low-prevalence verdicts it is aimed at still reach,
+    is an on-demand cloud scan through MAPS. The output has to say that and not more.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    printed = [
+        line
+        for line in body.splitlines()
+        if "Write-Host" in line and "block-at-first-sight" in line.lower()
+    ]
+    for line in printed:
+        assert "not block-at-first-sight" in line or "does not act" in line, (
+            f"this line still tells the reader block-at-first-sight was exercised:\n{line.strip()}"
+        )
+    assert "ON-DEMAND cloud scan" in body, (
+        "the lane no longer says what kind of cloud scan it actually performed"
+    )
