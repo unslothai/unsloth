@@ -9,6 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -42,10 +43,16 @@ class _Handler(BaseHTTPRequestHandler):
             ).encode()
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
-        else:
+        elif body.get("stream"):
             payload = _SSE
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
+        else:
+            payload = json.dumps(
+                {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -145,9 +152,11 @@ def test_an_omitted_top_p_is_not_forwarded_and_the_gateway_accepts():
     assert '"content":"ok"' in stream
 
 
-def test_an_explicit_top_p_still_reaches_the_gateway():
-    body, _ = _through_route(temperature = 0.7, top_p = 0.9)
-    assert body["top_p"] == 0.9
+@pytest.mark.parametrize("top_p", [0.0, 0.9, 1.0])
+def test_an_explicit_top_p_still_reaches_the_gateway(top_p):
+    body, stream = _through_route(temperature = 0.7, top_p = top_p)
+    assert body["top_p"] == top_p
+    assert "cannot both be specified" in stream
 
 
 def test_the_client_omits_top_p_when_given_none():
@@ -176,16 +185,14 @@ def test_the_non_streaming_helper_omits_top_p_when_given_none():
         )
 
         async def go() -> None:
-            try:
-                await client.chat_completion(
-                    messages = [{"role": "user", "content": "ping"}],
-                    model = "claude-sonnet-4-6",
-                    temperature = 0.0,
-                    top_p = None,
-                    max_tokens = 1,
-                )
-            except Exception:
-                pass
+            response = await client.chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "claude-sonnet-4-6",
+                temperature = 0.0,
+                top_p = None,
+                max_tokens = 1,
+            )
+            assert response["choices"][0]["message"]["content"] == "ok"
 
         _run(go)
         assert "top_p" not in gateway.body
@@ -217,4 +224,4 @@ def test_the_connection_test_ping_omits_top_p():
 
         _run(go)
         assert "top_p" not in gateway.body
-        assert "cannot both be specified" not in results[0].message
+        assert results[0].success, results[0].message
