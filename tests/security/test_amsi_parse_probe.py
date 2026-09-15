@@ -302,7 +302,17 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
         "never serves"
     )
 
-    shipped = (REPO / "install.ps1").read_bytes()
+    # The COMMITTED blob, not the working tree. A Windows checkout with the default
+    # core.autocrlf=true rewrites install.ps1 to CRLF on disk -- .gitattributes carries no *.ps1
+    # rule -- so reading the file here failed on Windows runners while the bytes this project
+    # actually serves were unchanged. The lane copies blobs out of git for exactly this reason, so
+    # the assertion has to look where the lane looks.
+    shipped = subprocess.run(
+        ["git", "show", "HEAD:install.ps1"],
+        cwd = REPO,
+        check = True,
+        capture_output = True,
+    ).stdout
     assert b"\r\n" not in shipped, (
         "install.ps1 now contains CRLF, so the assumption this lane is built on no longer holds. "
         "Check .gitattributes before changing the workflow: a committed Authenticode signature over "
