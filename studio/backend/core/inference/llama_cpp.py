@@ -8133,10 +8133,16 @@ class LlamaCppBackend:
             non_executable = None
             from utils.llama_cpp_path_settings import prefer_gpu_capable
 
-            # A first hit proven CPU-only yields to a GPU-capable sibling build (#5941).
-            paths = prefer_gpu_capable(paths, lambda p: _file_status(p) == "file")
+            statuses = {p: _file_status(p) for p in paths}
+            first = next((p for p in paths if statuses[p] == "file"), None)
+            # A first hit proven CPU-only yields to a GPU-capable sibling build (#5941), unless
+            # a denied candidate precedes it: that denial stops discovery, it is not skipped over.
+            if first is not None and not any(
+                statuses[p] == "denied" for p in paths[: paths.index(first)]
+            ):
+                paths = prefer_gpu_capable(paths, lambda p: statuses[p] == "file")
             for p in paths:
-                st = _file_status(p)
+                st = statuses[p]
                 if st == "file":
                     return str(p), None
                 if st == "denied":

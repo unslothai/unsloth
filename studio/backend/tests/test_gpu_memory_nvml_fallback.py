@@ -260,6 +260,22 @@ class TestAGpuCapableBuildIsPreferred:
         # A static build or the installer's wrapper: not proven CPU-only, so search order holds.
         assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build"]
 
+    @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason = "needs a real permission denial")
+    def test_a_denied_candidate_ahead_of_the_gpu_build_still_stops_discovery(self, tmp_path, monkeypatch):
+        made = self._tree(tmp_path, "linux", {"build": ["libggml-cpu.so"], "build-cuda": ["libggml-cuda.so"]})
+        monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", _REAL_FINDER)
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
+        # An in-flight replace or an ACL: the pinned layout's build/ cannot be read at all.
+        (tmp_path / "build" / "bin").chmod(0)
+        try:
+            assert LlamaCppBackend._find_llama_server_binary() is None
+        finally:
+            (tmp_path / "build" / "bin").chmod(0o755)
+        assert LlamaCppBackend._find_llama_server_binary() == str(made["build-cuda"])
+
     def test_the_runtime_finder_agrees(self, tmp_path, monkeypatch):
         made = self._tree(
             tmp_path,
