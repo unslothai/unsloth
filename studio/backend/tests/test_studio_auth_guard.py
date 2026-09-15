@@ -2198,6 +2198,9 @@ def test_a_windows_root_survives_python_literal_escaping(monkeypatch):
     assert any(
         spelling in code.lower() for spelling in tools._studio_home_spellings_lowered()
     ), code
+    # The same doubled spelling has to satisfy the root-naming test the guard gates on.
+    monkeypatch.setattr(tools, "_studio_root_spellings", lambda: [root.lower()])
+    assert tools._text_names_the_studio_root(code), code
 
 
 def test_a_recursive_read_of_the_studio_root_is_refused(studio_home):

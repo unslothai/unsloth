@@ -3029,9 +3029,12 @@ def _text_names_the_studio_root(text: str) -> bool:
     spellings = _studio_root_spellings()
     if any(spelling in lowered for spelling in spellings):
         return True
-    # The escaped spelling of a root with a space in it names the same directory.
-    unescaped = lowered.replace("\\ ", " ")
-    return unescaped != lowered and any(spelling in unescaped for spelling in spellings)
+    # The escaped spellings name the same directory: a shell escapes a space as `\\ `, and a python
+    # literal doubles every separator of a Windows path.
+    for unescaped in (lowered.replace("\\ ", " "), lowered.replace("\\\\", "\\")):
+        if unescaped != lowered and any(spelling in unescaped for spelling in spellings):
+            return True
+    return False
 
 
 def _quoted_words(text: str) -> "list[str]":
