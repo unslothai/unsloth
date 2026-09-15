@@ -1012,18 +1012,35 @@ def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
 
 
 # Every file that ships and is scanned, including the two no other check in this file reads.
-DOCUMENTED_SCRIPTS = tuple(sorted(
-    set(ALL_SCRIPTS) | {"studio/setup.bat", "scripts/uninstall.sh"}
-))
+DOCUMENTED_SCRIPTS = tuple(sorted(set(ALL_SCRIPTS) | {"studio/setup.bat", "scripts/uninstall.sh"}))
 
 # Vendor names, detection families and analyst vocabulary. Not a style rule: PowerShell hands the
 # entire top-level script block to AMSI at compile time, so comments are classifier input, and
 # VirusTotal's analysis of install.ps1 quoted one of our own comments as grounds for suspicion.
 BANNED_TOKENS = (
-    "bitdefender", "kaspersky", "skyhigh", "trellix", "mcafee", "avast", "sophos",
-    "malwarebytes", "tencent", "rising", "panda",
-    "wacatac", "heur:", "heracles", "gen:variant", "behaveslike", "trojan", "dropper",
-    "amsi", "smartscreen", "virustotal", "sigma rule", "malware",
+    "bitdefender",
+    "kaspersky",
+    "skyhigh",
+    "trellix",
+    "mcafee",
+    "avast",
+    "sophos",
+    "malwarebytes",
+    "tencent",
+    "rising",
+    "panda",
+    "wacatac",
+    "heur:",
+    "heracles",
+    "gen:variant",
+    "behaveslike",
+    "trojan",
+    "dropper",
+    "amsi",
+    "smartscreen",
+    "virustotal",
+    "sigma rule",
+    "malware",
 )
 
 # Generic words describing a runtime hazard the code actually handles, one of which reaches the
@@ -1073,8 +1090,14 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
 
     # The sections are the skeleton; these are the point. A record with headings and no evidence is
     # the same loss with extra steps.
-    for evidence in ("Gen:Variant.MSILHeracles.272113", "HEUR:Trojan.VBS.Agent.gen",
-                     "BehavesLike.PS.Suspicious.gr", "#10540", "#10805", "#9140"):
+    for evidence in (
+        "Gen:Variant.MSILHeracles.272113",
+        "HEUR:Trojan.VBS.Agent.gen",
+        "BehavesLike.PS.Suspicious.gr",
+        "#10540",
+        "#10805",
+        "#9140",
+    ):
         assert evidence in AV_SHAPES_RECORD, f"the record no longer names {evidence}"
 
 
