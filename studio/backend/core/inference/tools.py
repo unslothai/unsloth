@@ -10084,7 +10084,9 @@ MCP_TOOL_SCHEMA_TOOL = {
 
 
 def _mcp_input_schema(tool: dict) -> dict:
-    return tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
+    return (
+        tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
+    )
 
 
 def _mcp_spec_compacted(tool: dict) -> bool:
@@ -10512,7 +10514,9 @@ def execute_tool(
             return f"Error: stdio MCP server '{display}' is disabled on this host"
         tool = _mcp_cached_tool(server, tool_name)
         if tool is not None and _mcp_spec_compacted(tool) and isinstance(arguments, dict):
-            missing = [key for key in _mcp_input_schema(tool).get("required") or [] if key not in arguments]
+            missing = [
+                key for key in _mcp_input_schema(tool).get("required") or [] if key not in arguments
+            ]
             if missing:
                 return _fit_result_to_room(
                     f"Error: MCP tool '{tool_name}' requires {', '.join(missing)}.\n\n"

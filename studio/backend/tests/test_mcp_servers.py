@@ -2013,7 +2013,10 @@ def _big_mcp_tool():
             "properties": {
                 "data": {
                     "anyOf": [
-                        {"type": "object", "properties": {"q": {"type": "string", "description": "x" * 900}}},
+                        {
+                            "type": "object",
+                            "properties": {"q": {"type": "string", "description": "x" * 900}},
+                        },
                         {"type": "object"},
                     ]
                 },
@@ -2040,7 +2043,10 @@ def test_mcp_specs_compact_large_schemas():
     small = {
         "name": "ping",
         "description": "Ping. Returns pong.",
-        "inputSchema": {"type": "object", "properties": {"n": {"type": "integer", "description": "count"}}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {"n": {"type": "integer", "description": "count"}},
+        },
     }
     specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [small, _big_mcp_tool()])
     assert specs[0]["function"]["description"] == "[S] Ping. Returns pong."
@@ -2069,7 +2075,9 @@ def test_mcp_summary_caps_a_description_without_a_sentence_end():
     assert len(long) == 240 and long.endswith("...")
 
 
-def test_mcp_tool_lists_offer_the_schema_tool_only_when_something_was_compacted(tmp_path, monkeypatch):
+def test_mcp_tool_lists_offer_the_schema_tool_only_when_something_was_compacted(
+    tmp_path, monkeypatch
+):
     import asyncio
 
     from core.inference import mcp_client, tools as tools_mod
