@@ -231,12 +231,15 @@ def test_a_gguf_whose_family_is_only_in_its_filename_is_still_recognised():
     from core.inference.media_locality import detected_image_family
 
     opaque = types.SimpleNamespace(
-        model_id = "local/custom", model_path = "/models/custom",
-        gguf_filename = "z-image-turbo-Q4_K_M.gguf", model_kind = "gguf", ambiguous = False,
+        model_id = "local/custom",
+        model_path = "/models/custom",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+        ambiguous = False,
     )
-    assert detected_image_family(opaque) is not None, (
-        "the filename-only family went unrecognised; the gate would prewarm on an sd.cpp host"
-    )
+    assert (
+        detected_image_family(opaque) is not None
+    ), "the filename-only family went unrecognised; the gate would prewarm on an sd.cpp host"
 
 
 def test_the_gate_uses_the_pick_aware_family_resolver():
