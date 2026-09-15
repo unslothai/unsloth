@@ -51,11 +51,8 @@ def test_multi_token_criteria_builds_and_runs_on_cpu():
     assert criteria[0](torch.tensor([100, 101, 7]), None) is False
 
 
-# has_real_cuda(), not torch.cuda.is_available() and not has_real_accelerator(). The raw probe
-# is patched True process-wide by tests/_zoo_aggressive_cuda_spoof.py, so sharing a session with
-# tests/version_compat or tests/vllm_compat would un-skip this on a CPU-only box. The broader
-# has_real_accelerator() is true on an XPU-only or Ascend NPU-only host as well, and the body
-# below names cuda three times. tests/python/test_accelerator_skip_guards.py is the guard.
+# Neither torch.cuda.is_available(), which the spoof patches True process-wide, nor
+# has_real_accelerator(), which is true on an XPU-only host: the body names cuda three times.
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device")
 def test_stop_token_follows_the_input_device():
     criteria = create_stopping_criteria(_FakeTokenizer(eos_token_id = 2))

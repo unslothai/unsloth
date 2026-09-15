@@ -48,12 +48,9 @@ _ALLOWED = {
     _TESTS_ROOT / "conftest.py",
 }
 
-# Every probe the spoof answers that a skip guard could plausibly ask. is_available was the
-# only one listed, and it is not the only one spoofed: device_count returns 1, is_initialized
-# True, is_bf16_supported True, get_device_capability (8, 0). A guard written
-# `skipif(torch.cuda.device_count() == 0)` or `skipif(not torch.cuda.is_bf16_supported())`
-# read exactly as safe and evaded this test completely.
-# test_the_spoofed_probe_list_keeps_up_with_the_spoof below keeps this in step.
+# Every probe the spoof answers that a skip guard could plausibly ask. Listing only the
+# is_available three left `skipif(torch.cuda.device_count() == 0)` reading as safe and
+# evading this test; test_the_spoofed_probe_list_keeps_up_with_the_spoof keeps it in step.
 _SPOOFED_CALLS = {
     ("torch", "cuda", "is_available"),
     ("torch", "xpu", "is_available"),
@@ -66,9 +63,8 @@ _SPOOFED_CALLS = {
     ("torch", "cuda", "get_device_properties"),
 }
 
-# The rest of what the spoof patches: things a test DOES, not things it asks. Seeding,
-# stream and event plumbing, cache and device handling. Listing them is what lets the
-# meta-test below insist that every newly spoofed name is put in one bucket or the other.
+# The rest of what the spoof patches: things a test DOES, not things it asks. Listed so the
+# meta-test below can insist every newly spoofed name lands in one bucket or the other.
 _SPOOFED_NON_PREDICATES = {
     ("torch", "Tensor", "is_pinned"),
     ("torch", "Tensor", "pin_memory"),
@@ -130,9 +126,8 @@ def _skipif_calls(tree: ast.AST):
                 yield decorator
 
 
-# Both recorded-answer probes gate: has_real_accelerator() for a test that just needs somewhere
-# to put a tensor, has_real_cuda() for one that names cuda. Either settles the CPU-only case,
-# which is what short-circuiting ahead of a spoofed probe requires.
+# has_real_accelerator() for a test that just needs somewhere to put a tensor, has_real_cuda()
+# for one that names cuda. Which of the two suffices is per-namespace; see _satisfying_gates.
 _REAL_PROBES = ("has_real_accelerator", "has_real_cuda")
 
 
@@ -263,8 +258,8 @@ def test_the_spoofed_probe_list_keeps_up_with_the_spoof():
         "guard would:\n  " + "\n  ".join(unclassified)
     )
 
-    # And nothing claimed here may have quietly stopped being spoofed, or the guard above
-    # is rejecting an idiom that is now perfectly safe.
+    # Nothing listed may have quietly stopped being spoofed, or the guard above now rejects
+    # an idiom that has become safe.
     stale = sorted(".".join(n) for n in (classified - patched) if n[1] == "cuda")
     assert not stale, (
         "these are listed as spoofed but the spoof no longer patches them:\n  " + "\n  ".join(stale)
@@ -468,8 +463,7 @@ def _offenders_in(condition: str) -> list[str]:
 @pytest.mark.parametrize(
     "condition",
     [
-        # Short-circuits before the torch call on a machine with no CUDA, so the spoof never
-        # gets to answer. Both polarities, and nested one level down.
+        # Both polarities, and nested one level down.
         "not has_real_cuda() or torch.cuda.device_count() < 2",
         "has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12",
         "not has_real_cuda() or (torch.cuda.device_count() < 2 or x)",
@@ -486,15 +480,14 @@ def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
 @pytest.mark.parametrize(
     "condition",
     [
-        # The gate is there but does not dominate the torch call, so on a CPU-only box
-        # the spoof still decides. These are the near-misses the exemption must not cover.
+        # The gate is present but does not dominate the call, so the spoof still decides.
         ("torch.cuda.device_count() < 2 or not has_real_accelerator()", "gate comes after"),
         ("has_real_accelerator() or torch.cuda.device_count() < 2", "and-gate under or"),
         ("not has_real_accelerator() and torch.cuda.device_count() < 2", "or-gate under and"),
         ("torch.cuda.device_count() < 2", "no gate at all"),
         ("x if has_real_cuda() else torch.cuda.device_count() < 2", "not a bool chain"),
-        # The broad probe is true on an XPU-only or Ascend NPU-only host, so it does not
-        # settle whether torch.cuda is there to answer. Only has_real_cuda() does.
+        # The broad probe is true on an XPU-only host, so it does not settle whether
+        # torch.cuda is there to answer.
         ("not has_real_accelerator() or torch.cuda.device_count() < 2", "broad gate on cuda"),
         (
             "has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12",

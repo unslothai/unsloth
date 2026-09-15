@@ -239,11 +239,8 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 
 
 @pytest.mark.skipif(
-    # has_real_accelerator() first, and not merely for tidiness: the spoof in
-    # tests/_zoo_aggressive_cuda_spoof.py makes device_count() return 1 process-wide, so
-    # this guard's answer on a CPU-only runner is the spoof's, not the machine's. It
-    # happens to skip today because 1 < 2; raise that stub to 2 to exercise a multi-GPU
-    # path and this test un-skips on a box with no card at all.
+    # The spoof answers device_count() with 1, so this skips today only because 1 < 2.
+    # Raise that stub to exercise a multi-GPU path and it un-skips on a box with no card.
     not has_real_cuda()
     or torch.cuda.device_count() < 2
     or packing_utils._XFormersBlockMask is None,
