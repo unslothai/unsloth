@@ -23,6 +23,7 @@ from core.inference.llama_cpp import _LLAMA_VIDEO_FPS, _video_fps_flags  # noqa:
 from core.inference.llama_video_input import (  # noqa: E402
     MAX_FRAME_PIXELS,
     MAX_FRAME_RATE,
+    MIN_SAMPLED_SECONDS,
     shrink_video_for_llama,
 )
 from test_llama_flag_catalog import _probe_with_help  # noqa: E402
@@ -302,6 +303,57 @@ def test_a_long_clip_still_fits_the_cap_and_is_really_shrunk(tmp_path):
     assert shrunk is not clip
     assert len(base64.b64decode(shrunk)) < len(base64.b64decode(clip))
     assert _probe(tmp_path, shrunk)["width"] == 640
+
+
+def _frames_at(tmp_path: Path, clip_b64: str, name: str, fps: int) -> int:
+    """Frames llama-server would actually get, via the same `-vf fps=` it runs."""
+    path = tmp_path / name
+    path.write_bytes(base64.b64decode(clip_b64))
+    info = _probe(tmp_path, clip_b64)
+    raw = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-vf",
+            f"fps={fps}",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        check = True,
+        capture_output = True,
+    ).stdout
+    return len(raw) // (info["width"] * info["height"] * 3)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("seconds", [0.1, 0.3, 0.4])
+def test_a_sub_second_clip_still_reaches_the_model(tmp_path, seconds):
+    # ffmpeg's fps filter places its first output frame half an interval in, so
+    # at the 1 fps Studio pins, anything under ~0.5s decodes to NOTHING and the
+    # model answers about a video it never saw. These worked at the old 4 fps
+    # default, so this is a regression guard.
+    clip = _clip(tmp_path, f"tiny{seconds}.mp4", "320x180", rate = 30, seconds = seconds)
+    assert _frames_at(tmp_path, clip, f"tiny-src{seconds}", 1) == 0
+
+    shrunk = shrink_video_for_llama(clip, _CAP)
+
+    assert _frames_at(tmp_path, shrunk, f"tiny-out{seconds}", 1) >= 1
+    assert _probe(tmp_path, shrunk)["duration"] == pytest.approx(MIN_SAMPLED_SECONDS, abs = 0.15)
+
+
+@needs_ffmpeg
+def test_a_long_enough_clip_within_the_budget_is_still_left_alone(tmp_path):
+    # The floor must not drag ordinary clips into a needless re-encode.
+    clip = _clip(tmp_path, "ok.mp4", "640x360", rate = 10, seconds = 2)
+
+    assert shrink_video_for_llama(clip, _CAP) is clip
 
 
 def test_a_probe_that_is_not_an_object_forwards_the_clip_untouched(monkeypatch):
