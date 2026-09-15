@@ -83,6 +83,8 @@ _MANIFEST_NAME = "manifest.json"
 _BUNDLE_NAME = "cache.bin"
 _BUNDLE_PREFIX = "bundle-"
 _BUNDLE_SUFFIX = ".bin"
+# What _atomic_write names its in-progress file, as a suffix: ".<final name>.<random>.tmp".
+_TEMP_SUFFIX = ".tmp"
 _FORMAT_VERSION = 1
 
 # A bundle file this new is NOT collectable even when the manifest does not name it: another process may have just
@@ -248,6 +250,11 @@ class CacheContext:
     # when this still reads what it read before it started, so a shape registered WHILE that save ran cannot be
     # marked persisted by it.
     dirty_seq: int = 0
+    # A bundle this context LOADED and rejected on its checksum. The save below must overwrite that
+    # file rather than take its exists() shortcut: the recompiled artifacts usually hash to the same
+    # digest, so the shortcut would leave the corrupt bytes in place under a manifest that names
+    # them, and every future start would reject the cache again with no way back.
+    rejected_bundle: Optional[str] = None
 
 
 def begin(
@@ -387,6 +394,7 @@ def _try_load(ctx: CacheContext, logger: Any) -> bool:
     digest = hashlib.sha256(data).hexdigest()
     if manifest.get("sha256") and manifest["sha256"] != digest:
         _warn(logger, "compile-cache: bundle checksum mismatch; ignoring")
+        ctx.rejected_bundle = ctx.bundle.name
         return False
 
     try:
@@ -418,7 +426,9 @@ def _atomic_write(path: Path, data: bytes) -> None:
     """
     tmp: Optional[str] = None
     try:
-        fd, tmp = tempfile.mkstemp(dir = str(path.parent), prefix = f".{path.name}.", suffix = ".tmp")
+        fd, tmp = tempfile.mkstemp(
+            dir = str(path.parent), prefix = f".{path.name}.", suffix = _TEMP_SUFFIX
+        )
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
@@ -456,6 +466,11 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
             if not (
                 name == _BUNDLE_NAME
                 or (name.startswith(_BUNDLE_PREFIX) and name.endswith(_BUNDLE_SUFFIX))
+                # An _atomic_write that the interpreter killed mid-write leaves its temp file
+                # behind: the finally that removes it does not run when the daemon save thread is
+                # torn down inside fh.write, and the file can be gigabytes. The same grace window
+                # covers it, so a write actually in flight is never the one taken.
+                or (name.startswith(".") and name.endswith(_TEMP_SUFFIX))
             ):
                 continue
             try:
@@ -513,7 +528,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         # ever names a bundle already fully on disk. An exit between the two leaves the OLD manifest still naming
         # the OLD bundle, which is untouched, so the previous warm start survives and the new file is just an
         # orphan the next successful save collects.
-        if not bundle.exists():
+        if not bundle.exists() or bundle.name == ctx.rejected_bundle:
             _atomic_write(bundle, data)
         _atomic_write(
             ctx.manifest_path,

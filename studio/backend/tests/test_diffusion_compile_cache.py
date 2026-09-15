@@ -783,3 +783,46 @@ def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened
     assert second.exists()
     assert reopened.hit is True
     assert reopened.bundle == second
+
+
+def test_a_bundle_rejected_on_its_checksum_is_rewritten_rather_than_kept(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    # Corruption on disk gives a load that fails the checksum. The recompile that follows produces
+    # the same artifacts and therefore the same content-addressed NAME, so the exists() shortcut
+    # would leave the corrupt bytes in place under a manifest that names them and the cache could
+    # never come back. The rejection is remembered and the file overwritten.
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    good = ctx.bundle.read_bytes()
+    ctx.bundle.write_bytes(b"CORRUPT" + good[7:])
+
+    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert reopened.hit is False
+    assert reopened.rejected_bundle == ctx.bundle.name
+
+    reopened.saved = False
+    assert cc.save(reopened) is True
+    assert reopened.bundle.read_bytes() == good
+
+    # And the next start hits again, which is the whole point: the cache healed itself.
+    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+
+
+def test_a_temp_file_left_by_a_killed_save_is_collected(monkeypatch, tmp_path, mutable_megacache):
+    # _atomic_write's finally does not run when the interpreter tears the daemon save thread down
+    # inside fh.write, so its temp file survives, and it is as large as the bundle. Collection now
+    # recognises it, under the same grace window that protects a write actually in flight.
+    import os as _os
+
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    stranded = ctx.dir / f".{ctx.bundle.name}.abcd1234{cc._TEMP_SUFFIX}"
+    stranded.write_bytes(b"half of a multi-GB bundle")
+
+    # Fresh, so it could still be somebody's in-flight write.
+    assert cc._collect_superseded(ctx.dir, None) == []
+    assert stranded.exists()
+
+    _os.utime(stranded, (0, 0))
+    assert cc._collect_superseded(ctx.dir, None) == [stranded.name]
+    assert not stranded.exists()
+    assert ctx.bundle.exists()
