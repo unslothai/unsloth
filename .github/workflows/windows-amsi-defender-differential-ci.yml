@@ -457,26 +457,51 @@ jobs:
           # launch, would otherwise be reported as live real-time protection and every candidate
           # result after it trusted. An unavailable scanner reporting no hit is the exact failure
           # this control exists to catch, so it must not be able to satisfy it.
+          # A benign file of the same size written the same way into the same directory, FIRST. An
+          # absent EICAR file only means Defender if an identical write that Defender has no opinion
+          # about succeeds; on its own, absence is equally explained by an ACL, a full disk or a
+          # transient I/O error. $ErrorActionPreference is 'Continue' in this step, so a
+          # non-terminating Set-Content failure does not even raise -- which is why the write is
+          # checked by looking for the file rather than by whether anything threw.
+          $canaryFile = Join-Path $controlDir 'canary.txt'
+          $canaryOk = $false
+          try {
+            Set-Content -LiteralPath $canaryFile -Encoding ascii -NoNewline -Value (
+              'X' * 68) -ErrorAction Stop
+            $canaryOk = (Test-Path -LiteralPath $canaryFile)
+          } catch {
+            Write-Host "::warning::could not write the benign canary: $($_.Exception.Message)"
+          }
+          if (-not $canaryOk) {
+            Write-Host '::warning::the control directory is not writable, so nothing about Defender can be concluded from a missing EICAR file.'
+            Write-Host '::warning::COULD NOT MEASURE on the Defender half: no positive control.'
+            Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+            exit 0
+          }
+
           $wrote = $false
           try {
             Set-Content -LiteralPath $controlFile -Encoding ascii -NoNewline -Value (
-              'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
-            $wrote = $true
+              'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*') `
+              -ErrorAction Stop
+            # Observed, not assumed. 'Continue' would otherwise carry a failed non-terminating write
+            # straight into $wrote = $true and the absence below would read as quarantine.
+            $wrote = (Test-Path -LiteralPath $controlFile)
+            if (-not $wrote) {
+              Write-Host 'control: EICAR was quarantined on write while the benign canary of the same size in the same directory survived; real-time protection is live.'
+              $fired = $true
+            }
           } catch {
-            # The one case where a throw IS the evidence, and it is evidence because the file is
-            # gone afterwards rather than because an exception was raised. Real-time protection
-            # quarantining on write is a stronger result than the on-demand scan reporting it.
+            # A throw is not evidence by itself. It is evidence only because the identical benign
+            # write into the same directory succeeded a moment ago and this file is not there.
             if (Test-Path -LiteralPath $controlFile) {
               Write-Host "::warning::could not write the EICAR control and the file is still there, so this was not a Defender block: $($_.Exception.Message)"
             } else {
-              Write-Host 'control: EICAR was quarantined on write; real-time protection is live.'
+              Write-Host "control: the EICAR write was refused while the benign canary of the same size in the same directory succeeded; real-time protection is live. ($($_.Exception.Message))"
               $fired = $true
             }
           }
-          if ($wrote -and -not (Test-Path -LiteralPath $controlFile)) {
-            Write-Host 'control: EICAR was quarantined immediately after the write; real-time protection is live.'
-            $fired = $true
-          } elseif ($wrote) {
+          if ($wrote) {
             try {
               # -DisableRemediation on the CONTROL too, so it is the same invocation the candidates
               # get. It is not only about remediation: release-desktop.yml records that the flag makes
@@ -522,21 +547,25 @@ jobs:
           $cloudNote = 'not determined'
           try {
             $pref = Get-MpPreference -ErrorAction Stop
+            # Reported, and deliberately NOT part of the gate. Block-at-first-sight only consults
+            # the cloud on an on-access OPEN (release-desktop.yml:1301-1305), and this lane never
+            # opens the copies: it exempts them from on-access scanning so a detection cannot
+            # quarantine the evidence before it is measured, and reads them through an explicit
+            # on-demand scan instead. What that scan needs is MAPS reporting and a reachable MAPS
+            # endpoint. Gating on this preference labelled a runner whose cloud the scan CAN reach
+            # as local-signatures-only, which is the opposite error from the one the gate is for.
+            $bafsNote = if ($pref.DisableBlockAtFirstSeen) {
+              'DisableBlockAtFirstSeen=true, so nothing would act on an on-access open; this lane does not use that path'
+            } else { 'block-at-first-sight is on' }
             if ([int]$pref.MAPSReporting -eq 0) {
-              $cloudNote = 'MAPSReporting is Disabled'
-            } elseif ($pref.DisableBlockAtFirstSeen) {
-              # Reachability is not the whole gate. With this preference set, MAPS answers and the
-              # cloud is queryable, but block-at-first-sight does not act -- and acting on a
-              # zero-prevalence file is the exact behaviour this lane claims below. release-desktop.yml
-              # treats the same value as fatal for the same reason.
-              $cloudNote = 'DisableBlockAtFirstSeen=true, so the cloud is reachable but does not act on first sight'
+              $cloudNote = "MAPSReporting is Disabled ($bafsNote)"
             } else {
               $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
               if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'fail') {
                 $cloudReady = $true
-                $cloudNote = "MAPSReporting=$($pref.MAPSReporting), connection validated"
+                $cloudNote = "MAPSReporting=$($pref.MAPSReporting), connection validated ($bafsNote)"
               } else {
-                $cloudNote = "ValidateMapsConnection exit $LASTEXITCODE"
+                $cloudNote = "ValidateMapsConnection exit $LASTEXITCODE ($bafsNote)"
               }
             }
           } catch {

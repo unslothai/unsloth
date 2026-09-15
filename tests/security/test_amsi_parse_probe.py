@@ -616,26 +616,36 @@ def test_a_parse_error_is_reported_even_when_no_control_fired_anywhere(tmp_path:
     assert "verdict=broken" in text, text
 
 
-def test_cloud_readiness_requires_block_at_first_sight_to_be_on() -> None:
-    """Reachable is not the same as acting, and the message claimed the second.
+def test_cloud_readiness_is_decided_by_maps_and_reports_bafs_separately() -> None:
+    """What the on-demand scan needs is MAPS, and block-at-first-sight is a different path.
 
-    With `DisableBlockAtFirstSeen` set, MAPS answers and `ValidateMapsConnection` succeeds, so the
-    gate passed and then told the reader that block-at-first-sight could act on the mark of the web.
-    Acting on a zero-prevalence file is the one behaviour this lane exists to exercise, and
-    release-desktop.yml treats the same preference as fatal for the same reason.
+    This gate used to refuse readiness whenever `DisableBlockAtFirstSeen` was set. That was right
+    while the step told the reader block-at-first-sight had acted on the mark of the web; it stopped
+    being right once the step was corrected to say what it actually does, which is an explicit
+    on-demand scan. BAFS only consults the cloud on an on-access OPEN
+    (release-desktop.yml:1301-1305) and this lane never opens the copies, so gating on it labelled a
+    runner whose cloud the scan CAN reach as local-signatures-only. The preference is still read and
+    still printed, because a reader has to know which configuration produced the verdict.
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
     start = body.index("$cloudReady = $false")
     end = body.index("if ($cloudReady) {", start)
     gate = body[start:end]
-    assert "DisableBlockAtFirstSeen" in gate, (
-        "the cloud-readiness gate checks only MAPS reporting and connectivity, so a runner with "
-        "block-at-first-sight disabled is still labelled cloud-protected"
-    )
     assert "$cloudReady = $true" in gate
-    assert gate.index("DisableBlockAtFirstSeen") < gate.index(
-        "$cloudReady = $true"
-    ), "the preference is read after readiness is already decided"
+    assert "ValidateMapsConnection" in gate, "readiness no longer verifies the MAPS connection"
+    assert gate.index("ValidateMapsConnection") < gate.index("$cloudReady = $true"), (
+        "readiness is decided before the MAPS connection is validated"
+    )
+    assert "DisableBlockAtFirstSeen" in gate, (
+        "the block-at-first-sight preference is no longer reported at all, so a reader cannot tell "
+        "which configuration produced the verdict"
+    )
+    assert "elseif ($pref.DisableBlockAtFirstSeen)" not in gate, (
+        "block-at-first-sight is gating readiness again, which mislabels a MAPS-reachable runner as "
+        "local signatures only"
+    )
+    # And it must still be printed, not merely computed.
+    assert "$bafsNote" in gate and "$cloudNote = " in gate
 
 
 def test_a_real_block_is_still_reported_when_another_script_fails_to_parse(tmp_path: Path) -> None:
@@ -929,3 +939,30 @@ def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
     assert "there is no positive control" in control, (
         "a control scan that cannot be launched no longer says the control did not run"
     )
+
+
+def test_the_defender_control_writes_a_benign_canary_first() -> None:
+    """An absent EICAR file only means Defender if an identical benign write succeeds.
+
+    On its own, absence is equally explained by an ACL, a full disk or a transient I/O error, and
+    `$ErrorActionPreference` is `Continue` in this step, so a non-terminating `Set-Content` failure
+    does not even raise. The control therefore writes a benign file of the same size the same way
+    into the same directory first, and gives up rather than concluding anything if that fails.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner"):]
+    control = defender[:defender.index("EICAR proves the LOCAL engine scans")]
+    assert "$canaryFile" in control, "there is no benign canary, so absence is not attributable"
+    assert control.index("$canaryOk") < control.index("$controlFile -Encoding ascii"), (
+        "the canary is written after the EICAR file, so a failed directory cannot be ruled out "
+        "before the EICAR write is interpreted"
+    )
+    assert "no positive control" in control, (
+        "an unwritable control directory no longer reports that there is no positive control"
+    )
+    # Both writes must be terminating, or Continue carries a failure straight past the check.
+    writes = [line for line in control.splitlines() if "Set-Content -LiteralPath $c" in line]
+    assert len(writes) == 2, writes
+    for line in writes:
+        block = control[control.index(line):control.index(line) + 400]
+        assert "-ErrorAction Stop" in block, f"this write is non-terminating:\n{line.strip()}"
