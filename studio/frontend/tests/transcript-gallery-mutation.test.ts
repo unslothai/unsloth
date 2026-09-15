@@ -6,7 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { readSrc } from "./helpers/kit.ts";
 
-test("pending transcript mutations refresh the current archive view", async () => {
+test("pending transcript mutations use the current view and deletion callback", async () => {
   const source = readSrc("features/audio/transcript-gallery.tsx");
   const tree = ts.createSourceFile(
     "transcript-gallery.tsx",
@@ -29,10 +29,11 @@ test("pending transcript mutations refresh the current archive view", async () =
     statements.join("\n") + "\nreturn { mutate, refresh, setArchived };",
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
   );
-  for (const [initialView, nextView] of [
-    [false, true],
-    [true, false],
-    [false, false],
+  for (const { initialView, nextView, removed } of [
+    { initialView: false, nextView: true, removed: ["deleted"] },
+    { initialView: true, nextView: false, removed: ["deleted"] },
+    { initialView: false, nextView: false, removed: ["deleted"] },
+    { initialView: false, nextView: true, removed: null },
   ]) {
     const state: unknown[] = [];
     const refs: { current: unknown }[] = [];
@@ -46,7 +47,7 @@ test("pending transcript mutations refresh the current archive view", async () =
       latest: null,
       autoSelect: false,
       onSelect: () => {},
-      onDelete: (ids: unknown) => deletions.push(ids),
+      onDelete: (ids: unknown) => deletions.push(["stale", ids]),
       useState: (initial: unknown) => {
         const index = stateIndex++;
         if (!(index in state)) state[index] = initial;
@@ -80,14 +81,16 @@ test("pending transcript mutations refresh the current archive view", async () =
     const request = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const mutation = before.mutate(() => request, ["deleted"]);
+    const mutation = before.mutate(() => request, removed);
     before.setArchived(nextView);
+    scope.onDelete = (ids: unknown) => deletions.push(["current", ids]);
+    if (removed === null) scope.currentId = "retained-archived";
     const after = render();
     await after.refresh();
     finish();
     await mutation;
     assert.deepEqual(requests, [nextView, nextView]);
     assert.deepEqual(state[0], [{ id: String(nextView) }]);
-    assert.deepEqual(deletions, [["deleted"]]);
+    assert.deepEqual(deletions, [["current", removed]]);
   }
 });

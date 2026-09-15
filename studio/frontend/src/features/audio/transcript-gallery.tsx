@@ -54,11 +54,11 @@ export function TranscriptGallery({
   const generation = useRef(0);
   const loadingRef = useRef(false);
   const currentIdRef = useRef(currentId);
-  const selectionRef = useRef({ autoSelect, onSelect });
+  const selectionRef = useRef({ autoSelect, onSelect, onDelete });
   useLayoutEffect(() => {
     currentIdRef.current = currentId;
-    selectionRef.current = { autoSelect, onSelect };
-  }, [currentId, autoSelect, onSelect]);
+    selectionRef.current = { autoSelect, onSelect, onDelete };
+  }, [currentId, autoSelect, onSelect, onDelete]);
   const refresh = useCallback(() => {
     const ticket = ++generation.current;
     loadingRef.current = true;
@@ -135,7 +135,7 @@ export function TranscriptGallery({
     try {
       await action();
       if (removed === null || removed.includes(currentIdRef.current ?? ""))
-        onDelete(removed);
+        selectionRef.current.onDelete(removed);
       await refreshRef.current();
     } catch (error) {
       toast.error(
