@@ -6395,8 +6395,16 @@ class DiffusionBackend:
                 return True
             if self._generation_owns_slot:
                 return False
-            # Only teardown or transition ownership makes queued waiters cancellable.
-            if not self._teardown_waiters and not self._transition_owns_slot:
+            # Only teardown, transition, or an ACCEPTED eject makes queued waiters cancellable. The
+            # eject raises _unload_waiters the moment it is admitted and reserves the teardown only
+            # once construction releases _lock, which can be minutes later. That window is exactly
+            # when the same counter denies these waiters admission, so without it here Stop answered
+            # False throughout and the request it could not cancel went on to run.
+            if (
+                not self._teardown_waiters
+                and not self._transition_owns_slot
+                and not self._unload_waiters
+            ):
                 return False
             # Recheck live state so timed waiters observe a replacement handoff.
             cancels = set(self._queued_generate_cancels)

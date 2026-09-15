@@ -218,3 +218,25 @@ def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
 
     # ~5 polls at the 0.1s timeout. A spin does tens of thousands in the same half second.
     assert polls["n"] <= 20, polls
+
+
+def test_stop_cancels_a_queued_generation_while_an_eject_waits_for_the_lock(backend):
+    """An eject raises the load fence when it is ACCEPTED and reserves the teardown only once
+    construction releases _lock. Through that window the same counter denies a queued generation
+    admission, so Stop had to be able to reach it: it answered False instead, and the request it
+    could not cancel went on to run once the eject finished."""
+    queued = threading.Event()
+    backend._queued_generate_cancels.add(queued)
+    with backend._load_cancel_lock:
+        backend._unload_waiters += 1
+        backend._unload_fence_clear.clear()
+    # Exactly the pre-reservation window: neither of the old predicates is true yet.
+    assert not backend._teardown_waiters and not backend._transition_owns_slot
+
+    assert backend.cancel_generate() is True
+    assert queued.is_set()
+
+
+def test_stop_still_reports_nothing_to_cancel_on_an_idle_backend(backend):
+    backend._queued_generate_cancels.add(threading.Event())
+    assert backend.cancel_generate() is False
