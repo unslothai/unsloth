@@ -8929,7 +8929,8 @@ class LlamaCppBackend:
         if needs_budget and effective_budget > 0:
             value_key = f"supports_reasoning_budget_value:{effective_budget}"
             if value_key not in caps:
-                probe_env = cls._llama_server_env_for_binary(binary)
+                probe_binary = cls._exec_path_for_launch(binary)
+                probe_env = cls._llama_server_env_for_binary(probe_binary)
                 # Same shape as the --help probe: llama-server parses LLAMA_ARG_* before
                 # argv, so a stale inherited value would read as "rejects the budget".
                 for name in tuple(probe_env):
@@ -8939,7 +8940,7 @@ class LlamaCppBackend:
                     probe_env["GGML_METAL_DEVICES"] = "0"
                 try:
                     result = subprocess.run(
-                        [binary, "--reasoning-budget", str(effective_budget), "--help"],
+                        [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
                         capture_output = True,
                         text = True,
                         encoding = "utf-8",

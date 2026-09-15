@@ -3911,3 +3911,35 @@ def test_a_drafter_dropped_as_unloadable_does_not_reload_to_refetch_it():
         )
         is True
     )
+
+
+def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary: {"supports_reasoning_budget": True}),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_exec_path_for_launch",
+        staticmethod(lambda binary: "/runtime/bin/llama-server"),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_llama_server_env_for_binary",
+        staticmethod(lambda binary: {}),
+    )
+
+    def run(cmd, **kwargs):
+        return _types.SimpleNamespace(returncode = 0 if cmd[0] == "/runtime/bin/llama-server" else 1)
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "run", run)
+    caps = LlamaCppBackend.validate_reasoning_budget_capabilities(
+        "/runtime/llama-server",
+        extra_args = None,
+        reasoning_budget = 32,
+        reasoning_budget_message = "",
+    )
+    assert caps["supports_reasoning_budget_value:32"] is True
