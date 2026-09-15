@@ -84,6 +84,7 @@ import {
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { TranscriptGallery } from "./transcript-gallery";
+import { AUTH_SESSION_ENDING_EVENT } from "@/features/auth";
 import { downloadTranscript } from "./transcript-download";
 import { TranscriptionProgress } from "./transcription-progress";
 import type { TranscriptRecord, TranscriptProgress } from "./transcript-stream";
@@ -592,8 +593,19 @@ export function AudioPage({
       event.preventDefault();
       event.returnValue = "";
     };
+    const confirmLogout = (event: Event) => {
+      if (
+        !window.confirm(
+          "This transcript could not be saved. Download it before logging out, or log out and discard it?",
+        )
+      ) event.preventDefault();
+    };
     window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
+    window.addEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      window.removeEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
+    };
   }, [transcript, transcriptRecord, transcriptExported]);
 
   const refreshSttStatus = useCallback(async () => {

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readSrc, readText } from "./helpers/kit.ts";
+import { AUTH_SESSION_ENDING_EVENT } from "../src/features/auth/session-events.ts";
 
 const source = readSrc("features/audio/audio-page.tsx");
 
@@ -160,4 +161,93 @@ test("leaving the page stops microphone capture while transcription can finish i
     run.slice(run.indexOf("await transcribeWithProgress")),
     /!activeRef.current/,
   );
+});
+
+test("logout checks unsaved transcripts before revoking the session or navigating", async () => {
+  const eventName = AUTH_SESSION_ENDING_EVENT;
+  const sidebar = readSrc("components/app-sidebar.tsx");
+  const parse = (text: string) =>
+    ts.createSourceFile(
+      "component.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX,
+    );
+  const audioTree = parse(source);
+  let protection: string | undefined;
+  function findProtection(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(audioTree) === "useEffect" &&
+      node.arguments[0]?.getText(audioTree).includes('"set_renderer_activity"')
+    ) {
+      protection = node.arguments[0].getText(audioTree);
+    }
+    ts.forEachChild(node, findProtection);
+  }
+  findProtection(audioTree);
+  assert.ok(protection);
+  const sidebarTree = parse(sidebar);
+  const handlers: string[] = [];
+  function findLogout(node: ts.Node) {
+    if (
+      ts.isArrowFunction(node) &&
+      node.modifiers?.some((item) => item.kind === ts.SyntaxKind.AsyncKeyword) &&
+      node.body.getText(sidebarTree).includes("await logout()")
+    ) {
+      handlers.push(node.getText(sidebarTree));
+    }
+    ts.forEachChild(node, findLogout);
+  }
+  findLogout(sidebarTree);
+  assert.equal(handlers.length, 2);
+  const execute = (expression: string, scope: Record<string, unknown>) => {
+    const { outputText } = ts.transpileModule(`return (${expression});`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    });
+    return new Function(...Object.keys(scope), outputText)(
+      ...Object.values(scope),
+    );
+  };
+  for (const handler of handlers) {
+    for (const scenario of ["decline", "accept", "saved", "exported", "unmounted"]) {
+      const events: string[] = [];
+      const target = new EventTarget();
+      const window = Object.assign(target, {
+        confirm: () => {
+          events.push("confirm");
+          return scenario === "accept";
+        },
+      });
+      const cleanup = execute(protection, {
+        transcript: "unsaved text",
+        transcriptRecord: scenario === "saved" ? { id: "saved" } : null,
+        transcriptExported: scenario === "exported",
+        isTauri: false,
+        window,
+        AUTH_SESSION_ENDING_EVENT: eventName,
+      })();
+      if (scenario === "unmounted") cleanup?.();
+      await execute(handler, {
+        window,
+        Event,
+        AUTH_SESSION_ENDING_EVENT: eventName,
+        logout: async () => {
+          events.push("logout");
+        },
+        clearAuthTokens: () => {
+          events.push("clear");
+        },
+        navigate: () => {
+          events.push("navigate");
+        },
+      })();
+      assert.deepEqual(
+        events,
+        scenario === "decline"
+          ? ["confirm"]
+          : scenario === "accept"
+            ? ["confirm", "logout", "navigate"]
+            : ["logout", "navigate"],
+      );
+      cleanup?.();
+    }
+  }
 });
