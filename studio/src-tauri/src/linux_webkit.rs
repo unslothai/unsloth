@@ -22,8 +22,9 @@ const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
 // WebKit is not assumed to special-case "0" here, so presence alone is an operator override
 // and the setting below is the documented way off.
 const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
-// Ours, not WebKit's. 1 forces the compositing workaround on, 0 forces it off, so a report
-// from outside the narrow rule below is settled without shipping a new predicate.
+// Ours, not WebKit's. 1/true/yes/on forces the compositing workaround on, 0/false/no/off
+// forces it off (see compositing_setting), so a report from outside the narrow rule below
+// is settled without shipping a new predicate.
 const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
 // Comma-joined list of the variables we set, so a relaunch tells our own inherited output
 // from an operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
@@ -120,6 +121,21 @@ fn force_dmabuf_requested(value: &OsStr) -> bool {
     value.as_encoded_bytes().first() != Some(&b'0')
 }
 
+/// `UNSLOTH_WEBKIT_DISABLE_COMPOSITING` as a tri-state: Some(true) to force the
+/// compositing workaround on, Some(false) to force it off, None to leave the rule below
+/// deciding. Unlike the WebKit variables above, this one is ours and is the documented
+/// way out, so it reads the spellings a person actually types rather than one exact byte.
+/// Matching only `"0"` would leave someone who wrote `false` on the very fallback they
+/// were opting out of, and since the native default is now compositing-off, that mistake
+/// would be silent.
+fn compositing_setting(value: &OsStr) -> Option<bool> {
+    match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
@@ -192,18 +208,18 @@ fn rendering_plan(
     // module. Requiring BOTH is overfitted on purpose: with one host on each side neither
     // axis is established, so the conservative rule leaves every measured machine as it is
     // today. Anyone outside it reporting the same freeze gets the setting above.
-    let compositing_setting = env(DISABLE_COMPOSITING_SETTING);
-    let requested = |wanted: &str| compositing_setting.as_deref() == Some(OsStr::new(wanted));
-    if !requested("0")
-        && (requested("1")
+    let setting = env(DISABLE_COMPOSITING_SETTING);
+    let requested = |wanted: bool| setting.as_deref().and_then(compositing_setting) == Some(wanted);
+    if !requested(false)
+        && (requested(true)
             || (wayland_session && nvidia_driver_loaded && mixed_gpu_vendors && open_kernel_module))
     {
-        let reason = if requested("1") {
+        let reason = if requested(true) {
             COMPOSITING_FORCED_REASON
         } else {
             COMPOSITING_REASON
         };
-        let workaround = if requested("1") && nvidia_x11 {
+        let workaround = if requested(true) && nvidia_x11 {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
         } else {
             RenderingWorkaround::DisableCompositing
@@ -219,7 +235,7 @@ fn rendering_plan(
     //
     // The module probe can over-match PRIME systems rendering on an iGPU. Those hosts can
     // opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0 or keep compositing enabled with
-    // UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
+    // UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0 (or false/no/off; see compositing_setting).
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
@@ -238,7 +254,7 @@ fn rendering_plan(
             || !supports_force_shared_memory(webkit_version)
         {
             RenderingWorkaround::DisableDmabuf
-        } else if requested("0") {
+        } else if requested(false) {
             // The opt-out keeps compositing enabled but preserves the SHM fallback.
             RenderingWorkaround::ForceSharedMemoryOnNvidia
         } else {
@@ -1326,6 +1342,45 @@ mod tests {
                 NVIDIA_REASON
             )
         );
+    }
+
+    #[test]
+    fn the_setting_reads_the_spellings_people_write() {
+        // The native default is compositing-off, so an opt-out this does not recognize is
+        // not a no-op any more: it leaves the host on the fallback it asked to leave.
+        for off in ["0", "false", "no", "off", "FALSE", "Off", " 0 ", "\tno\n"] {
+            assert_eq!(
+                plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, off)], true, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                    NVIDIA_REASON
+                ),
+                "{off:?} should keep compositing"
+            );
+        }
+        for on in ["1", "true", "yes", "on", "TRUE", "On", " 1 "] {
+            assert_eq!(
+                plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, on)], false, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositing,
+                    COMPOSITING_FORCED_REASON
+                ),
+                "{on:?} should force the workaround"
+            );
+        }
+        // Anything else is not an instruction, so the rule decides as if it were unset.
+        for unknown in ["", "maybe", "2", "-1", "enabled"] {
+            assert_eq!(
+                plan_on_graphics(
+                    &[(DISABLE_COMPOSITING_SETTING, unknown)],
+                    true,
+                    false,
+                    false
+                ),
+                plan_on_graphics(&[], true, false, false),
+                "{unknown:?} should not read as an instruction"
+            );
+        }
     }
 
     #[test]
