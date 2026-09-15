@@ -11,6 +11,7 @@ import { snapshotQueuedChatRunSettings } from "../src/features/chat/utils/queued
 import { reorderPromptQueueItems } from "../src/features/chat/utils/prompt-queue-reorder.ts";
 import { steeringInsertionIndex } from "../src/features/chat/utils/composer-preferences.ts";
 import { chatModelLifecycleGate } from "../src/features/chat/utils/model-lifecycle-gate.ts";
+import { parseExternalModelId } from "../src/features/chat/external-providers.ts";
 import {
   planUserPromptQueueStop,
   userStopTargetCancelMode,
@@ -415,26 +416,68 @@ test("a new steering queue waits for cancellation and rejects an unidentified ta
 });
 
 // Exercise the production queue factory with controlled settings hydration.
-let factory: ts.Expression | undefined;
-function findFactory(node: ts.Node) {
-  if (
-    ts.isVariableDeclaration(node) &&
-    node.name.getText(source) === "startHydratedPromptQueue" &&
-    node.initializer &&
-    ts.isCallExpression(node.initializer)
-  ) {
-    factory = node.initializer.arguments[0];
+function composerCallbackJs(name: string) {
+  let factory: ts.Expression | undefined;
+  function visit(node: ts.Node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(source) === name &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer)
+    ) {
+      factory = node.initializer.arguments[0];
+    }
+    ts.forEachChild(node, visit);
   }
-  ts.forEachChild(node, findFactory);
+  visit(source);
+  assert.ok(factory, `Missing production callback ${name}`);
+  return ts.transpileModule(`return (${factory.getText(source)});`, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.None,
+    },
+  }).outputText;
 }
-findFactory(source);
-assert.ok(factory);
-const factoryJs = ts.transpileModule(`return (${factory.getText(source)});`, {
-  compilerOptions: {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.None,
-  },
-}).outputText;
+const factoryJs = composerCallbackJs("startHydratedPromptQueue");
+const targetFactoryJs = composerCallbackJs("createPromptQueueTarget");
+
+async function targetForSelection(checkpoint: string, modelLoading: boolean, incoming: string | null) {
+  let settings!: ReturnType<typeof snapshotQueuedChatRunSettings>;
+  const runtime = {
+    params: { checkpoint, temperature: 0.4 },
+    activeGgufVariant: "old-Q4.gguf",
+    loadingModelPick: incoming ? { id: incoming } : null,
+    modelLoading,
+    permissionMode: "ask",
+    toolsEnabled: true,
+    ragEnabled: false,
+    incognito: false,
+    hydratePersistedSettings: async () => undefined,
+  };
+  const deps = {
+    aui: {
+      threads: () => ({}),
+      threadListItem: () => ({ getState: () => ({ id: "chat", remoteId: "chat" }) }),
+    },
+    referenceThreadId: "chat",
+    chatHistoryClearBoundary: { capture: () => 0 },
+    promptQueueTargetMountedRef: { current: true },
+    indexingActiveRef: { current: false },
+    useChatRuntimeStore: { getState: () => runtime },
+    compactIds: (ids: unknown[]) => [...new Set(ids.filter(Boolean))],
+    snapshotQueuedChatRunSettings: (...args: Parameters<typeof snapshotQueuedChatRunSettings>) => {
+      settings = snapshotQueuedChatRunSettings(...args);
+      return settings;
+    },
+    parseExternalModelId,
+    hasPreStreamRunReservation: () => false,
+  };
+  const create = new Function(...Object.keys(deps), targetFactoryJs)(
+    ...Object.values(deps),
+  ) as () => Promise<Target>;
+  return { target: Object.assign(makeTarget("chat", false), await create()), settings };
+}
+
 function hydratedFactory(
   w: ReturnType<typeof world>,
   target: Target,
@@ -908,11 +951,93 @@ test("loading defers model resolution while retaining queued sampling and permis
   const ready = snapshotQueuedChatRunSettings(typed);
   assert.equal(ready.params.checkpoint, "outgoing-model");
   assert.equal(ready.activeGgufVariant, "old-Q4.gguf");
-  assert.match(
-    source.text,
-    /deferModelResolution:\s*chatStateAtQueueStart.modelLoading &&\s*parseExternalModelId\(chatStateAtQueueStart.params.checkpoint\) === null/,
-  );
 });
+
+for (const behavior of ["queue", "steer"] as const) {
+  for (const failed of [false, true]) {
+    test(`external-to-local switch waits for the incoming model: ${behavior}, failed=${failed}`, async () => {
+      const w = world();
+      w.setModelLoading(true);
+      const { target, settings } = await targetForSelection(
+        "external::provider::hosted-model", true, "incoming-local",
+      );
+      w.startPromptQueue(["wait for the selected model"], target, false, behavior);
+      const run = w.run();
+      await w.dispatchQueuedPrompt(run, run.items[0]);
+      assert.deepEqual(w.appended, [], "never send to the outgoing hosted provider");
+      assert.equal(target.usesLocalModel, true);
+      assert.equal(settings.params.checkpoint, "");
+      assert.equal(settings.activeGgufVariant, null);
+      assert.equal(settings.params.temperature, 0.4);
+      assert.equal(settings.permissionMode, "ask");
+      assert.equal(settings.toolsEnabled, true);
+      if (failed) {
+        w.handlePromptQueueRunFailed(undefined, true);
+        w.setModelLoading(false);
+        await w.dispatchQueuedPrompt(run, run.items[0]);
+        assert.equal(w.isPromptQueueRunReadyToDispatch(run), false);
+        assert.deepEqual(w.appended, []);
+        assert.equal(run.items[0].prompt, "wait for the selected model");
+      } else {
+        w.setModelLoading(false);
+        await w.dispatchQueuedPrompt(run, run.items[0]);
+        assert.deepEqual(w.appended, ["wait for the selected model"]);
+      }
+    });
+  }
+}
+
+test("an external-to-local preparation keeps the follow-up in the composer", async () => {
+  const lease = chatModelLifecycleGate.tryAcquire("preparing")!;
+  try {
+    const w = world();
+    const { target } = await targetForSelection(
+      "external::provider::hosted-model", true, "incoming-local",
+    );
+    let cleared = false;
+    hydratedFactory(w, target)(["keep this draft"], false, () => { cleared = true; });
+    await Promise.resolve();
+    assert.equal(cleared, false);
+    assert.equal(w.runs.size, 0);
+  } finally {
+    chatModelLifecycleGate.release(lease);
+  }
+});
+
+test("external queues retain their provider across unrelated local loading and failure", async () => {
+  const outgoing = "external::provider::hosted-model";
+  const before = await targetForSelection(outgoing, false, null);
+  const unrelated = await targetForSelection(outgoing, true, null);
+  const stalePick = await targetForSelection(outgoing, false, "old-local-pick");
+  const incoming = await targetForSelection(outgoing, true, "incoming-local");
+  assert.equal(incoming.target.usesLocalModel, true);
+  for (const { target, settings } of [before, unrelated, stalePick]) {
+    assert.equal(target.usesLocalModel, false);
+    assert.equal(settings.params.checkpoint, outgoing);
+    const w = world();
+    w.setModelLoading(true);
+    w.startPromptQueue(["hosted follow-up"], target);
+    w.handlePromptQueueRunFailed(undefined, true);
+    const run = w.run();
+    assert.equal(run.paused, false);
+    await w.dispatchQueuedPrompt(run, run.items[0]);
+    assert.deepEqual(w.appended, ["hosted follow-up"]);
+  }
+});
+
+for (const checkpoint of ["outgoing-local", ""]) {
+  test(`local loading still defers model resolution: checkpoint=${checkpoint || "empty"}`, async () => {
+    for (const pick of ["incoming-local", null]) {
+      const { target, settings } = await targetForSelection(checkpoint, true, pick);
+      assert.equal(target.usesLocalModel, true);
+      assert.equal(settings.params.checkpoint, "");
+      assert.equal(settings.activeGgufVariant, null);
+    }
+    const ready = await targetForSelection(checkpoint, false, null);
+    assert.equal(ready.settings.params.checkpoint, checkpoint);
+    assert.equal(ready.settings.activeGgufVariant, "old-Q4.gguf");
+  });
+}
 
 test("a model load starting during the document probe defers the pending append", async () => {
   const w = world();

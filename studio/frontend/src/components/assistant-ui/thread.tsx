@@ -3730,7 +3730,10 @@ const Composer: FC<{
         // Resolve the incoming model at dispatch; retain the prompt's settings.
         deferModelResolution:
           chatStateAtQueueStart.modelLoading &&
-          parseExternalModelId(chatStateAtQueueStart.params.checkpoint) === null,
+          parseExternalModelId(
+            chatStateAtQueueStart.loadingModelPick?.id ??
+              chatStateAtQueueStart.params.checkpoint,
+          ) === null,
       },
     );
     const getThreadListItemState = () => {
