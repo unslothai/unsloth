@@ -28,10 +28,10 @@ def test_the_key_tuple_lives_in_one_place():
     # compute_loss, so the tuple in unsloth_zoo is the only list of names.
     assert src.count("vision_inputs.get(") >= 10
     # The one remaining direct probe is the old-zoo guard, which only needs pixel_values.
-    assert src.count("kwargs.get(\"pixel_values\", None)") == 1
+    assert src.count('kwargs.get("pixel_values", None)') == 1
     for gone in (
-        "kwargs.get(\"image_grid_thw\", None)",
-        "kwargs.get(\"num_images\", None)",
+        'kwargs.get("image_grid_thw", None)',
+        'kwargs.get("num_images", None)',
     ):
         assert gone not in src, gone
 
@@ -65,8 +65,14 @@ def test_compute_loss_hands_the_whole_set_to_the_gradient_pass():
     # or a key added to the tuple would reach the logprob pass and not the loss.
     for call in patched.split("grpo_accumulated_loss(")[1:]:
         body = call.split("\n                )")[0]
-        for gone in ("pixel_values =", "image_grid_thw =", "pixel_attention_mask =",
-                     "image_sizes =", "num_images =", "token_type_ids ="):
+        for gone in (
+            "pixel_values =",
+            "image_grid_thw =",
+            "pixel_attention_mask =",
+            "image_sizes =",
+            "num_images =",
+            "token_type_ids =",
+        ):
             assert gone not in body, gone
 
 
@@ -150,7 +156,13 @@ def test_generate_forward_wrapper_keeps_the_real_signature():
     class _Toy(torch.nn.Module):
         config = type("cfg", (), {"is_encoder_decoder": False})()
 
-        def forward(self, input_ids = None, pixel_values = None, spatial_shapes = None, **kwargs):
+        def forward(
+            self,
+            input_ids = None,
+            pixel_values = None,
+            spatial_shapes = None,
+            **kwargs,
+        ):
             return input_ids
 
     model = _Toy()

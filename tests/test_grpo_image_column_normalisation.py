@@ -125,10 +125,7 @@ def test_guard_names_the_column_and_the_issue():
 
 
 def test_guard_is_injected_when_no_anchor_matches():
-    source = (
-        "    def _generate_and_score_completions(self, inputs):\n"
-        "        return inputs\n"
-    )
+    source = "    def _generate_and_score_completions(self, inputs):\n        return inputs\n"
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", source
     )
