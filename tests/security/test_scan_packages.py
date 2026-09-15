@@ -2635,3 +2635,48 @@ def test_a_socketed_file_renders_what_it_always_rendered():
     assert len(found) == 1
     code_only = sp._strip_noncode(source)
     assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL)
+
+
+def test_the_fixtures_are_published_atomically() -> None:
+    """The generated archives live at fixed paths that four CI workers rewrite concurrently.
+
+    `.github/workflows/workflow-trigger-lint.yml` runs `pytest -q -n 4` over `tests/security` with
+    the default `--dist load`, which scatters tests from ONE file across all four workers. Each runs
+    the session-scoped autouse fixture and rewrites these paths while the others read them. A plain
+    `write_bytes` truncates first, so a reader can catch a half-written archive -- and it does not
+    fail with a corrupt-file error, it fails asserting scanner semantics on a short member list,
+    which is close to untraceable.
+
+    Two properties, and the second is what makes the first sound.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    source = (_Path(__file__).resolve().parent / "fixtures" / "_build.py").read_text(
+        encoding = "utf-8")
+    assert "os.replace" in source, (
+        "the fixture builder no longer publishes through os.replace. A truncate-then-write at a "
+        "fixed path races the other xdist workers."
+    )
+    assert "write_bytes(buf" not in source and "write_bytes(gz_buf" not in source, (
+        "the builder writes an archive directly to its final path again"
+    )
+    assert f'{_os.getpid.__name__}()' in source or "getpid" in source, (
+        "the temp name is no longer pid-unique, so the workers collide on the temp file instead of "
+        "on the final one"
+    )
+
+    # Byte-for-byte reproducible, which is the reason a reader that sees the old file and a reader
+    # that sees the new one are looking at the same thing.
+    import hashlib
+    for name, digest in (
+        ("malicious_wheel.whl", "fe6927b5"),
+        ("clean_wheel.whl", "0c327818"),
+        ("malicious_sdist.tar.gz", "7516530a"),
+    ):
+        got = hashlib.sha256((FIXTURES / name).read_bytes()).hexdigest()
+        assert got.startswith(digest), (
+            f"{name} now hashes {got[:8]}, not {digest}. These bytes are the same ones that were "
+            f"committed before they were generated; a change here means the archives are no longer "
+            f"deterministic and the atomic publish above no longer guarantees equivalence."
+        )
