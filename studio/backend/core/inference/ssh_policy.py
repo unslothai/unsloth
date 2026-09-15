@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import ast
+import ipaddress
 import re
+import shlex
 from typing import Iterable, Optional
+from urllib.parse import urlsplit
 
 from state.ssh_approvals import approved_hosts, is_host_approved, normalize_host
 
@@ -25,7 +28,7 @@ _SSH_PY_CONNECT_ATTRS = frozenset({"connect", "connect_ssh"})
 
 _SSH_PY_CONNECT_FQ = (
     "paramiko.SSHClient.connect",
-    "paramiko.Transport.connect",
+    "paramiko.Transport",
     "asyncssh.connect",
     "asyncssh.SSHClient.connect",
     "fabric.Connection",
@@ -64,6 +67,7 @@ _SSH_NO_ARG_FLAGS = frozenset(
 # OpenSSH options that take a separate value token.
 _SSH_VALUE_FLAGS = frozenset(
     {
+        "B",
         "b",
         "c",
         "D",
@@ -78,6 +82,7 @@ _SSH_VALUE_FLAGS = frozenset(
         "m",
         "O",
         "o",
+        "P",
         "p",
         "Q",
         "R",
@@ -88,7 +93,6 @@ _SSH_VALUE_FLAGS = frozenset(
 )
 
 _SSH_REDIRECT_OPTIONS = frozenset({"hostname", "proxyjump"})
-_SSH_DYNAMIC_OPTIONS = frozenset({"proxycommand"})
 
 _SHELL_EXEC_FUNCS = frozenset(
     {
@@ -113,12 +117,22 @@ _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
 def _extract_host_from_endpoint(token: str) -> Optional[str]:
     """Parse a user@host, host:port, host:path, or bracketed IPv6 operand."""
     token = token.strip().strip("'\"")
-    if not token or token.startswith("-") or token.startswith("$") or token.startswith("${"):
+    if not token or token.startswith("-") or any(c in token for c in "$`%"):
         return None
     if "/" in token and "@" not in token and ":" not in token:
         return None
 
+    if token.startswith(("ssh://", "scp://", "sftp://")):
+        try:
+            return normalize_host(urlsplit(token).hostname or "") or None
+        except ValueError:
+            return None
     host_part = token.split("@", 1)[-1]
+    if host_part.count(":") > 1 and not host_part.startswith("["):
+        try:
+            return str(ipaddress.IPv6Address(host_part))
+        except ValueError:
+            return None
 
     if host_part.startswith("[") and "]" in host_part:
         host = host_part[1 : host_part.index("]")]
@@ -133,21 +147,25 @@ def _extract_host_from_endpoint(token: str) -> Optional[str]:
             host_part = left
 
     host = normalize_host(host_part)
-    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+    if not host:
         return None
     return host
 
 
 def _host_from_ssh_option(key: str, value: Optional[str]) -> tuple[set[str], bool]:
-    """Extract hosts from one ``-o`` key/value pair."""
+    """Extract destinations or reject configuration that hides them."""
+    key = key.strip().lower()
+    value = (value or "").strip()
+    if key in {"proxycommand", "include", "localcommand", "knownhostscommand"}:
+        return set(), True
+    if key not in _SSH_REDIRECT_OPTIONS:
+        return set(), False
+    if key == "proxyjump" and value.lower() == "none":
+        return set(), False
     hosts: set[str] = set()
     dynamic = False
-    key = (key or "").strip().lower()
-    value = (value or "").strip()
-    if key in _SSH_DYNAMIC_OPTIONS:
-        return hosts, True
-    if key in _SSH_REDIRECT_OPTIONS and value:
-        host = _extract_host_from_endpoint(value)
+    for endpoint in value.split(",") if key == "proxyjump" else [value]:
+        host = _extract_host_from_endpoint(endpoint)
         if host:
             hosts.add(host)
         else:
@@ -155,93 +173,65 @@ def _host_from_ssh_option(key: str, value: Optional[str]) -> tuple[set[str], boo
     return hosts, dynamic
 
 
-def _parse_ssh_option_token(tok: str) -> tuple[Optional[str], Optional[str]]:
-    if "=" in tok:
-        key, value = tok.split("=", 1)
-        return key.strip().lower(), value.strip()
-    return tok.strip().lower(), None
-
-
-def _consume_ssh_flag(flag: str, tokens: list[str], index: int) -> tuple[int, set[str], bool]:
-    """Advance past one ssh flag and return any hosts it names."""
-    hosts: set[str] = set()
-    dynamic = False
-    flag_body = flag[1:]
-    if not flag_body:
-        return index, hosts, dynamic
-
-    if flag_body[0] in _SSH_NO_ARG_FLAGS and all(ch in _SSH_NO_ARG_FLAGS for ch in flag_body):
-        return index, hosts, dynamic
-
-    if flag_body[0] in _SSH_VALUE_FLAGS:
-        opt = flag_body[0]
-        attached = flag_body[1:]
-        if opt == "o":
-            if attached:
-                key, value = _parse_ssh_option_token(attached)
-                opt_hosts, opt_dynamic = _host_from_ssh_option(key, value)
-                hosts.update(opt_hosts)
-                dynamic = dynamic or opt_dynamic
-            elif index < len(tokens):
-                key, value = _parse_ssh_option_token(tokens[index])
-                if value is None and index + 1 < len(tokens):
-                    value = tokens[index + 1]
-                    index += 2
-                else:
-                    index += 1
-                opt_hosts, opt_dynamic = _host_from_ssh_option(key, value)
-                hosts.update(opt_hosts)
-                dynamic = dynamic or opt_dynamic
-            return index, hosts, dynamic
-        if attached:
-            if opt == "J":
-                host = _extract_host_from_endpoint(attached)
-                if host:
-                    hosts.add(host)
-                else:
-                    dynamic = True
-            return index, hosts, dynamic
-        if index < len(tokens):
-            value = tokens[index]
-            index += 1
-            if opt == "J":
-                host = _extract_host_from_endpoint(value)
-                if host:
-                    hosts.add(host)
-                else:
-                    dynamic = True
-            elif opt == "o":
-                key, opt_value = _parse_ssh_option_token(value)
-                if opt_value is None and index < len(tokens):
-                    opt_value = tokens[index]
-                    index += 1
-                opt_hosts, opt_dynamic = _host_from_ssh_option(key, opt_value)
-                hosts.update(opt_hosts)
-                dynamic = dynamic or opt_dynamic
-        return index, hosts, dynamic
-
-    return index, hosts, dynamic
-
-
-def _parse_ssh_cli_options(tokens: list[str]) -> tuple[list[str], set[str], bool]:
-    """Return positional tokens plus hosts named by ssh options."""
+def _parse_ssh_cli_options(tokens: list[str], command: str) -> tuple[list[str], set[str], bool]:
+    """Parse client option arity before interpreting destination operands."""
+    value_flags = _SSH_VALUE_FLAGS
+    no_arg_flags = _SSH_NO_ARG_FLAGS
+    if command == "scp":
+        value_flags = frozenset("cDFiJloPSX")
+        no_arg_flags = frozenset("346ABCOpqRrsTv")
+    elif command == "sftp":
+        value_flags = frozenset("BbcDFiJloPRSsX")
+        no_arg_flags = frozenset("46AaCfNpqrv")
     positional: list[str] = []
     hosts: set[str] = set()
     dynamic = False
     index = 0
     while index < len(tokens):
-        tok = tokens[index]
-        if tok == "--":
-            positional.extend(tokens[index + 1 :])
-            break
-        if tok.startswith("-") and tok != "-":
-            index += 1
-            index, opt_hosts, opt_dynamic = _consume_ssh_flag(tok, tokens, index)
-            hosts.update(opt_hosts)
-            dynamic = dynamic or opt_dynamic
-            continue
-        positional.append(tok)
+        token = tokens[index]
         index += 1
+        if token == "--":
+            positional.extend(tokens[index:])
+            break
+        if not token.startswith("-") or token == "-":
+            positional.append(token)
+            if command in {"ssh", "slogin", "sftp"}:
+                break
+            continue
+        flags = token[1:]
+        while flags:
+            option, flags = flags[0], flags[1:]
+            if option in no_arg_flags:
+                continue
+            if option not in value_flags:
+                dynamic = True
+                break
+            if flags:
+                value = flags
+            elif index < len(tokens):
+                value = tokens[index]
+                index += 1
+            else:
+                dynamic = True
+                break
+            flags = ""
+            if (
+                option == "F"
+                or (command == "scp" and option in {"D", "S"})
+                or (command == "sftp" and option in {"D", "S"})
+            ):
+                dynamic = True
+            elif option == "J":
+                found, unknown = _host_from_ssh_option("proxyjump", value)
+                hosts.update(found)
+                dynamic |= unknown
+            elif option == "o":
+                parts = re.split(r"[=\s]+", value.strip(), maxsplit = 1)
+                found, unknown = _host_from_ssh_option(
+                    parts[0], parts[1] if len(parts) == 2 else None
+                )
+                hosts.update(found)
+                dynamic |= unknown
     return positional, hosts, dynamic
 
 
@@ -264,15 +254,13 @@ def _hosts_from_ssh_segment(name: str, tokens: list[str]) -> tuple[set[str], boo
     literal_hosts: set[str] = set()
     dynamic = False
     cmd = name.lower()
-    if cmd in {"ssh", "slogin"}:
-        positional, opt_hosts, opt_dynamic = _parse_ssh_cli_options(tokens)
-        literal_hosts.update(opt_hosts)
-        dynamic = dynamic or opt_dynamic
-        candidates = [positional[0]] if positional else []
+    positional, opt_hosts, opt_dynamic = _parse_ssh_cli_options(tokens, cmd)
+    literal_hosts.update(opt_hosts)
+    dynamic = dynamic or opt_dynamic
+    if cmd in {"ssh", "slogin", "sftp"}:
+        candidates = positional[:1]
     else:
-        candidates = _scp_remote_candidates(tokens)
-        if not candidates and tokens:
-            candidates = [tokens[-1]]
+        candidates = _scp_remote_candidates(positional)
     if not candidates:
         return literal_hosts, True
     for cand in candidates:
@@ -333,7 +321,7 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
     return bindings
 
 
-def _ssh_client_bindings(tree: ast.AST) -> dict[str, str]:
+def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, str]:
     """Map variables assigned from SSH client factories."""
     clients: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -343,6 +331,8 @@ def _ssh_client_bindings(tree: ast.AST) -> dict[str, str]:
         if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Call):
             continue
         fq = _fq_name(node.value.func)
+        root, sep, rest = fq.partition(".")
+        fq = bindings.get(root, root) + (sep + rest if sep else "")
         if fq.endswith(".SSHClient") or fq.endswith(".Transport") or fq.endswith(".Connection"):
             clients[target.id] = fq
     return clients
@@ -379,6 +369,8 @@ def _resolve_ssh_call(
         return None
 
     fq = _fq_name(func)
+    root, sep, rest = fq.partition(".")
+    fq = bindings.get(root, root) + (sep + rest if sep else "")
     if fq in _SSH_PY_CONNECT_FQ or fq.endswith(".Connection"):
         root = fq.split(".", 1)[0]
         if root in bindings or root in _SSH_PY_ROOT_MODULES:
@@ -391,6 +383,8 @@ def _resolve_ssh_call(
     if isinstance(func.value, ast.Name):
         client_fq = clients.get(func.value.id)
         if client_fq:
+            if client_fq == "paramiko.Transport":
+                return None
             root = client_fq.split(".", 1)[0]
             if root in _SSH_PY_ROOT_MODULES:
                 return f"{root}.{func.attr}"
@@ -448,10 +442,7 @@ def _literal_strings_from_node(node: ast.AST) -> list[str]:
 def _ssh_from_argv_literals(strings: list[str]) -> tuple[set[str], bool]:
     if not strings:
         return set(), False
-    cmd = strings[0].rsplit("/", 1)[-1].lower()
-    if cmd not in _SSH_COMMANDS:
-        return set(), False
-    return _hosts_from_ssh_segment(cmd, strings[1:])
+    return extract_ssh_hosts_from_command(shlex.join(strings))
 
 
 def _extract_ssh_from_shell_literal(literal: str) -> tuple[set[str], bool]:
@@ -485,19 +476,6 @@ def _ssh_call_span(node: ast.Call) -> tuple[int, int, int, int]:
     return lineno, col, end_lineno, end_col
 
 
-def _position_in_span(lineno: int, col: int, span: tuple[int, int, int, int]) -> bool:
-    start_line, start_col, end_line, end_col = span
-    if lineno < start_line or lineno > end_line:
-        return False
-    if start_line == end_line:
-        return start_col <= col < end_col
-    if lineno == start_line:
-        return col >= start_col
-    if lineno == end_line:
-        return col < end_col
-    return True
-
-
 def _scan_ssh_python_usage(
     code: str,
 ) -> tuple[set[str], bool, bool, list[tuple[int, int, int, int]]]:
@@ -509,7 +487,7 @@ def _scan_ssh_python_usage(
     except SyntaxError:
         return set(), True, bool(re.search(r"\b(?:paramiko|asyncssh|fabric)\b", code)), []
     bindings = _ssh_import_bindings(tree)
-    clients = _ssh_client_bindings(tree)
+    clients = _ssh_client_bindings(tree, bindings)
     shell_aliases = _shell_exec_aliases(tree)
     hosts: set[str] = set()
     dynamic = False
@@ -525,12 +503,25 @@ def _scan_ssh_python_usage(
                 connect_spans.append(_ssh_call_span(node))
                 host_lit: Optional[str] = None
                 if node.args:
-                    host_lit = _literal_host_from_ast(node.args[0])
+                    endpoint = node.args[0]
+                    if (
+                        ssh_call == "paramiko.Transport"
+                        and isinstance(endpoint, ast.Tuple)
+                        and endpoint.elts
+                    ):
+                        endpoint = endpoint.elts[0]
+                    host_lit = _literal_host_from_ast(endpoint)
                 if host_lit is None:
                     for kw in node.keywords or []:
                         if kw.arg in {"hostname", "host"}:
                             host_lit = _literal_host_from_ast(kw.value)
                             break
+                if host_lit and ssh_call in {
+                    "fabric.Connection",
+                    "fabric.connection.Connection",
+                    "paramiko.Transport",
+                }:
+                    host_lit = _extract_host_from_endpoint(host_lit)
                 if host_lit:
                     hosts.add(host_lit)
                 else:
@@ -685,7 +676,7 @@ def filter_ssh_approved_network_blocks(
         if col < 0:
             kept.append(item)
             continue
-        if any(_position_in_span(line, col, span) for span in approved_spans):
+        if any((line, col) == span[:2] for span in approved_spans):
             continue
         kept.append(item)
     filtered["network_calls"] = kept

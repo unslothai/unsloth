@@ -269,3 +269,111 @@ class TestSessionCleanup:
         assert "prod.example.com" in approved_hosts("sess-1")
         clear_session("sess-1")
         assert approved_hosts("sess-1") == frozenset()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ssh -P approved.example unapproved.example uptime",
+        "ssh -F alternate.conf approved.example uptime",
+        "scp -o HostName=unapproved.example file approved.example:/tmp/file",
+        "sftp -o HostName=unapproved.example approved.example",
+        "find . -maxdepth 0 -exec ssh unapproved.example uptime \\;",
+        "ssh -voHostName=unapproved.example approved.example",
+        'ssh -o "HostName unapproved.example" approved.example',
+        "ssh -J approved.example,unapproved.example approved.example",
+    ],
+)
+def test_cli_redirects_require_approval(command):
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ssh deploy@$TARGET uptime",
+        "ssh deploy@${TARGET} uptime",
+        "scp file deploy@$TARGET:/tmp/file",
+    ],
+)
+def test_approval_does_not_authorize_shell_expansions(command):
+    approve_hosts("review", collect_ssh_hosts_for_approval("terminal", {"command": command}))
+    assert check_ssh_command_access(command, "review") is not None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko as p; c=p.SSHClient(); c.connect(hostname='unapproved.example')",
+        "from paramiko import SSHClient; c=SSHClient(); c.connect(hostname='unapproved.example')",
+        "from paramiko import SSHClient as Client; c=Client(); c.connect(hostname='unapproved.example')",
+        "import subprocess; subprocess.run(['env', 'ssh', 'unapproved.example'])",
+    ],
+)
+def test_python_aliases_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+def test_nested_http_call_keeps_its_host_block():
+    code = (
+        "import paramiko, requests; "
+        "paramiko.SSHClient().connect('approved.example', "
+        "password=requests.get('https://unapproved.example').text)"
+    )
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ssh -p 2222 approved.example uptime",
+        "ssh -vp2222 approved.example uptime",
+        'ssh -o "StrictHostKeyChecking no" approved.example uptime',
+        "scp -P 2222 file approved.example:/tmp/file",
+        "sftp -P 2222 approved.example",
+        "find . -maxdepth 0 -exec ssh approved.example uptime \\;",
+    ],
+)
+def test_supported_literal_destinations_after_approval(command):
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ssh 2001:db8::1 uptime",
+        "scp scp://[2001:db8::1]/file ./file",
+        "sftp sftp://[2001:db8::1]/file",
+    ],
+)
+def test_ipv6_uri_destinations_remain_distinct(command):
+    approve_hosts("review", collect_ssh_hosts_for_approval("terminal", {"command": command}))
+    assert check_ssh_command_access(command, "review") is None
+    assert (
+        check_ssh_command_access(command.replace("2001:db8::1", "2001:dead::2"), "review")
+        is not None
+    )
+
+
+def test_paramiko_transport_uses_constructor_destination():
+    code = "import paramiko; t=paramiko.Transport(('approved.example', 22)); t.connect(username='deploy')"
+    assert check_ssh_python_access(code, "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "from fabric import Connection; Connection('deploy@approved.example:2222').run('uptime')",
+        "import paramiko; t=paramiko.Transport('approved.example:2222'); t.connect(username='deploy')",
+    ],
+)
+def test_python_endpoint_shorthand_uses_host_approval(code):
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
