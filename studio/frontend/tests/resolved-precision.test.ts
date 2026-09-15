@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DENSE_QUANT_KINDS,
   PRECISION_REFUSAL_TITLE,
   type ResolvedControl,
+  isDenseQuantKind,
   isPrecisionRefusal,
   isResolvedHonored,
   resolvedBadge,
@@ -312,4 +314,16 @@ test("a precision refusal is recognised so it can be shown as an actionable toas
   assert.equal(isPrecisionRefusal("text_encoder_quant='int8' could not be used: nope."), true);
   assert.equal(isPrecisionRefusal("A diffusion load is already in progress."), false);
   assert.equal(PRECISION_REFUSAL_TITLE, "Requested precision is not available");
+});
+
+// The supported kinds mirror the backend constant.
+test("the dense-quant kinds are the two the backend quantises", () => {
+  assert.deepEqual([...DENSE_QUANT_KINDS], ["gguf", "pipeline"]);
+  assert.equal(isDenseQuantKind("gguf"), true);
+  assert.equal(isDenseQuantKind("pipeline"), true);
+  assert.equal(isDenseQuantKind("single_file"), false);
+  assert.equal(isDenseQuantKind(" Pipeline "), true);
+  assert.equal(isDenseQuantKind(null), false);
+  assert.equal(isDenseQuantKind(undefined), false);
+  assert.equal(isDenseQuantKind(""), false);
 });

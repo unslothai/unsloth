@@ -37,6 +37,7 @@ from typing import Any, Optional
 from loggers import get_logger
 
 from .diffusion_krea2 import load_krea2_text_encoder, load_krea2_tokenizer
+from .diffusion_transformer_quant import mark_source_precision
 
 logger = get_logger(__name__)
 
@@ -362,7 +363,8 @@ def load_ideogram4_transformer(
             f"missing={real_missing[:8]} unexpected={unexpected[:8]}"
         )
     model.to(dtype)
-    return model
+    # Preserve the published source precision after widening the tensors to bf16.
+    return mark_source_precision(model, "fp8")
 
 
 def load_ideogram4_pipeline(
