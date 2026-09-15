@@ -53,6 +53,39 @@ _MAX_NAMED_FAILURES = 3
 _MAX_WITHHELD_PATHS = 500
 _JOB_EVENT_KEEPALIVE_S = 4.0
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
+_IGNORE_SCAN_DIRS = frozenset(
+    {
+        ".git",
+        ".svn",
+        ".hg",
+        ".venv",
+        "venv",
+        "env",
+        "node_modules",
+        "bower_components",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+    }
+)
+_IGNORE_SCAN_EXACT_FILES = frozenset(
+    {
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "pnpm-lock.yml",
+        "npm-shrinkwrap.json",
+        "pipfile.lock",
+    }
+)
+
+
+def _is_ignored_scan_file(name: str) -> bool:
+    lower = name.lower()
+    if lower.startswith(".env") or lower.endswith(".env"):
+        return True
+    if lower.endswith(".lock") or lower.endswith(".lockb"):
+        return True
+    return lower in _IGNORE_SCAN_EXACT_FILES
 
 
 class _SyncStopped(Exception):
@@ -983,6 +1016,8 @@ def _scan(
                 if entry.is_symlink():
                     continue
                 if entry.is_dir(follow_symlinks = False):
+                    if entry.name in _IGNORE_SCAN_DIRS:
+                        continue
                     resolved = os.path.realpath(full)
                     if (
                         not _is_within(root, resolved)
@@ -1020,7 +1055,9 @@ def _scan(
                     continue
                 if not entry.is_file(follow_symlinks = False):
                     continue
-                if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
+                if _is_ignored_scan_file(entry.name):
+                    continue
+                if os.path.splitext(entry.name)[1].lower() not in config.ALL_UPLOAD_EXTS:
                     continue
                 # Finder metadata carries the document's extension, so a text parser would embed and cite it as a
                 # real chunk.
