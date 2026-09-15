@@ -100,6 +100,17 @@ const MARKDOWN_CASES = [
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
+  // Every label to CommonMark's 999 is registered, so one past 200 must be held.
+  `[${"x".repeat(250)}]: /url\n\n${paragraphs(12)}[${"x".repeat(250)}]: /url\n\nq\n\n`,
+  `[${"x".repeat(999)}]: /url\n\n${paragraphs(12)}[${"x".repeat(999)}]: /url\n\nq\n\n`,
+  // Label whitespace is normalised: `[foo\nbar]` registers as `foo bar`.
+  `[foo\nbar]: /url\n\n${paragraphs(12)}[foo\nbar]: /url\n\nq\n\n`,
+  `[foo\n${"y".repeat(300)}]: /url\n\n${paragraphs(12)}[foo\n${"y".repeat(300)}]: /url\n\nq\n\n`,
+  // 1040 UTF-16 units, 520 code points: the bound must count the latter. Also
+  // cuts surrogate pairs in half while streaming.
+  `[${"😀".repeat(520)}]: /url\n\n${paragraphs(12)}[${"😀".repeat(520)}]: /url\n\nq\n\n`,
+  // Registers as `foo\ bar`, so the escape must admit a line ending; `.` cannot.
+  `[foo\\\nbar]: /url\n\n${paragraphs(12)}[foo\\\nbar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.
@@ -306,7 +317,8 @@ test("the block split is shared per reply without leaking between replies", () =
   // their calls through it, so the only thing keeping that honest is that the slot is keyed
   // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
   const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
-  const withReference = "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
+  const withReference =
+    "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
   const other = "Message C.\n\n```js\nconst c = 1;\n```\n";
 
   for (const reply of [plain, withReference, other, withReference, plain]) {
@@ -359,6 +371,230 @@ test("link references and definitions stay in one rendered document", () => {
     (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
     true,
   );
+});
+
+// Everything Marked stores must move the key as it arrives, or the reference keeps
+// the stale link. Every line ending, because the key reads un-normalised text.
+test("a definition that spans lines still moves the render key", () => {
+  const labels = ["foo", "x".repeat(250), "foo\nbar", "foo\\\nbar"];
+
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    const eol = (text: string) => text.replaceAll("\n", newline);
+    const usage = eol(`Before [reference][foo bar].\n\n${paragraphs(20)}`);
+
+    // A container marker is stripped before storing, so label, destination and
+    // title each have to be found behind one.
+    for (const label of labels) {
+      for (const [container, indent] of [
+        ["", "  "],
+        ["> ", "> "],
+        ["- ", "  "],
+      ] as const) {
+        for (const separator of [" ", `\n${indent}`]) {
+          const opened = `${usage}${eol(`${container}[${label}]:${separator}`)}`;
+          const destined = `${opened}https://example.com/reference`;
+          const titled = `${destined}${eol(`\n${indent}"reference"`)}`;
+          const shape = JSON.stringify(
+            eol(`${container}[${label}]:${separator}`),
+          );
+
+          assert.equal(markdownRenderScope(destined), "document", shape);
+          assert.notEqual(
+            markdownRenderKey(opened),
+            markdownRenderKey(destined),
+            `render key did not move for the destination of ${shape}`,
+          );
+          assert.notEqual(
+            markdownRenderKey(destined),
+            markdownRenderKey(titled),
+            `render key did not move for the title of ${shape}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// The other half of that contract: text the key captures that marked does NOT
+// store remounts the whole subtree once per character of it. A definition in a
+// container keeps its continuation in the same block, so these reach the key
+// suffix where prose after a plain definition does not.
+test("prose after a definition does not move the render key", () => {
+  const tails = [
+    "ordinary prose that follows on the next line",
+    // Opens like a title and never closes: marked stores none until one does.
+    '"a quoted sentence that keeps going',
+    "'a quoted sentence that keeps going",
+    "(a parenthetical that keeps going",
+  ];
+
+  for (const [container, indent] of [
+    ["", ""],
+    ["> ", "> "],
+    ["- ", "  "],
+    ["1. ", "   "],
+  ] as const) {
+    for (const definition of [
+      `${container}[g]: /guide`,
+      `${container}[g]: /guide "settled"`,
+      `${container}[g]:\n${indent}/guide`,
+    ]) {
+      for (const tail of tails) {
+        const settled = `See [g][g].\n\n${definition}`;
+        const key = markdownRenderKey(settled);
+        const shape = JSON.stringify(`${definition}⏎${tail}`);
+
+        // A key that moves at ANY prefix is a remount, so sweep, not endpoints.
+        for (let index = 1; index <= tail.length; index += 1) {
+          const separator = definition.includes("\n") ? " " : `\n${indent}`;
+          assert.equal(
+            markdownRenderKey(`${settled}${separator}${tail.slice(0, index)}`),
+            key,
+            `render key moved for prose after ${shape} at prefix ${index}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// marked stores the space in `[g]: <https://x.test/a b>`, so the key must follow
+// an angle destination to its `>` or it settles on the first word and freezes.
+test("an angle-bracketed destination keeps moving the render key", () => {
+  const usage = "See [guide][g].\n\n";
+  const streamed = [
+    "[g]: <https://x.test/a",
+    "[g]: <https://x.test/a ",
+    "[g]: <https://x.test/a b",
+    "[g]: <https://x.test/a b>",
+    '[g]: <https://x.test/a b> "settled"',
+  ];
+
+  let previous = markdownRenderKey(`${usage}[g]: `);
+  for (const step of streamed) {
+    const key = markdownRenderKey(usage + step);
+    assert.notEqual(key, previous, `render key did not move for ${step}`);
+    previous = key;
+  }
+
+  // `>` closes the ANGLE form only: marked keeps it in `[g]: https://x.test/a>b`.
+  let bareStep = markdownRenderKey(`${usage}[g]: `);
+  for (const step of ["https://x.test/a", "https://x.test/a>", "https://x.test/a>b"]) {
+    const key = markdownRenderKey(`${usage}[g]: ${step}`);
+    assert.notEqual(key, bareStep, `render key did not move for ${step}`);
+    bareStep = key;
+  }
+
+  // Padding after the destination does not stop Marked storing a next-line title.
+  for (const [container, indent] of [
+    ["", "  "],
+    ["> ", "> "],
+  ] as const) {
+    const destined = `${usage}${container}[g]: /url  `;
+    assert.notEqual(
+      markdownRenderKey(destined),
+      markdownRenderKey(`${destined}\n${indent}"title"`),
+      `render key did not move for a padded title behind ${JSON.stringify(container)}`,
+    );
+  }
+
+  // Bare still stops at whitespace, which is what keeps prose out of the key.
+  const bare = markdownRenderKey(`${usage}[g]: https://x.test/ab`);
+  assert.equal(
+    markdownRenderKey(`${usage}[g]: https://x.test/ab\nordinary prose follows`),
+    bare,
+  );
+});
+
+// The window back from each `]:` has to hold the widest label: 999 escapes each
+// followed by an astral code point. Sized in code points it cuts the opening `[`
+// off these. The padding is what forces the window to be the thing under test.
+test("the widest label is still found far into a reply", () => {
+  const padding = "ordinary prose. ".repeat(400);
+  for (const filler of ["z", "\u{1F600}", "\\z", "\\\u{1F600}"]) {
+    const reply = `See [guide][g].\n\n${padding}\n\n[${filler.repeat(999)}]: /url`;
+    assert.equal(
+      markdownRenderScope(reply),
+      "document",
+      `a 999-repetition label of ${JSON.stringify(filler)} was not found`,
+    );
+  }
+});
+
+// Every `[` used to be a start position that ran to the bound before it could
+// fail, so one long line dense with `[` cost half a second per render. A wall-clock
+// budget, not a ratio against a plain reply of the same length: marked's own block
+// split is itself far dearer over 100,000 `[` than over 100,000 `x`, so a ratio
+// would measure marked rather than this probe.
+test("a bracket-dense reply does not stall the scan", () => {
+  const reply = `See [guide][g].\n\n${"[".repeat(100_000)}\n\n[g]: /guide`;
+  for (let run = 0; run < 3; run += 1) markdownRenderScope(reply);
+  const samples = [];
+  for (let run = 0; run < 5; run += 1) {
+    const started = performance.now();
+    markdownRenderScope(reply);
+    samples.push(performance.now() - started);
+  }
+  const median = samples.sort((a, b) => a - b)[2];
+  assert.ok(median < 150, `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`);
+});
+
+// Scope decides what is committed, so it cannot follow the reply's line ending.
+// This label is 999 normalised, 1000 raw under CRLF.
+test("the render scope does not depend on the reply's line ending", () => {
+  const label = `foo${" ".repeat(995)}`;
+  const usage = `Before [reference][foo].\n\n${paragraphs(20)}`;
+
+  const source = `${usage}[${label}\n]: https://example.com/reference`;
+  for (const newline of ["\n", "\r\n", "\r"]) {
+    assert.equal(
+      markdownRenderScope(source.replaceAll("\n", newline)),
+      "document",
+      JSON.stringify(newline),
+    );
+  }
+});
+
+test("extended definitions keep their scope and key outside code blocks", () => {
+  const labels = [
+    "x".repeat(250),
+    "x".repeat(999),
+    "foo\nbar",
+    "foo\\\nbar",
+    "😀".repeat(520),
+  ];
+  const usage = "See [guide][g].\n\n";
+
+  for (const label of labels) {
+    for (const prefix of ["", "> ", "- ", "1. ", "- > "]) {
+      for (const newline of ["\n", "\r\n", "\r"]) {
+        const eol = (text: string) => text.replaceAll("\n", newline);
+        const definition = `${prefix}[${label}]: /guide`;
+        const reply = eol(`${usage}${definition}`);
+        assert.equal(markdownRenderScope(reply), "document", reply);
+        assert.notEqual(
+          markdownRenderKey(reply),
+          markdownRenderKey(`${reply}-changed`),
+        );
+        assert.deepEqual(parseMarkdownIntoRenderableBlocks(reply), [reply]);
+      }
+    }
+
+    const fenced = `\`\`\`md\n[${label}]: /code\n\`\`\``;
+    const indented = `[${label}]: /code`
+      .split("\n")
+      .map((line) => `    ${line}`)
+      .join("\n");
+    for (const code of [fenced, indented]) {
+      assert.equal(markdownRenderScope(`${usage}${code}`), "blocks", code);
+      const real = `${usage}[g]: /guide`;
+      assert.equal(
+        markdownRenderKey(`${real}\n\n${code}`),
+        markdownRenderKey(real),
+        code,
+      );
+    }
+  }
 });
 
 test("a transient marker imbalance can recover incremental parsing", () => {
