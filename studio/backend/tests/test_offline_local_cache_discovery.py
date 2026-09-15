@@ -274,9 +274,9 @@ def test_an_answered_no_is_not_overturned_by_a_later_outage(monkeypatch, tmp_pat
     # The verdict cache expires; the Hub is now rate limiting rather than answering.
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
-    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False, (
-        "an outage handed out a repo the Hub had already refused this caller"
-    )
+    assert (
+        cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False
+    ), "an outage handed out a repo the Hub had already refused this caller"
     assert cached_read_refused(API_KEY_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
 
 
@@ -309,9 +309,9 @@ def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(monkeypat
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
     assert cache_reads_authorized(API_KEY_TOKEN, repo_id = "acme/other") is True
-    assert cache_reads_authorized("hf_a_different_api_key", repo_id = ON_DISK) is True, (
-        "one credential's refusal must not answer for another"
-    )
+    assert (
+        cache_reads_authorized("hf_a_different_api_key", repo_id = ON_DISK) is True
+    ), "one credential's refusal must not answer for another"
 
 
 def test_the_denial_memory_is_dropped_by_the_test_reset(monkeypatch, tmp_path):

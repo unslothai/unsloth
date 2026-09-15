@@ -164,9 +164,7 @@ def _denial_is_remembered(key: tuple[str, str, str], now: float) -> bool:
         return True
 
 
-def _with_remembered_denial(
-    key: tuple[str, str, str], verdict: Optional[bool]
-) -> Optional[bool]:
+def _with_remembered_denial(key: tuple[str, str, str], verdict: Optional[bool]) -> Optional[bool]:
     """A verdict of "could not ask" reads as the last answer the Hub gave, if it was no."""
     if verdict is None and _denial_is_remembered(key, time.monotonic()):
         return False
