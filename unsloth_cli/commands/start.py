@@ -123,6 +123,9 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
     "subagents for other delegation requests."
 )
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
+_PI_USER_RESOURCE_DIRS = ("extensions", "skills", "prompts", "themes", "npm", "git")
+_PI_USER_RESOURCE_SETTINGS = ("packages", "extensions", "skills", "prompts", "themes")
+_PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
@@ -2963,9 +2966,20 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
     return Path.home() / ".codex"
 
 
+def _is_junction(path: Path) -> bool:
+    # Path.is_junction() was added in Python 3.12.
+    if hasattr(path, "is_junction"):
+        return path.is_junction()
+    try:
+        return (
+            getattr(os.lstat(path), "st_reparse_tag", None) == 0xA0000003
+        )  # IO_REPARSE_TAG_MOUNT_POINT
+    except OSError:
+        return False
+
+
 def _remove_overlay_entry(path: Path) -> None:
-    is_junction = getattr(path, "is_junction", None)
-    if is_junction and is_junction():
+    if _is_junction(path):
         path.rmdir()
     elif path.is_symlink() or path.is_file():
         path.unlink()
@@ -4588,6 +4602,126 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
+def _link_user_dir(source: Path, target: Path) -> None:
+    # Refresh links, but preserve real session directories.
+    if target.is_symlink() or _is_junction(target):
+        _remove_overlay_entry(target)
+    if target.exists() or not source.is_dir():
+        return
+    target.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    try:
+        target.symlink_to(source, target_is_directory = True)
+    except OSError:
+        if not _create_directory_junction(source, target):
+            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
+
+
+def _pi_local_entry(entry: str, source: Path, home: Path) -> str:
+    """Re-anchor a user path from the original Pi agent directory."""
+    value = entry.strip()
+    if value.startswith("file:"):
+        return entry
+    if value == "~" or value.startswith(("~/", "~" + os.sep)):
+        target = os.path.join(home, value[2:])
+    else:
+        # Pi stores local packages relative to its agent directory.
+        target = os.path.join(source, value)
+    target = os.path.normpath(target)
+    try:
+        relative = os.path.relpath(target, source)
+    except ValueError:  # on another Windows drive
+        return target
+    # Keep paths into linked resource directories session-relative.
+    if relative.split(os.sep)[0] in _PI_USER_RESOURCE_DIRS:
+        return relative
+    return target
+
+
+def _pi_settings_entries(key: str, entries, source: Path, home: Path) -> list:
+    if not isinstance(entries, list):
+        return []
+    result = []
+    for entry in entries:
+        if key == "packages":
+            spec = entry.get("source") if isinstance(entry, dict) else entry
+            # All other package sources are local paths.
+            if isinstance(spec, str) and not spec.strip().startswith(
+                ("npm:", "git:", "github:", "http:", "https:", "ssh:")
+            ):
+                spec = _pi_local_entry(spec, source, home)
+                entry = {**entry, "source": spec} if isinstance(entry, dict) else spec
+        # Patterns remain relative to the linked resource directories.
+        elif isinstance(entry, str) and not (
+            entry.startswith(("!", "+", "-")) or "*" in entry or "?" in entry
+        ):
+            entry = _pi_local_entry(entry, source, home)
+        result.append(entry)
+    return result
+
+
+def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
+    """Expose selected user Pi resources inside an isolated session."""
+    if _wsl_windows_executable(["pi"]):
+        # Windows Pi cannot reliably follow WSL links into mounted drives.
+        return
+    user_home = Path.home()
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    # Pi resolves a relative override from the launch directory.
+    source = (
+        Path(os.path.abspath(os.path.expanduser(configured)))
+        if configured
+        else user_home / ".pi" / "agent"
+    )
+    if source.resolve(strict = False) == agent_dir.resolve(strict = False):
+        # Do not treat this session as its own resource source.
+        source = user_home / ".pi" / "agent"
+    for name in _PI_USER_RESOURCE_DIRS:
+        _link_user_dir(source / name, agent_dir / name)
+    # HOME is relocated, so link Pi's other global skill directory too.
+    _link_user_dir(user_home / ".agents" / "skills", home / ".agents" / "skills")
+
+    user_settings_path = source / "settings.json"
+    user_settings = _read_json_object(user_settings_path)
+    if user_settings is None:
+        typer.echo(
+            f"Warning: couldn't parse {user_settings_path}; "
+            "Pi packages listed there won't load in this session.",
+            err = True,
+        )
+        user_settings = {}
+    settings_path = agent_dir / "settings.json"
+    settings = _read_json_object(settings_path)
+    if settings is None:
+        typer.echo(
+            f"Warning: couldn't parse {settings_path}; your Pi packages won't load in this session.",
+            err = True,
+        )
+        return
+    manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
+    previous = _read_json_object(manifest_path) or {}
+    before = json.dumps(settings, sort_keys = True)
+    copied = {}
+    for key in _PI_USER_RESOURCE_SETTINGS:
+        entries = _pi_settings_entries(key, user_settings.get(key), source, user_home)
+        # Refresh copied entries while preserving settings added inside the session.
+        stale = previous.get(key) if isinstance(previous.get(key), list) else []
+        own = settings.get(key) if isinstance(settings.get(key), list) else []
+        own = [item for item in own if item not in stale and item not in entries]
+        if entries or own:
+            settings[key] = entries + own
+        else:
+            settings.pop(key, None)
+        if entries:
+            copied[key] = entries
+    if json.dumps(settings, sort_keys = True) != before:
+        _write_private_json(settings_path, settings)
+    if copied != previous:
+        if copied:
+            _write_private_json(manifest_path, copied)
+        else:
+            manifest_path.unlink(missing_ok = True)
+
+
 def write_pi_subagent_config(
     base: str,
     key: str,
@@ -5318,6 +5452,7 @@ def pi(
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME is relocated too so any other ~/.pi paths stay in the session. The key rides in the config rather than the env.
         pi_agent_dir = home / ".pi" / "agent"
         write_pi_config(base, key, entry, pi_agent_dir / "models.json")
+        write_pi_user_resources(pi_agent_dir, home)
         env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
             # Node resolves ~/.pi via USERPROFILE (then HOMEDRIVE + HOMEPATH) on Windows, not HOME. Set them whenever Pi may run as a Windows process: native Windows, or a /mnt Windows shim launched from WSL, where the WSLENV bridge then translates the path. Otherwise the Windows process falls back to the user's real %USERPROFILE%\\.pi. splitdrive yields no drive off a POSIX path, so HOMEDRIVE/HOMEPATH stay unset there.

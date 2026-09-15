@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import sys
 import time
@@ -5399,7 +5400,21 @@ def test_write_pi_config_preserves_and_idempotent(tmp_path):
     assert path.read_text() == before
 
 
-def test_connect_pi_no_launch(fake_studio, tmp_path):
+def _pi_user_agent_dir(tmp_path, monkeypatch) -> Path:
+    user_home = tmp_path / "user-home"
+    agent_dir = user_home / ".pi" / "agent"
+    agent_dir.mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising = False)
+    return agent_dir
+
+
+def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "extensions" / "mine.ts").write_text("export default () => {};\n")
+    (user_agent_dir / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mine"]}))
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
     # Pi resolves its config dir from PI_CODING_AGENT_DIR first, so pin it at the session
@@ -5416,6 +5431,209 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+    assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
+    settings = json.loads((home / ".pi" / "agent" / "settings.json").read_text())
+    assert settings == {"packages": ["npm:pi-mine"]}
+    assert not (user_agent_dir / "models.json").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
+def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    user_home = user_agent_dir.parent.parent
+    for name in ("extensions", "skills", "npm", "git"):
+        (user_agent_dir / name).mkdir()
+    (user_home / ".agents" / "skills").mkdir(parents = True)
+    (user_agent_dir / "auth.json").write_text('{"google": "user-key"}\n')
+    (user_agent_dir / "models.json").write_text('{"providers": {"mine": {}}}\n')
+    (user_agent_dir / "sessions").mkdir()
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "defaultProvider": "google",
+                "theme": "light",
+                "packages": [
+                    "npm:pi-mine@1.2.3",
+                    "git:github.com/me/pi-tools",
+                    "../../src/local-extension",
+                    {"source": "~/other-extension", "extensions": ["index.ts"]},
+                ],
+                "extensions": [
+                    "extensions/extra.ts",
+                    "-extensions/off.ts",
+                    "root.ts",
+                    "/abs/ext.ts",
+                ],
+                "skills": ["skills/*"],
+            }
+        )
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, agent_dir / "models.json")
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    for name in ("extensions", "skills", "npm", "git"):
+        assert (agent_dir / name).is_symlink()
+        assert (agent_dir / name).resolve() == (user_agent_dir / name).resolve()
+    assert not (agent_dir / "prompts").exists()
+    assert (session_home / ".agents" / "skills").resolve() == (
+        user_home / ".agents" / "skills"
+    ).resolve()
+    for private in ("auth.json", "sessions"):
+        assert not (agent_dir / private).exists()
+    assert "mine" not in json.loads((agent_dir / "models.json").read_text())["providers"]
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    assert settings == {
+        "packages": [
+            "npm:pi-mine@1.2.3",
+            "git:github.com/me/pi-tools",
+            str(user_home / "src" / "local-extension"),
+            {"source": str(user_home / "other-extension"), "extensions": ["index.ts"]},
+        ],
+        "extensions": [
+            "extensions/extra.ts",
+            "-extensions/off.ts",
+            str(user_agent_dir / "root.ts"),
+            "/abs/ext.ts",
+        ],
+        "skills": ["skills/*"],
+    }
+
+
+def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    user_settings = user_agent_dir / "settings.json"
+    user_settings.write_text(json.dumps({"packages": ["npm:old", "npm:kept"]}))
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+    # Add session-only state, then change the user config.
+    settings_path = agent_dir / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    settings["packages"].append("npm:session-only")
+    settings["theme"] = "dark"
+    settings_path.write_text(json.dumps(settings))
+    user_settings.write_text(json.dumps({"packages": ["npm:kept", "npm:new"]}))
+    (user_agent_dir / "extensions").rmdir()
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert json.loads(settings_path.read_text()) == {
+        "packages": ["npm:kept", "npm:new", "npm:session-only"],
+        "theme": "dark",
+    }
+    assert not (agent_dir / "extensions").exists() and not (agent_dir / "extensions").is_symlink()
+
+    user_settings.unlink()
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert json.loads(settings_path.read_text()) == {
+        "packages": ["npm:session-only"],
+        "theme": "dark",
+    }
+    assert not (agent_dir / start._PI_USER_RESOURCES_MANIFEST).exists()
+
+
+def test_write_pi_user_resources_leaves_session_dirs_and_user_files_alone(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "npm" / "node_modules" / "pi-mine").mkdir(parents = True)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "extensions" / "mine.ts").write_text("mine\n")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    (agent_dir / "npm").mkdir(parents = True)
+    (agent_dir / "npm" / "session.txt").write_text("session\n")
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert not (agent_dir / "npm").is_symlink()
+    assert (agent_dir / "npm" / "session.txt").read_text() == "session\n"
+    assert (agent_dir / "extensions" / "mine.ts").read_text() == "mine\n"
+    # Deleting the session must not delete linked user files.
+    shutil.rmtree(session_home)
+    assert (user_agent_dir / "extensions" / "mine.ts").read_text() == "mine\n"
+    assert (user_agent_dir / "npm" / "node_modules" / "pi-mine").is_dir()
+
+
+def test_write_pi_user_resources_uses_inherited_agent_dir(tmp_path, monkeypatch):
+    _pi_user_agent_dir(tmp_path, monkeypatch)
+    configured = tmp_path / "custom-pi"
+    (configured / "extensions").mkdir(parents = True)
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(configured))
+
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
+
+    # Do not reuse the session as its own source.
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert not (agent_dir / "extensions").exists()
+
+
+def test_write_pi_user_resources_resolves_a_relative_agent_dir_from_the_launch_dir(
+    tmp_path, monkeypatch
+):
+    _pi_user_agent_dir(tmp_path, monkeypatch)
+    configured = tmp_path / "launch" / "custom-pi"
+    (configured / "extensions").mkdir(parents = True)
+    (configured / "settings.json").write_text(json.dumps({"packages": ["../src/local-ext"]}))
+    monkeypatch.chdir(tmp_path / "launch")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", "custom-pi")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    assert settings == {"packages": [str(tmp_path / "launch" / "src" / "local-ext")]}
+
+
+def test_is_junction_reads_the_reparse_tag_before_python_3_12(tmp_path, monkeypatch):
+    monkeypatch.delattr(Path, "is_junction", raising = False)
+    tags = {"junction": 0xA0000003, "symlink": 0xA000000C}
+
+    def lstat(path):
+        name = Path(path).name
+        if name not in tags:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(st_reparse_tag = tags[name])
+
+    monkeypatch.setattr(start.os, "lstat", lstat)
+    assert start._is_junction(tmp_path / "junction")
+    assert not start._is_junction(tmp_path / "symlink")
+    assert not start._is_junction(tmp_path / "missing")
+
+
+def test_link_user_dir_replaces_a_junction_from_an_earlier_run(tmp_path, monkeypatch):
+    target = tmp_path / "session" / "extensions"
+    target.mkdir(parents = True)  # stands in for a junction to a previous source
+    source = tmp_path / "user" / "extensions"
+    source.mkdir(parents = True)
+    monkeypatch.setattr(start, "_is_junction", lambda path: path == target and path.is_dir())
+
+    start._link_user_dir(source, target)
+
+    assert target.is_symlink()
+    assert target.resolve() == source.resolve()
+
+
+def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypatch):
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "extensions").mkdir()
+    (user_agent_dir / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mine"]}))
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi")
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    assert not agent_dir.exists()
 
 
 @pytest.mark.parametrize("yolo", [False, True])
@@ -5460,6 +5678,9 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
     # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
     # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
+    user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
+    # Avoid pathlib selecting WindowsPath on this POSIX runner.
+    monkeypatch.setattr(start.Path, "home", lambda: user_home)
     monkeypatch.setattr(start.os, "name", "nt")
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
