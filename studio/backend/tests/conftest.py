@@ -58,6 +58,16 @@ if str(_backend_root) not in sys.path:
 # suite reaches beyond the stub's get_logger keeps importing the real thing.
 import loggers  # noqa: E402
 
+# A stub would satisfy that import too, and silently: what makes the difference is whether
+# the slot holds a package. So check the one attribute the failure is about, rather than
+# trusting that the line above won the race. This also keeps the name used, which is what
+# scripts/verify_import_hoist.py reads a module-level import for; suppressing it there would
+# have cost the rename-clash signal on this file for a line whose whole job is a side effect.
+assert hasattr(loggers, "__path__"), (
+    f"the 'loggers' slot holds a non-package ({loggers!r}); a ModuleType stub from some test "
+    "module got there first, so `from loggers.media_progress import ...` will still fail"
+)
+
 # tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
 # a test module imports from it at collection, before any fixture runs.
 for _up in Path(__file__).resolve().parents:
