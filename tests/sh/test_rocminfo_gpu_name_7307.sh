@@ -413,6 +413,32 @@ _mask_case "export ROCR_VISIBLE_DEVICES=2,1; export CUDA_VISIBLE_DEVICES=1" "gfx
 _mask_case "export ROCR_VISIBLE_DEVICES=2,1; export HIP_VISIBLE_DEVICES=1" "gfx1100"
 _mask_case "export HIP_VISIBLE_DEVICES=0" "gfx1200"
 
+# `amd-smi list` on ROCm 6.x answers ids only (GPU, BDF, UUID, KFD_ID); the arch lives in
+# `static --asic`. A record with an empty arch column is not an answer and must not stop
+# that fallback, or an rocminfo-less host routes to the generic wheel.
+echo "=== amd-smi list without an arch falls through to static --asic ==="
+_smi_bin=$(mktemp -d)
+cat > "$_smi_bin/amd-smi" <<'EOF'
+#!/bin/sh
+case "${1:-} ${2:-}" in
+    "list ") printf 'GPU: 0\n    BDF: 0000:c3:00.0\n' ;;
+    "static --asic") printf 'GPU: 0\n    ASIC:\n        MARKET_NAME: AMD Radeon Graphics\n        TARGET_GRAPHICS_VERSION: gfx1151\n' ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$_smi_bin/amd-smi"
+_fallback=$(sed -n '/_gfx_records=$(amd-smi list 2>\/dev\/null | _amd_smi_gpu_records/,/_gfx_probe=amd-smi$/p' "$INSTALL_SH")
+[ -n "$_fallback" ] || { echo "FATAL: no amd-smi fallback found in $INSTALL_SH" >&2; exit 1; }
+{
+    sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_gfx_arch_slots()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_amd_smi_hip_order()/,/^}/p' "$INSTALL_SH"
+    printf '%s\n' "_gfx_all=''; _gfx_probe=''; _gfx_space=hip" "$_fallback" fi 'printf "%s" "$_gfx_all"'
+} > "$_smi_bin/run.sh"
+assert_eq "an arch-less amd-smi list still reaches static --asic" "gfx1151" \
+    "$(PATH="$_smi_bin:$PATH" sh "$_smi_bin/run.sh" 2>/dev/null)"
+rm -rf "$_smi_bin"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

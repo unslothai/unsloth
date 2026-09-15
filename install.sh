@@ -4780,8 +4780,10 @@ case "$_torch_index_leaf" in
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
             _gfx_records=$(amd-smi list 2>/dev/null | _amd_smi_gpu_records || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it so a host with hipinfo-less amd-smi reports the gfx target.
-            [ -z "$_gfx_records" ] && \
-                _gfx_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true)
+            # `amd-smi list` may answer ids with no arch (a record per device, arch column empty), so test for an arch, not for records.
+            case "$_gfx_records" in *gfx*) ;; *)
+                _gfx_records=$(amd-smi static --asic 2>/dev/null | _amd_smi_gpu_records || true) ;;
+            esac
             if [ -n "$_gfx_records" ]; then
                 # HIP_ID from `amd-smi list -e` maps discovery order onto the order HIP numbers, as the GPU summary below does. The first output line reports which space came back.
                 _gfx_smi_out=$(amd-smi list -e 2>/dev/null | _amd_smi_hip_order "$_gfx_records" || true)
