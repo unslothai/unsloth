@@ -3177,8 +3177,15 @@ _UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
 # python-v0 all install fine, so probing them only threw warm caches away. git and builds are in
 # because a `git+` requirement does write them.
 _UV_PIP_STORES = (
-    "archive", "builds", "built-wheels", "flat-index", "git",
-    "interpreter", "sdists", "simple", "wheels",
+    "archive",
+    "builds",
+    "built-wheels",
+    "flat-index",
+    "git",
+    "interpreter",
+    "sdists",
+    "simple",
+    "wheels",
 )
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
 
