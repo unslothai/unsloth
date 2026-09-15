@@ -96,6 +96,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
@@ -1889,23 +1890,9 @@ def _openai_llama_admission_output_allowance(
 
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
-    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
-
-    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
-    """
-    args = [str(arg) for arg in (extra_args or ())]
-    found = None
-    for index, raw in enumerate(args):
-        if raw.startswith("--image-max-tokens="):
-            value = raw.partition("=")[2]
-        elif raw == "--image-max-tokens" and index + 1 < len(args):
-            value = args[index + 1]
-        else:
-            continue
-        parsed = _positive_int_or_none(value)
-        if parsed is not None:
-            found = parsed
-    return found
+    """Return the effective ``--image-max-tokens`` value."""
+    from core.inference.llama_server_args import extra_args_image_max_tokens
+    return extra_args_image_max_tokens(extra_args)
 
 
 # Embeddings one image may become, per projector family, from llama.cpp's own
@@ -10266,6 +10253,60 @@ def _inherited_ctx_size() -> int:
         return 0
 
 
+def _launch_required_ubatch_for_config(
+    config,
+    llama_extra_args: Optional[list[str]] = None,
+    disable_vision: bool = False,
+) -> int:
+    """Return the required micro-batch for a local GGUF config."""
+    from core.inference.llama_cpp import _launch_required_ubatch
+    from utils.models.gguf_metadata import read_gguf_embedding_length
+
+    gguf_file = str(getattr(config, "gguf_file", "") or "")
+    own = getattr(config, "gguf_mmproj_file", None)
+    resolved = None
+    if own and getattr(config, "is_vision", False) and not disable_vision:
+        resolved = _probe_backend()._resolve_launch_mmproj_path(
+            model_path = gguf_file,
+            mmproj_path = str(own),
+        )
+    return _launch_required_ubatch(
+        resolved,
+        # The text embedding size identifies the causal Gemma 4 variants.
+        read_gguf_embedding_length(gguf_file) if gguf_file else None,
+        llama_extra_args,
+        is_vision = bool(getattr(config, "is_vision", False)),
+        vision_off = disable_vision,
+    )
+
+
+def _remote_required_ubatch(
+    config,
+    llama_extra_args: Optional[list[str]] = None,
+    disable_vision: bool = False,
+) -> int:
+    """Return a conservative micro-batch for an undownloaded GGUF config."""
+    from core.inference.llama_cpp import _launch_required_ubatch, extra_args_disable_mmproj
+
+    from core.inference.llama_cpp import _unknown_projector_ubatch
+
+    if (
+        bool(getattr(config, "is_vision", False))
+        and not disable_vision
+        and not extra_args_disable_mmproj(llama_extra_args)
+    ):
+        # Match the worst-case post-download allocation.
+        return _unknown_projector_ubatch(llama_extra_args)
+    # No repo projector in play, but the extras or the environment may still name one.
+    return _launch_required_ubatch(
+        None,
+        None,
+        llama_extra_args,
+        is_vision = False,
+        vision_off = disable_vision,
+    )
+
+
 def _gguf_runtime_bytes(
     gguf_path: str,
     max_seq_length: int,
@@ -10280,6 +10321,7 @@ def _gguf_runtime_bytes(
     is_diffusion: bool = False,
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
+    launch_required_ubatch: int = 0,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10295,6 +10337,7 @@ def _gguf_runtime_bytes(
     over-reserves on purpose; a panel quoting a number to a user wants the other
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
+        from core.inference.llama_cpp import _batch_ubatch_for_mmproj
         from core.inference.llama_server_args import (
             parse_ctx_override,
             resolve_ctx_checkpoints,
@@ -10304,6 +10347,13 @@ def _gguf_runtime_bytes(
         probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
+        # Price the same batch sizes used by load_model.
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+            0 if is_diffusion else launch_required_ubatch,
+            n_batch,
+            n_ubatch,
+            llama_extra_args,
+        )
         # Carried out even when the cache cannot be sized: block_count is a separate
         # key and is usually there, and a caller that loses it prices a manual offload
         # split as fully GPU-resident (_gguf_offloaded_layer_fraction has nothing to
@@ -10583,6 +10633,7 @@ def _estimate_gguf_kv_gb(
     n_devices: int = 1,
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
+    launch_required_ubatch: int = 0,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
@@ -10602,6 +10653,7 @@ def _estimate_gguf_kv_gb(
         n_devices = n_devices,
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
+        launch_required_ubatch = launch_required_ubatch,
     )
     return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
 
@@ -10615,15 +10667,26 @@ def _remote_gguf_compute_reserve_gb(
     n_devices: int = 1,
     tensor_parallel: bool = False,
     is_diffusion: bool = False,
+    required_ubatch: int = 0,
 ) -> float:
     """Compute buffers a remote GGUF will reserve, in GB.
 
     Split out of _estimate_gguf_required_gb so a caller that is pricing something
     else, a drafter for instance, can hold it at zero the way it already holds
     _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
+
+    ``required_ubatch`` matches the post-download launch.
     """
     # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
+    from core.inference.llama_cpp import _batch_ubatch_for_mmproj
     from core.inference.llama_server_args import parse_ctx_override
+
+    n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+        0 if is_diffusion else required_ubatch,
+        n_batch,
+        n_ubatch,
+        llama_extra_args,
+    )
 
     try:
         ctx_override = parse_ctx_override(llama_extra_args) or 0
@@ -11012,6 +11075,9 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 is_diffusion = is_diffusion,
                 model_identifier = getattr(config, "identifier", None),
+                launch_required_ubatch = _launch_required_ubatch_for_config(
+                    config, llama_extra_args, disable_vision
+                ),
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -11066,6 +11132,7 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 tensor_parallel = tensor_parallel,
                 is_diffusion = is_diffusion,
+                required_ubatch = _remote_required_ubatch(config, llama_extra_args, disable_vision),
             )
             return total_gb
         return None
@@ -11493,11 +11560,16 @@ def _gguf_resident_file_gb(
             0,
             llama_extra_args,
             model_identifier = getattr(config, "identifier", None),
+            # Subtract the same runtime term added above.
+            launch_required_ubatch = _launch_required_ubatch_for_config(
+                config, llama_extra_args, disable_vision
+            ),
         )
     else:
         context_term_gb = _remote_gguf_compute_reserve_gb(
             llama_extra_args = llama_extra_args,
             max_seq_length = 0,
+            required_ubatch = _remote_required_ubatch(config, llama_extra_args, disable_vision),
         )
     files_gb = max(0.0, required_gb - context_term_gb)
     # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
@@ -12050,6 +12122,9 @@ def _gguf_memory_breakdown(
         # An embedding model is recognised from its identifier, not its header, so the
         # panel has to hand over the same one /load does or it prices a generation model.
         model_identifier = getattr(config, "identifier", None),
+        launch_required_ubatch = _launch_required_ubatch_for_config(
+            config, llama_extra_args, disable_vision
+        ),
     )
     files_gb = _gguf_resident_file_gb(
         config,
@@ -21660,6 +21735,7 @@ async def _proxy_to_external_provider(
     # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
     # `model_fields_set` separates "asked for 20" from "said nothing", and the provider keeps
     # its own default for the latter. Read before ANY write: a setattr marks a field explicit.
+    _top_p_explicit = payload.top_p if "top_p" in payload.model_fields_set else None
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (
@@ -21719,7 +21795,7 @@ async def _proxy_to_external_provider(
     async def _stream():
         _provider_kwargs = dict(
             temperature = payload.temperature,
-            top_p = payload.top_p,
+            top_p = _top_p_explicit,
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets
             # a limit instead of falling back to the provider default.
@@ -29481,6 +29557,12 @@ async def _responses_non_streaming(
             request_state.skip_api_monitor = previous_skip_monitor
 
 
+def _responses_error_code(exc: Exception) -> str:
+    if _classify_llama_generation_error(exc):
+        return "context_length_exceeded"
+    return "server_error"
+
+
 async def _responses_stream(
     payload: ResponsesRequest,
     messages: list[ChatMessage],
@@ -29585,7 +29667,7 @@ async def _responses_stream(
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 429)
 
-    def _responses_admission_failed_sse(exc: Exception, *, status_code: int) -> str:
+    def _responses_admission_failed_sse(exc: Exception, *, code: str) -> str:
         # Emitted in-band after the 200 headers, so flag failed: the middleware must not
         # treat this failed stream as a success and claim a preview-owned model.
         mark_response_failed(getattr(request, "scope", None))
@@ -29609,7 +29691,7 @@ async def _responses_stream(
                             "total_tokens": 0,
                         },
                         "error": {
-                            "code": status_code,
+                            "code": code,
                             "message": str(exc),
                         },
                     },
@@ -29983,7 +30065,7 @@ async def _responses_stream(
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
-        def _failed_response_payload(exc: Exception, status_code: int) -> dict:
+        def _failed_response_payload(exc: Exception) -> dict:
             # Built only for in-band response.failed events after the 200 headers, so
             # flag failed: the middleware must not treat a failed stream as a success.
             mark_response_failed(getattr(request, "scope", None))
@@ -30002,7 +30084,7 @@ async def _responses_stream(
                         "total_tokens": input_tokens + output_tokens,
                     },
                     "error": {
-                        "code": status_code,
+                        "code": _responses_error_code(exc),
                         "message": _friendly_error(exc),
                     },
                 },
@@ -30071,7 +30153,7 @@ async def _responses_stream(
                             "status": "failed",
                             "model": _clean_model,
                             "output": [],
-                            "error": {"code": 502, "message": _friendly_error(e)},
+                            "error": {"code": "server_error", "message": _friendly_error(e)},
                         },
                     },
                 )
@@ -30101,7 +30183,7 @@ async def _responses_stream(
                             "model": _clean_model,
                             "output": [],
                             "error": {
-                                "code": resp.status_code,
+                                "code": _responses_error_code(RuntimeError(err_text)),
                                 "message": _friendly_upstream_error(err_text[:500]),
                             },
                         },
@@ -30145,7 +30227,7 @@ async def _responses_stream(
                         api_monitor.fail(monitor_id, error_message)
                         yield _sse(
                             "response.failed",
-                            _failed_response_payload(RuntimeError(error_message), 502),
+                            _failed_response_payload(RuntimeError(error_message)),
                         )
                         return
                     _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
@@ -30242,10 +30324,9 @@ async def _responses_stream(
             if not disconnect_event.is_set():
                 logger.error("responses stream error: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                status_code = 400 if _classify_llama_generation_error(e) is not None else 500
                 yield _sse(
                     "response.failed",
-                    _failed_response_payload(e, status_code),
+                    _failed_response_payload(e),
                 )
                 return
         except Exception as e:
@@ -30255,10 +30336,9 @@ async def _responses_stream(
                 return
             logger.error("responses stream error: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
-            status_code = 400 if _classify_llama_generation_error(e) is not None else 500
             yield _sse(
                 "response.failed",
-                _failed_response_payload(e, status_code),
+                _failed_response_payload(e),
             )
             return
         finally:
@@ -30591,7 +30671,7 @@ async def _responses_stream(
                 level = "warning",
             )
             api_monitor.fail(monitor_id, str(exc))
-            yield _responses_admission_failed_sse(exc, status_code = 503)
+            yield _responses_admission_failed_sse(exc, code = "server_is_overloaded")
         except LlamaAdmissionCancelled:
             _llama_admission_log(
                 "cancelled-before-upstream",
@@ -31611,7 +31691,23 @@ async def anthropic_count_tokens(
         and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
-    if not _count_client_tools:
+    if _count_client_tools:
+        from core.inference.chat_template_helpers import (
+            forced_tool_catalog,
+            neutralize_tool_descriptions,
+        )
+
+        # Pick the forced tool from the sanitized catalog, as the passthrough body does (#7066).
+        _count_safe_tools = neutralize_tool_descriptions(
+            openai_tools, None, getattr(llama_backend, "markup_profile", None)
+        )
+        openai_tools = (
+            forced_tool_catalog(
+                anthropic_tool_choice_to_openai(payload.tool_choice), _count_safe_tools
+            )
+            or openai_tools
+        )
+    else:
         openai_messages = _prepend_current_date_to_messages(
             openai_messages,
             request,
@@ -33360,6 +33456,7 @@ def _build_passthrough_payload(
     markup = None,
 ):
     from core.inference.chat_template_helpers import (
+        forced_tool_catalog,
         neutralize_control_markup_in_messages,
         neutralize_tool_descriptions,
         reconciled_tool_choice,
@@ -33381,11 +33478,15 @@ def _build_passthrough_payload(
     # "tools": [] would still advertise tool use.
     safe_tools = neutralize_tool_descriptions(openai_tools, None, _pt_markup)
     if safe_tools:
-        body["tools"] = _llama_compatible_tools(safe_tools)
         # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
         # forced; forwarding that choice would name an unadvertised function and hand
         # llama-server back the raw markup. Fall back to "auto" to stay consistent (#7066).
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
+        # llama-server reads tool_choice only as a string and treats an object as "auto".
+        forced_tools = forced_tool_catalog(tool_choice, safe_tools)
+        if forced_tools:
+            safe_tools, tool_choice = forced_tools, "required"
+        body["tools"] = llama_grammar_tools(_llama_compatible_tools(safe_tools))
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     _apply_seeded_llama_request(body, seed)
@@ -33546,6 +33647,23 @@ async def _anthropic_passthrough_stream(
         markup = getattr(llama_backend, "markup_profile", None),
     )
 
+    from core.inference.chat_template_helpers import (
+        forced_tool_catalog,
+        neutralize_tool_descriptions,
+    )
+
+    # Pick the forced tool from the sanitized catalog, as the body does: a dropped forced tool
+    # leaves the rest of the catalog under "auto" (#7066).
+    _count_tools = (
+        forced_tool_catalog(
+            tool_choice,
+            neutralize_tool_descriptions(
+                openai_tools, None, getattr(llama_backend, "markup_profile", None)
+            ),
+        )
+        or openai_tools
+    )
+
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     # Pass the tools through so tool-schema tokens are counted (otherwise the
@@ -33556,7 +33674,7 @@ async def _anthropic_passthrough_stream(
         lambda: llama_backend.count_chat_tokens(
             openai_messages,
             None,
-            openai_tools,
+            _count_tools,
             chat_template_kwargs = _reasoning_template_kwargs(
                 llama_backend, enable_thinking, reasoning_effort, preserve_thinking
             ),
@@ -33596,7 +33714,7 @@ async def _anthropic_passthrough_stream(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(auto_heal_tool_calls, body.get("tools"), body.get("tool_choice"))
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -33916,7 +34034,7 @@ async def _anthropic_passthrough_non_streaming(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(auto_heal_tool_calls, body.get("tools"), body.get("tool_choice"))
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.

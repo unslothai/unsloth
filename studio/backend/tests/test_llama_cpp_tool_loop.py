@@ -6597,3 +6597,44 @@ def test_structured_every_independent_edit_keeps_its_verification(monkeypatch):
         ["v1", "Edited a.txt", "v2", "Edited b.txt", "v3"],
     )
     assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeypatch):
+    data = {
+        "type": "object",
+        "properties": {
+            "view_url": {"type": "string"},
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+        },
+        "required": ["view_url"],
+    }
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "mcp__notion__query",
+            "parameters": {"type": "object", "properties": {"data": data}, "required": ["data"]},
+        },
+    }
+    arguments = {"data": {"view_url": "u", "page_size": "1", "start_cursor": "c"}}
+    stream = [
+        _tool_call_sse("mcp__notion__query", arguments, "call_a"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
+    calls = _record_tool_calls(monkeypatch, "row 2")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "next page"}],
+        [tool],
+        max_tool_iterations = 2,
+    )
+
+    wire = payloads[0]["tools"][0]["function"]["parameters"]["properties"]["data"]
+    assert wire == {**data, "anyOf": [{"type": "object", "additionalProperties": True}]}
+    assert calls == [
+        ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
+    ]

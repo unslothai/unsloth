@@ -2691,9 +2691,20 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = "none")
         assert body["tool_choice"] == "none"
 
-    def test_override_tool_choice_named_function(self):
-        tc = {"type": "function", "function": {"name": "f"}}
+    def test_named_function_is_sent_as_its_one_tool_under_required(self):
+        args = self._args()
+        args["openai_tools"].append(
+            {"type": "function", "function": {"name": "g", "parameters": {"type": "object"}}}
+        )
+        tc = {"type": "function", "function": {"name": "g"}}
+        body = _build_passthrough_payload(**args, tool_choice = tc)
+        assert [t["function"]["name"] for t in body["tools"]] == ["g"]
+        assert body["tool_choice"] == "required"
+
+    def test_named_function_missing_from_tools_is_forwarded_unchanged(self):
+        tc = {"type": "function", "function": {"name": "missing"}}
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
+        assert [t["function"]["name"] for t in body["tools"]] == ["f"]
         assert body["tool_choice"] == tc
 
     def test_llama_incompatible_tool_constraints_are_omitted(self):
