@@ -383,6 +383,35 @@ class TestAGpuCapableBuildIsPreferred:
         assert ps.host_gpu_vendors() == set()
         assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True
 
+    def test_host_vendors_read_the_wsl_runtimes(self, tmp_path, monkeypatch):
+        """WSL2 has no DRM card and no /dev/kfd or /dev/nvidiactl: the GPU is behind /dev/dxg
+        and the vendor is the runtime that drives it."""
+        from utils import llama_cpp_path_settings as ps
+
+        monkeypatch.setattr(ps.sys, "platform", "linux")
+        monkeypatch.setattr(ps.os.path, "isdir", lambda p: False)
+        monkeypatch.setattr(ps, "_DRM_ROOT", str(tmp_path / "drm"))
+        rocm = tmp_path / "rocm"
+        wsl_lib = tmp_path / "wsl"
+        monkeypatch.setattr(ps, "_WSL_ROCM_LIB_DIRS", (str(rocm),))
+        monkeypatch.setattr(ps, "_WSL_CUDA_LIB_DIR", str(wsl_lib))
+        nodes = {"/dev/dxg"}
+        monkeypatch.setattr(ps.os.path, "exists", lambda p: p in nodes or os.path.lexists(p))
+        for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+            monkeypatch.delenv(var, raising = False)
+        assert ps.host_gpu_vendors() is None
+        rocm.mkdir()
+        (rocm / "librocdxg.so.1").write_bytes(b"")
+        assert ps.host_gpu_vendors() == {"amd"}
+        wsl_lib.mkdir()
+        (wsl_lib / "libcuda.so.1.1").write_bytes(b"")
+        assert ps.host_gpu_vendors() == {"amd", "nvidia"}
+        # The masks still apply, and without /dev/dxg the runtimes prove nothing.
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+        assert ps.host_gpu_vendors() == {"nvidia"}
+        nodes.discard("/dev/dxg")
+        assert ps.host_gpu_vendors() is None
+
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps
         made = self._tree(tmp_path, "linux", {"build": [], "build-cuda": ["libggml-cuda.so"]})

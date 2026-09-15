@@ -100,6 +100,10 @@ _WINDOWS_VENDOR_DLLS = {
     "intel": ("ze_intel_gpu64.dll", "igdrcl64.dll"),
 }
 _DRM_ROOT = "/sys/class/drm"
+# WSL2 reaches the GPU through /dev/dxg (no DRM card, no /dev/kfd or /dev/nvidiactl): the
+# vendor is the runtime that drives it, librocdxg for AMD and the WSL libcuda for NVIDIA.
+_WSL_ROCM_LIB_DIRS = ("/opt/rocm/lib", "/opt/rocm/lib64")
+_WSL_CUDA_LIB_DIR = "/usr/lib/wsl/lib"
 _HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from this host
 
 
@@ -151,16 +155,25 @@ def host_gpu_vendors() -> Optional[set[str]]:
                 vendors.add(vendor)
         if os.path.isdir("/proc/driver/nvidia"):
             vendors.add("nvidia")
+        wsl = os.path.exists("/dev/dxg")
+        wsl_amd = wsl and any(
+            os.path.exists(os.path.join(d, n))
+            for d in _WSL_ROCM_LIB_DIRS
+            for n in ("librocdxg.so", "librocdxg.so.1")
+        )
+        wsl_nvidia = wsl and any(Path(_WSL_CUDA_LIB_DIR).glob("libcuda.so*"))
+        vendors |= {v for v, on in (("amd", wsl_amd), ("nvidia", wsl_nvidia)) if on}
         detected = set(vendors)
         # A container that exposes only one vendor's device nodes, or a mask hiding a vendor,
         # must not make its backend look runnable on a hybrid box.
         if "nvidia" in vendors and (
-            not os.path.exists("/dev/nvidiactl") or _mask_hides_all("CUDA_VISIBLE_DEVICES")
+            not (os.path.exists("/dev/nvidiactl") or wsl_nvidia)
+            or _mask_hides_all("CUDA_VISIBLE_DEVICES")
         ):
             vendors.discard("nvidia")
         # HIP reads HIP_, then ROCR_, then CUDA_VISIBLE_DEVICES (_active_gpu_visibility_mask).
         if "amd" in vendors and (
-            not os.path.exists("/dev/kfd")
+            not (os.path.exists("/dev/kfd") or wsl_amd)
             or _mask_hides_all(
                 "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"
             )
