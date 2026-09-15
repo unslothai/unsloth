@@ -115,6 +115,7 @@ jobs:
 
           $files = @('install.ps1', 'studio/setup.ps1', 'scripts/uninstall.ps1')
           $laid = 0
+          $manifest = @()
           foreach ($f in $files) {
             $leaf = ($f -replace '/', '_')
             foreach ($pair in @(@($base, 'base'), @($head, 'head'))) {
@@ -152,6 +153,7 @@ jobs:
                 Write-Host "::error::could not read $f at $($sha.Substring(0,8)) ($side)"
                 exit 1
               }
+              $manifest += [pscustomobject]@{ side = $side; leaf = $leaf }
               $laid++
             }
           }
@@ -159,6 +161,12 @@ jobs:
             Write-Host '::error::fewer than two files were laid out, so there is nothing to compare. Refusing to report a verdict.'
             exit 1
           }
+          # The EXPECTED set, written down. Both measurement loops used to enumerate whatever was
+          # still on disk, so a copy quarantined by real-time protection before they ran simply left
+          # the set: it became neither an unmeasured row nor a detection, and a surviving sibling
+          # could carry the job to a clean verdict. Recording what was laid out means an absent file
+          # is a measurable fact rather than a silence.
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $root 'manifest.json') -Encoding utf8
           Write-Host "laid out $laid file copies"
           "base_sha=$base"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "head_sha=$head"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -172,6 +180,29 @@ jobs:
           ROOT: ${{ steps.sides.outputs.root }}
         run: |
           $ErrorActionPreference = 'Continue'
+          $script:UnslothVanished = @()
+          # Reads the layout manifest and returns what SHOULD be there, with anything missing
+          # reported rather than skipped. A quarantined copy is the case this exists for.
+          function Get-UnslothExpected {
+            param([Parameter(Mandatory = $true)][string]$Side)
+            $manifestPath = Join-Path $env:ROOT 'manifest.json'
+            if (-not (Test-Path -LiteralPath $manifestPath)) {
+              Write-Host '::warning::the layout manifest is missing, so the expected set is unknown and only surviving files can be measured'
+              return @(Get-ChildItem -LiteralPath (Join-Path $env:ROOT $Side) -Filter '*.ps1' -ErrorAction SilentlyContinue)
+            }
+            $expected = @(Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json | Where-Object { $_.side -eq $Side })
+            $out = @()
+            foreach ($entry in $expected) {
+              $path = Join-Path (Join-Path $env:ROOT $Side) $entry.leaf
+              if (Test-Path -LiteralPath $path) {
+                $out += (Get-Item -LiteralPath $path)
+              } else {
+                $script:UnslothVanished += "$Side/$($entry.leaf)"
+              }
+            }
+            return $out
+          }
+
           $probe = (Resolve-Path '.github/scripts/Probe-AmsiParse.ps1').Path
           $out = Join-Path $env:RUNNER_TEMP 'amsi'
           New-Item -ItemType Directory -Force -Path $out | Out-Null
@@ -188,7 +219,7 @@ jobs:
           $rows = @()
           $noResult = @()
           foreach ($side in 'base', 'head') {
-            foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side) -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+            foreach ($file in (Get-UnslothExpected $side)) {
               $json = Join-Path $out "$side-$($file.BaseName).json"
               Write-Host "--- $side/$($file.Name)"
               # -Control on every invocation, so the control fires in the same process as the
@@ -229,6 +260,13 @@ jobs:
                 data = $parsed
               }
             }
+          }
+
+          # A copy that was laid out and is no longer there was not measured, and saying so is the
+          # whole point of tracking the expected set.
+          foreach ($v in $script:UnslothVanished) {
+            Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be compiled"
+            $noResult += "$v [the laid-out copy vanished before it was measured]"
           }
 
           if ($rows.Count -eq 0) {
@@ -377,6 +415,29 @@ jobs:
           ROOT: ${{ steps.sides.outputs.root }}
         run: |
           $ErrorActionPreference = 'Continue'
+          $script:UnslothVanished = @()
+          # Reads the layout manifest and returns what SHOULD be there, with anything missing
+          # reported rather than skipped. A quarantined copy is the case this exists for.
+          function Get-UnslothExpected {
+            param([Parameter(Mandatory = $true)][string]$Side)
+            $manifestPath = Join-Path $env:ROOT 'manifest.json'
+            if (-not (Test-Path -LiteralPath $manifestPath)) {
+              Write-Host '::warning::the layout manifest is missing, so the expected set is unknown and only surviving files can be measured'
+              return @(Get-ChildItem -LiteralPath (Join-Path $env:ROOT $Side) -Filter '*.ps1' -ErrorAction SilentlyContinue)
+            }
+            $expected = @(Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json | Where-Object { $_.side -eq $Side })
+            $out = @()
+            foreach ($entry in $expected) {
+              $path = Join-Path (Join-Path $env:ROOT $Side) $entry.leaf
+              if (Test-Path -LiteralPath $path) {
+                $out += (Get-Item -LiteralPath $path)
+              } else {
+                $script:UnslothVanished += "$Side/$($entry.leaf)"
+              }
+            }
+            return $out
+          }
+
           $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
           if (-not (Test-Path -LiteralPath $mp)) {
             Write-Host "::warning::MpCmdRun.exe is absent; the file-scan half could not run. This is a missing scanner, not a clean verdict."
@@ -466,7 +527,7 @@ jobs:
           $flagged = @()
           $unscanned = @()
           foreach ($side in 'base', 'head') {
-            foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side) -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+            foreach ($file in (Get-UnslothExpected $side)) {
               # Mark of the web, so block-at-first-sight consults the cloud rather than treating a
               # local file as trusted. A zero-prevalence script from the Internet zone is exactly what
               # the reporter in #10805 had, and it is the condition the heuristics are harshest under.
@@ -515,6 +576,11 @@ jobs:
                 $unscanned += "$side/$($file.Name) [exit $code]"
               }
             }
+          }
+
+          foreach ($v in $script:UnslothVanished) {
+            Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be scanned"
+            $unscanned += "$v [the laid-out copy vanished before it was scanned]"
           }
 
           Write-Host ''

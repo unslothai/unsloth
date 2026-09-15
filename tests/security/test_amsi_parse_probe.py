@@ -727,3 +727,26 @@ def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
     assert "Get-MpPreference" in runs[exclude_at], (
         "the exclusion is never read back, so a refusal is silent"
     )
+
+
+def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
+    """Enumerating the directory makes a quarantined copy disappear from the results entirely.
+
+    Both the AMSI and the Defender loop derived their input set from `Get-ChildItem` over the
+    laid-out directory. If real-time protection takes a flagged copy away first, which can happen
+    whenever `Add-MpPreference` was refused, that candidate enters neither the unmeasured list nor
+    the detection list, and a surviving sibling can carry the job to a clean verdict. The layout
+    step knows what it wrote, so the loops read that instead and report anything absent.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert "manifest.json" in body, "the layout step no longer records what it laid out"
+    assert body.count("Get-UnslothExpected") >= 3, (
+        "not every measurement loop reads the expected set"
+    )
+    # The bare enumeration must be gone from the measurement loops.
+    assert "foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side)" not in body, (
+        "a measurement loop still enumerates whatever survived on disk"
+    )
+    # And a vanished file has to reach both verdicts, not just be printed.
+    assert "$noResult += \"$v" in body, "a vanished copy never reaches the AMSI verdict"
+    assert "$unscanned += \"$v" in body, "a vanished copy never reaches the Defender verdict"
