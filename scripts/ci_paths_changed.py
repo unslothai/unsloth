@@ -75,11 +75,13 @@ def _self_test() -> int:
         print(f"  {flag} {path:48s} run={got} want={want}")
     # a mixed changeset is relevant if any one file is
     if not relevant(["README.md", "pyproject.toml"], pats):
-        print("  FAIL mixed changeset with a dependency file must run"); bad += 1
+        print("  FAIL mixed changeset with a dependency file must run")
+        bad += 1
     else:
         print("  ok   mixed changeset with a dependency file runs")
     if relevant(["README.md", "unsloth/models/llama.py"], pats):
-        print("  FAIL wholly unrelated changeset must skip"); bad += 1
+        print("  FAIL wholly unrelated changeset must skip")
+        bad += 1
     else:
         print("  ok   wholly unrelated changeset skips")
     print("self-test:", "FAILED" if bad else "passed")
