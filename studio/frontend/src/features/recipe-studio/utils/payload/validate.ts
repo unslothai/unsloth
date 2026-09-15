@@ -165,6 +165,21 @@ export function validateValidatorConfigs(
       errors.push(`Validator ${config.name}: target '${target}' not found.`);
       continue;
     }
+    if (
+      config.validator_type === "json" ||
+      config.validator_type === "markdown"
+    ) {
+      if (
+        targetConfig.kind !== "llm" &&
+        targetConfig.kind !== "expression" &&
+        targetConfig.kind !== "sampler"
+      ) {
+        errors.push(
+          `Validator ${config.name}: target '${target}' must be a generated field.`,
+        );
+      }
+      continue;
+    }
     if (targetConfig.kind !== "llm" || targetConfig.llm_type !== "code") {
       errors.push(
         `Validator ${config.name}: target '${target}' must be LLM Code.`,

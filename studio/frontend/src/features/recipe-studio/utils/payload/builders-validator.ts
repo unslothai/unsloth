@@ -5,6 +5,8 @@ import type { NodeConfig, ValidatorConfig } from "../../types";
 import { isValidatorCodeLang } from "../validators/code-lang";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
+const JSON_VALIDATION_FN_MARKER = "unsloth_json_validator";
+const MARKDOWN_VALIDATION_FN_MARKER = "unsloth_markdown_validator";
 
 function parseBatchSize(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -23,7 +25,45 @@ export function buildValidatorColumn(
     .map((value) => value.trim())
     .filter(Boolean);
   if (targetColumns.length === 0) {
-    errors.push(`Validator ${config.name}: target code column required.`);
+    errors.push(`Validator ${config.name}: target column required.`);
+  }
+  if (config.validator_type === "json") {
+    return {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_type: "validation",
+      name: config.name,
+      drop: config.drop ?? false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: targetColumns,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_type: "local_callable",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_params: {
+        // biome-ignore lint/style/useNamingConvention: api schema
+        validation_function: JSON_VALIDATION_FN_MARKER,
+      },
+      // biome-ignore lint/style/useNamingConvention: api schema
+      batch_size: parseBatchSize(config.batch_size),
+    };
+  }
+  if (config.validator_type === "markdown") {
+    return {
+      // biome-ignore lint/style/useNamingConvention: api schema
+      column_type: "validation",
+      name: config.name,
+      drop: config.drop ?? false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      target_columns: targetColumns,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_type: "local_callable",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      validator_params: {
+        // biome-ignore lint/style/useNamingConvention: api schema
+        validation_function: MARKDOWN_VALIDATION_FN_MARKER,
+      },
+      // biome-ignore lint/style/useNamingConvention: api schema
+      batch_size: parseBatchSize(config.batch_size),
+    };
   }
   if (config.validator_type === "oxc") {
     const targetName = targetColumns[0] ?? "";
