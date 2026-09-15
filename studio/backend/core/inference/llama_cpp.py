@@ -4976,6 +4976,25 @@ def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Opt
 _MMPROJ_OFFLOAD_ENV_VAR = "LLAMA_ARG_MMPROJ_OFFLOAD"
 _MMPROJ_OFFLOAD_NEG_ENV_VAR = "LLAMA_ARG_NO_MMPROJ_OFFLOAD"
 
+# Gemma 4 expects video at up to 1 fps; llama-server defaults to 4.
+_LLAMA_VIDEO_FPS = "1"
+_VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
+
+
+def _video_fps_flags(
+    server_caps: Mapping[str, object], env: Optional[Mapping[str, str]] = None
+) -> list[str]:
+    """Return the default FPS flag unless unsupported or set in the environment.
+
+    User extras are appended later and retain their last-wins override.
+    """
+    if not server_caps.get("supports_video_fps"):
+        return []
+    source = os.environ if env is None else env
+    if source.get(_VIDEO_FPS_ENV_VAR) is not None:
+        return []
+    return ["--video-fps", _LLAMA_VIDEO_FPS]
+
 
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
     """True when the child's environment names the projector placement at all.
@@ -8311,6 +8330,7 @@ class LlamaCppBackend:
                 "supports_metrics": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
+                "supports_video_fps": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
                 "spec_draft_cache_k_flag": None,
@@ -8358,6 +8378,7 @@ class LlamaCppBackend:
         supports_metrics = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
+        supports_video_fps = False
         supports_load_mode = False
         spec_draft_ngl_flag = None
         spec_draft_cache_k_flag = None
@@ -8583,6 +8604,7 @@ class LlamaCppBackend:
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
+            supports_video_fps = _is_real("--video-fps")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
@@ -8675,6 +8697,7 @@ class LlamaCppBackend:
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
+            "supports_video_fps": supports_video_fps,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
             "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
@@ -24482,6 +24505,10 @@ class LlamaCppBackend:
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
                             cache_ram,
                         )
+                # On every launch, not only where Studio emits --mmproj: a projector
+                # from the extras or LLAMA_ARG_MMPROJ takes video too, and llama-server
+                # ignores the flag when no projector loads.
+                cmd.extend(_video_fps_flags(server_caps))
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the

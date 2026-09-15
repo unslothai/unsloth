@@ -125,6 +125,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.llama_video_input import shrink_video_for_llama
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -20338,7 +20339,7 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
     """Append an input_video part to the last user message, in place.
 
     llama-server samples the clip into frames itself (ffmpeg via mtmd), so the
-    container is forwarded untouched. Rides the message list like image_url and
+    part carries a container, not frames. Rides the message list like image_url and
     input_audio, so it flows through the plain and tool-calling paths alike.
     Ref: llama.cpp tools/server/server-common.cpp, `type == "input_video"`.
     """
@@ -23329,8 +23330,7 @@ async def produce_openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
 
-        # Forwarded whole: llama-server owns the frame sampling, and takes the
-        # clip only when /props reports modalities.video.
+        # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
         if payload.video_base64:
             if not getattr(llama_backend, "_has_video_input", False):
@@ -23342,6 +23342,7 @@ async def produce_openai_chat_completions(
             video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
             if video_rejection is not None:
                 raise _reject(*video_rejection)
+            video_b64 = await asyncio.to_thread(shrink_video_for_llama, video_b64)
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
