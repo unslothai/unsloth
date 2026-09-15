@@ -4022,3 +4022,14 @@ def test_a_refused_download_only_pick_leaves_the_staged_rollback_alone():
     nothing left to commit."""
     src = " ".join(_read("features/images/images-page.tsx").split())
     assert "if (!downloadOnlyPick) abandonPick();" in src
+
+
+def test_an_unresolvable_download_only_gguf_hands_nothing_back():
+    """A GGUF repo whose filename cannot be resolved (several quants and no hint, or a failed
+    listing) reaches onNotStarted. Under Download only nothing was applied, so what sits in
+    quantRevert is the staged load's own baseline: reverting it would load that model with the
+    previous resident's steps and guidance and leave it nothing to commit."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"onNotStarted: \(\) => \{\n(.*?)\n        \},", src, re.S)
+    assert body, "the not-started callback was not found; this guard has gone stale"
+    assert "!downloadOnly &&" in body.group(1)

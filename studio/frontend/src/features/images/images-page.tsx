@@ -2843,7 +2843,9 @@ export function ImagesPage({
           applyImageModelDefaults(repoId);
         },
         onNotStarted: () => {
-          if (quantRevert.current === revert) {
+          // Nothing was applied for a download-only pick, so there is nothing to hand back, and
+          // what sits in the slot is the staged load's own baseline.
+          if (!downloadOnly && quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
           }

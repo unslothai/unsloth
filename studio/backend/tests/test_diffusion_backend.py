@@ -7455,6 +7455,69 @@ def test_a_local_unrecognised_gguf_path_plans_no_download(monkeypatch, tmp_path)
     assert plan == {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
 
 
+def test_a_failed_prequant_lookup_marks_the_plan_incomplete(monkeypatch):
+    """The dense transformer shards are already excluded for a GGUF pick, so a swallowed prequant
+    lookup leaves a plan naming NEITHER transformer source. A caller that downloads and then loads
+    is fine (the loader fetches it inline); one that must not download afterwards has to be told the
+    list is partial, or Download only reports success and the load still pulls multi-GB on use."""
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "someone/mixed-gguf-collection": [
+                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)
+            ],
+            "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+        },
+    )
+    _no_cache(monkeypatch)
+    boom = RuntimeError("model_info timed out")
+
+    def failing_source(self, fam, kind, hf_token, kwargs, failures_out = None):
+        if failures_out is not None:
+            failures_out.append(boom)
+        return None
+
+    monkeypatch.setattr(DiffusionBackend, "_dit_prequant_plan_source", failing_source)
+
+    plan = DiffusionBackend().download_plan(
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+        base_repo = "unsloth/Z-Image-Turbo",
+    )
+
+    assert plan["plan_failed"] is True, "a swallowed prequant lookup left the plan calling itself complete"
+
+
+def test_a_prequant_lookup_that_finds_nothing_is_not_a_failure(monkeypatch):
+    """None is also the ordinary answer when the pick uses no hosted prequant at all. Only the
+    swallowed exception counts, or every dense pick would report an incomplete plan."""
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "someone/mixed-gguf-collection": [
+                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)
+            ],
+            "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+        },
+    )
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dit_prequant_plan_source",
+        lambda self, fam, kind, hf_token, kwargs, failures_out = None: None,
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+        base_repo = "unsloth/Z-Image-Turbo",
+    )
+
+    assert plan["plan_failed"] is False
+
+
 def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(monkeypatch):
     # An explicit base_repo supplies what family detection could not, so the pick must still plan.
     _fake_hf_api(
