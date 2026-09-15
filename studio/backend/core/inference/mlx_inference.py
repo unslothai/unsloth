@@ -19,6 +19,7 @@ from core.inference.native_tool_tokens import (
     closes_an_open_envelope,
     decoder_preserves_token,
     reasoning_control_tokens,
+    stop_token_text,
 )
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
@@ -1092,6 +1093,144 @@ def _mlx_stop_sequences(stop):
     matched: it is found at position 0 of every reply and would end each turn before its first
     token."""
     return [x for x in ([stop] if isinstance(stop, str) else stop or []) if x]
+
+
+def _rebuilt_detokenizer(detokenizer):
+    """A fresh one of ``detokenizer``'s kind, for the versions whose own cannot be copied.
+
+    Only the naive detokenizer needs this, and it is also the only one that keeps the tokenizer it
+    wraps -- SPM and BPE build decoded tables in ``__init__`` and copy cleanly -- so that attribute
+    doubles as the test for "can be rebuilt at all"."""
+    tokenizer = getattr(detokenizer, "_tokenizer", None)
+    if tokenizer is None:
+        return None
+    try:
+        return type(detokenizer)(tokenizer)
+    except Exception as exc:  # noqa: BLE001 -- third-party detokenizers vary; caller falls back
+        logger.debug("MLX streaming detokenizer could not be rebuilt (%s)", exc)
+        return None
+
+
+def _mlx_stream_detokenizer(source):
+    """One of ``source``'s own kind, independent of the detokenizer the runtime drives.
+
+    Copying is the fallback, not the rule: it raises on the naive detokenizer, whose ``text`` is a
+    property over an inherited slot. mlx-lm builds one per read, so a second read is already
+    independent; mlx-vlm's processor hands back the one its older versions stream through."""
+    detokenizer = getattr(source, "detokenizer", None)
+    if detokenizer is None:
+        return None
+    independent = getattr(source, "detokenizer", None)
+    if independent is None or independent is detokenizer:
+        try:
+            independent = copy.copy(detokenizer)
+        except Exception as exc:  # noqa: BLE001 -- third-party detokenizers vary; caller falls back
+            # mlx-vlm gained ``__copy__`` only at 0.6.0, and below it the naive detokenizer --
+            # what every model resolves to whose decoder is neither SPM nor a top-level ByteLevel
+            # -- cannot be copied at all. Rebuilding one is what that ``__copy__`` does. Giving up
+            # here instead leaves the turn with no detokenizer, and the branch that handles that
+            # can only pass the runtime's text through, so every control the allowlist suppresses
+            # would reach the reply on the whole supported floor.
+            independent = _rebuilt_detokenizer(detokenizer)
+            if independent is None:
+                logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
+                return None
+    try:
+        independent.reset()
+    except Exception as exc:  # noqa: BLE001 -- as above
+        logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
+        return None
+    return independent
+
+
+class _MlxStreamedText:
+    """A reply rebuilt from the ids the runtime sampled, for turns carrying native controls.
+
+    A streaming detokenizer holds a piece until the ones after it settle, so a control reaches
+    ``response.text`` inside a later segment, with nothing left to say which characters came from
+    it: deciding suppression there deletes prose that merely spells a control, and re-decoding the
+    id on its own step writes a second copy ahead of the text still held.
+
+    ``generation_tokens``, not a finish reason, says which ids the reply owes -- the supported
+    mlx-vlm floor has no such field, and a turn broken out of on a stop token or the token limit
+    reports a position no yield covered. Hence also ``finish``, run by the caller once the runtime
+    stops yielding.
+
+    Stop ids are held rather than written, since both runtimes stop before their detokenizer sees
+    one, and released only to close a tool envelope. The run is held whole: the ids read as ending
+    a turn come from the model config, which lists more than the one the runtime stopped on.
+
+    Neither a denoised block, which names one id for many, nor a missing detokenizer leaves ids to
+    rebuild from; the runtime's own text stands and the allowlist cannot speak for it."""
+
+    def __init__(self, detokenizer, decoder, tokenizer, stop_ids):
+        self._detokenizer = detokenizer
+        self._decoder = decoder
+        self._tokenizer = tokenizer
+        self._stop_ids = stop_ids
+        self._held_stops = []
+        self._filled = 0
+
+    def feed(self, response) -> str:
+        if self._detokenizer is None:
+            # Every id but the one generation stopped before is already in that text, so only the
+            # last can still be a closer the reply owes.
+            stop_id = getattr(response, "token", None)
+            self._held_stops = (
+                [int(stop_id)] if stop_id is not None and int(stop_id) in self._stop_ids else []
+            )
+            return getattr(response, "text", None) or ""
+        filled = getattr(response, "generation_tokens", None)
+        if filled is not None:
+            filled = int(filled)
+            if filled <= self._filled:
+                return ""
+            several = filled > self._filled + 1
+            self._filled = filled
+            if several:
+                return self._drain() + (getattr(response, "text", None) or "")
+        token_id = getattr(response, "token", None)
+        if token_id is None:
+            return ""
+        token_id = int(token_id)
+        if token_id in self._stop_ids:
+            self._held_stops.append(token_id)
+            return ""
+        if self._decoder.suppresses(token_id):
+            return ""
+        if self._held_stops:
+            # Text followed them, so they ended nothing.
+            held, self._held_stops = self._held_stops, []
+            for stop_id in held:
+                if not self._decoder.suppresses(stop_id):
+                    self._detokenizer.add_token(stop_id)
+        self._detokenizer.add_token(token_id)
+        return self._detokenizer.last_segment
+
+    def finish(self, sampled: str) -> str:
+        """The text still held once the runtime stops yielding."""
+        if self._detokenizer is None:
+            return self._closing_stop(sampled)
+        segment = self._drain()
+        return segment + self._closing_stop(sampled + segment)
+
+    def _drain(self) -> str:
+        self._detokenizer.finalize()
+        return self._detokenizer.last_segment
+
+    def _closing_stop(self, settled: str) -> str:
+        held, self._held_stops = self._held_stops, []
+        closing = ""
+        for stop_id in held:
+            if not self._decoder.keeps(stop_id):
+                continue
+            text = stop_token_text(self._tokenizer, stop_id) or ""
+            if settled.endswith(text):
+                continue
+            # Nested markup ends on a closer each, so the run can owe more than one.
+            if closes_an_open_envelope(settled + text, text):
+                closing += text
+        return closing
 
 
 def _mlx_stop_cut(text: str, stops) -> tuple[int, bool]:
@@ -3145,6 +3284,16 @@ class MLXInferenceBackend:
             if native_token_decoder is not None
             else ()
         )
+        streamed_text = (
+            _MlxStreamedText(
+                _mlx_stream_detokenizer(self._tokenizer),
+                native_token_decoder,
+                self._tokenizer,
+                stop_token_ids,
+            )
+            if preserve_native_channels
+            else None
+        )
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -3213,18 +3362,7 @@ class MLXInferenceBackend:
                     final_response = response
                     token_ids.append(response.token)
                     if preserve_native_channels:
-                        _tok = native_token_decoder.decode_stream_token(
-                            response.token, getattr(response, "text", None) or ""
-                        )
-                        # Generation ends on a stop id, so this one is trailing. Same rule as
-                        # the non-reasoning branch: drop it unless it closes a tool envelope.
-                        if (
-                            _tok
-                            and response.token in stop_token_ids
-                            and not closes_an_open_envelope(sampled + _tok, _tok)
-                        ):
-                            _tok = ""
-                        sampled += _tok
+                        sampled += streamed_text.feed(response)
                         if sequences:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                         else:
@@ -3306,7 +3444,12 @@ class MLXInferenceBackend:
         # The turn's settled text: delivered once for the plain path, as the tail for the native-channel one. Every
         # snapshot was matched as it arrived, so a turn no sequence ended owes all of its text, held-back partial
         # included.
-        if sequences:
+        if streamed_text is not None and not stopped:
+            # The flush can carry a whole sequence: it was held back unmatched, not cleared.
+            sampled += streamed_text.finish(sampled)
+            if sequences:
+                cut, stopped = _mlx_stop_cut(sampled, sequences)
+        if sequences or streamed_text is not None:
             if not stopped:
                 cut = len(sampled)
             if normalizer is None:
@@ -3567,19 +3710,14 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        # Same provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
-        # native tool controls, so a genuine wrapped call would reach the parser markerless and
-        # be refused. Text-only requests on a VLM come here too, and reasoning delimiters that
-        # are special ids need preserving as well.
+        # The allowlist the text path applies: a native tool control or reasoning delimiter stays
+        # so the parser can tell a wrapped call from markerless prose and the snapshot normalizer
+        # can find the thought channel. Text-only requests on a VLM come here too.
         vlm_token_decoder = (
             NativeToolTokenDecoder(
                 self._tokenizer,
                 preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
             )
-            # ``vlm_reasoning_markers`` too, matching the text path: mlx-vlm has already
-            # dropped those controls from ``response.text``, so without the decoder the
-            # snapshot normaliser never sees the opener or closer and the reasoning surfaces
-            # as ordinary answer text on a no-tools request.
             if (tools or tool_protocol_active or vlm_reasoning_markers is not None)
             and self._tokenizer
             else None
@@ -3590,6 +3728,16 @@ class MLXInferenceBackend:
             _mlx_stop_token_ids(self._tokenizer, self._model)
             if vlm_token_decoder is not None
             else ()
+        )
+        vlm_detokenizer = (
+            _mlx_stream_detokenizer(self._processor) or _mlx_stream_detokenizer(self._tokenizer)
+            if vlm_token_decoder is not None
+            else None
+        )
+        vlm_streamed_text = (
+            _MlxStreamedText(vlm_detokenizer, vlm_token_decoder, self._tokenizer, vlm_stop_ids)
+            if vlm_token_decoder is not None
+            else None
         )
 
         session = self._vlm_prompt_cache_session(
@@ -3644,17 +3792,11 @@ class MLXInferenceBackend:
                         **vlm_kwargs,
                     ):
                         final_response = response
-                        token_text = response.text if hasattr(response, "text") else str(response)
-                        token_id = getattr(response, "token", None)
-                        if vlm_token_decoder is not None and token_id is not None:
-                            # Only a special id is re-decoded; ordinary ids keep mlx-vlm's text.
-                            _decoded = vlm_token_decoder.decode_stream_token(token_id, token_text)
-                            # A stop token is dropped unless it closes an open envelope.
+                        if vlm_streamed_text is not None:
+                            token_text = vlm_streamed_text.feed(response)
+                        else:
                             token_text = (
-                                ""
-                                if int(token_id) in vlm_stop_ids
-                                and not closes_an_open_envelope(sampled + _decoded, _decoded)
-                                else _decoded
+                                response.text if hasattr(response, "text") else str(response)
                             )
                         sampled += token_text
                         if not sequences:
@@ -3669,6 +3811,17 @@ class MLXInferenceBackend:
                                 break
                         if cancel_event and cancel_event.is_set():
                             break
+                    if vlm_streamed_text is not None and not stopped:
+                        tail = vlm_streamed_text.finish(sampled)
+                        if tail:
+                            sampled += tail
+                            if not sequences:
+                                yield prefill + sampled
+                            else:
+                                cut, stopped = _mlx_stop_cut(sampled, sequences)
+                                if cut > released:
+                                    released = cut
+                                    yield prefill + sampled[:cut]
                     # As in _generate_text: what was withheld is ordinary text now.
                     if sequences and not stopped and released < len(sampled):
                         yield prefill + sampled

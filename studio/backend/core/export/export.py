@@ -47,7 +47,6 @@ _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
     try:
         from peft import PeftModel, PeftModelForCausalLM
-        from transformers.modeling_utils import PushToHubMixin
         import torch
     except Exception as _torch_exc:
         _TORCH_IMPORT_ERROR = _torch_exc
@@ -452,8 +451,7 @@ def _ensure_hub_repo_private(hf_api, repo_id):
         raise RuntimeError(
             f"private=True was requested but {repo_id!r} could not be confirmed private "
             "(the token likely lacks `write:repo_settings`, or the repository belongs to "
-            "someone else). Refusing to upload rather than publish the GGUF files to a "
-            "public repository."
+            "someone else). Refusing to upload rather than publish to a public repository."
         ) from exception
 
 
@@ -953,12 +951,10 @@ class ExportBackend:
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
                     # redo the expensive quantization.
                     hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     content = MODEL_CARD.format(
                         username = repo_id.split("/")[0],
                         base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
@@ -1076,12 +1072,10 @@ class ExportBackend:
                     )
 
                     hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     username = repo_id.split("/")[0]
 
                     content = MODEL_CARD.format(

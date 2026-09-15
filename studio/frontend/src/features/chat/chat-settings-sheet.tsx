@@ -66,7 +66,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
 import { PermissionModeDropdown } from "./permission-mode-select";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
@@ -101,9 +108,11 @@ import {
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
+  modelCatalogVersion,
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
   resolveExternalMaxTokensClamp,
+  subscribeModelCatalog,
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
@@ -436,6 +445,11 @@ function specFallbackMessage({
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+    case "drafter_unloadable":
+      // The file IS beside the model; it just cannot be opened as a draft. So no "place
+      // the sidecar" and no "check your network": both name a remedy that changes
+      // nothing, and the backend stands the refetch down for exactly this case.
+      return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
     case "drafter_not_found":
       if (drafter === "DSpark") {
         return isLocalGguf
@@ -783,6 +797,8 @@ export function ChatSettingsPanel({
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const maxTokensMax = isExternalModel
     ? getExternalMaxOutputTokens(
         externalProviderType,

@@ -1509,12 +1509,21 @@ class CudaRuntimePreference:
     selection_log: list[str]
 
 
-def detect_torch_cuda_runtime_preference(host: Any) -> CudaRuntimePreference:
+def detect_torch_cuda_runtime_preference(
+    host: Any, *, gpu_hidden_by_mask: bool = False
+) -> CudaRuntimePreference:
+    """The runtime line Torch was built against, so the bundle matches the venv.
+
+    `gpu_hidden_by_mask` is for a caller that already established an NVIDIA GPU hidden by
+    CUDA_VISIBLE_DEVICES. Both usual gates answer "no GPU" under that mask, so selection
+    would fall back to newest-first and hand a cu12 venv a CUDA 13 bundle. No mask touches
+    torch.version.cuda, so it is read without the availability check.
+    """
     selection_log: list[str] = []
     if host.is_macos:
         selection_log.append("torch_cuda_preference: skipped on macOS")
         return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-    if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
+    if not ((host.has_usable_nvidia or gpu_hidden_by_mask) and (host.is_linux or host.is_windows)):
         selection_log.append(
             "torch_cuda_preference: skipped because CUDA host prerequisites were not met"
         )
@@ -1533,11 +1542,18 @@ def detect_torch_cuda_runtime_preference(host: Any) -> CudaRuntimePreference:
         )
         return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
-    try:
-        cuda_available = bool(torch.cuda.is_available())
-    except Exception as exc:
-        selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
+    if gpu_hidden_by_mask:
+        cuda_available = True
+        selection_log.append(
+            "torch_cuda_preference: GPU hidden by CUDA_VISIBLE_DEVICES; reading "
+            "torch.version.cuda without the availability check"
+        )
+    else:
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception as exc:
+            selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
+            return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
 
     if not cuda_available:
         selection_log.append(

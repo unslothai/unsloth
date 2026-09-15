@@ -71,6 +71,7 @@ from core.inference.context_window import (
     tool_result_budget,
     turn_is_servable,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
@@ -89,6 +90,8 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
+    extra_args_image_max_tokens,
+    extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
@@ -2544,10 +2547,24 @@ def _resolve_swa_pattern(
 
 
 def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
-    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`."""
-    if not url or "huggingface.co/" not in url:
+    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`.
+
+    A mirrored HF_ENDPOINT is recognised too, so a URL recorded on a mirror
+    still resolves to its repo id. huggingface.co stays accepted either way:
+    the same install can hold entries written before the mirror was set.
+    """
+    if not url:
         return None
-    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    marker = "huggingface.co/"
+    if marker not in url:
+        mirror = get_hf_endpoint().split("://", 1)[-1].rstrip("/") + "/"
+        if mirror in url:
+            marker = mirror
+        else:
+            return None
+    tail = url.split(marker, 1)[1].rstrip("/")
     parts = tail.split("/")
     if len(parts) < 2:
         return None
@@ -3376,6 +3393,16 @@ def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
     nothing. A root mirror is still taken: publishing one beside the weights says
     it is the one to use."""
     return _pick_mtp(candidates, allow_nested = False)
+
+
+def _mtp_drafter_loads_standalone(path: str) -> bool:
+    """Does *path* have the embeddings a ``--model-draft`` file needs?
+
+    The rule lives in ``gguf_metadata`` so the memory-estimate route, which asks on
+    every settings change, shares its ``(path, mtime, size)`` cache.
+    """
+    from utils.models.gguf_metadata import mtp_drafter_loads_standalone
+    return mtp_drafter_loads_standalone(path)
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -4298,6 +4325,17 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
+# Non-causal image decoding requires one image chunk to fit in the micro-batch.
+# These are the per-image limits from clip.cpp. Exact values avoid excess VRAM use.
+_MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
+    "gemma3": 256,
+    "deepseek4v": 384,
+}
+# A projector whose family we cannot read gets headroom instead of a ceiling.
+_MMPROJ_UNKNOWN_UBATCH = 2048
+_GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 _LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
@@ -5738,26 +5776,22 @@ def _extra_args_n_parallel(
     return found
 
 
-def _extra_args_n_ubatch(
+def _named_batch_sizes(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
-    n_ctx: Optional[int] = None,
-    *,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
-) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+) -> tuple[int, int, bool, bool]:
+    """Resolve batch sizes and whether each was explicitly set.
 
-    Precedence mirrors the launched command line: env, then the first-class
-    n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
-    extra_args (appended last, so they last-wins-override the emitted flags).
+    Precedence is environment, first-class fields, then extra arguments.
     """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
     }
+    named = {"batch": False, "ubatch": False}
     source_env = os.environ if env is None else env
-    overridden = False
     for key, env_name in (
         ("batch", "LLAMA_ARG_BATCH"),
         ("ubatch", "LLAMA_ARG_UBATCH"),
@@ -5766,16 +5800,16 @@ def _extra_args_n_ubatch(
         if raw:
             try:
                 values[key] = int(raw)
-                overridden = True
+                named[key] = True
             except (TypeError, ValueError):
                 pass
 
     if n_batch is not None:
         values["batch"] = int(n_batch)
-        overridden = True
+        named["batch"] = True
     if n_ubatch is not None:
         values["ubatch"] = int(n_ubatch)
-        overridden = True
+        named["ubatch"] = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -5793,10 +5827,26 @@ def _extra_args_n_ubatch(
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         try:
             values[key] = int(value)
-            overridden = True
+            named[key] = True
         except (TypeError, ValueError):
             continue
-    if not overridden:
+    return values["batch"], values["ubatch"], named["batch"], named["ubatch"]
+
+
+def _extra_args_n_ubatch(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+) -> Optional[int]:
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    _batch, _ubatch, _batch_named, _ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    values = {"batch": _batch, "ubatch": _ubatch}
+    if not (_batch_named or _ubatch_named):
         return None
 
     # common_params stores signed values, then llama_context_params converts
@@ -5809,6 +5859,135 @@ def _extra_args_n_ubatch(
     if n_ctx is not None and n_ctx > 0:
         effective = min(effective, n_ctx)
     return effective
+
+
+def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
+    """``{arch}.embedding_length``, cached, or None. Thin import-local wrapper."""
+    if not path:
+        return None
+    try:
+        from utils.models.gguf_metadata import read_gguf_embedding_length
+        return read_gguf_embedding_length(str(path))
+    except Exception as e:
+        logger.debug(f"embedding length read failed: {e}")
+        return None
+
+
+def _unknown_projector_ubatch(
+    extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> int:
+    """Return conservative headroom for an unclassified projector."""
+    return max(_MMPROJ_UNKNOWN_UBATCH, extra_args_image_max_tokens(extra_args, env) or 0)
+
+
+def _mmproj_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Return the required micro-batch, or 0 when the default is sufficient.
+
+    Inspect the image tower because audio-only projectors may still be marked as vision.
+    """
+    if not mmproj_path:
+        return 0
+    try:
+        from utils.models.gguf_metadata import (
+            mmproj_accepts_image,
+            read_mmproj_vision_projector_type,
+        )
+        if not mmproj_accepts_image(mmproj_path):
+            return 0
+        family = (read_mmproj_vision_projector_type(mmproj_path) or "").strip().lower()
+    except Exception as e:
+        logger.debug(f"mmproj capability read failed: {e}")
+        family = ""
+    custom = extra_args_image_max_tokens(extra_args, env) or 0
+    if not family:
+        return _unknown_projector_ubatch(extra_args, env)
+    if family not in _MMPROJ_NON_CAUSAL_IMAGE_TOKENS:
+        return 0
+    if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
+        return 0
+    # A custom image limit can exceed the family's built-in ceiling.
+    ceiling = max(_MMPROJ_NON_CAUSAL_IMAGE_TOKENS[family], custom)
+    return ceiling if ceiling > _DEFAULT_LLAMA_N_UBATCH else 0
+
+
+def _launch_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    *,
+    is_vision: bool = True,
+    vision_off: bool = False,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Return the largest micro-batch required by any possible launch projector.
+
+    Taking the maximum avoids duplicating llama.cpp's projector precedence and only
+    over-reserves when multiple image towers are supplied.
+    """
+    required = 0
+
+    # Pass-through arguments override managed projector flags.
+    override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+    if override:
+        required = max(
+            required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
+        )
+
+    if not vision_off:
+        # Inherited projectors survive --no-mmproj but not the vision switch.
+        source_env = os.environ if env is None else env
+        if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
+            required = max(required, _unknown_projector_ubatch(extra_args, env))
+        inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
+        if inherited:
+            required = max(
+                required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args, env)
+            )
+
+    if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
+        if mmproj_path:
+            required = max(
+                required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
+            )
+
+    if not vision_off and extra_args_mmproj_auto(extra_args, env):
+        # llama-server's adjacent-projector search can disagree with ours.
+        required = max(
+            required,
+            _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
+            if mmproj_path
+            else _unknown_projector_ubatch(extra_args, env),
+        )
+
+    return required
+
+
+def _batch_ubatch_for_mmproj(
+    required_ubatch: int,
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+) -> tuple[Optional[int], Optional[int]]:
+    """Raise an unset micro-batch, capped by the effective batch size."""
+    if required_ubatch <= 0:
+        return n_batch, n_ubatch
+    batch, ubatch, batch_named, ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    if ubatch_named:
+        return n_batch, n_ubatch
+    # Match llama_context_params, which converts the signed batch to uint32_t.
+    batch &= 0xFFFFFFFF
+    target = min(required_ubatch, batch)
+    if target <= ubatch:
+        return n_batch, n_ubatch
+    return n_batch, target
 
 
 def _build_ngram_mod_flags(
@@ -6445,11 +6624,13 @@ class LlamaCppBackend:
         # Separate MTP drafter launched with the current model; reload-dedup
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
-        # Drafter this load resolved then deliberately suppressed (virtualised Metal
-        # with no draft-layer flag). The dedup keys on the drafter the caller asked
-        # for, still on disk, so without this the detected path never matches the
-        # launched None and every repeat Apply tears down a healthy server.
+        # Drafter this load resolved then suppressed: unloadable sidecar, or virtualised
+        # Metal with no draft-layer flag. The caller keeps detecting it on disk, so
+        # without this record every repeat Apply tears down a healthy server.
         self._mtp_draft_suppressed_path: Optional[str] = None
+        # WHICH drop it was, "unloadable" or "paravirtual": only the unloadable one is a
+        # verdict on the CONTENTS, so only it reloads on repair and renames the reason.
+        self._mtp_draft_suppressed_reason: Optional[str] = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -7585,6 +7766,8 @@ class LlamaCppBackend:
         if (
             intent.gguf_path is None
             and self._spec_fallback_reason == "drafter_not_found"
+            # The fetch did find it and the load dropped it; refetching finds it again.
+            and self._mtp_draft_suppressed_path is None
             and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
             and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
             # DFlash asks through _dflash_retry_needed below, which is set only for
@@ -7689,6 +7872,16 @@ class LlamaCppBackend:
             except OSError:
                 return False
             if requested_draft != loaded_draft:
+                return False
+            # Repair a rejected sidecar in place and a path-only comparison would keep the
+            # drafter-free server. Only the unloadable drop is re-asked: the paravirtual
+            # one is a property of the build, so the same bytes drop again. Cached on
+            # (path, mtime, size), so only a repaired file is reparsed.
+            if (
+                self._mtp_draft_suppressed_reason == "unloadable"
+                and self._mtp_draft_suppressed_path
+                and _mtp_drafter_loads_standalone(self._mtp_draft_suppressed_path)
+            ):
                 return False
         return True
 
@@ -19106,9 +19299,7 @@ class LlamaCppBackend:
         total_weight = sum(split)
         for i, idx in enumerate(gpu_indices):
             alloc_bytes = total_bytes * split[i] / total_weight
-            capacity_bytes = (
-                (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
-            )
+            capacity_bytes = (usable_by_idx[idx] - reserve_mib) * 1024 * 1024 - cc_per_device_bytes
             if alloc_bytes > capacity_bytes:
                 return False
         return True
@@ -20989,6 +21180,7 @@ class LlamaCppBackend:
             # The canonical mode drives which drafter is downloaded, sized and
             # launched, so resolve it once before either branch can use it.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
@@ -21174,9 +21366,54 @@ class LlamaCppBackend:
                 logger.info("Main GGUF contains an embedded MTP head; ignoring separate drafter.")
                 mtp_draft_path = None
 
+            # Before the fit prices it, or a drafter that never launches pushes layers
+            # off the GPU. DSpark/DFlash borrow token_embd from the target by design.
+            #
+            # Not when the extras name their own drafter: draft flags are last-wins, so
+            # that file is the one llama-server opens and the sibling is never touched.
+            # Dropping it anyway reads as drafterless, and the fallback emits ngram-mod
+            # or --spec-default BEFORE the extras are appended, so the override stops
+            # running as MTP. Same helper and child-env rule as the paravirtual drop
+            # below: inherited LLAMA_ARG_SPEC_DRAFT_* reaches the child only when the
+            # extras own --spec-type.
+            if (
+                mtp_draft_path
+                and _spec_canon not in ("dspark", "dflash")
+                and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+                and not _mtp_drafter_loads_standalone(mtp_draft_path)
+            ):
+                logger.warning(
+                    "Dropping MTP drafter %s: it carries neither token_embd.weight nor "
+                    "nextn_shared_target_tensors, so llama-server cannot load it as "
+                    "--model-draft; loading without it.",
+                    mtp_draft_path,
+                )
+                _unloadable_mtp_draft_path = mtp_draft_path
+                mtp_draft_path = None
+
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
+
+            # Decide after downloading the projector and before pricing the load.
+            n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+                _launch_required_ubatch(
+                    None
+                    if (disable_vision or not is_vision)
+                    else self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    ),
+                    # Use the same order-independent metadata read as the estimators.
+                    _read_gguf_embedding_length(model_path),
+                    extra_args,
+                    is_vision = is_vision,
+                    vision_off = disable_vision,
+                ),
+                n_batch,
+                n_ubatch,
+                extra_args,
+            )
 
             # Backstop for everything the pre-teardown probes fail open on: refuse from the
             # header rather than watching llama-server die as "failed to start".
@@ -21201,6 +21438,7 @@ class LlamaCppBackend:
                 # reloads a healthy diffusion server on every Apply.
                 self._mtp_draft_path = None
                 self._mtp_draft_suppressed_path = None
+                self._mtp_draft_suppressed_reason = None
                 # And the verdict on why the last load had no drafter, for the same
                 # reason once more: _build_speculative_flags clears it at the top of
                 # every load that reaches it, and this path never does. Both retry
@@ -24564,7 +24802,10 @@ class LlamaCppBackend:
                     mtp_draft_path = mtp_draft_path,
                     drafter_label = _DRAFTER_DISPLAY_LABELS.get(_spec_canon, "MTP"),
                 )
-                _pv_suppressed_draft_path: Optional[str] = None
+                _suppressed_draft_path: Optional[str] = _unloadable_mtp_draft_path
+                _suppressed_draft_reason: Optional[str] = (
+                    "unloadable" if _unloadable_mtp_draft_path else None
+                )
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
                 # Same shape as the projector drop above: the CPU pin below needs a
                 # draft-layer flag from the probe, and without one the drafter keeps its
@@ -24613,7 +24854,12 @@ class LlamaCppBackend:
                     # Remember what was suppressed: the drafter stays on disk, so caller
                     # and route keep detecting it, and comparing that against the
                     # launched None would reload a healthy server on every repeat Apply.
-                    _pv_suppressed_draft_path = launch_mtp_draft_path
+                    # Only what this drop removed: extras trigger it with none of ours
+                    # launched, and None would clear a record an earlier drop made.
+                    if launch_mtp_draft_path:
+                        _suppressed_draft_path = launch_mtp_draft_path
+                        # A property of the build, not the file, so a repair must not reload.
+                        _suppressed_draft_reason = "paravirtual"
                     launch_mtp_draft_path = None
                     if extra_args:
                         # Same reason: record the extras as REQUESTED next to the
@@ -24665,6 +24911,9 @@ class LlamaCppBackend:
                     dspark_fit_sized = not use_fit,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
+                    # So the fallback says unopenable, not missing. DSpark/DFlash never
+                    # reach the drop.
+                    mtp_drafter_unloadable = bool(_unloadable_mtp_draft_path),
                     drafter_no_vram = _spec_dropped_no_vram,
                     embedded_mtp_partial_offload = bool(
                         _spec_canon == "auto"
@@ -26795,6 +27044,16 @@ class LlamaCppBackend:
                         avail_mib = _preflight_avail_mib,
                         pageable_note = _cpu_pageable_note,
                     )
+                    # This return skips the commit block below, so write the drafter
+                    # records here too: left describing the PREVIOUS load, the comparator
+                    # judges this child against another model's drafter and a carried-over
+                    # suppressed path stands the refetch down for a load that dropped
+                    # nothing. Inert while only virtualised Metal could suppress, where
+                    # auto-Vulkan fallback cannot happen; an unloadable sidecar can be
+                    # suppressed anywhere.
+                    self._mtp_draft_path = launch_mtp_draft_path
+                    self._mtp_draft_suppressed_path = _suppressed_draft_path
+                    self._mtp_draft_suppressed_reason = _suppressed_draft_reason
                     logger.warning(
                         "llama-server loaded successfully on CPU after the "
                         "auto-selected Vulkan backend crashed. GPU acceleration "
@@ -26811,7 +27070,8 @@ class LlamaCppBackend:
                 self._gguf_load_identity = self._gguf_load_source_identity(model_path, mmproj_path)
                 self._hf_repo = hf_repo
                 self._mtp_draft_path = launch_mtp_draft_path
-                self._mtp_draft_suppressed_path = _pv_suppressed_draft_path
+                self._mtp_draft_suppressed_path = _suppressed_draft_path
+                self._mtp_draft_suppressed_reason = _suppressed_draft_reason
                 # For local GGUF files, extract variant from filename if absent
                 if hf_variant:
                     self._hf_variant = hf_variant
@@ -28154,6 +28414,7 @@ class LlamaCppBackend:
         drafter_no_vram: bool = False,
         embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
+        mtp_drafter_unloadable: bool = False,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
 
@@ -28223,6 +28484,11 @@ class LlamaCppBackend:
             bool(self._nextn_predict_layers)
             or _is_mtp_model_name(model_identifier, model_path)
             or bool(mtp_draft_path)
+            # A dropped sidecar was this quant's ONLY MTP signal: the motivating
+            # RVN-Q6_K.gguf has no nextn_predict_layers and no -mtp in its name, so
+            # clearing mtp_draft_path read as a plain model, skipping every arm below and
+            # leaving the drop unexplained. Kept as a signal, it reaches the fallback.
+            or mtp_drafter_unloadable
         )
         _mtp_size_b = _extract_model_size_b(model_identifier)
         # The sub-3B regression is an embedded-head cost; a separate drafter
@@ -28230,12 +28496,14 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
-        # Drafterless Gemma (name-only MTP, no embedded head): emitting MTP
-        # would abort llama-server, so every mode below falls back instead.
+        # Drafterless Gemma (name-only MTP, no embedded head), or any quant whose only
+        # drafter was dropped as unopenable: emitting MTP would abort llama-server, so
+        # every mode below falls back. Without the second case a dropped sidecar on any
+        # non-Gemma repo disables MTP in silence.
         _mtp_drafter_missing = (
-            _is_gemma_mtp_name(model_identifier, model_path)
-            and not mtp_draft_path
+            not mtp_draft_path
             and not self._nextn_predict_layers
+            and (_is_gemma_mtp_name(model_identifier, model_path) or mtp_drafter_unloadable)
         )
         # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
         # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,
@@ -28504,17 +28772,28 @@ class LlamaCppBackend:
 
         def _fallback_drafter_not_found() -> None:
             """Drafterless Gemma: use ngram-mod (or spec-default) and record why."""
-            logger.warning(
-                "Model %s is MTP-capable but no drafter or head was found; "
-                "falling back. Check network or run `unsloth studio update`.",
-                model_identifier,
-            )
+            if mtp_drafter_unloadable:
+                logger.warning(
+                    "Model %s had an MTP drafter that llama-server cannot open as "
+                    "--model-draft; falling back without it.",
+                    model_identifier,
+                )
+            else:
+                logger.warning(
+                    "Model %s is MTP-capable but no drafter or head was found; "
+                    "falling back. Check network or run `unsloth studio update`.",
+                    model_identifier,
+                )
             if caps.get("supports_ngram_mod"):
                 _emit_ngram_mod()
             else:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
-            self._spec_fallback_reason = "drafter_not_found"
+            # Its own reason: the drafter_not_found copy tells a local load to place a file
+            # already on disk, and offers a refetch this load deliberately stands down.
+            self._spec_fallback_reason = (
+                "drafter_unloadable" if mtp_drafter_unloadable else "drafter_not_found"
+            )
 
         if effective_mode == "ngram":
             _emit_ngram_mod()
@@ -28905,6 +29184,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
+            self._mtp_draft_suppressed_reason = None
             self._spec_fallback_reason = None
 
             self._mmproj_fallback_reason = None
@@ -31517,6 +31797,56 @@ class LlamaCppBackend:
                     continue
                 raise
 
+    @staticmethod
+    def decode_slot_from_chunk(chunk) -> Optional[int]:
+        """The llama-server slot a stream chunk was decoded on, None if it does not say.
+
+        Only the final result carries ``__verbose``, and only when asked for.
+        """
+        if not isinstance(chunk, dict):
+            return None
+        verbose = chunk.get("__verbose")
+        if not isinstance(verbose, dict):
+            return None
+        slot = verbose.get("id_slot")
+        if type(slot) is not int or slot < 0:
+            return None
+        return slot
+
+    def release_idle_chat_slot(self, base_url: str, slot: int) -> bool:
+        """Erase one completed round's cached context, True once the engine says so.
+
+        Declines unless the round decoded on this server, which a reload renumbers, and
+        unless --slot-save-path is in play, which the endpoint requires. An erase aimed at
+        a slot since handed to another request is deferred rather than dropped, so even a
+        timeout can cost that chat its prefix.
+        """
+        if (
+            not self._slot_save_dir
+            or base_url != self.base_url
+            or type(slot) is not int
+            or slot < 0
+        ):
+            return False
+        try:
+            response = httpx.post(
+                f"{base_url}/slots/{slot}",
+                params = {"action": "erase"},
+                headers = self._auth_headers,
+                timeout = 2.0,
+                trust_env = False,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return (
+                result.get("id_slot") == slot
+                and type(result.get("n_erased")) is int
+                and result["n_erased"] >= 0
+            )
+        except Exception:
+            logger.debug("Approval cache reclamation failed; retaining reservation", exc_info = True)
+            return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -31965,6 +32295,7 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        on_decode_slot: Optional[Callable[[str, int], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -32683,6 +33014,9 @@ class LlamaCppBackend:
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
+            if on_decode_slot is not None:
+                payload["verbose"] = True
+                payload["response_fields"] = ["id_slot"]
             if perf_callback is not None:
                 payload["timings_per_token"] = True
             if logit_bias:
@@ -32690,7 +33024,7 @@ class LlamaCppBackend:
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
-                payload["tools"] = safe_tools
+                payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
@@ -32966,6 +33300,10 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+                                if on_decode_slot is not None:
+                                    slot = self.decode_slot_from_chunk(chunk_data)
+                                    if slot is not None:
+                                        on_decode_slot(self.base_url, slot)
 
                                 _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
@@ -36031,7 +36369,7 @@ class LlamaCppBackend:
                     # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
-                        template_body["tools"] = tools
+                        template_body["tools"] = llama_grammar_tools(tools)
                     # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs

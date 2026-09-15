@@ -187,9 +187,13 @@ class LoadRequest(BaseModel):
         description = (
             "Physical prompt micro-batch size for llama-server (--ubatch-size) "
             f"for this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
-            "default (512). llama.cpp caps it at the batch size. Larger values "
-            "speed up prompt processing at the cost of compute-buffer VRAM. "
-            "Ignored for non-GGUF models."
+            "default (512), raised to a projector's own per-image ceiling when "
+            "its images would abort the server at 512: 1120 for Gemma 4, and "
+            "2048 for a projector whose family cannot be read. Every other "
+            "vision model keeps the 512 default. "
+            "llama.cpp caps it at the batch size. Larger values speed up prompt "
+            "processing at the cost of compute-buffer VRAM. Ignored for "
+            "non-GGUF models."
         ),
     )
     load_mode: Optional[Literal["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]] = Field(
