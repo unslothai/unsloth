@@ -1627,12 +1627,14 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
             # is a real operand rather than something to step over.
             if name in pattern_flags:
                 skip = 0
+            if name not in spec:
+                name = _resolved_long_flag(spec, name) or name
             kind = spec.get(name)
             if sep and kind:
                 _add_flag_operand(operands, kind, attached, write_cmd, creating)
                 continue
-            if not sep and spec.get(arg):
-                pending_flag = arg
+            if not sep and kind:
+                pending_flag = name
                 continue
             flag, value = _short_flag_with_value(arg, spec)
             if flag in pattern_flags:
@@ -1795,6 +1797,14 @@ def _seven_zip_operands(args, creating: bool) -> "list[tuple[str, bool]]":
 
 # Commands whose presence after a `cd` means something under the new directory is written.
 _DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
+
+
+def _resolved_long_flag(spec, name: str) -> "str | None":
+    """GNU long options accept unambiguous abbreviations, so `cp --targ=` IS `--target-directory=`."""
+    if not name.startswith("--") or len(name) < 3:
+        return None
+    matches = [flag for flag in spec if flag.startswith(name)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _command_base_writes(base: str) -> bool:

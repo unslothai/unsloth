@@ -3374,6 +3374,8 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # GNU long options accept unambiguous abbreviations, so `--targ=` is the destination.
+    "cp --targ=/usr/share/doc payload",
     # Short options cluster, so `-ni` edits in place exactly as `-i` does.
     "sed -ni 's/x/y/p' /usr/share/doc/notes",
     # `xargs` forwards the paths to ANOTHER command, whose mode is the one that counts.
@@ -3771,6 +3773,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "cp --targ=./staged payload",
+    "cp --preserve=mode notes.txt copy.txt",
     # Reading through the same spellings stays silent under a read-silent root.
     "sed -n '1,5p' /usr/share/doc/notes",
     "find /usr/share/doc -name '*.txt' | xargs cat",
