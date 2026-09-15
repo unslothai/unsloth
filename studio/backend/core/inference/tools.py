@@ -3799,6 +3799,15 @@ def _python_copies_the_studio_root(tree) -> bool:
     if not root:
         return False
     folded_root = _folded_word(root)
+    # `root = os.environ["UNSLOTH_STUDIO_HOME"]; os.walk(root)` names the root through one binding,
+    # which arrives as a bare `Name` that neither the env test nor the fold can resolve.
+    aliases = {
+        target.id: node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -3820,6 +3829,8 @@ def _python_copies_the_studio_root(tree) -> bool:
             if k.arg in ("src", "root_dir", "base_dir", "top", "path")
         )
         for argument in sources:
+            if isinstance(argument, ast.Name):
+                argument = aliases.get(argument.id)
             if argument is None:
                 continue
             if _names_the_studio_home_env(argument):
