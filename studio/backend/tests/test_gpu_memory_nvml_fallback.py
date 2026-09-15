@@ -266,6 +266,7 @@ class TestTheEmbeddingServerKeepsTheGpu:
     def test_embeddings_offload_when_only_nvml_answers(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
         probe_script(_payload([_row(0, 8000)]))
+        monkeypatch.setattr(embed_mod.sys, "platform", "linux")  # Metal answers on a Mac
         monkeypatch.setattr(embed_mod.config, "embed_device_preference", lambda: "auto")
         monkeypatch.setattr(
             LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda binary: []), raising = False
@@ -327,9 +328,12 @@ class TestAGpuCapableBuildIsPreferred:
         return made
 
     @pytest.mark.parametrize("platform", ["linux", "win32"])
-    def test_the_cuda_sibling_build_wins_over_a_cpu_only_first_hit(self, tmp_path, platform):
+    def test_the_cuda_sibling_build_wins_over_a_cpu_only_first_hit(
+        self, tmp_path, platform, monkeypatch
+    ):
         from utils import llama_cpp_path_settings as ps
 
+        monkeypatch.setattr(ps, "host_gpu_vendors", lambda: None)  # not this host's vendors
         so = ".dll" if platform == "win32" else ".so"
         pre = "" if platform == "win32" else "lib"
         made = self._tree(
