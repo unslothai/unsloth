@@ -593,6 +593,18 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
+      # Seeds its own thread, so it needs no model and no id from an earlier step. Not in
+      # the chat shard: that one ends by clicking Shutdown, and this sweeps 7 viewports.
+      - name: Chat width presets (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_chat_width
+        run: |
+          mkdir -p logs/playwright_chat_width
+          python tests/studio/playwright_chat_width.py
+
       # The owner creates an account, its setup code is private, and switching accounts in one
       # browser clears account data; the account is deleted at the end, so the owner is back alone.
       - name: Multi-account switch flow (Playwright)
