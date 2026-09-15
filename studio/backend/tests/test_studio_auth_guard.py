@@ -1828,3 +1828,24 @@ def test_a_chdir_in_an_uncalled_helper_does_not_move_the_walk(monkeypatch, tmp_p
             ), blocked
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_wildcard_that_carries_no_literal_hint(monkeypatch, tmp_path):
+    # `../../a?th/.b*` expands onto `auth/.bootstrap_password` while containing none of the literal
+    # hints, so the prefilter was returning before the glob analysis that exists for this could run.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in ("cat ../../a?th/.b*", "cat ../../a?th/*"):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in ("ls *.py", "ls ../../m*/", "ls ../../models/*.gguf", "grep -r x src/*.py"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

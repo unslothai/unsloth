@@ -2884,6 +2884,20 @@ def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
     return False
 
 
+def _glob_text_can_name_the_auth_dir(lowered: str) -> bool:
+    """True when *lowered*, read as a shell glob, can expand onto the auth directory or below it."""
+    auth_markers, variable_markers, _cd_re = _studio_auth_dir_markers()
+    markers = auth_markers + (variable_markers if ("$" in lowered or "%" in lowered) else ())
+    if not markers:
+        return False
+    candidates = {lowered, _canonical_path_text(lowered)}
+    return any(
+        _glob_can_name_the_marker(candidate, canonical_marker)
+        for _marker, canonical_marker in markers
+        for candidate in candidates
+    )
+
+
 def _references_studio_credential(text: str) -> bool:
     """True if *text* names Studio's auth directory or one of the credential files in it."""
     if not text:
@@ -2891,7 +2905,13 @@ def _references_studio_credential(text: str) -> bool:
     lowered = text.lower()
     # Once per candidate token of every command, so skip the regexes when nothing can match.
     if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
-        return False
+        # A WILDCARD can name the directory without spelling it: `../../a?th/.b*` expands to
+        # `auth/.bootstrap_password` and carries no hint at all, so the prefilter was skipping the
+        # glob analysis that exists for exactly this. Only the marker comparison can match here, the
+        # literal patterns needing a hint by construction, so that is all this runs.
+        if not _GLOB_META_RE.search(lowered):
+            return False
+        return _glob_text_can_name_the_auth_dir(lowered)
     # `<home>//auth/auth.db` and `<home>/./auth/auth.db` open the same file.
     normalized = _REDUNDANT_SLASH_RE.sub("", text)
     lowered_normalized = normalized.lower()
