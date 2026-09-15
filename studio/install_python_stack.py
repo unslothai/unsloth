@@ -3567,11 +3567,11 @@ def _detect_cuda_torch_index_url() -> str:
             continue
         tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
-    # No nvidia-smi: the driver libraries carry the same version and SMs, and on Linux the
-    # kernel module's release bounds it. Defaulting to cu126 gave Blackwell a kernel-less wheel.
+    # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
+    # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
+    # default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
     inventory = _nvidia_library_inventory()
     if inventory is not None and inventory.cuda_driver_version:
-        tag = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
         sms = []
         for row in inventory.devices:
             m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
@@ -3579,11 +3579,9 @@ def _detect_cuda_torch_index_url() -> str:
                 sms = []
                 break
             sms.append(int(m.group(1)) * 10 + int(m.group(2)))
-        return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, None, sms or None)}"
-    if _nvidia_probe is not None and _nvidia_probe.enabled() and sys.platform != "win32":
-        bound = _nvidia_probe.cuda_version_for_driver(_nvidia_probe.proc_driver_version())
-        if bound is not None:
-            return f"{_PYTORCH_WHL_BASE}/{_torch_family_for_cuda_version(*bound)}"
+        if sms:
+            family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
+            return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 

@@ -2712,7 +2712,13 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 visible_rows = rows
             if not has_physical_nvidia:
                 has_physical_nvidia = True
-                has_usable_nvidia = bool(visible_rows)
+                # As the nvidia-smi rows are read: a mask NVML rows cannot name (a MIG
+                # UUID) leaves the GPU usable.
+                has_usable_nvidia = bool(visible_rows) or (
+                    visible_device_tokens is not None
+                    and visible_device_tokens != []
+                    and not supports_explicit_visible_device_matching(visible_device_tokens)
+                )
             for _index, _uuid, cap in rows:
                 normalized_cap = normalize_compute_cap(cap)
                 if normalized_cap is not None and normalized_cap not in physical_compute_caps:

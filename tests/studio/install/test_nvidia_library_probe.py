@@ -275,6 +275,18 @@ class TestDetectHostFallsBackToTheLibraries:
         host = ILP.detect_host()
         assert host.has_usable_nvidia and host.compute_caps == ["61"]
 
+    def test_a_mask_nvml_rows_cannot_name_keeps_the_gpu_usable(self, monkeypatch):
+        # A MIG UUID names a slice, not the parent GPU NVML lists: usable, as with nvidia-smi.
+        _hide_the_real_host(monkeypatch, nvidia_smi = None)
+        monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: _inventory(caps = ("9.0",)))
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-4b3c2a1d-0000-1111-2222-333344445555")
+        host = ILP.detect_host()
+        assert host.has_physical_nvidia and host.has_usable_nvidia
+        assert host.compute_caps == [] and host.physical_compute_caps == ["90"]
+        # An explicit UUID that matches nothing stays unusable.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-00000000-0000-0000-0000-000000000000")
+        assert not ILP.detect_host().has_usable_nvidia
+
     def test_the_cuda_driver_api_rows_are_already_masked(self, monkeypatch):
         _hide_the_real_host(monkeypatch, nvidia_smi = None)
         monkeypatch.setattr(
@@ -360,13 +372,16 @@ class TestTorchIndexFallsBackToTheLibraries:
         )
         assert IPS._detect_cuda_torch_index_url().endswith("/cu126")
 
-    def test_the_kernel_module_release_is_the_last_word_on_linux(self, monkeypatch):
+    def test_without_compute_caps_the_default_stays(self, monkeypatch):
+        # A driver version alone cannot rule out Maxwell, Pascal or Volta, which cu128+ drop.
         self._no_smi(monkeypatch)
-        monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: None)
         monkeypatch.setattr(IPS.sys, "platform", "linux")
         monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1")
-        monkeypatch.setattr(IPS._nvidia_probe, "proc_driver_version", lambda: "570.124.06")
-        assert IPS._detect_cuda_torch_index_url().endswith("/cu128")
+        monkeypatch.setattr(IPS._nvidia_probe, "proc_driver_version", lambda: "580.65.06")
+        capless = PROBE.NvidiaLibraryInventory("cuda", (13, 0), "", [{"compute_cap": ""}])
+        for inventory in (None, capless):
+            monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda inv = inventory: inv)
+            assert IPS._detect_cuda_torch_index_url().endswith("/cu126")
 
     def test_nothing_at_all_still_defaults_to_cu126(self, monkeypatch):
         self._no_smi(monkeypatch)
@@ -397,7 +412,10 @@ def test_setup_sh_asks_the_library_last():
     assert '_setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py"' in body
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "a working bash is required")
+@pytest.mark.skipif(
+    shutil.which("bash") is None or sys.platform == "win32",
+    reason = "a POSIX bash is required (Windows resolves bash to WSL)",
+)
 def test_setup_sh_probe_hook_runs(tmp_path):
     start = SETUP_TEXT.index("_setup_run_smi() {")
     runner = SETUP_TEXT[start : SETUP_TEXT.index("\n}\n", start) + 3]
