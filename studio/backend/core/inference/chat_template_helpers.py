@@ -1933,6 +1933,19 @@ def reconciled_tool_choice(tool_choice, openai_tools, safe_tools):
     return "auto"
 
 
+def forced_tool_catalog(tool_choice, tools):
+    forced = forced_tool_name(tool_choice)
+    if forced is None:
+        return []
+    return [
+        tool
+        for tool in tools or []
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and tool["function"].get("name") == forced
+    ]
+
+
 def _tokenizer_objects(tokenizer) -> tuple:
     """Return a processor/tokenizer and its distinct nested tokenizer."""
     if tokenizer is None:
