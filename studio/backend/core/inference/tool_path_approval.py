@@ -1149,6 +1149,20 @@ _PATH_HINT_RE = re.compile(r"[/~\\:]")
 
 # `sed -i` rewrites its operands in place, unlike a plain sed.
 _SED_INPLACE_FLAGS = ("-i", "--in-place")
+# A short option that consumes the rest of its token as a value, so `perl -Ilib` is not an `-i`.
+_SHORT_OPTION_VALUE_CHARS = "eflI"
+
+
+def _clusters_inplace(arg: str) -> bool:
+    """`sed -ni` edits in place just as `sed -i` does: short options cluster into one token."""
+    if not arg.startswith("-") or arg.startswith("--"):
+        return False
+    for char in arg[1:]:
+        if char == "i":
+            return True
+        if char in _SHORT_OPTION_VALUE_CHARS:
+            break
+    return False
 
 
 _REDIR_WRITE_RE = re.compile(r"^\d*(?:>>?\|?|&>>?)$")
@@ -1249,7 +1263,10 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     if any("xargs" in t or "parallel" in t for t in tokens) and any(
         _token_command_base(t) in _PATH_FORWARDING_COMMANDS for t in tokens
     ):
-        operands.extend((t, False) for t in tokens if _looks_absolute(t))
+        # The wrapped command decides the mode: `xargs touch` MODIFIES what it is handed, and
+        # charging it as a read left a write to a read-silent root silent.
+        forwarded_write = _forwarded_command_writes(tokens)
+        operands.extend((t, forwarded_write) for t in tokens if _looks_absolute(t))
     # A backtick substitution runs as a command of its own, so it is scanned as one IN ADDITION to
     # the pass above. Not instead of: `cat `echo /media/x`` puts the path in the outer command's
     # operand position too, and replacing the tokens dropped exactly that reading.
@@ -1552,11 +1569,8 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if not (read_cmd or write_cmd or dest_last or flag_only):
         return []
     inplace = command in ("sed", "perl") and any(
-        arg == flag
-        or (arg.startswith("-i") and not arg.startswith("--"))
-        or arg.startswith("--in-place")
+        arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args
-        for flag in _SED_INPLACE_FLAGS
     )
     spec = _PATH_FLAG_SPECS.get(command, {})
     # `tar cf out.tar .` / `tar -cf out.tar .` create the archive; the same flags only read when extracting.
@@ -1674,15 +1688,55 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
 # Relative writes after a `chdir` land under the NEW directory, so the destination is charged as a
 # write when the snippet writes anything afterwards. Mirrors the terminal `cd` rule; the classifier
 # keeps no working-directory state, and a path computed at runtime stays the documented residual.
+def _ctor_opens_for_write(node) -> bool:
+    """`h5py.File(path, "w")` rewrites the file it names; the default `"r"` mode does not."""
+    mode = next(
+        (kw.value for kw in _call_keywords(node) if kw.arg == "mode"),
+        node.args[1] if len(node.args) > 1 else None,
+    )
+    return (
+        isinstance(mode, ast.Constant)
+        and isinstance(mode.value, str)
+        and any(char in mode.value for char in "wax+")
+    )
+
+
+def _subprocess_child_writes(tree) -> bool:
+    """`subprocess.run(["touch", "f"])` writes, though no python writer call appears in the tree."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in (
+            _PY_PATH_SUBPROCESS_CALLS
+        ):
+            continue
+        head = node.args[0] if node.args else None
+        words = getattr(head, "elts", [head])
+        first = next(
+            (w.value for w in words if isinstance(w, ast.Constant) and isinstance(w.value, str)), ""
+        )
+        if _command_base_writes(
+            _token_command_base(_shell_words(first)[0] if first.split() else "")
+        ):
+            return True
+    return False
+
+
 def _python_directory_change_targets(tree, operands) -> "list[tuple[str, bool]]":
     """The absolute destination of an `os.chdir` in a snippet that also writes."""
     # `open` is not listed: the operand pass already reports its mode, so a read through it does
     # not count as writing while `open(p, "w")` does.
     writers = _PY_PATH_WRITE_CALLS | _PY_PATH_CONTENT_FIRST_CALLS
-    if not any(writing for _path, writing in operands) and not any(
-        isinstance(node, ast.Call)
-        and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) in writers
-        for node in ast.walk(tree)
+    if (
+        not any(writing for _path, writing in operands)
+        and not any(
+            isinstance(node, ast.Call)
+            and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) in writers
+            for node in ast.walk(tree)
+        )
+        # A relative operand handed to a child process leaves no path entry at all, so the write
+        # `os.chdir("/models"); subprocess.run(["touch", "w.gguf"])` performs is only visible here.
+        and not _subprocess_child_writes(tree)
     ):
         return []
     targets: "list[tuple[str, bool]]" = []
@@ -1743,6 +1797,37 @@ def _seven_zip_operands(args, creating: bool) -> "list[tuple[str, bool]]":
 _DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
 
 
+def _command_base_writes(base: str) -> bool:
+    """Whether a bare command word modifies what it is handed."""
+    return (
+        base in _PATH_WRITE_COMMANDS
+        or base in _PATH_DEST_LAST_COMMANDS
+        or base in _PATH_ARCHIVE_COMMANDS
+        or base in _EXTRA_WRITE_COMMANDS
+    )
+
+
+_EXTRA_WRITE_COMMANDS = frozenset("rm rmdir touch truncate dd shred sed perl".split())
+# `xargs -n 1 cmd`: these carry their value in the NEXT token, which is not the wrapped command.
+_FORWARDING_VALUE_FLAGS = frozenset("-a -d -E -e -I -i -L -l -n -P -s".split())
+
+
+def _forwarded_command_writes(tokens) -> bool:
+    """`... | xargs touch` writes every path it is handed; `... | xargs cat` only reads them."""
+    for index, token in enumerate(tokens):
+        if _token_command_base(token) not in _PATH_FORWARDING_COMMANDS:
+            continue
+        skip = False
+        for candidate in tokens[index + 1 :]:
+            if skip:
+                skip = False
+            elif candidate.startswith("-"):
+                skip = candidate in _FORWARDING_VALUE_FLAGS
+            else:
+                return _command_base_writes(_token_command_base(candidate))
+    return False
+
+
 def _directory_change_write_targets(tokens) -> "list[tuple[str, bool]]":
     """The absolute destination of a `cd` that is followed by a write, as a write operand."""
     targets: "list[str]" = []
@@ -1757,10 +1842,7 @@ def _directory_change_write_targets(tokens) -> "list[tuple[str, bool]]":
         if not targets:
             continue
         if (
-            base in _PATH_WRITE_COMMANDS
-            or base in _PATH_DEST_LAST_COMMANDS
-            or base in _PATH_ARCHIVE_COMMANDS
-            or base in ("rm", "rmdir", "dd", "shred", "sed", "perl")
+            _command_base_writes(base)
             or _REDIR_WRITE_RE.match(token)
             or _REDIR_PREFIX_RE.match(token)
             and ">" in token
@@ -3060,7 +3142,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 )
             add(given, not _sqlite_opens_read_only(node, given))
         elif name in _PY_PATH_OPENING_CTORS:
-            add(first, False)
+            add(first, _ctor_opens_for_write(node))
         elif name in _PY_PATH_READ_CALLS:
             add(first, False)
             if is_method:

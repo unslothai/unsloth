@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # Short options cluster, so `-ni` edits in place exactly as `-i` does.
+    "sed -ni 's/x/y/p' /usr/share/doc/notes",
+    # `xargs` forwards the paths to ANOTHER command, whose mode is the one that counts.
+    "printf '%s\\n' /usr/share/doc/new.txt | xargs touch",
+    "ls | xargs -I {} cp {} /usr/share/doc/",
     # A `cd` to an absolute directory moves where every later RELATIVE write lands.
     f"cd {_OUTSIDE_DIR} && touch weights.gguf",
     f"cd {_OUTSIDE_DIR} && echo hi > out.txt",
@@ -3564,6 +3569,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `h5py.File(path, "w")` truncates the file the constructor names.
+    "import h5py\nh5py.File('/usr/share/doc/model.h5', 'w')",
+    "import netCDF4\nnetCDF4.Dataset('/usr/share/doc/grid.nc', mode = 'a')",
+    # A relative operand handed to a child process lands wherever the `chdir` moved it.
+    "import os, subprocess\nos.chdir('/usr/share/doc')\nsubprocess.run(['touch', 'new.gguf'])",
     # `pandas.read_excel(io = ...)` is the documented name of its first parameter.
     f"import pandas as pd\nprint(pd.read_excel(io = {_OUTSIDE_FILE!r}))",
     # The same names on a Path-like receiver, and their qualified forms, are the filesystem calls.
@@ -3761,6 +3771,10 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    # Reading through the same spellings stays silent under a read-silent root.
+    "sed -n '1,5p' /usr/share/doc/notes",
+    "find /usr/share/doc -name '*.txt' | xargs cat",
+    "ls /usr/share | xargs -n 1 echo",
     "env - FOO=bar cat notes.txt",
     "pr <(cat notes.txt)",
     # `basename` / `dirname` print components of a NAME; they open nothing.
@@ -3873,6 +3887,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import h5py\nh5py.File('/usr/share/doc/model.h5', 'r')",
+    "import os, subprocess\nos.chdir('/usr/share/doc')\nsubprocess.run(['ls', '-la'])",
     "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
     "import io\nprint(io.open_code('local.py').read())",
     "import pandas as pd\nprint(pd.read_excel(io = 'book.xlsx'))",
