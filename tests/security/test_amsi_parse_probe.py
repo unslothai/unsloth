@@ -263,7 +263,13 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
     # is separately destroyed by the text round trip.
     blob = b"Write-Host 'one'\r\nWrite-Host 'two \xff'\r\n\r\n\r\nWrite-Host 'three'"
     (repo / "install.ps1").write_bytes(blob)
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
     for argv in (
         ["git", "init", "-q"],
         # -text so the checkout cannot be what normalises the line endings: the question here is
@@ -590,9 +596,9 @@ def test_a_parse_error_is_reported_even_when_no_control_fired_anywhere(tmp_path:
     """
     rows = (
         "@("
-        + _row("base", "install.ps1", control=False, result=_COMPILED)
+        + _row("base", "install.ps1", control = False, result = _COMPILED)
         + ", "
-        + _row("head", "install.ps1", control=False, result=_SYNTAX)
+        + _row("head", "install.ps1", control = False, result = _SYNTAX)
         + ")"
     )
     code, text = _run_verdict(tmp_path, rows)
@@ -617,6 +623,6 @@ def test_cloud_readiness_requires_block_at_first_sight_to_be_on() -> None:
         "block-at-first-sight disabled is still labelled cloud-protected"
     )
     assert "$cloudReady = $true" in gate
-    assert gate.index("DisableBlockAtFirstSeen") < gate.index("$cloudReady = $true"), (
-        "the preference is read after readiness is already decided"
-    )
+    assert gate.index("DisableBlockAtFirstSeen") < gate.index(
+        "$cloudReady = $true"
+    ), "the preference is read after readiness is already decided"
