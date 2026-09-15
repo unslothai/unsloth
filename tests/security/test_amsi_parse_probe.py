@@ -633,9 +633,9 @@ def test_cloud_readiness_is_decided_by_maps_and_reports_bafs_separately() -> Non
     gate = body[start:end]
     assert "$cloudReady = $true" in gate
     assert "ValidateMapsConnection" in gate, "readiness no longer verifies the MAPS connection"
-    assert gate.index("ValidateMapsConnection") < gate.index("$cloudReady = $true"), (
-        "readiness is decided before the MAPS connection is validated"
-    )
+    assert gate.index("ValidateMapsConnection") < gate.index(
+        "$cloudReady = $true"
+    ), "readiness is decided before the MAPS connection is validated"
     assert "DisableBlockAtFirstSeen" in gate, (
         "the block-at-first-sight preference is no longer reported at all, so a reader cannot tell "
         "which configuration produced the verdict"
@@ -919,26 +919,28 @@ def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
     catch, could report clean.
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
-    defender = body[body.index("Ask Defender's file scanner"):]
-    defender = defender[:defender.index("Upload the measurements")]
-    control = defender[:defender.index("EICAR proves the LOCAL engine scans")]
+    defender = body[body.index("Ask Defender's file scanner") :]
+    defender = defender[: defender.index("Upload the measurements")]
+    control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
     # Every place the control is declared live has to be immediately preceded by an observation,
     # which here means a Test-Path on the control file rather than the fact that something threw.
     lines = control.splitlines()
     for i, line in enumerate(lines):
         if "$fired = $true" not in line:
             continue
-        window = "\n".join(lines[max(0, i - 6):i])
+        window = "\n".join(lines[max(0, i - 6) : i])
         assert "Test-Path -LiteralPath $controlFile" in window, (
             "this sets the control live without first observing that the control file is gone:\n"
-            + window + "\n" + line
+            + window
+            + "\n"
+            + line
         )
-    assert "so this was not a Defender block" in control, (
-        "a failed control write no longer reports itself as something other than a block"
-    )
-    assert "there is no positive control" in control, (
-        "a control scan that cannot be launched no longer says the control did not run"
-    )
+    assert (
+        "so this was not a Defender block" in control
+    ), "a failed control write no longer reports itself as something other than a block"
+    assert (
+        "there is no positive control" in control
+    ), "a control scan that cannot be launched no longer says the control did not run"
 
 
 def test_the_defender_control_writes_a_benign_canary_first() -> None:
@@ -950,21 +952,21 @@ def test_the_defender_control_writes_a_benign_canary_first() -> None:
     into the same directory first, and gives up rather than concluding anything if that fails.
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
-    defender = body[body.index("Ask Defender's file scanner"):]
-    control = defender[:defender.index("EICAR proves the LOCAL engine scans")]
+    defender = body[body.index("Ask Defender's file scanner") :]
+    control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
     assert "$canaryFile" in control, "there is no benign canary, so absence is not attributable"
     assert control.index("$canaryOk") < control.index("$controlFile -Encoding ascii"), (
         "the canary is written after the EICAR file, so a failed directory cannot be ruled out "
         "before the EICAR write is interpreted"
     )
-    assert "no positive control" in control, (
-        "an unwritable control directory no longer reports that there is no positive control"
-    )
+    assert (
+        "no positive control" in control
+    ), "an unwritable control directory no longer reports that there is no positive control"
     # Both writes must be terminating, or Continue carries a failure straight past the check.
     writes = [line for line in control.splitlines() if "Set-Content -LiteralPath $c" in line]
     assert len(writes) == 2, writes
     for line in writes:
-        block = control[control.index(line):control.index(line) + 400]
+        block = control[control.index(line) : control.index(line) + 400]
         assert "-ErrorAction Stop" in block, f"this write is non-terminating:\n{line.strip()}"
 
 
@@ -979,26 +981,27 @@ def test_the_control_fires_only_through_the_command_the_candidates_are_read_with
     same command.
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
-    defender = body[body.index("Ask Defender's file scanner"):]
-    control = defender[:defender.index("EICAR proves the LOCAL engine scans")]
+    defender = body[body.index("Ask Defender's file scanner") :]
+    control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
     assert "$controlDir = Join-Path $env:ROOT 'defender-control'" in control, (
         "the control is not inside the on-access exclusion, so real-time protection can take it "
         "away before the on-demand scan reads it"
     )
     # Exactly one place may set the control live, and it is the branch that read the scan output.
     lines = control.splitlines()
-    fired = [i for i, line in enumerate(lines) if "$fired = [bool]" in line or "$fired = $true" in line]
-    assert len(fired) == 1, (
-        "the control fires from more than one place again:\n"
-        + "\n".join(lines[i].strip() for i in fired)
+    fired = [
+        i for i, line in enumerate(lines) if "$fired = [bool]" in line or "$fired = $true" in line
+    ]
+    assert len(fired) == 1, "the control fires from more than one place again:\n" + "\n".join(
+        lines[i].strip() for i in fired
     )
     assert "$controlOut -match" in lines[fired[0]], (
         f"the control is set live by something other than the on-demand scan output: "
         f"{lines[fired[0]].strip()}"
     )
-    assert "the measurement path is unproven" in control, (
-        "a control removed before the scan no longer says the measurement path went unproven"
-    )
+    assert (
+        "the measurement path is unproven" in control
+    ), "a control removed before the scan no longer says the measurement path went unproven"
 
 
 def test_a_missing_layout_manifest_cannot_produce_a_clean_verdict() -> None:
@@ -1009,9 +1012,9 @@ def test_a_missing_layout_manifest_cannot_produce_a_clean_verdict() -> None:
     unmeasured condition and has to reach the verdict, not only the log.
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
-    assert body.count("$script:UnslothUnknownExpected") >= 6, (
-        "the unknown-expected-set condition is not tracked in both halves"
-    )
+    assert (
+        body.count("$script:UnslothUnknownExpected") >= 6
+    ), "the unknown-expected-set condition is not tracked in both halves"
     for half, feeds in (
         ("Ask AMSI, under Windows PowerShell 5.1", "$noResult +="),
         ("Ask Defender's file scanner", "$unscanned +="),
@@ -1020,7 +1023,9 @@ def test_a_missing_layout_manifest_cannot_produce_a_clean_verdict() -> None:
         end = body.index("- name:", start + 10)
         # The step bodies run past the next `- name:` marker for the AMSI half, so take the whole
         # remainder for it and cut at the upload step instead.
-        chunk = body[start:body.index("Upload the measurements")] if "AMSI" in half else body[start:]
-        loop = chunk[chunk.index("foreach ($side in $script:UnslothUnknownExpected)"):]
-        loop = loop[:loop.index("}")]
+        chunk = (
+            body[start : body.index("Upload the measurements")] if "AMSI" in half else body[start:]
+        )
+        loop = chunk[chunk.index("foreach ($side in $script:UnslothUnknownExpected)") :]
+        loop = loop[: loop.index("}")]
         assert feeds in loop, f"{half}: the unknown expected set does not reach the verdict"
