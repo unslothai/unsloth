@@ -18108,6 +18108,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                     llama_backend, _native_grant_backed, _model_id
                 ),
                 gguf_variant = llama_backend.hf_variant,
+                memory_warning = llama_backend.last_load_warning,
                 loading = _loading,
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is

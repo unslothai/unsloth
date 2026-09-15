@@ -21,6 +21,7 @@ import {
   type ModelRuntime,
   withModelLoadNotice,
 } from "@/lib/model-lifecycle-events";
+import { showLoadWarning } from "../utils/load-warning-toast";
 import type {
   MessageRecord,
   ModelType,
@@ -299,6 +300,7 @@ export async function loadModel(
       // passed -- a cached Hub candidate is requested by its loadId while the runtime
       // keeps `loaded.model`, and the unload is issued with the second.
       showCarveoutAdvice(loaded.carveout_advice, loaded.model, payload.model_path);
+      showLoadWarning(loaded.memory_warning);
       return loaded;
     },
   );

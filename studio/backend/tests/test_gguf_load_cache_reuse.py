@@ -667,6 +667,12 @@ class TestLoadReusesCachedCopy:
         assert not backend.matches_load_source(requested)
         assert backend.matches_load_source(replace(requested, hf_variant = "Q4_K_M"))
 
+        with _low_disk_hub(100 * GIB, served = str(served)):
+            assert backend.load_model(requested) is True
+
+        assert backend.hf_variant == "Q8_0"
+        assert backend.last_load_warning is None
+
     def test_companion_prefers_main_snapshot_sibling(self, hf_cache):
         """A cached mmproj is reused from the main model's snapshot."""
         backend = LlamaCppBackend()

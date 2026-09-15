@@ -4075,6 +4075,9 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        load_warning = _inference_status(base, key).get("memory_warning") if model else None
+        if load_warning:
+            typer.echo(f"Warning: {load_warning}", err = True)
     except BaseException:
         _shutdown_auto_served()
         raise
