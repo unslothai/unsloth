@@ -365,6 +365,11 @@ def _clear_finished_warm_locked() -> None:
 
 DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
 
+# The catalog's own task identifiers, which _build_index compares with ==. Anything else
+# (a friendly "image"/"video") silently builds an empty index and reads as "no models here",
+# so the gate would refuse forever. Pinned against the catalog by test_diffusers_prewarm.py.
+_MEDIA_PREWARM_TASKS = ("text-to-image", "text-to-video")
+
 _diffusers_prewarm_lock = threading.Lock()
 _diffusers_prewarmed = False
 
@@ -400,7 +405,8 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             return False
         try:
             from core.inference.media_model_index import available_media_model_ids  # noqa: PLC0415
-            if not any(available_media_model_ids(task) for task in ("image", "video")):
+
+            if not any(available_media_model_ids(task) for task in _MEDIA_PREWARM_TASKS):
                 # Nothing to load, so the import would be pure cost. Not latched: a model
                 # downloaded later should let the next lifespan reconsider.
                 logger.debug("diffusers prewarm skipped: no local image or video model")

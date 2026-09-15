@@ -96,7 +96,7 @@ def _stub_diffusers(monkeypatch, *, raises = False):
 def test_an_install_with_no_image_models_pays_nothing(warm, monkeypatch):
     """The gate is the entire justification for doing this at boot. A chat-only or
     training-only user must not pay diffusers' 316 MB for a page they never open."""
-    _stub_gate(monkeypatch, {"image": [], "video": []})
+    _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": []})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
@@ -104,7 +104,7 @@ def test_an_install_with_no_image_models_pays_nothing(warm, monkeypatch):
 
 
 def test_it_prewarms_when_an_image_model_is_present(warm, monkeypatch):
-    _stub_gate(monkeypatch, {"image": ["unsloth/Z-Image-GGUF"], "video": []})
+    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"], "text-to-video": []})
     seen = _stub_diffusers(monkeypatch)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is True
@@ -113,7 +113,7 @@ def test_it_prewarms_when_an_image_model_is_present(warm, monkeypatch):
 
 def test_a_video_only_install_also_prewarms(warm, monkeypatch):
     """Both media backends go through the same diffusers import."""
-    _stub_gate(monkeypatch, {"image": [], "video": ["some/video-model"]})
+    _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["some/video-model"]})
     _stub_diffusers(monkeypatch)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is True
@@ -121,7 +121,7 @@ def test_a_video_only_install_also_prewarms(warm, monkeypatch):
 
 def test_the_kill_switch_is_honoured(warm, monkeypatch):
     monkeypatch.setenv(warm.DIFFUSERS_PREWARM_DISABLE_ENV_VAR, "1")
-    _stub_gate(monkeypatch, {"image": ["unsloth/Z-Image-GGUF"]})
+    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
@@ -129,7 +129,7 @@ def test_the_kill_switch_is_honoured(warm, monkeypatch):
 
 
 def test_it_latches_so_a_second_call_is_free(warm, monkeypatch):
-    _stub_gate(monkeypatch, {"image": ["m"]})
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is True
@@ -139,7 +139,7 @@ def test_it_latches_so_a_second_call_is_free(warm, monkeypatch):
 def test_concurrent_callers_prewarm_once(warm, monkeypatch):
     """Single-flight, asserted on how many callers did the work rather than on lock entries,
     which would be a race against thread scheduling."""
-    _stub_gate(monkeypatch, {"image": ["m"]})
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch)
 
     did = []
@@ -163,9 +163,58 @@ def test_a_gate_that_raises_means_skip_not_crash(warm, monkeypatch):
 def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
     """A --no-torch host, or a broken diffusers, reports False. The load path imports it again
     and is the one that reports the failure to the user."""
-    _stub_gate(monkeypatch, {"image": ["m"]})
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch, raises = True)
     assert warm.prewarm_diffusers_if_image_models_exist() is False
+
+
+def test_the_gate_asks_for_the_catalogs_real_task_identifiers():
+    """``_build_index`` matches ``_local_model_task(info) == task`` exactly, so a friendly
+    ``"image"``/``"video"`` builds a permanently EMPTY index and the gate refuses forever: the
+    prewarm would be dead code that every stubbed test still passes. Pinned against the
+    catalog's own set so a rename there fails here instead of silently disabling the prewarm."""
+    from hub.services.models.catalog_classification import _LOADABLE_MEDIA_GGUF_TASKS
+    from utils import torch_warmup
+
+    assert set(torch_warmup._MEDIA_PREWARM_TASKS) == set(_LOADABLE_MEDIA_GGUF_TASKS)
+
+
+def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monkeypatch):
+    """The same check driven through the REAL index rather than a stub of it.
+
+    This is the one a stub cannot make: feed the catalog one text-to-image model and confirm
+    ``available_media_model_ids`` finds it under the identifier the gate passes, and finds
+    nothing under ``"image"``. Without it, keying the stub on the gate's own strings makes a
+    wrong identifier look correct, which is exactly how this shipped the first time."""
+    from core.inference import media_model_index as idx
+    from utils import torch_warmup
+
+    fake = types.SimpleNamespace(
+        id = "unsloth/Z-Image-GGUF", model_id = "unsloth/Z-Image-GGUF",
+        display_name = "Z-Image-GGUF", path = "/nonexistent/z-image",
+        model_format = None, partial = False,
+    )
+    routes_models = sys.modules.setdefault("routes.models", types.ModuleType("routes.models"))
+    monkeypatch.setattr(routes_models, "collect_local_models", lambda _root: [fake],
+                        raising = False)
+    monkeypatch.setattr(routes_models, "_local_model_task",
+                        lambda _info: "text-to-image", raising = False)
+    # _name_keys and the on-disk checks would reject a path that does not exist, so stand in
+    # for the registration step; the task comparison above it is what is under test.
+    monkeypatch.setattr(idx, "_name_keys", lambda _info: ("z-image-gguf",), raising = False)
+    monkeypatch.setattr(idx, "_resolve_load_dir", lambda p: p, raising = False)
+    monkeypatch.setattr(idx, "_add_gguf_picks",
+                        lambda index, info, keys, on_disk, load_dir: False, raising = False)
+    monkeypatch.setattr(idx, "_loadable_directory", lambda _d: True, raising = False)
+    idx.invalidate_index()
+
+    found = {task: idx.available_media_model_ids(task)
+             for task in (*torch_warmup._MEDIA_PREWARM_TASKS, "image", "video")}
+    idx.invalidate_index()
+
+    assert found["text-to-image"], "the gate's identifier finds nothing in the real index"
+    assert not found["image"], "the friendly identifier unexpectedly matched"
+    assert not found["video"]
 
 
 def _post_warm_source() -> str:
