@@ -151,7 +151,9 @@ unsloth studio --secure
 ```
 
 #### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: Docker Desktop with WSL 2). Run:
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: [Docker Desktop with WSL 2](https://unsloth.ai/docs/get-started/install/docker)).
+
+**Linux / WSL (Bash):**
 ```bash
 docker run -d --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
@@ -160,7 +162,7 @@ docker run -d --gpus all --ipc=host \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
-Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The `unsloth-studio` volume keeps your accounts, chats and trained models across `docker rm`; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+Follow startup with `docker logs -f <container>`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. The `unsloth-studio` volume keeps your accounts, chats and trained models across `docker rm`; each image brings its own Studio code, and a volume from an older image is migrated on the first start (its old code is kept under `.unsloth-studio-legacy/`). Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
