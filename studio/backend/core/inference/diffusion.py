@@ -2411,6 +2411,16 @@ class DiffusionBackend:
                 for name in (source.filename, source.fallback_filename):
                     if name and name in sizes:
                         return (source.location, name, int(sizes[name]))
+                # The repo answered and holds NEITHER name. Not "no prequant is used" -- this pick
+                # is configured to use one and the dense shards are already excluded for it, so the
+                # plan names no transformer source at all and must say it is partial.
+                if failures_out is not None:
+                    failures_out.append(
+                        RuntimeError(
+                            f"prequant artifact missing from {source.location}: "
+                            f"{source.filename!r} / {source.fallback_filename!r}"
+                        )
+                    )
                 return None
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
