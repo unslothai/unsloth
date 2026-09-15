@@ -328,11 +328,9 @@ const STALL_MS = 400;
  * `healthyAfterMs: null` means none of them do. Returns how long the loop
  * survived, in ms.
  *
- * Milliseconds, not reads. The window is defined in time -- the source keeps a
- * `lastHealthy` stamp and gives up at `Date.now() - lastHealthy >= stallMs` --
- * so time is what it is fair to assert on. A read count is that quantity
- * divided by the cost of one poll, which is the only part of this that varies
- * between platforms: about 1 ms here and about 15 ms on a Windows runner.
+ * Milliseconds, not reads: the window is defined in time (`Date.now() -
+ * lastHealthy >= stallMs`), and a read count is that divided by poll cost,
+ * which is the one thing here that varies by platform.
  */
 async function msBeforeSettling(healthyAfterMs: number | null): Promise<number> {
   const { settled, stop } = record();
@@ -363,21 +361,10 @@ async function msBeforeSettling(healthyAfterMs: number | null): Promise<number> 
 }
 
 test("a healthy read resets the stall window", async () => {
-  // Earlier versions compared READ COUNTS between two runs and asked for a
-  // ratio. That made the verdict depend on the cost of a poll, which is the
-  // noisiest thing in reach on a shared windows-latest runner: observed at
-  // 65/55, 64/43 and 62/50 in one run, ratios from 1.18 to 1.49 against a
-  // 1.25 bar, so the same healthy code passed and failed within three rounds.
-  // Best-of-three and majority-of-three were both attempts to average that
-  // away, and neither shrank the spread because the spread is the measurement.
-  //
-  // Timing it instead removes the poll cost from the arithmetic entirely, and
-  // turns the signal from a ratio into a DIFFERENCE. The reset fires on a
-  // clock rather than at a read index, so it lands halfway through the window
-  // whatever a poll costs, and the loop should then outlast the plain one by
-  // about half a window. Jitter is bounded by one poll interval, which is
+  // The reset fires on a clock, not at a read index, so it lands halfway
+  // through the window whatever a poll costs. Jitter is then one poll interval,
   // ~15 ms at worst against a 200 ms signal, so one sample of each is enough
-  // where six were not.
+  // where a ratio of read counts needed three rounds and still flaked.
   const withoutReset = await msBeforeSettling(null);
   const withReset = await msBeforeSettling(STALL_MS / 2);
 
