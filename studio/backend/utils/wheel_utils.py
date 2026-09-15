@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Callable
@@ -333,13 +335,45 @@ def install_wheel(
     return attempts
 
 
-def url_exists(url: str) -> bool:
-    try:
-        request = urllib.request.Request(url, method = "HEAD")
-        with urllib.request.urlopen(request, timeout = 10):
-            return True
-    except urllib.error.HTTPError as exc:
-        _logger.debug("url_exists(%s): HTTP %s", url, exc.code)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _logger.debug("url_exists(%s): %s", url, exc)
-    return False
+def _timed_out(exc: BaseException) -> bool:
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _probe_is_retriable(exc: BaseException) -> bool:
+    """Whether to probe again, which only a transfer failure earns: retrying a refusal asks a throttled host twice as often as it asked."""
+    if _timed_out(exc):  # the stall already spent the whole timeout
+        return False
+    if isinstance(exc, urllib.error.HTTPError):
+        headers = getattr(exc, "headers", None)
+        if headers is not None and str(headers.get("Retry-After") or "").strip():
+            return False
+        return exc.code == 408 or exc.code >= 500
+    return True
+
+
+def url_exists(url: str, *, attempts: int = 2) -> bool | None:
+    """True if reachable, False for a 404, None when availability cannot be checked. Only a 404 means "not published", so a refusal is never proof that no prebuilt exists. Retries up to ``attempts`` times where ``_probe_is_retriable``."""
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(url, method = "HEAD")
+            with urllib.request.urlopen(request, timeout = 10):
+                return True
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                _logger.debug("url_exists(%s): HTTP 404", url)
+                return False
+            exc, reason = error, f"HTTP {error.code}"
+        except (OSError, http.client.HTTPException) as error:
+            # OSError covers URLError and a reset peer; HTTPException a malformed response.
+            exc, reason = error, error
+        if attempt < attempts and _probe_is_retriable(exc):
+            _logger.debug("url_exists(%s): %s; retrying", url, reason)
+            time.sleep(1.5 * attempt)
+            continue
+        break
+    _logger.warning(
+        "url_exists(%s): %s; could not determine prebuilt wheel availability", url, reason
+    )
+    return None

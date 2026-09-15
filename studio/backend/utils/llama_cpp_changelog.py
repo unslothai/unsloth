@@ -18,8 +18,12 @@ from typing import Optional
 import structlog
 
 from utils.prebuilt.freshness_flow import (
+    GITHUB_RATE_LIMIT_STATUS,
     RELEASE_CACHE_TTL_SECONDS,
     RELEASE_FAILURE_CACHE_TTL_SECONDS,
+    github_rate_limit_remaining,
+    error_body,
+    note_github_rate_limited,
 )
 
 logger = structlog.get_logger(__name__)
@@ -99,9 +103,19 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
             logger.debug("llama changelog release too large", repo = repo, tag = tag)
             return None
         payload = json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        wait = 0.0
+        if exc.code in GITHUB_RATE_LIMIT_STATUS:
+            wait = note_github_rate_limited(exc.headers, status = exc.code, body = error_body(exc))
+        if wait:
+            logger.debug(
+                "llama changelog fetch rate limited", repo = repo, tag = tag, backoff_seconds = int(wait)
+            )
+        else:
+            logger.debug("llama changelog fetch failed", repo = repo, tag = tag, error = str(exc))
+        return None
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         OSError,
         # A truncated read raises HTTPException, which is not an OSError.
         http.client.HTTPException,
@@ -123,7 +137,9 @@ def _release_for_tag(
     key = (repo, tag)
     # Memory-only, so monotonic throughout: a backward clock step must not be able to extend the TTL. freshness_flow uses wall time because it persists to disk.
     now = time.monotonic()
-    if force_refresh:
+    # Before the debounce is spent: a forced refresh under lockout fetches nothing, and burning its slot would leave "check now" dead until the interval passes.
+    locked_out = github_rate_limit_remaining() > 0
+    if force_refresh and not locked_out:
         forced_at = _release_forced_at.get(key)
         if forced_at is not None and now - forced_at < FORCE_REFRESH_MIN_INTERVAL_SECONDS:
             force_refresh = False
@@ -138,6 +154,12 @@ def _release_for_tag(
             return cached[1] if fresh else None
         if fresh:
             return cached[1]
+    # A retry into a rate-limited API only delays the reset, so the lockout holds even for force_refresh.
+    if locked_out:
+        cached = _release_memo.get(key)
+        if cached and now - cached[0] < RELEASE_CACHE_TTL_SECONDS:
+            return cached[1]
+        return None
     release = _fetch_release(repo, tag)
     if release is None:
         _release_failed_at[key] = time.monotonic()
