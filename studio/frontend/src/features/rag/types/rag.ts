@@ -24,6 +24,8 @@ export interface RagDocument {
   linkedFolderId?: string | null;
   managed: boolean;
   createdAt?: string | null;
+  /** Size of the stored bytes; null when the file behind the row is gone. */
+  sizeBytes?: number | null;
 }
 
 export function isLinkedFolderManaged(document: RagDocument): boolean {
@@ -32,7 +34,6 @@ export function isLinkedFolderManaged(document: RagDocument): boolean {
 
 /** RagDocument enriched for the global uploaded-files list (settings Data tab). */
 export interface UploadedDocument extends RagDocument {
-  sizeBytes?: number | null;
   kbName?: string | null;
   projectName?: string | null;
 }
@@ -180,6 +181,29 @@ export interface PreviewTarget {
   text?: string | null;
 }
 
+/** A source opened in the preview modal. The backend decides how to render it and
+ * whether it may be edited, so the client keeps no list of file extensions and the
+ * two can never disagree about what is editable. */
+export interface DocumentContent {
+  documentId: string;
+  filename: string;
+  /** "pdf" renders from the signed file URL and carries no text. */
+  mediaKind: "pdf" | "text";
+  /** What the View tab shows. "source" has no richer view, so the modal shows the
+   * text alone with no toggle; the rest pair a View with an Edit. */
+  preview: "source" | "markdown" | "html" | "extracted";
+  text?: string | null;
+  editable: boolean;
+  /** Text was cut off at the size cap, so it is shown but not editable. */
+  truncated: boolean;
+  /** The line ending the file uses. A textarea reports every line as "\n" whatever the
+   * file held, so the editor works in LF and restores this on save; a file mixing
+   * conventions has none, and comes back read-only instead. */
+  newline: "\n" | "\r\n";
+  /** Why editing is unavailable; shown in the footer. Null when editable. */
+  readOnlyReason?: string | null;
+}
+
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
 const ACCEPTED_UPLOAD_EXTS = new Set(
@@ -192,4 +216,16 @@ export function isSupportedSourceName(name: string): boolean {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return false;
   return ACCEPTED_UPLOAD_EXTS.has(name.slice(dot).toLowerCase());
+}
+
+/** Whether a failed mutation means "the thing is already gone", which for a delete is the
+ * state the caller wanted. Restoring the row instead would put back a document that does
+ * not exist and 404s on every later action.
+ *
+ * Matches the error ``ragError`` builds -- an ``Error`` carrying the status -- rather than
+ * any object with a ``status`` field: a duck-typed check would also match an unrelated
+ * payload that happens to carry ``status: 404``. Kept here so the node:test runner can
+ * reach it, since ``rag-api`` pulls in an image asset the runner cannot load. */
+export function isAlreadyGone(err: unknown): boolean {
+  return err instanceof Error && (err as { status?: unknown }).status === 404;
 }

@@ -13,6 +13,22 @@ export {
   listKnowledgeBases,
 } from "./api/rag-api";
 export { saveMarkdownAsProjectSource } from "./api/save-markdown-source";
+export {
+  fileTypeLabel,
+  formatSize,
+  formatUploadedAt,
+  toSortTime,
+} from "./lib/document-format";
+export {
+  SOURCE_SORT_LABELS,
+  SOURCES_COLLAPSED_LIMIT,
+  filterSources,
+  hasHiddenSources,
+  isBulkRemovable,
+  sortSources,
+  visibleSources,
+} from "./lib/source-list";
+export type { SourceSortMode } from "./lib/source-list";
 export { useRagAvailabilityStore } from "./api/rag-availability";
 export { isLinkedFolderManaged } from "./types/rag";
 export type { KnowledgeBase, RagDocument, UploadedDocument } from "./types/rag";

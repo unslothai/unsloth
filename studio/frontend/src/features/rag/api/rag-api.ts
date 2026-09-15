@@ -7,6 +7,7 @@ import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
+  DocumentContent,
   DocumentUploadResult,
   FolderSyncJob,
   FolderSyncJobEvent,
@@ -19,6 +20,7 @@ import type {
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
+import { pollJobUntilTerminal } from "../lib/poll-job";
 import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 
 const RAG_BASE = "/api/rag";
@@ -724,6 +726,14 @@ export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
 
+/** Poll until a job reaches a terminal status, and return it. See poll-job.ts. */
+export function waitForJob(
+  jobId: string,
+  options: { timeoutMs?: number } = {},
+): Promise<IndexJob> {
+  return pollJobUntilTerminal(getJob, jobId, options);
+}
+
 /** Longest gap between frames before a stream is treated as buffered by a proxy. */
 const SSE_STALL_MS = 12000;
 
@@ -796,6 +806,25 @@ export function getPreviewTarget(
   return ragRequest(
     `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
   );
+}
+
+export function getDocumentContent(
+  documentId: string,
+): Promise<DocumentContent> {
+  return ragRequest(`/documents/${encodeURIComponent(documentId)}/content`);
+}
+
+/** Save edited text and re-index it. The reply names the *replacement* document:
+ * the edit is ingested as a new row and the old one is retired only once that
+ * succeeds, so callers must refresh rather than assume the id is unchanged. */
+export function updateDocumentContent(
+  documentId: string,
+  text: string,
+): Promise<DocumentUploadResult> {
+  return ragRequest(`/documents/${encodeURIComponent(documentId)}/content`, {
+    method: "PUT",
+    body: { text },
+  });
 }
 
 // Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because consumers bypass

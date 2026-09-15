@@ -244,8 +244,28 @@ def _is_managed_preview_path(stored_path: str) -> bool:
         return False
 
 
-def _doc_view(row: dict) -> dict:
-    return {
+def _stored_size(stored_path: str | None) -> int | None:
+    """Size of a document's stored bytes, or None when it has no readable file.
+
+    A document keeps its row after the upload (or linked-folder snapshot) behind
+    it has gone, so a missing path is expected rather than an error.
+    """
+    if not stored_path:
+        return None
+    try:
+        return os.path.getsize(stored_path)
+    except OSError:
+        return None
+
+
+def _doc_view(row: dict, *, with_size: bool = False) -> dict:
+    """Wire form of a document row.
+
+    `with_size` is opt-in because it stats each row: the sources panel sorts by
+    size and the settings Data tab shows it, but the KB and thread lists render
+    neither and are polled every four seconds while something indexes.
+    """
+    view = {
         "id": row["id"],
         "filename": row["filename"],
         "status": row["status"],
@@ -258,6 +278,9 @@ def _doc_view(row: dict) -> dict:
         "managed": bool(row.get("linked_folder_id")),
         "createdAt": row.get("created_at"),
     }
+    if with_size:
+        view["sizeBytes"] = _stored_size(row.get("stored_path"))
+    return view
 
 
 class CreateKbRequest(BaseModel):
@@ -665,7 +688,9 @@ def list_project_documents(project_id: str, subject: str = Depends(get_current_s
     conn = _rag_connection()
     try:
         docs = store.list_documents(conn, store.project_scope(project_id))
-        return {"documents": [_doc_view(d) for d in docs]}
+        # Only here and the settings list carry sizes: this one is the sources
+        # panel, which sorts by them.
+        return {"documents": [_doc_view(d, with_size = True) for d in docs]}
     finally:
         conn.close()
 
@@ -791,15 +816,7 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
 
     out = []
     for doc in docs:
-        view = _doc_view(doc)
-        stored_path = doc.get("stored_path")
-        size = None
-        if stored_path:
-            try:
-                size = os.path.getsize(stored_path)
-            except OSError:
-                size = None
-        view["sizeBytes"] = size
+        view = _doc_view(doc, with_size = True)
         view["kbName"] = kb_names.get(doc.get("kb_id"))
         view["projectName"] = project_names.get(doc.get("project_id"))
         out.append(view)
@@ -811,6 +828,11 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
     _require_rag()
     conn = _rag_connection()
     try:
+        # Read and delete in one transaction so this serializes against an ingestion worker
+        # publishing a replacement of this document (ingestion._replace_old_document takes the
+        # same lock). Otherwise the worker could retire this row between the read and the
+        # delete, leaving the delete a silent no-op and the source back under the new id.
+        conn.execute("BEGIN IMMEDIATE")
         doc = store.get_visible_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
@@ -1140,3 +1162,359 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
         # linked documents are named by a posix relative path, invalid in this header
         filename = doc["filename"].rsplit("/", 1)[-1],
     )
+
+
+# Formats a <textarea> represents faithfully, so an edit round-trips byte for byte.
+# .pdf and .docx are deliberately absent: neither survives being retyped as plain
+# text, so both are display-only.
+_EDITABLE_EXTS = {".txt", ".md", ".markdown", ".html", ".htm"}
+
+# What the modal's "View" tab shows, per extension. "source" means the raw text is
+# the only honest view, so the modal offers no toggle and goes straight to the
+# editor. Anything richer gets a View/Edit pair: "markdown" renders it, "extracted"
+# shows the text the indexer derived from a file whose source is not that text.
+#
+# Keyed by extension so a newly supported upload type (see config.UPLOAD_EXTS)
+# picks a view here and the client needs no change.
+_PREVIEW_MODES = {
+    ".md": "markdown",
+    ".markdown": "markdown",
+    # Rendered in the chat artifact canvas: a sandboxed, opaque-origin iframe with
+    # network access denied by default. That sandbox is what makes rendering an
+    # uploaded page safe -- it must never be dropped into the app's own origin.
+    ".html": "html",
+    ".htm": "html",
+    # No source to edit, so the extracted text is both the view and the whole of it.
+    ".docx": "extracted",
+}
+# Read (and accept) at most this much text. Beyond it the preview is truncated for
+# display and editing is refused, because saving a truncated body would silently
+# delete the tail of the file.
+_MAX_TEXT_EDIT_BYTES = 1024 * 1024
+# The same bound for text with no byte form of its own (a .docx extraction). One
+# character is at most four UTF-8 bytes, so this can never exceed the byte cap.
+_MAX_TEXT_EDIT_CHARS = _MAX_TEXT_EDIT_BYTES // 4
+
+
+# A .docx is a zip, and a small one can hold text that expands to many times its size on
+# disk. Slicing the extraction only bounds the reply -- the parser has already built the
+# whole document by then, so the allocation happened regardless. The archive declares how
+# much it unpacks to, which costs no decompression to read, so one that cannot possibly fit
+# the cap is never handed to the parser at all. Generous against the character cap because
+# a .docx is mostly markup: the text inside is a fraction of the XML around it.
+_MAX_DOCX_UNPACKED_BYTES = 16 * 1024 * 1024
+
+
+def _docx_text(stored_path: str) -> tuple[str, bool]:
+    """A Word document's extracted text, bounded before it is extracted.
+
+    Returns ``("", False)`` for an archive too large to preview, which reads as truncated
+    with nothing to show -- distinct from an empty document, which is faithfully empty.
+    """
+    import zipfile
+
+    from core.rag import parsers
+
+    try:
+        with zipfile.ZipFile(stored_path) as archive:
+            unpacked = sum(item.file_size for item in archive.infolist())
+    except Exception:  # noqa: BLE001 - not a readable zip; let the parser report it
+        unpacked = 0
+    if unpacked > _MAX_DOCX_UNPACKED_BYTES:
+        return "", False
+    # Accumulated, not joined in one pass: joining allocates a second full copy of text the
+    # parser has already built, and stopping at the cap keeps the excess out of the reply.
+    pages: list[str] = []
+    size = 0
+    for page in parsers.parse(stored_path):
+        pages.append(page.text)
+        size += len(page.text) + 1
+        if size > _MAX_TEXT_EDIT_CHARS:
+            return "\n".join(pages)[:_MAX_TEXT_EDIT_CHARS], False
+    return "\n".join(pages), True
+
+
+def _document_text(stored_path: str, ext: str) -> tuple[str, bool]:
+    """The document's own text, and whether it is the whole of it verbatim.
+
+    ``False`` means the text on screen is not a faithful copy of the file, so
+    saving it back would destroy the part that did not survive the trip. Two ways
+    that happens: the body was cut off at the size cap, or a byte was not valid
+    UTF-8 and decoded to U+FFFD (saving would rewrite that byte as the encoding of
+    the replacement character, corrupting content the user never touched).
+
+    A .docx has no text form on disk, so it goes back through the ingestion parser
+    and what the modal shows is exactly what was chunked and embedded. That is
+    never editable, and is capped here because a small compressed file can extract
+    to many megabytes.
+    """
+    if ext == ".docx":
+        return _docx_text(stored_path)
+    with open(stored_path, "rb") as handle:
+        # One byte past the cap distinguishes "exactly at the cap" from "longer".
+        raw = handle.read(_MAX_TEXT_EDIT_BYTES + 1)
+    complete = len(raw) <= _MAX_TEXT_EDIT_BYTES
+    raw = raw[:_MAX_TEXT_EDIT_BYTES]
+    # replace, not strict: a preview must never 500 on a stray byte. Whether the
+    # decode was lossy decides editability, not whether it succeeded.
+    text = raw.decode("utf-8", errors = "replace")
+    return text, complete and text.encode("utf-8") == raw
+
+
+def _newline_style(text: str) -> str | None:
+    """The one line ending this text uses, or ``None`` when it mixes conventions.
+
+    A <textarea> hands back "\\n" for every line whatever the file used -- the HTML API value is
+    newline-normalized -- so an edit can only be written back verbatim when a single convention
+    covers the whole file and the client can restore it. A file that mixes them (or uses a lone
+    CR) has no such convention, so it is shown and not edited rather than silently rewritten.
+    """
+    crlf, lf, cr = text.count("\r\n"), text.count("\n"), text.count("\r")
+    if crlf and crlf == lf == cr:
+        return "\r\n"
+    return "\n" if not cr else None
+
+
+@router.get("/documents/{document_id}/content")
+def document_content(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    """Text of a source for the preview modal, plus whether it may be edited.
+
+    The editability decision lives here rather than in the client so there is one
+    copy of the rule; the client renders whatever this returns.
+    """
+    _require_rag()
+    conn = _rag_connection()
+    try:
+        doc = store.get_visible_document(conn, document_id)
+        if doc is None:
+            raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_document_owner(conn, doc)
+    finally:
+        conn.close()
+
+    ext = os.path.splitext(doc["filename"])[1].lower()
+    out = {
+        "documentId": document_id,
+        "filename": doc["filename"],
+        "mediaKind": "pdf" if ext == ".pdf" else "text",
+        "preview": _PREVIEW_MODES.get(ext, "source"),
+        "text": None,
+        "editable": False,
+        "truncated": False,
+        "readOnlyReason": None,
+        # The line ending the editor must restore on save; see _newline_style.
+        "newline": "\n",
+    }
+    if ext == ".pdf":
+        # Rendered from the signed file URL by pdf.js, so no text is sent here.
+        out["readOnlyReason"] = "PDFs are shown as the original document and cannot be edited here."
+        return out
+
+    stored_path = doc.get("stored_path")
+    if not stored_path or not os.path.isfile(stored_path):
+        raise HTTPException(status_code = 404, detail = "Document file not available")
+    # Same uploads-root confinement as the signed file route: a stored_path that
+    # escaped the managed root is never read, let alone written.
+    if not _is_managed_preview_path(stored_path):
+        raise HTTPException(status_code = 403, detail = "Forbidden")
+
+    try:
+        out["text"], faithful = _document_text(stored_path, ext)
+    except Exception as exc:  # noqa: BLE001 - a broken file is a preview failure, not a 500
+        logger.warning("failed to read document %s for preview", document_id, exc_info = True)
+        raise HTTPException(
+            status_code = 422, detail = f"Could not read this document ({exc})"
+        ) from exc
+
+    if ext not in _EDITABLE_EXTS:
+        out["truncated"] = not faithful
+        # An empty document reads back faithfully empty, so nothing-and-unfaithful is the
+        # archive that was too large to unpack rather than a document with no words in it.
+        out["readOnlyReason"] = (
+            "This Word document is too large to preview here."
+            if not faithful and not out["text"]
+            else "Word documents are shown as the text indexed and cannot be edited here."
+        )
+    elif doc.get("linked_folder_id"):
+        # Editing the snapshot would be undone by the next folder sync, and the
+        # original in the user's folder is never written to. So: display only.
+        out["readOnlyReason"] = (
+            "This source is synced from a linked folder, so it is read-only here. "
+            "Edit the file in the folder instead."
+        )
+    elif doc.get("status") in ("pending", "running"):
+        out["readOnlyReason"] = "This source is still indexing."
+    elif not faithful:
+        # Either cut off at the cap or holding a byte that is not valid UTF-8.
+        # Saving back what is on screen would destroy whatever did not survive
+        # the trip, so it is shown and not editable.
+        out["truncated"] = True
+        out["readOnlyReason"] = (
+            "This file cannot be edited here: it is too large or is not valid UTF-8 text."
+        )
+    elif (newline := _newline_style(out["text"])) is None:
+        # The editor works in LF and restores one convention on save, which a file using
+        # several cannot survive: saving it back would rewrite line endings the user never
+        # touched, the same reason a lossy decode above is read-only.
+        out["readOnlyReason"] = (
+            "This file mixes line endings, so editing it here would rewrite them."
+        )
+    else:
+        out["editable"] = True
+        out["newline"] = newline
+    return out
+
+
+def _release_replacement_claim(document_id: str) -> None:
+    """Undo the claim when the replacement never started.
+
+    Best-effort: the alternative to a failed release is a source stuck reading as
+    indexing, which is worse than a logged warning.
+    """
+    try:
+        conn = _rag_connection()
+        try:
+            conn.execute(
+                "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
+                (document_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - the caller is already raising
+        logger.warning("failed to release edit claim on %s", document_id, exc_info = True)
+
+
+class UpdateDocumentContentRequest(BaseModel):
+    # Characters, which bound the request cheaply; the byte length that actually
+    # governs what may be written is checked against the cap below, since one
+    # character can encode to four bytes.
+    text: str = Field(max_length = _MAX_TEXT_EDIT_BYTES)
+
+
+@router.put("/documents/{document_id}/content")
+def update_document_content(
+    document_id: str,
+    payload: UpdateDocumentContentRequest,
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    """Save an edited source and re-index it, returning the replacement document.
+
+    The edit is written to a *new* file in the managed uploads root and ingested as
+    a replacement, never over the existing one. The document it replaces is retired
+    by the ingestion worker only once the re-index completes, so a parse or embed
+    failure leaves the original searchable rather than destroying it. Files outside
+    the uploads root -- every original the user linked or dragged in -- are never
+    opened for writing.
+    """
+    _require_rag()
+    conn = _rag_connection()
+    try:
+        doc = store.get_visible_document(conn, document_id)
+        if doc is None:
+            raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_document_owner(conn, doc)
+    finally:
+        conn.close()
+
+    if doc.get("linked_folder_id"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Linked-folder documents are managed by folder synchronization",
+        )
+    ext = os.path.splitext(doc["filename"])[1].lower()
+    if ext not in _EDITABLE_EXTS:
+        raise HTTPException(status_code = 400, detail = f"'{ext}' documents cannot be edited")
+    if doc.get("status") in ("pending", "running"):
+        # An ingestion worker is reading the current file and will write this
+        # document's rows; replacing it underneath would race that job.
+        raise HTTPException(status_code = 409, detail = "This source is still indexing")
+    old_path = doc.get("stored_path")
+    if not old_path or not os.path.isfile(old_path):
+        raise HTTPException(status_code = 404, detail = "Document file not available")
+    if not _is_managed_preview_path(old_path):
+        raise HTTPException(status_code = 403, detail = "Forbidden")
+
+    body = payload.text.encode("utf-8")
+    # max_length counts characters; this counts what actually lands on disk. A
+    # payload that passed the field check can still exceed the cap (one character
+    # encodes to up to four bytes), and saving it would produce a file the next
+    # GET has to truncate -- turning the source the user just saved read-only.
+    if len(body) > _MAX_TEXT_EDIT_BYTES:
+        raise HTTPException(
+            status_code = 413,
+            detail = f"Text exceeds the {_MAX_TEXT_EDIT_BYTES // 1024} KB edit limit.",
+        )
+
+    scope = doc["scope"]
+    _raise_if_scope_retired(scope, "The owner of this source is being deleted")
+
+    uploads = ensure_dir(rag_uploads_root())
+    stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
+    with open(stored_path, "wb") as handle:
+        handle.write(body)
+    try:
+        with folder_sync.scope_lock(scope):
+            _raise_if_scope_retired(scope, "The owner of this source is being deleted")
+            # An ordinary upload dedupes by content hash, so a scope never holds the same
+            # bytes twice. A replacement cannot go through that path -- start_ingestion's
+            # dedupe branch owns `replaces` and its early return would drop it -- so saving
+            # this source into another one's exact bytes would index the same content under
+            # two documents, and retrieval (which dedupes only by chunk id) would return
+            # both copies. Refused rather than silently merged: the two sources keep their
+            # own names, and quietly retiring the one being edited would make it vanish
+            # into a file the user did not open.
+            #
+            # Inside the scope lock, which is what makes it hold: outside it, two clients
+            # editing two different sources to the same new bytes both see no twin, then
+            # admit one after the other and index the content twice. The lock is the same
+            # one start_ingestion's admission runs under, so a losing writer sees the
+            # winner's row.
+            conn = _rag_connection()
+            try:
+                twin = store.document_by_hash(conn, scope, hashlib.sha256(body).hexdigest())
+            finally:
+                conn.close()
+            if twin is not None and twin != document_id:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "This edit would make the source identical to another one in this "
+                        "project."
+                    ),
+                )
+            with _rag_unavailable_as_503(stored_path):
+                # The claim on the source lives inside start_ingestion's admission
+                # transaction, alongside the replacement row that records what it is
+                # waiting for -- the status read above came from a closed connection, so
+                # it cannot serialize two saves on its own, and claiming here instead
+                # would leave the claim committed and unexplained if this process died
+                # before the row existed. A second concurrent save matches no row there
+                # and arrives as ReplacementClaimUnavailable.
+                try:
+                    new_id, job_id = ingestion.start_ingestion(
+                        scope,
+                        doc.get("kb_id"),
+                        doc.get("thread_id"),
+                        # Same scope columns and same filename: the replacement is
+                        # the same source, so retrieval keeps finding it where it
+                        # was.
+                        doc["filename"],
+                        stored_path,
+                        project_id = doc.get("project_id"),
+                        dedupe = False,
+                        replaces = (document_id, old_path),
+                    )
+                except ingestion.ReplacementClaimUnavailable as exc:
+                    # Lost the race: the claim was never taken, so there is nothing to
+                    # release and the winner's save is untouched.
+                    raise HTTPException(status_code = 409, detail = str(exc)) from exc
+                except Exception:
+                    # Past the admission transaction (a worker that could not start), so
+                    # the claim is committed and only this can hand it back.
+                    _release_replacement_claim(document_id)
+                    raise
+    except Exception:
+        _remove_stored_upload(stored_path)
+        raise
+    return {"documentId": new_id, "jobId": job_id, "filename": doc["filename"]}
