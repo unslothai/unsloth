@@ -48,15 +48,21 @@ export const BUDGET = {
   // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
   // together instead of each dragging main red on its own.
   //
-  // That is the re-measure. raw ran out first and main is red on its own: at 5fbbd61e6f main
+  // That is the re-measure. raw ran out first and main went red on its own: at 5fbbd61e6f main
   // measures 5,377.2 KB raw / 1,607.9 KB transfer, 6.1 KB past the raw ceiling, with nothing
-  // on a branch to blame. Both halves move together as the note above intended, to the same
-  // 4.1% headroom: 5,730,000 leaves 218.5 KB raw and 1,715,000 leaves 66.9 KB transfer.
+  // on a branch to blame. #10974 then bought main back with +10,000 bytes, to 5,502,720
+  // measured against a 5,510,000 ceiling: 7.1 KB of room, which is one locale string. That is
+  // the pattern this replaces rather than repeats.
   //
-  // Nothing became eager again. The eager chunk set is still 84 chunks with the same members
-  // and the same top five, so there is still nothing here to lazy-load; the raw total grew
-  // inside chunks that were already eager. Measured on one machine, one build per side, so
-  // the two numbers are comparable to each other rather than to a CI runner's.
+  // Both halves move together as the note above intended, to the same 4.1% headroom:
+  // 5,730,000 leaves 222.0 KB raw over #10974's measurement, and 1,715,000 leaves 66.9 KB
+  // transfer.
+  //
+  // Nothing became eager again. The eager set gained one chunk over the window, 84 to 85, and
+  // kept the same top five, so there is still nothing here to lazy-load; the raw total grew
+  // inside chunks that were already eager, the locale messages most of all. Measured on one
+  // machine, one build per side, so the two numbers are comparable to each other rather than
+  // to a CI runner's.
   transferBytes: 1_715_000,
   rawBytes: 5_730_000,
 };

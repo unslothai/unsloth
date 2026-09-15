@@ -679,6 +679,7 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry
           python tests/studio/playwright_image_download_cancel_retry.py
+          PW_DOWNLOAD_ONLY=1 PW_ART_DIR="$PW_ART_DIR/download-only" python tests/studio/playwright_image_download_cancel_retry.py
 
       # Same drive with the checkpoint absent, so the plan stages two entries instead of one and
       # the queue's ordering and cancellation are covered as well as the single-entry path.
@@ -692,6 +693,19 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
+          PW_DOWNLOAD_ONLY=1 PW_ART_DIR="$PW_ART_DIR/download-only" python tests/studio/playwright_image_download_cancel_retry.py
+
+      - name: Image download queue regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_download_queue
+        run: |
+          PW_ART_DIR="$PW_ART_DIR/queue" python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/load" PW_LOAD_SECOND=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-plan" PW_LOAD_SECOND=1 PW_HOLD_FIRST_PLAN=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-filename" PW_RESOLVE_FIRST=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-quant" PW_LOAD_SECOND=1 PW_HOLD_FIRST_PLAN=1 PW_DIFFERENT_QUANT=1 python tests/studio/playwright_image_download_queue.py
 
       # The Text encoder precision control: what the select sends to the plan and to the load, that
       # Default omits the field entirely, that a refresh race cannot leave a stale reading, and that
@@ -903,6 +917,7 @@ jobs:
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
+            logs/playwright_image_download_queue
             logs/playwright_image_text_encoder
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
