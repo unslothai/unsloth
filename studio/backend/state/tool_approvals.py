@@ -10,12 +10,18 @@ Each gated call is identified by a unique ``approval_id`` (minted with ``new_app
 The slot is registered with ``begin_tool_decision`` *before* the loop yields ``tool_start``, closing the race where a fast confirmation (or an auto "Always allow") could arrive before the waiter exists. ``wait_tool_decision`` then blocks and cleans up its own slot.
 """
 
+import os
 import secrets
 import threading
 from typing import Optional
 
 # Generous ceiling so a user can deliberate; the stop button or a disconnect still breaks the wait early via cancel_event.
 _DECISION_TIMEOUT = 3600.0
+
+# How long a durable (parked) approval waits for a human before denying and letting the agent continue.
+# 0 denies immediately (fully autonomous). Default is generous enough for "grab your phone" but short
+# enough that an unattended agentic loop doesn't stall for the full lease window.
+_PARK_TIMEOUT_S = float(os.environ.get("UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S", "300"))
 
 # Fed to the model as the tool result when the user denies a call, so it can adapt instead of the turn ending abruptly.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
@@ -48,14 +54,16 @@ def wait_tool_decision(
     cancel_event = None,
     timeout = _DECISION_TIMEOUT,
 ):
-    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. Always removes its own slot on exit."""
+    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. A durable run's cancel_event is never set on a browser disconnect, so a parked gate does NOT auto-deny at the 3600s ceiling; instead it denies at the shorter park timeout (default 300s, ``UNSLOTH_STUDIO_TOOL_APPROVAL_TIMEOUT_S``) so an unattended agent adapts and continues. An explicit Stop still denies immediately. Always removes its own slot on exit."""
+    park = bool(getattr(cancel_event, "durable", False))
+    effective_timeout = _PARK_TIMEOUT_S if park else timeout
     try:
         waited = 0.0
         while not slot["event"].wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return "deny"
             waited += 0.5
-            if waited >= timeout:
+            if waited >= effective_timeout:
                 return "deny"
         return slot["decision"] or "deny"
     finally:
