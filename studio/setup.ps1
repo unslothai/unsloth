@@ -234,6 +234,30 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
+# ── Helper: is a conda environment ACTIVE in this session? ──
+# Mirrors install.ps1. CONDA_PREFIX is what `conda activate` and the Anaconda Prompt set,
+# and it is the only signal that separates "conda is installed" from "we are running inside
+# one of its environments".
+function Test-ActiveCondaEnvironment {
+    foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
+        if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
+    }
+    return $false
+}
+
+# The position a PERSISTENT PATH write may actually use. A prepend writes an ordering into
+# the registry that outlives the conda activation it was made under, so from the next shell
+# on our directory sits ahead of the conda environment's own entries (#5871). Mirrors
+# install.ps1; the parity is asserted in tests/python/test_installer_conda_path_guard.py.
+function Resolve-UserPathPosition {
+    param(
+        [ValidateSet('Append','Prepend')]
+        [string]$Position = 'Append'
+    )
+    if ($Position -eq 'Prepend' -and (Test-ActiveCondaEnvironment)) { return 'Append' }
+    return $Position
+}
+
 # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
 function Add-ToUserPath {
     param(
@@ -242,6 +266,9 @@ function Add-ToUserPath {
         [string]$Position = 'Append'
     )
     if (Get-Variable -Name StageRoot -ValueOnly -ErrorAction SilentlyContinue) { return $false }
+    # Every persistent PATH write goes through Resolve-UserPathPosition, so an active conda
+    # environment cannot be demoted by any call site.
+    $Position = Resolve-UserPathPosition -Position $Position
     try {
         $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
         try {
