@@ -178,11 +178,11 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
             lines.setdefault(node.func.attr, node.lineno)
     assert "close_dynamo_import_window" in lines, "the load path never closes the dynamo window"
     for consumer in (
-        "hidream_te4_kwargs",   # FP8 text-encoder cast -> diffusion_precision -> diffusers.hooks
-        "apply_step_cache",     # diffusion_cache -> diffusers.hooks
-        "begin",                # compile_cache.begin -> the compile stack
-        "apply_speed_optims",   # reads torch._dynamo.config
-        "apply_memory_plan",    # offload -> diffusers.hooks
+        "hidream_te4_kwargs",  # FP8 text-encoder cast -> diffusion_precision -> diffusers.hooks
+        "apply_step_cache",  # diffusion_cache -> diffusers.hooks
+        "begin",  # compile_cache.begin -> the compile stack
+        "apply_speed_optims",  # reads torch._dynamo.config
+        "apply_memory_plan",  # offload -> diffusers.hooks
     ):
         assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
         assert (
@@ -193,12 +193,11 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
     # module in diffusers.hooks evaluates @torch.compiler.disable() at class-body time.
     src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8").splitlines()
     first_diffusers = next(
-        n for n, line in enumerate(src, 1)
-        if line.strip() == "import diffusers" and n > body.lineno
+        n for n, line in enumerate(src, 1) if line.strip() == "import diffusers" and n > body.lineno
     )
-    assert lines["close_dynamo_import_window"] < first_diffusers, (
-        "the pre-import runs after `import diffusers`, which triggers the dynamo import itself"
-    )
+    assert (
+        lines["close_dynamo_import_window"] < first_diffusers
+    ), "the pre-import runs after `import diffusers`, which triggers the dynamo import itself"
 
 
 def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports():
@@ -214,7 +213,8 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
     # A call to assert_pipeline_class_available counts: it closes the window itself, ahead of its
     # own `import diffusers`, so an import below one is already protected.
     guards = [
-        n for n, line in enumerate(src, 1)
+        n
+        for n, line in enumerate(src, 1)
         if "close_dynamo_import_window(" in line
         or ("assert_pipeline_class_available(" in line and "import" not in line)
     ]
@@ -222,13 +222,13 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
     assert imports, "video.py no longer imports diffusers; re-check this test"
     assert guards, "the video path never closes the dynamo window"
     for imp in imports:
-        assert any(g < imp for g in guards), (
-            f"`import diffusers` at video.py:{imp} has no dynamo guard above it"
-        )
+        assert any(
+            g < imp for g in guards
+        ), f"`import diffusers` at video.py:{imp} has no dynamo guard above it"
         # Above it in the same block, not merely somewhere earlier in a 6000-line file.
-        assert imp - max(g for g in guards if g < imp) < 40, (
-            f"the guard for video.py:{imp} is too far above it to be the one protecting it"
-        )
+        assert (
+            imp - max(g for g in guards if g < imp) < 40
+        ), f"the guard for video.py:{imp} is too far above it to be the one protecting it"
 
 
 def test_the_pipeline_class_probe_closes_the_window_itself():
@@ -240,21 +240,29 @@ def test_the_pipeline_class_probe_closes_the_window_itself():
     preflight (_assert_family_pipeline_available -> DiffusionLoraConfig.normalized). Guarding it
     once here covers every caller, including any added later, which chasing call sites does not.
     """
-    tree = ast.parse((_BACKEND / "core/inference/diffusion_families.py").read_text(encoding = "utf-8"))
+    tree = ast.parse(
+        (_BACKEND / "core/inference/diffusion_families.py").read_text(encoding = "utf-8")
+    )
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "assert_pipeline_class_available"
     )
     guard = next(
-        (n.lineno for n in ast.walk(fn)
-         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-         and n.func.id == "close_dynamo_import_window"),
+        (
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "close_dynamo_import_window"
+        ),
         None,
     )
     assert guard is not None, "the pipeline-class probe never closes the dynamo window"
 
     imports = [
-        n.lineno for n in ast.walk(fn)
+        n.lineno
+        for n in ast.walk(fn)
         if isinstance(n, ast.Import) and any(a.name == "diffusers" for a in n.names)
     ]
     assert imports, "assert_pipeline_class_available no longer imports diffusers"
@@ -270,9 +278,9 @@ def test_every_request_thread_entry_point_reaches_that_probe():
         ("core/training/diffusion_train_common.py", "training preflight"),
     ):
         src = (_BACKEND / rel).read_text(encoding = "utf-8")
-        assert "assert_pipeline_class_available(" in src, (
-            f"{caller} ({rel}) no longer routes through the guarded probe; it needs its own guard"
-        )
+        assert (
+            "assert_pipeline_class_available(" in src
+        ), f"{caller} ({rel}) no longer routes through the guarded probe; it needs its own guard"
 
 
 def test_load_failure_is_logged_with_a_traceback():
