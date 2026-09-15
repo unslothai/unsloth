@@ -47,10 +47,12 @@ def _resident(engine, repo_id = "org/model"):
     engine._state = SimpleNamespace(repo_id = repo_id)
 
 
-def _background_load(engine, account_id, repo_id = "org/other"):
-    engine._loading = _LoadingState(
-        repo_id = repo_id, base_repo = repo_id, account_id = account_id
-    )
+def _background_load(
+    engine,
+    account_id,
+    repo_id = "org/other",
+):
+    engine._loading = _LoadingState(repo_id = repo_id, base_repo = repo_id, account_id = account_id)
 
 
 def _pending_invocation(engine, account_id):
