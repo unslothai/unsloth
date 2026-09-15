@@ -1121,7 +1121,9 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     )
     # `install -d` / `mkdir -p` style: every positional is a directory being CREATED.
     directory_mode = command == "install" and any(
-        arg == "-d" or arg == "--directory" or (arg.startswith("-") and not arg.startswith("--") and "d" in arg.lstrip("-"))
+        arg == "-d"
+        or arg == "--directory"
+        or (arg.startswith("-") and not arg.startswith("--") and "d" in arg.lstrip("-"))
         for arg in args
     )
     skip = _PATH_ARG_SKIP.get(command, 0)
@@ -1173,9 +1175,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         if dest_last:
             # `install -d DIRECTORY...` creates every operand (`install --help`), so there is no
             # source to distinguish and the "more than one positional" rule does not apply.
-            writing = directory_mode or (
-                position == len(positionals) - 1 and len(positionals) > 1
-            )
+            writing = directory_mode or (position == len(positionals) - 1 and len(positionals) > 1)
         else:
             # `creating and position == 0` is the LEGACY form, `tar cf out.tar src`, where the
             # archive occupies the first positional. With `-f` the archive arrived as a flag value
