@@ -8445,21 +8445,21 @@ def _loaded_satisfies(requested: str) -> bool:
             )
             if candidate
         ]
-        # The whole id too: an Ollama tag (":latest") is part of the name, not a quant suffix.
-        whole_id_matched = _matches_any(requested, candidates)
-        if not whole_id_matched and not _matches_any(base, candidates):
-            return False
         identifier = getattr(llama_backend, "model_identifier", None)
-        if (
-            identifier
-            and is_ollama_manifest_ref(identifier)
-            and not _resident_is_still_tagged(identifier, llama_backend)
-        ):
+        if identifier and is_ollama_manifest_ref(identifier):
+            # A re-pull keeps a spelling and replaces its blobs: only the loaded tag answers by name.
+            if not _resident_is_still_tagged(identifier, llama_backend):
+                return False
+            own = [identifier, ollama_model_ref_public_id(identifier)]
+            if _matches_any(requested, own):
+                return True
+            if _matches_any(base, own):
+                # The tag itself is the whole name, so a quant suffix on top of it names nothing.
+                return not looks_like_quant(variant)
+            return _ollama_request_is_resident(requested, llama_backend)
+        if not _matches_any(requested, candidates) and not _matches_any(base, candidates):
             return False
-        # A quant-shaped tag matched whole names one file, so a manifest resident has none to check.
-        if (whole_id_matched and is_ollama_manifest_ref(identifier or "")) or not looks_like_quant(
-            variant
-        ):
+        if not looks_like_quant(variant):
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
     backend = get_inference_backend()
@@ -8612,6 +8612,27 @@ def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
     return bool(source and source == loaded)
 
 
+def _ollama_request_is_resident(requested: str, llama_backend) -> bool:
+    """Whether *requested*'s blobs are the resident ones. Reads the built index, never a scan."""
+    identifier = getattr(llama_backend, "model_identifier", None)
+    if not identifier or not is_ollama_manifest_ref(identifier):
+        return False
+    if is_ollama_manifest_ref(requested):
+        return _resident_is_still_tagged(requested, llama_backend)
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    try:
+        load_path = (resolve_local_gguf(requested, allow_scan = False) or (None,))[0]
+    except Exception as e:
+        logger.debug("inference.ollama_alias_resolve_failed: %s", e)
+        return False
+    return bool(
+        load_path
+        and is_ollama_manifest_ref(load_path)
+        and _resident_is_still_tagged(load_path, llama_backend)
+    )
+
+
 def _resolves_to_resident(
     load_path: Optional[str],
     *,
@@ -8682,6 +8703,28 @@ def _classify_and_probe_residency(
 
     is_gguf = local_target_is_gguf(load_path, alias)
     return is_gguf, _resolves_to_resident(load_path, llama_only = llama_only, exact_only = not is_gguf)
+
+
+def _validated_target_is_resident(
+    request: "ValidateModelRequest",
+    *,
+    model_identifier: str,
+    config,
+    is_gguf: bool,
+    native_grant_backed: bool,
+) -> bool:
+    """Whether the artifact this validation resolved -- not the spelling asked for -- is loaded.
+
+    A lease picks the file and a variant the quant, so ``model_path`` names neither.
+    """
+    if is_ollama_manifest_ref(request.model_path):
+        return _resolves_to_resident(request.model_path, llama_only = is_gguf)
+    if native_grant_backed or not is_gguf:
+        target = model_identifier
+    else:
+        from hub.utils.gguf import resolve_local_gguf_path
+        target = config.gguf_file or resolve_local_gguf_path(model_identifier, request.gguf_variant)
+    return _resolves_to_resident(target, llama_only = is_gguf, exact_only = True)
 
 
 def _innermost_indexed_owner(path: str) -> Optional[str]:
@@ -9260,13 +9303,13 @@ async def _maybe_auto_switch_model(
             advertised = getattr(backend, "_openai_advertised_id", None)
             if advertised:
                 loaded_keys.add(advertised.lower())
-            if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
-                return False
-            # An Ollama tag is mutable: after a re-pull the id still matches, the weights do not.
             if ollama_target:
+                # The blobs, not the keys: an alias shares no spelling with the resident tag.
                 loaded_source = _blob_identity(getattr(backend, "_gguf_load_identity", None))
                 if not ollama_source_identity or loaded_source != ollama_source_identity:
                     return False
+            elif loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+                return False
             loaded_companion_roots = tuple(
                 getattr(backend, "_openai_gguf_companion_roots", ()) or ()
             )
@@ -16324,6 +16367,14 @@ async def validate_model(
             valid = True,
             message = "Model identifier is valid.",
             identifier = model_log_label if native_grant_backed else config.identifier,
+            resident = await asyncio.to_thread(
+                _validated_target_is_resident,
+                request,
+                model_identifier = model_identifier,
+                config = config,
+                is_gguf = is_gguf,
+                native_grant_backed = native_grant_backed,
+            ),
             display_name = model_log_label
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
@@ -26918,12 +26969,13 @@ def _openai_model_objects() -> list[dict]:
 
     # Check GGUF backend
     llama_backend = get_llama_cpp_backend()
-    # Claiming a re-pulled tag would displace the scanned row holding its current weights.
+    # Claiming a re-pulled tag would displace the scanned row holding its weights, and the id
+    # about to be published is not always the tag the load recorded: an alias is its own name.
     _resident_identifier = getattr(llama_backend, "model_identifier", None) or ""
     _stale_ollama_resident = (
         llama_backend.is_loaded
         and is_ollama_manifest_ref(_resident_identifier)
-        and not _resident_is_still_tagged(_resident_identifier, llama_backend)
+        and not _loaded_satisfies(_llama_public_model_id(llama_backend))
     )
     if llama_backend.is_loaded and not _stale_ollama_resident:
         # Advertise the repo id an auto-switch load recorded, not the concrete
@@ -27511,7 +27563,16 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
             # The source path, not the resolved load dir: an HF repo's snapshot pointer can
             # move within the catalog's lifetime, and a cached snapshot path would then
             # report a freshly loaded model as unloaded. Residency resolves it per call.
-            scanned.append((info, is_gguf, quants, getattr(info, "path", None)))
+            # An Ollama row's path is the blob a read-only scan found, and only its tag is judged.
+            row_id = getattr(info, "id", None)
+            scanned.append(
+                (
+                    info,
+                    is_gguf,
+                    quants,
+                    row_id if is_ollama_manifest_ref(row_id or "") else getattr(info, "path", None),
+                )
+            )
         if catalog_at is not None:
             # The generation read BEFORE the scan, not after: an invalidation that
             # landed while the scan ran would otherwise be stamped in as if the scan

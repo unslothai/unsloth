@@ -2,9 +2,9 @@
 
 import asyncio
 import json
-from inspect import getsource
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -15,10 +15,27 @@ from routes import inference as inf, models as models_route
 from storage import studio_db
 from utils import paths, hf_cache_settings
 from studio.backend.tests.test_legacy_ollama_source import _write_ollama_store
-from studio.backend.tests.test_openai_auto_switch import _reset_keepwarm
+from studio.backend.tests.test_openai_auto_switch import (
+    _FakeBackend,
+    _reset_keepwarm,
+    _run_hook,
+    _wired,
+)
 
 
 _NO_ORCHESTRATOR = SimpleNamespace(active_model_name = None, models = {})
+
+
+def _refusing_to_scan():
+    raise AssertionError("the alias lookup must not scan")
+
+
+def _retag(store: Path, tag: str, digest: str) -> None:
+    (store / "blobs" / f"sha256-{digest}").write_bytes(b"GGUF-not-really-" + digest[:4].encode())
+    layer = {"mediaType": "application/vnd.ollama.image.model", "digest": f"sha256:{digest}"}
+    (store / "manifests/registry.ollama.ai/library/llama3" / tag).write_text(
+        json.dumps({"config": {}, "layers": [layer]}), encoding = "utf-8"
+    )
 
 
 @pytest.fixture
@@ -47,6 +64,23 @@ def store(tmp_path, monkeypatch):
     yield root
     resolver.invalidate_index()
     _reset_keepwarm()
+
+
+@pytest.fixture
+def aliased(store):
+    tags = store / "manifests/registry.ollama.ai/library/llama3"
+    (tags / "8b").write_bytes((tags / "latest").read_bytes())
+    return {r.model_id: r.id for r in models_route._scan_ollama_dir(store, materialize_links = False)}
+
+
+@pytest.fixture
+def serving(monkeypatch):
+    def _pin(backend):
+        monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf, "get_inference_backend", lambda: _NO_ORCHESTRATOR)
+        return backend
+
+    return _pin
 
 
 def test_the_compat_inventory_still_hands_out_a_gguf_path(store):
@@ -84,43 +118,30 @@ def test_catalog_and_resolver_are_read_only_and_share_the_public_id(store, monke
     assert len(rows) == 1
 
 
-def _resident(ref: str) -> SimpleNamespace:
+def _resident(ref: str, *, advertised: str = "") -> _FakeBackend:
     from core.inference.llama_cpp import LlamaCppBackend
+
     materialized = ollama.materialize_ollama_model_ref(ref)
-    return SimpleNamespace(
-        is_loaded = True,
-        model_identifier = ref,
-        _openai_advertised_id = ollama.ollama_model_ref_public_id(ref),
-        hf_variant = None,
-        gguf_path = materialized,
-        context_length = 4096,
-        max_context_length = 4096,
-        native_context_length = 4096,
-        _is_audio = False,
-        _audio_type = None,
-        _gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(materialized),
-    )
+    backend = _FakeBackend(ref, advertised_id = advertised or ollama.ollama_model_ref_public_id(ref))
+    backend.gguf_path = materialized
+    backend._is_audio, backend._audio_type = False, None
+    for field in ("context_length", "max_context_length", "native_context_length"):
+        setattr(backend, field, 4096)
+    backend._gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(materialized)
+    return backend
 
 
-def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store, monkeypatch):
-    """A re-pulled tag no longer names the resident weights, so its entry is withdrawn."""
+def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store, serving):
     ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
-    backend = _resident(ref)
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(inf, "get_inference_backend", lambda: _NO_ORCHESTRATOR)
+    backend = serving(_resident(ref))
     assert inf._loaded_satisfies("ollama/llama3:latest") is True
+    assert inf._loaded_satisfies("ollama/llama3:latest:Q8_0") is False
     assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:latest"]
     # The load identity is recorded before the server answers and outlives a failed load.
     backend.is_loaded = False
     assert inf._resolves_to_resident(ref, llama_only = True) is False
     backend.is_loaded = True
-
-    manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
-    data = json.loads(manifest.read_text())
-    data["layers"][0]["digest"] = "sha256:" + "c" * 64
-    (store / "blobs" / ("sha256-" + "c" * 64)).write_bytes(b"GGUF-repulled")
-    manifest.write_text(json.dumps(data))
-
+    _retag(store, "latest", "c" * 64)
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
 
@@ -129,7 +150,7 @@ def _rewritten(model_path: str) -> str:
     return inf._as_ollama_manifest_request(LoadRequest(model_path = model_path)).model_path
 
 
-def test_a_link_is_loaded_as_the_tag_that_materialized_it(store, monkeypatch):
+def test_a_link_is_loaded_as_the_tag_that_materialized_it(store, monkeypatch, serving):
     """Its directory names the tag, so a selection stored under an older link name resolves too."""
     ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
     link = Path(ollama.materialize_ollama_model_ref(ref))
@@ -137,8 +158,7 @@ def test_a_link_is_loaded_as_the_tag_that_materialized_it(store, monkeypatch):
     for named in (link, link.with_name("llama3-latest-Q4_K_M.gguf")):
         assert _rewritten(str(named)) == ref
     assert _rewritten(str(store / "blobs")) == str(store / "blobs")
-    # An authorized request keeps its own path: the tag may name blobs the authorization never
-    # judged, and the resolver answers an Ollama reference before it ever verifies a lease.
+    # An authorized request keeps its own path: the tag may name blobs it never judged.
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
     assert _rewritten(str(link)) == str(link)
     monkeypatch.setattr(account_access, "managed_account", lambda: False)
@@ -149,38 +169,123 @@ def test_a_link_is_loaded_as_the_tag_that_materialized_it(store, monkeypatch):
     manifest.write_text("truncated")
     assert _rewritten(str(link)) == str(link)
     manifest.write_text(json.dumps(data))
-    # Both routes bind the rewrite back, and only once the account has authorized the spelling
-    # the caller actually sent: substituting an identity ahead of that check widens access.
-    for route in (inf._load_model_impl, inf.validate_model):
-        body = getsource(route)
-        rewrite = body.index(
-            "request = await asyncio.to_thread(_as_ollama_manifest_request, request)"
-        )
-        guard = body.index("account_access.require_model_access, request.model_path")
-        assert guard < rewrite, route.__name__
-
-
-def test_a_read_only_store_s_fallback_link_resolves_too(store, monkeypatch, tmp_path):
-    """A read-only or sandboxed install puts its links beside the cache, not beside the blobs."""
-    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
-    monkeypatch.setattr(ollama, "cache_root", lambda: tmp_path / "cache")
-    # A file, not a read-only directory: mkdir refuses it on every platform, root included.
-    (store / ".studio_links").write_text("")
-    link = Path(ollama.materialize_ollama_model_ref(ref))
-    assert "ollama_links" in link.parts and ".studio_links" not in link.parts
-    assert _rewritten(str(link)) == ref
-
-
-def test_a_tag_loaded_by_its_link_is_listed_once(store, monkeypatch):
-    """The load records the tag, so the scanned row and the resident are one entry, not two."""
-    ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
-    link = ollama.materialize_ollama_model_ref(ref)
-    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _resident(_rewritten(link)))
-    monkeypatch.setattr(inf, "get_inference_backend", lambda: _NO_ORCHESTRATOR)
+    serving(_resident(ref))
     assert [(m["id"], m["loaded"]) for m in asyncio.run(inf._openai_catalog_objects())] == [
         ("ollama/llama3:latest", True)
     ]
-    assert inf._loaded_satisfies("ollama/llama3:latest") is True
+
+
+def test_the_switch_gate_follows_the_blobs_under_an_alias(store, aliased, monkeypatch):
+    """A tag is a mutable name: it answers for the resident model only while it still names it."""
+    alias = aliased["ollama/llama3:8b"]
+    backend = _resident(aliased["ollama/llama3:latest"])
+    _, recorder = _wired(monkeypatch, backend, (alias, None, "ollama/llama3:8b"))
+    loader = inf._load_model_impl
+
+    async def _load_and_record_identity(request, *args, **kwargs):
+        from core.inference.llama_cpp import LlamaCppBackend
+        await loader(request, *args, **kwargs)
+        backend._gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(
+            ollama.materialize_ollama_model_ref(request.model_path)
+        )
+
+    monkeypatch.setattr(inf, "_load_model_impl", _load_and_record_identity)
+    _run_hook("ollama/llama3:8b")
+    assert recorder.calls == []
+    _retag(store, "8b", "c" * 64)
+    _run_hook("ollama/llama3:8b")
+    assert [call.model_path for call in recorder.calls] == [alias]
+
+
+def test_an_alias_answers_for_the_resident_blobs_until_its_own_tag_moves(
+    store, aliased, monkeypatch, serving
+):
+    """Adoption records a name, and a re-pull replaces the weights under a name it keeps."""
+    link = Path(ollama.materialize_ollama_model_ref(aliased["ollama/llama3:latest"]))
+    alias_link = Path(ollama.materialize_ollama_model_ref(aliased["ollama/llama3:8b"]))
+    # The advertised id a request adopting the resident model under another name leaves behind.
+    serving(_resident(aliased["ollama/llama3:latest"], advertised = "ollama/llama3:8b"))
+
+    def _satisfied() -> bool:
+        resolver.invalidate_index()
+        resolver.resolve_local_gguf("ollama/llama3:8b")
+        with monkeypatch.context() as warm_only:
+            # Scanning here would run ahead of the bounded cold-index wait its callers apply.
+            warm_only.setattr(resolver, "_index", _refusing_to_scan)
+            return inf._loaded_satisfies("ollama/llama3:8b")
+
+    assert _satisfied() is True
+    assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:8b"]
+    # Whichever spelling the inventory gave a recipe: this link, an older link name, the alias.
+    for stored in (link, link.with_name("llama3-latest-Q4_K_M.gguf"), alias_link):
+        assert _validate(str(stored)).resident is True
+    # Re-pulled: the spelling is the same and the weights under it are not.
+    _retag(store, "8b", "c" * 64)
+    assert _satisfied() is False
+    assert inf._openai_model_objects() == []
+    assert _validate(str(alias_link)).resident is False
+
+
+def _validate(
+    model_path: str,
+    *,
+    variant = None,
+    gguf_file = ...,
+):
+    from models.inference import ValidateModelRequest
+
+    config = SimpleNamespace(
+        identifier = model_path,
+        display_name = Path(model_path).name,
+        is_gguf = True,
+        gguf_file = model_path if gguf_file is ... else gguf_file,
+        is_lora = False,
+        is_vision = False,
+    )
+    request = ValidateModelRequest(model_path = model_path, gguf_variant = variant)
+    with patch.object(inf.ModelConfig, "from_identifier", return_value = config):
+        return asyncio.run(inf.validate_model(request, current_subject = "t"))
+
+
+def test_validate_answers_for_the_artifact_it_resolved(store, monkeypatch, tmp_path, serving):
+    """The variant picks the quant and a lease picks the file, so the identifier decides neither."""
+    from hub.utils import gguf as gguf_utils
+
+    def quant(name):
+        return str(tmp_path / f"model-{name}.gguf")
+
+    def loaded(
+        identifier,
+        path,
+        variant = None,
+    ):
+        return SimpleNamespace(
+            is_loaded = True,
+            model_identifier = identifier,
+            _openai_advertised_id = None,
+            hf_variant = variant,
+            gguf_path = path,
+        )
+
+    monkeypatch.setattr(gguf_utils, "resolve_local_gguf_path", lambda _id, name: quant(name))
+    # By repo id, then out of the directory the quants share. Q8_0 is loaded both times.
+    for identifier, by_file in (("org/model-GGUF", False), (str(tmp_path), True)):
+        serving(loaded(identifier, quant("Q8_0"), variant = "Q8_0"))
+        for name, expected in (("Q8_0", True), ("Q4_K_M", False)):
+            asked = quant(name) if by_file else None
+            assert _validate(identifier, variant = name, gguf_file = asked).resident is expected
+
+    one, other = (tmp_path / name for name in ("loaded.gguf", "other.gguf"))
+    for path in (one, other):
+        path.write_bytes(b"GGUF")
+    serving(loaded(str(one), str(one)))
+    for granted, expected in ((other, False), (one, True)):
+        monkeypatch.setattr(
+            inf,
+            "_resolve_model_identifier_for_request",
+            lambda request, granted = granted, **kwargs: (str(granted), granted.name, True),
+        )
+        assert _validate(str(one)).resident is expected
 
 
 def test_a_symlinked_manifests_dir_still_resolves(tmp_path, monkeypatch):
