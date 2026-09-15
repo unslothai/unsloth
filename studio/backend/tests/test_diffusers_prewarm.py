@@ -38,6 +38,24 @@ _BACKEND = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
+def restore_diffusers_modules():
+    """Put back every ``diffusers*`` entry this test disturbs.
+
+    The purge tests call the real ``purge_partial_import``, which evicts whatever ``diffusers``
+    submodules the session had already imported. monkeypatch cannot undo that: it only restores
+    keys it set itself, so the eviction leaks into later tests, which then rebuild a partial
+    diffusers and fail for reasons that have nothing to do with them.
+    """
+    saved = {name: mod for name, mod in sys.modules.items() if name.split(".")[0] == "diffusers"}
+    try:
+        yield
+    finally:
+        for name in [n for n in sys.modules if n.split(".")[0] == "diffusers"]:
+            del sys.modules[name]
+        sys.modules.update(saved)
+
+
+@pytest.fixture
 def warm(monkeypatch):
     """``utils.torch_warmup`` with the prewarm latch reset, so each test starts cold."""
     from utils import torch_warmup
@@ -298,7 +316,7 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
     assert "import" in order and order.index("import") > 2
 
 
-def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch):
+def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch, restore_diffusers_modules):
     """The failure this prewarm adds that the loader did not have.
 
     When ``diffusers/__init__.py`` raises, CPython evicts only the parent and keeps every
@@ -334,7 +352,7 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch):
     ), "a failed prewarm left submodules behind for the load path to trip over"
 
 
-def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monkeypatch):
+def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monkeypatch, restore_diffusers_modules):
     """Releasing between the failed import and the purge is the whole bug.
 
     CPython drops the ``diffusers`` module lock the moment ``__init__`` raises. A request already
@@ -383,7 +401,7 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monk
     )
 
 
-def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm, monkeypatch):
+def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm, monkeypatch, restore_diffusers_modules):
     """The half of the failure the parent purge cannot reach.
 
     ``import diffusers`` and ``import diffusers.hooks`` are two imports and either can fail. When
