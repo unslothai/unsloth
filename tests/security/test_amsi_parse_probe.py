@@ -422,7 +422,12 @@ def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Pa
     ("label", "base_result", "base_control", "expect"),
     [
         ("base compiled the same file", _COMPILED, True, "This change introduced it"),
-        ("base was refused for the same file", _BLOCKED, True, "pre-existing rather than introduced"),
+        (
+            "base was refused for the same file",
+            _BLOCKED,
+            True,
+            "pre-existing rather than introduced",
+        ),
         ("base row is not validly measured", _COMPILED, False, "cannot be said from this run"),
         ("base did not compile the same file", _SYNTAX, True, "cannot be said from this run"),
     ],
@@ -439,9 +444,9 @@ def test_causality_is_decided_per_script_and_only_against_a_valid_base(
     """
     rows = (
         "@("
-        + _row("base", "install.ps1", control=base_control, result=base_result)
+        + _row("base", "install.ps1", control = base_control, result = base_result)
         + ", "
-        + _row("head", "install.ps1", control=True, result=_BLOCKED)
+        + _row("head", "install.ps1", control = True, result = _BLOCKED)
         + ")"
     )
     code, text = _run_verdict(tmp_path, rows)
@@ -454,11 +459,11 @@ def test_a_block_on_a_different_base_script_is_not_called_pre_existing(tmp_path:
     install.ps1, and the run announced the install.ps1 block as pre-existing."""
     rows = (
         "@("
-        + _row("base", "setup.ps1", control=True, result=_BLOCKED)
+        + _row("base", "setup.ps1", control = True, result = _BLOCKED)
         + ", "
-        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
         + ", "
-        + _row("head", "install.ps1", control=True, result=_BLOCKED)
+        + _row("head", "install.ps1", control = True, result = _BLOCKED)
         + ")"
     )
     code, text = _run_verdict(tmp_path, rows)
