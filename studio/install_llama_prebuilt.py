@@ -2694,10 +2694,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         except OSError:
             pass
 
-    # What nvidia-smi could not say, the driver's own libraries can: absent from PATH,
-    # a stale copy, a timeout or a non-zero exit all left driver_cuda_version unset, and
-    # "runnable by this driver=none" then sent a CUDA host to a source build or the CPU.
-    # NVML lists the physical inventory as nvidia-smi does, so the mask is applied here.
+    # What nvidia-smi could not say (absent, stale, hung, non-zero exit), the driver's own
+    # libraries can. NVML is the physical inventory, like nvidia-smi, so the mask applies.
     if (is_linux or is_windows) and (
         not has_physical_nvidia or driver_cuda_version is None or not physical_compute_caps
     ):

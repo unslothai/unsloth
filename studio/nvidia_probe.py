@@ -3,25 +3,17 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """NVIDIA inventory read from the driver's own libraries, for a host nvidia-smi cannot answer for.
 
-The installers ask nvidia-smi three questions: is there a GPU, what compute capability, and
-what CUDA version does the driver carry. Every "no GPU" here is fatal to the install, so an
-absent nvidia-smi (a container with only the driver libraries mounted, a snap, a Windows box
-with the utility off PATH), a stale copy on PATH, or a localized banner all read as a CPU
-host. Ollama, Jan and lemonade ask NVML or the CUDA driver API instead, which ship with the
-driver itself and never with a utility package.
+An absent, stale or hanging nvidia-smi read as a CPU host, which is fatal to the install.
+Ollama, Jan and lemonade ask NVML or the CUDA driver API instead, which ship with the driver.
 
-Two sources, in order:
+* NVML (`libnvidia-ml.so.1` / `nvml.dll`): the PHYSICAL inventory, unmasked like nvidia-smi;
+  the caller applies CUDA_VISIBLE_DEVICES.
+* the CUDA driver API (`libcuda.so.1` / `nvcuda.dll`): honours the mask; used when NVML is
+  unavailable.
 
-* NVML (`libnvidia-ml.so.1` / `nvml.dll`): the same library nvidia-smi is a client of, so
-  the inventory is the PHYSICAL one and ignores CUDA_VISIBLE_DEVICES exactly as nvidia-smi
-  does. The caller applies the mask, as it does to nvidia-smi rows.
-* the CUDA driver API (`libcuda.so.1` / `nvcuda.dll`): honours the mask, so an emptied one
-  reads as no devices. Only consulted when NVML is unavailable.
-
-The probe always runs in a child process with a deadline: these libraries block in-process
-in exactly the states that make nvidia-smi hang, and a hung installer is worse than a wrong
-one. When even that fails, `/proc/driver/nvidia/version` still names the driver, and the
-driver major bounds the CUDA major (CUDA 13 needs R580+, CUDA 12 R525+, CUDA 11 R450+).
+Always a child process with a deadline: these libraries block in-process in the states that
+hang nvidia-smi. Failing both, `/proc/driver/nvidia/version` names the driver, and the driver
+major bounds the CUDA major (13 needs R580+, 12 R525+, 11 R450+).
 """
 
 from __future__ import annotations
@@ -214,8 +206,7 @@ def _from_payload(payload: object) -> NvidiaLibraryInventory | None:
 def enabled() -> bool:
     """UNSLOTH_NVIDIA_LIBRARY_PROBE=0 turns every source here off, the /proc bound included.
 
-    The test suites set it: a test that hides nvidia-smi to fake a CPU host would otherwise
-    find the real GPUs, or the real driver release, through here.
+    The test suites set it, so a test faking a CPU host does not find the real GPUs here.
     """
     return os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") != "0"
 

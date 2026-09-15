@@ -3567,9 +3567,8 @@ def _detect_cuda_torch_index_url() -> str:
             continue
         tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
-    # No nvidia-smi answered. The driver libraries carry the same version (and the SMs), and
-    # on Linux the kernel module's release still bounds it; defaulting to cu126 here is what
-    # handed Blackwell hosts a wheel with no kernels.
+    # No nvidia-smi: the driver libraries carry the same version and SMs, and on Linux the
+    # kernel module's release bounds it. Defaulting to cu126 gave Blackwell a kernel-less wheel.
     inventory = _nvidia_library_inventory()
     if inventory is not None and inventory.cuda_driver_version:
         tag = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
