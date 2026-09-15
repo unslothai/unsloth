@@ -10929,7 +10929,12 @@ class LlamaCppBackend:
         except Exception:
             return False
 
-    def _gpu_ids_own_placement(self, gpu_ids, *, is_vulkan: Optional[bool] = None) -> bool:
+    def _gpu_ids_own_placement(
+        self,
+        gpu_ids,
+        *,
+        is_vulkan: Optional[bool] = None,
+    ) -> bool:
         """Whether a ``gpu_ids`` pick is narrow enough to overrule a user ``--device``.
 
         A pick that keeps every visible GPU narrows nothing, so there is no conflict
@@ -19681,9 +19686,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cache_tuning_target_unknown(
-        extra_args: Optional[Iterable[str]],
-        device_flags_owned: bool,
-        env: Mapping[str, str],
+        extra_args: Optional[Iterable[str]], device_flags_owned: bool, env: Mapping[str, str]
     ) -> bool:
         """Whether the device this cache tuning would be chosen against is the one
         the child actually gets.
@@ -26331,9 +26334,7 @@ class LlamaCppBackend:
                                 "Keeping ascending GPU order: a pass-through "
                                 "--tensor-split is positional over it."
                             )
-                        elif self._repoint_emitted_tensor_split(
-                            cmd, _pin_ids, _inherited_order
-                        ):
+                        elif self._repoint_emitted_tensor_split(cmd, _pin_ids, _inherited_order):
                             logger.info(
                                 "Pinning the child's GPU order to the inherited "
                                 "visibility mask: %s (ascending would be %s).",
