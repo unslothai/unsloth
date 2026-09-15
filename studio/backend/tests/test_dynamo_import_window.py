@@ -191,6 +191,64 @@ def test_load_failure_is_logged_with_a_traceback():
     pytest.fail("no diffusion.load_failed log call found")
 
 
+def test_the_dynamo_failure_is_rewritten_into_something_actionable():
+    """The raw text names a private torch module and reads as a bug in the model, while the
+    only remedy is a restart. Measured on torch 2.10: a process that has lost this import race
+    does not recover, so "try again" in the same process is wrong advice."""
+    from core.inference.diffusion import dynamo_partial_init_message
+
+    exc = AttributeError(
+        "partially initialized module 'torch._dynamo' has no attribute 'utils' "
+        "(most likely due to a circular import)"
+    )
+    msg = dynamo_partial_init_message(exc)
+    assert msg and "Restart Unsloth" in msg
+    assert "torch._dynamo" in msg, "name the module so the log and the toast can be tied together"
+
+
+def test_the_rewrite_finds_the_failure_through_an_exception_chain():
+    """It surfaces from inside diffusers, so it arrives wrapped."""
+    from core.inference.diffusion import dynamo_partial_init_message
+
+    try:
+        try:
+            raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
+        except AttributeError as inner:
+            raise RuntimeError("Failed to import diffusers.hooks") from inner
+    except RuntimeError as outer:
+        assert dynamo_partial_init_message(outer) is not None
+
+
+def test_an_unrelated_load_failure_keeps_its_own_text():
+    """Same contract as hub_access_message: rewrite only what it recognises, or a real error
+    would be replaced by advice that does not apply to it."""
+    from core.inference.diffusion import dynamo_partial_init_message
+
+    assert dynamo_partial_init_message(RuntimeError("CUDA out of memory")) is None
+    assert dynamo_partial_init_message(FileNotFoundError("no such file")) is None
+
+
+def test_the_rewrite_is_wired_into_the_load_failure_handler():
+    """Asserted on source, since reaching the handler needs a GPU and a model."""
+    body = ast.unparse(_load_pipeline_failure_handler())
+    assert "dynamo_partial_init_message" in body, (
+        "the load failure handler no longer rewrites the dynamo error"
+    )
+    assert body.index("hub_access_message") < body.index("dynamo_partial_init_message"), (
+        "a gated-repo message must keep priority; it is the more specific diagnosis"
+    )
+
+
+def _load_pipeline_failure_handler():
+    tree = ast.parse((_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try):
+            seg = ast.unparse(node)
+            if "hub_access_message" in seg and "redact_native_paths" not in seg:
+                return node
+    raise AssertionError("could not find the load failure handler")
+
+
 def test_trainer_reads_dynamo_config_defensively():
     """A bare ``torch._dynamo.config`` at module scope triggers the lazy import and can bind a
     half-built module, raising at import time where nothing handles it."""

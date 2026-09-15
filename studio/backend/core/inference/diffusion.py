@@ -256,6 +256,35 @@ def _hf_token_in_play(hf_token: Optional[str]) -> bool:
         return False
 
 
+_DYNAMO_PARTIAL_RE = re.compile(
+    r"partially initialized module 'torch\._dynamo'|"
+    r"module 'torch\._dynamo' has no attribute 'utils'"
+)
+
+
+def dynamo_partial_init_message(exc: BaseException) -> Optional[str]:
+    """Rewrite the half-initialised ``torch._dynamo`` failure into the step that unblocks the
+    user, else None so an unrelated load error keeps its own text. Same contract as
+    ``hub_access_message``: only the toast changes, the raw exception still reaches the log.
+
+    Worth special-casing because the raw text names a private torch module and reads as a bug in
+    the model, while the actual remedy is a restart and nothing else. Measured on torch 2.10:
+    once a process loses this import race the state does not recover, so retrying the load in
+    the same process fails the same way (0 of 14 retries resolved)."""
+    seen = exc
+    for _ in range(10):  # __cause__/__context__ chain, bounded against a cycle
+        if seen is None:
+            break
+        if _DYNAMO_PARTIAL_RE.search(str(seen)):
+            return (
+                "PyTorch's compiler module (torch._dynamo) ended up half-initialised in this "
+                "process, so the image model could not finish loading. Restart Unsloth and load "
+                "it again; this state does not clear on its own."
+            )
+        seen = seen.__cause__ or seen.__context__
+    return None
+
+
 def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
     """Rewrite a gated-repo failure into the step that actually unblocks the user, else None so an
     unrelated load error keeps its own text. Only the toast is affected; the raw exception,
@@ -2203,9 +2232,11 @@ class DiffusionBackend:
             from utils.native_path_leases import redact_native_paths
 
             try:
-                text = hub_access_message(
-                    exc, had_token = _hf_token_in_play(kwargs.get("hf_token"))
-                ) or str(exc)
+                text = (
+                    hub_access_message(exc, had_token = _hf_token_in_play(kwargs.get("hf_token")))
+                    or dynamo_partial_init_message(exc)
+                    or str(exc)
+                )
             except Exception:  # noqa: BLE001
                 text = str(exc)
             with self._lock:
@@ -4455,7 +4486,17 @@ class DiffusionBackend:
                     # lacking it must not take the load down. Best-effort, never a new failure.
                     try:
                         from utils.torch_warmup import ensure_dynamo_imported
-                        ensure_dynamo_imported()
+                        if not ensure_dynamo_imported():
+                            # Not fatal here, and deliberately not a retry: measured on torch
+                            # 2.10, a process that has lost this race does not recover (0 of 14
+                            # retries resolved), and evicting the half-built package to re-import
+                            # is the C-extension purge that purge_partial_import already refuses.
+                            # So the useful thing is a breadcrumb: if the offload step below dies
+                            # on dynamo, this line is what says the condition was already present.
+                            logger.warning(
+                                "diffusion.load: torch._dynamo is not importable in this process; "
+                                "if this load fails on a dynamo import, restart Unsloth"
+                            )
                     except Exception as exc:  # noqa: BLE001 - optimisation only
                         logger.debug("dynamo pre-import skipped: %r", exc)
 
