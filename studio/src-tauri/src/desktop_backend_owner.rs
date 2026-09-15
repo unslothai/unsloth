@@ -156,6 +156,32 @@ struct TokenResponse {
     access_token: String,
 }
 
+/// The multi-account answer from /api/auth/desktop-login: the secret proved the shell
+/// owns the backend, but the session belongs to whoever signs in, so no token is issued.
+#[derive(Deserialize)]
+struct MultiLoginRequired {
+    login_required: bool,
+    login_mode: String,
+}
+
+/// What an authenticated probe of the owned backend presents.
+enum ProbeCredential {
+    Bearer(String),
+    DesktopSecret(String),
+}
+
+fn probe_credential(body: &[u8], secret: &str) -> Result<ProbeCredential, String> {
+    if let Ok(tokens) = serde_json::from_slice::<TokenResponse>(body) {
+        return Ok(ProbeCredential::Bearer(tokens.access_token));
+    }
+    match serde_json::from_slice::<MultiLoginRequired>(body) {
+        Ok(multi) if multi.login_required && multi.login_mode == "multi" => {
+            Ok(ProbeCredential::DesktopSecret(secret.to_string()))
+        }
+        _ => Err("desktop_auth_token_response_invalid".to_string()),
+    }
+}
+
 pub(crate) fn desktop_candidate_ports() -> std::ops::RangeInclusive<u16> {
     DESKTOP_PORT_START..=DESKTOP_PORT_END
 }
@@ -827,15 +853,15 @@ fn ready_for_use_status(health: Option<&HealthResponse>) -> OwnedBackendReadines
 
 async fn health_ready_status(
     port: u16,
-    access_token: Option<&str>,
+    credential: Option<&ProbeCredential>,
 ) -> Result<OwnedBackendReadiness, String> {
-    match fetch_health(port, access_token).await {
+    match fetch_health(port, credential).await {
         Ok(health) => {
             let authenticated_version = health
                 .as_ref()
                 .and_then(|health| health.version.as_deref())
                 .filter(|version| !version.is_empty());
-            if access_token.is_some() {
+            if credential.is_some() {
                 let Some(version) = authenticated_version else {
                     return Err("desktop_auth_health_unverified".to_string());
                 };
@@ -851,7 +877,7 @@ async fn health_ready_status(
             }
             Ok(ready_for_use_status(health.as_ref()))
         }
-        Err(reason) if access_token.is_some() => Err(reason),
+        Err(reason) if credential.is_some() => Err(reason),
         Err(reason) => Ok(OwnedBackendReadiness::Stale { reason }),
     }
 }
@@ -894,15 +920,19 @@ fn fetch_liveness_blocking(port: u16) -> Result<Option<DesktopLiveness>, String>
 }
 async fn fetch_health(
     port: u16,
-    access_token: Option<&str>,
+    credential: Option<&ProbeCredential>,
 ) -> Result<Option<HealthResponse>, String> {
     let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let mut request = client.get(format!("http://127.0.0.1:{port}/api/health"));
-    if let Some(access_token) = access_token {
-        request = request.bearer_auth(access_token);
+    match credential {
+        Some(ProbeCredential::Bearer(token)) => request = request.bearer_auth(token),
+        Some(ProbeCredential::DesktopSecret(secret)) => {
+            request = request.header("X-Desktop-Secret", secret)
+        }
+        None => {}
     }
     let response = request.send().await.map_err(|e| e.to_string())?;
-    if access_token.is_some()
+    if credential.is_some()
         && matches!(
             response.status(),
             reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
@@ -938,7 +968,7 @@ async fn desktop_login_route_compatible(port: u16, timeout: Duration) -> bool {
     }
 }
 
-async fn desktop_secret_login(port: u16, secret: &str) -> Result<String, String> {
+async fn desktop_secret_login(port: u16, secret: &str) -> Result<ProbeCredential, String> {
     let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
@@ -954,11 +984,11 @@ async fn desktop_secret_login(port: u16, secret: &str) -> Result<String, String>
             response.status()
         ))
     } else {
-        response
-            .json::<TokenResponse>()
+        let body = response
+            .bytes()
             .await
-            .map(|tokens| tokens.access_token)
-            .map_err(|_| "desktop_auth_token_response_invalid".to_string())
+            .map_err(|_| "desktop_auth_secret_probe_failed".to_string())?;
+        probe_credential(&body, secret)
     }
 }
 
@@ -966,8 +996,8 @@ async fn authenticated_health_ready_status(
     port: u16,
     secret: &str,
 ) -> Result<OwnedBackendReadiness, String> {
-    let access_token = desktop_secret_login(port, secret).await?;
-    health_ready_status(port, Some(&access_token)).await
+    let credential = desktop_secret_login(port, secret).await?;
+    health_ready_status(port, Some(&credential)).await
 }
 
 pub(crate) async fn probe_owned_backend_state(
@@ -1206,15 +1236,19 @@ pub(crate) fn exact_port_http_shutdown_blocking(port: u16) -> Result<(), String>
     if !(200..300).contains(&login.status) {
         return Err(format!("desktop login returned HTTP {}", login.status));
     }
-    let tokens = serde_json::from_slice::<TokenResponse>(&login.body)
-        .map_err(|e| format!("desktop login response invalid: {e}"))?;
-    let shutdown = http_request_blocking(
-        port,
-        "POST",
-        "/api/shutdown",
-        &[format!("Authorization: Bearer {}", tokens.access_token)],
-        &[],
-    )?;
+    let (path, header) = match probe_credential(&login.body, &secret)
+        .map_err(|e| format!("desktop login response invalid: {e}"))?
+    {
+        ProbeCredential::Bearer(token) => {
+            ("/api/shutdown", format!("Authorization: Bearer {token}"))
+        }
+        // Multi-account install: no session was minted, so the secret stops the backend.
+        ProbeCredential::DesktopSecret(secret) => (
+            "/api/desktop/shutdown",
+            format!("X-Desktop-Secret: {secret}"),
+        ),
+    };
+    let shutdown = http_request_blocking(port, "POST", path, &[header], &[])?;
     if (200..300).contains(&shutdown.status) {
         Ok(())
     } else {
@@ -1425,6 +1459,47 @@ mod tests {
         assert!(seen[1]
             .to_ascii_lowercase()
             .contains("authorization: bearer test-access-token"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_uses_the_secret_when_login_mints_no_session() {
+        let (port, seen, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"login_required":true,"login_mode":"multi"}"#),
+            (
+                "200 OK",
+                r#"{"version":"2026.8.4","native_path_leases_supported":true}"#,
+            ),
+        ])
+        .await;
+
+        let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert!(matches!(readiness, OwnedBackendReadiness::Ready));
+        let seen = seen.lock().unwrap();
+        let health = seen[1].to_ascii_lowercase();
+        assert!(health.contains("x-desktop-secret: desktop-test-secret"));
+        assert!(!health.contains("authorization:"));
+    }
+
+    #[test]
+    fn a_login_body_without_a_token_or_multi_marker_is_invalid() {
+        assert_eq!(
+            probe_credential(br#"{"login_required":true,"login_mode":"single"}"#, "s")
+                .err()
+                .as_deref(),
+            Some("desktop_auth_token_response_invalid")
+        );
+        assert_eq!(
+            probe_credential(b"{}", "s").err().as_deref(),
+            Some("desktop_auth_token_response_invalid")
+        );
+        assert!(matches!(
+            probe_credential(br#"{"access_token":"t"}"#, "s"),
+            Ok(ProbeCredential::Bearer(token)) if token == "t"
+        ));
     }
 
     #[tokio::test]
