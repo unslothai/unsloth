@@ -313,3 +313,83 @@ test("a precision refusal is recognised so it can be shown as an actionable toas
   assert.equal(isPrecisionRefusal("A diffusion load is already in progress."), false);
   assert.equal(PRECISION_REFUSAL_TITLE, "Requested precision is not available");
 });
+
+const ENCODER_OPTIONS = ["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
+// The images page's mapping for the Text encoder precision select, in one place.
+const toEncoderOption = (v: string) =>
+  ENCODER_OPTIONS.find((o) => o === v || (o === "auto" && (v === "none" || v === "off"))) ?? null;
+
+test("the text encoder select follows what the loaded build actually ran", () => {
+  // Nothing requested and nothing engaged: Default. The backend spells "no encoder quant" as "off",
+  // and an older one as "none"; both have to land on Default rather than leaving a stale pick up.
+  assert.equal(
+    resolvedSelectValue({ value: "off", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue({ value: "none", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  // Honored: the select keeps the request.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8_dynamic", requested: "fp8_dynamic", source: "explicit", status: "applied", reason: "" },
+      toEncoderOption,
+    ),
+    "fp8_dynamic",
+  );
+  // Downgraded int8 -> fp8: the request was NOT honored, so the select must snap to what engaged.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8", requested: "int8", source: "explicit", status: "fell_back", reason: "int8 needs resident weights" },
+      toEncoderOption,
+    ),
+    "fp8",
+  );
+  // Declined to dense entirely: back to Default, not the refused request.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "off", requested: "nvfp4", source: "explicit", status: "fell_back", reason: "no Blackwell GPU" },
+      toEncoderOption,
+    ),
+    "auto",
+  );
+});
+
+test("the reseed key moves when the text encoder build changes, and only then", () => {
+  const atLoad = {
+    transformer_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    text_encoder_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    memory_mode: { value: "balanced", source: "auto", reason: "" },
+    attention_backend: { value: "native", source: "auto", reason: "" },
+  } satisfies Record<string, ResolvedControl>;
+  const key = resolvedSeedKey(atLoad);
+
+  // A reason-only rewrite is the same build: the user's pending edit must survive it. Keying on the
+  // whole serialized entry (what the first cut of the encoder control did) re-seeded here.
+  assert.equal(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { ...atLoad.text_encoder_quant, reason: "re-measured after the first image" },
+    }),
+    key,
+    "a reason rewrite must not re-seed",
+  );
+  // A reload that downgrades the encoder is a different build, so it must re-seed.
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "off", requested: "fp8", source: "explicit", status: "fell_back", reason: "declined" },
+    }),
+    key,
+    "a declined encoder must re-seed",
+  );
+  // So is one the user asked to change.
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "int8", requested: "int8", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+});

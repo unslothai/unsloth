@@ -5,11 +5,32 @@
 
 import json
 import os
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import expect, sync_playwright
 
 from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _json, klein_row
+
+# The host refuses the requested encoder precision and runs dense weights instead. The backend
+# spells that as value "off" with status "fell_back", which is the ONE shape this driver could not
+# otherwise produce: everywhere else the stub echoes the request back.
+DECLINE = os.environ.get("PW_DECLINE", "0") == "1"
+ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_text_encoder"))
+ART.mkdir(parents = True, exist_ok = True)
+
+
+def _record(page, state, loads, plans, errors):
+    """Leave something behind for the CI artifact: a driver that uploads an empty directory on
+    failure tells whoever reads it nothing."""
+    (ART / "result.json").write_text(
+        json.dumps(
+            {"state": state, "loads": loads, "plans": plans, "page_errors": errors, "declined": DECLINE},
+            indent = 2,
+        ),
+        encoding = "utf-8",
+    )
+    page.screenshot(path = str(ART / "text-encoder.png"), full_page = True)
 
 
 def main():
@@ -21,6 +42,8 @@ def main():
         if state["loaded"]:
             requested = loads[-1].get("text_encoder_quant")
             value = "fp8" if requested == "int8" else requested
+            if DECLINE and requested:
+                value = "off"
             result.update(
                 loaded = True,
                 repo_id = REPO_ID,
@@ -34,7 +57,9 @@ def main():
                         "value": value,
                         "requested": requested,
                         "source": "explicit" if requested else "auto",
-                        "status": "fell_back" if requested == "int8" else "applied",
+                        "status": (
+                            "fell_back" if (requested == "int8" or (DECLINE and requested)) else "applied"
+                        ),
                         "reason": "Test precision outcome",
                     }
                 },
@@ -169,6 +194,17 @@ def main():
         expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled(
             timeout = 20_000
         )
+        if DECLINE:
+            # The request reached the backend, the backend declined it, and the select must show what
+            # RAN, not what was asked for. Otherwise the page advertises a precision nothing is using.
+            expect(encoder).to_have_text("Default")
+            assert loads[-1]["text_encoder_quant"] == "fp8", loads
+            assert not errors, errors
+            _record(page, state, loads, plans, errors)
+            print(f"Passed: a declined encoder precision reseeds to Default ({browser.version})")
+            context.close()
+            browser.close()
+            return
         expect(encoder).to_have_text("FP8 (storage)")
         assert loads[-1]["text_encoder_quant"] == "fp8", loads
 
@@ -203,9 +239,17 @@ def main():
             lambda request: urlparse(request.url).path == "/api/inference/images/load"
         ):
             state["complete"] = True
-        expect(encoder).to_have_text("Default")
+        # The staged load carries the precision pinned when it was queued, so this one is Default.
         assert "text_encoder_quant" not in loads[-1], loads[-1]
+        # The edit made WHILE it was staging survives it, because the build that landed is the same
+        # one that was already loaded: the reseed follows a change of build, not every completed
+        # load. That is how the other three Advanced selects behave, and Reapply is how the user
+        # then asks for it. Snapping back to Default here would discard a visible selection twice
+        # over, with nothing to say it had happened.
+        expect(encoder).to_have_text("FP8 (storage)")
+        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
         assert not errors, errors
+        _record(page, state, loads, plans, errors)
         print(
             f"Passed: planned and pinned precision, four explicit modes, fallback reseeding and default omission ({browser.version})"
         )

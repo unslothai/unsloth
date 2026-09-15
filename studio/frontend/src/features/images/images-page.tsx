@@ -2026,25 +2026,9 @@ export function ImagesPage({
   // A status read started before an eject can answer after the one that followed it, and this
   // page has no periodic poll to correct it, so only the newest ticket may write.
   const statusTicket = useRef(0);
-  const encoderSeedKey = useRef<string | null>(null);
   const setStatusIfNewest = useCallback(
-    (ticket: number, next: DiffusionStatus, completedLoad = false) => {
-      if (ticket !== statusTicket.current) return;
-      setStatus(next);
-      const key = next.loaded
-        ? JSON.stringify([next.repo_id, next.model_kind, next.gguf_variant, next.resolved?.text_encoder_quant])
-        : null;
-      // A reload can resolve identically while a later user selection is still pending.
-      if (key === encoderSeedKey.current && !completedLoad) return;
-      encoderSeedKey.current = key;
-      const record = next.loaded ? next.resolved : null;
-      if (!record) return;
-      const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
-        (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
-          (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
-        ) ?? null,
-      );
-      if (encoder) setTextEncoderQuant(encoder);
+    (ticket: number, next: DiffusionStatus) => {
+      if (ticket === statusTicket.current) setStatus(next);
     },
     [],
   );
@@ -2144,7 +2128,7 @@ export function ImagesPage({
           // it and refresh NOTHING: the unload's own response is authoritative.
           return;
         }
-        setStatusIfNewest(ticket, loaded, true);
+        setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
@@ -2346,6 +2330,14 @@ export function ImagesPage({
       ) ?? null,
     );
     if (quant) setTransformerQuant(quant);
+    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
+      // A declined encoder request engages dense weights, spelled "off" (or "none" by an older
+      // backend); the select's option for that is Default.
+      (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
+      ) ?? null,
+    );
+    if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
