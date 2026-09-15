@@ -352,14 +352,36 @@ def _local_gguf_entry(
 # base model and fetch weights this resolver promises never to download.
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
 # The multimodal sub-configs the repo's own vision detector reads, which is what tells a served VLM apart from a plain
-# seq2seq wearing the same architecture suffix.
+# seq2seq wearing the same architecture suffix. Presence of any one of these is the proof; nothing here is read for
+# its value, so a renamed spelling is a miss and not a wrong answer.
 _MULTIMODAL_CONFIG_KEYS = (
     "vision_config",
     "img_processor",
     "image_token_index",
     "projector_config",
     "audio_config",
+    # transformers 5 spellings of the same proof. A visual checkpoint declares its placeholder token ids at the top
+    # level, and a conversion can ship them with no vision sub-config at all: the checkpoint reported in #10951 is a
+    # language-only MLX conversion of a VLM that kept ``Qwen3_5MoeForConditionalGeneration`` in architectures and
+    # carries image_token_id, video_token_id and the vision_start/end pair, while its vision tower and vision_config
+    # are gone. Without these the auto-switch reads it as a plain seq2seq and 404s an installed model.
+    "image_token_id",
+    "video_token_id",
+    "vision_start_token_id",
+    "vision_end_token_id",
 )
+# text_config is deliberately NOT in the tuple above, and audio_token_id is deliberately not either.
+#
+# text_config: transformers 5 nests one in text-only configs too, so on its own it is not evidence of a second
+# modality. ClvpConfig (``ClvpModelForConditionalGeneration``, a voice model with no chat serving path here) and the
+# Gemma 4 assistant configs serialise text_config and no modality key at all, so accepting it alone would open this
+# gate to exactly what the gate exists to close. It counts only beside one of the keys above, and those keys already
+# decide that case, so the pairing needs no branch of its own; test_multimodal_config_keys.py holds the rule.
+#
+# audio_token_id: the audio families are admitted by name below rather than by marker, because the MLX worker refuses
+# ASR and TTS outright and only some model types have a conditional audio serving path at all. A generic audio marker
+# would bypass that allowlist and advertise HiggsAudioV2 and VibeVoiceAsr as chat models, and would serve csm on an
+# MLX host where the worker rejects it.
 _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
@@ -446,7 +468,8 @@ def _is_generative_chat_config(config: dict) -> bool:
     if not any(name.endswith("ForConditionalGeneration") for name in names):
         return False
     # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving path has no AutoModelForSeq2SeqLM
-    # branch, so require a multimodal sub-config.
+    # branch, so require proof of a second modality. A nested text_config is not that proof on its own; see the
+    # _MULTIMODAL_CONFIG_KEYS comment.
     if any(key in config for key in _MULTIMODAL_CONFIG_KEYS):
         return True
     # whisper is the audio model rather than wearing one, so it carries no such sub-config. the MLX worker refuses ASR
