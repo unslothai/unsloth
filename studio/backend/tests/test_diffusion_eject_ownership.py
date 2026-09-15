@@ -275,9 +275,7 @@ def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
     monkeypatch.setattr(
         backend, "load_pipeline", lambda **kw: (_ for _ in ()).throw(RuntimeError("cancelled"))
     )
-    monkeypatch.setattr(
-        "core.inference.diffusion.detect_family_for_pick", lambda *a, **k: None
-    )
+    monkeypatch.setattr("core.inference.diffusion.detect_family_for_pick", lambda *a, **k: None)
     backend._run_load(repo_id = "org/model-GGUF", _load_token = token)
 
     assert backend.draining_repo_ids() == (), "the thread returned and nothing released its repos"
