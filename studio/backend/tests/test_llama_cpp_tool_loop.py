@@ -6283,7 +6283,9 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
             # One round, so the loop breaks on the cap mid-round rather than at the top.
             max_tool_iterations = 1,
             permission_mode = "off",
-            on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
+            on_conversation_grew = lambda conversation, _tools: seen.append(
+                copy.deepcopy(conversation)
+            ),
         )
     )
 
