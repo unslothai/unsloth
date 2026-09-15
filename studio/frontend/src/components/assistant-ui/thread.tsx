@@ -43,12 +43,16 @@ import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
+import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
+import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  ChatSkillsDialog,
+
   PROMPT_QUEUE_DRAG_TYPE,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
@@ -69,6 +73,7 @@ import {
   stripSearchImageTokens,
   useChatActive,
   useInComparePane,
+  refreshSkillsCatalog,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -321,6 +326,7 @@ import {
   type ChangeEvent,
   type CompositionEvent,
   type ClipboardEvent,
+  type CSSProperties,
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -333,6 +339,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -2365,6 +2372,8 @@ const Composer: FC<{
     (s) => s.setImageToolsEnabled,
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
@@ -2460,9 +2469,20 @@ const Composer: FC<{
   // Thread on screen, so the guard can tell whether a write belongs to the
   // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
   const draftKeyRef = useRef<string | null>(null);
+  // True while the @skill picker has a row to pick, so Enter selects it instead of sending.
+  const mentionConsumesEnterRef = useRef(false);
+  const setMentionConsumesEnter = useCallback((consumesEnter: boolean) => {
+    mentionConsumesEnterRef.current = consumesEnter;
+  }, []);
+  // True while the @skill picker is open, so Escape closes it without collapsing the composer.
+  const mentionOpenRef = useRef(false);
+  const setMentionOpen = useCallback((open: boolean) => {
+    mentionOpenRef.current = open;
+  }, []);
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({
       submitOnEnter: true,
+      skipEnterRef: mentionConsumesEnterRef,
       onModEnter: queueOnModEnter,
       justSentRef,
       draftKeyRef,
@@ -2481,6 +2501,8 @@ const Composer: FC<{
       plainPasteAtRef.current = isPlainPasteChord(event)
         ? performance.now()
         : 0;
+      // A fresh @ re-reads the skill folders, so a skill written since page load is offered.
+      if (event.key === "@") refreshSkillsCatalog();
     },
     [],
   );
@@ -2598,6 +2620,14 @@ const Composer: FC<{
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const inputId = useId();
+  const [editorHeight, setEditorHeight] = useState(40);
+  const [isWritingExpanded, setIsWritingExpanded] = useState(false);
+  const toggleWritingExpanded = () => {
+    setIsWritingExpanded((expanded) => !expanded);
+    inputRef.current?.focus({ preventScroll: true });
+  };
   // Cache line metrics so getComputedStyle runs once, not per keystroke.
   const lineMetricsRef = useRef<{ lineHeight: number; padding: number } | null>(
     null,
@@ -2626,6 +2656,28 @@ const Composer: FC<{
     const contentHeight = el.scrollHeight - padding;
     if (contentHeight > lineHeight * 1.5) setIsMultiline(true);
   }, [composerText, isMultiline]);
+  // Autosize's own count: it measures a detached clone, so the expanded
+  // editor's min/max-height can't inflate it the way scrollHeight would.
+  const [editorRows, setEditorRows] = useState(1);
+  const handleEditorHeightChange = useCallback(
+    (height: number, meta: { rowHeight: number }) => {
+      setEditorHeight(height);
+      if (meta.rowHeight <= 0) return;
+      const el = inputRef.current;
+      if (el && !lineMetricsRef.current) {
+        const cs = getComputedStyle(el);
+        const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
+        const padTop = Number.parseFloat(cs.paddingTop) || 0;
+        const padBottom = Number.parseFloat(cs.paddingBottom) || 0;
+        lineMetricsRef.current = { lineHeight, padding: padTop + padBottom };
+      }
+      const padding = lineMetricsRef.current?.padding ?? 0;
+      setEditorRows(Math.round((height - padding) / meta.rowHeight));
+    },
+    [],
+  );
+  // Only once the draft outgrows the compact box: a hard break, or past row 3.
+  const showWritingToggle = composerText.includes("\n") || editorRows > 3;
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
   );
@@ -3378,6 +3430,9 @@ const Composer: FC<{
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+    // Here, not beside send(): handleSubmit returns early on the three queueing
+    // paths, which empty the composer too.
+    setIsWritingExpanded(false);
   }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
@@ -4437,6 +4492,27 @@ const Composer: FC<{
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
+  useEffect(() => {
+    setIsWritingExpanded(false);
+  }, [composerIdentity]);
+  // Window capture runs before the document listeners where the @-mention popover
+  // closes and cancelOnEscape preventDefaults every Escape (canCancel is a runtime
+  // capability, not a live run), so defaultPrevented cannot tell them apart.
+  useEffect(() => {
+    const collapseOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key === "Escape" &&
+        !event.isComposing &&
+        !mentionOpenRef.current &&
+        event.target instanceof Node &&
+        editorRef.current?.contains(event.target)
+      ) {
+        setIsWritingExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", collapseOnEscape, true);
+    return () => window.removeEventListener("keydown", collapseOnEscape, true);
+  }, []);
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
@@ -4872,28 +4948,73 @@ const Composer: FC<{
           />
         ) : (
           <>
-            <ComposerPrimitive.Input
-              placeholder={
-                overlay ? "Type your edits for your image" : "Ask anything"
+            <div
+              ref={editorRef}
+              className="unsloth-composer-editor"
+              style={
+                {
+                  "--composer-editor-height": `${composerText.length === 0 ? 40 : Math.max(40, editorHeight)}px`,
+                } as CSSProperties
               }
-              ref={inputRef}
-              className="aui-composer-input unsloth-composer-input"
-              minRows={1}
-              maxRows={12}
-              autoFocus={!disabled}
-              disabled={disabled}
-              aria-label={overlay ? "Image edit instructions" : "Message input"}
-              // dir="auto": browser picks LTR/RTL from the first strong char;
-              // no effect on Latin / CJK / Devanagari.
-              dir="auto"
-              {...inputProps}
-              // Capture, so inputProps keeps the handlers it already owns.
-              onKeyDownCapture={notePlainPasteChord}
-              onKeyUpCapture={endPlainPasteChord}
-              onBlurCapture={endPlainPasteChord}
-              addAttachmentOnPaste={false}
-              onPaste={handleFilePaste}
-            />
+            >
+              <ComposerPrimitive.Input
+                id={inputId}
+                placeholder={
+                  overlay ? "Type your edits for your image" : "Ask anything"
+                }
+                ref={inputRef}
+                className="aui-composer-input unsloth-composer-input"
+                minRows={1}
+                maxRows={12}
+                onHeightChange={handleEditorHeightChange}
+                autoFocus={!disabled}
+                disabled={disabled}
+                aria-label={overlay ? "Image edit instructions" : "Message input"}
+                // dir="auto": browser picks LTR/RTL from the first strong char;
+                // no effect on Latin / CJK / Devanagari.
+                dir="auto"
+                {...inputProps}
+                // Capture, so inputProps keeps the handlers it already owns.
+                onKeyDownCapture={notePlainPasteChord}
+                onKeyUpCapture={endPlainPasteChord}
+                onBlurCapture={endPlainPasteChord}
+                addAttachmentOnPaste={false}
+                onPaste={handleFilePaste}
+              />
+              {(showWritingToggle || isWritingExpanded) && (
+                <TooltipIconButton
+                  type="button"
+                  tooltip={
+                    isWritingExpanded ? "Collapse composer" : "Expand composer"
+                  }
+                  aria-expanded={isWritingExpanded}
+                  aria-controls={inputId}
+                  disabled={disabled}
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={toggleWritingExpanded}
+                >
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2.25}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="size-4"
+                    aria-hidden={true}
+                  >
+                    <path
+                      d={
+                        isWritingExpanded
+                          ? "M13 2v5h5M2 13h5v5"
+                          : "M11 4h5v5M4 11v5h5"
+                      }
+                    />
+                  </svg>
+                </TooltipIconButton>
+              )}
+            </div>
             <ComposerRightControls
               disabled={
                 disabled ||
@@ -4959,6 +5080,12 @@ const Composer: FC<{
 
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <SkillMentionPopover
+        enabled={supportsTools}
+        onConsumesEnterChange={setMentionConsumesEnter}
+        onOpenChange={setMentionOpen}
+      />
     <ComposerPrimitive.Root
       ref={attachComposer}
       // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
@@ -4966,6 +5093,9 @@ const Composer: FC<{
       // on the toolbar instead of on the conversation.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
+      data-writing-expanded={
+        isWritingExpanded && !isDictating ? "true" : undefined
+      }
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
@@ -4999,7 +5129,7 @@ const Composer: FC<{
               no layout shift and the drop still lands. */}
           <div
             className={cn(
-              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
+              "aui-composer-drop-overlay pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 opacity-0 backdrop-blur-sm transition-opacity duration-150 group-data-[dragging=true]/dropzone:opacity-100 dark:bg-card/90",
               pageDragging && "opacity-100",
             )}
           >
@@ -5015,6 +5145,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </PromptQueueContext.Provider>
   );
 };
@@ -5071,11 +5202,14 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
+  skipEnterRef,
   onModEnter,
   justSentRef,
   draftKeyRef,
 }: {
   submitOnEnter?: boolean;
+  /** Set while a composer popover will consume plain Enter itself. */
+  skipEnterRef?: RefObject<boolean>;
   /** Cmd/Ctrl+Enter without Shift, claimed before the plain-Enter submit. */
   onModEnter?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   // Guard armed by the last send or queue. See setComposerText below.
@@ -5236,7 +5370,12 @@ function useImeComposerInputHandlers({
         onModEnter(e);
         return;
       }
-      if (submitOnEnter && e.key === "Enter" && !e.shiftKey) {
+      if (
+        submitOnEnter &&
+        e.key === "Enter" &&
+        !e.shiftKey &&
+        !skipEnterRef?.current
+      ) {
         e.preventDefault();
         e.currentTarget.form?.requestSubmit();
       }
@@ -5246,6 +5385,7 @@ function useImeComposerInputHandlers({
       onModEnter,
       refreshStuckTimer,
       setCompositionState,
+      skipEnterRef,
       submitOnEnter,
     ],
   );
@@ -5971,6 +6111,7 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
@@ -6079,6 +6220,12 @@ const ComposerToolsMenu: FC<{
         {mcpEnabledForChat && !mcpDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
+      </DropdownMenuItem>
+    ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={2} />
+        Agent Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -6225,6 +6372,7 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -6742,11 +6890,10 @@ const ComposerRightControls: FC<{
           aria-label="Dictate"
           type="button"
           variant="ghost"
-          className="size-8 rounded-full text-foreground"
+          className="size-9 rounded-full text-foreground"
           onClick={onDictateClick}
         >
-          {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
-          <MicIcon className="unsloth-dictate-icon size-[22px]" />
+          <MicIcon className="unsloth-dictate-icon size-6" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf
@@ -7251,6 +7398,10 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
   ImageGenerationToolUI,
 );
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+// Read at render time, not module scope: the skill modules reach the chat barrel.
+const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
+  <ReadSkillToolUI {...props} />
+));
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
 /**
@@ -7272,6 +7423,7 @@ const ASSISTANT_PART_COMPONENTS = {
     by_name: {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      read_skill: ReadSkillToolUIConfirmable,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
@@ -7281,6 +7433,7 @@ const ASSISTANT_PART_COMPONENTS = {
     Fallback: ToolFallbackConfirmable,
   },
 } as const;
+
 
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve

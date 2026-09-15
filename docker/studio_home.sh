@@ -165,6 +165,25 @@ for target in "$HOME_DIR"/*; do
     esac
 done
 
+# A killed update (docker stop ends in SIGKILL) can leave its previous tree beside src
+# and half-replaced packages; unsloth-studio-update keeps a record beside src until the
+# update is committed. Finish that restore here, before supervisord starts Studio on the
+# unverified tree. The home is linked by now, so the updater finds the venv.
+if [ -s "$APP/.src-update.rollback" ]; then
+    updater="${UNSLOTH_STUDIO_UPDATER:-/usr/local/bin/unsloth-studio-update}"
+    if [ -x "$updater" ]; then
+        log "an update was interrupted (record at $APP/.src-update.rollback); putting the previous install back before Studio starts"
+        if UNSLOTH_STUDIO_HOME="$HOME_DIR" "$updater" --recover; then
+            log "the previous install is back"
+        else
+            log "WARNING: the previous install could not be put back (see above); Studio may fail to start"
+            log "  finish it by hand: docker exec <container> unsloth-studio-update --recover"
+        fi
+    else
+        log "WARNING: an update was interrupted (record at $APP/.src-update.rollback) and $updater is not here to finish the restore"
+    fi
+fi
+
 if [ "${#moved[@]}" -gt 0 ]; then
     size="$(du -sh -- "$legacy" 2>/dev/null | cut -f1)"
     log "kept aside in $legacy (${size:-?}): ${moved[*]}"

@@ -1917,11 +1917,9 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
-	/* Pill composer; own classes so compare-mode keeps its stacked layout. py
-	   12px matches the send circle's gap to the right edge, so it sits evenly
-	   inside the 32px corner. */
+	/* 28px corner: the send circle sits at an even 10px inset inside it. */
 	.unsloth-composer-surface {
-		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		@apply relative flex w-full flex-col rounded-[28px] bg-background dark:bg-card p-2.5 outline-none transition-shadow;
 		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
@@ -1962,7 +1960,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-left {
-		@apply flex min-w-0 flex-wrap items-center gap-0.5;
+		@apply relative top-px flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
 		/* Pull the plus button closer to the composer edge. Logical, so RTL
 		   pulls it outward instead of into the action group. */
@@ -1976,7 +1974,7 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
 		margin-inline-start: auto;
-		/* 12px surface + 4px line padding minus this = 12px edge gap. */
+		/* Cancel the line padding to preserve the surface's 10px edge gap. */
 		margin-inline-end: -0.25rem;
 	}
 
@@ -1985,15 +1983,13 @@ html[data-chat-font] .aui-root {
 		flex-basis: 100%;
 		width: 100%;
 		/* Sits close to the left edge, near the plus. */
-		padding-left: 0.375rem;
+		padding-left: calc(0.375rem + 1px);
 		padding-top: 0.5rem;
 		padding-bottom: 0.5rem;
 	}
 
-	/* Two-row gap between text and controls. On the line, not the input, so
-	   the placeholder max-height clamp never crops it like padding would. */
 	.unsloth-composer-line[data-expanded="true"] {
-		row-gap: 0.75rem;
+		row-gap: 0.375rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
@@ -2010,6 +2006,42 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-input {
 		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+	}
+
+	/* Animate the frame so the textarea stays mounted and keeps selection/undo. */
+	.unsloth-composer-editor {
+		position: relative;
+		order: 1;
+		flex-basis: 100%;
+		width: 100%;
+		height: var(--composer-editor-height, 40px);
+		transition: height 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.unsloth-composer-editor .unsloth-composer-input {
+		display: block;
+		min-height: 100%;
+		max-height: 100% !important;
+		/* Reserved before typing, or the toggle appearing would reflow the text. */
+		padding-right: 2.25rem;
+	}
+
+	/* max(): at 480px tall the clamp is 192px, under the twelve-row compact
+	   height, so expanding would clip. svh, since dvh tracks Safari's bar. */
+	.aui-composer-root[data-writing-expanded="true"] .unsloth-composer-editor {
+		height: max(
+			var(--composer-editor-height, 40px),
+			clamp(8rem, calc(80svh - 12rem), 42rem)
+		);
+	}
+
+	/* The welcome composer starts mid-page; move it up so the toolbar stays in view. */
+	.aui-thread-welcome-center {
+		transition: padding-top 280ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.aui-thread-welcome-center:has([data-writing-expanded="true"]) {
+		padding-top: 1rem;
 	}
 
 	.unsloth-composer-plus {
@@ -2045,12 +2077,6 @@ html[data-chat-font] .aui-root {
 	/* Mobile and very shrunk windows: the dictate/send cluster was dropping to
 	   a second line. Take the width back from the gutters, not the controls. */
 	@container composer-shell (max-width: 30rem) {
-		/* Was 12px; the 32px corner still clears the plus/send circles. */
-		.unsloth-composer-surface {
-			padding-left: 0.5rem;
-			padding-right: 0.5rem;
-		}
-
 		.unsloth-composer-line {
 			padding-left: 0;
 			padding-right: 0;
@@ -2082,7 +2108,7 @@ html[data-chat-font] .aui-root {
 
 		/* Keeps the text starting just right of the plus glyph below it. */
 		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
-			padding-left: 0.5rem;
+			padding-left: calc(0.5rem + 1px);
 		}
 
 		/* Recording swaps the input for the dictation bar, whose timer and
@@ -2107,14 +2133,6 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* ~400px and under: settle the control row toward the bottom edge, since
-	   12px under a 32px circle is more air than the trimmed sides carry. */
-	@container composer-shell (max-width: 23.5rem) {
-		.unsloth-composer-surface {
-			padding-bottom: 0.5rem;
-		}
-	}
-
 	/* ~375px and under. Each control is a circle around a much smaller glyph,
 	   so the built-in air, not the gap, sets the spacing. Shrink the circles
 	   by 4px; overlapping them instead would make adjacent hit areas share
@@ -2125,10 +2143,7 @@ html[data-chat-font] .aui-root {
 		}
 
 
-		/* A 32px corner is a big fraction of a box this small. The drop
-		   overlay tracks it, or its edge shows against the surface. */
-		.unsloth-composer-surface,
-		.unsloth-composer-surface .aui-composer-drop-overlay {
+		.unsloth-composer-surface {
 			border-radius: 1.5rem;
 		}
 
@@ -2196,19 +2211,6 @@ html[data-chat-font] .aui-root {
 
 		.unsloth-dictation-timer {
 			margin-inline-end: 0.25rem;
-		}
-	}
-
-	/* ~275px and under: trim the vertical padding and row gap so the box is no
-	   taller than the rows it holds. */
-	@container composer-shell (max-width: 16rem) {
-		.unsloth-composer-surface {
-			padding-top: 0.5rem;
-			padding-bottom: 0.5rem;
-		}
-
-		.unsloth-composer-line[data-expanded="true"] {
-			row-gap: 0.5rem;
 		}
 	}
 
@@ -3559,17 +3561,16 @@ html[data-chat-font] .aui-root {
 	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
 	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
-	/* Mic and send arrow sit above the shared glyph size: both fill their
-	   viewBox, so they read smaller than the stroked icons beside them. Keep
-	   after the size-[NN] rules they override. */
+	/* Mic and send sit above the shared glyph size. Must follow size-[NN]. */
 	& svg.unsloth-dictate-icon {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
+		transform: translateY(2px);
 	}
 	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {
-		width: calc(var(--ui-icon-size) * 1.15);
-		height: calc(var(--ui-icon-size) * 1.15);
+		width: calc(var(--ui-icon-size) * 1.3);
+		height: calc(var(--ui-icon-size) * 1.3);
 	}
 	/* Composer plus keeps its pre-#7400 22px base (1.375x the token is the same
 	   curve a 22px glyph would follow), so only its scaling changed. */

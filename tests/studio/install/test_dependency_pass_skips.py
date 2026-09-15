@@ -2043,7 +2043,7 @@ def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatc
     assert "install_manifest.consume_previous_manifest()" in source[at : at + 200]
     # The path is bound above the removal so the same check can run BEFORE it as well; the
     # invariant here is that the parked copy is read for and gone within this window.
-    assert "_parked.exists()" in source[at : at + 400]
+    assert "manifest_is_present(_parked)" in source[at : at + 400]
 
 
 def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
