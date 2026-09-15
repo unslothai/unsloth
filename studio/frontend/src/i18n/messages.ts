@@ -16,6 +16,7 @@ export const LOCALES = {
   de: { label: "German", nativeLabel: "Deutsch" },
   it: { label: "Italian", nativeLabel: "Italiano" },
   ru: { label: "Russian", nativeLabel: "Русский" },
+  sv: { label: "Swedish", nativeLabel: "Svenska" },
   hi: { label: "Hindi", nativeLabel: "हिन्दी" },
   ar: { label: "Arabic", nativeLabel: "العربية" },
 } as const;
@@ -42,6 +43,7 @@ const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   de: () => import("./locales/de"),
   it: () => import("./locales/it"),
   ru: () => import("./locales/ru"),
+  sv: () => import("./locales/sv"),
   hi: () => import("./locales/hi"),
   ar: () => import("./locales/ar"),
 };
