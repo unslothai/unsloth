@@ -23,6 +23,7 @@ These tests pin the three things the fix depends on, none of which need a real t
 from __future__ import annotations
 
 import ast
+import builtins
 import sys
 import threading
 import types
@@ -82,34 +83,40 @@ def test_absent_torch_is_not_fatal(warm, monkeypatch):
 
 
 def test_concurrent_callers_import_once(warm, monkeypatch):
-    """Single-flight is the whole mechanism: the window closes because ONE thread performs
-    the first import while the rest wait on our lock rather than racing CPython's."""
+    """Single-flight is the whole mechanism: the window closes because exactly ONE thread
+    performs the first import while the rest wait on our lock rather than racing CPython's.
+
+    Asserted by counting the IMPORTS, not the lock entries. Threads that arrive before the
+    first one latches legitimately queue on the lock, so a bound on lock entries is a race
+    against thread scheduling; the double-checked flag inside the lock is what guarantees
+    the import body runs once, and that is the property worth pinning."""
     _fake_torch(monkeypatch, bind_utils = True)
-    entries = []
-    real_lock = warm._dynamo_lock
 
-    class _CountingLock:
-        def __enter__(self):
-            entries.append(threading.current_thread().name)
-            return real_lock.__enter__()
+    real_import = builtins.__import__
+    imports = []
+    lock = threading.Lock()
 
-        def __exit__(self, *a):
-            return real_lock.__exit__(*a)
+    def _counting_import(name, *args, **kwargs):
+        if name.startswith("torch._dynamo"):
+            with lock:
+                imports.append(name)
+        return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(warm, "_dynamo_lock", _CountingLock())
+    monkeypatch.setattr(builtins, "__import__", _counting_import)
+
     results = []
     threads = [
         threading.Thread(target = lambda: results.append(warm.ensure_dynamo_imported()))
-        for _ in range(8)
+        for _ in range(12)
     ]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert results == [True] * 8
-    # Whoever latched it first sends everyone after it down the fast path, so the lock is
-    # not entered eight times.
-    assert len(entries) < 8
+
+    assert results == [True] * 12
+    # `import torch._dynamo` plus `import torch._dynamo.utils`, from one thread only.
+    assert len(imports) == 2, f"the import body ran more than once: {imports}"
 
 
 def test_the_warm_closes_the_window_before_it_starts_a_thread():
