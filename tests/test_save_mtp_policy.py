@@ -278,7 +278,7 @@ def _capture_warnings(save_module, monkeypatch):
 
 
 def test_an_older_zoo_leaves_the_config_alone_and_says_nothing(
-    save_module, zoo_without_the_helpers, monkeypatch,
+    save_module, zoo_without_the_helpers, monkeypatch
 ):
     """Before this change the import failure was reported through the same
     warning as a real problem, so every merged save on an older zoo, of any
@@ -295,11 +295,13 @@ def test_an_older_zoo_leaves_the_config_alone_and_says_nothing(
 
 
 def test_an_older_zoo_does_not_make_the_push_guard_complain(
-    save_module, zoo_without_the_helpers, monkeypatch,
+    save_module, zoo_without_the_helpers, monkeypatch
 ):
     said = _capture_warnings(save_module, monkeypatch)
 
-    class _Holder: pass
+    class _Holder:
+        pass
+
     text = _Holder()
     setattr(text, "mtp_num_hidden_layers", 1)
     text.num_hidden_layers = 24
