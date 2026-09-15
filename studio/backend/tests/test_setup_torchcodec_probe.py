@@ -256,7 +256,7 @@ def test_the_shell_probe_is_bounded():
     text = _SETUP_SH.read_text(encoding = "utf-8")
     probe = text.index("_TORCHCODEC_PROBE=")
     after = text[probe : text.index('step "torchcodec"', probe)]
-    assert "timeout 60 python -c" in after
+    assert 'timeout 60 "$_TORCHCODEC_PY" -c' in after
     # ...and still runs where coreutils `timeout` is absent, as the GPU probes do.
     assert "command -v timeout" in after
     # That fallback path is the one stock macOS takes, so the deadline has to live in
@@ -365,12 +365,28 @@ def test_the_powershell_probe_runs_the_studio_interpreter():
     assert "$VenvDir" in after
 
 
+def test_the_shell_probe_runs_the_studio_interpreter():
+    # setup.sh activates the venv long before this block, but the uv installer branch
+    # prepends $HOME/.local/bin to PATH afterwards, so a pyenv/pipx/asdf `python` shim
+    # there shadows the venv and bare `python` answers a silent "absent" for an install
+    # that does have torchcodec. setup.ps1 already names the venv interpreter for the
+    # same reason; the sh side must too, falling back to bare `python` only where no
+    # venv exists (Colab installs into the system interpreter).
+    text = _SETUP_SH.read_text(encoding = "utf-8")
+    probe = text.index("_TORCHCODEC_PROBE=")
+    after = text[probe : text.index('step "torchcodec"', probe)]
+    assert " python -c " not in after, "the probe reads whichever python is on PATH"
+    assert '_TORCHCODEC_PY="$VENV_DIR/bin/python"' in after
+    assert '"$_TORCHCODEC_PY" -c "$_TORCHCODEC_PROBE"' in after
+    assert '_TORCHCODEC_PY="python"' in after, "no venv (Colab) must still have an interpreter"
+
+
 def test_the_shell_probe_carries_no_apostrophe():
     # It is passed as a single-quoted sh string, so one apostrophe anywhere in it
     # (including in a comment) closes the quote and breaks the script.
     text = _SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_TORCHCODEC_PROBE='") + len("_TORCHCODEC_PROBE='")
-    span = text[start : text.index("timeout 60 python -c", start)]
+    span = text[start : text.index("_TORCHCODEC_PY=", start)]
     assert span.count("'") == 1, "the probe body has an apostrophe that closes its own quote"
 
 

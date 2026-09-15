@@ -4451,19 +4451,10 @@ else:
 '
     # The answer is read as its own line, like the other bounded probes: a torch
     # import banner on stdout would otherwise never match any state below.
-    # The venv interpreter by path where there is one, mirroring setup.ps1. Several
-    # PATH prepends run between the activation above and here -- the astral uv
-    # installer branch puts $HOME/.local/bin FIRST -- so a pyenv/pipx/asdf
-    # ~/.local/bin/python shim shadows the venv from that point on, and bare
-    # `python` then answers a silent "absent" for an install that does have
-    # torchcodec. Colab is the case bare `python` exists for: there is no venv
-    # there ($_COLAB_NO_VENV), and the deps went into the system interpreter.
-    _TORCHCODEC_PY="python"
-    if [ -x "$VENV_DIR/bin/python" ]; then _TORCHCODEC_PY="$VENV_DIR/bin/python"; fi
     if command -v timeout >/dev/null 2>&1; then
-        _TORCHCODEC_STATE="$(timeout 60 "$_TORCHCODEC_PY" -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
+        _TORCHCODEC_STATE="$(timeout 60 python -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
     else
-        _TORCHCODEC_STATE="$("$_TORCHCODEC_PY" -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
+        _TORCHCODEC_STATE="$(python -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
     fi
 
     if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
