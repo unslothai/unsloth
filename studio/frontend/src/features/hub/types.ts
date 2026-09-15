@@ -34,6 +34,8 @@ export interface DiscoverRow {
   result: HfModelResult;
   isAvailableOnDevice: boolean;
   isPartialOnDevice: boolean;
+  companionPrefetch?: boolean;
+  cachedComponents?: string[];
   summary: string;
   capabilities: Capability[];
 }
@@ -65,6 +67,8 @@ export interface SelectedModelView {
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
+  cachedComponents?: string[];
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;

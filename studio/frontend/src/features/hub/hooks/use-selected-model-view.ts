@@ -113,9 +113,11 @@ export function useSelectedModelView({
         : selectedLocalRow?.source === "hf_cache"
           ? Boolean(selectedLocalRow.partial)
           : selectedDiscoverRow.isPartialOnDevice;
+      const isCompanionPrefetch = selectedCachedRow?.companionPrefetch === true;
       const isResolvedOnDevice = selectedCachedRow
-        ? !selectedCachedRow.partial
-        : selectedLocalRow?.source === "hf_cache" && !selectedLocalRow.partial;
+        ? !selectedCachedRow.partial && !isCompanionPrefetch
+        : selectedLocalRow?.source === "hf_cache" &&
+          !selectedLocalRow.partial;
       const resolvedModelFormat =
         selectedCachedRow?.modelFormat ??
         (selectedLocalRow?.modelFormat &&
@@ -137,7 +139,9 @@ export function useSelectedModelView({
           ? "On device"
           : isResolvedPartial
             ? "Partial on device"
-            : "Hugging Face",
+            : isCompanionPrefetch
+              ? "Cached assets on device"
+              : "Hugging Face",
         path: onDevicePath,
         isLocal: false,
         isGguf:
@@ -166,6 +170,8 @@ export function useSelectedModelView({
           null,
         partialResumable:
           (selectedCachedRow ?? selectedLocalRow)?.partialResumable === true,
+        companionPrefetch: isCompanionPrefetch,
+        cachedComponents: selectedCachedRow?.cachedComponents,
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
@@ -229,11 +235,13 @@ export function useSelectedModelView({
         baseModel: mergedBaseModel,
         baseModelSource: mergedBaseModel ? "huggingface" : null,
         baseModelHubId: mergedBaseModel,
-        isDownloaded: !selectedCachedRow.partial,
+        isDownloaded: !selectedCachedRow.partial && !selectedCachedRow.companionPrefetch,
         runtimeCanChat: selectedCachedRow.capabilities.canChat,
         isPartial: selectedCachedRow.partial ?? false,
         partialTransport: selectedCachedRow.partialTransport ?? null,
         partialResumable: selectedCachedRow.partialResumable === true,
+        companionPrefetch: selectedCachedRow.companionPrefetch === true,
+        cachedComponents: selectedCachedRow.cachedComponents,
         capabilities: detectViewCapabilities(
           mergedTags,
           mergedPipelineTag,
