@@ -675,8 +675,14 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
     if tensor_names is None:
         return False
     try:
+        # Separately, and quietly: unsloth and unsloth_zoo are installed and
+        # upgraded on their own, and an older zoo without these names is not an
+        # error to report on every save of every model. Without this the message
+        # below reaches people whose config never declared an MTP head at all.
         from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
-
+    except ImportError:
+        return False
+    try:
         if not isinstance(config_dict, dict):
             return False
         holders = [config_dict]
@@ -720,8 +726,15 @@ def _mtp_config_matching_tensors(model, tensor_names):
     restore = []
     try:
         if tensor_names is not None:
-            from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
-
+            try:
+                # Quiet on an older unsloth_zoo, for the reason in
+                # `_strip_absent_mtp_declaration`.
+                from unsloth_zoo.saving_utils import MTP_CONFIG_KEY, mtp_head_is_present
+            except ImportError:
+                MTP_CONFIG_KEY = None
+            if MTP_CONFIG_KEY is None:
+                tensor_names = None
+        if tensor_names is not None:
             config = getattr(model, "config", None)
             holders = _config_mtp_holders(config, MTP_CONFIG_KEY)
             # Materialised once: the rule below is evaluated per holder, and a

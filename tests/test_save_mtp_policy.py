@@ -243,3 +243,85 @@ def test_guard_does_nothing_when_the_tensor_names_are_unknown(save_module):
 def test_guard_never_raises_on_a_model_without_a_config(save_module):
     with save_module._mtp_config_matching_tensors(types.SimpleNamespace(), BODY):
         pass
+
+
+# ---- an older unsloth_zoo: unchanged behaviour, and no noise ---------------
+
+
+@pytest.fixture
+def zoo_without_the_helpers(save_module, monkeypatch):
+    """`unsloth_zoo.saving_utils` as an older release has it: no MTP names on it.
+
+    The two packages are installed and upgraded separately, so this is what an
+    unsloth updated ahead of its zoo actually sees.
+    """
+    import sys
+
+    real = sys.modules.get("unsloth_zoo.saving_utils")
+    stand_in = types.ModuleType("unsloth_zoo.saving_utils")
+    for name in dir(real or types.ModuleType("empty")):
+        if name in ("MTP_CONFIG_KEY", "mtp_head_is_present", "reconcile_mtp_config"):
+            continue
+        if name.startswith("__"):
+            continue
+        setattr(stand_in, name, getattr(real, name))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.saving_utils", stand_in)
+    return stand_in
+
+
+def _capture_warnings(save_module, monkeypatch):
+    said = []
+    logger = save_module.logger
+    monkeypatch.setattr(logger, "warning_once", lambda message, *a, **kw: said.append(message))
+    monkeypatch.setattr(logger, "warning", lambda message, *a, **kw: said.append(message))
+    return said
+
+
+def test_an_older_zoo_leaves_the_config_alone_and_says_nothing(
+    save_module, zoo_without_the_helpers, monkeypatch,
+):
+    """Before this change the import failure was reported through the same
+    warning as a real problem, so every merged save on an older zoo, of any
+    model, printed it. The declaration must simply stay, quietly."""
+    said = _capture_warnings(save_module, monkeypatch)
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": {"num_hidden_layers": 24, "mtp_num_hidden_layers": 1},
+    }
+
+    assert save_module._strip_absent_mtp_declaration(config, BODY) is False
+    assert config["text_config"]["mtp_num_hidden_layers"] == 1
+    assert said == [], said
+
+
+def test_an_older_zoo_does_not_make_the_push_guard_complain(
+    save_module, zoo_without_the_helpers, monkeypatch,
+):
+    said = _capture_warnings(save_module, monkeypatch)
+
+    class _Holder: pass
+    text = _Holder()
+    setattr(text, "mtp_num_hidden_layers", 1)
+    text.num_hidden_layers = 24
+    config = _Holder()
+    config.text_config = text
+    model = _Holder()
+    model.config = config
+
+    with save_module._mtp_config_matching_tensors(model, BODY):
+        assert getattr(text, "mtp_num_hidden_layers") == 1
+    assert getattr(text, "mtp_num_hidden_layers") == 1
+    assert said == [], said
+
+
+def test_a_real_failure_is_still_reported(save_module, monkeypatch):
+    """The quiet path is for a missing helper only. Anything else the repair
+    trips over must still be reported."""
+    said = _capture_warnings(save_module, monkeypatch)
+
+    class _Exploding(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("config is not readable")
+
+    assert save_module._strip_absent_mtp_declaration(_Exploding(), BODY) is False
+    assert said and "config is not readable" in said[0], said
