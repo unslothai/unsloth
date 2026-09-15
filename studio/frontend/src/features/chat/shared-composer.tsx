@@ -8,6 +8,7 @@ import {
   serverTuningLoadPayload,
 } from "./lib/server-tuning-fields";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { useTextareaSkillMentions } from "@/components/assistant-ui/skill-mentions";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -69,6 +70,7 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
+  BookOpenIcon,
   ChevronDownIcon,
   Columns2Icon,
   GlobeIcon,
@@ -109,6 +111,7 @@ import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
@@ -174,11 +177,13 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
+import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   type CompositionEvent,
   type ClipboardEvent,
@@ -194,6 +199,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 export type CompareMessagePart =
@@ -581,6 +587,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
@@ -650,6 +657,14 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+
+  const skillMentions = useTextareaSkillMentions({
+    text,
+    setText,
+    inputRef: textareaRef,
+    composingRef,
+    enabled: supportsTools,
+  });
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
@@ -692,6 +707,7 @@ export function SharedComposer({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const externalSelection = parseExternalModelId(checkpoint);
   const isExternalModel = externalSelection !== null;
   const selectedExternalProvider =
@@ -726,7 +742,8 @@ export function SharedComposer({
     externalSelection != null
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
-          effectiveExternalModelId,
+          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
+          externalSelection?.modelId,
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
@@ -755,8 +772,14 @@ export function SharedComposer({
   // one on flips the other off, so the visible state matches what the backend sends.
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
@@ -2019,6 +2042,12 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <BookOpenIcon />
+        Agent Skills
+      </DropdownMenuItem>
+    ),
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -2170,6 +2199,8 @@ export function SharedComposer({
         void addFiles(e.dataTransfer.files);
       }}
     >
+      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
+
       <PromptStorageDialog
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
@@ -2246,7 +2277,10 @@ export function SharedComposer({
           )}
         </div>
       )}
+      {skillMentions.popover}
+
       <textarea
+        {...skillMentions.inputProps}
         ref={textareaRef}
         value={text}
         onChange={(e) => {
@@ -2255,6 +2289,18 @@ export function SharedComposer({
           // to the stored value mid-composition, wiping the preedit (#5318).
           setCompositionState(isNativeComposing(e.nativeEvent));
           setText(e.target.value);
+          skillMentions.update(
+            e.target.value,
+            e.target.selectionStart ?? e.target.value.length,
+          );
+        }}
+
+        onSelect={(event) => {
+          skillMentions.update(
+            event.currentTarget.value,
+            event.currentTarget.selectionStart ??
+              event.currentTarget.value.length,
+          );
         }}
         onCompositionStart={() => {
           setCompositionState(true);
@@ -2266,12 +2312,16 @@ export function SharedComposer({
           setCompositionState(false);
           setText(e.currentTarget.value);
         }}
-        onKeyDown={onKeyDown}
+        onKeyDown={(event) => {
+          if (!skillMentions.onKeyDown(event)) onKeyDown(event);
+        }}
         onPaste={handleFilePaste}
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
           setCompositionState(false);
+
+          skillMentions.close();
         }}
         placeholder="Send to both models..."
         // dir="auto" detects RTL from the first strong character; no effect on LTR scripts. Kept next to
@@ -2595,7 +2645,7 @@ export function SharedComposer({
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
                       reasoningDisabled,
-                      reasoningEffort,
+                      reasoningEffort: displayedEffort,
                     })}
                   >
                     <BulbIcon className="size-[15.5px]" />
@@ -2603,7 +2653,7 @@ export function SharedComposer({
                       <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
-                              reasoningEffort,
+                              displayedEffort,
                               externalSelection?.modelId,
                             )}`
                           : "Thinking"}
@@ -2662,7 +2712,7 @@ export function SharedComposer({
                               "unsloth-tick size-4",
                               !(
                                 effectiveReasoningVisualEnabled &&
-                                reasoningEffort === level
+                                displayedEffort === level
                               ) && "opacity-0",
                             )}
                           />

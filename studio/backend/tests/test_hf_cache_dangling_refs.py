@@ -1574,9 +1574,9 @@ _MTIME_READERS = {
             "_scan_hf_cache",
             "_scan_lmstudio_dir",
             "_scan_models_dir",
-            "_scan_ollama_dir",
         }
     ),
+    "hub/services/models/ollama.py": frozenset({"_ollama_model_info_from_manifest"}),
 }
 
 

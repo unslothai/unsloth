@@ -58,6 +58,7 @@ import {
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
+import { useIsAccountOwner } from "@/features/auth";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -73,6 +74,7 @@ import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
+import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
@@ -84,6 +86,7 @@ const PREFS_KEYS: string[] = [
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
@@ -175,6 +178,7 @@ function resetAllPrefs() {
 }
 
 export function GeneralTab() {
+  const isOwner = useIsAccountOwner();
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
@@ -262,6 +266,7 @@ export function GeneralTab() {
   const tokenValidated = tokenIsCurrent && tokenValidation.isValid === true;
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadUploadLimitSettings()
       .then((settings) => {
@@ -280,9 +285,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadHelperPrecacheSettings()
       .then((settings) => {
@@ -301,9 +307,10 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
   useEffect(() => {
+    if (!isOwner) return;
     let cancelled = false;
     void loadPreviewSharing()
       .then((settings) => {
@@ -322,7 +329,7 @@ export function GeneralTab() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, isOwner]);
 
 
   const saveHelperPrecache = async (enabled: boolean) => {
@@ -504,10 +511,10 @@ export function GeneralTab() {
             ) : null}
           </div>
         </SettingsRow>
-        {/* The desktop app authenticates via desktop auto-auth with a generated
-            secret, so this password only governs remote browsers and is managed
-            in Remote access instead. Web only. */}
-        {isTauri ? null : (
+        {/* The desktop owner authenticates via desktop auto-auth with a generated
+            secret, so the owner password only governs remote browsers and is
+            managed in Remote access instead. Managed accounts sign in here. */}
+        {isTauri && isOwner ? null : (
           <SettingsRow
             label={t("settings.general.password")}
             description={t("settings.general.passwordDescription")}
@@ -606,6 +613,9 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
+      {isOwner ? (
+        <>
       <SettingsSection
         title={t("settings.general.previewSharing.sectionTitle")}
       >
@@ -722,6 +732,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+        </>
+      ) : null}
 
       <SettingsSection
         title={t("settings.general.resetPreferences.sectionTitle")}
