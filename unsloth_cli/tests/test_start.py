@@ -1593,7 +1593,14 @@ def test_connect_prints_the_running_models_load_warning(fake_studio, monkeypatch
     )
     http_json = start._http_json
 
-    def with_warning(method, url, token, payload = None, timeout = 30, error = None):
+    def with_warning(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": MODEL["id"], "memory_warning": notice}
         return http_json(method, url, token, payload, timeout, error)
