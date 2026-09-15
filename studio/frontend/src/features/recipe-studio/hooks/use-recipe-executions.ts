@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { getInferenceStatus, loadModel } from "@/features/chat";
 import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
-import { usePlatformStore } from "@/config/env";
-import {
-  DEFAULT_MAX_SEQ_LENGTH,
-  isServedByMlx,
-} from "@/features/model-picker";
+import { DEFAULT_MAX_SEQ_LENGTH, isServedByMlx } from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
@@ -42,6 +39,11 @@ import {
 import { createBaseExecutionRecord } from "../executions/runtime";
 import { trackRecipeExecution } from "../executions/tracker";
 import {
+  type LocalModelSelection,
+  contextIntent,
+  isLocalModelAlreadyLoaded,
+} from "../lib/local-model-residency";
+import {
   type RecipeRunSettings,
   useRecipeExecutionsStore,
 } from "../stores/recipe-executions";
@@ -69,17 +71,6 @@ function collectUsedLlmModelAliases(payload: RecipePayload): Set<string> {
   }
   return aliases;
 }
-
-type LocalModelSelection = {
-  target: string;
-  ggufVariant: string;
-  aliases: string[];
-  /** The context that model's own load asked for, for a selection captured to be
-   *  restored. Absent for a recipe's own target, which pins nothing. */
-  requestedContextLength?: number | null;
-  /** Whether MLX served it. Only there is a positive request above unambiguous. */
-  isMlx?: boolean;
-};
 
 type LocalModelLoadPlan =
   | { selection: LocalModelSelection; error: null; legacyAliases?: never }
@@ -206,70 +197,6 @@ function getLocalModelLoadPlan(
   return selection ? { selection, error: null } : null;
 }
 
-function isDirectGgufTarget(target: string): boolean {
-  return target.toLowerCase().endsWith(".gguf");
-}
-
-function localSelectionMatchesActive(input: {
-  target: string;
-  ggufVariant: string;
-  activeModel: string | null | undefined;
-  activeVariant: string;
-}): boolean {
-  const { target, ggufVariant, activeModel, activeVariant } = input;
-  if (!activeModel || activeModel.toLowerCase() !== target.toLowerCase()) {
-    return false;
-  }
-  return (
-    activeVariant === ggufVariant ||
-    (isDirectGgufTarget(target) && !ggufVariant)
-  );
-}
-
-/** A context request, read only where it means something.
- *
- *  An unpinned MLX load sends 0, so a positive value there is a pin. llama.cpp is
- *  ambiguous: a same-model reload echoes the resolved n_ctx while the control is still
- *  Auto (see resolve-ctx-pin-seed.ts), so reading that as a pin would reload the model
- *  on every run and then re-pin an Auto-sized one. 0 is Auto on both.
- */
-function contextIntent(
-  value: number | null | undefined,
-  isMlx: boolean | null | undefined,
-): number | null {
-  return isMlx && typeof value === "number" && value > 0 ? value : null;
-}
-
-async function isLocalModelAlreadyLoaded(
-  selection: LocalModelSelection,
-): Promise<boolean> {
-  const { target, ggufVariant, requestedContextLength } = selection;
-  try {
-    const status = await getInferenceStatus();
-    if (
-      !localSelectionMatchesActive({
-        target,
-        ggufVariant,
-        activeModel: status.model_identifier ?? status.active_model,
-        activeVariant: status.gguf_variant?.trim() ?? "",
-      })
-    ) {
-      return false;
-    }
-    // Same checkpoint, different context intent is still a different load: a recipe that
-    // asked for nothing must not inherit whatever window Chat pinned.
-    // The resident backend decides, since both values describe the load that is running.
-    const residentIsMlx = status.is_mlx ?? false;
-    return (
-      contextIntent(requestedContextLength, residentIsMlx) ===
-      contextIntent(status.requested_context_length, residentIsMlx)
-    );
-  } catch {
-    // Fall through to load attempt; the backend will re-error if needed.
-    return false;
-  }
-}
-
 async function loadLocalModelSelection(
   selection: LocalModelSelection,
 ): Promise<string | null> {
@@ -387,7 +314,7 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
         requestedContextLength: status.requested_context_length ?? null,
-      isMlx: status.is_mlx ?? false,
+        isMlx: status.is_mlx ?? false,
       },
       unrestorableLabel: null,
     };

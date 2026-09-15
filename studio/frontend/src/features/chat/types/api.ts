@@ -124,6 +124,8 @@ export interface ValidateModelResponse {
   valid: boolean;
   message: string;
   identifier?: string | null;
+  /** Decided from the files, so an Ollama tag answers for whichever spelling loaded it. */
+  resident?: boolean;
   display_name?: string | null;
   is_gguf?: boolean;
   is_diffusion?: boolean;
