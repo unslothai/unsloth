@@ -459,9 +459,9 @@ def test_a_renamed_sigma_bucket_is_not_silently_dropped() -> None:
     exited 0 on a real regression. The day VirusTotal renames or adds a bucket is exactly the day
     this measurement matters.
     """
-    assert vtd.parse_sigma({"informational": 3}) == {"informational": 3}, (
-        "an unrecognised severity bucket is still dropped by the parser"
-    )
+    assert vtd.parse_sigma({"informational": 3}) == {
+        "informational": 3
+    }, "an unrecognised severity bucket is still dropped by the parser"
 
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
     payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 1, "informational": 4}
@@ -480,9 +480,17 @@ def test_an_unranked_bucket_never_overrides_the_ordered_tradeoff() -> None:
     bucket that did not move must not turn it into a regression.
     """
     base_payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
-    base_payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 1, "low": 5, "informational": 2}
+    base_payload["data"]["attributes"]["sigma_analysis_stats"] = {
+        "high": 1,
+        "low": 5,
+        "informational": 2,
+    }
     payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
-    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 0, "low": 8, "informational": 2}
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {
+        "high": 0,
+        "low": 8,
+        "informational": 2,
+    }
     delta = vtd.compare(_snap(base_payload, "baseline", "a" * 64), _snap(payload))
     assert delta.exit_code() == 0, (delta.worse, delta.better)
 
