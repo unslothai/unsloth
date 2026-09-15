@@ -926,6 +926,9 @@ def _server_port() -> int:
 server = pytest.mark.server
 
 # Simulate missing torch packages for imports, find_spec(), and distribution metadata.
+# from_name is patched too, not just discover: only 3.11+ routes named lookups through
+# discover, so on 3.9/3.10 version("torch") would still answer. Names come from the
+# metadata because Distribution.name does not exist on 3.9.
 _HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
     """
     import importlib.metadata as _metadata
@@ -936,11 +939,24 @@ _HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
         sys.modules[_name] = None
 
     _discover = _metadata.Distribution.discover.__func__
+    _from_name = _metadata.Distribution.from_name.__func__
+
+    def _hidden(dist):
+        try:
+            return (dist.metadata["Name"] or "").lower() in _HIDDEN
+        except Exception:
+            return False
 
     def _discover_without_torch(cls, **kwargs):
-        return (d for d in _discover(cls, **kwargs) if (d.name or "").lower() not in _HIDDEN)
+        return (d for d in _discover(cls, **kwargs) if not _hidden(d))
+
+    def _from_name_without_torch(cls, name):
+        if name.lower() in _HIDDEN:
+            raise _metadata.PackageNotFoundError(name)
+        return _from_name(cls, name)
 
     _metadata.Distribution.discover = classmethod(_discover_without_torch)
+    _metadata.Distribution.from_name = classmethod(_from_name_without_torch)
     """
 )
 
@@ -971,6 +987,23 @@ class TestLiveServerStartup:
 
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join([str(hide_dir), str(backend_dir)])
+
+        # Prove the shim took before blaming the server: a sitecustomize that never loaded
+        # otherwise surfaces as a puzzling chat_only failure.
+        hidden = subprocess.run(
+            [
+                str(py), "-c",
+                "import importlib.metadata as m, importlib.util as u, sys\n"
+                "try: m.version('torch'); sys.exit('metadata visible')\n"
+                "except m.PackageNotFoundError: pass\n"
+                "assert u.find_spec('torch') is None, 'spec visible'",
+            ],
+            env = env,
+            capture_output = True,
+            timeout = 60,
+        )
+        if hidden.returncode != 0:
+            pytest.fail(f"torch is still visible to the server process: {hidden.stderr.decode(errors = 'replace')}")
         proc = subprocess.Popen(
             [str(py), str(backend_dir / "run.py"), "--port", str(port)],
             env = env,
