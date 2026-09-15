@@ -3984,35 +3984,40 @@ class MLXInferenceBackend:
             generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
             final_response = None
             try:
-                for response in vlm_stream(
-                    self._model,
-                    self._processor,
-                    prompt,
-                    audio = [audio_array],
-                    max_tokens = max_new_tokens,
-                    # Greedy; the knobs below are load-time state, not caller kwargs.
-                    temperature = 0.0,
-                    **self._kv_quant_generate_kwargs(),
-                    **self._kv_window_generate_kwargs(),
-                ):
-                    final_response = response
-                    sampled += response.text if hasattr(response, "text") else str(response)
-                    if sequences:
-                        cut, stopped = _mlx_stop_cut(sampled, sequences)
-                    else:
-                        cut = len(sampled)
-                    # Cut before normalizing: the markers the normalizer writes are this layer's own, unmatched for
-                    # the same reason the prefill is.
-                    delta = sampled[released:cut]
-                    released = cut
-                    if normalizer is not None:
-                        delta = normalizer.feed(delta)
-                    if delta:
-                        yield delta
-                    if stopped:
-                        break
-                    if cancel_event and cancel_event.is_set():
-                        break
+                with closing(
+                    _iter_vlm_responses(
+                        vlm_stream(
+                            self._model,
+                            self._processor,
+                            prompt,
+                            audio = [audio_array],
+                            max_tokens = max_new_tokens,
+                            # Greedy; the knobs below are load-time state, not caller kwargs.
+                            temperature = 0.0,
+                            **self._kv_quant_generate_kwargs(),
+                            **self._kv_window_generate_kwargs(),
+                        )
+                    )
+                ) as responses:
+                    for response in responses:
+                        final_response = response
+                        sampled += response.text if hasattr(response, "text") else str(response)
+                        if sequences:
+                            cut, stopped = _mlx_stop_cut(sampled, sequences)
+                        else:
+                            cut = len(sampled)
+                        # Cut before normalizing: the markers the normalizer writes are this layer's own, unmatched for
+                        # the same reason the prefill is.
+                        delta = sampled[released:cut]
+                        released = cut
+                        if normalizer is not None:
+                            delta = normalizer.feed(delta)
+                        if delta:
+                            yield delta
+                        if stopped:
+                            break
+                        if cancel_event and cancel_event.is_set():
+                            break
             finally:
                 # Derived as the vision path derives it: this backend reports no finish reason, and unset reads as a
                 # natural end.

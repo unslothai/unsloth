@@ -2609,6 +2609,18 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
 
     seen = {}
     order = []
+    stream_state = {"active": False}
+
+    @contextmanager
+    def _generation_context():
+        assert not stream_state["active"]
+        stream_state["active"] = True
+        try:
+            yield
+        finally:
+            stream_state["active"] = False
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", _generation_context)
 
     @contextlib.contextmanager
     def _fake_adapter_state(model, use_adapter):
@@ -2641,18 +2653,30 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
     def _fake_stream(model, processor, prompt, **kwargs):
         seen["inside"] = seen.get("entered") and not seen.get("exited")
         assert order[-1] == "fusion_enter"
-        if seen.get("fail"):
-            raise RuntimeError("generation failed")
-        yield SimpleNamespace(
-            text = "x",
-            prompt_tokens = 1,
-            prompt_tps = 1.0,
-            generation_tokens = 1,
-            generation_tps = 1.0,
-        )
+        assert stream_state["active"]
+        try:
+            if seen.get("fail"):
+                raise RuntimeError("generation failed")
+            yield SimpleNamespace(
+                text = "x",
+                prompt_tokens = 1,
+                prompt_tps = 1.0,
+                generation_tokens = 1,
+                generation_tps = 1.0,
+            )
+        finally:
+            assert stream_state["active"]
+            order.append("producer_closed")
+
+    retained = []
+
+    def _retained_stream(*args, **kwargs):
+        producer = _fake_stream(*args, **kwargs)
+        retained.append(producer)
+        return producer
 
     fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.stream_generate = _fake_stream
+    fake_vlm.stream_generate = _retained_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
     monkeypatch.setattr(
         mlx_inference,
@@ -2686,12 +2710,14 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
         "adapter_enter",
         "snapshots_released",
         "fusion_enter",
+        "producer_closed",
         "fusion_exit",
         "adapter_exit",
     ]
     assert order == completed
     stream = backend.generate_audio_input_response(**args)
     assert next(stream) == "x"
+    assert not stream_state["active"]
     stream.close()
     assert order == completed * 2
     assert not backend._generation_lock.locked()
@@ -2700,6 +2726,15 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
         list(backend.generate_audio_input_response(**args))
     assert order == completed * 3
     assert not backend._generation_lock.locked()
+
+    seen["fail"] = False
+    cancelled = __import__("threading").Event()
+    for index, extra in enumerate(({"cancel_event": cancelled}, {"stop": ["x"]}), start = 4):
+        cancelled.set()
+        list(backend.generate_audio_input_response(**args, **extra))
+        assert order == completed * index
+        assert not stream_state["active"]
+        assert not backend._generation_lock.locked()
 
 
 def test_worker_forwards_use_adapter_on_the_audio_command():
