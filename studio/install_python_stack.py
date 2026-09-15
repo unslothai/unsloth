@@ -3537,16 +3537,17 @@ def _torch_family_for_cuda_version(major: int, minor: int) -> str:
     return "cpu"  # ancient driver: no usable CUDA wheels
 
 
-def _detect_cuda_torch_index_url() -> str:
+def _detect_cuda_torch_index_url(*, known_only: bool = False) -> str | None:
     """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
 
     Mirrors install.sh::get_torch_index_url's CUDA ladder so `studio update` repairs
     to the same wheel family a fresh install would pick. Honours the explicit
     overrides first (UNSLOTH_TORCH_INDEX_URL / _FAMILY) so a headless / CI install
     never lets the host GPU decide. Otherwise probes nvidia-smi (parsing both "CUDA
-    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable. The
-    driver version is only an upper bound, so the GPU architectures can cap the
-    result at cu126 (see _cap_cuda_family_for_pre_turing).
+    Version:" and "CUDA UMD Version:"), then the driver library, defaulting to cu126
+    when neither answers, or to None with known_only. The driver version is only an
+    upper bound, so the GPU architectures can cap the result at cu126 (see
+    _cap_cuda_family_for_pre_turing).
     """
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
@@ -3554,7 +3555,6 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    tag = "cu126"  # default when the driver CUDA version cannot be read
     # Every candidate until one ANSWERS, the way _has_usable_nvidia_gpu does. Taking the
     # first that merely exists loses to a stale nvidia-smi on PATH: the presence probe
     # walks past it to the working Program Files copy and confirms the GPU, while this one
@@ -3588,20 +3588,37 @@ def _detect_cuda_torch_index_url() -> str:
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
     # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
     # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
-    # default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
+    # caller's default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
     inventory = _nvidia_library_inventory()
     if inventory is not None and inventory.cuda_driver_version:
-        sms = []
-        for row in inventory.devices:
-            m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
-            if m is None:
-                sms = []
-                break
-            sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+        sms = _inventory_compute_sms(inventory)
         if sms:
             family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
             return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
-    return f"{_PYTORCH_WHL_BASE}/{tag}"
+    return None if known_only else f"{_PYTORCH_WHL_BASE}/cu126"
+
+
+def _inventory_compute_sms(inventory) -> "list[int]":
+    """Every sm_NN the driver library lists; empty when one row is unreadable, like
+    _nvidia_compute_sms."""
+    sms: list[int] = []
+    for row in inventory.devices:
+        m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
+        if m is None:
+            return []
+        sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+    return sms
+
+
+def _host_compute_sms() -> "list[int] | None":
+    """The host's sm_NN list from nvidia-smi, else from the driver library; None when
+    neither can say."""
+    smi = _nvidia_smi_path()
+    sms = _nvidia_compute_sms(smi) if smi else None
+    if sms:
+        return sms
+    inventory = _nvidia_library_inventory()
+    return (_inventory_compute_sms(inventory) or None) if inventory is not None else None
 
 
 def _driver_cuda_torch_flavor_tag() -> str:
@@ -3802,6 +3819,13 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return url
 
 
+def _deliberate_cpu_torch() -> bool:
+    """Someone chose CPU torch: an explicit CPU index pin, or a manifest that recorded cpu
+    as NAMED rather than selected and nothing in this run names a GPU family instead.
+    An unproven cpu record is not a choice."""
+    return _explicit_cpu_torch_index_pin() or _expected_torch_flavor_was_pinned("cpu")
+
+
 def _ensure_cuda_torch() -> None:
     """Repair a venv whose torch is a ROCm build on an NVIDIA host.
 
@@ -3903,8 +3927,7 @@ def _ensure_cuda_torch() -> None:
         _span = _cuda_family_sm_range(_family, _installed_release)
         if _span is None:
             return  # untagged or unrecognised build: not this check's business
-        _smi = _nvidia_smi_path()
-        _sms = _nvidia_compute_sms(_smi) if _smi else None
+        _sms = _host_compute_sms()
         if not _sms or _span_covers(_span, _sms):
             return  # healthy CUDA torch this host can use
         # Never trade one partial family for another, or reinstall the same one forever.
@@ -3916,6 +3939,23 @@ def _ensure_cuda_torch() -> None:
         _why = (
             f"torch is {_family} but this host has GPUs outside its "
             f"sm_{_span[0]}-{_span[1]} range"
+        )
+    elif (
+        _marker == "cpu"
+        and not _deliberate_cpu_torch()
+        and _is_cuda_family_leaf(
+            _torch_index_leaf(_detect_cuda_torch_index_url(known_only = True) or "")
+        )
+    ):
+        # A CPU wheel nobody asked for on an NVIDIA host whose driver is known to run a CUDA
+        # wheel (the selector's cu126 default for an unreadable driver is not evidence): a
+        # dependency step resolved torch from PyPI, or the GPU was not detected at install
+        # time. The Windows flavour invariant catches this; Linux only recorded it.
+        _recorded = _RECORDED_TORCH_TAG or ""
+        _why = "torch is a CPU build on an NVIDIA host" + (
+            f" although this install recorded {_recorded}"
+            if _is_cuda_family_leaf(_recorded)
+            else ""
         )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel

@@ -24,8 +24,183 @@ from unsloth_pwsh_runner import pwsh_env
 REPO = Path(__file__).resolve().parents[2]
 
 PS_SCRIPTS = ("install.ps1", "studio/setup.ps1", "scripts/uninstall.ps1")
-SH_SCRIPTS = ("install.sh", "studio/setup.sh")
-ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS
+SH_SCRIPTS = ("install.sh", "studio/setup.sh", "scripts/uninstall.sh")
+# A shipped .bat is scanned like any other file, and studio/setup.bat launches PowerShell, so the
+# same rules apply. Neither it nor scripts/uninstall.sh was in any list here, which is how
+# setup.bat's `-ExecutionPolicy Bypass` survived the passes in #7822 and #8586: every guard below
+# was reading a set of files that did not include it.
+BAT_SCRIPTS = ("studio/setup.bat",)
+ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS + BAT_SCRIPTS
+
+
+# ---------------------------------------------------------------------------
+# Why the installers are written the way they are, and which product flagged what
+# ---------------------------------------------------------------------------
+#
+# This record lives here, in a test, rather than in the shipped scripts or in a doc.
+#
+# Not in the scripts, because PowerShell hands the entire top-level script block to AMSI at compile
+# time, before the first statement runs -- so every byte of install.ps1 is classifier input, comments
+# included. VirusTotal's analysis of the file quoted one of our own comments back as grounds for
+# suspicion: "The presence of comments that suggest the script is designed to evade detection by
+# security tools (e.g. 'AMSI scans this file in full before a line of it runs') further adds to the
+# suspicion." Prose naming vendors and detection families raises the score of the very file it is
+# trying to explain.
+#
+# Here, because this file already owns the guards that keep those shapes out, it ships to nobody, it
+# is not packaged, and nothing scans it. The rule the tests below enforce is:
+#
+#     a comment in a shipped script says what the code does and what breaks if you change it;
+#     this record says which scanner flagged which shape, and when.
+#
+# Nothing below is an evasion. Every decision makes the installer do strictly LESS than the shape it
+# replaced: no compiler, no script engine, no remote script text, no cache purge on a no-op. The
+# heuristics are not wrong about the shapes; they are wrong that we are an instance of them, and the
+# fix is to stop having the shape.
+AV_SHAPES_RECORD = r"""
+## Measured detections
+
+| Sample | Verdict |
+|---|---|
+| install.ps1 at 1ad44677d (the revision reported in #10805) | 1 malicious / 58 undetected: Skyhigh
+  (Trellix / McAfee Enterprise) BehavesLike.PS.Suspicious.gr, engine v2021.2.0+4045, definitions
+  20260912 |
+| the same file uploaded elsewhere as unsloth_install2.ps1 | same single engine, same label |
+| tests/security/fixtures/malicious_wheel.whl, malicious_sdist.tar.gz | 2/65 and 2/60 (Tencent,
+  Rising), and the cause of Panda flagging the GitHub repo zip as Exploit/CVE-2014-6271. Both are now
+  generated at test time rather than committed |
+
+Beyond the one engine verdict, VirusTotal runs 17 Sigma rules against install.ps1 (1 high, 11 medium,
+5 low) plus two crowdsourced YARA rules. That rule count, not an engine detection, is what drives the
+high scores seen on third-party analysis sites.
+
+## What the hardening has actually bought so far
+
+Measured by scripts/virustotal_delta.py, not asserted:
+
+|                  | baseline (1ad44677d)          | main (2c70592a)   |
+|------------------|-------------------------------|-------------------|
+| engines flagging | 1 / 60                        | 1 / 61            |
+| which            | Skyhigh BehavesLike.PS.Suspicious.gr | the same   |
+| Sigma            | 17 (1 high, 11 medium, 5 low) | 14 (10 medium, 4 low) |
+| YARA             | 2                             | 0                 |
+
+The high-severity rule is gone, and so are both YARA hits --
+INDICATOR_SUSPICIOUS_PWSH_B64Encoded_Concatenated_FileEXEC and Windows_API_Function, the second of
+which is the P/Invoke cluster. The Skyhigh verdict has not moved, and that is recorded as unchanged
+rather than dressed up: a cloud behavioural verdict is not recomputed because we deleted some code,
+and the honest expectation is that the static axis moves first and the engine axis may never move.
+
+This is the first before-and-after this work has had. Six passes shipped without one, which is why
+none of them could be shown to have achieved anything.
+
+## Reflection emit instead of Add-Type
+
+Add-Type on Windows PowerShell 5.1 -- the interpreter the desktop app spawns, and the one a clean
+Windows box ships -- has no in-process compiler. -TypeDefinition and -MemberDefinition alike write C#
+to %TEMP% and run csc.exe, leaving source, a response file and a DLL behind.
+
+Bitdefender blocked the resulting DLL as Gen:Variant.MSILHeracles.272113 (#10540). The shape it scores
+is real: a windowless PowerShell spawned by a GUI binary, running a compiler, writing executable
+content to %TEMP%. The same call also failed outright with CS2001 where %TEMP% was unusable (#9140),
+so this is a robustness fix as much as a detection one.
+
+System.Reflection.Emit builds the identical interop stubs in memory: no compiler process, no source
+file, no DLL, and an empty Assembly.Location. windows-no-compiler-ci.yml is the standing proof --
+4688 process auditing unioned with a live FileSystemWatcher over every temp root, with a positive
+control, requiring zero compiler launches across a full install.
+
+## No .vbs launcher
+
+A WScript.Shell .vbs that spawns a hidden PowerShell with a bypassed execution policy is close to the
+canonical shape VBS-dropper heuristics are written for -- Kaspersky HEUR:Trojan.VBS.Agent.gen is the
+family. The .lnk files therefore point straight at powershell.exe running launch-studio.ps1, with no
+script engine in between, and the installer removes an older launch-studio.vbs if it finds one,
+because leaving it behind means a machine that was cleaned still has the flagged file.
+
+## RemoteSigned rather than Bypass, next to a hidden window
+
+A hidden window paired with a bypassed execution policy is a pair Microsoft's own detections key on,
+and it appears in Sigma's "Suspicious PowerShell WindowStyle Option" too. The hidden window is a real
+requirement -- a console flashing up on every launch is a visible regression, and
+tests/studio/install/test_launch_studio_launcher.py pins the flag -- so the half that goes is the
+policy.
+
+RemoteSigned is not a weaker guarantee here, it is the same one: it refuses unsigned scripts only in
+the Internet and Untrusted zones, and every script involved is written locally by the installer. Where
+a mark of the web can exist (a downloaded zip rather than a clone), Unblock-File clears it first
+instead of the policy being relaxed to tolerate it.
+
+Three things to know before simplifying any of this:
+
+  - UNC paths are a remote zone. \\wsl.localhost\<distro>\tmp\x.ps1 is refused under RemoteSigned,
+    which is why install.sh resolves the Windows %TEMP% for its generated script and skips shortcut
+    creation rather than falling back to Bypass when it cannot.
+  - Execution policy is evaluated against the script FILE's zone, not against who launched
+    PowerShell, and it does not apply to -Command at all. A .cmd or .bat shim therefore cannot
+    launder a remote-zone script, and Sigma's "Powershell Execute Batch Script" scores the shim
+    itself.
+  - The Windows CLIENT default is Restricted, which blocks every script file. Documentation telling a
+    user to set a process-scoped policy is load-bearing; it just does not need to say Bypass.
+
+## The icon-cache refresh is gated on a first install or a real icon change
+
+Clearing icon caches and killing StartMenuExperienceHost is the only way to make Explorer pick up a
+rewritten .lnk icon, and ie4uinit's global broadcast alone does not do it. But "clear caches, kill a
+shell process, repeat on every run" is a cluster behavioural engines score, and on a reinstall that
+changed nothing it is also pure waste. So both install.ps1 and install.sh snapshot the icon and run
+the heavy path only on a first install or an actual change, preserving start2.bin.
+
+SHChangeNotify stays, and with it one shell32 import: a permanently wrong desktop icon is a worse
+outcome than one import.
+
+## uv comes from a pinned archive, not from a remote install script
+
+The upstream one-liner pipes a remote script into the interpreter. Running remote script text
+in-process is the highest-scoring thing in this problem space, and download-run-delete is the literal
+definition of a dropper. Our fallback reaches the same end state (same archive, same destination, same
+user-PATH prepend as astral's installer) by fetching a DATA file with a pinned SHA-256.
+
+Cost: bumping the uv version means bumping all three hashes, one per architecture, in all three
+scripts. That is deliberate friction and the comment at each site says so.
+
+There is a floor no shape work removes: while the supported install route is
+`irm https://unsloth.ai/install.ps1 | iex`, the documented entry point is itself the top-scoring token
+sequence in this space.
+
+## Why the script headers do not repeat the usage text
+
+install.ps1 and scripts/uninstall.ps1 are scanned in full at compile time, before a line of either
+runs, and nothing reads a header comment from inside the script. Duplicating the README's option list
+into a header adds bytes to a classifier's input and reaches no user.
+
+## Shapes we are keeping, on purpose
+
+Each fires a rule and each is load-bearing. Listed so nobody spends a second pass rediscovering them.
+
+  - -WindowStyle Hidden on the shortcuts. Removing it makes a console window appear on every launch;
+    the flag is a pinned contract in test_launch_studio_launcher.py.
+  - Authenticode publisher checks on the python.org and vc_redist downloads. Weakening a real security
+    control to lower a heuristic score is backwards.
+  - New-Object -ComObject WScript.Shell to write the .lnk files. The only shortcut mechanism available
+    to PowerShell 5.1 without IShellLink interop; hand-writing the shell-link binary format or
+    emitting COM interop are both more suspicious and more fragile.
+  - Unblock-File rather than deleting the Zone.Identifier stream directly. The direct delete trades
+    one medium indicator ("Suspicious Unblock-File") for another ("Hidden Executable In NTFS Alternate
+    Data Stream"), which already fires.
+  - ie4uinit, Get-Process, python -X utf8 -c, Invoke-WebRequest. Each is scored; each has no
+    equivalent that does the job.
+
+## Reporting a detection
+
+Use the "Windows: antivirus or security software blocked the installer" issue form. It requires the
+product, the exact detection name, the full error including its FullyQualifiedErrorId, and the output
+of a read-only collection script naming the AMSI providers actually loaded.
+
+Those fields are required because clearance is granted per file hash and every vendor submission form
+asks for a detection name. Six previous reports (#8523, #6326, #6588, #6648, #10540, #10805) named
+none of them, which is why none could be submitted to a vendor or proven fixed.
+"""
 
 
 def _text(name: str) -> str:
@@ -107,18 +282,102 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         assert banned not in text, f"{name} contains {banned}"
 
 
+_HIDDEN = re.compile(r"-WindowStyle\s+Hidden", re.IGNORECASE)
+_BYPASS = re.compile(
+    r"-ExecutionPolicy\s+Bypass|Set-ExecutionPolicy[^\r\n]*?\bBypass\b", re.IGNORECASE
+)
+_ASSIGNMENT = re.compile(r"\$(?:script:|env:)?(\w+)\s*(?:=|\+=)\s*(.*)")
+
+# Every relaxed execution policy left in a shipped script, why it is still there, and what removes
+# it. A ratchet: these counts may go down, never up, and the test fails BOTH ways -- too many is a
+# new site, too few is a stale entry that has stopped guarding anything.
+KNOWN_BYPASS_SITES = {
+    # install.ps1:3433, the roaming-profile fallback for a launcher on a share. The last one left,
+    # and the only one that is genuinely load-bearing: %LOCALAPPDATA% can be folder-redirected to a
+    # UNC path, RemoteSigned refuses an unsigned script there, and a desktop shortcut that silently
+    # does nothing is worse than the token. Removing it needs launch-studio.ps1 written to a
+    # guaranteed-local directory first.
+    "install.ps1": 1,
+}
+
+# Known (script, variable) pairs where one assignment carries a hidden window and another a relaxed
+# policy. Empty is the goal. install.ps1's $shortcutArgs is recorded rather than failed on, so this
+# guard can land without also forcing the launcher relocation above.
+# Keyed on the CASEFOLDED variable name. PowerShell variable names are not case-sensitive
+# (about_Variables: "Variable names aren't case-sensitive"), so `$shortcutArgs` and `$ShortcutArgs`
+# are one variable. Grouping on the captured spelling instead would file them as two, each holding
+# only one of the two flags, and layer 3 below would wave the pair through on a capitalisation edit.
+KNOWN_SPLIT_PAIR_VARIABLES = {("install.ps1", "shortcutargs")}
+
+
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
-    # Microsoft's detections key on this pair;
-    # install.rs already refuses it for the app's own launch.
-    # Python setup/refresh argv is exercised at the subprocess boundary by
-    # unsloth_cli/tests/test_studio_runtime_gate_powershell.py::
-    # test_windows_launch_uses_process_flags_without_windowstyle.
-    for number, line in enumerate(_text(name).splitlines(), start = 1):
-        if re.search(r"-WindowStyle\s+Hidden", line, re.IGNORECASE):
-            assert not re.search(
-                r"-ExecutionPolicy\s+Bypass", line, re.IGNORECASE
+    """Three layers, because the same-line check alone never saw the pair we actually shipped.
+
+    Microsoft's detections key on the pair, and install.rs already refuses it for the app's own
+    launch. Python setup/refresh argv is exercised at the subprocess boundary by
+    unsloth_cli/tests/test_studio_runtime_gate_powershell.py::
+    test_windows_launch_uses_process_flags_without_windowstyle.
+
+    The original check compared the two flags only within one physical line. install.ps1 assigns
+    `$shortcutArgs` a hidden window at :3419 and then overwrites it with a relaxed policy at :3433,
+    fourteen lines apart in one function, and that passed for as long as it existed. A scanner reads
+    the file, not the line.
+    """
+    text = _text(name)
+    lines = text.splitlines()
+
+    # 1. Same line. The cheapest check and the one with the clearest message.
+    for number, line in enumerate(lines, start = 1):
+        if _HIDDEN.search(line):
+            assert not _BYPASS.search(
+                line
             ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
+
+    # 2. A ratchet on how many relaxed policies the file contains at all, wherever they sit and
+    #    whatever they are near. This is what catches a new one arriving somewhere the other two
+    #    layers do not model.
+    found = [
+        (number, line.strip()) for number, line in enumerate(lines, start = 1) if _BYPASS.search(line)
+    ]
+    allowed = KNOWN_BYPASS_SITES.get(name, 0)
+    assert len(found) <= allowed, (
+        f"{name} relaxes the execution policy in {len(found)} place(s) but {allowed} are recorded: "
+        f"{found}. RemoteSigned loads any locally written, unmarked script, which covers almost "
+        f"every case; if this one genuinely cannot, add it to KNOWN_BYPASS_SITES with the reason "
+        f"and what would remove it."
+    )
+    assert len(found) >= allowed, (
+        f"{name} now has {len(found)} relaxed policies but KNOWN_BYPASS_SITES records {allowed}. "
+        f"Lower the count in the same commit that removed one, so the ratchet keeps its grip "
+        f"instead of leaving slack for the next regression to fit into."
+    )
+
+    # 3. Same variable, any distance: the union of everything assigned to one name must not contain
+    #    both flags. This is the layer that catches the install.ps1 3419/3433 shape.
+    contributions: dict[str, set] = {}
+    spellings: dict[str, set] = {}
+    for line in lines:
+        match = _ASSIGNMENT.match(line.strip())
+        if not match:
+            continue
+        # Casefolded, because PowerShell resolves $shortcutArgs and $ShortcutArgs to one variable.
+        key = match.group(1).casefold()
+        spellings.setdefault(key, set()).add(match.group(1))
+        seen = contributions.setdefault(key, set())
+        if _HIDDEN.search(match.group(2)):
+            seen.add("hidden")
+        if _BYPASS.search(match.group(2)):
+            seen.add("bypass")
+    for variable, seen in sorted(contributions.items()):
+        if seen != {"hidden", "bypass"}:
+            continue
+        written = " / ".join(sorted(spellings[variable]))
+        assert (name, variable) in KNOWN_SPLIT_PAIR_VARIABLES, (
+            f"{name}: ${written} is assigned a hidden window in one place and a relaxed policy in "
+            f"another. Only one of them reaches the command line, so whichever is dead weight "
+            f"should go rather than be recorded here."
+        )
 
 
 # Every native import left in the installers, however it is declared. Both scripts define theirs through reflection
@@ -149,6 +408,20 @@ ALLOWED_PINVOKES = {
     "QueryFullProcessImageNameW",
     # Closing the handles CreateFileW and OpenProcess opened.
     "CloseHandle",
+    # The NVIDIA driver's own inventory (Get-NvidiaLibraryInventory) for a host whose nvidia-smi is absent, stale
+    # or hangs: the CUDA driver version and one compute capability per GPU. No PowerShell or .NET equivalent
+    # exists; nvidia-smi is the thing being worked around, and reading the registry names no driver version.
+    "nvmlInit_v2",
+    "nvmlShutdown",
+    "nvmlSystemGetCudaDriverVersion_v2",
+    "nvmlDeviceGetCount_v2",
+    "nvmlDeviceGetHandleByIndex_v2",
+    "nvmlDeviceGetCudaComputeCapability",
+    "cuInit",
+    "cuDriverGetVersion",
+    "cuDeviceGetCount",
+    "cuDeviceGet",
+    "cuDeviceGetAttribute",
 }
 
 
@@ -170,6 +443,62 @@ def _native_imports(text: str) -> set:
     return imported
 
 
+def test_setup_bat_clears_the_mark_before_loading_under_remotesigned() -> None:
+    """The batch launcher's two calls, in order, and the one flag it must not grow.
+
+    `setup.bat` used to run `powershell -ExecutionPolicy Bypass -File setup.ps1`. RemoteSigned is
+    enough, because setup.ps1 ships beside it inside an installed package and is MyComputer-zone.
+    The exception is a package unzipped from a download, where setup.ps1 carries a mark of the web
+    that RemoteSigned honours and Bypass ignored, so the mark is cleared first. Execution policy
+    governs script FILES and not -Command, so that first call runs under any machine policy.
+
+    The launch must keep loading profiles. That is not an oversight: tests/studio/
+    test_amd_venv_repair_loop.ps1 drives a profile that sets `Set-StrictMode -Version Latest`
+    against setup.ps1, and adding -NoProfile here would silently retire that coverage.
+    """
+    text = _text("studio/setup.bat")
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.strip().lower().startswith(("rem ", "@echo", "rem\t"))
+    ]
+    # The path and the policy both travel in variables now, so match on the flags rather than on a
+    # literal filename: the path is an environment variable so an apostrophe in the install
+    # directory cannot break the quoting, and the policy is chosen by a probe that steps down to
+    # Bypass only for a script on a remote share (see
+    # test_setup_bat_steps_down_to_bypass_only_for_a_remote_script).
+    launches = [line for line in lines if "-File" in line and "-ExecutionPolicy" in line]
+    assert len(launches) == 1, f"expected exactly one setup.ps1 launch, found {launches}"
+    launch = launches[0]
+
+    assert "-ExecutionPolicy %UNSLOTH_SETUP_POLICY%" in launch, (
+        f"studio/setup.bat must load setup.ps1 under the probed policy, not a hardcoded relaxed "
+        f"one: {launch}"
+    )
+    assert 'set "UNSLOTH_SETUP_POLICY=RemoteSigned"' in text, (
+        "the probed policy no longer DEFAULTS to RemoteSigned. That default is what makes a probe "
+        "which fails to run leave the tightened policy in place instead of restoring the relaxed one."
+    )
+    assert "-NoProfile" not in launch, (
+        "studio/setup.bat must keep loading profiles for setup.ps1. "
+        "tests/studio/test_amd_venv_repair_loop.ps1 drives a profile that sets Set-StrictMode "
+        "against it, and -NoProfile here would retire that coverage without anything failing."
+    )
+
+    unblock = [line for line in lines if "Unblock-File" in line]
+    assert len(unblock) == 1, f"expected exactly one Unblock-File call, found {unblock}"
+    assert text.index(unblock[0]) < text.index(launch), (
+        "the mark of the web has to be cleared before the launch that RemoteSigned would refuse, "
+        "not after it"
+    )
+    # Interpolating the path into the command string breaks on an apostrophe in the install
+    # directory, which is a real Windows user name.
+    assert "$env:" in unblock[0], (
+        f"pass the script path to Unblock-File through an environment variable rather than "
+        f"interpolating it into the command string: {unblock[0]}"
+    )
+
+
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_no_new_native_imports(name: str) -> None:
     text = _text(name)
@@ -182,31 +511,80 @@ def test_no_new_native_imports(name: str) -> None:
 
 @pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
 def test_virtual_terminal_answers_a_redirected_stream_without_defining_a_type(name: str) -> None:
-    """The answer we already know must come first, before any native work at all.
+    """The stronger contract this test's name always implied: nothing native happens here at all.
 
-    Only the redirected case is decided early, and it is decided FALSE: a redirected stdout is
-    not a console, GetConsoleMode fails on a non-console handle, and the native path could only
-    have returned false too. Anything claiming VT here would put raw escape sequences in the
-    Unsloth log panel, which is a pipe.
+    It used to assert an ordering -- that the redirect check came *before* the emit call -- because
+    the redirect check was the only thing keeping the desktop app off csc.exe. There is no emit call
+    now. A CI pre-flight measured Windows PowerShell 5.1 attached to a real console and found the
+    console mode already 0x7 before any of our code ran: bit 0x4,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, is set by the host at startup. The SetConsoleMode this
+    replaced was re-setting a bit that was already set, so reading
+    $Host.UI.SupportsVirtualTerminal loses nothing.
 
-    This used to guard an Add-Type, when the redirect check was all that kept the desktop app
-    off csc.exe. Nothing compiles now, so the ordering no longer matters to a scanner, but it is
-    still the cheaper answer and getting it wrong still corrupts the log panel.
+    Two things still have to hold. The redirected case must still be decided FALSE and decided
+    first: a redirected stdout is not a console, and anything claiming VT there puts raw escape
+    sequences in the Unsloth log panel, which is a pipe. And the function must stay free of native
+    work, or the three kernel32 imports come back one careful commit at a time.
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")
-    call = re.compile(r"(?m)^[ \t]*\$null = New-StudioEmittedNativeType\b").search(text, start)
-    assert call, f"{name} no longer emits the console thunk; update this guard"
-    define_at = call.start()
-    fast_path = text.index("if ($script:StudioStdoutRedirected) { return $false }", start)
-    assert fast_path < define_at, (
-        f"{name} builds the native console thunk before checking the stream: move the redirect "
-        f"guard above it, since a redirected stream can never render VT anyway."
+    # To the end of the function. The next top-level construct after it is the assignment of its
+    # result, which is a stable landmark in both files.
+    end = text.index("$script:StudioVtOk = Enable-StudioVirtualTerminal", start)
+    body = text[start:end]
+
+    fast_path = body.index("if ($script:StudioStdoutRedirected) { return $false }")
+    property_read = body.index("$Host.UI.SupportsVirtualTerminal")
+    assert fast_path < property_read, (
+        f"{name} consults the host before checking whether the stream is redirected. A redirected "
+        f"stream can never render VT, so that case has to be decided first and decided false."
     )
-    assert "$true" not in text[fast_path:define_at], (
-        f"{name} returns something other than $false before the native work. The early answer is "
-        f"only sound because a redirected stream can never render VT."
-    )
+
+    for banned in (
+        "New-StudioEmittedNativeType",
+        "DefinePInvokeMethod",
+        "Add-Type",
+        "GetStdHandle",
+        "SetConsoleMode",
+        "kernel32",
+    ):
+        assert banned not in _strip_comments(body), (
+            f"{name}'s Enable-StudioVirtualTerminal does native work again ({banned}). The host "
+            f"already enables virtual terminal processing at startup, measured: the console mode "
+            f"is 0x7 before we touch it. Colouring a banner is not worth three kernel32 imports."
+        )
+
+
+def _strip_comments(text: str) -> str:
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
+
+
+def test_neither_installer_declares_a_console_mode_import() -> None:
+    """The console thunk reached zero native surface, and must not drift back.
+
+    Both scripts used to declare GetStdHandle, GetConsoleMode and SetConsoleMode for one consumer: a
+    cosmetic ANSI colour banner. A CI pre-flight measured Windows PowerShell 5.1 attached to a real
+    console and found the mode already 0x7 before anything of ours ran, so bit 0x4,
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING, was already set by the host and the SetConsoleMode was
+    re-setting it. Without this test the three imports are one "just add a small helper" away from
+    coming back, and nothing else in the suite would notice: every other check here is about how a
+    native import is DECLARED rather than whether there is one.
+
+    Scoped to the console imports rather than to all of them. studio/setup.ps1 still emits the nvml
+    and nvcuda imports for Get-NvidiaLibraryProbeType, which is what the GPU inventory reads, so a
+    blanket "no native imports" assertion would be false and deleting the apparatus to satisfy it
+    would break that.
+    """
+    for name in ("install.ps1", "studio/setup.ps1"):
+        declared = _native_imports(_text(name))
+        for banned in ("GetStdHandle", "GetConsoleMode", "SetConsoleMode"):
+            assert banned not in declared, (
+                f"{name} declares {banned} again; the console mode is the host's job and "
+                f"$Host.UI.SupportsVirtualTerminal reports its outcome"
+            )
+    setup = _strip_comments(_text("studio/setup.ps1"))
+    assert "StudioVTNative" not in setup, "the emitted console thunk is back in studio/setup.ps1"
+    assert "Add-Type" not in setup, "studio/setup.ps1 compiles C# through csc.exe again"
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
@@ -245,7 +623,7 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
 
 
-@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+@pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     """The desktop app spawns Windows PowerShell 5.1, which compiles Add-Type by writing C# to
     %TEMP% and running csc.exe. A GUI binary launching a windowless PowerShell that launches a
@@ -255,20 +633,37 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
 
     Add-Type in full, not only -TypeDefinition: -MemberDefinition wraps its argument in a class
     and compiles that too. -AssemblyName is the only exception, since it loads an assembly that
-    already exists on disk. Both scripts, because a compile left anywhere makes "does this run a
-    compiler" depend on which entrypoint ran and whether an early return came first, and a guard
-    that holds only conditionally is what let this reach the field.
+    already exists on disk. Every shipped script, because a compile left anywhere makes "does this
+    run a compiler" depend on which entrypoint ran and whether an early return came first, and a
+    guard that holds only conditionally is what let this reach the field.
+
+    The shell scripts are covered for a concrete reason, not for symmetry. install.sh writes
+    PowerShell into a here-string and runs it on the Windows side to create the WSL shortcut, and
+    that generated script still carried the `Add-Type -MemberDefinition` this test exists to ban:
+    #10540 replaced it in install.ps1 and the install.sh copy was missed, because the parametrise
+    list here stopped at the two .ps1 files. The `^[ \\t]*Add-Type` anchor matches inside a
+    here-string exactly as it does outside one, so seeing it needs no here-string parsing.
     """
     text = _text(name)
     hits = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", text)
     assert not hits, (
         f"{name} compiles C# again ({len(hits)} Add-Type call(s), first: {hits[0].strip()!r}). "
-        "Declare native methods with New-StudioEmittedNativeType instead; -MemberDefinition runs "
-        "csc.exe just as -TypeDefinition does."
+        "Declare native methods with New-StudioEmittedNativeType instead, or with an inline "
+        "DefinePInvokeMethod block where the script is generated and cannot call it; "
+        "-MemberDefinition runs csc.exe just as -TypeDefinition does."
     )
-    assert (
-        "DefinePInvokeMethod" in text
-    ), f"{name} no longer emits its native imports; update this guard"
+    # Conditional, because "emits its native imports" only means anything for a file that HAS
+    # native imports. Three shipped files now declare none: scripts/uninstall.ps1 and
+    # studio/setup.sh never did, and studio/setup.ps1 stopped -- its whole emit apparatus existed
+    # to colour a banner, and the host turns out to enable virtual terminal processing before our
+    # code runs. Demanding the token of a file with zero native surface would be a guard that
+    # fails for being satisfied; test_setup_declares_no_native_imports_at_all is what keeps that
+    # zero honest.
+    if _native_imports(text):
+        assert "DefinePInvokeMethod" in text, (
+            f"{name} declares native imports but no longer emits them. If they are compiled again "
+            f"instead, that is csc.exe on 5.1, which is the shape this whole file exists to keep out."
+        )
     # The private-%TEMP% retry is gone with it: redirecting TEMP to compile again cannot beat a
     # filter driver, and "blocked writing an executable to TEMP, change TEMP, write it again" is
     # itself an evasion heuristic. Scoped to the resolver, since Initialize-StudioTempEnvironment
@@ -686,3 +1081,276 @@ def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
     assert "Get-StudioLexicalPath" in text
     # Constrained Language Mode forbids defining types at all, by emit as by Add-Type.
     assert '$languageMode -ne "FullLanguage"' in text
+
+
+# ---------------------------------------------------------------------------
+# The shipped scripts must not name detections. The document must.
+# ---------------------------------------------------------------------------
+
+
+# Every file that ships and is scanned, including the two no other check in this file reads.
+DOCUMENTED_SCRIPTS = tuple(sorted(set(ALL_SCRIPTS) | {"studio/setup.bat", "scripts/uninstall.sh"}))
+
+# Vendor names, detection families and analyst vocabulary. Not a style rule: PowerShell hands the
+# entire top-level script block to AMSI at compile time, so comments are classifier input, and
+# VirusTotal's analysis of install.ps1 quoted one of our own comments as grounds for suspicion.
+BANNED_TOKENS = (
+    "bitdefender",
+    "kaspersky",
+    "skyhigh",
+    "trellix",
+    "mcafee",
+    "avast",
+    "sophos",
+    "malwarebytes",
+    "tencent",
+    # "rising" is deliberately absent. It is a real engine, and one of the two that flagged the
+    # fixture archives, but the word is also ordinary English: "rising memory use" is a sentence
+    # someone will write, and boundary matching cannot tell it from the vendor. A guard that fails
+    # on valid prose gets deleted by the next person, so it is worth less than nothing. "tencent",
+    # the other engine that flagged those archives, has no such problem and stays.
+    "panda",
+    "wacatac",
+    "heur:",
+    "heracles",
+    "gen:variant",
+    "behaveslike",
+    "trojan",
+    "dropper",
+    "amsi",
+    "smartscreen",
+    "virustotal",
+    "sigma rule",
+    "malware",
+)
+
+# Generic words describing a runtime hazard the code actually handles, one of which reaches the
+# user. Banning these would delete real operational meaning, so they are deliberately allowed:
+# antivirus, quarantine, scanner, security software, blocked.
+#
+# "false positive" is also deliberately absent, and for a more interesting reason: this test caught
+# it at install.ps1 and studio/setup.ps1, where it means a *statistical* false positive in a
+# registry probe and has nothing to do with a scanner. A token list is only as good as the words
+# having one meaning.
+
+
+def _banned_pattern(token: str) -> re.Pattern:
+    """`token`, matched on word boundaries where the token's own edges are word characters.
+
+    A raw substring search makes several of these unusable. `rising` is inside `surprising`,
+    `arising` and `comprising`; `panda` is inside `pandas`, which is a real dependency name. The
+    failure message would then accuse an ordinary sentence of naming an antivirus vendor, and the
+    fix a reader would reach for is to delete the guard. Boundaries are conditional because
+    `heur:` and `gen:variant` end or begin on a colon, where `\b` asserts the opposite of what is
+    wanted.
+    """
+    left = r"\b" if token[:1].isalnum() else ""
+    right = r"\b" if token[-1:].isalnum() else ""
+    return re.compile(left + re.escape(token) + right, re.IGNORECASE)
+
+
+@pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
+@pytest.mark.parametrize("token", BANNED_TOKENS)
+def test_no_shipped_script_names_a_detection(name: str, token: str) -> None:
+    path = REPO / name
+    if not path.is_file():
+        pytest.skip(f"{name} is not present")
+    found = _banned_pattern(token).search(path.read_text(encoding = "utf-8"))
+    assert not found, (
+        f"{name} contains {token!r}. Vendor names, detection families and analyst vocabulary "
+        f"belong in tests/studio/test_installer_av_shapes.py, not in a file that is itself handed to "
+        f"a classifier in full before it runs. Say what the code does and what breaks if it "
+        f"changes; link the anchor for which product flagged what."
+    )
+
+
+def test_the_record_survives_and_keeps_its_evidence() -> None:
+    """Without this, the ban above is satisfiable by deleting the knowledge instead of moving it.
+
+    Six hardening passes shipped without recording which engine flagged what, which is why none of
+    them could be shown to have fixed anything. AV_SHAPES_RECORD is where that record lives now --
+    in this file rather than a doc, because a test ships to nobody and nothing scans it, and because
+    the guards that enforce the split are right here beside it.
+    """
+    for section in (
+        "## Measured detections",
+        "## Reflection emit instead of Add-Type",
+        "## No .vbs launcher",
+        "## RemoteSigned rather than Bypass, next to a hidden window",
+        "## The icon-cache refresh is gated on a first install or a real icon change",
+        "## uv comes from a pinned archive, not from a remote install script",
+        "## Why the script headers do not repeat the usage text",
+        "## Shapes we are keeping, on purpose",
+    ):
+        assert section in AV_SHAPES_RECORD, f"the record lost its {section!r} section"
+
+    # The sections are the skeleton; these are the point. A record with headings and no evidence is
+    # the same loss with extra steps.
+    for evidence in (
+        "Gen:Variant.MSILHeracles.272113",
+        "HEUR:Trojan.VBS.Agent.gen",
+        "BehavesLike.PS.Suspicious.gr",
+        "#10540",
+        "#10805",
+        "#9140",
+    ):
+        assert evidence in AV_SHAPES_RECORD, f"the record no longer names {evidence}"
+
+
+@pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
+def test_every_script_that_dropped_its_explanation_points_at_the_record(name: str) -> None:
+    """A comment reduced to "security software blocks this" with no forward reference is worse
+    than the prose it replaced: the next maintainer cannot tell whether it is still true.
+    """
+    path = REPO / name
+    if not path.is_file():
+        pytest.skip(f"{name} is not present")
+    text = path.read_text(encoding = "utf-8")
+    hints = ("Add-Type", "RemoteSigned", "ClearIconCache", "Sha256", "SHA-256")
+    if not any(hint in text for hint in hints):
+        pytest.skip(f"{name} carries none of the documented shapes")
+    assert "test_installer_av_shapes.py" in text, (
+        f"{name} implements one of the recorded shapes but references nothing. Point at "
+        f"tests/studio/test_installer_av_shapes.py, where AV_SHAPES_RECORD says which product "
+        f"flagged what, so the reasoning is one grep away rather than lost."
+    )
+    # Assembled, so that a later blanket rename of the doc path cannot silently rewrite this check
+    # into asserting the opposite of what it means. That happened once while writing it.
+    stale = "docs/windows-installer-" + "av-shapes.md"
+    assert stale not in text, (
+        f"{name} points at {stale}, which does not exist. The record lives in "
+        f"tests/studio/test_installer_av_shapes.py as AV_SHAPES_RECORD."
+    )
+
+
+# -------------------------------------------------------------------------
+# studio/setup.bat
+# ---------------------------------------------------------------------------
+
+
+def _setup_bat_probe() -> str:
+    """The PowerShell that setup.bat embeds to clear the mark and choose a policy."""
+    for line in _text("studio/setup.bat").splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("rem") or stripped.startswith("@rem"):
+            continue
+        if "-Command" not in line:
+            continue
+        body = line.split('-Command "', 1)[1]
+        return body[: body.rindex('"`)')]
+    raise AssertionError(
+        "studio/setup.bat no longer embeds a -Command probe. It needs one: Unblock-File has to run "
+        "before setup.ps1 is loaded under RemoteSigned, and the remote-path check has to happen "
+        "before a policy is chosen."
+    )
+
+
+def test_the_setup_bat_probe_parses() -> None:
+    """It is one long line inside a batch `for /f` backquote block, which is a quoting minefield.
+
+    A syntax error here does not fail loudly: the `for /f` captures nothing, the batch default of
+    RemoteSigned stands, and the mark of the web is never cleared -- so a user who unzipped a
+    download gets a refusal with no hint that the probe was the thing that broke.
+    """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    probe = _setup_bat_probe()
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "probe.ps1"
+        path.write_text(probe, encoding = "utf-8")
+        result = _run_pwsh_parse(pwsh, path)
+    assert (
+        result.returncode == 0
+    ), f"the probe embedded in studio/setup.bat does not parse:\n{result.stdout}\n{result.stderr}"
+
+
+def _run_pwsh_parse(pwsh: str, path: Path):
+    import os
+    from unsloth_pwsh_runner import run_pwsh
+
+    script = (
+        "$errors = $null; $tokens = $null; "
+        "$null = [System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:UNSLOTH_TARGET, [ref]$tokens, [ref]$errors); "
+        "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }"
+    )
+    return run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = {**os.environ, "UNSLOTH_TARGET": str(path)},
+    )
+
+
+def test_setup_bat_steps_down_to_bypass_only_for_a_remote_script() -> None:
+    """The one case where RemoteSigned is a real regression, handled the way install.ps1 handles it.
+
+    Execution policy is judged on the script file's ZONE. A dotted-FQDN UNC, a DFS path or an
+    IP-literal share is the Internet zone, where RemoteSigned refuses an unsigned script and
+    `Unblock-File` cannot help: with no `Zone.Identifier` stream present the path decides, and there
+    is nothing to clear. `install.ps1` already steps down to Bypass for exactly this when it writes
+    the shortcut; reusing that logic beats inventing a second answer.
+    """
+    probe = _setup_bat_probe()
+    assert (
+        "DriveInfo" in probe and "Network" in probe
+    ), "the probe no longer detects a mapped network drive, so a script on H:/Z: would be refused"
+    assert "-like '\\\\*'" in probe, "the probe no longer detects a UNC path"
+    assert (
+        "'Bypass'" in probe and "'RemoteSigned'" in probe
+    ), "the probe no longer chooses between the two policies"
+    assert (
+        "Unblock-File" in probe
+    ), "the probe no longer clears the mark of the web, so an unzipped download is refused"
+
+    # The launch line, the -NoProfile asymmetry and the Unblock-File ordering are asserted by
+    # test_setup_bat_clears_the_mark_before_loading_under_remotesigned above; not repeated here.
+
+
+# Whole-line comments only. Both defects this guards against were whole-line, and a trailing `#`
+# cannot be told from a `#` inside a string without re-parsing, which would trade a real check for
+# a source of false alarms.
+_COMMENT_PREFIXES = {".bat": ("rem ", "::"), ".ps1": ("#",), ".sh": ("#",)}
+
+# A repo-relative path, which is a claim about THIS tree, as opposed to a PR number or a URL.
+# Anchored on the real top-level directories and required to carry a file extension, so
+# `unsloth.ai/install.ps1` (a URL) and a bare directory mention do not match.
+_REPO_PATH_IN_PROSE = re.compile(
+    r"(?<![\w./-])((?:\.github|docs|tests|scripts|studio|unsloth|unsloth_cli|unsloth_zoo)"
+    r"/[\w./-]+\.\w+)"
+)
+
+
+def _comment_lines(text: str, name: str):
+    prefixes = _COMMENT_PREFIXES[Path(name).suffix]
+    for line in text.splitlines():
+        stripped = line.strip().lower() if name.endswith(".bat") else line.strip()
+        if stripped.startswith(prefixes):
+            yield line
+
+
+@pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
+def test_a_comment_never_points_at_a_file_that_is_not_here(name: str) -> None:
+    """A comment citing evidence must cite something a reader can actually open.
+
+    Twice now a shipped script has carried a pointer to a file that was not in the tree: first
+    `docs/windows-installer-av-shapes.md` after the doc was folded into AV_SHAPES_RECORD, then
+    `.github/workflows/windows-vt-preflight.yml`, which lives in a separate PR and therefore does
+    not exist on this branch at all. Both read as authoritative and neither could be followed, which
+    is worse than saying nothing: the justification for deleting a native call becomes unverifiable.
+    Referring to a PR number is fine and stays true; referring to a path is a claim about this tree.
+    """
+    text = (REPO / name).read_text(encoding = "utf-8")
+    cited = set()
+    for line in _comment_lines(text, name):
+        cited.update(_REPO_PATH_IN_PROSE.findall(line))
+
+    missing = sorted(p for p in cited if not (REPO / p).exists())
+    assert not missing, (
+        f"{name} has a comment pointing at {missing}, which is not in this tree. Cite a PR number, "
+        "or cite tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD), which travels with the repo."
+    )
