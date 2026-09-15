@@ -42,7 +42,7 @@ useResearchRunStore.getState().setFollowing(run.id, true, "connected");
 useResearchRunStore.getState().openPanel(run.id);
 
 const adapter = {
-  async *run() {
+  async run() {
     throw new Error("No model calls expected");
   },
 };
