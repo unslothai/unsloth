@@ -4033,3 +4033,16 @@ def test_an_unresolvable_download_only_gguf_hands_nothing_back():
     body = re.search(r"onNotStarted: \(\) => \{\n(.*?)\n        \},", src, re.S)
     assert body, "the not-started callback was not found; this guard has gone stale"
     assert "!downloadOnly &&" in body.group(1)
+
+
+def test_a_download_only_pick_is_allowed_while_the_page_is_busy():
+    """The busy guard exists because the backend 409s a second load. A Download only pick submits
+    no load, and the selector stays interactive during a generation, so refusing it there was a
+    silent dead click: the user picked a model to download and nothing happened."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const handleModelSelect = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert body, "handleModelSelect not found"
+    text = body.group(1)
+    assert "if (busy !== null && !downloadOnlyPick) return;" in text
+    # Decided before the guard, or the guard reads an undefined binding.
+    assert text.index("const downloadOnlyPick =") < text.index("if (busy !== null")

@@ -2966,12 +2966,14 @@ export function ImagesPage({
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated safetensors pick.
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load with a 409.
-      if (busy !== null) return;
       // A Download only selection fetches files; it does not take over the page. Retiring the staged
       // intent and claiming the page for it stranded a load that was already downloading: that model
       // finished downloading and then never loaded, with no toast and nothing to retry from.
       const downloadOnlyPick = modelSelectionAction === "download";
+      // Ignore picks while a load/generation/unload is in flight: the backend rejects a second load
+      // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
+      // stays interactive during a generation: refusing it there was a silent dead click.
+      if (busy !== null && !downloadOnlyPick) return;
       if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
