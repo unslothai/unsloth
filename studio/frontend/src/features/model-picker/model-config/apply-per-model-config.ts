@@ -56,6 +56,10 @@ export function applyPerModelConfigToRuntime(
     specDraftNMax: config.specDraftNMax ?? null,
     specDraftCacheDtype: config.specDraftCacheDtype ?? null,
     nParallel: config.nParallel ?? null,
+    reasoningBudget: options.isDiffusion ? -1 : config.reasoningBudget,
+    reasoningBudgetMessage: options.isDiffusion
+      ? ""
+      : config.reasoningBudgetMessage,
     // the diffusion runner ignores the llama-server batch flags
     nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
     nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
@@ -114,6 +118,8 @@ export function currentRuntimePerModelConfig(
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
     nParallel: s.nParallel ?? null,
+    reasoningBudget: s.reasoningBudget,
+    reasoningBudgetMessage: s.reasoningBudgetMessage,
     nBatch: s.nBatch ?? null,
     nUbatch: s.nUbatch ?? null,
     loadMode: s.loadMode ?? null,
@@ -147,6 +153,8 @@ export function perModelConfigsEqual(
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
+    a.reasoningBudget === b.reasoningBudget &&
+    a.reasoningBudgetMessage === b.reasoningBudgetMessage &&
     (a.nBatch ?? null) === (b.nBatch ?? null) &&
     (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
     (a.loadMode ?? null) === (b.loadMode ?? null) &&

@@ -31,6 +31,18 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  // preserve inherited launch intent until the corresponding control changes.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
+  const reasoningBudgetMessage = useChatRuntimeStore(
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
+  );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const specDraftCacheDtype = useChatRuntimeStore(
@@ -85,6 +97,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
+      reasoningBudget: isGguf ? reasoningBudget : -1,
+      reasoningBudgetMessage: isGguf ? reasoningBudgetMessage : "",
       nBatch: nBatch ?? null,
       nUbatch: nUbatch ?? null,
       specDraftCacheDtype: specDraftCacheDtype ?? null,
@@ -117,6 +131,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     speculativeType,
     specDraftNMax,
     nParallel,
+    reasoningBudget,
+    reasoningBudgetMessage,
     nBatch,
     nUbatch,
     specDraftCacheDtype,
