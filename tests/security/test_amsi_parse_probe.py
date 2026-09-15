@@ -286,7 +286,7 @@ def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
 
 def _amsi_step_script() -> str:
     """The body of the step that turns probe results into a verdict, as CI runs it."""
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     for step in workflow["jobs"]["measure"]["steps"]:
         if step.get("id") == "amsi":
             return step["run"]
@@ -300,25 +300,29 @@ def _verdict_logic() -> str:
     """Everything from the per-row control onwards, with the row collection left to the caller."""
     script = _amsi_step_script()
     marker = "# The control decides whether any of this means anything"
-    assert marker in script, (
-        "the per-row control block is gone from the workflow, so there is nothing to exercise"
-    )
+    assert (
+        marker in script
+    ), "the per-row control block is gone from the workflow, so there is nothing to exercise"
     return script[script.index(marker) :]
 
 
-def _run_verdict(tmp_path: Path, rows_ps: str, no_result_ps: str = "@()") -> tuple[int, str]:
+def _run_verdict(
+    tmp_path: Path,
+    rows_ps: str,
+    no_result_ps: str = "@()",
+) -> tuple[int, str]:
     """Run the extracted verdict logic against synthetic probe rows."""
     pwsh = shutil.which("pwsh")
     if pwsh is None:
         pytest.skip("pwsh is unavailable")
     out = tmp_path / "github_output"
-    out.write_text("", encoding="utf-8")
+    out.write_text("", encoding = "utf-8")
     script = tmp_path / "verdict.ps1"
     script.write_text(
         f"$env:GITHUB_OUTPUT = '{out.as_posix()}'\n"
         f"$rows = {rows_ps}\n"
         f"$noResult = {no_result_ps}\n" + _verdict_logic(),
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     done = run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
@@ -326,7 +330,7 @@ def _run_verdict(tmp_path: Path, rows_ps: str, no_result_ps: str = "@()") -> tup
         text = True,
         timeout = 120,
     )
-    return done.returncode, done.stdout + done.stderr + out.read_text(encoding="utf-8")
+    return done.returncode, done.stdout + done.stderr + out.read_text(encoding = "utf-8")
 
 
 def _row(side: str, name: str, *, control: bool, result: str) -> str:
@@ -368,9 +372,11 @@ def test_the_head_verdict_is_never_clean_unless_head_was_really_measured(
     repository has already shipped three releases whose scan step was green because nothing scanned.
     The base side is held healthy in every case so that the head side is the only variable.
     """
-    rows = f"@({_row('base', 'install.ps1', control=True, result=_COMPILED)}, " + _row(
-        "head", "install.ps1", control=head_control, result=head
-    ) + ")"
+    rows = (
+        f"@({_row('base', 'install.ps1', control = True, result = _COMPILED)}, "
+        + _row("head", "install.ps1", control = head_control, result = head)
+        + ")"
+    )
     code, text = _run_verdict(tmp_path, rows)
     assert code == expect_code, f"{label}: expected exit {expect_code}, got {code}\n{text}"
     assert expect_text in text, f"{label}: expected {expect_text!r} in output\n{text}"
@@ -380,10 +386,14 @@ def test_the_head_verdict_is_never_clean_unless_head_was_really_measured(
 
 def test_a_probe_that_wrote_no_result_is_not_silently_dropped(tmp_path: Path) -> None:
     """The row simply vanished before, and a head file that vanishes leaves zero blocked: clean."""
-    rows = f"@({_row('base', 'install.ps1', control=True, result=_COMPILED)}, " + _row(
-        "head", "install.ps1", control=True, result=_COMPILED
-    ) + ")"
-    code, text = _run_verdict(tmp_path, rows, no_result_ps="@('head/setup.ps1 [the probe wrote no result]')")
+    rows = (
+        f"@({_row('base', 'install.ps1', control = True, result = _COMPILED)}, "
+        + _row("head", "install.ps1", control = True, result = _COMPILED)
+        + ")"
+    )
+    code, text = _run_verdict(
+        tmp_path, rows, no_result_ps = "@('head/setup.ps1 [the probe wrote no result]')"
+    )
     assert code == 0
     assert "verdict=unmeasured" in text, text
     assert "verdict=clean" not in text, text
@@ -397,9 +407,11 @@ def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Pa
     head answer -- taken in a process that would have said "not blocked" to anything at all --
     was published as clean.
     """
-    rows = f"@({_row('base', 'install.ps1', control=True, result=_BLOCKED)}, " + _row(
-        "head", "install.ps1", control=False, result=_COMPILED
-    ) + ")"
+    rows = (
+        f"@({_row('base', 'install.ps1', control = True, result = _BLOCKED)}, "
+        + _row("head", "install.ps1", control = False, result = _COMPILED)
+        + ")"
+    )
     code, text = _run_verdict(tmp_path, rows)
     assert code == 0
     assert "verdict=unmeasured" in text, text
