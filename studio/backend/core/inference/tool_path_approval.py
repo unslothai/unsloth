@@ -490,6 +490,12 @@ def _file_uri_path(text: str) -> "str | None":
     return path or None
 
 
+def _names_a_managed_account_subtree(candidate: str) -> bool:
+    """Whether *candidate* descends into a per-account directory of a managed install."""
+    parts = candidate.replace("\\", "/").lower().split("/")
+    return any(part == "accounts" and index + 1 < len(parts) for index, part in enumerate(parts))
+
+
 def _path_needs_approval(text, *, writing: bool = False) -> bool:
     """True when reading (or, with ``writing``, creating/overwriting) this path leaves the sandbox
     for the user's own filesystem.
@@ -544,6 +550,11 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     read_roots, write_roots = _silent_roots()
     roots = write_roots if writing else read_roots
     if not _contained_in(candidate, roots):
+        return True
+    # On a managed install the shared projects and tmp bases hold every account's own subtree, so a
+    # silent root can be an ANCESTOR of another account's private data. Their segment is never
+    # silent, whichever root it sits under.
+    if _names_a_managed_account_subtree(candidate):
         return True
     # Lexical containment is not enough on its own: a symlink INSIDE a silent root can resolve
     # outside it, and the lexical answer would have allowed the read. Resolved only here, where the
@@ -2108,6 +2119,11 @@ _PY_INSTANCE_READ_CTORS = {
 # The predicate family answers existence and type for a path, which is the same disclosure
 # `test -e` and `os.stat` make.
 # os.chdir re-points every relative path that follows, the same way `cd` does in the shell.
+# Readers that DESCEND. `glob`/`iglob`/`rglob` are listed because their pattern decides, and a
+# pattern rooted at `/` reaches the whole host either way.
+_PY_RECURSIVE_READ_CALLS = frozenset("walk rglob glob iglob".split())
+
+
 _PY_PATH_READ_CALLS = frozenset(
     """
     open_code read_text read_bytes getline getlines loadtxt genfromtxt fromfile read_csv
@@ -3227,9 +3243,17 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             writing_default = _ctor_opens_for_write(node)
             add(first, writing_default)
         elif name in _PY_PATH_READ_CALLS:
+            start = len(operands)
             add(first, False)
             if is_method:
                 add(func.value, False)
+            if name in _PY_RECURSIVE_READ_CALLS:
+                # The filesystem root itself is silent, because `ls /` names its entries and opens
+                # nothing. A RECURSIVE reader rooted there is a different act: it descends into
+                # every directory on the host, so what it reaches is reported instead of the root.
+                for path, _writing in operands[start:]:
+                    if path.rstrip("/\\") == "":
+                        operands.append((path.rstrip("/\\") + "/**", False))
         else:
             continue
         for position in _PY_PATH_EXTRA_READ_POSITIONS.get(name, ()):

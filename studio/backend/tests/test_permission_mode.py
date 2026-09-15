@@ -3585,6 +3585,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # The filesystem root is silent for a LISTING, not for a walk that descends the whole host.
+    "import os\nfor r, d, f in os.walk('/'):\n    print(f)",
     # `tempfile` creators write into `dir` when it is given.
     "import tempfile\ntempfile.mkstemp(dir = '/media/alice')",
     "import tempfile\ntempfile.TemporaryDirectory(dir = '/usr/share/doc')",
@@ -3919,6 +3921,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import os\nprint(os.listdir('/'))",
+    "import os\nfor r, d, f in os.walk('/usr/share/doc'):\n    print(f)",
     "import tempfile\ntempfile.mkstemp()",
     "import tempfile\ntempfile.mkdtemp(dir = './scratch')",
     "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'r')",
