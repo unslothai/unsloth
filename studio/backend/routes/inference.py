@@ -20551,6 +20551,39 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     )
 
 
+def _remote_video_destination_rejection(url: str) -> Optional[tuple[int, str]]:
+    """Refuse a remote clip aimed at a host llama-server should not be asked to fetch.
+
+    llama-server downloads the URL from this machine, so a caller could otherwise reach loopback,
+    the LAN or a cloud metadata endpoint through us. Only literals are classified: resolving a
+    name would block the event loop here, and llama-server re-resolves anyway, so a name that
+    rebinds is out of reach from this side. Tracked for the image path in #11010.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").rstrip(".")
+    refusal = (
+        400,
+        "A remote video URL must point at a public host. "
+        "Send the clip as a data URI instead.",
+    )
+    if not host:
+        return refusal
+    if host == "localhost" or host.endswith(".localhost"):
+        return refusal
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    # An IPv4 address wrapped in IPv6 is the same destination, and is_global reads the wrapper.
+    for mapped in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
+        if mapped is not None:
+            ip = mapped
+            break
+    return None if ip.is_global else refusal
+
+
 def _normalise_remote_scheme(url: str) -> str:
     """Lowercase the scheme, and only the scheme.
 
@@ -20566,6 +20599,9 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
     for clip in _request_video_clips(payload):
         # llama-server fetches it, so the cap cannot see its bytes; llama.cpp's 10 MB governs.
         if _is_remote_video(clip):
+            destination_rejection = _remote_video_destination_rejection(clip)
+            if destination_rejection is not None:
+                return destination_rejection
             continue
         rejection = _video_scheme_rejection(clip)
         if rejection is not None:
@@ -20593,11 +20629,16 @@ def _translate_video_parts(messages: list[dict]) -> None:
             scheme_rejection = _video_scheme_rejection(url)
             if scheme_rejection is not None:
                 raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
-            media = (
-                {"url": _normalise_remote_scheme(url)}
-                if _is_remote_video(url)
-                else {"data": _video_b64_rejection(url)[0]}
-            )
+            if _is_remote_video(url):
+                # Restated here too: _request_video_rejection only runs on a pre-switch validation.
+                destination_rejection = _remote_video_destination_rejection(url)
+                if destination_rejection is not None:
+                    raise HTTPException(
+                        status_code = destination_rejection[0], detail = destination_rejection[1]
+                    )
+                media = {"url": _normalise_remote_scheme(url)}
+            else:
+                media = {"data": _video_b64_rejection(url)[0]}
             part.clear()
             part.update({"type": "input_video", "input_video": media})
 

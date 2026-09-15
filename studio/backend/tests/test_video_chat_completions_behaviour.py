@@ -643,3 +643,81 @@ def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
         response = client.post("/v1/chat/completions", json = body)
     assert response.status_code == 400
     assert "hologram_url" in _detail(response)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8080/clip.mp4",
+        "http://localhost/clip.mp4",
+        "http://[::1]/clip.mp4",
+        "http://[::ffff:127.0.0.1]/clip.mp4",
+        "http://192.168.1.10/clip.mp4",
+        "http://10.0.0.5/clip.mp4",
+    ],
+)
+def test_a_remote_clip_aimed_at_a_private_host_is_refused(monkeypatch, url):
+    """llama-server downloads the URL from this machine, so an unchecked host turns a clip into
+    a server-side fetch of loopback, the LAN or a metadata endpoint."""
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(url))
+    assert response.status_code == 400
+    assert "must point at a public host" in _detail(response)
+
+
+def test_a_public_remote_clip_is_still_forwarded(monkeypatch):
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
+    assert response.status_code == 200
+    assert _sent_media(backend) == [
+        {"type": "input_video", "input_video": {"url": _REMOTE}}
+    ]
+
+
+def test_the_destination_guard_also_runs_without_a_pre_switch_validation():
+    """_request_video_rejection only runs on a pre-switch validation, so the dispatch boundary
+    has to refuse the same host on its own."""
+    from fastapi import HTTPException
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "video_url", "video_url": {"url": "http://169.254.169.254/clip.mp4"}}
+            ],
+        }
+    ]
+    with pytest.raises(HTTPException) as exc:
+        inference_route._translate_video_parts(messages)
+    assert exc.value.status_code == 400
+    assert "must point at a public host" in exc.value.detail
+
+
+def test_a_hostname_is_not_resolved_in_the_request_path(monkeypatch):
+    """Resolving would block the event loop, and llama-server re-resolves anyway, so a name is
+    forwarded rather than classified. Pinned so the tradeoff is not lost by accident."""
+    import socket
+
+    def _boom(*_a, **_k):
+        raise AssertionError("the request path must not resolve a video hostname")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+    assert inference_route._remote_video_destination_rejection(_REMOTE) is None
+
+
+def test_the_pre_switch_validation_refuses_a_private_host_before_any_model_loads():
+    """The dispatch boundary would catch it, but only after a switch had already been paid for."""
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(
+        _part_body("http://169.254.169.254/latest/meta-data/")
+    )
+    rejection = inference_route._request_video_rejection(payload)
+    assert rejection is not None
+    assert rejection[0] == 400
+    assert "must point at a public host" in rejection[1]
+    assert inference_route._request_video_rejection(
+        ChatCompletionRequest.model_validate(_part_body(_REMOTE))
+    ) is None
