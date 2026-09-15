@@ -2298,5 +2298,4 @@ def test_routes_inference_imports_under_the_settled_stubs():
     (`loggers.media_progress`, and `structlog` via external_provider) were the two walls.
     """
     import importlib
-
     assert importlib.import_module("routes.inference") is not None
