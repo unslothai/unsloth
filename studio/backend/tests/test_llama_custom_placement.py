@@ -159,7 +159,12 @@ def route_probe(
     [("auto", -1, 0), ("manual", 0, 99), ("manual", 0, 0), ("auto", -1, 99)],
 )
 def test_custom_arbiter_uses_native_placement_not_managed_fields(mode, layers, ini_layers):
-    events = route_probe(mode, layers, ini_layers)
+    events = route_probe(
+        mode,
+        layers,
+        ini_layers,
+        device = "none" if ini_layers == 0 else "cuda0",
+    )
     assert events == (["drain_without_acquire"] if ini_layers == 0 else ["acquire_gpu"])
 
 
@@ -175,6 +180,10 @@ def test_custom_route_never_retries_from_managed_tensor_toggle(tensor, raises):
 
 def test_uncertain_custom_device_keeps_gpu_handoff():
     assert route_probe("manual", 0, 0, device = None) == ["acquire_gpu"]
+
+
+def test_device_none_alone_skips_gpu_handoff():
+    assert route_probe("auto", -1, 99, device = "none") == ["drain_without_acquire"]
 
 
 def test_auto_selected_variant_replaces_early_bare_custom_override():

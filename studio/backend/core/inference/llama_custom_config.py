@@ -203,8 +203,7 @@ class CompiledCustomConfig:
         """Main-model placement is explicitly CPU-only; callers still check companions."""
         tuning = dict(self.tuning)
         return (
-            tuning.get("gpu_layers") == 0
-            and tuning.get("device") == "none"
+            tuning.get("device") == "none"
             and tuning.get("spec_type") in (None, "none", "off")
             and not tuning.get("tensor_parallel", False)
         )

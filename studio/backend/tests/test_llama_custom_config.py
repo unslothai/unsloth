@@ -187,7 +187,9 @@ def test_help_device_placeholder_list_is_not_an_enum(catalog):
     )
     assert devices[0]["arity"] == 1
     assert "choices" not in devices[0]
-    assert compile_ini("[*]\ndevice=none", (*catalog, *devices)).argv == ("--device", "none")
+    compiled = compile_ini("[*]\ndevice=none", (*catalog, *devices))
+    assert compiled.argv == ("--device", "none")
+    assert compiled.explicit_cpu_only
 
 
 @pytest.mark.parametrize("key", ["c", "ctx-size", "LLAMA_ARG_CTX_SIZE"])
