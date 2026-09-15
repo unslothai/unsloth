@@ -953,17 +953,12 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    # One header line that is never terminated, a byte at a time. Whole header LINES would hit
-    # http.client's own _MAXHEADERS cap of 100 and end the call on their own at about two
-    # seconds, which would make this fixture pass against a build that has no deadline at all.
-    # The test asserts on this constant directly rather than inferring it from a byte count.
+    # Bytes, never whole header lines: whole lines hit http.client's _MAXHEADERS cap of 100
+    # and end the call themselves in ~2s, passing against a build with no deadline at all.
     chunk = b"x"
-    # max_gap is what makes this fixture able to prove anything. urllib applies its own
-    # per-socket-operation timeout, and a peer that goes quiet for longer than that trips it
-    # regardless of whether a whole-request deadline exists. So the fixture records the longest
-    # silence it ever left: while every gap stays under the socket timeout, no per-operation
-    # timeout can have fired, and a probe that returned anyway returned on the whole-request
-    # deadline. A counter cannot answer that, because it cannot say when the bytes landed.
+    # urllib's per-socket-operation timeout is reset by any traffic. While max_gap stays under
+    # it no per-operation timeout can have fired, so a probe that returned anyway returned on
+    # the whole-request deadline. That is the only thing here that tells the two bounds apart.
     state = {"accepted": 0, "lines": 0, "chunk": chunk, "max_gap": 0.0, "last_write": None}
     stop = threading.Event()
 
@@ -1048,18 +1043,13 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
         shutdown()
 
     assert state["accepted"] >= 1, "fixture never accepted a connection"
-    # Asserted against what the fixture writes, not how many times it got to write it. The
-    # count was a proxy for this and a timing-dependent one: a slow runner made it small and a
-    # fast one made it large, while the property is that the repeated chunk ends no header line.
     assert b"\n" not in state["chunk"] and b"\r" not in state["chunk"], (
         "fixture is sending whole header lines again; http.client's _MAXHEADERS would "
         f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
 
-    # Was this run able to tell the two bounds apart at all? Only if the peer stayed inside
-    # urllib's per-operation timeout for the whole probe. A runner contended enough to break
-    # that has not produced a failure, it has produced no evidence, and the honest report is
-    # that rather than a pass on a build with no deadline or a red run on a busy machine.
+    # Contention that breaks the gap invariant yields no evidence, not a failure: report that
+    # rather than pass on a build with no deadline or go red on a busy machine.
     trickled_throughout = (
         lines >= 3
         and last_write is not None
