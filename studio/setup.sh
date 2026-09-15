@@ -1087,13 +1087,31 @@ _uv_cache_usable() {
         # `unused-v999/.git`, and a read-only file there condemned a cache real uv uses fine.
         # sdists-* only: that is the one store measured to abort on a read-only .git, and
         # rejecting a cache uv accepts costs the warm cache this path exists to find.
+        # One level inside the index stores, and only those. uv REWRITES this metadata on every
+        # resolve, so a shard another account owns aborts it: measured on uv 0.10.7, a 0555
+        # shard under simple-v20 or wheels-v6 gives "Failed to write to the client cache",
+        # exit 2, while one under archive-v0 or interpreter-v4 installs fine. Bounded on
+        # purpose: these hold one entry per index, where archive-* grows with every package.
+        case "$_uvu_name" in
+            simple-* | wheels-*)
+                for _uvu_shard in "$_uvu_bucket"/*/; do
+                    _uvu_shard=${_uvu_shard%/}
+                    [ -d "$_uvu_shard" ] || continue
+                    if ! _uv_cache_probe_writable "$_uvu_shard"; then
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                done
+                unset _uvu_shard
+                ;;
+        esac
         case "$_uvu_name" in sdists-*) _uvu_ctl=.git ;; *) _uvu_ctl="" ;; esac
         if [ -n "$_uvu_ctl" ] && ! _uv_control_files_writable "$_uvu_bucket" "$_uvu_ctl"; then
             unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
             return 1
         fi
     done
-    unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+    unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
     _uv_control_files_writable "$1" .lock || return 1
     return 0
 }

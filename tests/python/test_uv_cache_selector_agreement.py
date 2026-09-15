@@ -115,6 +115,10 @@ def _build(cache: Path, shape: str) -> None:
     elif shape == "stray version-shaped dir":
         (cache / "unused-v999").mkdir()
         (cache / "unused-v999" / ".lock").write_bytes(b"")
+    elif shape == "index shard":
+        (cache / "simple-v20" / "pypi").mkdir(parents = True)
+        (cache / "wheels-v6" / "pypi").mkdir(parents = True)
+        (cache / "interpreter-v4" / "abcd").mkdir(parents = True)
     elif shape == "control files present":
         (cache / ".lock").write_bytes(b"")
         (cache / "CACHEDIR.TAG").write_bytes(b"Signature")
@@ -134,6 +138,7 @@ _SHAPES = [
     "lock is a directory",
     "stray version-shaped dir",
     "control files present",
+    "index shard",
 ]
 
 
@@ -181,4 +186,32 @@ def test_both_implementations_agree_on_which_stores_are_probed(tmp_path, store, 
     finally:
         (cache / store).chmod(0o755)
     assert shell is python, f"{store}: shell={shell} python={python}"
+    assert shell is usable
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root can write anywhere")
+@pytest.mark.parametrize(
+    "shard, usable",
+    [
+        # uv REWRITES index metadata on every resolve, so a shard it cannot write aborts it.
+        ("simple-v20/pypi", False),
+        ("wheels-v6/pypi", False),
+        # Content-addressed stores are only added to; measured, uv installs fine with these
+        # at 0555, and rejecting would discard the warm cache over a shard uv never rewrites.
+        ("interpreter-v4/abcd", True),
+        ("archive-v0/pkg", True),
+        # Bounded on purpose: one level, not a walk of a cache with thousands of entries.
+        ("simple-v20/pypi/deeper", True),
+    ],
+)
+def test_both_implementations_agree_on_which_shards_are_probed(tmp_path, shard, usable):
+    cache = _warm(tmp_path / "uv")
+    (cache / shard).mkdir(parents = True, exist_ok = True)
+    (cache / shard).chmod(0o555)
+    try:
+        shell = _ask_shell("_uv_cache_usable", cache)
+        python = _studio()._uv_cache_is_writable(cache)
+    finally:
+        (cache / shard).chmod(0o755)
+    assert shell is python, f"{shard}: shell={shell} python={python}"
     assert shell is usable

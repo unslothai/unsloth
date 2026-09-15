@@ -3397,6 +3397,13 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
                 # cannot make the store and aborts. Skipping it would report the cache writable.
                 return False
             probes.append(entry)
+            # One level inside the index stores, and only those. uv REWRITES this metadata on
+            # every resolve, so a shard another account owns aborts it: measured on uv 0.10.7, a
+            # 0555 shard under simple-v20 or wheels-v6 gives "Failed to write to the client
+            # cache", exit 2, while one under archive-v0 or interpreter-v4 installs fine.
+            # Bounded on purpose: these hold one entry per index; archive-* grows per package.
+            if entry.name.lower().startswith(("simple-", "wheels-")):
+                probes.extend(shard for shard in entry.iterdir() if shard.is_dir())
     except OSError:
         return False
     for target in probes:

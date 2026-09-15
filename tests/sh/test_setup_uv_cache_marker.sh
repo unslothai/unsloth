@@ -338,6 +338,34 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
         fi
     done
 
+    # One level inside the INDEX stores, which uv rewrites on every resolve. Measured on uv
+    # 0.10.7: a 0555 shard under simple-v20 or wheels-v6 aborts with "Failed to write to the
+    # client cache", exit 2, while one under archive-v0 or interpreter-v4 installs fine.
+    SHARD="$CASE/nested shard/uv"
+    warm "$SHARD"
+    mkdir -p "$SHARD/simple-v20/pypi" "$SHARD/wheels-v6/pypi" "$SHARD/interpreter-v4/abcd"
+    record "$HOME_DIR" "$SHARD\\n"
+    for blocked in simple-v20/pypi wheels-v6/pypi; do
+        if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$SHARD/$blocked" 2>/dev/null; then
+            assert_eq "$shell: an unwritable $blocked shard falls back to Studio" \
+                "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+            chmod 0755 "$SHARD/$blocked" 2>/dev/null || true
+        fi
+    done
+    # ...and not deeper than that, nor in the content stores, where uv tolerates it and
+    # rejecting would throw away the warm cache over a shard it never rewrites.
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$SHARD/interpreter-v4/abcd" 2>/dev/null; then
+        assert_eq "$shell: an unwritable interpreter shard does not" \
+            "$SHARD" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0755 "$SHARD/interpreter-v4/abcd" 2>/dev/null || true
+    fi
+    mkdir -p "$SHARD/simple-v20/pypi/deeper"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$SHARD/simple-v20/pypi/deeper" 2>/dev/null; then
+        assert_eq "$shell: nor a directory two levels down" \
+            "$SHARD" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+        chmod 0755 "$SHARD/simple-v20/pypi/deeper" 2>/dev/null || true
+    fi
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one
