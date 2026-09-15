@@ -7,14 +7,6 @@ assignees: ''
 
 ---
 
----
-name: Unsloth Studio Bug
-about: Report a problem with the Unsloth Studio desktop app or web UI
-title: "[Unsloth Bug] "
-labels: bug
-assignees: ""
----
-
 <!--
 Search existing issues before submitting. Please do not remove the questions.
 Never post API keys, Hugging Face tokens, passwords, cookies, private prompts,
