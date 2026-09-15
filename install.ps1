@@ -2197,6 +2197,34 @@ exit 1
         $env:Path = $unique -join ";"
     }
 
+    # ── Helper: is a conda environment ACTIVE in this session? ──
+    # CONDA_PREFIX is what `conda activate` and the Anaconda Prompt set, and it is the only
+    # signal that separates "conda is installed" from "we are running inside one of its
+    # environments". CONDA_DEFAULT_ENV is read too, because a shell hook that exports only
+    # that one still leaves the caller inside conda's PATH ordering.
+    function Test-ActiveCondaEnvironment {
+        foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
+            if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
+        }
+        return $false
+    }
+
+    # The position a PERSISTENT PATH write may actually use. A prepend writes an ordering
+    # into the registry that outlives the conda activation it was made under, so from the
+    # next shell on our directory sits ahead of the conda environment's own entries and
+    # conda resolves binaries and DLLs out of ours. That is what corrupts an Anaconda base
+    # on its next `conda update` (#5871). Appending registers the same directory without
+    # demoting anything, which is all that is needed for `unsloth` to resolve in a new
+    # shell; the current run keeps its session-level prepend, and that dies with the process.
+    function Resolve-UserPathPosition {
+        param(
+            [ValidateSet('Append','Prepend')]
+            [string]$Position = 'Append'
+        )
+        if ($Position -eq 'Prepend' -and (Test-ActiveCondaEnvironment)) { return 'Append' }
+        return $Position
+    }
+
     # ── Helper: safely add a directory to the persistent User PATH ──
     # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
     function Add-ToUserPath {
@@ -2205,6 +2233,17 @@ exit 1
             [ValidateSet('Append','Prepend')]
             [string]$Position = 'Append'
         )
+        # Every persistent PATH write goes through Resolve-UserPathPosition, so an active
+        # conda environment cannot be demoted by any call site. Announced once per run: the
+        # installer makes several of these writes and one note is information, five is noise.
+        $resolvedPosition = Resolve-UserPathPosition -Position $Position
+        if ($resolvedPosition -ne $Position) {
+            if (-not $script:CondaPathPositionNoted) {
+                $script:CondaPathPositionNoted = $true
+                substep "conda environment active ($env:CONDA_PREFIX) -- appending to PATH instead of prepending, so conda keeps priority." "Yellow"
+            }
+            $Position = $resolvedPosition
+        }
         try {
             $regKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
             try {
@@ -4278,6 +4317,16 @@ exit 0
         return $null
     }
 
+    # Which PATH switch the python.org installer gets. PrependPath=1 registers the new
+    # interpreter and its Scripts directory at the FRONT of the User PATH; inside an active
+    # conda environment that is a permanent demotion of conda's own entries (#5871), so ask
+    # for the same registration at the back instead. AppendPath is the installer's own
+    # documented option, so python stays discoverable here either way.
+    function Get-PythonInstallerPathSwitch {
+        if (Test-ActiveCondaEnvironment) { return "AppendPath=1" }
+        return "PrependPath=1"
+    }
+
     # ── Fallback when winget fails (msstore 0x8a15005e): silent per-user python.org, no UAC. ──
     function Install-PythonFromPythonOrg {
         # $Arch overrides the host arch, to pull x64 onto an ARM64 box.
@@ -4333,13 +4382,13 @@ exit 0
             return $null
         }
 
-        # Per-user install => no UAC. PrependPath puts python + py on PATH;
+        # Per-user install => no UAC. The PATH switch puts python + py on PATH;
         # Include_launcher installs py.exe (preferred by Find-CompatiblePython).
         substep "installing Python $full (silent, per-user)..."
         $installArgs = @(
             "/quiet",
             "InstallAllUsers=0",
-            "PrependPath=1",
+            (Get-PythonInstallerPathSwitch),
             "Include_launcher=1",
             # Launcher per-user too: Include_launcher defaults to all-users, which needs admin.
             "InstallLauncherAllUsers=0",
@@ -4404,6 +4453,57 @@ exit 0
         return (Find-CompatiblePython -X64Only)
     }
 
+    # ── Windows on ARM: the interpreter handed to uv has to be x64 ──
+    # pyarrow (via datasets) and hf-transfer publish no win_arm64 wheel, so a native ARM64
+    # interpreter source-builds both and dies on CMake or Rust minutes into the run (#8495).
+    # Returns the interpreter to use, or $null when this host cannot be served at all, which
+    # is a STOP rather than a warning: continuing on ARM64 only moves the same failure to a
+    # place the user cannot read it in (#10875). UNSLOTH_ALLOW_ARM64_PYTHON=1 is the opt-out
+    # for anyone who has both wheels built and available locally.
+    function Resolve-WindowsOnArmX64Python {
+        param($SelectedPython)
+        if (-not $SelectedPython) { return $null }
+        substep "windows on arm: only a native ARM64 Python $($SelectedPython.Version) was found." "Yellow"
+        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
+        $X64Python = Install-X64Python
+        if ($X64Python) {
+            step "python" "using x64 Python $($X64Python.Version) under emulation"
+            return $X64Python
+        }
+        if ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on')) {
+            Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
+            Write-StudioLine "       UNSLOTH_ALLOW_ARM64_PYTHON is set, so continuing with ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
+            Write-StudioLine "       pyarrow (via datasets) and hf-transfer will be built from source, which needs" -ForegroundColor Yellow
+            Write-StudioLine "       CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            return $SelectedPython
+        }
+        Write-StudioLine "[ERROR] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Red
+        Write-StudioLine "        pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels, so an install" -ForegroundColor Yellow
+        Write-StudioLine "        on ARM64 Python $($SelectedPython.Version) fails while building them from source." -ForegroundColor Yellow
+        Write-StudioLine "        Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+        Write-StudioLine "        (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+        Write-StudioLine "        To attempt the install on ARM64 Python anyway, with CMake, MSVC and Rust" -ForegroundColor Yellow
+        Write-StudioLine "        already installed, set UNSLOTH_ALLOW_ARM64_PYTHON=1." -ForegroundColor Yellow
+        return $null
+    }
+
+    # Does an environment we are about to REUSE still match the interpreter we chose? The
+    # swap above only ever changes a FRESH selection, so a venv migrated from an older
+    # install keeps whatever interpreter it was built with, and on Windows on ARM that is
+    # native ARM64 CPython, which cannot resolve pyarrow or hf-transfer (#8495, #10875).
+    # True only when an x64 interpreter is in hand to rebuild with, so a host deliberately
+    # served by native ARM64 wheels is left alone.
+    function Test-StudioVenvArchMismatch {
+        param(
+            [Parameter(Mandatory = $true)][string]$VenvPython,
+            $SelectedPython
+        )
+        if ((Get-HostMachineArch) -ne "arm64") { return $false }
+        if (-not $SelectedPython -or $SelectedPython.Arch -ne "x86_64") { return $false }
+        if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) { return $false }
+        return ((Get-PythonPlatformTag $VenvPython) -eq "win-arm64")
+    }
+
     # ── Install Python if no compatible version (3.11-3.13) found ──
     Write-TauriLog "STEP" "Installing Python"
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
@@ -4416,7 +4516,20 @@ exit 0
         $pythonPackageId = "Python.Python.$PythonVersion"
         $wingetExit = $null
 
-        if ($script:WingetAvailable) {
+        # winget's Python package hard-codes PrependPath=1 in its own manifest, so there is
+        # no way to ask it for a registration that leaves an active conda environment in
+        # front. Inside one, take the python.org route first, where this installer chooses
+        # the switch itself; winget stays as the fallback it has always been, because a
+        # failed install is worse than a PATH we warn about.
+        if (Test-ActiveCondaEnvironment) {
+            substep "conda environment active ($env:CONDA_PREFIX) -- installing Python from python.org, which can be installed without taking PATH priority." "Yellow"
+            $DetectedPython = Install-PythonFromPythonOrg
+            if (-not $DetectedPython -and $script:WingetAvailable) {
+                substep "python.org could not provide Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
+            }
+        }
+
+        if ($script:WingetAvailable -and -not $DetectedPython) {
             # --source winget avoids msstore, whose cert-pinning (0x8a15005e) can abort the install.
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -4463,22 +4576,12 @@ exit 0
         }
     }
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
-    # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
-    # both and fails deep into the run. Warn up front if x64 is unobtainable.
+    # No x64 interpreter means no install, so this stops rather than warning: see
+    # Resolve-WindowsOnArmX64Python.
     if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
-        substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
-        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
-        $X64Python = Install-X64Python
-        if ($X64Python) {
-            $DetectedPython = $X64Python
-            step "python" "using x64 Python $($DetectedPython.Version) under emulation"
-        } else {
-            Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-StudioLine "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
-            Write-StudioLine "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
-            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-StudioLine "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
-            Write-StudioLine "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
+        $DetectedPython = Resolve-WindowsOnArmX64Python -SelectedPython $DetectedPython
+        if (-not $DetectedPython) {
+            return (Exit-InstallFailure "windows on arm: no x64 Python could be installed, and ARM64 Python cannot resolve pyarrow or hf-transfer")
         }
     }
 
@@ -5286,6 +5389,24 @@ exit 0
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
+    }
+
+    # Re-check what is about to be REUSED, not only what was selected: see
+    # Test-StudioVenvArchMismatch. Preserved through the ordinary rollback helper, so the
+    # previous environment is restored if anything later in this run fails, and cleared from
+    # $VenvDir so the branch below creates a fresh one on the x64 interpreter.
+    if (Test-StudioVenvArchMismatch -VenvPython $VenvPython -SelectedPython $DetectedPython) {
+        substep "windows on arm: the existing environment runs native ARM64 Python, which cannot" "Yellow"
+        substep "resolve pyarrow or hf-transfer -- rebuilding it on x64 Python $($DetectedPython.Version)." "Yellow"
+        try {
+            Start-StudioVenvRollback -ExistingDir $VenvDir
+        } catch {
+            Write-StudioLine "[ERROR] Could not move the ARM64 environment aside: $($_.Exception.Message)" -ForegroundColor Red
+            Write-StudioLine "        Close Unsloth Studio, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+            return (Exit-InstallFailure "Could not replace the native ARM64 environment at $VenvDir")
+        }
+        # Left set, the migrated-environment branch below would --no-deps into a fresh venv.
+        $_Migrated = $false
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
