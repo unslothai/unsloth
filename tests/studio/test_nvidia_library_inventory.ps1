@@ -95,7 +95,8 @@ $helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" 
 $emitters = @(Get-HelperSources $setupPs1 @("New-StudioDynamicAssembly", "New-StudioEmittedNativeType"))
 # The capability gate is a Windows policy probe; the child stands in for it and answers yes.
 $gateStub = 'function Test-StudioCanDefineNativeTypes { return $true }'
-Set-Content -LiteralPath $helperFile -Value ((@($gateStub) + $emitters + $setupParts) -join "`n") + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
+$helperBody = (@($gateStub) + $emitters + $setupParts) -join "`n"
+Set-Content -LiteralPath $helperFile -Value ($helperBody + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
 $pwshExe = (Get-Process -Id $PID).Path
 $realJson = & $pwshExe -NoProfile -File $helperFile 2>&1 | Select-Object -Last 1
 $offJson = & $pwshExe -NoProfile -Command "`$env:UNSLOTH_NVIDIA_LIBRARY_PROBE = '0'; & '$helperFile'" 2>&1 | Select-Object -Last 1
