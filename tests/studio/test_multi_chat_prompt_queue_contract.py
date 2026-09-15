@@ -182,7 +182,10 @@ def test_composer_only_queues_behind_the_current_chat():
     # share it. Assert the delegation here and the queueing there, rather than
     # expecting the call inline, so this stays a contract on behaviour instead
     # of on where the code happens to sit.
-    assert re.search(r"queueComposerText\(\s*liveThreadIsRunning \|\| livePreStreamRunActive,\s*behavior,?\s*\)", submit)
+    assert re.search(
+        r"queueComposerText\(\s*liveThreadIsRunning \|\| livePreStreamRunActive,\s*behavior,?\s*\)",
+        submit,
+    )
 
     queue_composer_text = _between(
         THREAD,
@@ -201,7 +204,9 @@ def test_composer_only_queues_behind_the_current_chat():
     # Read out of the guard that actually dispatches, not out of the file: the
     # abort and cleanup branches beside it hold the same comparison, so a
     # whole-file search stays green while the dispatch alone regresses to `.has`.
-    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun, behavior);")
+    dispatch_guard = _guard_for(
+        THREAD, "startPromptQueue(items, target, waitForCurrentRun, behavior);"
+    )
     assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
     assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
     # The other two are load-bearing as well. Abort without the identity check reports the successor's start as this

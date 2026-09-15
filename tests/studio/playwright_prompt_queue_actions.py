@@ -29,7 +29,9 @@ def check_actions(page):
 
     def menu(position):
         expect(page.get_by_role("menu")).to_have_count(0)
-        page.get_by_role("button", name = f"More options for queued prompt {position}", exact = True).click()
+        page.get_by_role(
+            "button", name = f"More options for queued prompt {position}", exact = True
+        ).click()
         expect(page.get_by_role("menu")).to_be_visible()
 
     def action(name):
@@ -112,31 +114,52 @@ def check_actions(page):
     order(["q2", "q1"])
     page.get_by_role("button", name = "Remove queued prompt 2", exact = True).click()
     order(["q2"])
-    expect(page.get_by_role("button", name = "Reorder queued prompt 1 of 1", exact = True)).to_be_disabled()
+    expect(
+        page.get_by_role("button", name = "Reorder queued prompt 1 of 1", exact = True)
+    ).to_be_disabled()
     menu(1)
     for label in ("Move to front", "Move up", "Move down", "Move to end"):
         expect(page.get_by_role("menuitem", name = label, exact = True)).to_be_disabled()
     page.keyboard.press("Escape")
-    expect(page.get_by_role("button", name = "More options for queued prompt 1", exact = True)).to_be_focused()
-    print("PASS: menu, edit, keyboard, mouse drag, file drop, pause/resume, race and single-item states", flush = True)
+    expect(
+        page.get_by_role("button", name = "More options for queued prompt 1", exact = True)
+    ).to_be_focused()
+    print(
+        "PASS: menu, edit, keyboard, mouse drag, file drop, pause/resume, race and single-item states",
+        flush = True,
+    )
 
 
 def check_touch(browser, url):
-    context = browser.new_context(viewport = {"width": 320, "height": 812}, is_mobile = True, has_touch = True)
+    context = browser.new_context(
+        viewport = {"width": 320, "height": 812}, is_mobile = True, has_touch = True
+    )
     try:
         page = context.new_page()
         page.goto(url)
         source = page.get_by_role("button", name = "Reorder queued prompt 3 of 3", exact = True)
         expect(source).to_be_visible()
         a = source.bounding_box()
-        b = page.get_by_role("button", name = "Reorder queued prompt 1 of 3", exact = True).bounding_box()
+        b = page.get_by_role(
+            "button", name = "Reorder queued prompt 1 of 3", exact = True
+        ).bounding_box()
         session = context.new_cdp_session(page)
         x, y = a["x"] + a["width"] / 2, a["y"] + a["height"] / 2
-        session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]})
+        session.send(
+            "Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y}]}
+        )
         for step in range(1, 7):
-            session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y + (b["y"] - a["y"]) * step / 6}]})
+            session.send(
+                "Input.dispatchTouchEvent",
+                {
+                    "type": "touchMove",
+                    "touchPoints": [{"x": x, "y": y + (b["y"] - a["y"]) * step / 6}],
+                },
+            )
         session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
-        expect(page.locator("[data-queue-item-id]").first).to_have_attribute("data-queue-item-id", "q2")
+        expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+            "data-queue-item-id", "q2"
+        )
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         print("PASS: touch drag at 320px", flush = True)
     finally:
