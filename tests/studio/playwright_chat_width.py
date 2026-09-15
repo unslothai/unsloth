@@ -29,7 +29,13 @@ PASSWORD = os.environ.get("STUDIO_NEW_PW") or os.environ.get("STUDIO_PW", "")
 TIMEOUT_MS = 60_000
 
 
-def api(page, path, method = "GET", body = None, token = None):
+def api(
+    page,
+    path,
+    method = "GET",
+    body = None,
+    token = None,
+):
     """Call the backend from the page, so the request carries the session cookie."""
     result = page.evaluate(
         """async ([url, method, body, token]) => {
@@ -96,36 +102,50 @@ def seed_thread(page, token):
     """
     thread_id = str(uuid.uuid4())
     now = int(time.time() * 1000)
-    api(page, "/api/chat/threads", method = "POST", token = token, body = {
-        "id": thread_id,
-        "title": "chat width presets",
-        "modelType": "base",
-        "modelId": "",
-        "archived": False,
-        "createdAt": now,
-        "updatedAt": now,
-    })
+    api(
+        page,
+        "/api/chat/threads",
+        method = "POST",
+        token = token,
+        body = {
+            "id": thread_id,
+            "title": "chat width presets",
+            "modelType": "base",
+            "modelId": "",
+            "archived": False,
+            "createdAt": now,
+            "updatedAt": now,
+        },
+    )
     user_id = str(uuid.uuid4())
-    api(page, f"/api/chat/threads/{thread_id}/messages", method = "PUT", token = token, body = {
-        "messages": [
-            {
-                "id": user_id,
-                "threadId": thread_id,
-                "parentId": None,
-                "role": "user",
-                "content": [{"type": "text", "text": "How wide does this column get?"}],
-                "createdAt": now,
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "threadId": thread_id,
-                "parentId": user_id,
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Seeded reply for the width presets. " * 40}],
-                "createdAt": now + 1,
-            },
-        ]
-    })
+    api(
+        page,
+        f"/api/chat/threads/{thread_id}/messages",
+        method = "PUT",
+        token = token,
+        body = {
+            "messages": [
+                {
+                    "id": user_id,
+                    "threadId": thread_id,
+                    "parentId": None,
+                    "role": "user",
+                    "content": [{"type": "text", "text": "How wide does this column get?"}],
+                    "createdAt": now,
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "threadId": thread_id,
+                    "parentId": user_id,
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Seeded reply for the width presets. " * 40}
+                    ],
+                    "createdAt": now + 1,
+                },
+            ]
+        },
+    )
     return thread_id
 
 
@@ -199,8 +219,9 @@ if __name__ == "__main__":
         page = browser.new_page(viewport = {"width": 1440, "height": 900}, reduced_motion = "reduce")
         token = sign_in(page)
         thread_id = os.environ.get("CHAT_THREAD_ID") or seed_thread(page, token)
-        page.goto(f"{BASE}/chat?thread={thread_id}", wait_until = "domcontentloaded",
-                  timeout = TIMEOUT_MS)
+        page.goto(
+            f"{BASE}/chat?thread={thread_id}", wait_until = "domcontentloaded", timeout = TIMEOUT_MS
+        )
         page.locator(".aui-assistant-message-root").wait_for(timeout = TIMEOUT_MS)
         print(check_widths(page))
         browser.close()
