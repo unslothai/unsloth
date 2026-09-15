@@ -2371,9 +2371,10 @@ def test_a_definition_time_call_is_not_inert(monkeypatch, tmp_path):
 
 
 def test_a_shell_local_studio_home_wins_over_the_backend_one(monkeypatch, tmp_path):
-    # The child expands the shell assignment, not the parent environment, so a command that rebinds
-    # the variable BEFORE using it names its own directory. An assignment AFTER a use rebinds
-    # nothing for that use, and must not hide a real read of the install's own auth directory.
+    # An assignment that stands as a command of its own rebinds what FOLLOWS it, so a command that
+    # rebinds the variable before using it names its own directory. Two things it does not cover: a
+    # PREFIX assignment, which POSIX expands the rest of its own command line before applying, and
+    # an assignment after a use, which rebinds nothing for that use.
     home = tmp_path / "studio-home"
     (home / "auth").mkdir(parents = True)
     (home / "sandbox" / _SESSION).mkdir(parents = True)
@@ -2382,7 +2383,7 @@ def test_a_shell_local_studio_home_wins_over_the_backend_one(monkeypatch, tmp_pa
     try:
         for ordinary in (
             'UNSLOTH_STUDIO_HOME=/tmp/project; cat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
-            'UNSLOTH_STUDIO_HOME=/tmp/project cat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
+            'export UNSLOTH_STUDIO_HOME=/tmp/p\ncat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
             "UNSLOTH_STUDIO_HOME=/tmp/a; UNSLOTH_STUDIO_HOME=/tmp/b;"
             ' cat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
         ):
@@ -2395,9 +2396,42 @@ def test_a_shell_local_studio_home_wins_over_the_backend_one(monkeypatch, tmp_pa
             # still happens under the real root.
             'UNSLOTH_STUDIO_HOME=$UNSLOTH_STUDIO_HOME; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db"'
             " .dump; UNSLOTH_STUDIO_HOME=/tmp",
+            # A PREFIX assignment does not govern its own command's expansion: the shell builds the
+            # word list first, so this still opens the INHERITED home's database.
+            'UNSLOTH_STUDIO_HOME=/tmp sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
+            'UNSLOTH_STUDIO_HOME=/tmp/project cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
             f'UNSLOTH_STUDIO_HOME={home}; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
         ):
             assert tools._bash_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), refused
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_foreign_environment_variable_is_not_the_studio_home(monkeypatch, tmp_path):
+    # A dynamic path piece was attributed to the studio root whenever the snippet mentioned the
+    # variable ANYWHERE, so an unrelated project directory read from a different variable was
+    # refused. The expression that built the path is what decides it.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = (
+            'import os\nprint(os.environ["UNSLOTH_STUDIO_HOME"])\n'
+            'project = os.environ["PROJECT_HOME"]\nopen(project + "/auth/config.json").read()'
+        )
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        for refused in (
+            'import os\nroot = os.environ["UNSLOTH_STUDIO_HOME"]\nopen(root + "/auth/auth.db").read()',
+            'import os\nopen(os.environ["UNSLOTH_STUDIO_HOME"] + "/auth/auth.db").read()',
+            'import os\nroot = os.getenv("UNSLOTH_STUDIO_HOME")\nopen(root + "/auth/auth.db").read()',
+        ):
+            assert tools._python_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED
             ), refused
     finally:

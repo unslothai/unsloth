@@ -2903,6 +2903,28 @@ _STUDIO_HOME_ASSIGN_RE = re.compile(
 )
 
 
+def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
+    """True when a command follows the assignment's value on the same simple command.
+
+    `H=/tmp cat x` is a prefix assignment; `H=/tmp; cat x` is an assignment that stands alone. The
+    value ends at the first unquoted separator, so the quotes are tracked while scanning it.
+    """
+    index = value_start
+    quote = ""
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in " \t;&|\n":
+            break
+        index += 1
+    following = text[index:].lstrip(" \t")
+    return bool(following) and following[0] not in ";&|\n"
+
+
 def _rebinds_the_studio_home_first(text: str) -> bool:
     """True when *text* assigns a studio home variable BEFORE any use of it.
 
@@ -2915,6 +2937,18 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
     lowered = text.lower()
     assignments: "dict[str, int]" = {}
     for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
+        # A PREFIX assignment (`H=/tmp cmd "$H/auth/auth.db"`) does not govern the expansion of its
+        # own command's arguments: the shell expands the word list before the assignment takes
+        # effect, so that read still happens under the INHERITED home. Only an assignment that
+        # stands as a command of its own, terminated by a separator, rebinds what follows.
+        if (
+            _assignment_is_a_command_prefix(text, match.end())
+            and (os.environ.get(match.group(1).upper()) or "").strip()
+        ):
+            # Only when the variable is SET: that inherited value is what the expansion uses. With
+            # it unset the expansion is empty, which can name no directory of this install's, so the
+            # assigned value is still the closest reading of what the command means.
+            continue
         # The LAST assignment of a name is the one the expansion applies, so that is the position
         # the first use has to come after: `H=$H; cat "$H/auth/auth.db"; H=/tmp` reads the real
         # database and then rebinds, and rewriting every use to `/tmp` erased the marker.
@@ -3631,6 +3665,7 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # resolves to the studio root and goes nowhere, and `auth/auth.db` is checked against the
     # sandbox, while the kernel joins them.
     dir_fds = _literal_directory_descriptors(tree, workdir)
+    studio_env_names, foreign_env_names = _python_env_binding_names(tree)
     process_aliases, process_functions = _process_module_aliases(tree)
     cwds: "list[str | None]" = [workdir]
     # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
@@ -3714,7 +3749,12 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         if "\x00" in folded:
             # A dynamic piece is the sensitive-path analyzer's, unless the code reads a
             # studio-home variable: bypass keeps that in the child env, so its value is known.
-            root = _studio_home_for_guard() if _code_reads_the_studio_home(code) else None
+            root = (
+                _studio_home_for_guard()
+                if _code_reads_the_studio_home(code)
+                and _expression_reads_the_studio_home(node, studio_env_names, foreign_env_names)
+                else None
+            )
             if root and any(
                 _references_studio_credential_here(folded.replace("\x00", root), cwd)
                 for cwd in cwds
@@ -4147,6 +4187,63 @@ def _is_chdir_call(
             modules or {"os", "contextlib"}
         )
     return isinstance(func, ast.Name) and func.id in bare
+
+
+def _reads_an_environment_variable(node) -> bool:
+    """True for `os.environ[...]`, `os.environ.get(...)` and `os.getenv(...)`."""
+    if isinstance(node, ast.Subscript):
+        receiver = node.value
+        return (getattr(receiver, "attr", None) or getattr(receiver, "id", None)) == "environ"
+    if isinstance(node, ast.Call):
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if called == "getenv":
+            return True
+        receiver = getattr(node.func, "value", None)
+        return (
+            called == "get"
+            and (getattr(receiver, "attr", None) or getattr(receiver, "id", None)) == "environ"
+        )
+    return False
+
+
+def _python_env_binding_names(tree) -> "tuple[set, set]":
+    """`(names holding the studio home, names holding some OTHER environment variable)`.
+
+    A dynamic path piece is only the studio root when the expression that built it actually read
+    that variable. Attributing it to any snippet that mentions the variable ANYWHERE refused
+    `project = os.environ["PROJECT_HOME"]; open(project + "/auth/config.json")`, which names an
+    unrelated application's directory.
+    """
+    studio: "set[str]" = set()
+    foreign: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        if not _reads_an_environment_variable(value):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                (studio if _names_the_studio_home_env(value) else foreign).add(target.id)
+    return studio, foreign
+
+
+def _expression_reads_the_studio_home(node, studio_names, foreign_names) -> bool:
+    """Whether THIS expression's dynamic piece is the studio home.
+
+    Positive attribution both ways: the expression reads the variable itself or uses a name bound to
+    it, or every environment-backed name in it belongs to a different variable. Anything this cannot
+    attribute keeps the old whole-snippet answer, which is the fail-closed one.
+    """
+    names = {piece.id for piece in ast.walk(node) if isinstance(piece, ast.Name)}
+    if any(_names_the_studio_home_env(piece) for piece in ast.walk(node)):
+        return True
+    if names & set(studio_names):
+        return True
+    return not (names & set(foreign_names))
 
 
 def _names_the_studio_home_env(node) -> bool:
