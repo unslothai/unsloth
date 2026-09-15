@@ -3933,7 +3933,9 @@ def _ensure_cuda_torch() -> None:
     elif (
         _marker == "cpu"
         and not _deliberate_cpu_torch()
-        and _is_cuda_family_leaf(_torch_index_leaf(_detect_cuda_torch_index_url(known_only = True) or ""))
+        and _is_cuda_family_leaf(
+            _torch_index_leaf(_detect_cuda_torch_index_url(known_only = True) or "")
+        )
     ):
         # A CPU wheel nobody asked for on an NVIDIA host whose driver is known to run a CUDA
         # wheel (the selector's cu126 default for an unreadable driver is not evidence): a
