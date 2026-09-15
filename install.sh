@@ -2428,8 +2428,101 @@ _cvd_hides_nvidia() {
     [ -z "$_cvd_trim" ] || [ "$_cvd_trim" = "-1" ]
 }
 
+# NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API) for a host whose nvidia-smi is absent, stale or hangs (#9255): "<cuda major>.<minor> <cap>,<cap>" or exit 1. Inline rather than studio/nvidia_probe.py, which is not on disk yet when the torch index is chosen; the two read the same calls.
+# Memoised for the run: the presence check and the torch index must read the same answer,
+# and a wedged driver pays its deadline once.
+_NVIDIA_LIBRARY_INVENTORY_STATE=""
+_NVIDIA_LIBRARY_INVENTORY_VALUE=""
+_nvidia_library_inventory() {
+    [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] || return 1
+    case "${_NVIDIA_LIBRARY_INVENTORY_STATE:-}" in
+        found) printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"; return 0 ;;
+        none) return 1 ;;
+    esac
+    # The system python3, else the managed venv's once it exists. No interpreter yet is
+    # not an answer to remember: the venv arrives later in this run.
+    if command -v python3 >/dev/null 2>&1; then _nli_py=python3
+    elif [ -n "${VENV_DIR:-}" ] && [ -x "$VENV_DIR/bin/python" ]; then _nli_py="$VENV_DIR/bin/python"
+    else return 1
+    fi
+    _NVIDIA_LIBRARY_INVENTORY_STATE="none"
+    _NVIDIA_LIBRARY_INVENTORY_VALUE=$(_run_bounded "$_nli_py" -I - 2>/dev/null <<'PY'
+import ctypes, os, sys
+
+def load(*names):
+    for name in names:
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            pass
+
+def sym(lib, name):  # an older NVML exports the unversioned entry point only
+    return getattr(lib, name, None) or getattr(lib, name.replace("_v2", ""))
+
+def nvml():
+    lib = load("libnvidia-ml.so.1", "libnvidia-ml.so")
+    if lib is None or sym(lib, "nvmlInit_v2")() != 0:
+        return None
+    try:
+        count, version = ctypes.c_uint(), ctypes.c_int()
+        if sym(lib, "nvmlDeviceGetCount_v2")(ctypes.byref(count)) != 0 or not count.value:
+            return None
+        if sym(lib, "nvmlSystemGetCudaDriverVersion_v2")(ctypes.byref(version)) != 0 or version.value < 1000:
+            return None
+        caps = []
+        for i in range(count.value):
+            dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
+            if sym(lib, "nvmlDeviceGetHandleByIndex_v2")(i, ctypes.byref(dev)) != 0 or \
+               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return None  # one unreadable GPU voids the source
+            caps.append(f"{major.value}.{minor.value}")
+        return version.value, caps
+    finally:
+        lib.nvmlShutdown()
+
+def cuda():
+    # The driver API honours CUDA_VISIBLE_DEVICES; the inventory must be the physical one, so a
+    # hidden pre-Turing card still caps the family (studio/nvidia_probe.py does the same).
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    lib = load("libcuda.so.1", "libcuda.so")
+    if lib is None or lib.cuInit(0) != 0:
+        return None
+    count, version = ctypes.c_int(), ctypes.c_int()
+    if lib.cuDeviceGetCount(ctypes.byref(count)) != 0 or not count.value:
+        return None
+    if lib.cuDriverGetVersion(ctypes.byref(version)) != 0 or version.value < 1000:
+        return None
+    caps = []
+    for i in range(count.value):
+        dev, major, minor = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+        # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
+        if lib.cuDeviceGet(ctypes.byref(dev), i) != 0 or \
+           lib.cuDeviceGetAttribute(ctypes.byref(major), 75, dev) != 0 or \
+           lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, dev) != 0:
+            return None
+        caps.append(f"{major.value}.{minor.value}")
+    return version.value, caps
+
+found = None
+for reader in (nvml, cuda):  # a reader that raises (a missing symbol) yields to the next
+    try:
+        found = reader()
+    except Exception:
+        found = None
+    if found and found[1]:
+        break
+if not found or not found[1]:
+    sys.exit(1)
+version, caps = found
+print(f"{version // 1000}.{version % 1000 // 10} {','.join(caps)}")
+PY
+) && [ -n "$_NVIDIA_LIBRARY_INVENTORY_VALUE" ] || return 1
+    _NVIDIA_LIBRARY_INVENTORY_STATE="found"
+    printf '%s\n' "$_NVIDIA_LIBRARY_INVENTORY_VALUE"
+}
+
 # ── NVIDIA usable-GPU helper ──
-# nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback; a hidden GPU is NOT usable.
+# nvidia-smi -L primary, /proc/driver/nvidia/gpus/ fallback, driver library last; a hidden GPU is NOT usable.
 _has_usable_nvidia_gpu() {
     if _cvd_hides_nvidia; then
         return 1
@@ -2449,6 +2542,7 @@ _has_usable_nvidia_gpu() {
        [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
         return 0
     fi
+    _nvidia_library_inventory >/dev/null 2>&1 && return 0
     return 1
 }
 
@@ -3759,8 +3853,13 @@ _probe_amd_gfx_arch() {
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
 _nvidia_cu126_verdict() {
-    [ -n "$1" ] || return 0
-    _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    # $2: capabilities already read from the driver library, one per line, when nvidia-smi cannot.
+    if [ -n "${2:-}" ]; then
+        _ncv_caps=$2
+    else
+        [ -n "$1" ] || return 0
+        _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    fi
     printf '%s\n' "$_ncv_caps" | awk '
         { gsub(/^[[:space:]]+|[[:space:]]+$/, "") }   # match the .Trim()/.strip() siblings
         /^[0-9]+\.[0-9]+$/ {
@@ -3789,7 +3888,7 @@ _cap_cuda_family_for_pre_turing() {
         cu128|cu130) ;;
         *) printf '%s\n' "$1"; return ;;
     esac
-    case "$(_nvidia_cu126_verdict "$2")" in
+    case "$(_nvidia_cu126_verdict "$2" "${3:-}")" in
         cu126)
             echo "[WARN] Pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $1 wheels start at sm_75." >&2
             printf '%s\n' "cu126"
@@ -4081,9 +4180,16 @@ get_torch_index_url() {
             -e 's/.*CUDA UMD Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
             -e 's/.*CUDA Version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
         | head -1)
+    _inventory_caps=""
     if [ -z "$_cuda_ver" ]; then
-        echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
-        echo "$_base/cu126"; return
+        # nvidia-smi absent, stale or hung: the driver library knows both; cu126 is the last resort.
+        if _inventory=$(_nvidia_library_inventory) && [ -n "$_inventory" ]; then
+            _cuda_ver=${_inventory%% *}
+            _inventory_caps=$(printf '%s' "${_inventory#* }" | tr ',' '\n')
+        else
+            echo "[WARN] Could not determine CUDA version from nvidia-smi, defaulting to cu126" >&2
+            echo "$_base/cu126"; return
+        fi
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
@@ -4093,7 +4199,7 @@ get_torch_index_url() {
     elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
     elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
     else echo "$_base/cpu"; return; fi
-    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
+    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi" "$_inventory_caps")"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
@@ -4593,6 +4699,12 @@ if [ -n "$_te_trim" ]; then
     fi
 fi
 
+# The NVIDIA presence check runs here first: get_torch_index_url runs in a command substitution,
+# whose library inventory memo would not outlive it, and the later checks would probe again.
+# Not for a pinned index or no torch at all: the selection does not read the GPU then.
+if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ]; then
+    _has_usable_nvidia_gpu >/dev/null 2>&1 || true
+fi
 TORCH_INDEX_URL=$(get_torch_index_url)
 
 # Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's per-arch wheels like install.ps1 does on Windows (unslothai#7301). Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at all, or the GPU is visible only through the env-independent KFD topology while rocminfo/amd-smi cannot read its arch (#7314; before the KFD detection fix these hosts reached this reroute via the false branch, so the empty-probe condition preserves that routing). A */cpu index chosen WITH a readable gfx and a readable but UNSUPPORTED ROCm version is a deliberate fallback and stays excluded, since the shared probe returns its gfx; an UNREADABLE version is only a detection miss, so it gets its own way in below (#8731). UNSLOTH_ROCM_GFX_ARCH stays authoritative either way.
