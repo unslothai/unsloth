@@ -94,12 +94,28 @@ body:
       description: |
         Open PowerShell (no administrator rights needed) and paste the block below. It only reads:
         registered antivirus products, the AMSI providers loaded into PowerShell, Defender's status,
-        and recent Defender events. It downloads nothing, changes nothing and touches no personal
-        data. Paste its output here.
+        and recent Defender events. It downloads nothing and changes nothing.
+
+        It does print file paths. Your user name and profile directory are replaced with
+        placeholders before anything is written, but a detection that happened to fire in the last
+        two hours is still listed even if it has nothing to do with Unsloth, and a path outside your
+        profile is printed as it is. **Read the output before you paste it, and delete any line you
+        would rather not publish** -- this issue is public. Removing a line we needed only costs us
+        one round trip asking for it.
 
 
         ```powershell
         $ErrorActionPreference = 'Continue'
+
+        # Replaces the two things in a Windows path that identify a person: the profile directory
+        # and the account name. Applied to every line below that can carry a path.
+        function Hide-Personal([string]$s) {
+          if (-not $s) { return $s }
+          if ($env:USERPROFILE) { $s = $s -replace ('(?i)' + [regex]::Escape($env:USERPROFILE)), '%USERPROFILE%' }
+          if ($env:USERNAME)    { $s = $s -replace ('(?i)' + [regex]::Escape($env:USERNAME)), '<user>' }
+          return $s
+        }
+
         "=== OS and host ==="
         $ci = $null
         try { $ci = Get-ComputerInfo -ErrorAction Stop } catch { "Get-ComputerInfo failed: $($_.Exception.Message)" }
@@ -111,7 +127,7 @@ body:
         "`n=== registered antivirus products ==="
         try {
           Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop |
-            ForEach-Object { "{0}   state=0x{1:X}   {2}" -f $_.displayName, $_.productState, $_.pathToSignedProductExe }
+            ForEach-Object { Hide-Personal ("{0}   state=0x{1:X}   {2}" -f $_.displayName, $_.productState, $_.pathToSignedProductExe) }
         } catch { "SecurityCenter2 unavailable: $($_.Exception.Message)" }
 
         "`n=== AMSI providers (the ones that can block a script) ==="
@@ -131,8 +147,8 @@ body:
             $dll = $dll.Trim('"')
             $vi = $null
             try { $vi = (Get-Item -LiteralPath $dll -ErrorAction Stop).VersionInfo } catch { }
-            if ($vi) { "$clsid   $dll   company='$($vi.CompanyName)'   product='$($vi.ProductName)'   version=$($vi.FileVersion)" }
-            else     { "$clsid   $dll   (file not readable)" }
+            if ($vi) { Hide-Personal "$clsid   $dll   company='$($vi.CompanyName)'   product='$($vi.ProductName)'   version=$($vi.FileVersion)" }
+            else     { Hide-Personal "$clsid   $dll   (file not readable)" }
           }
         }
 
@@ -148,7 +164,7 @@ body:
         try {
           Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1006,1007,1015,1116,1117,1121,1122; StartTime=(Get-Date).AddHours(-2)} -ErrorAction Stop |
             Select-Object -First 15 |
-            ForEach-Object { "$($_.TimeCreated)  id=$($_.Id)  " + ((($_.Message -split "`r?`n") | Where-Object { $_ -match '^(Name|Path|Process Name|Detection Source|Action):' }) -join ' | ') }
+            ForEach-Object { Hide-Personal ("$($_.TimeCreated)  id=$($_.Id)  " + ((($_.Message -split "`r?`n") | Where-Object { $_ -match '^(Name|Path|Process Name|Detection Source|Action):' }) -join ' | ')) }
         } catch { "no matching events, or the log could not be read: $($_.Exception.Message)" }
         ```
 

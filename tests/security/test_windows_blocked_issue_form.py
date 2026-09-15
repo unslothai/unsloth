@@ -180,3 +180,46 @@ def test_the_labels_the_form_declares_are_real() -> None:
         f"on the repository with `gh label create` and add them here; GitHub will otherwise drop "
         f"them without a word and the issue will arrive unlabelled."
     )
+
+
+def test_every_line_that_can_carry_a_path_is_redacted() -> None:
+    """The form is `required: true` and the issue is public, so this output gets published.
+
+    Three of the sections print file paths, and the Defender one prints `Path` and `Process Name`
+    for every detection in the last two hours, related to Unsloth or not. On a normal machine those
+    paths start with the profile directory and therefore carry the account name, and the file name
+    itself can be anything the person happened to have open. Redaction is applied at the point of
+    printing rather than trusted to the reporter, because the reporter is someone whose install is
+    already broken and who is pasting a block they did not write.
+    """
+    snippet = _snippet()
+    assert "function Hide-Personal" in snippet, (
+        "the collection script no longer defines the redaction helper, so the profile directory and "
+        "account name reach a public issue verbatim"
+    )
+    for carrier, why in (
+        ("pathToSignedProductExe", "the antivirus product's own path"),
+        ("$clsid   $dll", "the AMSI provider DLL path"),
+        ("$($_.TimeCreated)", "the Defender event path and process name"),
+    ):
+        line = next((ln for ln in snippet.splitlines() if carrier in ln), None)
+        assert line is not None, f"the collection script no longer prints {why} ({carrier})"
+        assert "Hide-Personal" in line, (
+            f"the line printing {why} is no longer redacted: {line.strip()}"
+        )
+
+
+def test_the_form_does_not_promise_more_privacy_than_it_delivers() -> None:
+    """The old wording said it touches no personal data, which was not true of the event section.
+
+    An assurance that overstates is worse than none: it is read by exactly the people least placed
+    to check it, and it discourages the one thing that does work, which is reading the output first.
+    """
+    description = _fields()["probe"]["attributes"]["description"]
+    assert "touches no personal data" not in description, (
+        "the form claims again that the collection script touches no personal data, but it prints "
+        "detection paths from the last two hours"
+    )
+    assert "Read the output before you paste it" in description, (
+        "the form no longer tells the reporter to read the output before publishing it"
+    )
