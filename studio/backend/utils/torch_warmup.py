@@ -435,15 +435,26 @@ def _is_native_video_pick(pick) -> bool:
     from core.inference.video_families import detect_video_family  # noqa: PLC0415
     from core.inference.video_minimax_h3 import is_h3_native  # noqa: PLC0415
 
-    for needle in (pick.model_path, pick.model_id):
-        if not needle:
+    gguf = getattr(pick, "gguf_filename", None)
+    for base in (pick.model_path, pick.model_id):
+        if not base:
             continue
-        try:
-            family = detect_video_family(needle)
-        except Exception:  # noqa: BLE001 -- a probe failure must not decide "native"
-            continue
-        if family is not None:
-            return bool(is_h3_native(family, "gguf"))
+        # Repo id first, then repo id + picked filename, which is the order and the pair
+        # video.py's own _detect_load_family uses: a local directory or a generically named repo
+        # often carries the family token only in the checkpoint filename.
+        for needle in (base, f"{base}/{gguf}" if gguf else None):
+            if not needle:
+                continue
+            try:
+                family = detect_video_family(needle)
+            except Exception:  # noqa: BLE001 -- a probe failure must not decide "native"
+                continue
+            if family is not None:
+                return bool(is_h3_native(family, "gguf"))
+    # Not covered on purpose: _detect_load_family also reads general.architecture out of a
+    # renamed GGUF's header. That is file IO on a boot thread to save memory, and guessing wrong
+    # in this direction only costs the prewarm, so an unidentifiable GGUF falls through to the
+    # safe default and prewarms.
     return False
 
 

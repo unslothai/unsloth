@@ -160,6 +160,29 @@ def test_a_video_only_install_of_an_h3_gguf_pays_nothing(warm, monkeypatch):
     assert warm._diffusers_prewarmed is False
 
 
+def test_an_h3_gguf_named_only_by_its_filename_pays_nothing(warm, monkeypatch):
+    """The supported layout the repo id alone cannot answer for.
+
+    A local directory or a generically named repo often carries the family token only in the
+    checkpoint filename, which is why video.py's own ``_detect_load_family`` tries the repo id
+    and then ``f"{repo_id}/{gguf_filename}"``. Looking at the id alone leaves this install
+    prewarming 316 MB for a load that returns through ``_run_load_h3_native``.
+    """
+    _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["custom-video"]})
+    sys.modules["core.inference.media_model_index"].resolve_local_media_model = (
+        lambda model_id, task: types.SimpleNamespace(
+            model_id = "custom-video",                    # names no family
+            model_path = "/models/custom",                # nor does the directory
+            gguf_filename = "minimax_h3_fl2va-Q4.gguf",   # only the checkpoint does
+            model_kind = "gguf",
+            ambiguous = False,
+        )
+    )
+    _stub_diffusers(monkeypatch)
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+
+
 def test_a_video_family_we_cannot_identify_still_prewarms(warm, monkeypatch):
     """The H3 skip is an exception carved out of the default, not a new default.
 
