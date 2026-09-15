@@ -750,8 +750,8 @@ def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
     # And a vanished file has to reach both verdicts, not just be printed.
     assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
     assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
-    assert "$noResult += \"$v" in body, "a vanished copy never reaches the AMSI verdict"
-    assert "$unscanned += \"$v" in body, "a vanished copy never reaches the Defender verdict"
+    assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
+    assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
 
 
 def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
@@ -763,9 +763,9 @@ def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
     decoded as Unicode.
     """
     body = PROBE.read_text(encoding = "utf-8")
-    assert "Get-Content -Raw -LiteralPath $file" not in body, (
-        "the probe still reads the candidate with Get-Content's default encoding"
-    )
+    assert (
+        "Get-Content -Raw -LiteralPath $file" not in body
+    ), "the probe still reads the candidate with Get-Content's default encoding"
     assert "UTF8Encoding" in body, "the probe does not decode the candidate as UTF-8"
 
     # And the decode really is lossless for the bytes we ship: driven through pwsh rather than
@@ -808,9 +808,9 @@ def test_the_defender_lane_does_not_claim_block_at_first_sight() -> None:
         if "Write-Host" in line and "block-at-first-sight" in line.lower()
     ]
     for line in printed:
-        assert "not block-at-first-sight" in line or "does not act" in line, (
-            f"this line still tells the reader block-at-first-sight was exercised:\n{line.strip()}"
-        )
-    assert "ON-DEMAND cloud scan" in body, (
-        "the lane no longer says what kind of cloud scan it actually performed"
-    )
+        assert (
+            "not block-at-first-sight" in line or "does not act" in line
+        ), f"this line still tells the reader block-at-first-sight was exercised:\n{line.strip()}"
+    assert (
+        "ON-DEMAND cloud scan" in body
+    ), "the lane no longer says what kind of cloud scan it actually performed"
