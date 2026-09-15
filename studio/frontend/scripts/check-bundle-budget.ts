@@ -32,38 +32,12 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2. Raised for the audio placement control: same
-  // build both sides, merge base 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
-  // ceiling by a tenth of a kilobyte.
-  //
-  // Raised again after a second squeeze. main measures 1,585.6 KB transfer and passed
-  // 1,645,000 by 20.9 KB, which is 1.3% and about six days at the 3.7 KB/day this file
-  // has drifted since 17363f8a2. That is the same margin the previous raise left, and it
-  // lasted six days before main went red again on a commit whose only frontend change was
-  // one English sentence rewritten shorter.
-  //
-  // Nothing became eager that should not be: across the whole window the eager chunk set
-  // gained no member, so there is nothing here to lazy-load. What runs out is headroom.
-  // 1,690,000 leaves 64.8 KB (4.1%), the proportion #8964 shipped with, which absorbed 17
-  // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
-  // together instead of each dragging main red on its own.
-  //
-  // That is the re-measure, and the reason it is one raise rather than the next in the queue.
-  // raw ran out and main went red on its own at 5fbbd61e6f, 5,377.2 KB against a 5,371.1 KB
-  // ceiling with nothing on a branch to blame. It has been bought back twice since, in one
-  // day: #10974 added 10,000 bytes and did not survive a single merge, and the next raise
-  // added 10,000 more. Each one leaves a few kilobytes, which is one locale string or one
-  // lazy boundary, and the next PR to cross it pays for a drift it did not cause.
-  //
-  // So both halves move together as the note above intended, to the headroom that raise
-  // chose. Against this merge's 5,384.0 KB raw / 1,610.2 KB transfer, 5,730,000 leaves
-  // 211.7 KB raw (3.8%) and 1,715,000 leaves 64.6 KB transfer (3.9%).
-  //
-  // Nothing became eager. The eager set is still 84 chunks with the same top five (chat,
-  // index, chunk-BO2N2NFS, providers-api, katex), so there is nothing here to lazy-load; the
-  // raw total grew inside chunks that were already eager, the locale messages most of all.
-  // Measured on one machine, one build per side, so the two numbers are comparable to each
-  // other rather than to a CI runner's.
+  // Measured, one machine and one build per side, so the pair is comparable to itself rather
+  // than to a runner's: 5,384.0 KB raw / 1,610.2 KB transfer at the merge base, leaving
+  // 211.7 KB and 64.6 KB spare. Both halves are re-measured TOGETHER, or each drags main red
+  // on its own; the previous four raises each bought a few kilobytes and were spent within
+  // days, charging the next PR for drift it did not cause. The eager set has not gained a
+  // member across any of it, so what runs out is headroom, not laziness.
   transferBytes: 1_715_000,
   rawBytes: 5_730_000,
 };
