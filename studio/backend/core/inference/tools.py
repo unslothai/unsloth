@@ -12421,9 +12421,16 @@ def _mcp_tool_schema(name, offset = None) -> str:
     return _mcp_schema_page("", text, offset)
 
 
-def _with_mcp_schema_tool(specs: list[dict]) -> list[dict]:
-    compacted = any(spec["function"]["description"].endswith(_MCP_COMPACT_HINT) for spec in specs)
+def _with_mcp_schema_tool(specs: list[dict], compacted: bool) -> list[dict]:
     return specs + [MCP_TOOL_SCHEMA_TOOL] if compacted else specs
+
+
+def _mcp_any_compacted(mcp_tools: list[dict]) -> bool:
+    return any(
+        _mcp_tool_model_visible(tool) and _mcp_spec_compacted(tool)
+        for tool in mcp_tools
+        if isinstance(tool, dict)
+    )
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
@@ -12501,6 +12508,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
     specs: list[dict] = []
     complete = True
+    compacted = False
     for server in servers:
         payload = get_cached_tools(server["id"])
         if payload is None:
@@ -12508,7 +12516,8 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
                 complete = False
             continue
         specs.extend(_mcp_specs_for_server(server, payload))
-    return _with_mcp_schema_tool(specs), complete
+        compacted = compacted or _mcp_any_compacted(payload)
+    return _with_mcp_schema_tool(specs, compacted), complete
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
@@ -12563,12 +12572,14 @@ async def get_enabled_mcp_tools() -> list[dict]:
             cache_tools(server["id"], payload)
 
     specs: list[dict] = []
+    compacted = False
     for server in servers:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
         specs.extend(_mcp_specs_for_server(server, payload))
-    return _with_mcp_schema_tool(specs)
+        compacted = compacted or _mcp_any_compacted(payload)
+    return _with_mcp_schema_tool(specs, compacted)
 
 
 _TIMEOUT_UNSET = object()
