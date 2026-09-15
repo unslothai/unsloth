@@ -291,7 +291,8 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
         "ComposerRightControls no longer renders the Queue button in exactly two places; "
         "re-read which of them can appear on an idle thread"
     )
-    assert "aria-label={`Prompt queue, ${current} of ${total}`}" in src, (
+    queue_src = (_THREAD_TSX.parent / "prompt-queue-list.tsx").read_text(encoding = "utf-8")
+    assert "aria-label={`Prompt queue, ${entry.current} of ${entry.total}`}" in queue_src, (
         "PromptQueueStack no longer names itself, so dom.promptQueue() matches nothing and the "
         "queued-idle interval is indistinguishable again"
     )
