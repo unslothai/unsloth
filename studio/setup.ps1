@@ -6666,8 +6666,9 @@ if ($StageRoot -and $NeedLlamaSourceBuild) {
 # The wheel is Python-side only: it installs and satisfies notebook_validator's
 # torch/torchcodec matrix, then fails at import because Windows ships no FFmpeg
 # avcodec/avutil. `datasets` 4.x reports that as "please install 'torchcodec'",
-# naming a package already installed, so say it here instead.
-if (-not $SkipPythonDeps) {
+# naming a package already installed, so say it here instead. The fast update path
+# still probes when a venv exists: the broken install is already there.
+if (-not $SkipPythonDeps -or (Test-Path (Join-Path $VenvDir 'Scripts\python.exe'))) {
     # Importing torchcodec imports torch: bound it so a wedged GPU runtime cannot
     # hang setup. No double quotes anywhere in the body, comments included: the helper
     # wraps it in them for -c <body>, so one more silently truncates the program.

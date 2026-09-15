@@ -230,21 +230,22 @@ def test_both_installers_report_the_loader_failure_that_is_not_ffmpeg(script):
 
 
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
-def test_the_probe_is_skipped_when_python_deps_were_skipped(script):
-    # Nothing is installed to probe, and the venv may not even exist.
+def test_the_probe_runs_on_the_fast_update_path_when_a_venv_exists(script):
+    # An up-to-date install skips the dependency pass, and that is exactly where a user
+    # with an already broken torchcodec lands on every update. Probe whenever there is a
+    # venv to inspect; skip only when nothing was installed and none exists (Colab, first run).
     # The ENCLOSING condition, not "the name appears somewhere above": the assignment sits
     # hundreds of lines earlier, so a backwards search passes even with the guard deleted.
     text = script.read_text(encoding = "utf-8")
-    opener, names = {
-        ".sh": ("_TORCHCODEC_PROBE=", ("_SKIP_PYTHON_DEPS",)),
-        ".ps1": ("$_torchcodecProbe = @", ("$SkipPythonDeps", "SkipPythonDeps")),
+    opener, skip, venv = {
+        ".sh": ("_TORCHCODEC_PROBE=", "_SKIP_PYTHON_DEPS", '-x "$VENV_DIR/bin/python"'),
+        ".ps1": ("$_torchcodecProbe = @", "SkipPythonDeps", "Join-Path $VenvDir 'Scripts\\python.exe'"),
     }[script.suffix]
     probe = text.index(opener)
     guard = text.rfind("if ", 0, probe)
     line = text[guard : text.index("\n", guard)]
-    assert any(
-        name in line for name in names
-    ), f"the probe's enclosing condition does not test the skip-python-deps flag: {line!r}"
+    assert skip in line, f"the probe's enclosing condition does not test the skip-python-deps flag: {line!r}"
+    assert venv in line, f"the probe's enclosing condition does not fall back to an existing venv: {line!r}"
 
 
 def test_the_shell_probe_is_skipped_in_llama_only_mode():

@@ -4390,8 +4390,9 @@ fi
 # torch/torchcodec matrix, then fails at import when FFmpeg's avcodec/avutil are
 # absent. `datasets` 4.x reports that as "please install 'torchcodec'", naming a
 # package already installed, so say it here instead. llama-only skips this: no
-# Python deps to report on, and _SKIP_PYTHON_DEPS is unassigned on that path.
-if [ "$_LLAMA_ONLY" != "1" ] && [ "${_SKIP_PYTHON_DEPS:-false}" != true ]; then
+# Python deps to report on, and _SKIP_PYTHON_DEPS is unassigned on that path. The fast
+# update path still probes when a venv exists: the broken install is already there.
+if [ "$_LLAMA_ONLY" != "1" ] && { [ "${_SKIP_PYTHON_DEPS:-false}" != true ] || [ -x "$VENV_DIR/bin/python" ]; }; then
     # Importing torchcodec imports torch, so bound it: a wedged GPU runtime must not
     # hang setup. The in-body alarm (POSIX only) covers hosts without coreutils
     # timeout, stock macOS most of all; Windows bounds it with Invoke-BoundedPythonProbe.
