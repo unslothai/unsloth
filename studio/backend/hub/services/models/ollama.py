@@ -532,8 +532,7 @@ def scan_ollama_dir(
                 continue
 
             lock = _materialization_lock(tag_file, ollama_dir) if materialize_links else None
-            # A load holds this tag, and its lease promises the link it made stays put: report that
-            # link rather than dropping the model for the length of the load. Never block.
+            # A load holds this tag; its lease keeps the link it made, so report that, never block.
             leased = lock is not None and not lock.acquire(blocking = False)
             try:
                 info = _ollama_model_info_from_manifest(

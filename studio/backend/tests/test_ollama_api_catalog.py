@@ -119,7 +119,6 @@ def test_catalog_and_resolver_are_read_only_and_share_the_public_id(store, monke
 
 
 def test_a_tag_being_loaded_stays_in_the_inventory(store):
-    """A load holds the tag's lease for its whole run, and a picker that loses the row hides it."""
     ref = models_route._scan_ollama_dir(store, materialize_links = False)[0].id
     lease = ollama.acquire_ollama_model_ref(ref)
     try:
@@ -156,7 +155,7 @@ def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store
     _retag(store, "latest", "c" * 64)
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
-    # A manifest mid-pull reads as nothing; the listing withholds the row rather than failing.
+    # A manifest mid-pull reads as nothing: withhold the row, do not fail the listing.
     (store / "manifests/registry.ollama.ai/library/llama3/latest").write_text("truncated")
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
@@ -235,7 +234,6 @@ def test_an_alias_answers_for_the_resident_blobs_until_its_own_tag_moves(
     # Whichever spelling the inventory gave a recipe: this link, an older link name, the alias.
     for stored in (link, link.with_name("llama3-latest-Q4_K_M.gguf"), alias_link):
         assert _validate(str(stored)).resident is True
-    # The other tag moving does not unname this one: only its own manifest speaks for it.
     _retag(store, "latest", "d" * 64)
     assert _satisfied() is True
     assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:8b"]

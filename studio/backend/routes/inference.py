@@ -8447,9 +8447,7 @@ def _loaded_satisfies(requested: str) -> bool:
         ]
         identifier = getattr(llama_backend, "model_identifier", None)
         if identifier and is_ollama_manifest_ref(identifier):
-            # A re-pull keeps a spelling and replaces its blobs, so the tag the load recorded
-            # vouches for nothing but itself. Every other name, the alias this was adopted under
-            # included, is resolved and judged on its own blobs.
+            # A re-pull keeps a spelling and replaces its blobs: the tag vouches for itself only.
             own = [name for name in (identifier, _ollama_public_id(identifier)) if name]
             still_tagged = _resident_is_still_tagged(identifier, llama_backend)
             if _matches_any(requested, own):
@@ -8591,7 +8589,6 @@ def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:
 
 
 def _ollama_public_id(ref: str) -> Optional[str]:
-    """The tag id *ref* publishes, or None once its manifest no longer reads."""
     try:
         return ollama_model_ref_public_id(ref)
     except (OSError, ValueError):
