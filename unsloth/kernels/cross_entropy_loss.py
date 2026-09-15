@@ -298,7 +298,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         vocab_size: int
         n_rows, vocab_size = logits.shape
         device = logits.device
-        labels = labels.to(device)
+        logits = logits.contiguous()
+        labels = labels.to(device).contiguous()
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks: int = div + (mod != 0)
@@ -436,8 +437,8 @@ def fast_cross_entropy_loss(
 
     device = logits.device
     loss = Fast_CrossEntropyLoss.apply(
-        logits.view(batch * seq_len, d),
-        labels.view(-1),
+        logits.reshape(batch * seq_len, d),
+        labels.reshape(-1),
         logit_softcapping,
         logit_scaling,
     )
