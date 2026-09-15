@@ -1849,3 +1849,60 @@ def test_a_wildcard_that_carries_no_literal_hint(monkeypatch, tmp_path):
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_fchdir_is_a_move_with_an_unknown_destination(monkeypatch, tmp_path):
+    # `os.fchdir(fd)` names where it goes by descriptor, so there is no path to fold. The move is
+    # real, so the studio root joins the live directories and a later relative credential path is
+    # resolved from there as well as from the sandbox.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        blocked = (
+            "import os\n"
+            'fd = os.open("../..", os.O_RDONLY)\n'
+            "os.fchdir(fd)\n"
+            'print(open("auth/auth.db", "rb").read())'
+        )
+        assert tools._python_exec(blocked, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        ordinary = (
+            "import os\n"
+            'fd = os.open("data", os.O_RDONLY)\n'
+            "os.fchdir(fd)\n"
+            'print(open("notes.txt").read())'
+        )
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_snippets_own_chdir_is_not_a_move(monkeypatch, tmp_path):
+    # A bare `chdir` only moves the walk once an import binds it. A snippet's own definition is an
+    # ordinary function, and a call to it was resolving later paths under the studio root.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = 'def chdir(path):\n    pass\nchdir("../..")\nprint(open("auth/config.json").read())'
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        for blocked in (
+            'from os import chdir\nchdir("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'from os import chdir as move\nmove("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'import os\nmove = os.chdir\nmove("../..")\nprint(open("auth/auth.db", "rb").read())',
+        ):
+            assert tools._python_exec(blocked, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), blocked
+    finally:
+        tools._studio_auth_markers_cache = None

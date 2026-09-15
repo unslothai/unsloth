@@ -3284,7 +3284,15 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
             argument = _chdir_argument(node)
             target = None if argument is None else _folded_path(argument)
             targets: "list[str]" = []
-            if target and "\x00" not in target:
+            # `os.fchdir(fd)` names its destination by a descriptor, so there is no path to fold and
+            # the move is real. The one destination that matters here is the studio root, so it is
+            # added to the live states: a later `auth/auth.db` is then resolved from there as well
+            # as from the sandbox, which is the fail-closed reading the unknown target calls for.
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "fchdir":
+                root = _studio_home_for_guard()
+                if root:
+                    targets = [root]
+            if not targets and target and "\x00" not in target:
                 # `os.chdir(Path.cwd().parents[1])` is an ordinary move, and the fold writes the
                 # walk as one marker, so resolve it here rather than ignoring the move.
                 targets = (
@@ -3632,12 +3640,19 @@ def _chdir_names(tree, modules: "set[str] | None" = None) -> "set[str]":
     An alias of somebody else's `chdir`, `move = ftp.chdir`, is not one of them.
     """
     modules = modules or {"os", "contextlib"}
-    names = {"chdir"}
+    # The BARE name only counts once an import binds it. A snippet's own `def chdir(path)` is an
+    # ordinary function, and treating a call to it as a move refused code that never leaves the
+    # sandbox. The qualified `os.chdir(...)` form does not go through this set.
+    names: "set[str]" = set()
+    defined_locally = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "chdir"
+        for node in ast.walk(tree)
+    )
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in ("os", "contextlib"):
             for alias in node.names:
-                if alias.name == "chdir" and alias.asname:
-                    names.add(alias.asname)
+                if alias.name == "chdir":
+                    names.add(alias.asname or alias.name)
         elif isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
             if not isinstance(target, ast.Name):
@@ -3649,6 +3664,8 @@ def _chdir_names(tree, modules: "set[str] | None" = None) -> "set[str]":
                 and value.value.id in modules
             ) or (isinstance(value, ast.Name) and value.id in names):
                 names.add(target.id)
+    if defined_locally:
+        names.discard("chdir")
     return names
 
 
@@ -3667,22 +3684,34 @@ def _chdir_modules(tree) -> "set[str]":
     return modules
 
 
+# The calls that change the process directory. `os.fchdir(fd)` moves to whatever the descriptor
+# names, which this scan cannot resolve: the move is real and its destination is unknown, so it is
+# tracked as an UNRESOLVED move rather than ignored.
+_CHDIR_METHODS = frozenset({"chdir", "fchdir"})
+
+
 def _is_chdir_call(
     node: "ast.Call",
     names: "set[str] | None" = None,
     modules: "set[str] | None" = None,
 ) -> bool:
-    """True for `os.chdir(...)`, a bare `chdir(...)`, and any alias bound from it."""
-    names = names or {"chdir"}
+    """True for `os.chdir(...)`, a bare `chdir(...)`, and any alias bound from it.
+
+    `names` is the set of BARE names that refer to it, which is empty for a snippet that defines its
+    own `chdir` and never imports one. Empty is meaningful here, so it is distinguished from the
+    None the callers that do not compute it pass. The qualified `os.chdir(...)` form is unaffected:
+    the receiver is what identifies it there.
+    """
+    bare = {"chdir"} if names is None else names
     func = node.func
     if isinstance(func, ast.Attribute):
-        if func.attr not in names:
+        if func.attr not in _CHDIR_METHODS and func.attr not in bare:
             return False
         # Only a module that owns the process directory. An unknown receiver is not one.
         return isinstance(func.value, ast.Name) and func.value.id in (
             modules or {"os", "contextlib"}
         )
-    return isinstance(func, ast.Name) and func.id in names
+    return isinstance(func, ast.Name) and func.id in bare
 
 
 def _code_reads_the_studio_home(code: str) -> bool:
