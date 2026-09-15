@@ -21063,6 +21063,8 @@ class LlamaCppBackend:
             binary, caps, resolved, compiled
         )
         with self._lock:
+            previous_compiled = self._compiled_custom_config
+            previous_intent = self._last_load_intent
             if cancelled():
                 return False
             with llama_cpp_path_selection_guard():
@@ -21166,9 +21168,6 @@ class LlamaCppBackend:
                 self._idle_slot_clearing_active = _idle_slot_clearing_active(
                     cmd, supports_cache_ram = bool(caps.get("supports_cache_ram"))
                 )
-                if cancelled() or not self._publish_healthy():
-                    self._kill_process()
-                    return False
                 self._commit_effective_parallel_slots(compiled.n_parallel)
                 self._requested_n_parallel = compiled.n_parallel
                 self._requested_n_ctx = tuning.get("n_ctx", 0)
@@ -21240,12 +21239,22 @@ class LlamaCppBackend:
                 self._audio_type = None
                 self._audio_probed = False
                 self._has_audio_input = False
+                # is_loaded is lock-free. Publish the complete custom snapshot before
+                # health so status and request paths cannot hydrate the new process
+                # with the previous model's configuration or runtime accounting.
+                self._compiled_custom_config = compiled
+                self._last_load_intent = resolved
+                if cancelled() or not self._publish_healthy():
+                    self._kill_process()
+                    return False
             except Exception:
                 self._kill_process()
                 raise
             finally:
                 self._custom_launch_pending = False
                 if not self._healthy:
+                    self._compiled_custom_config = previous_compiled
+                    self._last_load_intent = previous_intent
                     self._clear_custom_memory_state()
         # Reuse codec handling outside the lock, matching the managed path.
         try:
@@ -21257,10 +21266,10 @@ class LlamaCppBackend:
         with self._lock:
             if not applied or cancelled() or not self._healthy:
                 self._kill_process()
+                self._compiled_custom_config = previous_compiled
+                self._last_load_intent = previous_intent
                 self._clear_custom_memory_state()
                 return False
-            self._compiled_custom_config = compiled
-            self._last_load_intent = resolved
             if self._slot_save_dir:
                 self._slot_loaded_identity = (
                     self._gguf_file_identity(model_path),

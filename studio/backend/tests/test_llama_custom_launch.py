@@ -214,6 +214,39 @@ def test_custom_launch_publishes_effective_memory_state_before_health_wait(launc
     }
 
 
+def test_health_publication_sees_committed_custom_runtime(launch, monkeypatch):
+    previous_compiled = object()
+    previous_intent = llama.GgufLoadIntent("previous")
+    launch.backend._compiled_custom_config = previous_compiled
+    launch.backend._last_load_intent = previous_intent
+    publish_healthy = launch.backend._publish_healthy
+    observed = {}
+
+    def publish():
+        result = publish_healthy()
+        observed.update(
+            healthy = launch.backend.is_loaded,
+            compiled = launch.backend._compiled_custom_config,
+            intent = launch.backend.last_load_intent,
+            slots = launch.backend.effective_parallel_slots,
+            requested_ctx = launch.backend.requested_n_ctx,
+            effective_ctx = launch.backend.context_length,
+        )
+        return result
+
+    monkeypatch.setattr(launch.backend, "_publish_healthy", publish)
+    assert launch.backend.load_model(launch.intent)
+
+    assert observed["healthy"] is True
+    assert observed["compiled"] is launch.backend._compiled_custom_config
+    assert observed["compiled"] is not previous_compiled
+    assert observed["intent"] == launch.backend.last_load_intent
+    assert observed["intent"] is not previous_intent
+    assert observed["slots"] == 2
+    assert observed["requested_ctx"] == 56000
+    assert observed["effective_ctx"] == 28000
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -333,13 +366,18 @@ def test_props_accounting_mismatch_is_terminal(launch, monkeypatch):
 
 
 def test_audio_finalization_failure_clears_published_memory_state(launch, monkeypatch):
+    previous_compiled = object()
+    previous_intent = llama.GgufLoadIntent("previous")
+    launch.backend._compiled_custom_config = previous_compiled
+    launch.backend._last_load_intent = previous_intent
     monkeypatch.setattr(launch.backend, "_apply_detected_audio", lambda *a: False)
     assert launch.backend.load_model(launch.intent) is False
     assert launch.backend._process is None
     assert launch.backend._memory_state is None
     assert launch.backend._memory_direct_io is None
     assert launch.backend._custom_launch_pending is False
-    assert launch.backend.last_load_intent is None
+    assert launch.backend._compiled_custom_config is previous_compiled
+    assert launch.backend.last_load_intent is previous_intent
 
 
 def test_comment_only_change_dedupes_but_tuning_change_relaunches(launch):
