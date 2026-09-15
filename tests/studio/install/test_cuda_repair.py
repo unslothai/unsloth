@@ -710,7 +710,9 @@ class TestTheRepairReadsTheDriverLibrary:
     def test_the_inventory_supplies_the_sms_when_nvidia_smi_cannot(self):
         inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}])
         with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
-            mock_pip = _run_cuda_repair(torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1)
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1
+            )
         assert mock_pip.call_count == 1
         assert "cu126" in _index_url(mock_pip)
         with patch.object(stack_mod, "_nvidia_library_inventory", return_value = None):
@@ -718,16 +720,22 @@ class TestTheRepairReadsTheDriverLibrary:
         blind.assert_not_called()
 
     def test_an_unreadable_inventory_row_is_not_evidence(self):
-        inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}, {"compute_cap": ""}])
+        inventory = SimpleNamespace(
+            cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}, {"compute_cap": ""}]
+        )
         assert stack_mod._inventory_compute_sms(inventory) == []
         with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
-            mock_pip = _run_cuda_repair(torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1)
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", smi_rc = 1
+            )
         mock_pip.assert_not_called()
 
     def test_nvidia_smi_still_wins_when_it_answers(self):
         inventory = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "7.0"}])
         with patch.object(stack_mod, "_nvidia_library_inventory", return_value = inventory):
-            mock_pip = _run_cuda_repair(torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", compute_caps = ("8.9",))
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0", cuda_version = "13.0", compute_caps = ("8.9",)
+            )
         mock_pip.assert_not_called()
 
 

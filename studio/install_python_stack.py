@@ -3937,7 +3937,9 @@ def _ensure_cuda_torch() -> None:
         # invariant catches this; Linux only recorded the expectation.
         _recorded = _RECORDED_TORCH_TAG or ""
         _why = "torch is a CPU build on an NVIDIA host" + (
-            f" although this install recorded {_recorded}" if _is_cuda_family_leaf(_recorded) else ""
+            f" although this install recorded {_recorded}"
+            if _is_cuda_family_leaf(_recorded)
+            else ""
         )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
