@@ -14,6 +14,7 @@ GGUF alone.
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 
 import pytest
@@ -196,7 +197,27 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     assert 'gen_kwargs["video"] = _video_clip' in source
     use_tools = source.index("_sf_use_tools = (", handler)
     assert "and _video_clip is None" in source[use_tools : use_tools + 400]
-    assert "(image is not None or _video_clip is not None) and not _sf_use_tools" in source
+    # Structural, not literal. This pinned the exact
+    # "(image is not None or _video_clip is not None) and not _sf_use_tools"; #10970
+    # widened the image half to `_sf_has_image`, a superset, so the clause still fires
+    # for everything it used to and the test failed on the spelling.
+    client_tools = source.index("_sf_client_tools = (", handler)
+    block = source[client_tools : source.index("\n    )", client_tools)]
+    # Comments stripped, then narrowed to the ONE line carrying the escape hatch. Both
+    # matter: the block names an image in its own prose and carries a second
+    # `and not _sf_use_tools` conjunct, so reading the whole block passes on the wrong
+    # occurrences. Two mutations below were missed before this narrowing.
+    block = "\n".join(line.split("#")[0] for line in block.splitlines())
+    escape = next(line for line in block.splitlines() if "not _sf_tools_on" in line)
+    assert "and not _sf_use_tools" in escape, escape
+    # An image and a clip have to be ALTERNATIVES, each read positively. Merely occurring
+    # is not enough: `and` for `or` stops an image-only or video-only request entering the
+    # passthrough, and `image is None` / `not _sf_has_image` invert the condition. Either
+    # order, since which side reads first is arbitrary.
+    image = r"(?:\bimage is not None\b|\b_sf_has_image\b)"
+    clip = r"\b_video_clip is not None\b"
+    assert re.search(rf"{image}\s+or\s+{clip}|{clip}\s+or\s+{image}", escape), escape
+    assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
     conflict = source.index("if payload.audio_base64:", gate)
     assert conflict < speech

@@ -8,6 +8,7 @@ import type { ResolvedTransport } from "./constants";
 import type { TransportConflictInfo } from "./types";
 import {
   type DownloadKind,
+  type DownloadRequest,
   type JobListeners,
   downloadManager,
   jobKeyOf,
@@ -39,6 +40,7 @@ export interface DownloadJob {
   requestStartDownload: (
     variant: string | null,
     expectedBytes: number,
+    presentation?: DownloadRequest["presentation"],
   ) => Promise<void>;
   cancelDownload: (variant: string | null) => void;
   setExpectedBytes: (bytes: number, variant?: string | null) => void;
@@ -161,7 +163,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const requestStartDownload = useCallback(
-    async (variant: string | null, expectedBytes: number) => {
+    async (
+      variant: string | null,
+      expectedBytes: number,
+      presentation?: DownloadRequest["presentation"],
+    ) => {
       // This surface renders the conflict resolver (transportConflict), so the
       // start outcome is handled by the card UI; the awaited result is ignored.
       await downloadManager.requestStart({
@@ -169,6 +175,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
         repoId,
         variant,
         expectedBytes,
+        ...(presentation ? { presentation } : {}),
       });
     },
     [kind, repoId],
