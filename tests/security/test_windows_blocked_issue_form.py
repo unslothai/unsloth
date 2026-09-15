@@ -223,3 +223,59 @@ def test_the_form_does_not_promise_more_privacy_than_it_delivers() -> None:
     assert (
         "Read the output before you paste it" in description
     ), "the form no longer tells the reporter to read the output before publishing it"
+
+
+def test_the_defender_event_fields_survive_a_real_message(tmp_path: Path) -> None:
+    """Defender indents its detail lines, so an anchor on the field name matches none of them.
+
+    The rendered message for 1116 and its siblings is a header line followed by indented
+    `Field: value` lines (Microsoft's own 1117 reference lists the field set, and real 1116 output
+    shows the same). Anchoring on `^Name:` therefore matched nothing at all, and the section that
+    exists to carry the detection name, its path and the process that triggered it emitted only a
+    timestamp and an event id. That is a silent loss of the single most useful field in the report.
+
+    Driven through the snippet's own filter against a message in the documented shape, rather than
+    asserting the regex text, so a future rewrite of the extraction is judged on what it extracts.
+    """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    snippet = _snippet()
+    match = re.search(r"\$_ -match '([^']+)'", snippet)
+    assert match, "the collection script no longer filters the Defender event message lines"
+    pattern = match.group(1)
+
+    script = tmp_path / "fields.ps1"
+    script.write_text(
+        "\n".join(
+            [
+                '$msg = @"',
+                "Windows Defender Antivirus has detected malware or other potentially unwanted software.",
+                " Name: HackTool:Win64/Mimikatz.A",
+                " ID: 2147747903",
+                " Severity: High",
+                " Path: C:\\Users\\jsmith\\AppData\\Local\\Temp\\m64.exe",
+                " Detection Source: Real-Time Protection",
+                " Process Name: C:\\Windows\\System32\\cmd.exe",
+                " Action: Allowed",
+                '"@',
+                f"$sel = (($msg -split \"`r?`n\") | Where-Object {{ $_ -match '{pattern}' }}) -join ' | '",
+                'Write-Output "SELECTED:$sel"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    selected = done.stdout
+    for field in ("Name:", "Path:", "Process Name:", "Detection Source:", "Action:"):
+        assert field in selected, (
+            f"the filter dropped {field!r} from a Defender message in the documented indented shape, "
+            f"so the report would carry a timestamp and an event id and nothing else. Selected: "
+            f"{selected.strip()!r}"
+        )

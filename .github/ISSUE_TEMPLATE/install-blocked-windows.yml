@@ -164,7 +164,7 @@ body:
         try {
           Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1006,1007,1015,1116,1117,1121,1122; StartTime=(Get-Date).AddHours(-2)} -ErrorAction Stop |
             Select-Object -First 15 |
-            ForEach-Object { Hide-Personal ("$($_.TimeCreated)  id=$($_.Id)  " + ((($_.Message -split "`r?`n") | Where-Object { $_ -match '^(Name|Path|Process Name|Detection Source|Action):' }) -join ' | ')) }
+            ForEach-Object { Hide-Personal ("$($_.TimeCreated)  id=$($_.Id)  " + ((($_.Message -split "`r?`n") | Where-Object { $_ -match '^\s*(Name|Severity|Path|Process Name|Detection Source|Action)\s*:' }) -join ' | ')) }
         } catch { "no matching events, or the log could not be read: $($_.Exception.Message)" }
         ```
 
