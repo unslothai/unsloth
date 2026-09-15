@@ -236,6 +236,7 @@ test("the reseed key ignores the entries the backend rewrites mid-session", () =
     transformer_quant: { value: "off", requested: null, source: "auto", status: "applied", reason: "" },
     memory_mode: { value: "none", requested: null, source: "auto", status: "applied", reason: "" },
     attention_backend: { value: "native", requested: null, source: "auto", status: "applied", reason: "" },
+    family_override: { value: "auto", requested: null, source: "auto", status: "applied", reason: "" },
     speed_mode: { value: "deferred", requested: null, source: "auto", status: "applied", reason: "" },
     transformer_cache: { value: "off", requested: null, source: "auto", status: "applied", reason: "" },
   };
@@ -288,6 +289,14 @@ test("the reseed key ignores the entries the backend rewrites mid-session", () =
       attention_backend: { value: "_native_cudnn", requested: "cudnn", source: "explicit", status: "applied", reason: "" },
     }),
     key,
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      family_override: { value: "z-image", requested: "z-image", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+    "a replacement load with a different family must re-seed",
   );
 });
 

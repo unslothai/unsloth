@@ -23,6 +23,7 @@ _ENVS = (
 
 @pytest.fixture(autouse = True)
 def _clean_env_and_state(monkeypatch):
+    r._supported_family_capabilities.cache_clear()
     for e in _ENVS:
         monkeypatch.delenv(e, raising = False)
     # A light status-capable stub so selection / active_status() never import the heavy diffusers or sd.cpp
@@ -46,6 +47,7 @@ def _clean_env_and_state(monkeypatch):
     finally:
         r._active_engine_name = saved_engine
         r._fallback_reason = saved_reason
+        r._supported_family_capabilities.cache_clear()
 
 
 def _set_device(monkeypatch, backend):
@@ -200,6 +202,19 @@ def test_active_status_injects_engine_and_reason(monkeypatch):
     st = r.active_status()
     assert st["engine"] == ENGINE_DIFFUSERS
     assert st["fallback_reason"] and "binary unavailable" in st["fallback_reason"]
+
+
+def test_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        r,
+        "pipeline_available_family_names",
+        lambda: calls.append("probe") or ("z-image", "flux.1"),
+    )
+
+    assert r.active_status()["supported_families"] == ["z-image", "flux.1"]
+    assert r.active_status()["supported_families"] == ["z-image", "flux.1"]
+    assert calls == ["probe"]
 
 
 # ── engine-switch eviction ordering ───────────────────────────────────────────

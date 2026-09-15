@@ -39,9 +39,45 @@ export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;
 } {
-  const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  const matched = matchedDefaults(repoId);
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
+}
+
+function matchedDefaults(repoId: string): (typeof MODEL_DEFAULTS)[number] | undefined {
+  const id = repoId.toLowerCase();
+  return MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+}
+
+/** Prefer a recognizable model variant; use the explicit family only for an opaque path. */
+export function defaultsKeyFor(
+  repoId: string,
+  familyOverride: string | null | undefined,
+): string {
+  if (matchedDefaults(repoId)) return repoId;
+  const family = familyOverride?.trim();
+  return family && family.toLowerCase() !== "auto" ? family : repoId;
+}
+
+/** Use family semantics only when the resident load was explicitly pinned to them.
+ *
+ * Auto-detected named models keep their base-repo key, which distinguishes variants such as
+ * FLUX.1 Schnell and Dev. Opaque local pipelines have no useful repo/base token, but they can
+ * only enter through an explicit override, whose engaged family is authoritative.
+ */
+export function residentDefaultsKey(
+  repoId: string,
+  baseRepo: string | null | undefined,
+  resolvedFamily:
+    | { value?: string | boolean | null; source?: "auto" | "explicit" }
+    | null
+    | undefined,
+): string {
+  const repoKey = baseRepo ?? repoId;
+  if (matchedDefaults(repoKey)) return repoKey;
+  const family = resolvedFamily?.source === "explicit" ? resolvedFamily.value : null;
+  return typeof family === "string" && family.trim()
+    ? family.trim()
+    : repoKey;
 }

@@ -2324,8 +2324,10 @@ function passesTaskGate(
   filter: HfTaskFilter,
   catalog?: CatalogGroup[],
   activeCatalogArtifactIds?: ReadonlySet<string>,
+  localModel?: { opaque?: boolean },
 ): boolean {
   if (filter) {
+    const overridden = localModel?.opaque === true;
     const exactArtifact =
       repoId && catalog ? artifactForRepoId(repoId, catalog) : null;
     return (
@@ -2340,7 +2342,7 @@ function passesTaskGate(
           pickerTask: filter,
         })) &&
       !isImageEditModel(repoId)
-    );
+    ) || overridden;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
   // on click; only the never-loadable tag is hidden.
@@ -2515,6 +2517,7 @@ function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
   audioType?: string | null,
+  familyOverrideRequired = false,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2523,6 +2526,7 @@ function localModelMeta(
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
     audioType: audioType ?? null,
+    familyOverrideRequired,
   };
 }
 
@@ -2577,6 +2581,7 @@ export function HubModelPicker({
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -2606,6 +2611,7 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -2875,6 +2881,7 @@ export function HubModelPicker({
   const pickerInventory = useChatPickerInventory({
     enabled: true,
     allowedHiddenModelIds: activeCatalogArtifactIds,
+    opaqueKind,
   });
   const {
     cachedGguf,
@@ -3761,6 +3768,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              c,
             ) &&
             // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated
             // ARTIFACT, not a group-key match: a base sibling matches by key but dead-ends at the trust
@@ -3793,7 +3801,12 @@ export function HubModelPicker({
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
-                : false)),
+                : false) ||
+              (Boolean(
+                c.load_id?.trim() &&
+                  c.load_id.trim() !== c.repo_id.trim(),
+              ) &&
+                c.opaque === true)),
         ),
         downloadedSort,
         loadTimes,
@@ -3806,6 +3819,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       isMac,
+      opaqueKind,
     ],
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the
@@ -3859,6 +3873,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
@@ -3876,6 +3891,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      opaqueKind,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
@@ -3905,6 +3921,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             (!chatOnly ||
               Boolean(task) ||
@@ -3928,6 +3945,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      opaqueKind,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -3954,6 +3972,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
@@ -3971,6 +3990,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      opaqueKind,
     ],
   );
 
@@ -5460,6 +5480,7 @@ export function HubModelPicker({
                 isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
                 audioType: c.audio_type ?? null,
+                familyOverrideRequired: c.opaque === true,
               })
             }
             vramStatus={null}
@@ -5484,6 +5505,7 @@ export function HubModelPicker({
                   isGguf: false,
                   pipelineTag: c.task ?? null,
                   audioType: c.audio_type ?? null,
+                  familyOverrideRequired: c.opaque === true,
                 })
               }
             />
@@ -6224,7 +6246,12 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                          m.opaque === true,
+                                        ),
                                       );
                                     }
                                   }}
@@ -6265,7 +6292,12 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                          m.opaque === true,
+                                        ),
                                       )
                                     }
                                   />
@@ -6364,7 +6396,12 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                          m.opaque === true,
+                                        ),
                                       );
                                     }
                                   }}
@@ -6405,7 +6442,12 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                          m.opaque === true,
+                                        ),
                                       )
                                     }
                                   />
@@ -6495,7 +6537,12 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                          m.opaque === true,
+                                        ),
                                       );
                                     }
                                   }}
@@ -6532,7 +6579,12 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(
+                                          false,
+                                          m.task,
+                                          m.audio_type,
+                                          m.opaque === true,
+                                        ),
                                       )
                                     }
                                   />

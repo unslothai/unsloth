@@ -5,7 +5,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { defaultsFor } from "../src/features/images/image-generation-defaults.ts";
+import {
+  defaultsFor,
+  defaultsKeyFor,
+  residentDefaultsKey,
+} from "../src/features/images/image-generation-defaults.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -37,6 +41,50 @@ test("keeps the existing family defaults and fallback", () => {
   });
 });
 
+test("an explicit family supplies defaults for an opaque local path", () => {
+  const opaque = "/models/my-private-finetune";
+  assert.equal(defaultsKeyFor(opaque, "qwen-image"), "qwen-image");
+  assert.deepEqual(defaultsFor(defaultsKeyFor(opaque, "qwen-image")), {
+    steps: 20,
+    guidance: 4,
+  });
+  assert.equal(defaultsKeyFor(opaque, "auto"), opaque);
+});
+
+test("an explicit family does not flatten a recognizable picked variant", () => {
+  const schnell = "black-forest-labs/FLUX.1-schnell";
+  const turbo = "Tongyi-MAI/Z-Image-Turbo";
+  assert.equal(defaultsKeyFor(schnell, "flux.1"), schnell);
+  assert.equal(defaultsKeyFor(turbo, "z-image"), turbo);
+  assert.deepEqual(defaultsFor(defaultsKeyFor(schnell, "flux.1")), {
+    steps: 4,
+    guidance: 0,
+  });
+});
+
+test("resident defaults use explicit family without flattening named variants", () => {
+  const opaque = "/models/my-private-finetune";
+  assert.equal(
+    residentDefaultsKey(opaque, opaque, {
+      value: "qwen-image",
+      source: "explicit",
+    }),
+    "qwen-image",
+  );
+  assert.equal(
+    residentDefaultsKey(
+      "black-forest-labs/FLUX.1-schnell",
+      "black-forest-labs/FLUX.1-schnell",
+      { value: "flux.1", source: "explicit" },
+    ),
+    "black-forest-labs/FLUX.1-schnell",
+  );
+  assert.deepEqual(defaultsFor("black-forest-labs/FLUX.1-schnell"), {
+    steps: 4,
+    guidance: 0,
+  });
+});
+
 test("routed image picks apply and transactionally roll back model defaults", () => {
   const source = readSrc("features/images/images-page.tsx");
   const routeStart = source.indexOf(
@@ -51,7 +99,7 @@ test("routed image picks apply and transactionally roll back model defaults", ()
   const routeBlock = source.slice(routeStart, routeEnd);
   assert.match(routeBlock, /imagePresets\.hydrated/);
   assert.match(routeBlock, /quantRevert\.current = revert/);
-  assert.match(routeBlock, /applyImageModelDefaults\(wanted\)/);
+  assert.match(routeBlock, /applyImageModelDefaults\(wanted, "auto"\)/);
   assert.match(routeBlock, /!started[\s\S]*revertPick\(revert\)/);
 });
 

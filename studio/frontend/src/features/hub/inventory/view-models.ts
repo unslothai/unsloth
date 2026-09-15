@@ -169,6 +169,7 @@ export function buildCachedInventoryRow(
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
+    artifact_kind?: import("./api").LocalArtifactKind | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -205,6 +206,7 @@ export function buildCachedInventoryRow(
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
+    artifact: row.artifact_kind ?? "unknown",
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
@@ -287,6 +289,7 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
+        artifact: model.artifact_kind ?? "unknown",
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,

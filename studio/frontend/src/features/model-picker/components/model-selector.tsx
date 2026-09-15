@@ -128,6 +128,8 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** The one opaque on-device artifact kind this task runtime may load. */
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -327,6 +329,7 @@ function ModelSelectorContent({
   task,
   catalog,
   communityModelPolicy,
+  opaqueKind,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -355,6 +358,7 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -617,6 +621,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              opaqueKind={opaqueKind}
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
@@ -677,6 +682,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -848,6 +854,7 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
+        opaqueKind={opaqueKind}
       />
     </Popover>
   );
