@@ -196,9 +196,11 @@ def fetch(
             allow_status = (404,),
             deadline = deadline,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, TimeoutError) as exc:
         # The retry budget or the deadline is spent. VOID, not clean and not a crash: we did not
         # find out, and the summary has to say so while there is still time to write it.
+        # Both are needed: a spent retry budget raises RuntimeError, but a spent deadline raises
+        # TimeoutError, which is an OSError and would otherwise walk straight past this handler.
         snap = Snapshot(label = label, sha256 = sha256)
         snap.note = f"the lookup did not complete within its budget: {exc}"
         return snap

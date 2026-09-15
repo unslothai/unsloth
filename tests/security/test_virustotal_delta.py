@@ -431,3 +431,21 @@ def test_an_overridden_baseline_is_not_labelled_as_the_recorded_one() -> None:
         vtd.BASELINE_NOTE not in overridden
     ), "an overridden baseline is still labelled as install.ps1 at the recorded commit"
     assert "OVERRIDDEN" in overridden, overridden.splitlines()[:4]
+
+
+def test_a_spent_deadline_becomes_a_void_row_and_not_a_crash() -> None:
+    """The deadline this tool added raised past its own handler.
+
+    `VirusTotalClient.request` signals a spent budget with `TimeoutError`, which inherits from
+    `OSError` and not from `RuntimeError`, so the `except RuntimeError` in `fetch` let it through.
+    The workflow then died with a traceback before `render` wrote anything, which is the lost run
+    the deadline was added to prevent.
+    """
+
+    class _Expired:
+        def request(self, *args, **kwargs):
+            raise TimeoutError("deadline reached before GET /files/x")
+
+    snap = vtd.fetch(_Expired(), "d" * 64, "candidate", deadline = 0.0)
+    assert snap.total_engines == 0, "a timed-out lookup invented engine verdicts"
+    assert "budget" in snap.note, snap.note
