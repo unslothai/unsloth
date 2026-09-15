@@ -687,10 +687,7 @@ def _strip_absent_mtp_declaration(config_dict, tensor_names):
         if not holders:
             return False
         tensor_names = list(tensor_names)
-        if any(
-            mtp_head_is_present(tensor_names, config_dict, holder)
-            for holder in holders
-        ):
+        if any(mtp_head_is_present(tensor_names, config_dict, holder) for holder in holders):
             return False
         for holder in holders:
             holder.pop(MTP_CONFIG_KEY, None)

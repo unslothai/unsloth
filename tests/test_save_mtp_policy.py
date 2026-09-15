@@ -104,6 +104,7 @@ def save_module():
         reason = "unsloth_zoo.saving_utils is unavailable",
     )
     from unsloth_zoo import saving_utils
+
     for name in ("MTP_CONFIG_KEY", "mtp_head_is_present"):
         if not hasattr(saving_utils, name):
             pytest.skip(f"installed unsloth_zoo has no {name}")
@@ -128,7 +129,10 @@ WITH_MTP = BODY + ("mtp.fc.weight",)
 
 
 def test_stripper_removes_a_nested_declaration(save_module):
-    config = {"model_type": "qwen3_5", "text_config": {"num_hidden_layers": 24, "mtp_num_hidden_layers": 1}}
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": {"num_hidden_layers": 24, "mtp_num_hidden_layers": 1},
+    }
     assert save_module._strip_absent_mtp_declaration(config, BODY) is True
     assert "mtp_num_hidden_layers" not in config["text_config"]
     assert config["text_config"]["num_hidden_layers"] == 24

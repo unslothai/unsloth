@@ -54,8 +54,7 @@ def _resolver():
 def _recorded_class(directory, filename_prefix = None):
     """The `tokenizer_class` a save actually wrote, or a skip saying why not."""
     name = (
-        f"{filename_prefix}-tokenizer_config.json" if filename_prefix
-        else "tokenizer_config.json"
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
     )
     path = Path(directory) / name
     if not path.is_file():
@@ -72,9 +71,9 @@ def _recorded_class(directory, filename_prefix = None):
 
 def _assert_resolvable(recorded):
     resolve = _resolver()
-    assert isinstance(recorded, str) and recorded, (
-        f"tokenizer_class must be a non-empty string, got {recorded!r}"
-    )
+    assert (
+        isinstance(recorded, str) and recorded
+    ), f"tokenizer_class must be a non-empty string, got {recorded!r}"
     assert not recorded.startswith("_Unsloth_Patched_"), (
         f"an Unsloth wrapper class name leaked into the export as {recorded!r}; "
         f"this is the shape of unsloth#4085"
