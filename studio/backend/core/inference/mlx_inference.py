@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
@@ -615,6 +615,30 @@ def _mlx_fused_moe_gate_up(model):
 
 def _mlx_fused_decode_conv_silu(model):
     return _mlx_optional_fusion("fused_decode_conv_silu", model)
+
+
+def _vlm_generation_context():
+    import mlx.core as mx
+    from mlx_vlm.generate import generation_stream
+    return mx.stream(generation_stream)
+
+
+def _iter_vlm_responses(responses):
+    iterator = iter(responses)
+    try:
+        while True:
+            # Token views outside VLM's inner step must use its generation stream too.
+            with _vlm_generation_context():
+                try:
+                    response = next(iterator)
+                except StopIteration:
+                    return
+            yield response
+    finally:
+        close = getattr(iterator, "close", None)
+        if close is not None:
+            with _vlm_generation_context():
+                close()
 
 
 @contextmanager
@@ -3784,33 +3808,38 @@ class MLXInferenceBackend:
                     # any output escapes.
                     if prefill:
                         yield prefill
-                    for response in vlm_stream(
-                        self._model,
-                        self._processor,
-                        prompt,
-                        images,
-                        **vlm_kwargs,
-                    ):
-                        final_response = response
-                        if vlm_streamed_text is not None:
-                            token_text = vlm_streamed_text.feed(response)
-                        else:
-                            token_text = (
-                                response.text if hasattr(response, "text") else str(response)
+                    with closing(
+                        _iter_vlm_responses(
+                            vlm_stream(
+                                self._model,
+                                self._processor,
+                                prompt,
+                                images,
+                                **vlm_kwargs,
                             )
-                        sampled += token_text
-                        if not sequences:
-                            yield prefill + sampled
-                        else:
-                            cut, stopped = _mlx_stop_cut(sampled, sequences)
-                            # These deltas only append, so the cut never moves back over text already released.
-                            if cut > released:
-                                released = cut
-                                yield prefill + sampled[:cut]
-                            if stopped:
+                        )
+                    ) as responses:
+                        for response in responses:
+                            final_response = response
+                            if vlm_streamed_text is not None:
+                                token_text = vlm_streamed_text.feed(response)
+                            else:
+                                token_text = (
+                                    response.text if hasattr(response, "text") else str(response)
+                                )
+                            sampled += token_text
+                            if not sequences:
+                                yield prefill + sampled
+                            else:
+                                cut, stopped = _mlx_stop_cut(sampled, sequences)
+                                # These deltas only append, so the cut never moves back over text already released.
+                                if cut > released:
+                                    released = cut
+                                    yield prefill + sampled[:cut]
+                                if stopped:
+                                    break
+                            if cancel_event and cancel_event.is_set():
                                 break
-                        if cancel_event and cancel_event.is_set():
-                            break
                     if vlm_streamed_text is not None and not stopped:
                         tail = vlm_streamed_text.finish(sampled)
                         if tail:
@@ -3956,35 +3985,40 @@ class MLXInferenceBackend:
             generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
             final_response = None
             try:
-                for response in vlm_stream(
-                    self._model,
-                    self._processor,
-                    prompt,
-                    audio = [audio_array],
-                    max_tokens = max_new_tokens,
-                    # Greedy; the knobs below are load-time state, not caller kwargs.
-                    temperature = 0.0,
-                    **self._kv_quant_generate_kwargs(),
-                    **self._kv_window_generate_kwargs(),
-                ):
-                    final_response = response
-                    sampled += response.text if hasattr(response, "text") else str(response)
-                    if sequences:
-                        cut, stopped = _mlx_stop_cut(sampled, sequences)
-                    else:
-                        cut = len(sampled)
-                    # Cut before normalizing: the markers the normalizer writes are this layer's own, unmatched for
-                    # the same reason the prefill is.
-                    delta = sampled[released:cut]
-                    released = cut
-                    if normalizer is not None:
-                        delta = normalizer.feed(delta)
-                    if delta:
-                        yield delta
-                    if stopped:
-                        break
-                    if cancel_event and cancel_event.is_set():
-                        break
+                with closing(
+                    _iter_vlm_responses(
+                        vlm_stream(
+                            self._model,
+                            self._processor,
+                            prompt,
+                            audio = [audio_array],
+                            max_tokens = max_new_tokens,
+                            # Greedy; the knobs below are load-time state, not caller kwargs.
+                            temperature = 0.0,
+                            **self._kv_quant_generate_kwargs(),
+                            **self._kv_window_generate_kwargs(),
+                        )
+                    )
+                ) as responses:
+                    for response in responses:
+                        final_response = response
+                        sampled += response.text if hasattr(response, "text") else str(response)
+                        if sequences:
+                            cut, stopped = _mlx_stop_cut(sampled, sequences)
+                        else:
+                            cut = len(sampled)
+                        # Cut before normalizing: the markers the normalizer writes are this layer's own, unmatched for
+                        # the same reason the prefill is.
+                        delta = sampled[released:cut]
+                        released = cut
+                        if normalizer is not None:
+                            delta = normalizer.feed(delta)
+                        if delta:
+                            yield delta
+                        if stopped:
+                            break
+                        if cancel_event and cancel_event.is_set():
+                            break
             finally:
                 # Derived as the vision path derives it: this backend reports no finish reason, and unset reads as a
                 # natural end.

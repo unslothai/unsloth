@@ -16,8 +16,17 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.fixture
+def native_vlm_generation_context():
+    from core.inference import mlx_inference
+    return mlx_inference._vlm_generation_context
+
+
 @pytest.fixture(autouse = True)
-def mlx_inference_patches(monkeypatch):
+def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     module.fused_moe_gate_up = contextlib.nullcontext
     module.fused_decode_conv_silu = contextlib.nullcontext
@@ -754,6 +763,62 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
         ), f"{name!r} must default to None so existing callers stay valid"
 
 
+@pytest.mark.parametrize("ending", ["exhaust", "close", "error"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_vlm_iterator_restores_each_callers_stream_and_closes_on_generation_stream(
+    ending, reverse, monkeypatch, native_vlm_generation_context
+):
+    mx = pytest.importorskip("mlx.core")
+    pytest.importorskip("mlx_vlm.generate")
+    if not mx.metal.is_available():
+        pytest.skip("Metal is required")
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", native_vlm_generation_context)
+    from core.inference.mlx_inference import _iter_vlm_responses
+    from mlx_vlm.generate import generation_stream
+
+    original = mx.default_stream(mx.gpu)
+    callers = [original, mx.new_stream(mx.gpu)]
+    if reverse:
+        callers.reverse()
+    with mx.stream(generation_stream):
+        generation = mx.default_stream(mx.gpu)
+    assert all(caller != generation for caller in callers)
+    seen, closed = [], []
+
+    def responses():
+        try:
+            for index in range(3):
+                seen.append(mx.default_stream(mx.gpu))
+                if index == 2 and ending == "error":
+                    raise RuntimeError("generation failed")
+                yield index
+        finally:
+            closed.append(mx.default_stream(mx.gpu))
+
+    iterator = _iter_vlm_responses(responses())
+    for index, caller in enumerate(callers):
+        with mx.stream(caller):
+            assert next(iterator) == index
+            assert mx.default_stream(mx.gpu) == caller
+        assert mx.default_stream(mx.gpu) == original
+    with mx.stream(callers[0]):
+        if ending == "close":
+            iterator.close()
+        elif ending == "error":
+            with pytest.raises(RuntimeError, match = "generation failed"):
+                next(iterator)
+        else:
+            assert next(iterator) == 2
+            with pytest.raises(StopIteration):
+                next(iterator)
+        assert mx.default_stream(mx.gpu) == callers[0]
+    assert mx.default_stream(mx.gpu) == original
+    assert seen == [generation] * (2 if ending == "close" else 3)
+    assert closed == [generation]
+
+
 @pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     monkeypatch, mlx_moe, mlx_decode, feature
@@ -768,7 +833,18 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
     order = []
-    stream_state = {"fail": False}
+    stream_state = {"fail": False, "in_generation": False}
+
+    @contextmanager
+    def _generation_context():
+        assert not stream_state["in_generation"]
+        stream_state["in_generation"] = True
+        try:
+            yield
+        finally:
+            stream_state["in_generation"] = False
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", _generation_context)
 
     @contextmanager
     def _adapter_state(_model, state):
@@ -810,9 +886,14 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     def _vlm_stream(*_a, **_k):
         # The prefill must have been emitted before any generated token.
         assert order[-1] == "fusion_enter"
-        if stream_state["fail"]:
-            raise RuntimeError("generation failed")
-        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+        assert stream_state["in_generation"]
+        try:
+            if stream_state["fail"]:
+                raise RuntimeError("generation failed")
+            yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+        finally:
+            assert stream_state["in_generation"]
+            order.append("producer_closed")
 
     mlx_vlm.stream_generate = _vlm_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
@@ -836,8 +917,9 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     assert order == entered
     # Subsequent snapshots are cumulative (prefill + generated text).
     assert next(gen) == "<think>\nok"
+    assert not stream_state["in_generation"]
     gen.close()
-    completed = entered + ["fusion_exit", "adapter_exit"]
+    completed = entered + ["producer_closed", "fusion_exit", "adapter_exit"]
     assert order == completed
     assert not backend._generation_lock.locked()
     stream_state["fail"] = True
@@ -2527,6 +2609,18 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
 
     seen = {}
     order = []
+    stream_state = {"active": False}
+
+    @contextmanager
+    def _generation_context():
+        assert not stream_state["active"]
+        stream_state["active"] = True
+        try:
+            yield
+        finally:
+            stream_state["active"] = False
+
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_context", _generation_context)
 
     @contextlib.contextmanager
     def _fake_adapter_state(model, use_adapter):
@@ -2559,18 +2653,30 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
     def _fake_stream(model, processor, prompt, **kwargs):
         seen["inside"] = seen.get("entered") and not seen.get("exited")
         assert order[-1] == "fusion_enter"
-        if seen.get("fail"):
-            raise RuntimeError("generation failed")
-        yield SimpleNamespace(
-            text = "x",
-            prompt_tokens = 1,
-            prompt_tps = 1.0,
-            generation_tokens = 1,
-            generation_tps = 1.0,
-        )
+        assert stream_state["active"]
+        try:
+            if seen.get("fail"):
+                raise RuntimeError("generation failed")
+            yield SimpleNamespace(
+                text = "x",
+                prompt_tokens = 1,
+                prompt_tps = 1.0,
+                generation_tokens = 1,
+                generation_tps = 1.0,
+            )
+        finally:
+            assert stream_state["active"]
+            order.append("producer_closed")
+
+    retained = []
+
+    def _retained_stream(*args, **kwargs):
+        producer = _fake_stream(*args, **kwargs)
+        retained.append(producer)
+        return producer
 
     fake_vlm = types.ModuleType("mlx_vlm")
-    fake_vlm.stream_generate = _fake_stream
+    fake_vlm.stream_generate = _retained_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
     monkeypatch.setattr(
         mlx_inference,
@@ -2604,12 +2710,14 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
         "adapter_enter",
         "snapshots_released",
         "fusion_enter",
+        "producer_closed",
         "fusion_exit",
         "adapter_exit",
     ]
     assert order == completed
     stream = backend.generate_audio_input_response(**args)
     assert next(stream) == "x"
+    assert not stream_state["active"]
     stream.close()
     assert order == completed * 2
     assert not backend._generation_lock.locked()
@@ -2618,6 +2726,15 @@ def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_deco
         list(backend.generate_audio_input_response(**args))
     assert order == completed * 3
     assert not backend._generation_lock.locked()
+
+    seen["fail"] = False
+    cancelled = __import__("threading").Event()
+    for index, extra in enumerate(({"cancel_event": cancelled}, {"stop": ["x"]}), start = 4):
+        cancelled.set()
+        list(backend.generate_audio_input_response(**args, **extra))
+        assert order == completed * index
+        assert not stream_state["active"]
+        assert not backend._generation_lock.locked()
 
 
 def test_worker_forwards_use_adapter_on_the_audio_command():
