@@ -39,11 +39,7 @@ def _form() -> dict:
 
 
 def _fields() -> dict:
-    return {
-        item["id"]: item
-        for item in _form()["body"]
-        if isinstance(item, dict) and "id" in item
-    }
+    return {item["id"]: item for item in _form()["body"] if isinstance(item, dict) and "id" in item}
 
 
 def _snippet() -> str:
@@ -113,7 +109,7 @@ def test_the_collection_script_parses() -> None:
         "$null = [System.Management.Automation.Language.Parser]::ParseInput("
         "[System.IO.File]::ReadAllText($env:UNSLOTH_SNIPPET_PATH), [ref]$tokens, [ref]$errors); "
         "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }; "
-        "Write-Output \"OK $($tokens.Count)\""
+        'Write-Output "OK $($tokens.Count)"'
     )
     # Through a file and an environment variable, so nothing about the snippet's own quoting can
     # change how it is handed to the parser.
@@ -130,9 +126,9 @@ def test_the_collection_script_parses() -> None:
             env = {**__import__("os").environ, "UNSLOTH_SNIPPET_PATH": str(path)},
         )
 
-    assert result.returncode == 0, (
-        f"the collection script in {FORM.name} does not parse:\n{result.stdout}\n{result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"the collection script in {FORM.name} does not parse:\n{result.stdout}\n{result.stderr}"
 
 
 def test_the_collection_script_only_reads() -> None:
