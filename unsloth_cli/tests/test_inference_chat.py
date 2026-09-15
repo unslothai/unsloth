@@ -942,6 +942,20 @@ def test_chat_no_arg_chats_with_picked_trained_model(monkeypatch):
     assert resolved == ["outputs/run-42"]
 
 
+class _HealthResponse:
+    def __init__(self, body = b'{"status": "healthy", "service": "Unsloth UI Backend"}'):
+        self._body = body
+
+    def read(self, _limit = None):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def test_find_studio_server_none_when_not_running(monkeypatch):
     import urllib.request
 
@@ -952,6 +966,125 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
     assert _inference.find_studio_server() is None
+
+
+def test_find_studio_server_falls_back_to_a_recorded_studio_port(monkeypatch, tmp_path):
+    import importlib
+    import os
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: pid == os.getpid())
+    # Legacy records: a bare PID, no start time and no bind-address line.
+    (tmp_path / "studio-8887-424242.pid").write_text("424242", encoding = "utf-8")
+    (tmp_path / f"studio-8889-{os.getpid()}.pid").write_text(str(os.getpid()), encoding = "utf-8")
+    probed = []
+
+    def default_port_taken(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("HTTP Error 404: File not found")
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", default_port_taken)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+    probed.clear()
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    assert _inference.find_studio_server() is None
+    assert probed == ["http://127.0.0.1:8888/api/health"]
+
+
+def test_find_studio_server_skips_a_recorded_pid_reused_by_another_process(monkeypatch, tmp_path):
+    import importlib
+    import sys
+    import types
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    process = types.SimpleNamespace(create_time = lambda: 1000.0)
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process = lambda pid: process))
+    # A crashed Studio's record whose PID now belongs to another process, next to a live one.
+    (tmp_path / "studio-8887-4242.pid").write_text("4242\n500.0\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n1000.0\n127.0.0.1", encoding = "utf-8")
+    probed = []
+
+    def urlopen(request, *a, **k):
+        probed.append(request.full_url)
+        if ":8888/" in request.full_url:
+            raise OSError("connection refused")
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
+    assert probed == ["http://127.0.0.1:8888/api/health", "http://127.0.0.1:8889/api/health"]
+
+
+def test_find_studio_server_probes_a_recorded_port_on_the_family_it_bound(monkeypatch, tmp_path):
+    # An IPv6-only Studio shares its port number with whoever holds 127.0.0.1.
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n::1", encoding = "utf-8")
+    # `::` is v6only on macOS; a LAN-only bind is not reachable from this flow at all.
+    (tmp_path / "studio-8890-4344.pid").write_text("4344\n\n0.0.0.0,::", encoding = "utf-8")
+    (tmp_path / "studio-8891-4345.pid").write_text("4345\n\n::", encoding = "utf-8")
+    (tmp_path / "studio-8892-4346.pid").write_text("4346\n\n192.168.1.5", encoding = "utf-8")
+    probed = []
+
+    def nothing_answers(request, *a, **k):
+        probed.append(request.full_url)
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", nothing_answers)
+    assert _inference.find_studio_server() is None
+    assert probed == [
+        "http://127.0.0.1:8888/api/health",
+        "http://[::1]:8889/api/health",
+        "http://127.0.0.1:8890/api/health",
+        "http://[::1]:8890/api/health",
+        "http://[::1]:8891/api/health",
+    ]
+
+
+def test_find_studio_server_keeps_looking_past_a_stranger_on_the_default_port(
+    monkeypatch, tmp_path
+):
+    # Whatever took 8888 answers a health payload of its own for every path.
+    import importlib
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    studio = importlib.import_module("unsloth_cli.commands.studio")
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(studio, "_pid_alive", lambda pid: True)
+    (tmp_path / "studio-8889-4343.pid").write_text("4343\n\n127.0.0.1", encoding = "utf-8")
+
+    def stranger_on_8888(request, *a, **k):
+        if ":8888/" in request.full_url:
+            return _HealthResponse(b'{"status": "healthy", "service": "some-other-app"}')
+        return _HealthResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", stranger_on_8888)
+    assert _inference.find_studio_server() == "http://127.0.0.1:8889"
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
@@ -972,17 +1105,10 @@ def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
         ],
     )
 
-    class _OK:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     def only_ipv4(request, *a, **k):
         if "127.0.0.1" not in request.full_url:
             raise OSError("connection refused")
-        return _OK()
+        return _HealthResponse()
 
     monkeypatch.setattr(urllib.request, "urlopen", only_ipv4)
     assert _inference.find_studio_server() == "http://127.0.0.1:8888"

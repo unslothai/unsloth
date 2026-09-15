@@ -94,6 +94,7 @@ import {
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
+import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -237,6 +238,8 @@ async function loadConversationMessages(
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
   } = options;
+  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  const liveBranch = liveThreadBranch(threadId);
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -245,7 +248,12 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw, { includeSiblings }) as typeof raw;
+  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+  const storedIds = new Set(raw.map((m) => m.id));
+  const headId = liveBranch
+    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
+    : undefined;
+  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
 }
 
 function exportTs(): string {
@@ -390,7 +398,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 
 // ShareGPT training JSONL (human/system/gpt turns).
 export async function exportConversationShareGPT(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+  const messages = await loadConversationMessages(threadId, {
+    includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+  });
   if (!messages) return;
 
   const conversations: Array<{ from: string; value: string }> = [];

@@ -23,6 +23,8 @@ from auth.authentication import (
 from routes import export as export_routes
 from routes.data_recipe import jobs as data_recipe_jobs_routes
 
+OFFICIAL_HF = "https://huggingface.co"
+
 
 async def _fake_ensure_export_supported():
     pass
@@ -49,8 +51,11 @@ def _publish_manager(monkeypatch, seen):
     monkeypatch.setattr(
         data_recipe_jobs_routes,
         "publish_recipe_dataset",
-        lambda artifact_path, repo_id, description, hf_token, private: (
-            seen.update(token = hf_token) or f"https://huggingface.co/datasets/{repo_id}"
+        # link_endpoint is keyword-only at the real call site, so **kwargs here keeps
+        # the stub from going stale the next time the route grows an argument.
+        lambda *, artifact_path, repo_id, description, hf_token, private, **kwargs: (
+            seen.update(token = hf_token, **kwargs)
+            or f"{kwargs.get('link_endpoint') or OFFICIAL_HF}/datasets/{repo_id}"
         ),
     )
 
@@ -85,6 +90,8 @@ def test_publish_allows_a_token_bearing_key_and_a_ui_session(
     )
     assert response.status_code == 200
     assert seen["token"] == expected
+    # The published link is built for the caller, not for the host running Studio.
+    assert seen["link_endpoint"] == OFFICIAL_HF
 
 
 # ------------------------------------------------------------------------ export routes

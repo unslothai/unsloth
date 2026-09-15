@@ -4,6 +4,7 @@
 import sys
 import os
 import tempfile
+import unicodedata
 from pathlib import Path
 import importlib.util
 
@@ -198,16 +199,16 @@ def test_raw_text_loader():
         # Spaces around newlines trimmed on both sides, even across multiple newlines.
         assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
 
-        # Stripping a non-ASCII char between spaces must not leave a double space
-        assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
-        assert preprocessor.clean_text("a \u00e9 b") == "a b"
-        assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
+        # Stripping an invisible character between spaces must not leave a double space.
+        assert preprocessor.clean_text("word1 \u200b word2") == "word1 word2"
+        assert preprocessor.clean_text("a \ue000 b") == "a b"
+        assert preprocessor.clean_text("prefix \ufffd suffix") == "prefix suffix"
 
-        # Stripping a non-ASCII char adjacent to a newline must not leave a stray space.
-        assert preprocessor.clean_text("foo \u00e9\nbar") == "foo\nbar"
-        assert preprocessor.clean_text("foo\n\u00e9 bar") == "foo\nbar"
-        # The double-space collapse must not swallow a paragraph break near a non-ASCII char.
-        assert preprocessor.clean_text("a \u00a9\n\nb") == "a\n\nb"
+        # Stripping an invisible character adjacent to a newline must not leave a stray space.
+        assert preprocessor.clean_text("foo \u200b\nbar") == "foo\nbar"
+        assert preprocessor.clean_text("foo\n\ue000 bar") == "foo\nbar"
+        # The double-space collapse must not swallow a paragraph break near an invisible character.
+        assert preprocessor.clean_text("a \u200b\n\nb") == "a\n\nb"
 
         # Idempotence: clean_text twice == once.
         idempotent_inputs = [
@@ -227,15 +228,91 @@ def test_raw_text_loader():
         assert stats["total_samples"] > 0, "Should count samples"
         assert "warnings" in stats, "Should include warnings"
 
-        print("✅ All tests passed!")
+        # Plain ASCII: a Windows console is cp1252 and cannot encode a check mark, so one
+        # here killed the driver mid-file. pytest hid it, capturing stdout as UTF-8.
+        print("All tests passed!")
         return True
 
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        return False
-
+    # No `except Exception: return False` here: it swallowed the failure and still reported a
+    # pass, so every assertion above ran in CI unable to fail it. That is how this shipped.
     finally:
         os.unlink(test_file)
+
+
+def test_clean_text_keeps_text_in_any_script():
+    """Top level on purpose: an assertion inside test_raw_text_loader used to be swallowed."""
+    preprocessor = TextPreprocessor()
+    for script_text in [
+        "Le caf\u00e9 \u00e9tait tr\u00e8s bon.",
+        "\u00bfD\u00f3nde est\u00e1 la ni\u00f1a?",
+        "Gr\u00f6\u00dfe und Stra\u00dfe",
+        "\u673a\u5668\u5b66\u4e60\u5f88\u6709\u8da3\u3002",
+        "\u3053\u3093\u306b\u3061\u306f\u3001\u4e16\u754c\u3002",
+        "\u0645\u0631\u062d\u0628\u0627\u060c \u0628\u0627\u0644\u0639\u0627\u0644\u0645",
+        "\u041f\u0440\u0438\u0432\u0435\u0442, \u043c\u0438\u0440!",
+        "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e\u0964",
+        "\uc548\ub155\ud558\uc138\uc694.",
+        "\u0393\u03b5\u03b9\u03ac \u03c3\u03bf\u03c5",
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+        "\u0dc1\u0dca\u200d\u0dbb\u0dd3",
+        "Price: \u20ac100, x \u2264 4, \u00a9 2026 Acme\u2122",
+        "I \u2764\ufe0f you 1\ufe0f\u20e3 \U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
+        "\u06dd\u0661\u0662 \u0600\u0663",
+        "\U00013000\U00013430\U00013001",
+        "f\u2061(x) = a\u2062b",
+        # Garay (Unicode 16) is unassigned in older interpreters' databases and must survive anyway.
+        "\U00010d50\U00010d51",
+    ]:
+        assert (
+            preprocessor.clean_text(script_text) == script_text
+        ), f"clean_text must keep text in any script: {script_text!r}"
+
+
+def test_clean_text_drops_invisible_characters():
+    """The control for the test above: invisible characters are still removed."""
+    preprocessor = TextPreprocessor()
+    for raw, expected in [
+        ("a\x00b", "ab"),
+        ("a\x1bb", "ab"),
+        ("\ufeffhello", "hello"),
+        ("co\u00adop", "coop"),
+        ("a\u200bb", "ab"),
+        ("\u202eabc", "abc"),
+        ("a\u200eb\u2060c", "abc"),
+        ("\u2066abc\u2069", "abc"),
+        ("a\ue000b", "ab"),
+        ("a\ufffdb", "ab"),
+        ("a\uffffb", "ab"),
+    ]:
+        assert preprocessor.clean_text(raw) == expected, raw
+
+
+def test_clean_text_decision_cannot_drift_between_interpreters():
+    """unicodedata ships with the interpreter (3.9 has Unicode 13.0, 3.14 has 16.0), and
+    Unicode freezes only Cc, Co and Cs. Keying on any other category would clean the same
+    corpus differently per Python. https://www.unicode.org/policies/property_value_stability_table.html
+    """
+    immutable = {"Cc", "Co", "Cs"}
+    assert set(raw_text_module._TextCharTable._DROP_CATEGORIES) <= immutable, (
+        "clean_text may only key on the General_Category values Unicode has frozen "
+        f"({sorted(immutable)}); the rest differ between Python versions."
+    )
+
+    # Everything else dropped is named explicitly, not derived from the database.
+    preprocessor = TextPreprocessor()
+    for codepoint in (0x00AD, 0x200B, 0x200E, 0x2060, 0x2066, 0xFEFF, 0xFFFD, 0xE0001):
+        assert preprocessor.clean_text(f"a{chr(codepoint)}b") == "ab", hex(codepoint)
+
+    # Unassigned (Cn) means newer than this interpreter's database, so it must survive.
+    unassigned = [
+        cp
+        for cp in range(0x10D40, 0x10D90)
+        if unicodedata.category(chr(cp)) == "Cn" and not (cp & 0xFFFE) == 0xFFFE
+    ]
+    for codepoint in unassigned[:8]:
+        text = f"a{chr(codepoint)}b"
+        assert preprocessor.clean_text(text) == text, hex(codepoint)
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
@@ -288,7 +365,7 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
         input_ids, list
     ), f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
     assert input_ids == [0, 1, 2, 3], f"unexpected input_ids: {input_ids}"
-    print("✅ test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed!")
+    print("test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed")
     return True
 
 
@@ -344,7 +421,7 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
             chunk.endswith("</s>") == is_last
         ), f"chunk {i} (last={is_last}) eos suffix mismatch: {chunk!r}"
 
-    print("✅ test_smart_chunk_text_no_eos_on_intermediate_full_chunks passed!")
+    print("test_smart_chunk_text_no_eos_on_intermediate_full_chunks passed")
     return True
 
 
@@ -725,6 +802,9 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
 
 if __name__ == "__main__":
     success = test_raw_text_loader()
+    test_clean_text_keeps_text_in_any_script()
+    test_clean_text_drops_invisible_characters()
+    test_clean_text_decision_cannot_drift_between_interpreters()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
     success = test_smart_chunk_text_no_eos_on_intermediate_full_chunks() and success
     success = test_load_from_file_skips_non_object_json_lines() and success

@@ -6,6 +6,14 @@ subprocess spawned on first checkpoint load and reused for later exports. Switch
 checkpoints that need different transformers versions kills the old subprocess and spawns a new
 one. Pattern follows core/inference/orchestrator.py."""
 
+from core.training.account_jobs import (
+    account_process_spec,
+    init_job_owner,
+    job_control,
+    job_read,
+    owned_job,
+    validate_job_paths,
+)
 import atexit
 import structlog
 from collections import deque
@@ -40,6 +48,7 @@ class ExportOrchestrator:
     routes/export.py needs minimal changes."""
 
     def __init__(self):
+        init_job_owner(self, self.is_export_active, self.cancel_export, self._clear_account_result)
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
@@ -73,6 +82,14 @@ class ExportOrchestrator:
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
 
+    # ------------------------------------------------------------------
+
+    def _clear_account_result(self):
+        self.current_checkpoint = None
+        self.is_vision = self.is_peft = False
+        self._last_op = None
+        self.clear_logs()
+
     def _append_log(self, entry: Dict[str, Any]) -> None:
         line = entry.get("line")
         if not line:
@@ -98,6 +115,7 @@ class ExportOrchestrator:
             self._log_buffer.clear()
             self._run_start_seq = self._log_seq
 
+    @job_read(lambda self, cursor: ([], cursor))
     def get_logs_since(self, cursor: int) -> Tuple[List[Dict[str, Any]], int]:
         with self._log_lock:
             new_entries = [entry for entry in self._log_buffer if entry["seq"] > cursor]
@@ -105,10 +123,12 @@ class ExportOrchestrator:
             return new_entries, new_entries[-1]["seq"]
         return [], cursor
 
+    @job_read(lambda self: 0)
     def get_current_log_seq(self) -> int:
         with self._log_lock:
             return self._log_seq
 
+    @job_read(lambda self: 0)
     def get_run_start_seq(self) -> int:
         with self._log_lock:
             return self._run_start_seq
@@ -141,13 +161,16 @@ class ExportOrchestrator:
                 "error": None if success else (message or None),
             }
 
+    @job_read(lambda self: None)
     def get_last_op(self) -> Optional[Dict[str, Any]]:
         with self._op_lock:
             return dict(self._last_op) if self._last_op is not None else None
 
+    @job_read(lambda self: None)
     def get_active_op_kind(self) -> Optional[str]:
         return self._active_op_kind
 
+    @job_control
     def cancel_export(self) -> bool:
         """Terminate the in-flight export subprocess immediately.
 
@@ -221,18 +244,24 @@ class ExportOrchestrator:
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
+            process_args, process_kwargs = account_process_spec(
+                "core.export.worker",
+                "run_export_process",
+                cache_env,
+                {
+                    "cmd_queue": self._cmd_queue,
+                    "resp_queue": self._resp_queue,
+                    "config": config,
+                },
+            )
             # Kept in a local as well as on self: a concurrent _shutdown_subprocess can
             # see a process that has not finished starting, decide it is not alive and
             # clear self._proc, and every read below would then be off a None while the
             # worker is alive and unadopted.
             _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = ("core.export.worker", "run_export_process", cache_env),
-                kwargs = {
-                    "cmd_queue": self._cmd_queue,
-                    "resp_queue": self._resp_queue,
-                    "config": config,
-                },
+                args = process_args,
+                kwargs = process_kwargs,
                 daemon = True,
             )
             self._proc = _spawned_proc
@@ -434,6 +463,9 @@ class ExportOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
+    # ------------------------------------------------------------------
+
+    @owned_job()
     def load_checkpoint(
         self,
         checkpoint_path: str,
@@ -444,13 +476,18 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         allow_ambient: bool = True,
         subject: Optional[str] = None,
+        base_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
         Always spawns a fresh subprocess to ensure a clean Python interpreter.
+        ``base_model`` pins an already authorized adapter base; the worker then ignores the
+        adapter config, which its owner can rewrite after the check.
         """
+        validate_job_paths({"checkpoint_path": checkpoint_path})
         sub_config = {
             "checkpoint_path": checkpoint_path,
+            "base_model": base_model,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
@@ -627,12 +664,14 @@ class ExportOrchestrator:
             },
         )
 
+    @owned_job(continuation = True)
     def _run_export(self, export_type: str, params: dict) -> Tuple[bool, str, Optional[str]]:
         """Send an export command and wait for the result.
 
         Returns ``(success, message, output_path)``. ``output_path`` is the on-disk
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
+        validate_job_paths(params)
         with self._lock:
             if not self._ensure_subprocess_alive():
                 return (
@@ -682,6 +721,7 @@ class ExportOrchestrator:
                 self._active_op_kind = None
                 self._export_active = False
 
+    @job_control
     def cleanup_memory(self) -> bool:
         with self._lock:
             if not self._ensure_subprocess_alive():
@@ -716,9 +756,12 @@ class ExportOrchestrator:
                 self._active_op_kind = None
                 self._export_active = False
 
-    def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:
+    def scan_checkpoints(self, outputs_dir: Optional[str] = None) -> List[Tuple[str, list]]:
         """Scan for checkpoints — runs locally, no ML imports."""
+        outputs_dir = outputs_dir if outputs_dir is not None else str(outputs_root())
+        validate_job_paths({"output_dir": outputs_dir})
         from utils.models.checkpoints import scan_checkpoints
+
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 

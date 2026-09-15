@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import http.client
+import http.server
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import shlex
 import signal
 import sys
+import threading
 import time
 import urllib.error
 from pathlib import Path
@@ -1509,7 +1511,7 @@ def fake_studio(tmp_path, monkeypatch):
         error = None,
     ):
         calls.append((method, url, payload))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": state["models"]}
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
@@ -2384,7 +2386,7 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
         error = None,
     ):
         calls.append((method, url, payload))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2426,7 +2428,7 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "abc123"}] if state["loaded"] else []}
         if url.endswith("/api/inference/load"):
             state["loaded"] = True
@@ -2489,7 +2491,7 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2521,7 +2523,7 @@ def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2555,7 +2557,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
             }
@@ -2604,7 +2606,7 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
             }
@@ -2810,7 +2812,7 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-stale":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -2838,7 +2840,7 @@ def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-saved":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-saved":
             raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -2929,7 +2931,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     ):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             # Decoy sorts first, so models[0] is the wrong pick on the old code.
             return {"object": "list", "data": [MODEL, {"id": canonical, "context_length": 4096}]}
         return inner(method, url, token, payload, timeout, error)
@@ -3041,7 +3043,7 @@ def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monke
         captured["load"] = load
         captured["server_options"] = server_options
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -3072,7 +3074,7 @@ def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch
     ):
         captured["load"] = load
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -3347,7 +3349,7 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     ):
         captured["server_options"] = server_options
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -3548,7 +3550,7 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
     ):
         if url.endswith("/api/inference/load"):
             return {}
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": [MODEL]}  # decoy; request never appears
         return inner(method, url, token, payload, timeout, error)
 
@@ -3684,7 +3686,9 @@ def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, mon
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    assert not any(c[1].endswith("/v1/models") for c in fake_studio)  # minted key never sent
+    assert not any(
+        c[1].endswith("/api/inference/loaded-models") for c in fake_studio
+    )  # minted key never sent
 
 
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
@@ -3893,7 +3897,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-abc123")
     monkeypatch.setattr(start.time, "sleep", lambda _s: None)
 
-    server = start._start_studio_server(
+    returned_base, server = start._start_studio_server(
         "http://127.0.0.1:8888",
         "unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL",
         start.LoadOptions(
@@ -3918,6 +3922,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
     assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"
     assert cmd[cmd.index("-p") + 1] == "8888"
+    assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
@@ -3969,17 +3974,138 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
         lambda message = "", **_kwargs: created.append(("echo", message)),
     )
 
-    server = start._start_studio_server(
+    returned_base, server = start._start_studio_server(
         BASE,
         "owner/model-GGUF",
         start.LoadOptions(gguf_variant = "Q4_K_M"),
     )
 
-    assert server.pid == 4321
+    assert (returned_base, server.pid) == (BASE, 4321)
     assert (BASE, "sk-unsloth-early", "owner/model-GGUF", "Q4_K_M", "created") in created
     assert created.count("poll") == 2
     assert created[-2:] == ["complete", "close"]
     assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
+
+
+def test_start_studio_server_follows_the_port_the_child_bound(monkeypatch, tmp_path):
+    requests = {"occupant": [], "studio": []}
+
+    def handler(name, status, body):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests[name].append(self.path)
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        return Handler
+
+    occupant = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler("occupant", 404, b"{}"))
+    studio = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), handler("studio", 200, b'{"status": "healthy"}')
+    )
+    for httpd in (occupant, studio):
+        threading.Thread(target = httpd.serve_forever, daemon = True).start()
+    requested_port, bound_port = occupant.server_address[1], studio.server_address[1]
+    fake = SimpleNamespace(pid = 4242, poll = lambda: None)
+    commands = []
+    progress_bases = []
+
+    def fake_popen(command, **kwargs):
+        commands.append(command)
+        kwargs["stdout"].write(
+            f"UNSLOTH_START_PORT: {bound_port}\n"
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\n"
+            "Model loaded: owner/model\n".encode()
+        )
+        kwargs["stdout"].flush()
+        return fake
+
+    class FakeProgress:
+        downloaded_bytes = 0
+
+        def __init__(self, base, *_args):
+            progress_bases.append(base)
+
+        def poll(self):
+            pass
+
+        def complete(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(start.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(start.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start, "_SERVER_START_TIMEOUT_S", 5)
+    try:
+        base, server = start._start_studio_server(
+            f"http://127.0.0.1:{requested_port}", "owner/model", start.LoadOptions()
+        )
+    finally:
+        for httpd in (occupant, studio):
+            httpd.shutdown()
+            httpd.server_close()
+
+    assert (base, server) == (f"http://127.0.0.1:{bound_port}", fake)
+    assert commands[0][commands[0].index("-p") + 1] == str(requested_port)
+    assert progress_bases == [base]
+    assert requests == {"occupant": [], "studio": ["/api/health"]}
+
+
+def test_start_studio_server_reads_the_port_the_child_reported_once(monkeypatch):
+    # The child reports its port once, before the loader pushes it out of the tail the key uses.
+    class FakePopen:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    # 401 lines: the 400-line tail starts one line past the port.
+    log = (
+        "UNSLOTH_START_PORT: 8889\n"
+        "UNSLOTH_START_API_KEY: sk-unsloth-early\n"
+        + "loading tensors\n" * 398
+        + "Model loaded: owner/model"
+    )
+    healthy = []
+    progress_bases = []
+
+    class FakeProgress:
+        downloaded_bytes = 0
+
+        def __init__(self, base, *_args):
+            progress_bases.append(base)
+
+        def poll(self):
+            pass
+
+        def complete(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: FakePopen())
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, **_k: healthy.append(base) or True)
+    monkeypatch.setattr(start, "_read_log", lambda _path: log)
+    monkeypatch.setattr(start, "_log_tail", lambda *a, **k: "\n".join(log.splitlines()[-400:]))
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    base, _server = start._start_studio_server(BASE, "owner/model", start.LoadOptions())
+
+    tail = "\n".join(log.splitlines()[-400:])
+    assert start._START_API_KEY_PREFIX in tail and start._START_PORT_PREFIX not in tail
+    assert base == "http://127.0.0.1:8889"
+    assert progress_bases == [base]
+    assert healthy == [base]
 
 
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
@@ -4233,7 +4359,7 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
-        assert url.endswith("/v1/models"), url
+        assert url.endswith("/api/inference/loaded-models"), url
         return {"data": models}
 
     def refuse_load(base, key, model, load, payload):
@@ -4300,7 +4426,7 @@ def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, caps
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
-        assert url.endswith("/v1/models"), url
+        assert url.endswith("/api/inference/loaded-models"), url
         return {"data": []}
 
     def failing_load(base, key, model, load, payload):
@@ -4331,7 +4457,7 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     ):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
@@ -4357,6 +4483,29 @@ def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     assert "unsloth studio stop" in result.output
 
 
+def test_auto_served_session_uses_the_port_the_server_bound(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    bound = "http://127.0.0.1:8889"
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+    launched = {}
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return bound, fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_launch", lambda command, env, **_kwargs: launched.update(env) or 0)
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Unsloth ready at {bound} " in result.output
+    assert launched["ANTHROPIC_BASE_URL"] == bound
+    assert fake_studio and all(
+        url.startswith(f"{bound}/") for _method, url, _payload in fake_studio
+    )
+
+
 def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     stopped = []
@@ -4364,7 +4513,7 @@ def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch)
 
     def fake_start(*_args):
         start._auto_served_server = fake
-        return fake
+        return _args[0], fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", stopped.append)
@@ -4390,7 +4539,7 @@ def test_auto_served_server_exit_is_not_reported_as_running(fake_studio, monkeyp
 
     def fake_start(*_args):
         start._auto_served_server = fake
-        return fake
+        return _args[0], fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_launch", lambda *a, **k: 0)
@@ -4494,7 +4643,7 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
@@ -4594,7 +4743,7 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     ):
         started["base"] = base
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -5608,7 +5757,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     ):
         captured["server_options"] = server_options
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
@@ -6430,7 +6579,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-other-server":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-other-server":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -7867,7 +8016,7 @@ def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "foo-Q4_K_M", "loaded": True}]}
         if url.endswith("/api/inference/status"):
             return {
@@ -8496,7 +8645,7 @@ def test_claude_post_connect_failure_tears_down_auto_served(fake_studio, monkeyp
     ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
@@ -8701,7 +8850,7 @@ def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, m
     ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
-        return fake
+        return base, fake
 
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(
