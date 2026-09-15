@@ -231,6 +231,11 @@ def test_an_alias_answers_for_the_resident_blobs_until_its_own_tag_moves(
     # Whichever spelling the inventory gave a recipe: this link, an older link name, the alias.
     for stored in (link, link.with_name("llama3-latest-Q4_K_M.gguf"), alias_link):
         assert _validate(str(stored)).resident is True
+    # The other tag moving does not unname this one: only its own manifest speaks for it.
+    _retag(store, "latest", "d" * 64)
+    assert _satisfied() is True
+    assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:8b"]
+
     # Re-pulled: the spelling is the same and the weights under it are not.
     _retag(store, "8b", "c" * 64)
     assert _satisfied() is False

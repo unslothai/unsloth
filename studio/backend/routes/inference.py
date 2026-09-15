@@ -8447,15 +8447,16 @@ def _loaded_satisfies(requested: str) -> bool:
         ]
         identifier = getattr(llama_backend, "model_identifier", None)
         if identifier and is_ollama_manifest_ref(identifier):
-            # A re-pull keeps a spelling and replaces its blobs: only the loaded tag answers by name.
-            if not _resident_is_still_tagged(identifier, llama_backend):
-                return False
+            # A re-pull keeps a spelling and replaces its blobs, so the tag the load recorded
+            # vouches for nothing but itself. Every other name, the alias this was adopted under
+            # included, is resolved and judged on its own blobs.
             own = [identifier, ollama_model_ref_public_id(identifier)]
+            still_tagged = _resident_is_still_tagged(identifier, llama_backend)
             if _matches_any(requested, own):
-                return True
+                return still_tagged
             if _matches_any(base, own):
                 # The tag itself is the whole name, so a quant suffix on top of it names nothing.
-                return not looks_like_quant(variant)
+                return still_tagged and not looks_like_quant(variant)
             return _ollama_request_is_resident(requested, llama_backend)
         if not _matches_any(requested, candidates) and not _matches_any(base, candidates):
             return False
