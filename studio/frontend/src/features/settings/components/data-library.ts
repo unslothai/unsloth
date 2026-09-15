@@ -42,6 +42,7 @@ export function filterLibraryItems<T extends LibraryItem>(
   filters: LibraryFilters,
   projects: ReadonlyMap<string, string> = new Map(),
   labels?: LibraryProjectLabels,
+  locale?: string,
 ): T[] {
   const terms = searchable(filters.query).trim().split(/\s+/).filter(Boolean);
   const timestamp = (item: T) => {
@@ -66,13 +67,13 @@ export function filterLibraryItems<T extends LibraryItem>(
     return terms.every((term) => haystack.includes(term));
   });
   if (filters.sort === "default") return matching;
+  const compare = new Intl.Collator(locale).compare;
   return matching.sort((a, b) => {
-    const byTitle = a.title.localeCompare(b.title);
-    if (filters.sort === "alphabetical")
-      return byTitle || a.id.localeCompare(b.id);
+    const byTitle = compare(a.title, b.title);
+    if (filters.sort === "alphabetical") return byTitle || compare(a.id, b.id);
     const byTime =
       (timestamp(b) - timestamp(a)) * (filters.sort === "oldest" ? -1 : 1);
-    return byTime || byTitle || a.id.localeCompare(b.id);
+    return byTime || byTitle || compare(a.id, b.id);
   });
 }
 

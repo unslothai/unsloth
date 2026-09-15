@@ -209,3 +209,50 @@ test("dates use the requested app locale", () => {
     );
   }
 });
+
+test("title ordering and timestamp ties follow the selected app locale", () => {
+  const rows = [
+    { id: "z", title: "Zebra", createdAt: 1, updatedAt: 1 },
+    { id: "a", title: "阿", createdAt: 1, updatedAt: 1 },
+    { id: "b", title: "八", createdAt: 1, updatedAt: 1 },
+  ];
+  const orders = {
+    en: ["z", "b", "a"],
+    "zh-CN": ["a", "b", "z"],
+    ja: ["z", "a", "b"],
+  };
+  for (const sort of [
+    "alphabetical",
+    "created",
+    "updated",
+    "oldest",
+  ] as const) {
+    for (const [locale, expected] of Object.entries(orders)) {
+      assert.deepEqual(
+        ids(
+          filterLibraryItems(
+            rows,
+            { ...DEFAULT_LIBRARY_FILTERS, sort },
+            undefined,
+            undefined,
+            locale,
+          ),
+        ),
+        expected,
+      );
+    }
+  }
+  assert.deepEqual(
+    ids(
+      filterLibraryItems(
+        rows,
+        { ...DEFAULT_LIBRARY_FILTERS, sort: "default" },
+        undefined,
+        undefined,
+        "zh-CN",
+      ),
+    ),
+    ["z", "a", "b"],
+  );
+  assert.deepEqual(ids(rows), ["z", "a", "b"]);
+});

@@ -48,7 +48,7 @@ import {
 import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
-import { translate, useT } from "@/i18n";
+import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
 /** Archived items shown per page; "Show more" pulls the next page. Matches ArchivedChatsView. */
@@ -94,6 +94,7 @@ interface ArchivedPage {
  */
 export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const t = useT();
+  const locale = useLocale();
   const isImages = kind === "images";
   const isAudio = kind === "audio";
   const [rows, setRows] = useState<ArchivedRow[]>([]);
@@ -130,8 +131,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const filtered = useMemo(
-    () => filterLibraryItems(rows, filters),
-    [rows, filters],
+    () => filterLibraryItems(rows, filters, undefined, undefined, locale),
+    [rows, filters, locale],
   );
   const displayed = useMemo(
     () => filtered.slice(0, visibleCount),

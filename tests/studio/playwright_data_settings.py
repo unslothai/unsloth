@@ -272,6 +272,8 @@ def run(page):
 
     checks.extend(run_libraries(page))
     checks.extend(run_library_locales(page))
+    checks.extend(run_library_selection(page))
+    checks.extend(run_library_collation(page))
 
     errors = page.evaluate("window.__settingsSmoke.errors()")
     resize_notice = "ResizeObserver loop completed with undelivered notifications."
@@ -731,6 +733,128 @@ def run_library_locales(page):
     expect(search).to_have_value("NoMatchingTitle")
     expect(page.get_by_role("button", name = "Filtrar y ordenar", exact = True)).to_be_visible()
     checks.append("library-locale-live-switch-retains-query")
+    page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('en');}")
+    return checks
+
+
+def run_library_selection(page):
+    page.evaluate("window.__settingsSmoke.close()")
+    expect(page.get_by_role("dialog")).to_have_count(0)
+    page.evaluate("""() => {
+        const f = window.__dataFixture;
+        Object.assign(f, {requests: [], failMutation: false, holdMutation: false, listFail: false});
+        f.rows = Array.from({length: 32}, (_, i) => ({
+            id: `selection-${i}`, title: `Chat ${i}`, modelType: 'base', modelId: 'test',
+            createdAt: 1700000000000, updatedAt: 1700000000000 + (32-i)*1000,
+        }));
+        window.__settingsSmoke.open('data');
+    }""")
+    page.locator('[data-settings-label="Manage chats"]').get_by_role(
+        "button", name = "Manage", exact = True
+    ).click()
+    target = page.get_by_role("checkbox", name = 'Select "Chat 19"', exact = True)
+    target.click()
+    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
+    page.evaluate("""() => {
+        window.__dataFixture.rows[20].updatedAt = 1900000000000;
+        window.dispatchEvent(new Event('unsloth-chat-history-updated'));
+    }""")
+    expect(target).to_have_count(0)
+    expect(page.get_by_role("button", name = "Chat 20", exact = True)).to_be_visible()
+    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
+    checks = ["selected-chat-survives-live-page-reorder"]
+    select_all = page.get_by_role("checkbox", name = "Select all visible chats", exact = True)
+    expect(select_all).not_to_be_checked()
+    select_all.click()
+    expect(page.get_by_text("Selected chats: 21", exact = True)).to_be_visible()
+    select_all.click()
+    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
+    checks.append("select-visible-preserves-hidden-selection")
+    page.get_by_role("button", name = "Show more (12)", exact = True).click()
+    expect(target).to_be_checked()
+    checks.append("revealed-chat-keeps-its-selection")
+    page.evaluate("""() => {
+        const f = window.__dataFixture;
+        f.rows.push(...Array.from({length: 40}, (_, i) => ({
+            id: `incoming-${i}`, title: `Incoming ${i}`, modelType: 'base', modelId: 'test',
+            createdAt: 1700000000000, updatedAt: 1900000000000 + i + 1,
+        })));
+        window.dispatchEvent(new Event('unsloth-chat-history-updated'));
+    }""")
+    expect(target).to_have_count(0)
+    expect(page.get_by_text("Selected chats: 1", exact = True)).to_be_visible()
+    page.get_by_role("button", name = "Delete", exact = True).click()
+    expect(page.get_by_role("alertdialog").get_by_role("heading")).to_have_text("Delete chats (1)")
+    page.get_by_role("alertdialog").get_by_role("button", name = "Cancel", exact = True).click()
+    page.get_by_role("button", name = "Archive", exact = True).click()
+    page.wait_for_function(
+        "window.__dataFixture.rows.find(r => r.id === 'selection-19').archived === true"
+    )
+    assert page.evaluate(
+        "window.__dataFixture.requests.filter(r => r.method === 'PATCH').map(r => r.path)"
+    ) == ["/api/chat/threads/selection-19"]
+    checks.append("bulk-action-retains-original-selected-id")
+    # Explicit filter changes still clear selections.
+    page.get_by_role("checkbox", name = 'Select "Incoming 18"', exact = True).click()
+    page.get_by_role("searchbox", name = "Search chats or projects", exact = True).fill("Incoming 18")
+    expect(
+        page.get_by_role("checkbox", name = 'Select "Incoming 18"', exact = True)
+    ).not_to_be_checked()
+    expect(page.get_by_role("button", name = "Archive", exact = True)).to_have_count(0)
+    checks.append("explicit-filter-change-clears-selection")
+    return checks
+
+
+def run_library_collation(page):
+    checks = []
+    titles = ["阿", "八", "中", "张", "曾", "Zebra", "苹果", "橙子", "東京", "大阪"]
+    for shelf in ["manage", "chats", "images", "videos", "audio"]:
+        page.evaluate("window.__settingsSmoke.close()")
+        expect(page.get_by_role("dialog")).to_have_count(0)
+        page.evaluate(
+            """async ({shelf, titles}) => {
+            await (await import('/src/i18n/index.ts')).setLocale('en');
+            const f = window.__dataFixture;
+            Object.assign(f, {requests: [], failMutation: false, holdMutation: false, listFail: false, failPage: false, stallPage: false});
+            f.rows = titles.map((title, i) => ({id: `collation-${i}`, title, modelType: 'base', modelId: 'test',
+                createdAt: 1700000000000, updatedAt: 1700000000000, archived: shelf === 'chats'}));
+            f.projects = titles.map((name, i) => ({id: `project-${i}`, name, createdAt: 1, updatedAt: 1}));
+            f.media = Object.fromEntries(['images', 'videos', 'audio'].map(kind => [kind, titles.map((prompt, i) => ({
+                id: `${kind}-${i}`, prompt, url: '/unused',
+                created_at: kind === 'images' ? 1700000000 : '2023-11-14T22:13:20Z',
+            }))]));
+            if(shelf === 'manage') window.__settingsSmoke.open('data');
+            else window.__settingsSmoke.openArchived(shelf);
+        }""",
+            {"shelf": shelf, "titles": titles},
+        )
+        if shelf == "manage":
+            page.locator('[data-settings-label="Manage chats"]').get_by_role(
+                "button", name = "Manage", exact = True
+            ).click()
+        page.get_by_role("button", name = "Filter and sort", exact = True).click()
+        page.get_by_role("menuitemradio", name = "Alphabetical", exact = True).click()
+        for locale in ["en", "zh-CN", "ja"]:
+            info = page.evaluate(
+                """async ({locale, titles}) => {
+                const api = await import('/src/i18n/index.ts');
+                await api.setLocale(locale);
+                return {expected: [...titles].sort(new Intl.Collator(locale).compare),
+                    projectFilter: api.translate('settings.data.library.filterProject')};
+            }""",
+                {"locale": locale, "titles": titles},
+            )
+            if shelf in ["manage", "chats"]:
+                rows = page.locator("main section .divide-y button[title]:not([aria-label])")
+            else:
+                rows = page.locator("[data-archived-id] p[title]")
+            expect(rows).to_have_text(info["expected"])
+            checks.append(f"{shelf}-alphabetical-{locale}")
+            if shelf in ["manage", "chats"]:
+                page.get_by_role("button", name = info["projectFilter"], exact = True).click()
+                assert page.get_by_role("option").all_text_contents()[2:] == info["expected"]
+                page.keyboard.press("Escape")
+                checks.append(f"{shelf}-projects-{locale}")
     page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('en');}")
     return checks
 

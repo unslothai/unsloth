@@ -24,7 +24,7 @@ import {
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
-import { translate, useT } from "@/i18n";
+import { translate, useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { Delete02Icon, Message01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -47,6 +47,7 @@ const ARCHIVED_PAGE_SIZE = 20;
 
 export function ArchivedChatsView() {
   const t = useT();
+  const locale = useLocale();
   const labels = useLibraryProjectLabels();
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const { projects: activeProjects } = useChatProjects();
@@ -101,8 +102,9 @@ export function ArchivedChatsView() {
         filters,
         projectNames,
         labels,
+        locale,
       ),
-    [archivedItems, removed, filters, projectNames, labels],
+    [archivedItems, removed, filters, projectNames, labels, locale],
   );
   const narrowed =
     filters.query.trim() !== "" ||

@@ -38,7 +38,7 @@ import {
   usePinnedChatsStore,
 } from "@/features/chat";
 import { isDownloadCancelled } from "@/lib/native-files";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -70,6 +70,7 @@ const MANAGE_PAGE_SIZE = 20;
 
 export function ManageChatsView() {
   const t = useT();
+  const locale = useLocale();
   const labels = useLibraryProjectLabels();
   const chatCount = (count: number) =>
     t(
@@ -109,15 +110,15 @@ export function ManageChatsView() {
     [projects],
   );
   const filtered = useMemo(
-    () => filterLibraryItems(items, filters, projectNames, labels),
-    [items, filters, projectNames, labels],
+    () => filterLibraryItems(items, filters, projectNames, labels, locale),
+    [items, filters, projectNames, labels, locale],
   );
   const visible = groupLibraryItems(
     filtered.slice(0, visibleCount),
     projectNames,
     labels,
   ).flatMap((group) => group.items);
-  const selectedItems = visible.filter((item) => selectedIds.has(item.id));
+  const selectedItems = items.filter((item) => selectedIds.has(item.id));
 
   function changeFilters(next: LibraryFilters) {
     setFilters(next);
@@ -126,8 +127,11 @@ export function ManageChatsView() {
     setVisibleCount(MANAGE_PAGE_SIZE);
   }
   const selectedCount = selectedItems.length;
+  const visibleSelectedCount = visible.filter((item) =>
+    selectedIds.has(item.id),
+  ).length;
   const allVisibleSelected =
-    visible.length > 0 && visible.every((item) => selectedIds.has(item.id));
+    visible.length > 0 && visibleSelectedCount === visible.length;
   const allSelectedPinned =
     selectedCount > 0 &&
     selectedItems.every((item) => pinnedIds.includes(item.id));
@@ -160,9 +164,14 @@ export function ManageChatsView() {
 
   function toggleAllVisible() {
     if (busy) return;
-    setSelectedIds(
-      allVisibleSelected ? new Set() : new Set(visible.map((item) => item.id)),
-    );
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const item of visible) {
+        if (allVisibleSelected) next.delete(item.id);
+        else next.add(item.id);
+      }
+      return next;
+    });
     lastToggledId.current = null;
   }
 
@@ -293,7 +302,7 @@ export function ManageChatsView() {
             checked={
               allVisibleSelected
                 ? true
-                : selectedCount > 0
+                : visibleSelectedCount > 0
                   ? "indeterminate"
                   : false
             }
