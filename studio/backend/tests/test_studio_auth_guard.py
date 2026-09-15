@@ -2282,6 +2282,60 @@ def test_enumerating_the_studio_root_for_a_credential_name_is_refused(monkeypatc
         tools._studio_auth_markers_cache = None
 
 
+def test_a_definition_time_call_is_not_inert(monkeypatch, tmp_path):
+    # Default arguments and decorators run when the function is DEFINED, so the move happens even
+    # though nothing calls `f`. Only the BODY of an uncalled function is inert.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        read = "print(open('auth/auth.db','rb').read())"
+        for code in (
+            f"import os\ndef f(x = os.chdir('../..')): pass\n{read}",
+            f"import os\n@os.chdir('../..')\ndef f(): pass\n{read}",
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # A call in the body of a function nothing invokes still moves nothing.
+        inert = f"import os\ndef f():\n    os.chdir('../..')\n{read}"
+        assert tools._python_exec(inert, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_shell_local_studio_home_wins_over_the_backend_one(monkeypatch, tmp_path):
+    # The child expands the shell assignment, not the parent environment, so a command that rebinds
+    # the variable BEFORE using it names its own directory. An assignment AFTER a use rebinds
+    # nothing for that use, and must not hide a real read of the install's own auth directory.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for ordinary in (
+            'UNSLOTH_STUDIO_HOME=/tmp/project; cat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
+            'UNSLOTH_STUDIO_HOME=/tmp/project cat "$UNSLOTH_STUDIO_HOME/auth/config.json"',
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        for refused in (
+            'cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"; UNSLOTH_STUDIO_HOME=/tmp/project',
+            f'UNSLOTH_STUDIO_HOME={home}; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
+        ):
+            assert tools._bash_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), refused
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
     # `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +` names no credential and no auth segment,
     # but the child inherits the variable and emits `auth/auth.db` and `.bootstrap_password`. Only

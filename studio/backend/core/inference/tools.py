@@ -2903,10 +2903,28 @@ _STUDIO_HOME_ASSIGN_RE = re.compile(
 )
 
 
-def _binds_an_unset_studio_home(text: str) -> bool:
-    """True when *text* assigns a studio home variable the backend does not itself set."""
+def _rebinds_the_studio_home_first(text: str) -> bool:
+    """True when *text* assigns a studio home variable BEFORE any use of it.
+
+    The shell assignment is what the child expands, whether or not the backend sets the same name,
+    so `UNSLOTH_STUDIO_HOME=/tmp/project; cat "$UNSLOTH_STUDIO_HOME/auth/config.json"` reads a
+    project file and not this install's directory. An assignment that comes AFTER a use rebinds
+    nothing for that use, and expanding it would hide a real read of the install's own auth
+    directory, so the ordering is what decides it.
+    """
+    lowered = text.lower()
     for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
-        if not (os.environ.get(match.group(1).upper()) or "").strip():
+        name = match.group(1).lower()
+        uses = [
+            position
+            for position in (
+                lowered.find(f"${name}"),
+                lowered.find(f"${{{name}}}"),
+                lowered.find(f"%{name}%"),
+            )
+            if position != -1
+        ]
+        if not uses or min(uses) >= match.end():
             return True
     return False
 
@@ -3407,7 +3425,7 @@ def _references_studio_credential_here(
     # generic `STUDIO_HOME` is registered as this install's root even when the backend does not
     # set it. Resolving the local binding first stops `STUDIO_HOME=/opt/app cat
     # "$STUDIO_HOME/auth/config.json"` from being refused as a read of Studio's own auth directory.
-    if "=" in text and _binds_an_unset_studio_home(text):
+    if "=" in text and _rebinds_the_studio_home_first(text):
         text = _expand_shell_assignments(text)
     if _references_studio_credential(text):
         return True
@@ -3554,9 +3572,14 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
             continue
         elif not isinstance(node, ast.Lambda):
             continue
-        for inner in ast.walk(node):
-            if isinstance(inner, ast.Call) and inner is not node:
-                inert.add(id(inner))
+        # The BODY only. Default arguments, decorators and annotations are evaluated when the
+        # function is DEFINED, so `def f(x = os.chdir("../..")): pass` moves the process even
+        # though nothing ever calls `f`.
+        body = node.body if isinstance(node.body, list) else [node.body]
+        for statement in body:
+            for inner in ast.walk(statement):
+                if isinstance(inner, ast.Call):
+                    inert.add(id(inner))
     return inert
 
 
