@@ -808,6 +808,10 @@ _PATH_FLAG_SPECS = {
     "curl": {
         "-o": "write",
         "--output": "write",
+        # `--output-dir <dir>` is where `-O` puts what it downloads (`curl --help all`), and `-O`
+        # itself contributes no operand, so without this an ordinary download wrote outside the
+        # sandbox with nothing in the command for the gate to look at.
+        "--output-dir": "write",
         "-O": "skip",
         "-d": "skip",
         "--data": "skip",
@@ -824,7 +828,14 @@ _PATH_FLAG_SPECS = {
         "--max-time": "skip",
         "--connect-timeout": "skip",
     },
-    "wget": {"-O": "write", "--output-document": "write", "-P": "write", "--header": "skip"},
+    "wget": {
+        "-O": "write",
+        "--output-document": "write",
+        # `-P, --directory-prefix=PREFIX` (`wget --help`): both spellings save under that prefix.
+        "-P": "write",
+        "--directory-prefix": "write",
+        "--header": "skip",
+    },
     "zip": {"-x": "skip", "-i": "skip"},
     # `unzip ... archive ... [-d exdir]` (`unzip -hh`): the ARCHIVE is read and the extraction
     # target is written. Listed as all-writes, even `unzip -l /usr/share/doc/example.zip` asked,
@@ -1609,17 +1620,37 @@ def _python_module_aliases(tree) -> dict:
     never looked at.
     """
     aliases: dict = {}
+    assigned: "list[tuple[str, str]]" = []
     for node in _tree_nodes(tree):
         if isinstance(node, ast.ImportFrom):
             for entry in node.names:
                 if entry.asname and entry.name in _PY_MODULE_PATH_RECEIVERS:
                     aliases[entry.asname] = entry.name
             continue
+        # `stream = io` copies the module under a new name, exactly as `import io as stream` does.
+        # Resolved after the walk, since the import it refers to may come later in the source.
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id != node.value.id:
+                    assigned.append((target.id, node.value.id))
         if not isinstance(node, ast.Import):
             continue
         for entry in node.names:
             root = entry.name.split(".", 1)[0]
             aliases[entry.asname or root] = root
+    # A copy only counts when what it copies resolves to a modelled module, so `x = some_object`
+    # binds nothing. Followed to the end of its chain, and a name bound more than once is dropped.
+    bound_twice = {name for name, _ in assigned if sum(1 for n, _ in assigned if n == name) > 1}
+    for name, source in assigned:
+        if name in bound_twice or name in aliases:
+            continue
+        seen = {name}
+        while source in dict(assigned) and source not in seen and source not in aliases:
+            seen.add(source)
+            source = dict(assigned)[source]
+        root = aliases.get(source, source)
+        if root in _PY_MODULE_PATH_RECEIVERS:
+            aliases[name] = root
     return aliases
 
 

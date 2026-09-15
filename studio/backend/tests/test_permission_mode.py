@@ -3455,6 +3455,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "rg --ignore-file=/media/kuser/MEDIA_SSD/private.rules needle .",
     # `install -d DIR...` CREATES every operand, so the destination-last rule does not apply.
     "install -d /dev/shm/tool-output",
+    # `--output-dir` is where `-O` puts the download, and `-O` itself contributes no operand.
+    "curl --output-dir=/media/kuser/MEDIA_SSD/private -O https://example.com/payload",
+    "wget --directory-prefix=/media/kuser/MEDIA_SSD/private https://example.com/payload",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3543,6 +3546,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # A constructor bound by assignment, which is the same binding an import alias makes.
     "from pathlib import Path\nP = Path\nP('/media/kuser/MEDIA_SSD/private.txt').read_text()",
     "import os.path\nj = os.path.join\nopen(j('/media/kuser/MEDIA_SSD', 'x.txt')).read()",
+    # A module copied through an assignment is the same module.
+    "import io\nstream = io\nstream.open('/media/kuser/MEDIA_SSD/private.txt').read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3575,6 +3580,8 @@ _INDIRECT_BENIGN_TERMINAL = (
     "wget https://example.com/x",
     "install -d out",
     "install a.txt b.txt",
+    "curl --output-dir=out -O https://example.com/payload",
+    "wget --directory-prefix=downloads https://example.com/payload",
     "tar -cf out.tar /usr/share/doc",
     # A read-only sqlite invocation under a read-silent root. Without `-readonly` the database is a
     # write, which /usr is not silent for.
@@ -3605,6 +3612,8 @@ _INDIRECT_BENIGN_PYTHON = (
     "import json\njson.load(open('cfg.json'))",
     "from pathlib import Path as P\nP('data.csv').read_text()",
     "from pathlib import Path\nP = Path\nP('data.csv').read_text()",
+    "import io\nstream = io\nstream.open('notes.txt').read()",
+    "stream = something\nstream.open('/media/kuser/MEDIA_SSD/x')",
     "from numpy import load\nload('data.npy')",
     "from json import load\nload(open('cfg.json'))",
     "from PIL import Image as I\nI.open('local.png')",
