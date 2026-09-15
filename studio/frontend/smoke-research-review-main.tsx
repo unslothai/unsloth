@@ -72,7 +72,7 @@ function Harness() {
       <div style={{ display: "flex", height: "100vh", gap: 24 }}>
         <ThreadPrimitive.Root>
           <ThreadPrimitive.Messages
-            components={{ AssistantMessage: Message }}
+            components={{ Message }}
           />
         </ThreadPrimitive.Root>
         <div style={{ width: 420 }}>
