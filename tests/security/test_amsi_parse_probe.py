@@ -17,9 +17,12 @@ step -- on the base side, from a commit nobody reviewed for that purpose.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import subprocess
 import tempfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -232,19 +235,67 @@ def test_the_probe_reports_on_a_host_without_amsi_rather_than_crashing() -> None
         )
 
 
-def test_the_laid_out_copies_keep_the_bytes_that_ship() -> None:
+def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
     """The lane scans the bytes users get, or its verdict does not transfer to them.
 
-    install.ps1 is LF-only with no BOM. `Set-Content` rewrites every line ending to CRLF and, on
-    Windows PowerShell 5.1, prepends a BOM, so a copy written that way is a file this project never
-    serves. Writing through .NET with a BOM-less encoder is the only way to keep them equal.
+    The copies used to be reconstructed rather than copied: `git show` was captured into a
+    PowerShell variable, which decodes the blob into lines, and the write back re-encoded them. That
+    round trip converts CRLF to LF, collapses every trailing blank line into one, invents a final
+    newline where the blob had none, and cannot represent a byte that is not valid UTF-8. The
+    scanner was then judging a file this project never serves.
+
+    Driven through the workflow's own extraction snippet against a real blob built to carry all
+    three of those properties, rather than by asserting on the text of the snippet, so a future
+    rewrite is judged on the bytes it produces.
     """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
     body = WORKFLOW.read_text(encoding = "utf-8")
-    assert "UTF8Encoding($false)" in body, (
-        "the base/head copies are no longer written with a BOM-less encoder, so the scanner is being "
-        "handed bytes that differ from what ships"
+    start = body.index("$psi = New-Object System.Diagnostics.ProcessStartInfo")
+    end = body.index("$laid++", start)
+    snippet = textwrap.dedent(body[start:end])
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # CRLF, a byte that is not valid UTF-8, two trailing blank lines and no final newline: each one
+    # is separately destroyed by the text round trip.
+    blob = b"Write-Host 'one'\r\nWrite-Host 'two \xff'\r\n\r\n\r\nWrite-Host 'three'"
+    (repo / "install.ps1").write_bytes(blob)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for argv in (
+        ["git", "init", "-q"],
+        # -text so the checkout cannot be what normalises the line endings: the question here is
+        # only what the extraction does with the blob.
+        ["git", "config", "core.autocrlf", "false"],
+        ["git", "add", "install.ps1"],
+        ["git", "commit", "-qm", "b"],
+    ):
+        subprocess.run(argv, cwd = repo, check = True, env = env)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd = repo, check = True, capture_output = True, text = True
+    ).stdout.strip()
+
+    dest = tmp_path / "copy.ps1"
+    script = tmp_path / "lay.ps1"
+    script.write_text(
+        f"$sha = '{sha}'\n$f = 'install.ps1'\n$dest = '{dest.as_posix()}'\n" + snippet,
+        encoding = "utf-8",
     )
-    assert "[System.IO.File]::WriteAllText" in body
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        cwd = str(repo),
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert dest.read_bytes() == blob, (
+        "the laid-out copy is not the committed blob, so the scanner is judging bytes this project "
+        "never serves"
+    )
+
     shipped = (REPO / "install.ps1").read_bytes()
     assert b"\r\n" not in shipped, (
         "install.ps1 now contains CRLF, so the assumption this lane is built on no longer holds. "
@@ -527,3 +578,45 @@ def test_a_block_claimed_without_a_live_control_is_not_trusted(tmp_path: Path) -
     assert code == 0, text
     assert "verdict=unmeasured" in text, text
     assert "verdict=clean" not in text, text
+
+
+def test_a_parse_error_is_reported_even_when_no_control_fired_anywhere(tmp_path: Path) -> None:
+    """The per-row ordering was fixed and the global one was not, which left the same hole.
+
+    Whether a script compiles does not depend on AMSI, so the compile verdict has to be decided
+    before the gate that reports a scanner-less runner as unmeasured. With the gate first, a
+    candidate with a syntax error on a runner where no control fired at all, which is the usual
+    state of a hosted image, exited zero and said the probe had not completed.
+    """
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control=False, result=_COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control=False, result=_SYNTAX)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, f"a candidate that does not parse was filed as unmeasured\n{text}"
+    assert "verdict=broken" in text, text
+
+
+def test_cloud_readiness_requires_block_at_first_sight_to_be_on() -> None:
+    """Reachable is not the same as acting, and the message claimed the second.
+
+    With `DisableBlockAtFirstSeen` set, MAPS answers and `ValidateMapsConnection` succeeds, so the
+    gate passed and then told the reader that block-at-first-sight could act on the mark of the web.
+    Acting on a zero-prevalence file is the one behaviour this lane exists to exercise, and
+    release-desktop.yml treats the same preference as fatal for the same reason.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    start = body.index("$cloudReady = $false")
+    end = body.index("if ($cloudReady) {", start)
+    gate = body[start:end]
+    assert "DisableBlockAtFirstSeen" in gate, (
+        "the cloud-readiness gate checks only MAPS reporting and connectivity, so a runner with "
+        "block-at-first-sight disabled is still labelled cloud-protected"
+    )
+    assert "$cloudReady = $true" in gate
+    assert gate.index("DisableBlockAtFirstSeen") < gate.index("$cloudReady = $true"), (
+        "the preference is read after readiness is already decided"
+    )

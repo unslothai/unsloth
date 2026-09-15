@@ -95,18 +95,36 @@ jobs:
               $dest = Join-Path (Join-Path $root $side) $leaf
               # git show, not a second checkout: it costs nothing and cannot leave the working tree
               # in a state the next step misreads.
-              $content = (git show "${sha}:${f}" 2>$null)
-              if ($LASTEXITCODE -ne 0 -or $null -eq $content) {
+              git cat-file -e "${sha}:${f}" 2>$null
+              if ($LASTEXITCODE -ne 0) {
                 Write-Host "::notice::$f does not exist at $($sha.Substring(0,8)) ($side); skipping it on that side"
                 continue
               }
-              # Written through .NET rather than Set-Content, and this is not fussiness. The point of
-              # the lane is to scan the bytes that ship, and install.ps1 is LF-only with no BOM.
-              # Set-Content would rewrite every line ending to CRLF and, on Windows PowerShell 5.1,
-              # prepend a BOM -- so the scanner would be given a file this project never serves, and
-              # a verdict on it would not transfer to the one users get.
-              $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-              [System.IO.File]::WriteAllText($dest, (($content -join "`n") + "`n"), $utf8NoBom)
+              # The blob is copied as a byte stream, never captured as PowerShell text, and that is
+              # the whole point of the lane rather than fussiness: it scans the bytes that ship.
+              # Capturing `git show` into a variable decodes the output into lines and the write
+              # back re-encodes them, which silently converts CRLF to LF, drops every trailing blank
+              # line but one, adds a final newline where there was none, and mangles anything that
+              # is not valid UTF-8. The scanner would then be judging a file this project never
+              # serves, and a clean verdict on it would not transfer to the one users get.
+              $psi = New-Object System.Diagnostics.ProcessStartInfo
+              $psi.FileName = 'git'
+              $psi.ArgumentList.Add('show')
+              $psi.ArgumentList.Add("${sha}:${f}")
+              $psi.RedirectStandardOutput = $true
+              $psi.UseShellExecute = $false
+              $proc = [System.Diagnostics.Process]::Start($psi)
+              $out = [System.IO.File]::Create($dest)
+              try {
+                $proc.StandardOutput.BaseStream.CopyTo($out)
+              } finally {
+                $out.Dispose()
+                $proc.WaitForExit()
+              }
+              if ($proc.ExitCode -ne 0) {
+                Write-Host "::error::could not read $f at $($sha.Substring(0,8)) ($side)"
+                exit 1
+              }
               $laid++
             }
           }
@@ -214,6 +232,19 @@ jobs:
           }
 
           Write-Host ''
+          # Ahead of the control gate below, for the same reason the per-row loop classifies parse
+          # errors before it: whether a script compiles is a property of the script. With this after
+          # the gate, a candidate with a syntax error on a runner where no control fired anywhere
+          # was filed as "not measured" and the job exited zero, which is the case this verdict
+          # exists for.
+          $headDidNotCompile = @($didNotCompile | Where-Object { $_ -like 'head/*' })
+          if ($headDidNotCompile.Count) {
+            foreach ($c in $headDidNotCompile) { Write-Host "::error::the candidate did not compile: $c" }
+            Write-Host '::error::A shipped script that does not parse is a defect in its own right, and it also means AMSI never got to judge it. Not clean, and not merely unmeasured.'
+            "verdict=broken" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 1
+          }
+
           $controlFired = @($rows | Where-Object { $_.controlFired }).Count -gt 0
           if (-not $controlFired) {
             # Never clean. On this runner Defender is in passive mode with both drive roots excluded,
@@ -227,14 +258,6 @@ jobs:
           }
 
           Write-Host 'control: the AMSI test sample was refused, so a provider is live and this process can answer.'
-
-          $headDidNotCompile = @($didNotCompile | Where-Object { $_ -like 'head/*' })
-          if ($headDidNotCompile.Count) {
-            foreach ($c in $headDidNotCompile) { Write-Host "::error::the candidate did not compile: $c" }
-            Write-Host '::error::A shipped script that does not parse is a defect in its own right, and it also means AMSI never got to judge it. Not clean, and not merely unmeasured.'
-            "verdict=broken" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            exit 1
-          }
 
           $headUnmeasured = @($unmeasured | Where-Object { $_ -like 'head/*' })
           $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
@@ -354,6 +377,12 @@ jobs:
             $pref = Get-MpPreference -ErrorAction Stop
             if ([int]$pref.MAPSReporting -eq 0) {
               $cloudNote = 'MAPSReporting is Disabled'
+            } elseif ($pref.DisableBlockAtFirstSeen) {
+              # Reachability is not the whole gate. With this preference set, MAPS answers and the
+              # cloud is queryable, but block-at-first-sight does not act -- and acting on a
+              # zero-prevalence file is the exact behaviour this lane claims below. release-desktop.yml
+              # treats the same value as fatal for the same reason.
+              $cloudNote = 'DisableBlockAtFirstSeen=true, so the cloud is reachable but does not act on first sight'
             } else {
               $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
               if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'fail') {
