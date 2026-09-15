@@ -1182,11 +1182,8 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
 def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
     monkeypatch, tmp_path
 ):
-    """A Windows driver that wrote no AdapterFamily leaves the name as the only arch source.
-
-    Dropping a card the installers do ship a wheel for also drops it from Settings > System,
-    so the panel reads "No visible GPU" beside a card the OS lists (#10468). The name table
-    decides both, so a gap in it costs the message as well as the wheel.
+    """With no AdapterFamily from the driver, the name is the only arch source, and a
+    gap in the name table costs both the wheel and the "No visible GPU" panel (#10468).
     """
     _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)

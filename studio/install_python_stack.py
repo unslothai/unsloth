@@ -1922,9 +1922,8 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
     # RDNA 3 iGPU (Phoenix / Hawk Point)
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    # RDNA 2 refresh parts carry their own number, so 6950 XT / 6850M XT / 6550M matched nothing
-    # and took CPU torch where the name is the only arch source (#10468). 6850M XT is Navi 22,
-    # filed here as 6750 / 6700 already are: every RDNA 2 row resolves to gfx103X-all.
+    # RDNA 2 refresh numbers (6950 / 6850M / 6550M) matched nothing and took CPU torch (#10468).
+    # 6850M XT is Navi 22, filed here like 6750 / 6700: every RDNA 2 row resolves to gfx103X-all.
     (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
     (

@@ -71,7 +71,7 @@ $otherNames = @(
     @{ N = "AMD Radeon RX 6900 XT";        A = "gfx1030" },
     @{ N = "AMD Radeon RX 6600 XT";        A = "gfx1032" },
     @{ N = "AMD Radeon RX 6500 XT";        A = "gfx1034" },
-    # RDNA 2 refresh parts: their own number, so the arms above never covered them (#10468).
+    # RDNA 2 refresh numbers, not covered by the arms above (#10468).
     @{ N = "AMD Radeon RX 6950 XT";        A = "gfx1030" },
     @{ N = "AMD Radeon RX 6850M XT";       A = "gfx1030" },
     @{ N = "AMD Radeon RX 6550M";          A = "gfx1034" },
