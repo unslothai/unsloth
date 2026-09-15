@@ -690,8 +690,6 @@ _PATH_READ_COMMANDS = frozenset(
         "fd",
         "readlink",
         "realpath",
-        "basename",
-        "dirname",
         "awk",
         "gawk",
         "mawk",
@@ -2460,6 +2458,54 @@ def _python_qualified_read_aliases(tree) -> "set[str]":
     return aliases
 
 
+# Method names that mean a filesystem operation on a path OBJECT and something else entirely on any
+# other receiver: `text.replace(a, b)` and `items.remove(x)` touch no file. The qualified forms
+# (`os.replace`, `os.remove`) are unambiguous and are handled by the module receiver instead.
+_PY_AMBIGUOUS_PATH_METHODS = frozenset({"replace", "remove"})
+
+
+def _receiver_is_a_path_object(receiver, ctors, path_objects) -> bool:
+    """True when the receiver of an ambiguous method is a `Path`-like value.
+
+    A direct `Path(p).replace(q)`, a name bound to one, or a chain off either. Anything else -- a
+    str, a list, a DataFrame -- is left alone, which is what the pre-existing analyzer did by
+    keeping these names qualified.
+    """
+    while isinstance(receiver, ast.Attribute):
+        receiver = receiver.value
+    if isinstance(receiver, ast.Call):
+        func = receiver.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        return name in ctors
+    if isinstance(receiver, ast.Name):
+        return receiver.id in path_objects
+    return False
+
+
+def _python_path_object_names(tree, ctors) -> "set[str]":
+    """Local names bound to a `Path`-like object, by assignment or by `with ... as`."""
+    names: "set[str]" = set()
+
+    def bind(target, value) -> None:
+        if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+            return
+        func = value.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name in ctors:
+            names.add(target.id)
+
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bind(target, node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            bind(node.target, node.value)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                bind(item.optional_vars, item.context_expr)
+    return names
+
+
 def _python_path_fold_aliases(tree) -> "tuple[set, set]":
     """`(path constructor names, os.path.join names)`, including the local names imports bind them to.
 
@@ -2771,6 +2817,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     # function aliases count here exactly as the module ones do.
     archive_aliases = {**module_aliases, **function_aliases}
     archive_ctors = _python_archive_ctor_names(tree)
+    path_objects = _python_path_object_names(tree, ctors)
     archive_objects = _python_archive_object_names(tree, archive_aliases, archive_ctors)
     containers = _python_literal_containers(tree)
     fileinput_readers = _python_fileinput_readers(tree)
@@ -2936,6 +2983,16 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # A child process is not bound by this scan at all, so its argv is screened as a command line: that way
             # `subprocess.run(["cp", "x", "/etc/y"])` is seen as the WRITE it is, not as two reads.
             add_subprocess_operands(node)
+        elif (
+            name in _PY_AMBIGUOUS_PATH_METHODS
+            and is_method
+            and not module_receiver
+            and not _receiver_is_a_path_object(func.value, ctors, path_objects)
+        ):
+            # `text.replace(a, b)` and `items.remove(x)` transform data in memory. Only a Path-like
+            # receiver makes these the filesystem calls of the same name; `os.replace` / `os.remove`
+            # arrive with a module receiver and are dispatched below as before.
+            continue
         elif name in _PY_PATH_DEST_SECOND_CALLS:
             # shutil.copy(src, dst) as a function; as a METHOD (Path(p).rename(q)) the receiver is the source.
             # `os.rename(...)` is spelled as an attribute but is the FUNCTION form, so its receiver is

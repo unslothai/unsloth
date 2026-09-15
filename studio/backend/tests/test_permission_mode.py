@@ -3550,6 +3550,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # `pandas.read_excel(io = ...)` is the documented name of its first parameter.
     f"import pandas as pd\nprint(pd.read_excel(io = {_OUTSIDE_FILE!r}))",
+    # The same names on a Path-like receiver, and their qualified forms, are the filesystem calls.
+    f"import os\nos.replace({_OUTSIDE_FILE!r}, 'b')",
+    f"import os\nos.remove({_OUTSIDE_FILE!r})",
+    f"from pathlib import Path\np = Path('x')\np.replace({_OUTSIDE_FILE!r})",
     # `io.open_code` opens its argument in binary mode, which is a read of that path.
     f"import io\nprint(io.open_code({_OUTSIDE_FILE!r}).read())",
     # `ZipFile.write` / `TarFile.add` name a SOURCE on disk and copy it into the archive.
@@ -3735,6 +3739,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 _INDIRECT_BENIGN_TERMINAL = (
     "env - FOO=bar cat notes.txt",
     "pr <(cat notes.txt)",
+    # `basename` / `dirname` print components of a NAME; they open nothing.
+    "basename /media/alice/private.txt",
+    "dirname /media/alice/private.txt",
     "zcat archive.gz",
     "cat <(cat $(echo notes.txt))",
     "diff <(sort a) <(sort b)",
@@ -3830,6 +3837,10 @@ _INDIRECT_BENIGN_PYTHON = (
     "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
     "import io\nprint(io.open_code('local.py').read())",
     "import pandas as pd\nprint(pd.read_excel(io = 'book.xlsx'))",
+    # `replace` and `remove` on a str, a list or a DataFrame touch no file.
+    "text = 'a'\nprint(text.replace('/media/alice', 'x'))",
+    "import pandas as pd\ndf = pd.DataFrame()\ndf.replace('/media/alice', 'x')",
+    "items = ['/media/alice']\nitems.remove('/media/alice')",
     # A gzip/bz2/lzma object takes DATA, exactly like an ordinary file handle.
     "import gzip\nf = gzip.GzipFile('out.gz', 'w')\nf.write(b'/home/alice/x')",
     "import shutil\nshutil.unpack_archive('local.zip', 'build')",
