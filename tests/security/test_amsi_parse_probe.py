@@ -696,19 +696,34 @@ def test_the_defender_control_is_scanned_the_way_the_candidates_are() -> None:
         )
 
 
-def test_the_laid_out_copies_are_exempt_from_on_access_scanning() -> None:
-    """On-access quarantine turns a detection into a missing file, which this lane exits zero for.
+def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
+    """Excluding the directory only before the SCAN leaves both earlier steps exposed.
 
     Real-time protection acts on open and on write, and `-DisableRemediation` governs only the
-    explicit scan, so a live provider can take a copy away while it is being stamped or opened.
-    release-desktop.yml adds filesystem exclusions for exactly this reason and notes that the
-    verdict is unaffected, because the explicit scan ignores exclusions anyway.
+    explicit MpCmdRun scan, so a live provider can take a copy away while the layout step writes it
+    or while the AMSI step reads it. The later `Get-ChildItem` loops then simply do not see that
+    file, and another valid row can carry both halves to a clean verdict. release-desktop.yml
+    establishes its exclusions before copying its inputs for exactly this reason.
     """
-    body = WORKFLOW.read_text(encoding = "utf-8")
-    start = body.index("Add-MpPreference -ExclusionPath")
-    assert start < body.index(
-        "$controlOut = (& $mp -Scan"
-    ), "the exclusion is added after the control has already been scanned"
-    assert (
-        "$env:ROOT" in body[start : start + 120]
-    ), "the exclusion does not cover the directory the base and head copies were laid out in"
+    import yaml as _yaml
+
+    workflow = _yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    steps = workflow["jobs"]["measure"]["steps"]
+    names = [str(s.get("name", "")) for s in steps]
+    runs = [str(s.get("run", "")) for s in steps]
+
+    exclude_at = next(
+        (i for i, r in enumerate(runs) if "Add-MpPreference -ExclusionPath" in r), None
+    )
+    assert exclude_at is not None, "nothing exempts the comparison directory any more"
+    layout_at = next(i for i, n in enumerate(names) if "Lay out both sides" in n)
+    amsi_at = next(i for i, n in enumerate(names) if "Ask AMSI" in n)
+    assert exclude_at < layout_at, (
+        "the exclusion is added after the copies are written, so real-time protection can "
+        "quarantine one before it is ever measured"
+    )
+    assert exclude_at < amsi_at, "the exclusion is added after the copies are opened"
+    # A non-terminating Add-MpPreference that was refused looks identical to one that worked.
+    assert "Get-MpPreference" in runs[exclude_at], (
+        "the exclusion is never read back, so a refusal is silent"
+    )

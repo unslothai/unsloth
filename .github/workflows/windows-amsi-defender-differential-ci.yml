@@ -63,6 +63,33 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Exempt the comparison directory from on-access scanning
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # BEFORE anything is written there, not before the scan. Real-time protection acts on
+          # open and on write, and -DisableRemediation governs only the explicit MpCmdRun scan, so
+          # a live provider could take a copy away while the layout step writes it or while the
+          # AMSI step reads it. The later Get-ChildItem loops would then simply not see that file,
+          # and another valid row could carry both halves to a clean verdict.
+          # release-desktop.yml:1437-1444 establishes its exclusions before copying for the same
+          # reason, and records that the verdict is unaffected because the explicit scan ignores
+          # file exclusions.
+          $root = Join-Path $env:RUNNER_TEMP 'sides'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Add-MpPreference -ExclusionPath $root -ErrorAction Continue
+
+          # Verified, not assumed: Add-MpPreference is non-terminating here and a hosted image or
+          # tamper protection can refuse it without saying so. A refusal is not fatal -- the lane
+          # still measures, it just loses this protection -- but it has to be visible, because the
+          # symptom of losing it is a file quietly missing from the results.
+          $pref = Get-MpPreference -ErrorAction SilentlyContinue
+          if ($pref -and @($pref.ExclusionPath) -contains $root) {
+            Write-Host "on-access exclusion in place for $root"
+          } else {
+            Write-Host "::warning::could not exempt $root from on-access scanning. If real-time protection is live, a flagged copy can be quarantined before it is scanned and would then be reported as missing rather than as a detection."
+          }
+
       - name: Lay out both sides of the comparison
         id: sides
         shell: pwsh
@@ -354,17 +381,6 @@ jobs:
           if (-not (Test-Path -LiteralPath $mp)) {
             Write-Host "::warning::MpCmdRun.exe is absent; the file-scan half could not run. This is a missing scanner, not a clean verdict."
             exit 0
-          }
-
-          # Real-time protection acts on open and on write, and -DisableRemediation governs only the
-          # explicit scan, so a live provider can quarantine a laid-out copy while it is being
-          # stamped or opened and turn a detection into a missing file, which this non-required lane
-          # then exits zero for. Exempt the directory holding the copies, exactly as
-          # release-desktop.yml:1437-1444 does, and for the same stated reason: the verdict is
-          # unaffected because -DisableRemediation ignores file exclusions. -ErrorAction Continue
-          # because a hosted runner may refuse the change, and that is not a reason to stop.
-          if ($env:ROOT) {
-            Add-MpPreference -ExclusionPath $env:ROOT -ErrorAction Continue
           }
 
           # The control first, and everything after it is conditional on it. Assembled from three
