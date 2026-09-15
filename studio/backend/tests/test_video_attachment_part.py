@@ -219,8 +219,13 @@ def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_genera
     block = "\n".join(line.split("#")[0] for line in block.splitlines())
     escape = next(line for line in block.splitlines() if "not _sf_tools_on" in line)
     assert "_video_clip is not None" in escape, escape
-    assert re.search(r"\bimage\b|\b_sf_has_image\b", escape), escape
     assert "and not _sf_use_tools" in escape, escape
+    # The image half has to be read POSITIVELY. Matching the identifier alone accepts
+    # `image is None` and `not _sf_has_image`, which invert the condition and route an
+    # image request the wrong way -- the literal this replaces would have caught that, so
+    # this has to as well. Both spellings are in the mutation matrix.
+    assert re.search(r"\bimage is not None\b|\b_sf_has_image\b", escape), escape
+    assert not re.search(r"\bimage is None\b|\bnot\s+_sf_has_image\b", escape), escape
     # Settled at the gate: a model without audio input never enters the audio-input path.
     conflict = source.index("if payload.audio_base64:", gate)
     assert conflict < speech
