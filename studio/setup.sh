@@ -3242,11 +3242,12 @@ _has_local_llama_server() {
 
 # The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
 # `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
-# Whether the install marker's $2 names the pinned ref $3: exact, or the installer's own alias
-# and commit-prefix matching (a short commit pin matches the recorded full one).
+# Whether the install marker's $2 names the pinned ref $3: exact, or ($4 = refs) the installer's
+# own alias and commit-prefix matching (a short commit pin matches the recorded full one). A
+# published release tag is a name, not a ref, so it compares exactly.
 _installed_prebuilt_ref_matches() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
-    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" <<'PY' 2>/dev/null
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" "${4:-exact}" <<'PY' 2>/dev/null
 import importlib.util
 import json
 import sys
@@ -3261,7 +3262,8 @@ except Exception:
     marker = {}
 value = marker.get(sys.argv[3]) if isinstance(marker, dict) else None
 value = value.strip() if isinstance(value, str) else ""
-sys.exit(0 if value and (value == sys.argv[4] or installer.refs_match(value, sys.argv[4])) else 1)
+same = value == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(value, sys.argv[4]))
+sys.exit(0 if value and same else 1)
 PY
 }
 
@@ -3334,7 +3336,7 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     fi
     case "${UNSLOTH_LLAMA_TAG:-}" in
         ""|latest|master) ;;
-        *) _installed_prebuilt_ref_matches "$install_dir" tag "$UNSLOTH_LLAMA_TAG" || return 1 ;;
+        *) _installed_prebuilt_ref_matches "$install_dir" tag "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
     esac
     _has_local_llama_server "$install_dir" || return 1
     backend="$(_installed_prebuilt_backend "$install_dir")"

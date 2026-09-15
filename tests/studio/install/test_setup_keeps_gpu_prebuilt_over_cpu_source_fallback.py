@@ -186,6 +186,14 @@ class TestTheKeepDecision:
             _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b8509-mix", **nvidia)
             == "REPLACE"
         )
+        # A published release tag is a name: a hex-looking prefix of the recorded one is not it.
+        install_dir = _install(
+            tmp_path, {"backend": "cuda", "release_tag": "0123456789abcdef0123456789abcdef01234567"}
+        )
+        assert (
+            _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "0123456789ab", **nvidia)
+            == "REPLACE"
+        )
 
     def test_a_cpu_prebuilt_is_not_worth_keeping(self, tmp_path):
         install_dir = _install(tmp_path, {"backend": "cpu"})

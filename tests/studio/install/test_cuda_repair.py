@@ -761,6 +761,11 @@ class TestACpuWheelTheInstallRecordedAsCudaIsRepaired:
             assert mock_pip.call_count == 1, (recorded, pinned)
             assert "cu130" in _index_url(mock_pip)
 
+    def test_a_driver_that_runs_no_cuda_wheel_keeps_its_cpu_wheel(self):
+        # CUDA 10.2: the index selector answers cpu, so the CPU wheel is what this host gets.
+        with patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cu128"):
+            _run_cuda_repair(torch_state = "cpu", cuda_version = "10.2").assert_not_called()
+
     def test_a_named_cpu_choice_or_an_explicit_cpu_pin_is_respected(self):
         with (
             patch.object(stack_mod, "_RECORDED_TORCH_TAG", "cpu"),

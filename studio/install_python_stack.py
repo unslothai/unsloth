@@ -3931,10 +3931,14 @@ def _ensure_cuda_torch() -> None:
             f"torch is {_family} but this host has GPUs outside its "
             f"sm_{_span[0]}-{_span[1]} range"
         )
-    elif _marker == "cpu" and not _deliberate_cpu_torch():
-        # A CPU wheel nobody asked for on an NVIDIA host: a dependency step resolved torch
-        # from PyPI, or the GPU was not detected at install time. The Windows flavour
-        # invariant catches this; Linux only recorded the expectation.
+    elif (
+        _marker == "cpu"
+        and not _deliberate_cpu_torch()
+        and _is_cuda_family_leaf(_torch_index_leaf(_detect_cuda_torch_index_url()))
+    ):
+        # A CPU wheel nobody asked for on an NVIDIA host whose driver runs a CUDA wheel: a
+        # dependency step resolved torch from PyPI, or the GPU was not detected at install
+        # time. The Windows flavour invariant catches this; Linux only recorded it.
         _recorded = _RECORDED_TORCH_TAG or ""
         _why = "torch is a CPU build on an NVIDIA host" + (
             f" although this install recorded {_recorded}"
