@@ -124,6 +124,8 @@ export interface ValidateModelResponse {
   valid: boolean;
   message: string;
   identifier?: string | null;
+  /** Decided from the files, so an Ollama tag answers for whichever spelling loaded it. */
+  resident?: boolean;
   display_name?: string | null;
   is_gguf?: boolean;
   is_diffusion?: boolean;
@@ -159,6 +161,9 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** The only missing artifact when the main GGUF is already cached. */
+  pending_drafter_filename?: string | null;
+  pending_drafter_size_bytes?: number;
   shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
@@ -175,6 +180,8 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
+  /** True only when Hub metadata resolved every required companion. */
+  dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
 }

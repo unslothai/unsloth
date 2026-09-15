@@ -2169,6 +2169,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
@@ -2265,8 +2266,7 @@ def detect_mtp_file(
             except OSError:
                 continue
             for f in entries:
-                name = f.name.lower()
-                if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                if not is_published_drafter_filename(f.name, kind = "mtp", allow_legacy_suffix = False):
                     continue
                 if not _matches_weight(f):
                     continue
@@ -2306,13 +2306,7 @@ def detect_mtp_file(
                 # _is_mtp_drafter accepts everything under MTP/ by design (it excludes them from variant
                 # menus). Too broad to include here: a weight copy would launch as --model-draft. Require
                 # a published drafter name: mtp-<model> or <model>-MTP.
-                lower = f.name.lower()
-                if not lower.endswith(".gguf"):
-                    continue
-                # Drop the shard suffix first: an old-scheme split copy is named
-                # <model>-Q8_0-MTP-00001-of-00002.gguf, whose stem does not end in -mtp.
-                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
-                if not (lower.startswith("mtp-") or stem.endswith("-mtp")):
+                if not is_published_drafter_filename(f.name, kind = "mtp"):
                     continue
                 if not _matches_weight(f):
                     continue

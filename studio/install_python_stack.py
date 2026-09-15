@@ -40,6 +40,17 @@ for _dir in (_BACKEND_DIR, _STUDIO_DIR):
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
 
+try:
+    import nvidia_probe as _nvidia_probe  # noqa: E402
+except Exception:  # an older checkout beside a newer setup script
+    _nvidia_probe = None
+
+
+def _nvidia_library_inventory():
+    """The NVML / CUDA driver inventory, or None. A seam, so tests can hide the real host."""
+    return _nvidia_probe.probe() if _nvidia_probe is not None else None
+
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -1911,9 +1922,14 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),  # Navi 33
     # RDNA 3 iGPU (Phoenix / Hawk Point)
     (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
-    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
+    # RDNA 2 refresh numbers (6950 / 6850M / 6550M) matched nothing and took CPU torch (#10468).
+    # 6850M XT is Navi 22, filed here like 6750 / 6700: every RDNA 2 row resolves to gfx103X-all.
+    (r"RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),  # Navi 21
     (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),  # Navi 23
-    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),  # Navi 24
+    (
+        r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
+        "gfx1034",
+    ),  # Navi 24
 ]
 
 
@@ -2533,7 +2549,18 @@ def _has_usable_nvidia_gpu() -> bool:
                 return True
         except OSError:
             pass
-    return False
+    # Last: the driver's own libraries, which ship without the nvidia-smi utility.
+    inventory = _nvidia_library_inventory()
+    if inventory is None or not inventory.devices:
+        return False
+    if inventory.source != "nvml" or cvd is None:
+        return True  # the CUDA driver rows already honour the mask
+    # NVML rows are physical: an explicit index or GPU- UUID mask must name one of them.
+    # A mask they cannot name (a MIG UUID) is left usable, as the probes above leave it.
+    tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+    if not all(t.isdigit() or t.startswith("gpu-") for t in tokens):
+        return True
+    return any(row["index"] in tokens or row["uuid"].lower() in tokens for row in inventory.devices)
 
 
 # Which probe answered the last _detect_amd_gfx_codes() call: only rocminfo is subject
@@ -2719,6 +2746,11 @@ _GENERIC_WHEEL_GFX_MIN_ROCM: "dict[str, tuple[int, int]]" = {
     "gfx950": (7, 0),
     "gfx1150": (7, 0),
     "gfx1151": (7, 0),
+    # gfx1102 (Navi 33 / RX 7600): rocm6.3 is the first family whose rocBLAS / hipBLASLt
+    # Tensile libraries carry it (rocm6.0-6.2 stop at gfx1030/gfx1100/gfx1101). Without an
+    # entry here the tag check reads "support unknown" and leaves an RX 7600 on a wheel that
+    # has no kernels for it.
+    "gfx1102": (6, 3),
     "gfx1200": (6, 4),
     "gfx1201": (6, 4),
 }
@@ -3452,21 +3484,27 @@ def _span_covers(span: "tuple[int, int]", sms: "list[int]") -> bool:
     return all(span[0] <= sm <= span[1] for sm in sms)
 
 
-def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
+def _cap_cuda_family_for_pre_turing(
+    family: str,
+    exe: "str | None",
+    sms: "list[int] | None" = None,
+) -> str:
     """Use cu126 when it covers every physical GPU missed by the selected family.
 
     CUDA_VISIBLE_DEVICES is intentionally ignored. Non-x86_64 hosts retain the
-    driver-derived family because their wheel matrices differ.
+    driver-derived family because their wheel matrices differ. `sms` is the inventory
+    already in hand (the library probe); otherwise it is read from `exe`.
     """
     if platform.machine().lower() not in ("x86_64", "amd64"):
         return family
     span = _cuda_family_sm_range(family)
-    if span is None or exe is None:
+    if span is None or (exe is None and sms is None):
         return family
     if span[0] <= _CU126_SM_RANGE[0]:
         return family  # nothing lower to fall back to
     floor = span[0]
-    sms = _nvidia_compute_sms(exe)
+    if sms is None:
+        sms = _nvidia_compute_sms(exe)
     if not sms or all(sm >= floor for sm in sms):
         return family  # no GPU here sits under the family's floor
     if not _span_covers(_CU126_SM_RANGE, sms):
@@ -3482,6 +3520,21 @@ def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
         f"PyTorch 2.11's {family} wheels ship no kernels for them"
     )
     return "cu126"
+
+
+def _torch_family_for_cuda_version(major: int, minor: int) -> str:
+    """install.sh::get_torch_index_url's CUDA ladder, from the driver's CUDA version."""
+    if major >= 13:
+        return "cu130"
+    if major == 12 and minor >= 8:
+        return "cu128"
+    if major == 12 and minor >= 6:
+        return "cu126"
+    if major >= 12:
+        return "cu124"
+    if major >= 11:
+        return "cu118"
+    return "cpu"  # ancient driver: no usable CUDA wheels
 
 
 def _detect_cuda_torch_index_url() -> str:
@@ -3531,20 +3584,23 @@ def _detect_cuda_torch_index_url() -> str:
         m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
         if m is None:
             continue
-        major, minor = int(m.group(1)), int(m.group(2))
-        if major >= 13:
-            tag = "cu130"
-        elif major == 12 and minor >= 8:
-            tag = "cu128"
-        elif major == 12 and minor >= 6:
-            tag = "cu126"
-        elif major >= 12:
-            tag = "cu124"
-        elif major >= 11:
-            tag = "cu118"
-        else:
-            tag = "cpu"  # ancient driver: no usable CUDA wheels
+        tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
+    # No nvidia-smi: the driver libraries carry the same version and the SMs the pre-Turing
+    # cap needs. Defaulting to cu126 gave Blackwell a kernel-less wheel; without SMs the
+    # default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
+    inventory = _nvidia_library_inventory()
+    if inventory is not None and inventory.cuda_driver_version:
+        sms = []
+        for row in inventory.devices:
+            m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
+            if m is None:
+                sms = []
+                break
+            sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+        if sms:
+            family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
+            return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
