@@ -1892,3 +1892,38 @@ test("a remembered manual split the resident load does not run is still a reload
     false,
   );
 });
+
+
+test("inherited reasoning defaults do not reload an unchanged resident", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    reasoning_budget_message: "Conclude now.",
+    requested_reasoning_budget: -1,
+    requested_reasoning_budget_message: "",
+  }, BLANK), true);
+});
+
+test("pinning the effective reasoning value changes the resident request", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    requested_reasoning_budget: -1,
+  }, { ...BLANK, reasoningBudget: 32 }), false);
+  assert.equal(matches({
+    reasoning_budget_message: "Conclude now.",
+    requested_reasoning_budget_message: "",
+  }, { ...BLANK, reasoningBudgetMessage: "Conclude now." }), false);
+});
+
+test("an explicit zero reasoning request can reuse the resident", () => {
+  assert.equal(matches({
+    reasoning_budget: 0,
+    requested_reasoning_budget: 0,
+  }, { ...BLANK, reasoningBudget: 0 }), true);
+});
+
+test("legacy status without reasoning request echoes keeps its comparison", () => {
+  assert.equal(matches({
+    reasoning_budget: 32,
+    reasoning_budget_message: "Conclude now.",
+  }, { ...BLANK, reasoningBudget: 32, reasoningBudgetMessage: "Conclude now." }), true);
+});
