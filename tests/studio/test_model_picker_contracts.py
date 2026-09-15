@@ -3912,30 +3912,34 @@ def test_a_download_only_pick_does_not_strand_a_staged_load():
     mode = re.search(r'const (\w+) = modelSelectionAction === "download";', pick)
     assert mode, "handleModelSelect does not read the selection mode before branching"
     flag = mode.group(1)
-    assert pick.index(mode.group(0)) < pick.index("beginPick();"), (
-        "the mode is read after the staged intent has already been retired"
-    )
-    assert f"if (!{flag}) beginPick();" in pick, "a download-only pick still retires the staged load"
-    assert re.search(rf"const token = {flag} \? undefined : pickGuard\.claim\(\);", pick), (
-        "a download-only pick still claims the page, which makes the staged load's token stale"
-    )
+    assert pick.index(mode.group(0)) < pick.index(
+        "beginPick();"
+    ), "the mode is read after the staged intent has already been retired"
+    assert (
+        f"if (!{flag}) beginPick();" in pick
+    ), "a download-only pick still retires the staged load"
+    assert re.search(
+        rf"const token = {flag} \? undefined : pickGuard\.claim\(\);", pick
+    ), "a download-only pick still claims the page, which makes the staged load's token stale"
 
     repo_pick = re.search(r"const loadGgufRepoPick = useCallback\(\n(.*?)\n  \);", src, re.S)
     assert repo_pick, "loadGgufRepoPick not found"
     repo = repo_pick.group(1)
-    assert "beginPick();" not in repo, "the repo-level download-only pick still retires the staged load"
-    assert re.search(r"const token = downloadOnly \? 0 : pickGuard\.claim\(\);", repo), (
-        "the repo-level download-only pick still claims the page"
-    )
+    assert (
+        "beginPick();" not in repo
+    ), "the repo-level download-only pick still retires the staged load"
+    assert re.search(
+        r"const token = downloadOnly \? 0 : pickGuard\.claim\(\);", repo
+    ), "the repo-level download-only pick still claims the page"
 
     stage_fn = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
     assert stage_fn, "loadOrStage not found"
     body = stage_fn.group(1)
     clearing = re.search(r"if \(([^)]*)\) \{\n\s*pendingStagedLoad\.current = null;", body)
     assert clearing, "loadOrStage no longer has the staged-intent clearing block"
-    assert "!downloadOnly" in clearing.group(1), (
-        "loadOrStage still clears the staged load intent for a download-only pick"
-    )
+    assert "!downloadOnly" in clearing.group(
+        1
+    ), "loadOrStage still clears the staged load intent for a download-only pick"
 
 
 def test_every_optimistic_pick_hands_its_label_back_under_a_guard():
@@ -3949,16 +3953,16 @@ def test_every_optimistic_pick_hands_its_label_back_under_a_guard():
     rollbacks = re.findall(r"if \(!started(.*?)\) \{\n\s*revertPick\(", pick, re.S)
     assert rollbacks, "no optimistic rollback found; this guard has gone stale"
     for tail in rollbacks:
-        assert "stillOwnsPick()" in tail, (
-            "an optimistic pick reverts its label without checking it still owns the page"
-        )
+        assert (
+            "stillOwnsPick()" in tail
+        ), "an optimistic pick reverts its label without checking it still owns the page"
 
 
 def test_a_repeated_download_only_pick_queues_one_download():
     """Two picks of the same model planned the same files twice and downloaded every byte twice;
     the second start could also come back "busy" against the first and be dropped silently."""
     src = " ".join(_read("features/images/images-page.tsx").split())
-    assert "if (queuedDownloadKeys().has(planKey(entries))) return true;" in src, (
-        "download-only plans are queued without checking what is already queued"
-    )
+    assert (
+        "if (queuedDownloadKeys().has(planKey(entries))) return true;" in src
+    ), "download-only plans are queued without checking what is already queued"
     assert "function planKey(entries: StagedDownloadEntry[])" in src
