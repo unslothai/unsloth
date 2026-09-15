@@ -77,6 +77,9 @@ export interface PersistedChatSettings {
   autoCompactEnabled?: boolean;
   contextPolicy?: "inherit" | "checkpoint" | "rolling";
   compactionHeadroomRatio?: number;
+  /** The model's self-note across a compaction. Off by default, like the server. */
+  selfNoteEnabled?: boolean;
+  selfNoteReserveTokens?: number;
 }
 
 interface ChatSettingsResponse {

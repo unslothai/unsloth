@@ -1773,6 +1773,21 @@ class CompactionContentPart(BaseModel):
     )
 
 
+class SelfNoteContentPart(BaseModel):
+    """A note the model wrote to itself, round-tripped so it survives compaction.
+
+    Stateless by construction: the note rides on the assistant message and the client
+    re-sends it with the branch, so checkpoint compaction keeps its "NOTHING IS STORED"
+    invariant. See ``core/inference/self_note.py``.
+    """
+
+    type: Literal["self_note"]
+    content: str = Field(
+        ...,
+        description = "Model-authored note carried across a compaction boundary.",
+    )
+
+
 class InputAudio(BaseModel):
     data: str = Field(
         ..., min_length = 1, description = "Base64-encoded audio, without a data: prefix."
@@ -1802,6 +1817,7 @@ _KNOWN_CONTENT_PART_TAGS = frozenset(
         "reasoning",
         "image_generation_call",
         "compaction",
+        "self_note",
     }
 )
 
@@ -1823,6 +1839,7 @@ ContentPart = Annotated[
         Annotated[OpenAIReasoningContentPart, Tag("reasoning")],
         Annotated[ImageGenerationCallContentPart, Tag("image_generation_call")],
         Annotated[CompactionContentPart, Tag("compaction")],
+        Annotated[SelfNoteContentPart, Tag("self_note")],
         Annotated[UnknownContentPart, Tag("unknown")],
     ],
     Discriminator(_content_part_discriminator),
@@ -2245,6 +2262,24 @@ class ChatCompletionRequest(BaseModel):
             "compaction fires, so the boundary can stay put for a stretch of turns. "
             "0.25 is the process default (ROLLING_COMPACTION_HEADROOM_RATIO). Ignored "
             "for checkpoint compaction. Unset keeps the process default."
+        ),
+    )
+    self_note_enabled: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Let the model leave itself a <remember></remember> note that "
+            "survives a checkpoint compaction, carried in the <self_note> section of "
+            "the carried-forward block. Off by default; unset uses UNSLOTH_SELF_NOTE."
+        ),
+    )
+    self_note_reserve_tokens: Optional[int] = Field(
+        None,
+        ge = 64,
+        le = 4096,
+        description = (
+            "[x-unsloth] Ceiling on the note's share of the carried-forward budget. The "
+            "user's own standing instructions are served first and the note takes what "
+            "is left, capped by this. Unset uses UNSLOTH_SELF_NOTE_MAX_TOKENS (256)."
         ),
     )
     studio_tool_history: Optional[bool] = Field(

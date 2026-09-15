@@ -270,3 +270,28 @@ def test_out_of_range_seeds_are_refused(seed):
 def test_the_whole_uint32_pin_range_is_accepted(seed):
     payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": seed}})
     assert payload.model_dump(exclude_unset = True) == {"inferenceParams": {"seed": seed}}
+
+
+def test_self_note_settings_round_trip():
+    payload = ChatSettingsPayload.model_validate(
+        {"selfNoteEnabled": True, "selfNoteReserveTokens": 512}
+    )
+    assert payload.selfNoteEnabled is True
+    assert payload.selfNoteReserveTokens == 512
+
+
+def test_self_note_reserve_rejects_below_floor():
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"selfNoteReserveTokens": 8})
+
+
+def test_self_note_reserve_rejects_above_ceiling():
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"selfNoteReserveTokens": 100000})
+
+
+def test_self_note_settings_are_optional():
+    # Every existing client omits them, and an omitted field must not change a save.
+    payload = ChatSettingsPayload.model_validate({})
+    assert payload.selfNoteEnabled is None
+    assert payload.selfNoteReserveTokens is None
