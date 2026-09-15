@@ -3060,7 +3060,10 @@ def _names_the_studio_root_itself(text: str) -> bool:
     inside a project. Only a bare `<root>` (with any trailing separator) is the directory whose walk
     reaches `auth/`.
     """
-    spellings = [spelling.rstrip("/\\") for spelling in _studio_root_spellings()]
+    # Folded the SAME way as the words, or a Windows root never matches: `_folded_word` turns
+    # `c:\\users\\...` into `c:/users/...`, while a merely right-stripped spelling keeps its
+    # backslashes.
+    spellings = [_folded_word(spelling) for spelling in _studio_root_spellings()]
     if not spellings:
         return False
     return any(_folded_word(word) in spellings for word in _quoted_words(text))
@@ -3864,7 +3867,10 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # then a tree call has to appear, and only then do the real root tests run. Ordinary numeric or
     # dataframe code stops at the first one, which is two substring scans.
     if (
-        ("studio_home" in lowered or _studio_home_lowered() in lowered)
+        (
+            "studio_home" in lowered
+            or any(spelling in lowered for spelling in _studio_home_spellings_lowered())
+        )
         and _PY_TREE_CALL_RE.search(lowered)
         and (_text_names_the_studio_root(code) or _code_reads_the_studio_home(code))
     ):
@@ -4568,15 +4574,21 @@ def _code_reads_the_working_directory(code: str) -> bool:
 _studio_home_lowered_cache: "tuple | None" = None
 
 
-def _studio_home_lowered() -> str:
-    """`_studio_home_for_guard()` lowercased, memoized on the marker table it comes from.
+def _studio_home_spellings_lowered() -> "tuple[str, ...]":
+    """The root as source text can spell it, memoized on the marker table it comes from.
 
-    This is a per-call prefilter, so rebuilding the root for every python snippet showed up.
+    A per-call prefilter, so rebuilding the root for every python snippet showed up. Three forms,
+    because a Windows root reaches the text as `c:\\dir`, as `c:\\\\dir` inside a python literal and
+    as `c:/dir`; on posix all three are the same string.
     """
     global _studio_home_lowered_cache
     markers = _studio_auth_dir_markers()[0]
     if _studio_home_lowered_cache is None or _studio_home_lowered_cache[0] is not markers:
-        _studio_home_lowered_cache = (markers, (_studio_home_for_guard() or "\x00").lower())
+        root = (_studio_home_for_guard() or "\x00").lower()
+        _studio_home_lowered_cache = (
+            markers,
+            tuple({root, root.replace("\\", "\\\\"), root.replace("\\", "/")}),
+        )
     return _studio_home_lowered_cache[1]
 
 

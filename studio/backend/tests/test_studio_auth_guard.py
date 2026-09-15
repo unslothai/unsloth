@@ -2153,6 +2153,38 @@ def test_windows_spellings_of_the_root_are_read_as_paths(monkeypatch, tmp_path):
     ]
 
 
+def test_a_windows_root_is_matched_through_the_same_fold(monkeypatch):
+    # `_folded_word` turns a backslash root into forward slashes, so the spellings it is compared
+    # against have to be folded the same way. This shape only occurs on Windows, so it is driven
+    # through the spellings directly and runs on every host.
+    root = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-0\test_x0\studio-home"
+    monkeypatch.setattr(tools, "_studio_root_spellings", lambda: [root.lower()])
+    for named in (
+        f"find {root} -type f -exec cat {{}} +",
+        f'tar -czf b.tgz "{root}"',
+        f"cp -a {root}\\. ./copy",
+    ):
+        assert tools._names_the_studio_root_itself(named), named
+    for ordinary in (f"find {root}\\projects\\p -type f", "find . -type f"):
+        assert not tools._names_the_studio_root_itself(ordinary), ordinary
+
+
+def test_a_windows_root_survives_python_literal_escaping(monkeypatch):
+    # A python literal doubles the separators, so the cheap prefilter needs that spelling too.
+    root = r"C:\Users\runner\Temp\studio-home"
+    monkeypatch.setattr(tools, "_studio_home_lowered_cache", None)
+    monkeypatch.setattr(tools, "_studio_home_for_guard", lambda: root)
+    monkeypatch.setattr(
+        tools,
+        "_studio_auth_dir_markers",
+        lambda: (((root + "/auth", "", root + "/auth"),), (), None),
+    )
+    code = "import shutil\nshutil.copytree(%r, './leak')" % root
+    assert any(
+        spelling in code.lower() for spelling in tools._studio_home_spellings_lowered()
+    ), code
+
+
 def test_a_recursive_read_of_the_studio_root_is_refused(studio_home):
     home = studio_home
     # `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +` names no credential and no auth segment,
