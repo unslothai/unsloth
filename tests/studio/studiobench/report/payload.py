@@ -217,9 +217,10 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app, so it belongs beside the
-    # identity fields where a reader can see whether the order was balanced.
-    "ab_plan": "header",
+    # Bookkeeping about HOW the A/B was run, not a measurement of the app. Its OWN section: the
+    # `header` section is collapsed to its FIRST row when the payload is assembled, so an ab_plan
+    # row filed there is silently dropped while record_counts still reports two header rows.
+    "ab_plan": "ab_plan",
     # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
     # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
@@ -237,6 +238,36 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     # reader scanning FORWARD can discard the cell's window rows.
     "cell_aborted": "aborted_cells",
 }
+
+
+def merged_ab_plan(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """One plan out of however many sessions wrote one.
+
+    `--resume` appends to the same payload and emits a fresh `ab_plan` for the work THAT
+    session was asked to do, so the cells a later session added are named only in a later
+    row. Taking `[0]` would drop their order while `record_counts` still reports the plans
+    exist, which is the same silent loss that moving this row out of `header` was for, one
+    layer down.
+
+    `order` is concatenated in session order, skipping ids an earlier plan already names, so
+    a resume that re-declares a completed rung does not double it. `balanced` is ANDed: one
+    unbalanced session is an unbalanced experiment, and letting a balanced first plan speak
+    for it would hide the drift warning the run printed. Everything else comes from the first
+    plan, which is where the refs are; a resume whose refs disagree is refused upstream, so
+    there is nothing to reconcile here.
+    """
+
+    if not rows:
+        return {}
+    plan = dict(rows[0])
+    order: list[Any] = []
+    for row in rows:
+        for cell_id in row.get("order", []):
+            if cell_id not in order:
+                order.append(cell_id)
+    plan["order"] = order
+    plan["balanced"] = all(bool(row.get("balanced")) for row in rows)
+    return plan
 
 
 def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
@@ -283,6 +314,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
         "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
+        "ab_plan": merged_ab_plan(sections.get("ab_plan", [])),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,

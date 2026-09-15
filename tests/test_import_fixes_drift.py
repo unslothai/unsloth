@@ -232,6 +232,19 @@ def test_peft_transformers_weight_conversion_importable_and_signature():
     """``patch_peft_weight_converter_compatibility``: wraps build_peft_weight_mapping;
     silently no-ops if the module is unimportable."""
     pytest.importorskip("peft")
+    # peft.utils.transformers_weight_conversion arrived in PEFT 0.19.0: the file is 404 at
+    # tags v0.18.0 and v0.18.1 upstream and present from v0.19.0 (huggingface/peft
+    # 5356277d, "FIX Changes for transformers 5 weight conversion"). Both pyprojects
+    # declare peft>=0.18.0, so on 0.18.x the patch above returns early by design and
+    # there is nothing for this detector to drift from. The hard gate stays loud from
+    # 0.19.0 up, which is the whole range where the module must exist.
+    peft_version = _safe_version(importlib_version("peft"))
+    if peft_version < _PkgVersion("0.19.0"):
+        pytest.skip(
+            f"peft {peft_version} predates peft.utils.transformers_weight_conversion "
+            "(added in 0.19.0); patch_peft_weight_converter_compatibility no-ops by "
+            "design below it, so its absence is the declared floor, not drift."
+        )
     try:
         from peft.utils import transformers_weight_conversion as twc
     except Exception as exc:
