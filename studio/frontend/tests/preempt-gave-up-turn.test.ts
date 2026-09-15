@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A turn the backend gave up on can be EMPTY, and an empty turn used to render as nothing at
- * all: a chat evicted while still prefilling never produces a token, and the stream carries
- * no error. `isContinuableContent` and the bar's own `partial.trim()` check both require
- * text, which is right for every other reason a turn stops early and wrong for this one.
+ * A turn the backend gave up on can be EMPTY: a chat evicted while still prefilling never produced
+ * a token, and the row mounted with no text, no notice and no Continue. `isContinuableContent` and
+ * the bar's `partial.trim()` both require text, wrong for the one reason raised before any token.
  */
 
 import assert from "node:assert/strict";
@@ -29,9 +28,8 @@ test("the give-up signal is read off the truncation event", () => {
 });
 
 test("an ordinary fit is not a give-up", () => {
-  // The same event carries real fits, several per turn on a compacting thread, and reading
-  // one as a give-up would relabel a healthy turn as paused. Typed as the event the backend
-  // really sends rather than a two-field stand-in.
+  // The same event carries real fits, several per turn on a compacting thread. Typed as the
+  // event the backend really sends, not a two-field stand-in.
   const fit: ContextTruncation = { fits: false, dropped_messages: 4 };
   assert.equal(isPreemptGaveUp(fit), false);
   assert.equal(isPreemptGaveUp({}), false);
@@ -41,7 +39,6 @@ test("an ordinary fit is not a give-up", () => {
 
 test("only a paused turn may be continued with no text", () => {
   assert.equal(resumesWithoutText("paused"), true);
-  // Every other reason has text by construction.
   assert.equal(resumesWithoutText("length"), false);
   assert.equal(resumesWithoutText("cancelled"), false);
   assert.equal(resumesWithoutText("interrupted"), false);

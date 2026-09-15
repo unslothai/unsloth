@@ -855,6 +855,17 @@ def test_an_unusable_admission_cadence_does_not_poison_the_lease(monkeypatch, ra
     assert int(applied * 1000) == 1_200_000
 
 
+def test_the_floor_covers_two_park_probes(monkeypatch):
+    """A swap build without the stream notices is asked at most once per probe interval, so a
+    lease shorter than two of those could settle a healthy parked run between probes."""
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "1")
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "3")
+    assert runs_mod._minimum_lease_seconds() == 2.0 * runs_mod._PARK_PROBE_MIN_INTERVAL_S
+    assert runs_mod._applied_lease_timeout(3.0) == 10.0
+    # Renewed at least twice per probe interval, so one missed probe still fits the lease.
+    assert runs_mod._renew_interval_seconds() <= runs_mod._PARK_PROBE_MIN_INTERVAL_S / 2.0
+
+
 def test_a_reasonable_admission_cadence_still_raises_the_floor(monkeypatch):
     """The sanitising must not flatten legitimate values: a slower keep-alive genuinely
     does need a longer minimum lease, which is the whole point of the floor."""

@@ -5187,6 +5187,9 @@ export function createOpenAIStreamAdapter(
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      // The server re-prefilled this answer after a park it could not hold: persisted with the
+      // message, so the chip's note survives a reload and follows the thread's last answer.
+      let sawPreemptRecompute = false;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5198,6 +5201,7 @@ export function createOpenAIStreamAdapter(
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
+        preemptRecomputed: sawPreemptRecompute || undefined,
         incomplete: {
           reason: resolveIncompleteReason("cancelled" as const, contextWindowExceeded),
         },
@@ -5205,8 +5209,8 @@ export function createOpenAIStreamAdapter(
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
-      // Latched rather than read off the last chunk, because the give-up notice arrives
-      // before the terminal chunk whose `length` would otherwise be the last word.
+      // Latched here rather than read off the last chunk, because the notice arrives before
+      // the terminal chunk and that chunk's `length` would otherwise be the last word.
       let preemptGaveUp = false;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
       let requestedMaxTokens: number | undefined;
@@ -6449,15 +6453,19 @@ export function createOpenAIStreamAdapter(
                 responseModelId = chunkModel;
               }
 
-              // Queued for a slot, or paused so another chat can finish: neither is an
-              // error and neither produces a token, so without a line on screen both look
-              // like a wedged backend. Routed through setToolStatus because that setter
-              // already handles two runs sharing the unresolved "__default" thread key,
-              // where a naive clear wipes the sibling's status.
+              // Queued for a slot, or paused so another chat can finish. Neither is an error and
+              // neither produces a token, so without a line on screen both look like a wedged
+              // backend. Via setToolStatus, which handles two runs sharing the "__default" key.
               const admissionStatus = (
                 chunk as unknown as { _admissionStatus?: AdmissionStatus }
               )._admissionStatus;
               if (admissionStatus !== undefined) {
+                if (admissionStatus === "recomputed") {
+                  // Qualifies the resume before it, so the status line stays as it is.
+                  // Reaches the chip through the message metadata below, per branch.
+                  sawPreemptRecompute = true;
+                  continue;
+                }
                 runtime.setToolStatus(
                   liveThreadKey(serverCancel),
                   admissionStatusLabel(admissionStatus),
@@ -6466,7 +6474,6 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // Handle tool status events
               const toolStatusText = (
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
@@ -6999,10 +7006,8 @@ export function createOpenAIStreamAdapter(
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
                 if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
-                  // The give-up latch too, not just the reason it set: the override below
-                  // is unconditional, so a tool run that gave up, broke into the final pass
-                  // and finished normally was still stamped paused. `length` is the shape a
-                  // give-up really ends on, so it never reaches this branch.
+                  // The give-up latch too, not just the reason it set: a tool run that gave up
+                  // breaks into the final pass, which can finish, and the override is unconditional.
                   preemptGaveUp = false;
                 }
               }
@@ -7729,11 +7734,8 @@ export function createOpenAIStreamAdapter(
           incompleteReason = "length";
         }
 
-        // A turn the backend gave up on is `paused`, not `length`: it ends on `length`
-        // because that is the shape a continuation resumes from, but naming Max Tokens sends
-        // the user to a setting that was never the constraint. `paused` also refuses the
-        // AUTOMATIC continuation, which would ask for another slot in the cache that just
-        // ran out. Last, so it wins over both assignments above.
+        // A turn the backend gave up on is `paused`, not `length`: it ends on `length` because that
+        // is the shape a continuation resumes from, but `paused` also refuses the AUTOMATIC one.
         if (preemptGaveUp) {
           incompleteReason = "paused";
         }
@@ -7856,6 +7858,7 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
+              preemptRecomputed: sawPreemptRecompute || undefined,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,

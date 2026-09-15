@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   ADMISSION_COMMENT_DONE,
   ADMISSION_COMMENT_PAUSED,
+  ADMISSION_COMMENT_RECOMPUTED,
   ADMISSION_COMMENT_RESUMED,
   ADMISSION_COMMENT_WAIT,
   admissionStatusLabel,
@@ -23,6 +24,16 @@ test("the four signals are recognised", () => {
   );
 });
 
+test("a recompute is read, and says nothing about what the run is doing", () => {
+  // It qualifies the resume before it: the answer came back, it just is not the one a
+  // restore would have produced, so no status line changes.
+  assert.equal(
+    readAdmissionComment(`: ${ADMISSION_COMMENT_RECOMPUTED}`),
+    "recomputed",
+  );
+  assert.equal(admissionStatusLabel("recomputed"), null);
+});
+
 test("the space after the colon is optional", () => {
   // SSE treats `:x` and `: x` as the same comment, and an intermediary may rewrite it.
   assert.equal(readAdmissionComment(":admission-wait"), "waiting");
@@ -35,7 +46,8 @@ test("the keep-alive comment is left to its own reader", () => {
 });
 
 test("a data line is never an admission signal", () => {
-  // Told apart by the leading colon alone, so a payload spelling one is not the comment.
+  // The two are told apart by the leading colon alone, so a payload that happens to spell one
+  // must not be mistaken for the comment.
   assert.equal(readAdmissionComment("data: admission-wait"), null);
   assert.equal(readAdmissionComment(""), null);
   assert.equal(readAdmissionComment("admission-wait"), null);
@@ -57,8 +69,7 @@ test("a run that is not generating gets a line, one that is gets none", () => {
 });
 
 test("queued and paused do not share one message", () => {
-  // Queued has produced nothing; paused has visible text above it, so one line for both
-  // would put "waiting for a free slot" under a half-written answer.
+  // Queued has produced nothing; paused has visible text above it.
   assert.notEqual(
     admissionStatusLabel("waiting"),
     admissionStatusLabel("paused"),
@@ -66,7 +77,6 @@ test("queued and paused do not share one message", () => {
 });
 
 test("neither line uses failure vocabulary", () => {
-  // Neither state is an error, and the whole point of the indicator is to say so.
   for (const status of ["waiting", "paused"] as const) {
     const label = admissionStatusLabel(status) ?? "";
     assert.ok(label.length > 0);

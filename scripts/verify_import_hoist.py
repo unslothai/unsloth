@@ -268,9 +268,9 @@ class _Builder(ast.NodeVisitor):
                 self._visit_annotation(node.annotation, scope)
             for t in targets:
                 self._bind_targets(scope, t)
-                # AugAssign target is also a load
-                if isinstance(node, ast.AugAssign):
-                    self._record_loads(t, scope)
+                # The names a target LOADS: the whole of an AugAssign target, and the object
+                # and key of `obj.attr[key] = ...` on any assignment.
+                self._record_loads(t, scope)
             return
         if isinstance(node, (ast.For, ast.AsyncFor)):
             self._visit_expr(node.iter, scope)
@@ -780,6 +780,12 @@ _SELF_TESTS = {
         "def f(x) -> Literal['T']:\n"
         "    return x\n",
         "BLOCKER",
+    ),
+    # `app.overrides[key] = ...` loads `app` and `key` although the statement is a Store.
+    "a_name_loaded_inside_an_assignment_target_is_a_use": (
+        "def f(app):\n    return app\n",
+        "from auth import key\ndef f(app):\n    app.overrides[key] = 1\n    return app\n",
+        None,
     ),
     # Prose is not a type, and a parse error there is not a finding.
     "unparseable_annotation_string_is_ignored": (

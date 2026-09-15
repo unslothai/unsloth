@@ -4967,9 +4967,8 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
-    # The cap keeps the FIRST calls and drops the tail. Which of them reaches its tool
-    # first is no longer fixed, since the round runs them together, so compare the set:
-    # what the cap must never do is drop a leading call and keep a later one.
+    # The cap keeps the FIRST calls and drops the tail; which reaches its tool first is
+    # no longer fixed. What it must never do is drop a leading call and keep a later one.
     assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
 
 
@@ -5360,10 +5359,8 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         max_tool_iterations = 2,
     )
 
-    # Sorted: a round's calls now RUN together, so which thread reaches the tool first
-    # is not fixed. These tests are about argument routing -- each call keeping its own
-    # fragments instead of inheriting the other's tail -- and the order the MODEL sees is
-    # asserted directly below, on the cards and on the replayed conversation.
+    # Sorted: a round's calls now RUN together, so which thread records first is not
+    # fixed. This is argument routing; the order the model sees is asserted below.
     assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
@@ -5414,10 +5411,8 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         max_tool_iterations = 2,
     )
 
-    # Sorted: a round's calls now RUN together, so which thread reaches the tool first
-    # is not fixed. These tests are about argument routing -- each call keeping its own
-    # fragments instead of inheriting the other's tail -- and the order the MODEL sees is
-    # asserted directly below, on the cards and on the replayed conversation.
+    # Sorted: a round's calls now RUN together, so which thread records first is not
+    # fixed. This is argument routing; the order the model sees is asserted below.
     assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
@@ -6340,7 +6335,6 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
 
 
 def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
-    """The gate's promise to compact an oversized call travels with that call."""
     # Two files, so the round's keys differ and the calls overlap: edits to one file are
     # kept in order on purpose.
     first_turn = _two_edits_in_one_turn()
@@ -6374,9 +6368,8 @@ def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
     real_compact = llama_cpp_module.compact_executed_call_arguments
 
     def recording_compact(conversation, tool_call_id):
-        # The gate prices a call by compacting it too, before it runs, and a later pass
-        # may compact finished calls for reply room; the promise being kept is the
-        # compaction the settle applies the moment the tool's own result lands.
+        # The gate compacts to price a call, and a later pass compacts for reply room;
+        # the promise is the one the settle applies when the tool's own result lands.
         if sys._getframe(1).f_code.co_name == "_settle_tool_call":
             compacted.append(tool_call_id)
         return real_compact(conversation, tool_call_id)

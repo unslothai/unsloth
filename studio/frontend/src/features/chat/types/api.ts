@@ -45,6 +45,9 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /** Exact concurrency for this load (auto/off/on). Omitted, the persisted setting applies;
+   *  a rollback sends what the previous load asked for, not the setting saved since. */
+  exact_concurrency?: string | null;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
 
@@ -232,6 +235,10 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  /** What the running llama-server does about exact concurrency: "on", "off" or "unavailable". */
+  exact_concurrency?: string | null;
+  /** The exact-concurrency setting the load resolved to (auto/off/on): what was asked for. */
+  requested_exact_concurrency?: string | null;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -384,6 +391,11 @@ export interface InferenceStatusResponse {
   requested_parallel_slots?: number | null;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
+    /** What the running llama-server does about exact concurrency: "on", "off", or
+     *  "unavailable". Absent on a backend that predates the switch, which reads as "off". */
+  exact_concurrency?: string | null;
+    /** The exact-concurrency setting the load resolved to (auto/off/on). What was ASKED for. */
+  requested_exact_concurrency?: string | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
@@ -720,8 +732,8 @@ export interface OpenAIChatChunk {
     // The prompt's share of the window (context_length minus the reply reserve), which is what one turn
     // must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
-    // Why this event was sent, when it was not sent by a fit. Only "preempt_gave_up" so
-    // far, which is not a truncation and carries `fits: true` with `dropped_messages: 0`.
+    // Why this event was sent when no fit sent it. Only "preempt_gave_up" so far, which is not a
+    // truncation and carries `fits: true`. It rides this event because this event reaches everyone.
     reason?: string;
   };
 }
