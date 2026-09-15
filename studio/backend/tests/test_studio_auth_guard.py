@@ -2190,6 +2190,48 @@ def test_a_recursive_read_of_the_studio_root_is_refused(studio_home):
         ), ordinary
 
 
+def test_a_recursive_python_copy_of_the_studio_root_is_refused(studio_home):
+    # `shutil.copytree(<root>, "/tmp/leak")` carries `auth/` with it and names no credential, and
+    # the copy is then an ordinary file nothing guards.
+    for refused in (
+        'import shutil, os\nshutil.copytree(os.environ["UNSLOTH_STUDIO_HOME"], "./leak")',
+        'import shutil, os\nshutil.copytree(src = os.environ["UNSLOTH_STUDIO_HOME"], dst = "./l")',
+        'import shutil, os\nshutil.make_archive("b", "zip", os.environ["UNSLOTH_STUDIO_HOME"])',
+        f'import shutil\nshutil.copytree({str(studio_home)!r}, "./leak")',
+    ):
+        assert tools._python_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        ), refused
+    for ordinary in (
+        'import shutil\nshutil.copytree("./src", "./dst")',
+        'import shutil\nshutil.make_archive("b", "zip", "./src")',
+        f'import shutil\nshutil.copytree({str(studio_home / "projects" / "p")!r}, "./dst")',
+    ):
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        ), ordinary
+
+
+def test_a_parent_walk_from_path_home_lands_in_the_studio_root(studio_home):
+    # Both environment builders set HOME to the session workdir, so `Path.home()` is `Path.cwd()`.
+    refused = 'from pathlib import Path\nprint(open(Path.home().parents[1] / "auth" / "auth.db", "rb").read())'
+    assert tools._python_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
+        tools._STUDIO_CREDENTIAL_BLOCKED
+    )
+    ordinary = 'from pathlib import Path\nprint(open(Path.home() / "notes.txt").read())'
+    assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+        tools._STUDIO_CREDENTIAL_BLOCKED
+    )
+
+
+def test_two_open_secrets_in_one_chunk_hold_from_the_first(studio_home):
+    # `rfind` walks right to left and the loop stopped at the first hit, so a chunk holding two
+    # open tokens emitted the earlier partial key.
+    from core.inference.tool_stream_exec import _hold_back_partial_secret
+    assert _hold_back_partial_secret("sk-unsloth-abcdsk-unsloth-") == 0
+    assert _hold_back_partial_secret("sk-unsloth-0123 done") == len("sk-unsloth-0123 done")
+
+
 def test_a_snippet_the_parser_cannot_hold_is_a_decision(studio_home):
     # `ast.parse` raises RecursionError on ~10k chained operators. Caught here, the guard returns a
     # decision; uncaught, the tool raised an internal exception instead of the interpreter's own

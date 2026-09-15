@@ -58,7 +58,8 @@ def _hold_back_partial_secret(text: str) -> int:
             # and held the chunk (and every chunk after it) back until the tool finished.
             if not rest or not _SECRET_TERMINATORS.intersection(rest):
                 best = min(best, absolute)
-            break
+            # Keep going left: a terminated occurrence says nothing about an EARLIER one, and
+            # stopping at the first one found hid an open token behind it.
             index = tail.rfind(prefix, 0, index)
     # Also a tail that is a PREFIX of a prefix ("...sk-unslo"), which no rfind above can see.
     for prefix in _SECRET_PREFIXES:

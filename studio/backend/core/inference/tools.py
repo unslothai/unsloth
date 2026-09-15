@@ -3748,6 +3748,36 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
     return inert
 
 
+# A recursive copy or archive of the studio ROOT carries `auth/` with it, and the copy is then an
+# ordinary file nothing guards. Mirrors the terminal walk rule.
+_PY_TREE_COPY_CALLS = frozenset({"copytree", "make_archive", "copy_tree", "unpack_archive"})
+
+
+def _python_copies_the_studio_root(tree) -> bool:
+    """True when a recursive copy or archive call names the studio root as its SOURCE."""
+    root = _studio_home_for_guard()
+    if not root:
+        return False
+    folded_root = _folded_word(root)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if name not in _PY_TREE_COPY_CALLS:
+            continue
+        # `copytree(src, dst)` names its source first; `make_archive(base, format, root_dir,
+        # base_dir)` names it third.
+        sources = list(node.args[2:4]) if name == "make_archive" else list(node.args[:1])
+        sources.extend(k.value for k in node.keywords if k.arg in ("src", "root_dir", "base_dir"))
+        for argument in sources:
+            if _names_the_studio_home_env(argument):
+                return True
+            folded = _folded_path(argument)
+            if isinstance(folded, str) and folded and _folded_word(folded) == folded_root:
+                return True
+    return False
+
+
 def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     """True when a path the CODE builds names the auth directory, however it is spelled.
 
@@ -3756,6 +3786,16 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     same fold the sensitive-path analyzer already applies to python; here its result is put through
     the credential test, resolved against the cwd like any other relative path."""
     lowered = code.lower()
+    # A recursive copy of the ROOT carries `auth/` without naming it, so it passes the hint filter
+    # below. Two substring tests gate the parse, which keeps this off the ordinary path.
+    if any(name in lowered for name in _PY_TREE_COPY_CALLS) and (
+        _text_names_the_studio_root(code) or _code_reads_the_studio_home(code)
+    ):
+        try:
+            if _python_copies_the_studio_root(ast.parse(code)):
+                return True
+        except (SyntaxError, RecursionError, MemoryError, ValueError):
+            pass
     if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
         return False
     try:
@@ -3929,12 +3969,17 @@ def _parent_chain(node) -> "tuple | None":
 
 
 def _is_cwd_call(node) -> bool:
-    """`Path.cwd()`, `os.getcwd()` and the bare spellings of either."""
+    """`Path.cwd()`, `os.getcwd()`, `Path.home()` and the bare spellings of each.
+
+    `home` counts because both subprocess environment builders set `HOME` to the session workdir, so
+    `Path.home()` returns the same directory `Path.cwd()` does and a parent walk off it lands in the
+    studio root just the same.
+    """
     if not isinstance(node, ast.Call):
         return False
     func = node.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-    return name in ("cwd", "getcwd")
+    return name in ("cwd", "getcwd", "home", "expanduser")
 
 
 def _literal_name_bases(tree) -> "dict[str, str]":
