@@ -3784,10 +3784,17 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
 # A recursive copy or archive of the studio ROOT carries `auth/` with it, and the copy is then an
 # ordinary file nothing guards. Mirrors the terminal walk rule.
 _PY_TREE_COPY_CALLS = frozenset({"copytree", "make_archive", "copy_tree", "unpack_archive"})
+# A recursive WALK of the root reaches `auth/` the same way a copy of it does, and reading
+# what it yields prints the secrets without any of them being named.
+_PY_TREE_WALK_CALLS = frozenset("walk rglob glob iglob iterdir listdir scandir".split())
+_PY_TREE_ROOT_CALLS = _PY_TREE_COPY_CALLS | _PY_TREE_WALK_CALLS
+# One C-speed scan for any of them, so ordinary code pays a single search rather than a
+# substring test per name.
+_PY_TREE_CALL_RE = re.compile("|".join(sorted(_PY_TREE_ROOT_CALLS)))
 
 
 def _python_copies_the_studio_root(tree) -> bool:
-    """True when a recursive copy or archive call names the studio root as its SOURCE."""
+    """True when a recursive copy, archive or walk call names the studio root as its SOURCE."""
     root = _studio_home_for_guard()
     if not root:
         return False
@@ -3796,13 +3803,25 @@ def _python_copies_the_studio_root(tree) -> bool:
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
-        if name not in _PY_TREE_COPY_CALLS:
+        if name not in _PY_TREE_ROOT_CALLS:
             continue
         # `copytree(src, dst)` names its source first; `make_archive(base, format, root_dir,
-        # base_dir)` names it third.
+        # base_dir)` names it third. A walker names it first too, or as the RECEIVER it is called
+        # on: `Path(os.environ["UNSLOTH_STUDIO_HOME"]).rglob("*")`.
         sources = list(node.args[2:4]) if name == "make_archive" else list(node.args[:1])
-        sources.extend(k.value for k in node.keywords if k.arg in ("src", "root_dir", "base_dir"))
+        if name in _PY_TREE_WALK_CALLS:
+            receiver = getattr(node.func, "value", None)
+            sources.append(receiver)
+            # `Path(<root>)` WRAPS the name the walk starts from, so the wrapped name is the source.
+            sources.extend(getattr(receiver, "args", ())[:1])
+        sources.extend(
+            k.value
+            for k in node.keywords
+            if k.arg in ("src", "root_dir", "base_dir", "top", "path")
+        )
         for argument in sources:
+            if argument is None:
+                continue
             if _names_the_studio_home_env(argument):
                 return True
             folded = _folded_path(argument)
@@ -3821,8 +3840,13 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     lowered = code.lower()
     # A recursive copy of the ROOT carries `auth/` without naming it, so it passes the hint filter
     # below. Two substring tests gate the parse, which keeps this off the ordinary path.
-    if any(name in lowered for name in _PY_TREE_COPY_CALLS) and (
-        _text_names_the_studio_root(code) or _code_reads_the_studio_home(code)
+    # Three tests gate the parse, cheapest first: the root has to be NAMEABLE in the text at all,
+    # then a tree call has to appear, and only then do the real root tests run. Ordinary numeric or
+    # dataframe code stops at the first one, which is two substring scans.
+    if (
+        ("studio_home" in lowered or _studio_home_lowered() in lowered)
+        and _PY_TREE_CALL_RE.search(lowered)
+        and (_text_names_the_studio_root(code) or _code_reads_the_studio_home(code))
     ):
         try:
             if _python_copies_the_studio_root(ast.parse(code)):
@@ -4519,6 +4543,21 @@ def _code_reads_the_working_directory(code: str) -> bool:
     """True when *code* asks for the working directory by any of its usual names."""
     lowered = code.lower()
     return '"pwd"' in lowered or "'pwd'" in lowered or "getcwd" in lowered or "cwd()" in lowered
+
+
+_studio_home_lowered_cache: "tuple | None" = None
+
+
+def _studio_home_lowered() -> str:
+    """`_studio_home_for_guard()` lowercased, memoized on the marker table it comes from.
+
+    This is a per-call prefilter, so rebuilding the root for every python snippet showed up.
+    """
+    global _studio_home_lowered_cache
+    markers = _studio_auth_dir_markers()[0]
+    if _studio_home_lowered_cache is None or _studio_home_lowered_cache[0] is not markers:
+        _studio_home_lowered_cache = (markers, (_studio_home_for_guard() or "\x00").lower())
+    return _studio_home_lowered_cache[1]
 
 
 def _studio_home_for_guard() -> "str | None":

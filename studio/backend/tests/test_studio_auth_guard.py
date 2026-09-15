@@ -2206,6 +2206,10 @@ def test_a_recursive_python_copy_of_the_studio_root_is_refused(studio_home):
     # the copy is then an ordinary file nothing guards.
     for refused in (
         'import shutil, os\nshutil.copytree(os.environ["UNSLOTH_STUDIO_HOME"], "./leak")',
+        # A recursive WALK of the root reaches the same files a copy of it does.
+        "import os\nfrom pathlib import Path\n"
+        'for p in Path(os.environ["UNSLOTH_STUDIO_HOME"]).rglob("*"):\n    print(p.read_text())',
+        'import os\nfor r, d, f in os.walk(os.environ["UNSLOTH_STUDIO_HOME"]):\n    print(f)',
         'import shutil, os\nshutil.copytree(src = os.environ["UNSLOTH_STUDIO_HOME"], dst = "./l")',
         'import shutil, os\nshutil.make_archive("b", "zip", os.environ["UNSLOTH_STUDIO_HOME"])',
         f'import shutil\nshutil.copytree({str(studio_home)!r}, "./leak")',
