@@ -121,6 +121,57 @@ _repo_access_lock = threading.Lock()
 # otherwise open a connection per caller.
 _repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
 
+# An answered NO outlives the verdict cache, and only an unaskable Hub ever reads it.
+#
+# Unaskable resolves against the disk, which is right for an offline operator and wrong as a
+# way to overturn a refusal that has already been given: 429 and 5xx are unaskable, they are
+# reachable from outside (a burst of probes rate-limits this host's own endpoint), and the
+# 60 s verdict cache means a caller the Hub refused a minute ago is one outage away from the
+# operator's cached copy of the repo. So a denial is remembered for longer than it is cached,
+# and while it is remembered "could not ask" answers no rather than reading the disk.
+#
+# Not a lockout: a Hub that answers again replaces it (an answered True is memoized as usual
+# and the memory is dropped), and a repo that was never refused has nothing here, so an
+# air-gapped host, a Hub outage and a mirror without /auth-check are unaffected. Keyed exactly
+# like the verdict cache, so it says nothing about any other credential.
+_DENIAL_MEMORY_TTL_S = 900.0
+_denied_repo_access: dict[tuple[str, str, str], float] = {}
+
+
+def _remember_denial(key: tuple[str, str, str], now: float) -> None:
+    with _repo_access_lock:
+        if len(_denied_repo_access) >= _REPO_ACCESS_CACHE_MAX:
+            for stale in [k for k, until in _denied_repo_access.items() if until <= now]:
+                _denied_repo_access.pop(stale, None)
+            if len(_denied_repo_access) >= _REPO_ACCESS_CACHE_MAX:
+                _denied_repo_access.pop(next(iter(_denied_repo_access)), None)
+        _denied_repo_access[key] = now + _DENIAL_MEMORY_TTL_S
+
+
+def _forget_denial(key: tuple[str, str, str]) -> None:
+    with _repo_access_lock:
+        _denied_repo_access.pop(key, None)
+
+
+def _denial_is_remembered(key: tuple[str, str, str], now: float) -> bool:
+    with _repo_access_lock:
+        until = _denied_repo_access.get(key)
+        if until is None:
+            return False
+        if until <= now:
+            _denied_repo_access.pop(key, None)
+            return False
+        return True
+
+
+def _with_remembered_denial(
+    key: tuple[str, str, str], verdict: Optional[bool]
+) -> Optional[bool]:
+    """A verdict of "could not ask" reads as the last answer the Hub gave, if it was no."""
+    if verdict is None and _denial_is_remembered(key, time.monotonic()):
+        return False
+    return verdict
+
 
 class _ProbeTimedOut(Exception):
     """Raised when /auth-check could not be asked at all, rather than answering."""
@@ -185,10 +236,16 @@ def _is_probe_timeout(exc: BaseException) -> bool:
 
 
 def reset_repo_access_cache() -> None:
-    """Drop memoized Hub access answers. Tests only."""
+    """Drop memoized Hub access answers. Tests only.
+
+    The remembered denials go with them: they outlive the verdict cache on purpose, so a test
+    that only cleared the cache would carry one test's refusal into the next one's unaskable
+    probe.
+    """
     with _repo_access_lock:
         _repo_access_cache.clear()
         _repo_access_inflight.clear()
+        _denied_repo_access.clear()
 
 
 def cache_reads_authorized(
@@ -422,16 +479,16 @@ def _explicit_token_reaches_repo(
     )
     cached = _cached_repo_access(key, time.monotonic())
     if cached is not _CACHE_MISS:
-        return cached  # type: ignore[return-value]
+        return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
     if offline or _hub_offline():
         # Not a verdict and not memoized: declared offline says nothing about the credential,
         # and a memo would then outlive the moment the network comes back.
-        return None
+        return _with_remembered_denial(key, None)
 
     with _inflight_lock(key):
         cached = _cached_repo_access(key, time.monotonic())
         if cached is not _CACHE_MISS:
-            return cached  # type: ignore[return-value]
+            return _with_remembered_denial(key, cached)  # type: ignore[arg-type]
         started = time.monotonic()
         try:
             allowed = _probe_repo_access(repo_id, token, repo_type)
@@ -457,7 +514,13 @@ def _explicit_token_reaches_repo(
             if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
                 _evict_repo_access_locked()
             _repo_access_cache[key] = (expiry, allowed)
-    return allowed
+        # Only an answer moves the memory. An unaskable Hub leaves whatever the last answer
+        # was, which is the whole point of keeping it.
+        if allowed is False:
+            _remember_denial(key, finished)
+        elif allowed is True:
+            _forget_denial(key)
+    return _with_remembered_denial(key, allowed)
 
 
 def _evict_repo_access_locked() -> None:

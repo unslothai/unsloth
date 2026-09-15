@@ -257,6 +257,76 @@ def test_a_hub_that_answered_no_still_denies_a_repo_on_disk(monkeypatch, tmp_pat
     assert cached_read_refused(API_KEY_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
 
 
+def test_an_answered_no_is_not_overturned_by_a_later_outage(monkeypatch, tmp_path):
+    """The gate's one boundary has to survive the Hub going away.
+
+    Unaskable resolves against the disk, and a 429 or a 5xx is unaskable while being
+    reachable from outside: a burst of probes rate-limits this host's own endpoint. Without a
+    memory of the refusal, a caller the Hub denied a minute ago would be one outage away from
+    the operator's cached copy of the private repo. The denial is remembered for longer than
+    the verdict is cached, so "could not ask" answers no while it stands.
+    """
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False, offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False
+
+    # The verdict cache expires; the Hub is now rate limiting rather than answering.
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False, (
+        "an outage handed out a repo the Hub had already refused this caller"
+    )
+    assert cached_read_refused(API_KEY_TOKEN, repo_id = ON_DISK, is_cached = lambda: True) is True
+
+
+def test_a_remembered_denial_is_dropped_once_the_hub_says_yes(monkeypatch, tmp_path):
+    """Not a lockout. Access granted after a refusal takes effect on the next answer, and the
+    outage behaviour goes back to reading the disk."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False, offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False
+
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, True, offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is True
+
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is True
+
+
+def test_a_repo_that_was_never_refused_still_resolves_against_the_disk(monkeypatch, tmp_path):
+    """The memory is per repo and per credential, so an air-gapped host, a Hub outage and a
+    mirror with no /auth-check route are all exactly as they were."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _materialize_repo(root, "acme/other")
+    _counting_probe(monkeypatch, False, offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False
+
+    hf_tokens._repo_access_cache.clear()
+    _counting_probe(monkeypatch, requests.exceptions.ConnectionError("refused"), offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = "acme/other") is True
+    assert cache_reads_authorized("hf_a_different_api_key", repo_id = ON_DISK) is True, (
+        "one credential's refusal must not answer for another"
+    )
+
+
+def test_the_denial_memory_is_dropped_by_the_test_reset(monkeypatch, tmp_path):
+    """It outlives the verdict cache, so the reset has to clear it or one test's refusal
+    decides the next test's outage."""
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    _counting_probe(monkeypatch, False, offline = False)
+    assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False
+    assert hf_tokens._denied_repo_access
+
+    reset_repo_access_cache()
+    assert not hf_tokens._denied_repo_access
+
+
 # --------------------------------------------------------------------------- probe classifier
 @pytest.mark.parametrize(
     "status, error_code, expected",

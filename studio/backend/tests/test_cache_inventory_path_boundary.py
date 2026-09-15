@@ -446,3 +446,40 @@ def test_the_path_field_lists_cover_the_inventory_schemas():
     assert not suspicious, (
         "path-shaped response fields that redaction does not know about: " + repr(suspicious)
     )
+
+
+def test_a_windows_network_share_is_shortened_like_any_other_path():
+    """A UNC path is the third spelling of absolute on Windows, and a scan folder on a network
+    share is written that way, so the server and share name used to survive in full."""
+    assert scrub_paths(r"Skipping \\fileserver\models\hub\models--acme--x: denied") == (
+        "Skipping .../hub/models--acme--x: denied"
+    )
+    assert scrub_paths(r"open \\srv\share\acme\config.json failed") == (
+        "open .../acme/config.json failed"
+    )
+    # And the shapes that are not paths stay exactly as written.
+    assert scrub_paths("ratio 3/4") == "ratio 3/4"
+    assert scrub_paths("https://huggingface.co/api/models/a/b") == (
+        "https://huggingface.co/api/models/a/b"
+    )
+
+
+def test_a_long_line_with_no_path_in_it_is_not_a_stall():
+    """The pattern nests a quantifier, so a line built from an exception has to stay linear."""
+    import time
+
+    line = ("word " * 20_000) + "x"
+    started = time.monotonic()
+    assert scrub_paths(line) == line
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_named_tuple_in_a_payload_is_rebuilt_rather_than_raising():
+    """Nothing answers one today, and the walk must not turn a future one into a 500: a
+    NamedTuple is a tuple whose constructor takes its fields one by one."""
+    import collections
+
+    Row = collections.namedtuple("Row", "repo_id size_bytes")
+    payload = {"rows": [Row("acme/x", 5)]}
+    out = redact_host_paths(payload, via_api_key = True)
+    assert out["rows"][0] == Row("acme/x", 5)

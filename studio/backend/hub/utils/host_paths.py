@@ -176,7 +176,17 @@ def _redact(payload: Any, *, redact_ambiguous_path: bool) -> Any:
         return out
     if isinstance(payload, (list, tuple)):
         redacted = [_redact(item, redact_ambiguous_path = redact_ambiguous_path) for item in payload]
-        return type(payload)(redacted) if isinstance(payload, tuple) else redacted
+        if not isinstance(payload, tuple):
+            return redacted
+        # A NamedTuple is a tuple whose constructor takes the fields one by one, so rebuilding
+        # it from the list raises and the route 500s on a payload it was only meant to edit.
+        # Rebuild it the way its own type is built, and keep the plain-tuple case as it was.
+        if hasattr(payload, "_fields"):
+            try:
+                return type(payload)(*redacted)
+            except Exception:
+                return tuple(redacted)
+        return type(payload)(redacted)
     return payload
 
 
@@ -245,7 +255,9 @@ def short_path_for_log(value: Any) -> str:
 _ABSOLUTE_PATH_RE = re.compile(
     # Not preceded by a word character, a colon or a slash, so a URL's "//host/path" and a
     # ratio like "3/4" are left as they were written.
-    r"(?<![\w:/])(?:[A-Za-z]:[\\/]|/)(?:[\w.\-+@ ]+[\\/])+[\w.\-+@]*"
+    # A UNC share is the third spelling of absolute on Windows, and a scan folder on a network
+    # share is written that way, so the whole server and share name used to stay in the line.
+    r"(?<![\w:/])(?:\\\\[^\\/\s]+[\\/]|[A-Za-z]:[\\/]|/)(?:[\w.\-+@ ]+[\\/])+[\w.\-+@]*"
 )
 
 
