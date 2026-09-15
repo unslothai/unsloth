@@ -217,9 +217,10 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
     "action": "actions",
     "sample": "samples",
     "failure": "crashes",
-    # Bookkeeping about HOW the A/B was run, not a measurement of the app, so it belongs beside the
-    # identity fields where a reader can see whether the order was balanced.
-    "ab_plan": "header",
+    # Bookkeeping about HOW the A/B was run, not a measurement of the app. Its OWN section: the
+    # `header` section is collapsed to its FIRST row when the payload is assembled, so an ab_plan
+    # row filed there is silently dropped while record_counts still reports two header rows.
+    "ab_plan": "ab_plan",
     # The optional surface sweep. Its own section: a surface row is a coverage fact about the UI, not a
     # timing, and folding it into `actions` would put it in front of the scorer.
     "surface": "surfaces",
@@ -283,6 +284,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
         "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
+        "ab_plan": (sections["ab_plan"][0] if sections.get("ab_plan") else {}),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,

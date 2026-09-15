@@ -1489,6 +1489,18 @@ _TORCHVISION_ABI_MARKERS = (
 # unrelated reason must keep importing unsloth, not get "reinstall torchvision".
 _LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
 _TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+# A torchvision whose extension failed to load does not always surface as a loader error.
+# When transformers imports it lazily the same break arrives as "partially initialized
+# module 'torchvision' has no attribute 'extension'". Both halves are required.
+# "partially initialized" is what separates the break from a plain typo on a healthy
+# torchvision ("module 'torchvision' has no attribute 'nms'"), which must never be
+# answered with "reinstall torchvision"; CPython only words it that way while the module
+# is still executing, which is exactly the window the import in
+# _probe_torchvision_binary runs in. The name must be torchvision itself or one of its
+# submodules, so an unrelated circular import elsewhere does not match either.
+_TORCHVISION_ATTRIBUTE_RE = re.compile(
+    r"partially initialized module 'torchvision(?:\.[\w.]+)?' has no attribute"
+)
 
 
 def _is_broken_torchvision_error(error) -> bool:
@@ -1498,6 +1510,8 @@ def _is_broken_torchvision_error(error) -> bool:
         checked.add(id(current))
         message = str(current)
         if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if _TORCHVISION_ATTRIBUTE_RE.search(message):
             return True
         if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
             m in message for m in _TORCH_LIBRARY_MARKERS

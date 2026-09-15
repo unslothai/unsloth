@@ -320,3 +320,78 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
 
     # Without the ledger nothing changes: an absent tag still means PyPI.
     assert "pip install" in advice("2.5.1")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # The reported message (unsloth#1793).
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)",
+        # A submodule, and the same break reached through one.
+        "partially initialized module 'torchvision.transforms' has no attribute "
+        "'InterpolationMode'",
+        "partially initialized module 'torchvision.io.image' has no attribute 'decode_jpeg'",
+    ],
+)
+def test_partially_initialized_torchvision_is_recognised(message):
+    """A torchvision whose extension failed to load can surface as an AttributeError on a
+    half-imported module rather than a loader failure (unsloth#1793)."""
+    assert import_fixes._is_broken_torchvision_error(AttributeError(message))
+
+
+def test_the_lazy_module_wrapper_around_it_is_recognised():
+    """transformers' _LazyModule re-raises as RuntimeError with the original as cause."""
+    inner = AttributeError(
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)"
+    )
+    outer = RuntimeError(
+        "Failed to import transformers.image_utils because of the following error "
+        "(look up to see its traceback):\n" + str(inner)
+    )
+    outer.__cause__ = inner
+    assert import_fixes._is_broken_torchvision_error(outer)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # A typo'd attribute on a HEALTHY torchvision. The module is fully imported, so
+        # CPython does not say "partially initialized", and telling this user to
+        # reinstall torchvision is wrong.
+        "module 'torchvision' has no attribute 'extension'",
+        "module 'torchvision' has no attribute 'nms'",
+        "module 'torchvision.ops' has no attribute 'nsm'",
+        # Someone else's circular import.
+        "partially initialized module 'numpy' has no attribute 'array'",
+        "partially initialized module 'mypackage.torchvision' has no attribute 'x'",
+        # Names that merely start with or contain torchvision.
+        "partially initialized module 'torchvisionfoo' has no attribute 'x'",
+        "partially initialized module 'not_torchvision' has no attribute 'x'",
+        "partially initialized module 'mytorchvision' has no attribute 'extension'",
+        "module 'os' has no attribute 'extension'",
+    ],
+)
+def test_a_healthy_torchvision_or_another_module_is_not_claimed(message):
+    assert not import_fixes._is_broken_torchvision_error(AttributeError(message))
+
+
+def test_the_probe_names_the_partially_initialized_break():
+    """End to end through the probe, not just the predicate."""
+    error = AttributeError(
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)"
+    )
+    with pytest.raises(ImportError) as excinfo:
+        _probe_with_import_raising(error)
+    assert "UNSLOTH_SKIP_TORCHVISION_CHECK=1" in str(excinfo.value)
+    assert excinfo.value.__cause__ is error
+
+
+def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
+    """`import unsloth` must not be turned into "reinstall torchvision" by an
+    AttributeError that carries no evidence of a half-imported module."""
+    _probe_with_import_raising(
+        AttributeError("module 'torchvision' has no attribute 'extension'")
+    )
