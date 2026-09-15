@@ -1908,6 +1908,9 @@ _PY_PATH_READ_CALLS = frozenset(
 # Callables whose first argument (or receiver) names a file being CREATED, OVERWRITTEN or REMOVED.
 _PY_PATH_WRITE_CALLS = frozenset(
     {
+        # `shutil.make_archive` CREATES `base_name + ext`; its source directories are read through
+        # `_PY_PATH_KWARGS_BY_CALL`.
+        "make_archive",
         "write_text",
         "write_bytes",
         "touch",
@@ -1967,7 +1970,18 @@ _PY_PATH_CONTENT_FIRST_CALLS = frozenset({"write_text", "write_bytes", "write"})
 
 # Keywords that always name a destination, whatever the call's default access is.
 _PY_PATH_DEST_KWARGS = frozenset(
-    {"dst", "dest", "destination", "target", "output", "out", "save_directory", "f"}
+    {
+        "dst",
+        "dest",
+        "destination",
+        "target",
+        "output",
+        "out",
+        "save_directory",
+        "f",
+        # `shutil.unpack_archive(a, extract_dir = d)` writes the members under `d`.
+        "extract_dir",
+    }
 )
 
 
@@ -2018,6 +2032,9 @@ _PY_PATH_DEST_SECOND_CALLS = frozenset(
         "replace",
         "link",
         "symlink",
+        # `shutil.unpack_archive(filename, extract_dir)` reads the archive and CREATES its members
+        # under the destination, so the pair reads exactly like a copy.
+        "unpack_archive",
     }
 )
 
@@ -2061,6 +2078,9 @@ _PY_PATH_KWARGS_BY_CALL = {
     "listdir": ("path",),
     "scandir": ("path",),
     "walk": ("top",),
+    # `shutil.make_archive(base_name, format, root_dir, base_dir)`: the archive is the first
+    # argument (a write), and the two directories it packs are reads.
+    "make_archive": ("root_dir", "base_dir"),
 }
 
 
@@ -2209,6 +2229,52 @@ def _chained_instance_reader_methods(receiver, module_aliases: "dict | None" = N
     else:
         return frozenset()
     return _PY_INSTANCE_READ_CTORS.get(name, frozenset())
+
+
+# `ZipFile.write(src)` and `TarFile.add(src)` name a file ON DISK and copy it INTO the archive, so
+# the first argument is a path being READ. That is the opposite of `f.write(data)`, which is why the
+# receiver has to identify it. Only the member-based archives: a `GzipFile`/`BZ2File` write takes
+# data, exactly like an ordinary file object.
+_PY_ARCHIVE_SOURCE_CALLS = frozenset({"write", "add"})
+_PY_ARCHIVE_MEMBER_CTORS = frozenset({"ZipFile", "TarFile"})
+
+
+def _is_archive_ctor_call(node, module_aliases = None) -> bool:
+    """True for `zipfile.ZipFile(...)`, `ZipFile(...)`, `tarfile.open(...)` and their aliases."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        receiver = func.value
+        base = receiver.id if isinstance(receiver, ast.Name) else ""
+        base = (module_aliases or {}).get(base, base)
+        # `tarfile.open` / `zipfile.ZipFile` are the documented constructors.
+        return func.attr in _PY_ARCHIVE_MEMBER_CTORS or (
+            func.attr == "open" and base in ("tarfile", "zipfile")
+        )
+    if isinstance(func, ast.Name):
+        return (module_aliases or {}).get(func.id, func.id) in _PY_ARCHIVE_MEMBER_CTORS
+    return False
+
+
+def _python_archive_object_names(tree, module_aliases = None) -> "set[str]":
+    """Local names holding a member-based archive, bound by assignment or by `with ... as`."""
+    names: "set[str]" = set()
+
+    def bind(target, value) -> None:
+        if isinstance(target, ast.Name) and _is_archive_ctor_call(value, module_aliases):
+            names.add(target.id)
+
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bind(target, node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            bind(node.target, node.value)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                bind(item.optional_vars, item.context_expr)
+    return names
 
 
 def _python_instance_reader_names(tree) -> dict:
@@ -2571,6 +2637,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     bindings = _python_path_bindings(tree, ctors, joins)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
+    archive_objects = _python_archive_object_names(tree, module_aliases)
     function_aliases = _python_function_aliases(tree, module_aliases)
     containers = _python_literal_containers(tree)
     fileinput_readers = _python_fileinput_readers(tree)
@@ -2753,6 +2820,16 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             for keyword in _call_keywords(node):
                 if keyword.arg == "path":
                     add(keyword.value, True)
+        elif (
+            name in _PY_ARCHIVE_SOURCE_CALLS
+            and is_method
+            and (
+                receiver_name in archive_objects
+                or _is_archive_ctor_call(func.value, module_aliases)
+            )
+        ):
+            # The member being added comes FROM the filesystem.
+            add(first, False)
         elif name in _PY_PATH_CONTENT_FIRST_CALLS:
             # Path(p).write_text(content): the first argument is DATA, not a path. Only the receiver is a path, so a
             # config value that happens to look like one ("/api/v1/items") must not read as a write target.

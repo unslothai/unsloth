@@ -3539,6 +3539,15 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `ZipFile.write` / `TarFile.add` name a SOURCE on disk and copy it into the archive.
+    f"import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write({_OUTSIDE_FILE!r})",
+    f"import tarfile\nwith tarfile.open('out.tar', 'w') as t:\n    t.add({_OUTSIDE_FILE!r})",
+    # `shutil.unpack_archive` creates the members under its destination.
+    f"import shutil\nshutil.unpack_archive('local.zip', {_OUTSIDE_DIR!r})",
+    f"import shutil\nshutil.unpack_archive('local.zip', extract_dir = {_OUTSIDE_DIR!r})",
+    # `shutil.make_archive` writes `base_name` and reads the directory it packs.
+    f"import shutil\nshutil.make_archive({_OUTSIDE_DIR!r} + '/backup', 'zip', 'src')",
+    f"import shutil\nshutil.make_archive('backup', 'zip', root_dir = {_OUTSIDE_DIR!r})",
     # argv[0] IS the binary that runs, even when a later word is a command name this scan knows.
     f"import subprocess\nsubprocess.run([{_OUTSIDE_FILE!r}, 'cat'])",
     # `sqlite3.connect(database = ...)` is the documented keyword spelling of the same argument.
@@ -3792,6 +3801,11 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
+    # A gzip/bz2/lzma object takes DATA, exactly like an ordinary file handle.
+    "import gzip\nf = gzip.GzipFile('out.gz', 'w')\nf.write(b'/home/alice/x')",
+    "import shutil\nshutil.unpack_archive('local.zip', 'build')",
+    "import shutil\nshutil.make_archive('backup', 'zip', 'src')",
     "import subprocess\nsubprocess.run(['/usr/bin/python3', 'train.py'])",
     "import sqlite3\nsqlite3.connect(database = 'local.db')",
     "from PIL import Image\nprint(Image.open(fp = 'local.png').size)",
