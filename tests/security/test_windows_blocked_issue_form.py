@@ -363,3 +363,29 @@ def test_the_required_error_field_warns_about_its_own_paths() -> None:
         "the error field does not mention that the issue is public, though it is required and "
         "routinely contains C:\\Users\\<name>"
     )
+
+
+def test_every_field_that_asks_for_a_path_says_the_issue_is_public() -> None:
+    """The privacy wording covered two fields and missed the one that asks for a path outright.
+
+    `error-text` and `probe` both warn that the issue is public and invite redaction, but
+    `file-path` asked for a full path with nothing but a `C:\\Users\\...` shaped placeholder to go
+    on. A reporter who follows the placeholder publishes their user name, and the protections added
+    everywhere else make that omission read as deliberate rather than missed.
+    """
+    fields = _fields()
+    for name in ("error-text", "probe", "file-path"):
+        attributes = fields[name]["attributes"]
+        text = f"{attributes.get('label', '')}\n{attributes.get('description', '')}"
+        assert "public" in text.lower(), (
+            f"the {name} field asks for a filesystem path without saying the issue is public"
+        )
+    # The probe is exempt from this second one: `Hide-Personal` substitutes the profile and user
+    # name before anything is written, so there is nothing for the reporter to rewrite by hand.
+    # These two are pasted unaided, and a warning with no worked replacement tends to be answered by
+    # dropping the field rather than by editing it.
+    for name in ("error-text", "file-path"):
+        description = fields[name]["attributes"].get("description", "")
+        assert "<me>" in description, (
+            f"the {name} field warns that the issue is public but never shows what to write instead"
+        )

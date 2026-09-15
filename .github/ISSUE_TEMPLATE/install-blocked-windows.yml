@@ -212,6 +212,9 @@ body:
     id: file-path
     attributes:
       label: The full path of the file that was blocked or removed, if one was named
+      description: >
+        This issue is public. If the path runs through your profile, replace the user name with
+        `<me>`; what we need is which file and which directory, not who you are.
       placeholder: 'C:\Program Files\Unsloth\install.ps1'
     validations:
       required: false
