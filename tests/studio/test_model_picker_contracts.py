@@ -686,9 +686,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # them behind a torn-snapshot guard. The sole-quant row uses the stronger downloaded
     # verdict; the other two guard directly on partial state.
     pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
-    downloaded_pins = re.findall(
-        r"loadId:\s*(\w+)\s*\?\s*c\.load_id\s*:\s*undefined", picker
-    )
+    downloaded_pins = re.findall(r"loadId:\s*(\w+)\s*\?\s*c\.load_id\s*:\s*undefined", picker)
     assert len(pins) + len(downloaded_pins) == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
@@ -700,9 +698,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
         "a multi-quant row that can start a load lost its partial-snapshot guard, or the VRAM bar "
         f"gained one: {sorted(pins)}"
     )
-    assert downloaded_pins == ["isDownloaded"], (
-        "the sole-quant row must carry the pin only after that quant is known complete"
-    )
+    assert downloaded_pins == [
+        "isDownloaded"
+    ], "the sole-quant row must carry the pin only after that quant is known complete"
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
