@@ -10,36 +10,91 @@ import type { PromptQueueUIItem } from "@/features/chat";
 import { reorderPromptQueueItems } from "@/features/chat/utils/prompt-queue-reorder";
 import "./src/index.css";
 
-const initialItems: PromptQueueUIItem[] = ["First prompt", "Second prompt", "Third prompt"].map((prompt, index) => ({
-  id: `q${index}`, runId: "smoke", prompt, position: index + 1, total: 3,
-  status: "queued", threadIds: ["smoke"], canEdit: true, canRemove: true,
+const initialItems: PromptQueueUIItem[] = [
+  "First prompt",
+  "Second prompt",
+  "Third prompt",
+].map((prompt, index) => ({
+  id: `q${index}`,
+  runId: "smoke",
+  prompt,
+  position: index + 1,
+  total: 3,
+  status: "queued",
+  threadIds: ["smoke"],
+  canEdit: true,
+  canRemove: true,
 }));
 
 function App() {
   const [items, setItems] = useState(initialItems);
   const [paused, setPaused] = useState(false);
   const [rejectMoves, setRejectMoves] = useState(false);
-  return <TooltipProvider>
-    <div style={{ padding: 16 }}>
-      <button type="button" onClick={() => {setItems(initialItems); setPaused(false); setRejectMoves(false);}}>Reset fixture</button>
-      <button type="button" onClick={() => setRejectMoves(true)}>Simulate dispatch race</button>
-      <button type="button" onClick={() => setItems((old) => old.slice(1))}>Dispatch first</button>
-    </div>
-    <main style={{ maxWidth: 850, margin: "180px auto 0" }}>
-      <PromptQueueList entry={{runId: "smoke", current: 1, total: items.length, local: true, temporary: false, dispatched: false, paused}}
-        items={items}
-        onEdit={(id, prompt) => {setItems((old) => old.map((item) => item.id === id ? {...item, prompt: prompt.trim()} : item)); return true;}}
-        onRemove={(id) => {setItems((old) => old.filter((item) => item.id !== id)); return true;}}
-        onMove={(id, targetId) => {
-          if (rejectMoves) return false;
-          const reordered = reorderPromptQueueItems(items, items.findIndex((item) => item.id === id), items.findIndex((item) => item.id === targetId));
-          if (!reordered) return false;
-          setItems(reordered);
-          return true;
-        }}
-        onPause={() => setPaused(true)} onResume={() => setPaused(false)} />
-    </main>
-  </TooltipProvider>;
+  return (
+    <TooltipProvider>
+      <div style={{ padding: 16 }}>
+        <button
+          type="button"
+          onClick={() => {
+            setItems(initialItems);
+            setPaused(false);
+            setRejectMoves(false);
+          }}
+        >
+          Reset fixture
+        </button>
+        <button type="button" onClick={() => setRejectMoves(true)}>
+          Simulate dispatch race
+        </button>
+        <button type="button" onClick={() => setItems((old) => old.slice(1))}>
+          Dispatch first
+        </button>
+      </div>
+      <main style={{ maxWidth: 850, margin: "180px auto 0" }}>
+        <PromptQueueList
+          entry={{
+            runId: "smoke",
+            current: 1,
+            total: items.length,
+            local: true,
+            temporary: false,
+            dispatched: false,
+            paused,
+          }}
+          items={items}
+          onEdit={(id, prompt) => {
+            setItems((old) =>
+              old.map((item) =>
+                item.id === id ? { ...item, prompt: prompt.trim() } : item,
+              ),
+            );
+            return true;
+          }}
+          onRemove={(id) => {
+            setItems((old) => old.filter((item) => item.id !== id));
+            return true;
+          }}
+          onMove={(id, targetId) => {
+            if (rejectMoves) return false;
+            const reordered = reorderPromptQueueItems(
+              items,
+              items.findIndex((item) => item.id === id),
+              items.findIndex((item) => item.id === targetId),
+            );
+            if (!reordered) return false;
+            setItems(reordered);
+            return true;
+          }}
+          onPause={() => setPaused(true)}
+          onResume={() => setPaused(false)}
+        />
+      </main>
+    </TooltipProvider>
+  );
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);

@@ -1090,8 +1090,7 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Acquire the local lifecycle before taking the cancellation snapshot.
-      // Local queue dispatch waits for this operation to settle.
+      // Hold the lifecycle lease through confirmation and loading.
       const lifecycleLease = useChatRuntimeStore
         .getState()
         .beginModelLoading();
@@ -2544,8 +2543,7 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
-      // Serialize the unload before taking the confirmation snapshot. Local
-      // queue dispatch waits until this operation settles.
+      // Hold the lifecycle lease through confirmation and unloading.
       lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
       if (lifecycleLease === null) {
         return false;

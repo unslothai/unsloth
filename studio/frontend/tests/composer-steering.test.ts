@@ -15,8 +15,7 @@ import {
   userStopTargetCancelMode,
 } from "../src/features/chat/utils/prompt-queue-user-stop.ts";
 
-// Exercise the shipped engine, including generation guards and pause/resume. The
-// surrounding browser stores, scheduler and inference transport are controlled.
+// Run the production queue engine with controlled stores and transport.
 const source = ts.createSourceFile(
   "thread.tsx",
   readSrc("components/assistant-ui/thread.tsx"),
@@ -280,8 +279,7 @@ test("a new steering queue waits for cancellation and rejects an unidentified ta
   assert.deepEqual(w.scopedCancels, [["chat"]]);
 });
 
-// The same async factory the composer uses; only model hydration and the store
-// are controlled. This catches rejection before a prompt ever reaches the engine.
+// Exercise the production queue factory with controlled settings hydration.
 let factory: ts.Expression | undefined;
 function findFactory(node: ts.Node) {
   if (

@@ -6,7 +6,7 @@ import { Streamdown } from "streamdown";
 import { useChatPreferencesStore } from "@/features/chat";
 import { useT } from "@/i18n";
 
-// Drafts may contain arbitrary URLs. Preview the text without opening links or loading images.
+// Render draft URLs without navigation or image requests.
 const components: NonNullable<ComponentProps<typeof Streamdown>["components"]> =
   {
     a: ({ children }) => (

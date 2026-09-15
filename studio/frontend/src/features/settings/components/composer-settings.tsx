@@ -10,7 +10,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useChatPreferencesStore, composerShortcutLabels } from "@/features/chat";
+import {
+  useChatPreferencesStore,
+  composerShortcutLabels,
+} from "@/features/chat";
 import { useT } from "@/i18n";
 import { isMacPlatform } from "../lib/keyboard-shortcuts";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";

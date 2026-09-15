@@ -58,8 +58,7 @@ export function shouldAbortPendingQueueForModelBoundary({
   capturedGeneration: number;
   usesLocalModel: boolean;
 }): boolean {
-  // Loading is a dispatch wait, not a reason to reject new follow-ups. A real
-  // model switch/unload still invalidates factories from the previous boundary.
+  // Loading delays dispatch; model changes invalidate older factories.
   return (
     usesLocalModel &&
     capturedGeneration !== localPromptQueueModelBoundary.capture()

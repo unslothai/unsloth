@@ -756,8 +756,7 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // Accept and display follow-ups while the model loads, but keep them pending
-  // (and editable/reorderable) until the local lifecycle operation settles.
+  // Keep prompts editable until the local model finishes loading.
   if (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading) {
     scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
     return;
@@ -784,8 +783,7 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // A load can start while the document probe is pending. Check again before
-  // accepting an append, so the prompt stays editable throughout the wait.
+  // Recheck loading after the document probe.
   if (
     hasIndexingDocuments ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
@@ -1282,8 +1280,7 @@ function startPromptQueue(
     throw new Error("The chat is no longer available for steering.");
   }
   const steer = () => {
-    // Insert first, then pause: the new prompt keeps the queue alive while
-    // pause removes the dispatched item and invalidates any pending dispatch.
+    // Insert before pausing so pending prompts survive cancellation.
     pausePromptQueueRun(targetIds);
     cancelPreStreamRunForThreadIds(targetIds);
     try {
@@ -1293,8 +1290,7 @@ function startPromptQueue(
         description: "The current response could not be interrupted.",
       });
     }
-    // Dispatch still checks the real runtime, so it waits for cancellation
-    // to settle instead of overlapping the current response.
+    // Dispatch waits for cancellation to finish.
     resumePromptQueueRun(targetIds);
   };
   const existingRun = findPromptQueueRunByTarget(target);
@@ -3620,7 +3616,7 @@ const Composer: FC<{
   }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
-  // Keep the submitted intent across attachment, indexing and settings waits.
+  // Retain follow-up behavior across preflight waits.
   const pendingFollowUpBehaviorRef = useRef<ComposerFollowUpBehavior>("queue");
   const waitToastRef = useRef<string | number | null>(null);
   // This chat's own settings are still on their way; a send now would run on the
@@ -3676,9 +3672,7 @@ const Composer: FC<{
     const runSettingsAtQueueStart = snapshotQueuedChatRunSettings(
       chatStateAtQueueStart,
       {
-        // The picker can still show the outgoing local model during a load.
-        // Resolve the settled model through the adapter's existing empty-model
-        // path, while retaining this prompt's sampling and tool preferences.
+        // Resolve the incoming model at dispatch; retain the prompt's settings.
         deferModelResolution:
           chatStateAtQueueStart.modelLoading &&
           parseExternalModelId(chatStateAtQueueStart.params.checkpoint) === null,
