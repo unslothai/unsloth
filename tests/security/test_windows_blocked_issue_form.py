@@ -264,7 +264,7 @@ def test_the_defender_event_fields_survive_a_real_message(tmp_path: Path) -> Non
                 'Write-Output "SELECTED:$sel"',
             ]
         ),
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     done = run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
