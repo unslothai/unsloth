@@ -1080,6 +1080,10 @@ export const it = {
           label: "Dimensione del font del codice",
           description: "Regola la dimensione di base usata per il codice.",
         },
+        chatWidth: {
+          label: "Larghezza della chat",
+          description: "Imposta la larghezza massima della colonna della chat. Si restringe comunque con la finestra.",
+        },
         fontSmoothing: {
           label: "Antialiasing dei caratteri",
           description:

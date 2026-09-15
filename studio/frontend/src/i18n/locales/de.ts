@@ -1115,6 +1115,10 @@ export const de = {
           label: "Schriftgröße für Code",
           description: "Passen Sie die Grundgröße für Code an.",
         },
+        chatWidth: {
+          label: "Chatbreite",
+          description: "Legen Sie die maximale Breite der Chatspalte fest. Sie verkleinert sich weiterhin mit dem Fenster.",
+        },
         fontSmoothing: {
           label: "Schriftglättung",
           description: "Kantenglättung für Schriften verwenden.",

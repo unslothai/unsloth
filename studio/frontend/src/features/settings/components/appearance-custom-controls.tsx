@@ -36,6 +36,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  CHAT_WIDTH_RANGE,
   CODE_FONT_SIZE_RANGE,
   type CustomModeColors,
   DEFAULT_CUSTOMIZATION,
@@ -862,6 +863,20 @@ export function CodeFontSizeRow() {
       onCommit={(next) => patch({ codeFontSize: next })}
       ariaLabel={t("settings.appearance.custom.codeFontSize.label")}
       unit="px"
+    />
+  );
+}
+
+export function ChatWidthRow() {
+  const t = useT();
+  const chatWidth = useAppearanceCustomStore((s) => s.customization.chatWidth);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <FontSizeInput
+      value={chatWidth}
+      range={CHAT_WIDTH_RANGE}
+      onCommit={(next) => patch({ chatWidth: next })}
+      ariaLabel={t("settings.appearance.custom.chatWidth.label")}
     />
   );
 }

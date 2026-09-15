@@ -1087,6 +1087,10 @@ export const ko = {
           label: "코드 글꼴 크기",
           description: "코드에 쓰이는 기본 크기를 조정합니다.",
         },
+        chatWidth: {
+          label: "채팅 너비",
+          description: "채팅 열의 최대 너비를 설정합니다. 창 크기에 따라 계속 좁아집니다.",
+        },
         fontSmoothing: {
           label: "글꼴 다듬기",
           description: "글꼴 안티앨리어싱을 사용합니다.",

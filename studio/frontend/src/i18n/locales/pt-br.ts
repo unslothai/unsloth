@@ -1100,6 +1100,10 @@ export const ptBR = {
           label: "Tamanho da fonte de código",
           description: "Ajuste o tamanho base do código.",
         },
+        chatWidth: {
+          label: "Largura do chat",
+          description: "Defina a largura máxima da coluna do chat. Ela continua estreitando com a janela.",
+        },
         fontSmoothing: {
           label: "Suavização de fonte",
           description: "Usar anti-aliasing suavizado nas fontes.",

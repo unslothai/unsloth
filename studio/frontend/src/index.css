@@ -178,6 +178,10 @@
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
+	/* Cap, not a fixed width: the column is w-full under it, so it still
+	   tracks the window. Appearance settings overrides this on <html>. */
+	--studio-chat-width: 100rem;
+
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
 	--foreground: oklch(0.2686 0 0);

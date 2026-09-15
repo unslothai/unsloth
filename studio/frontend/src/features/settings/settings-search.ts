@@ -66,6 +66,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
     "settings.appearance.custom.codeFontSize.label",
+    "settings.appearance.custom.chatWidth.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
     "settings.appearance.sidebarNav.title",

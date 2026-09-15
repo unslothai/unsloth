@@ -201,6 +201,8 @@ export type AppearanceCustomization = {
   uiFontSize: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
+  /** Cap on the chat column in px, not a fixed width. null = app default (1600). */
+  chatWidth: number | null;
   /** 0–100; 50 is neutral (no adjustment). */
   contrast: number;
   pointerCursors: boolean;
@@ -228,6 +230,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   importedFonts: [],
   uiFontSize: null,
   codeFontSize: null,
+  chatWidth: null,
   contrast: 50,
   pointerCursors: false,
   reduceMotion: "system",
@@ -244,6 +247,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+export const CHAT_WIDTH_RANGE = { min: 640, max: 2400, default: 1600 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
@@ -389,6 +393,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     importedFonts: sanitizeImportedFonts(source.importedFonts),
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
     codeFontSize: sanitizeSize(source.codeFontSize, CODE_FONT_SIZE_RANGE),
+    chatWidth: sanitizeSize(source.chatWidth, CHAT_WIDTH_RANGE),
     contrast,
     pointerCursors: source.pointerCursors === true,
     reduceMotion:
@@ -845,6 +850,13 @@ export function applyCustomizationToDocument(
   } else {
     el.removeAttribute("data-code-font-size");
     setVar("--custom-code-font-size", null);
+  }
+
+  // Left unset at the default so stock stays on the :root value in index.css.
+  if (c.chatWidth !== null && c.chatWidth !== CHAT_WIDTH_RANGE.default) {
+    setVar("--studio-chat-width", `${c.chatWidth}px`);
+  } else {
+    setVar("--studio-chat-width", null);
   }
 
   if (c.contrast !== 50) {

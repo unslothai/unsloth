@@ -1072,6 +1072,10 @@ export const ja = {
           label: "コードフォントサイズ",
           description: "コードの基本サイズを調整します。",
         },
+        chatWidth: {
+          label: "チャットの幅",
+          description: "チャット列の最大幅を設定します。ウィンドウに合わせて狭まります。",
+        },
         fontSmoothing: {
           label: "フォントスムージング",
           description: "滑らかなアンチエイリアスを使用します。",

@@ -1085,6 +1085,10 @@ export const en = {
           label: "Code font size",
           description: "Adjust the base size used for code.",
         },
+        chatWidth: {
+          label: "Chat width",
+          description: "Set the maximum width of the chat column. It still narrows with the window.",
+        },
         fontSmoothing: {
           label: "Font smoothing",
           description: "Use smoothed font anti-aliasing.",

@@ -1073,6 +1073,10 @@ export const zhCN = {
           label: "代码字号",
           description: "调整代码的基准字号。",
         },
+        chatWidth: {
+          label: "聊天宽度",
+          description: "设置聊天栏的最大宽度。它仍会随窗口变窄。",
+        },
         fontSmoothing: {
           label: "字体平滑",
           description: "使用平滑的字体抗锯齿。",

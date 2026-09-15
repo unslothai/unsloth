@@ -1114,6 +1114,10 @@ export const fr = {
           label: "Taille de police du code",
           description: "Ajustez la taille de base utilisée pour le code.",
         },
+        chatWidth: {
+          label: "Largeur du chat",
+          description: "Définissez la largeur maximale de la colonne de chat. Elle se réduit toujours avec la fenêtre.",
+        },
         fontSmoothing: {
           label: "Lissage des polices",
           description: "Utiliser le lissage des polices.",

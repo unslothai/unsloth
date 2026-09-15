@@ -1091,6 +1091,10 @@ export const ar = {
           label: "حجم خط الشيفرة",
           description: "اضبط الحجم الأساسي المستخدم للشيفرة.",
         },
+        chatWidth: {
+          label: "عرض المحادثة",
+          description: "حدد أقصى عرض لعمود المحادثة. ويظل يضيق مع حجم النافذة.",
+        },
         fontSmoothing: {
           label: "تنعيم الخطوط",
           description: "استخدام تنعيم حواف الخطوط.",

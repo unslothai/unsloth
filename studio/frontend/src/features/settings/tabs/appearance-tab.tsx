@@ -9,6 +9,7 @@ import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
+  ChatWidthRow,
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
@@ -107,6 +108,12 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.codeFontSize.description")}
         >
           <CodeFontSizeRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthRow />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.fontSmoothing.label")}
