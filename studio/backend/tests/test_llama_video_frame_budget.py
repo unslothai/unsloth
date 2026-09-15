@@ -499,8 +499,17 @@ def test_the_requested_rate_is_read_from_the_extras_and_the_environment():
     assert requested_video_fps(["--video-fps=8"], env = {}) == 8
     # llama.cpp resolves a repeated flag last-wins, so the encoder must agree.
     assert requested_video_fps(["--video-fps", "8", "--video-fps", "2"], env = {}) == 2
-    # Studio emits no flag at all when the environment sets one, so it wins.
-    assert requested_video_fps(["--video-fps", "2"], env = {"LLAMA_ARG_VIDEO_FPS": "8"}) == 8
+    # argv beats the environment, because llama.cpp reads the env var when it
+    # registers the option and argv overrides it afterwards. Measured on b10976:
+    # env=1 alone is 2796 prompt tokens, env=8 alone 19392, env=1 + argv=8 19392.
+    assert requested_video_fps(["--video-fps", "8"], env = {"LLAMA_ARG_VIDEO_FPS": "1"}) == 8
+    # ...and the environment still answers when argv says nothing.
+    assert requested_video_fps([], env = {"LLAMA_ARG_VIDEO_FPS": "8"}) == 8
+    # llama.cpp accepts the underscore spelling too (a bogus flag errors, this
+    # one does not), so an exact match on the hyphen would silently miss it.
+    assert requested_video_fps(["--video_fps", "8"], env = {}) == 8
+    assert requested_video_fps(["--video_fps=8"], env = {}) == 8
+    assert requested_video_fps(["--video_fps", "8", "--video-fps", "2"], env = {}) == 2
     # Garbage must not raise, and must not pretend to be a rate.
     assert requested_video_fps(["--video-fps", "abc"], env = {}) is None
     assert requested_video_fps(["--video-fps", "0"], env = {}) is None

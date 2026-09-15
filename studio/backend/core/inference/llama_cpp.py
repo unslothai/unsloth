@@ -5006,22 +5006,33 @@ def requested_video_fps(
     an explicit 8 fps has to reach the encoder, or the override silently buys
     nothing but duplicates.
 
-    Environment first, because Studio suppresses its own flag entirely when
-    LLAMA_ARG_VIDEO_FPS is set. Otherwise the LAST --video-fps in the extras,
-    which is how llama.cpp resolves a repeated flag (verified against b10976:
-    it warns "only last value will be used"). None when the user said nothing.
+    ARGV FIRST, then the environment. llama.cpp reads the env var while
+    registering the option and argv overrides it afterwards, so an inherited
+    LLAMA_ARG_VIDEO_FPS=1 alongside an advanced `--video-fps 8` samples at 8.
+    Verified against b10976 on a 5s clip: env=1 alone costs 2796 prompt tokens,
+    env=8 alone 19392, and env=1 with argv=8 also 19392.
+
+    Within argv the LAST occurrence wins, which is how llama.cpp resolves a
+    repeated flag ("only last value will be used"). Matching goes through
+    `_flag_name`, so the underscore spelling llama.cpp also accepts
+    (`--video_fps`, `--video_fps=8`) is caught rather than silently missed.
+
+    None when the user said nothing, or said something that is not a rate.
     """
-    source = os.environ if env is None else env
-    raw = source.get(_VIDEO_FPS_ENV_VAR)
+    args = [str(a) for a in (extra_args or ())]
+    raw = None
+    for i in range(len(args) - 1, -1, -1):
+        if _flag_name(args[i]) != "--video-fps":
+            continue
+        raw = (
+            args[i].split("=", 1)[1]
+            if "=" in args[i]
+            else (args[i + 1] if i + 1 < len(args) else None)
+        )
+        break
     if raw is None:
-        args = [str(a) for a in (extra_args or ())]
-        for i in range(len(args) - 1, -1, -1):
-            if args[i] == "--video-fps" and i + 1 < len(args):
-                raw = args[i + 1]
-                break
-            if args[i].startswith("--video-fps="):
-                raw = args[i].split("=", 1)[1]
-                break
+        source = os.environ if env is None else env
+        raw = source.get(_VIDEO_FPS_ENV_VAR)
     try:
         rate = float(raw)
     except (TypeError, ValueError):
