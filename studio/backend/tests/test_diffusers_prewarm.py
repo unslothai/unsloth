@@ -467,7 +467,9 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
     ), "the healthy parent was evicted; only the failed subtree should go"
 
 
-def test_the_parent_and_child_import_locks_are_never_held_together(warm, monkeypatch, restore_diffusers_modules):
+def test_the_parent_and_child_import_locks_are_never_held_together(
+    warm, monkeypatch, restore_diffusers_modules
+):
     """Holding both would invert CPython's own lock order and deadlock a concurrent import.
 
     ``import diffusers.hooks`` makes CPython take the CHILD lock first and import the parent from
@@ -504,12 +506,12 @@ def test_the_parent_and_child_import_locks_are_never_held_together(warm, monkeyp
 
     assert both_held, "the prewarm imported nothing; this test would be vacuous"
     offenders = [(n, p, c) for n, p, c in both_held if p and c]
-    assert not offenders, (
-        f"parent and child import locks held at the same time: {offenders}"
-    )
+    assert not offenders, f"parent and child import locks held at the same time: {offenders}"
 
 
-def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(warm, monkeypatch, restore_diffusers_modules):
+def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
+    warm, monkeypatch, restore_diffusers_modules
+):
     """The failure mode from the other side, with two real threads and the real locks.
 
     One thread takes the hooks lock and then reaches for the parent, which is the order CPython
@@ -559,7 +561,9 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(warm, monke
     p.join(5)
 
 
-def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(warm, monkeypatch, restore_diffusers_modules):
+def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
+    warm, monkeypatch, restore_diffusers_modules
+):
     """Held CONTINUOUSLY, not merely held again by the time the purge runs.
 
     Writing the try around the ``with`` instead of inside it releases the lock when the scope
@@ -598,7 +602,12 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(warm, 
     monkeypatch.setattr(warm, "purge_partial_import", _recording_purge)
 
     class _Boom:
-        def find_spec(self, name, path = None, target = None):
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
             if name == "diffusers":
                 raise ImportError("simulated half-built diffusers")
             return None
@@ -608,18 +617,17 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(warm, 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
 
     purge_at = next(
-        i for i, (what, name) in enumerate(timeline)
-        if what == "purge" and name == "diffusers"
+        i for i, (what, name) in enumerate(timeline) if what == "purge" and name == "diffusers"
     )
     # Everything before the purge, from the first acquisition onwards, must be acquisitions:
     # a matching release in there is the gap. Reentrant acquires (purge_partial_import takes the
     # same lock through its own decorator) are fine and expected.
     enter_at = next(
-        i for i, (what, name) in enumerate(timeline)
-        if what == "enter" and name == "diffusers"
+        i for i, (what, name) in enumerate(timeline) if what == "enter" and name == "diffusers"
     )
     released_early = [
-        i for i, (what, name) in enumerate(timeline)
+        i
+        for i, (what, name) in enumerate(timeline)
         if what == "exit" and name == "diffusers" and enter_at < i < purge_at
     ]
     assert not released_early, (
