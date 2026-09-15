@@ -363,6 +363,76 @@ def _clear_finished_warm_locked() -> None:
     _status.pop("seconds", None)
 
 
+DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
+
+_diffusers_prewarm_lock = threading.Lock()
+_diffusers_prewarmed = False
+
+
+def prewarm_diffusers_if_image_models_exist() -> bool:
+    """Import diffusers off the first image load. True iff this call did the import.
+
+    Measured on this stack, the first diffusion load pays roughly 5.3s of pure import before it
+    touches a weight: ``diffusers`` 1.6s, ``diffusers.hooks`` 2.4s and the pipeline classes 1.3s,
+    for about 316 MB. None of it depends on which model was picked, so it is the same cost every
+    first load in a fresh process, and all of it can be paid earlier by a thread nobody is
+    waiting on.
+
+    Gated on the install actually having a local image or video model, which is the whole point:
+    a chat-only or training-only user never pays the 316 MB. The gate itself is stdlib only (it
+    does not import torch or diffusers) and its index is cached and needed by the Images page
+    anyway, so building it here is work moved earlier rather than work added.
+
+    Called from the POST-warm worker, after ``join_background_warm()``, so it cannot delay any
+    coordinated warm stage or the socket bind. Concurrency was measured rather than assumed: 4 to
+    8 threads importing diffusers submodules together failed 0 of 16 trials, with and without
+    dynamo already imported, because these are ordinary package imports that CPython's per module
+    lock serialises, unlike the dynamo/inductor cycle in #10350.
+
+    Never fatal, and opt out with ``UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM=1``."""
+    global _diffusers_prewarmed
+    if _diffusers_prewarmed:
+        return False
+    if os.environ.get(DIFFUSERS_PREWARM_DISABLE_ENV_VAR) == "1":
+        return False
+    with _diffusers_prewarm_lock:
+        if _diffusers_prewarmed:
+            return False
+        try:
+            from core.inference.media_model_index import available_media_model_ids  # noqa: PLC0415
+
+            if not any(available_media_model_ids(task) for task in ("image", "video")):
+                # Nothing to load, so the import would be pure cost. Not latched: a model
+                # downloaded later should let the next lifespan reconsider.
+                logger.debug("diffusers prewarm skipped: no local image or video model")
+                return False
+        except Exception as exc:  # noqa: BLE001 -- a gate that cannot answer means skip, not crash
+            logger.debug("diffusers prewarm gate unavailable: %r", exc)
+            return False
+
+        started = time.perf_counter()
+        try:
+            import diffusers  # noqa: F401, PLC0415
+            import diffusers.hooks  # noqa: F401, PLC0415
+
+            # diffusers hard-codes _tqdm_active = True at import and honours no env var, so a
+            # prewarm that skipped this would let "Loading pipeline components..." draw straight
+            # onto the structlog stream, mid-record. The load path calls the same helper; it is
+            # idempotent and cheap.
+            from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
+
+            quiet_third_party_progress_bars()
+        except Exception as exc:  # noqa: BLE001 -- the load path imports it again and will report
+            logger.debug("diffusers prewarm skipped: %r", exc)
+            return False
+        _diffusers_prewarmed = True
+        logger.info(
+            "diffusers prewarmed in %.0fms; the first image load skips that import",
+            (time.perf_counter() - started) * 1000,
+        )
+        return True
+
+
 def warm_status() -> dict:
     """Snapshot of the warm for diagnostics and tests."""
     return {

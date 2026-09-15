@@ -348,6 +348,7 @@ import utils.hardware.hardware as _hw_module
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
     join_background_warm,
+    prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
     start_background_warm,
     warm_status,
@@ -608,6 +609,19 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     _start_linked_folder_auto_sync(generation)
+
+    # Last, and deliberately so: it is the only item here that is pure latency work rather than
+    # correctness, so everything above keeps its place in the queue. Roughly 5.3s of diffusers
+    # import that the first image load would otherwise pay, moved onto this thread, and only on
+    # installs that actually have an image or video model. Self-guarded and never fatal.
+    if _post_warm_retired(generation):
+        return
+    try:
+        prewarm_diffusers_if_image_models_exist()
+    except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
