@@ -20461,12 +20461,17 @@ def _local_video_clip(payload, model_info) -> str:
             status_code = 400,
             detail = "Only one video is supported per request on this model.",
         )
-    # This backend is handed bytes, so a remote URL would arrive as its own text.
-    if _is_remote_video(clips[0]):
+    # Generation is handed one clip and no turn, so MLX would move it onto the newest turn and
+    # answer as though it had just been attached.
+    if _video_is_on_an_older_turn(payload):
         raise HTTPException(
             status_code = 400,
-            detail = "A remote video URL is only supported on a local GGUF model. "
-            "Send the clip as a data URI instead.",
+            detail = "A video must be attached to the latest message on this model.",
+        )
+    # Refused everywhere, so the message must not send the caller to GGUF for it.
+    if _is_remote_video(clips[0]):
+        raise HTTPException(
+            status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1]
         )
     # _request_video_rejection runs only when a pre-switch validation happens, so an unsupported
     # scheme reached here and was decoded as base64 instead of earning the 400 GGUF returns.
@@ -20625,6 +20630,20 @@ def _message_video_urls(messages) -> list[str]:
                 url = video_url.get("url") if isinstance(video_url, dict) else video_url
                 urls.append(url if isinstance(url, str) else "")
     return urls
+
+
+def _video_is_on_an_older_turn(payload) -> bool:
+    """True when a ``video_url`` part sits anywhere before the newest user turn.
+
+    GGUF keeps a part on the turn that carried it. The non-GGUF path flattens the parts away and
+    hands generation one video kwarg, which MLX attaches to the newest user turn, so the same
+    request would put the clip on a different turn per backend.
+    """
+    messages = getattr(payload, "messages", None) or []
+    roles = [m.get("role") if isinstance(m, dict) else getattr(m, "role", None) for m in messages]
+    if "user" not in roles:
+        return False
+    return bool(_message_video_urls(messages[: len(roles) - 1 - roles[::-1].index("user")]))
 
 
 def _request_video_clips(payload) -> list[str]:

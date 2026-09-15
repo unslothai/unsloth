@@ -372,7 +372,7 @@ def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
     with pytest.raises(HTTPException) as exc:
         inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
     assert exc.value.status_code == 400
-    assert "remote video URL" in exc.value.detail
+    assert "Remote video URLs are not supported" in exc.value.detail
 
 
 @pytest.mark.parametrize(
@@ -666,3 +666,70 @@ def test_both_spellings_refuse_a_remote_clip_alike(monkeypatch):
         field = client.post("/v1/chat/completions", json = _field_body(_REMOTE))
     assert part.status_code == field.status_code == 400
     assert _detail(part) == _detail(field)
+
+
+def _older_turn_body(clip = _DATA_URI):
+    return {
+        "model": "test/model.gguf",
+        "stream": False,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video_url", "video_url": {"url": clip}},
+                    {"type": "text", "text": "what is this?"},
+                ],
+            },
+            {"role": "assistant", "content": "a clip"},
+            {"role": "user", "content": [{"type": "text", "text": "and now?"}]},
+        ],
+    }
+
+
+def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
+    """GGUF keeps the part on the turn that carried it; the non-GGUF path flattens the parts and
+    hands generation one video kwarg, which MLX attaches to the newest turn. Refusing keeps the
+    two backends from reading the same request as different conversations."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(_older_turn_body())
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+    assert exc.value.status_code == 400
+    assert "attached to the latest message" in exc.value.detail
+
+
+def test_a_clip_on_the_latest_turn_is_still_served_on_a_non_gguf_backend():
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
+    assert inference_route._local_video_clip(
+        payload, {"is_vision": True, "has_video_input": True}
+    ) == _CLIP_B64
+
+
+def test_the_legacy_field_is_not_treated_as_an_older_turn():
+    """video_base64 has no turn to belong to, so it is always the newest attachment."""
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(_field_body())
+    assert inference_route._video_is_on_an_older_turn(payload) is False
+    assert inference_route._local_video_clip(
+        payload, {"is_vision": True, "has_video_input": True}
+    ) == _CLIP_B64
+
+
+def test_gguf_still_keeps_a_clip_on_the_turn_that_carried_it(monkeypatch):
+    """The refusal above is a non-GGUF limit, not a new rule for everyone."""
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _older_turn_body())
+    assert response.status_code == 200
+    turns = [
+        m
+        for m in backend.dispatched[0]["messages"]
+        if m.get("role") == "user" and isinstance(m.get("content"), list)
+    ]
+    assert [p.get("type") for p in turns[0]["content"]] == ["input_video", "text"]
+    assert [p.get("type") for p in turns[-1]["content"]] == ["text"]

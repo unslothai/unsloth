@@ -1702,9 +1702,9 @@ class ImageContentPart(BaseModel):
 
 
 class VideoUrl(BaseModel):
-    """Video URL object: a data URI, or a remote URL llama-server fetches itself."""
+    """Video URL object: an inline data URI. Remote URLs are not fetched."""
 
-    url: str = Field(..., description = "data:video/mp4;base64,... or https://...")
+    url: str = Field(..., description = "data:video/mp4;base64,... (inline only)")
 
 
 class VideoContentPart(BaseModel):
