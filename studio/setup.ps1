@@ -2945,11 +2945,21 @@ if (-not $HasNvidiaSmi) {
             # Borrow another adapter's arch only when unpinned: an unmappable leading
             # adapter is exactly the #7776 iGPU and the named discrete card should decide,
             # but under a mask substituting installs wheels for a GPU they masked away.
-            $_borrowedIdx = -1
+            # Which adapter actually supplied the arch: the borrowed one, or the selected
+            # one when its own name mapped. -1 only when nothing mapped. Both cases need
+            # it, because either can leave $nameArches shorter than $gpuNames and so skip
+            # the repick block below.
+            $_archSrcIdx = -1
             if (-not $pickedName -and -not (Test-VisibleDevicesPinned) -and $nameArches.Count -gt 0) {
                 $pickedName = $nameArches[0]
-                $_borrowedIdx = $nameArchSrc[0]
+                $_archSrcIdx = $nameArchSrc[0]
             }
+            # Guarded on $_archSrcIdx so a borrow above is not overwritten. Spelled with
+            # -and rather than a bare truthiness test on $pickedName alone, because that
+            # exact spelling is the end anchor TestSetupPs1ShadowingParity slices this
+            # block on; a second copy closes its window early and hides the pinned-mask
+            # guard from it.
+            if ($pickedName -and $_archSrcIdx -lt 0) { $_archSrcIdx = $nameIdx }
             if ($pickedName) {
                 # Repick only when every adapter mapped: an unknown name may BE the
                 # discrete card, so skipping the iGPU could pick the wrong one.
@@ -2975,12 +2985,14 @@ if (-not $HasNvidiaSmi) {
                         [array]::IndexOf($nameArches, $script:ROCmGfxArch)
                     }
                     if ($_nameArchIdx -ge 0) { $ROCmGpuName = $gpuNames[$_nameArchIdx] }
-                } elseif ($_borrowedIdx -ge 0) {
+                } elseif ($_archSrcIdx -ge 0) {
                     # Not every adapter mapped, so the block above cannot run, but the arch
-                    # was borrowed from a KNOWN adapter and $ROCmGpuName is still adapter 0.
-                    # An unmappable iGPU ahead of an RX 9070 otherwise reads "AMD Radeon
-                    # Graphics (gfx1201)": the integrated name against the discrete arch.
-                    $ROCmGpuName = $gpuNames[$_borrowedIdx]
+                    # came from a KNOWN adapter and $ROCmGpuName is still adapter 0. Covers
+                    # both shapes: an unmappable iGPU ahead of an RX 9070 with no mask, and
+                    # the same pair with HIP_VISIBLE_DEVICES=1 selecting the RX 9070
+                    # directly. Either otherwise reads "AMD Radeon Graphics (gfx1201)":
+                    # the integrated name against the discrete arch.
+                    $ROCmGpuName = $gpuNames[$_archSrcIdx]
                 }
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
