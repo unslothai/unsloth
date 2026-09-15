@@ -412,3 +412,109 @@ def test_minimax_h3_offers_every_advertised_aspect_ratio():
         assert width * height <= H3_CANVAS_MAX_PIXELS, (width, height)
         rule_width, rule_height = h3_canvas_for_aspect(width, height)
         assert width <= rule_width and height <= rule_height, (width, height)
+
+
+def _resident_fam(**kwargs):
+    from core.inference.video_families import VideoFamily
+
+    base = dict(
+        name = "test-video",
+        pipeline_class = "TestPipeline",
+        transformer_class = "TestTransformer3DModel",
+        base_repo = "org/test-video",
+    )
+    base.update(kwargs)
+    return VideoFamily(**base)
+
+
+def test_the_per_scheme_row_wins_and_the_float_is_the_fallback():
+    """The per-scheme row wins and the family-wide float is the fallback."""
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    fam = _resident_fam(
+        prequant_resident_gb = 20.3,
+        prequant_resident_gb_by_scheme = (("nvfp4", 8.1), ("fp8", 13.6)),
+    )
+    assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(8.1)
+    assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(13.6)
+    assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(20.3)
+
+
+def test_an_unmeasured_family_reports_nothing_rather_than_guessing():
+    import types
+
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    assert video_family_prequant_resident_gb(_resident_fam(), "nvfp4") is None
+    assert video_family_prequant_resident_gb(types.SimpleNamespace(), "nvfp4") is None
+    fam = _resident_fam(prequant_resident_gb_by_scheme = (("nvfp4",), ("nvfp4", "big")))
+    assert video_family_prequant_resident_gb(fam, "nvfp4") is None
+
+
+def test_the_h3_measurement_still_answers_through_the_helper():
+    from core.inference.video_families import video_family_prequant_resident_gb
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert video_family_prequant_resident_gb(fam, "int8") == pytest.approx(fam.prequant_resident_gb)
+    assert video_family_prequant_resident_gb(fam, "fp8") == pytest.approx(fam.prequant_resident_gb)
+
+
+def test_every_hosted_nvfp4_denoiser_carries_its_measured_resident_size():
+    """Every hosted nvfp4 denoiser carries its measured resident size."""
+    from core.inference.video_families import (
+        _FAMILIES,
+        video_family_prequant_resident_gb,
+    )
+
+    expected = {
+        "wan2.2-ti2v-5b": 2.9,
+        "wan2.2-t2v-a14b": 16.2,
+        "hunyuanvideo-1.5": 4.8,
+        "hunyuanvideo-1.5-720p": 4.8,
+    }
+    hosting = {
+        fam.name
+        for fam in _FAMILIES
+        if any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos)
+    }
+    assert hosting == set(expected)
+    for fam in _FAMILIES:
+        if fam.name not in expected:
+            continue
+        assert video_family_prequant_resident_gb(fam, "nvfp4") == pytest.approx(expected[fam.name])
+
+
+def test_the_measured_nvfp4_size_is_a_4_bit_fraction_of_the_term_it_replaces():
+    """Sanity on direction and magnitude."""
+    from core.inference.video_families import (
+        _FAMILIES,
+        video_family_prequant_resident_gb,
+    )
+
+    seen = 0
+    for fam in _FAMILIES:
+        if not any(scheme == "nvfp4" for scheme, _repo in fam.prequant_repos):
+            continue
+        measured = video_family_prequant_resident_gb(fam, "nvfp4")
+        if measured is None or not fam.bf16_components_gb:
+            continue
+        seen += 1
+        assert (
+            0.2 * fam.bf16_components_gb[0] < measured < 0.4 * fam.bf16_components_gb[0]
+        ), fam.name
+    assert seen == 4
+
+
+def test_the_a14b_row_prices_both_experts_not_one():
+    from core.inference.video_families import (
+        detect_video_family,
+        video_family_prequant_resident_gb,
+    )
+
+    fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert fam.is_moe
+    names = {entry[-1] for entry in fam.prequant_filenames}
+    assert len(names) == 2
+    measured = video_family_prequant_resident_gb(fam, "nvfp4")
+    assert measured == pytest.approx(16.2)
+    assert measured > 0.25 * fam.bf16_components_gb[0]
