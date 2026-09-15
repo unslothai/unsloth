@@ -160,6 +160,8 @@ if ($script:UnslothVerbose) {
 }
 $script:LlamaCppDegraded = $false
 $script:LlamaKeptGpuPrebuilt = $null
+$script:NvidiaLibraryInventoryProbed = $false
+$script:NvidiaLibraryInventory = $null
 # Set by the offline keep, read unconditionally by the sidecar and legacy-migration blocks:
 # initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
@@ -922,8 +924,9 @@ public static class UnslothNvidiaProbe {
             var caps = new StringBuilder();
             for (uint i = 0; i < count; i++) {
                 IntPtr device; int major, minor;
-                if (nvmlDeviceGetHandleByIndex_v2(i, out device) != 0) continue;
-                if (nvmlDeviceGetCudaComputeCapability(device, out major, out minor) != 0) continue;
+                // One unreadable GPU voids the source: a partial list misleads the pre-Turing cap.
+                if (nvmlDeviceGetHandleByIndex_v2(i, out device) != 0) return "";
+                if (nvmlDeviceGetCudaComputeCapability(device, out major, out minor) != 0) return "";
                 if (caps.Length > 0) caps.Append(',');
                 caps.Append(major).Append('.').Append(minor);
             }
@@ -937,10 +940,10 @@ public static class UnslothNvidiaProbe {
         var caps = new StringBuilder();
         for (int i = 0; i < count; i++) {
             int device, major, minor;
-            if (cuDeviceGet(out device, i) != 0) continue;
+            if (cuDeviceGet(out device, i) != 0) return "";
             // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-            if (cuDeviceGetAttribute(out major, 75, device) != 0) continue;
-            if (cuDeviceGetAttribute(out minor, 76, device) != 0) continue;
+            if (cuDeviceGetAttribute(out major, 75, device) != 0) return "";
+            if (cuDeviceGetAttribute(out minor, 76, device) != 0) return "";
             if (caps.Length > 0) caps.Append(',');
             caps.Append(major).Append('.').Append(minor);
         }
@@ -963,8 +966,8 @@ public static class UnslothNvidiaProbe {
     } catch { return $null }
     $parts = "$raw".Split(";")
     if ($parts.Count -ne 4 -or -not $parts[3] -or [int]$parts[1] -lt 1) { return $null }
-    $caps = @($parts[3].Split(",") | Where-Object { $_ -match '^\d+\.\d+$' })
-    if ($caps.Count -eq 0) { return $null }
+    $caps = @($parts[3].Split(","))
+    if (@($caps | Where-Object { $_ -notmatch '^\d+\.\d+$' }).Count -gt 0) { return $null }
     $script:NvidiaLibraryInventory = @{
         Source      = $parts[0]
         CudaMajor   = [int]$parts[1]

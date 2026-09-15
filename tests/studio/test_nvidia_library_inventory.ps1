@@ -100,8 +100,11 @@ Check "the CUDA driver API line parses too" ((Probe-Raw "cuda;12;8;12.0").Source
 Check "an empty probe is no inventory" ($null -eq (Probe-Raw ""))
 Check "a zero driver version is no inventory" ($null -eq (Probe-Raw "nvml;0;0;8.9"))
 Check "no capabilities is no inventory" ($null -eq (Probe-Raw "nvml;13;0;"))
-Check "an unreadable capability is dropped" ((Probe-Raw "nvml;13;0;N/A,8.9").Count -eq 1)
-Check "the answer is cached" ((Get-NvidiaLibraryInventory).Count -eq 1)
+Check "an unreadable capability voids the inventory" ($null -eq (Probe-Raw "nvml;13;0;N/A,8.9"))
+Check "one unreadable GPU voids the compiled probe's source too" ($setupBlock -notmatch '\bcontinue;')
+Check "setup.ps1 initialises the cache with its other script state" (
+    (Get-Content -LiteralPath $setupPs1 -Raw) -match '(?m)^\$script:NvidiaLibraryInventoryProbed = \$false')
+Check "the answer is cached" ($null -eq (Get-NvidiaLibraryInventory))
 
 Write-Host ""
 Write-Host "=== consumers of the inventory ==="

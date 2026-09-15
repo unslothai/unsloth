@@ -2455,9 +2455,10 @@ def nvml():
         caps = []
         for i in range(count.value):
             dev, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
-            if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(dev)) == 0 and \
-               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) == 0:
-                caps.append(f"{major.value}.{minor.value}")
+            if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(dev)) != 0 or \
+               lib.nvmlDeviceGetCudaComputeCapability(dev, ctypes.byref(major), ctypes.byref(minor)) != 0:
+                return None  # one unreadable GPU voids the source
+            caps.append(f"{major.value}.{minor.value}")
         return version.value, caps
     finally:
         lib.nvmlShutdown()
@@ -2475,10 +2476,11 @@ def cuda():
     for i in range(count.value):
         dev, major, minor = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
         # CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR = 75, _MINOR = 76.
-        if lib.cuDeviceGet(ctypes.byref(dev), i) == 0 and \
-           lib.cuDeviceGetAttribute(ctypes.byref(major), 75, dev) == 0 and \
-           lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, dev) == 0:
-            caps.append(f"{major.value}.{minor.value}")
+        if lib.cuDeviceGet(ctypes.byref(dev), i) != 0 or \
+           lib.cuDeviceGetAttribute(ctypes.byref(major), 75, dev) != 0 or \
+           lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, dev) != 0:
+            return None
+        caps.append(f"{major.value}.{minor.value}")
     return version.value, caps
 
 found = nvml() or cuda()
