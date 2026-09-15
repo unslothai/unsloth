@@ -1072,7 +1072,13 @@ _PATH_FLAG_SPECS = {
         "-regex": "skip",
         "-newer": "read",
     },
-    "fd": {"--base-directory": "read", "--search-path": "read", "--exclude": "skip"},
+    # `fd --help`: `--ignore-file <path>` adds a custom ignore file, which it reads.
+    "fd": {
+        "--base-directory": "read",
+        "--search-path": "read",
+        "--ignore-file": "read",
+        "--exclude": "skip",
+    },
     "column": {"-s": "skip", "--separator": "skip", "-o": "skip", "--output-separator": "skip"},
     "paste": {"-d": "skip", "--delimiters": "skip"},
     "join": {"-t": "skip", "-1": "skip", "-2": "skip", "-e": "skip", "-o": "skip"},

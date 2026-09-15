@@ -3374,6 +3374,8 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `fd --ignore-file <path>` reads that file as a custom ignore list.
+    "fd --ignore-file=/media/alice/private.rules needle .",
     # GNU long options accept unambiguous abbreviations, so `--targ=` is the destination.
     "cp --targ=/usr/share/doc payload",
     # Short options cluster, so `-ni` edits in place exactly as `-i` does.
