@@ -123,6 +123,10 @@ body:
 
 
         ```powershell
+        & {
+        # Everything runs inside this block so the preference below is scoped to it. Setting
+        # $ErrorActionPreference at the prompt would change it for the rest of the session, and the
+        # field above promises this probe changes nothing.
         $ErrorActionPreference = 'Continue'
 
         # Replaces the two things in a Windows path that identify a person: the profile directory
@@ -130,7 +134,13 @@ body:
         function Hide-Personal([string]$s) {
           if (-not $s) { return $s }
           if ($env:USERPROFILE) { $s = $s -replace ('(?i)' + [regex]::Escape($env:USERPROFILE)), '%USERPROFILE%' }
-          if ($env:USERNAME)    { $s = $s -replace ('(?i)' + [regex]::Escape($env:USERNAME)), '<user>' }
+          # Only where the account name is a whole path component or the account half of DOMAIN\user:
+          # it must be preceded by a separator and not run into more word characters. A bare
+          # substring replace corrupts the evidence this form exists to collect -- an account named
+          # "win" rewrites "Windows Defender", and one named "cat" rewrites "Wacatac".
+          if ($env:USERNAME) {
+            $s = $s -replace ('(?i)(?<=[\\/])' + [regex]::Escape($env:USERNAME) + '(?![\w-])'), '<user>'
+          }
           return $s
         }
 
@@ -199,6 +209,7 @@ body:
               Hide-Personal ("$($_.TimeCreated)  id=$($_.Id)  " + $fields)
             }
         } catch { "no matching events, or the log could not be read: $($_.Exception.Message)" }
+        }
         ```
 
 

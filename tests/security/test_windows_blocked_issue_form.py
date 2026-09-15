@@ -389,3 +389,88 @@ def test_every_field_that_asks_for_a_path_says_the_issue_is_public() -> None:
         assert (
             "<me>" in description
         ), f"the {name} field warns that the issue is public but never shows what to write instead"
+
+
+def _hide_personal_source() -> str:
+    """Just the Hide-Personal function, lifted out of the shipped snippet."""
+    snippet = _snippet()
+    start = snippet.index("function Hide-Personal")
+    depth = 0
+    for i in range(start, len(snippet)):
+        if snippet[i] == "{":
+            depth += 1
+        elif snippet[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return snippet[start : i + 1]
+    raise AssertionError("Hide-Personal is not brace-balanced in the shipped snippet")
+
+
+@pytest.mark.parametrize(
+    ("username", "line", "expected"),
+    [
+        # The two corruptions a bare substring replace causes. Both rewrite the exact evidence the
+        # form exists to collect, and both look like a clean report to the person pasting it.
+        ("win", "Windows Defender Antivirus 4.18.24090.11", "Windows Defender Antivirus 4.18.24090.11"),
+        ("cat", "Trojan:Script/Wacatac.B!ml", "Trojan:Script/Wacatac.B!ml"),
+        # Still redacted where it is genuinely the account.
+        ("alice", r"C:\Users\alice\Downloads\x.ps1", r"C:\Users\<user>\Downloads\x.ps1"),
+        ("alice", r"CORP\alice", r"CORP\<user>"),
+        # A longer account name that merely starts with the same letters must not be half-eaten.
+        ("al", r"C:\Users\alice\x.ps1", r"C:\Users\alice\x.ps1"),
+    ],
+)
+def test_redaction_only_fires_on_a_real_account_component(
+    tmp_path: Path, username: str, line: str, expected: str
+) -> None:
+    """Driven through the shipped function, not by reading its regex.
+
+    The first version replaced every case-insensitive occurrence of the account name anywhere in
+    the line, so an account called `win` rewrote `Windows Defender` and one called `cat` rewrote
+    `Wacatac`. Those are the product and detection names the whole form is built to capture, and the
+    reporter cannot tell it happened.
+    """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    script = tmp_path / "redact.ps1"
+    script.write_text(
+        _hide_personal_source()
+        + "\n"
+        + "$env:USERPROFILE = 'C:\\Users\\__no_such_profile__'\n"
+        + f"$env:USERNAME = '{username}'\n"
+        + "Write-Output (Hide-Personal $env:UNSLOTH_LINE)\n",
+        encoding = "utf-8",
+    )
+    import os as _os
+
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = {**_os.environ, "UNSLOTH_LINE": line},
+    )
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert done.stdout.strip() == expected, (
+        f"account {username!r} turned {line!r} into {done.stdout.strip()!r}"
+    )
+
+
+def test_the_probe_does_not_change_the_callers_error_preference() -> None:
+    """The form promises the probe changes nothing, and then set a preference at the prompt.
+
+    `$ErrorActionPreference = 'Continue'` pasted into an interactive session persists for the rest
+    of that session, so a reporter who runs with `Stop` silently loses it. Running the body inside
+    a script block scopes the assignment to the block.
+    """
+    snippet = _snippet().strip()
+    assert snippet.startswith("& {"), (
+        "the probe no longer runs inside a script block, so the preference it sets leaks into the "
+        "session the reporter pasted it into"
+    )
+    assert snippet.endswith("}"), "the script block is not closed"
+    assert (
+        snippet.index("$ErrorActionPreference") > snippet.index("& {")
+    ), "the preference is set outside the block that was supposed to contain it"
