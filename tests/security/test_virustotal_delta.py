@@ -181,7 +181,9 @@ def test_a_baseline_with_no_engine_verdicts_is_void_like_the_candidate() -> None
     YARA. Compared against a real candidate, every finding reads as newly introduced, so the run
     exited 2 and named a list of regressions while having compared against nothing at all.
     """
-    empty = {"data": {"attributes": {"size": 1, "last_analysis_stats": {}, "last_analysis_results": {}}}}
+    empty = {
+        "data": {"attributes": {"size": 1, "last_analysis_stats": {}, "last_analysis_results": {}}}
+    }
     baseline = _snap(empty, "baseline", "a" * 64)
     delta = vtd.compare(baseline, _snap(copy.deepcopy(vtd._BASELINE_FIXTURE)))
     assert delta.exit_code() == 3, "an unanalysed baseline was compared against instead of voiding"
