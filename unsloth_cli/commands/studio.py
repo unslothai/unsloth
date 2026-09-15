@@ -2728,7 +2728,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
+def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None":
     lines = text.splitlines()
     if not lines or not lines[0].strip().isdigit():
         return None
@@ -2746,10 +2746,12 @@ def _parse_pid_record(text: str) -> "tuple[int, float | None] | None":
             created = float(lines[1].strip())
         except ValueError:
             created = None
-    return pid, created
+    # Third line: the addresses run.py bound, absent in a legacy record.
+    address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
+    return pid, created, address
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None] | None":
+def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
     try:
         text = path.read_text(encoding = "utf-8")
     except (OSError, UnicodeDecodeError):
@@ -2805,7 +2807,7 @@ def _pid_file_entries(
             typer.echo(f"Ignoring invalid PID file {path.name}")
             _unlink_quietly(path)
             continue
-        pid, created = record
+        pid, created, _address = record
         created_times, files = by_pid.setdefault(pid, ([], []))
         created_times.append(created)
         files.append(path)

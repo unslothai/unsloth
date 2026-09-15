@@ -1092,11 +1092,15 @@ def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
         return False
 
 
-def _log_tail(path: Path, lines: int = 20) -> str:
+def _read_log(path: Path) -> str:
     try:
-        return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
+        return path.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return "(no server log)"
+
+
+def _log_tail(path: Path, lines: int = 20) -> str:
+    return "\n".join(_read_log(path).splitlines()[-lines:])
 
 
 def _redacted_log_tail(path: Path, lines: int = 20) -> str:
@@ -1247,6 +1251,7 @@ def _start_studio_server(
     progress: Optional[_ModelDownloadProgress] = None
     downloaded_bytes = 0
     early_key_seen = False
+    port_followed = False
     try:
         while time.monotonic() < deadline:
             if server.poll() is not None:
@@ -1255,6 +1260,17 @@ def _start_studio_server(
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
             tail = _log_tail(log_path, lines = 400)
+            # `unsloth run` falls forward off a taken port, so poll the port it reports. Printed
+            # once, so read the whole log, not the tail below.
+            if not port_followed:
+                bound_port = re.search(
+                    rf"^{re.escape(_START_PORT_PREFIX)}(\d+)$",
+                    _read_log(log_path),
+                    flags = re.MULTILINE,
+                )
+                if bound_port:
+                    port_followed = True
+                    base = _effective_base(base, int(bound_port.group(1)))
             if progress is None:
                 marker = re.search(
                     rf"^{re.escape(_START_API_KEY_PREFIX)}(sk-unsloth-[^\s]+)$",
@@ -1263,13 +1279,6 @@ def _start_studio_server(
                 )
                 if marker:
                     early_key_seen = True
-                    bound_port = re.search(
-                        rf"^{re.escape(_START_PORT_PREFIX)}(\d+)$",
-                        tail,
-                        flags = re.MULTILINE,
-                    )
-                    if bound_port:
-                        base = _effective_base(base, int(bound_port.group(1)))
                     progress = _ModelDownloadProgress(
                         base,
                         marker.group(1),

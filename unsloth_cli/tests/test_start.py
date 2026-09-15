@@ -4059,6 +4059,55 @@ def test_start_studio_server_follows_the_port_the_child_bound(monkeypatch, tmp_p
     assert requests == {"occupant": [], "studio": ["/api/health"]}
 
 
+def test_start_studio_server_reads_the_port_the_child_reported_once(monkeypatch):
+    # The child reports its port once, before the loader pushes it out of the tail the key uses.
+    class FakePopen:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    # 401 lines: the 400-line tail starts one line past the port.
+    log = (
+        "UNSLOTH_START_PORT: 8889\n"
+        "UNSLOTH_START_API_KEY: sk-unsloth-early\n"
+        + "loading tensors\n" * 398
+        + "Model loaded: owner/model"
+    )
+    healthy = []
+    progress_bases = []
+
+    class FakeProgress:
+        downloaded_bytes = 0
+
+        def __init__(self, base, *_args):
+            progress_bases.append(base)
+
+        def poll(self):
+            pass
+
+        def complete(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: FakePopen())
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, **_k: healthy.append(base) or True)
+    monkeypatch.setattr(start, "_read_log", lambda _path: log)
+    monkeypatch.setattr(start, "_log_tail", lambda *a, **k: "\n".join(log.splitlines()[-400:]))
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+
+    base, _server = start._start_studio_server(BASE, "owner/model", start.LoadOptions())
+
+    tail = "\n".join(log.splitlines()[-400:])
+    assert start._START_API_KEY_PREFIX in tail and start._START_PORT_PREFIX not in tail
+    assert base == "http://127.0.0.1:8889"
+    assert progress_bases == [base]
+    assert healthy == [base]
+
+
 def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
     release = start.threading.Event()
     calls = []
