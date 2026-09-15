@@ -2359,6 +2359,9 @@ def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
             f'grep -r sk-unsloth "{home}"',
             f'cp -a "{home}" ./copy',
             f'rsync -av "{home}/" ./copy',
+            # `7z a` recurses into a directory with no flag at all.
+            f'7z a out.7z "{home}"',
+            f'zip -r out.zip "{home}"',
         ):
             assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED
@@ -2370,6 +2373,8 @@ def test_a_recursive_read_of_the_studio_root_is_refused(monkeypatch, tmp_path):
             f'grep -r TODO "{home}/projects/p"',
             "grep -r TODO .",
             "tar -czf out.tgz .",
+            "7z a out.7z src",
+            f'du -sh "{home}"',
         ):
             assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
                 tools._STUDIO_CREDENTIAL_BLOCKED

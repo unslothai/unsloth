@@ -2968,8 +2968,10 @@ def _names_the_studio_root_itself(text: str) -> bool:
 
 # Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
 # `find` with no action) is not one of these: it names files without reading them.
-_STUDIO_WALK_COMMANDS = frozenset({"rsync", "tar", "cpio", "rg", "ag", "ack"})
-_STUDIO_WALK_FLAG_COMMANDS = frozenset({"grep", "egrep", "fgrep", "cp", "scp", "zip", "7z", "7za"})
+# `7z a out.7z <dir>` recurses into the directory with no flag at all, so it belongs here rather
+# than with the ones that need `-r`.
+_STUDIO_WALK_COMMANDS = frozenset({"rsync", "tar", "cpio", "rg", "ag", "ack", "7z", "7za", "7zr"})
+_STUDIO_WALK_FLAG_COMMANDS = frozenset({"grep", "egrep", "fgrep", "cp", "scp", "zip"})
 # `find` reads nothing by itself; an ACTION (or a pipe into another command) is what does.
 _STUDIO_FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint"})
 _STUDIO_WALK_SPLIT_RE = re.compile(r"[\s;&()<>]+")
