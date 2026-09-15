@@ -567,7 +567,9 @@ def test_an_engine_that_did_not_answer_has_not_cleared_us() -> None:
     assert any("Skyhigh" in row for row in delta.better), delta.better
 
 
-@pytest.mark.parametrize("category", ["timeout", "confirmed-timeout", "failure", "type-unsupported"])
+@pytest.mark.parametrize(
+    "category", ["timeout", "confirmed-timeout", "failure", "type-unsupported"]
+)
 def test_an_inconclusive_result_does_not_clear_a_prior_detection(category: str) -> None:
     """An engine that timed out has not cleared us any more than one that never ran.
 
@@ -588,7 +590,7 @@ def test_an_inconclusive_result_does_not_clear_a_prior_detection(category: str) 
         "Microsoft": {"category": "undetected", "result": None},
     }
     delta = vtd.compare(baseline, _snap(payload))
-    assert not any("no longer flag" in row for row in delta.better), (
-        f"a {category!r} result was treated as Skyhigh clearing the candidate: {delta.better}"
-    )
+    assert not any(
+        "no longer flag" in row for row in delta.better
+    ), f"a {category!r} result was treated as Skyhigh clearing the candidate: {delta.better}"
     assert any("NOT cleared" in row for row in delta.same), delta.same
