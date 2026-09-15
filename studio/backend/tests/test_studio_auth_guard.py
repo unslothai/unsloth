@@ -2081,3 +2081,38 @@ def test_a_child_cwd_and_a_directory_descriptor_both_carry_the_studio_root(monke
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_class_body_runs_at_definition_but_its_methods_do_not(monkeypatch, tmp_path):
+    # Python executes a class body when the class statement runs, whether or not anything
+    # instantiates it, so `class C: os.chdir("../..")` moves the process. Grouped with the deferred
+    # bodies, that move was dropped and the database that followed resolved from the sandbox.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import os, sqlite3\nclass C:\n    os.chdir("../..")\n'
+            'print(sqlite3.connect("auth/auth.db"))',
+            'import os\nclass C:\n    os.chdir("../..")\nprint(open("auth/.desktop_secret").read())',
+            # An invoked method is a real move for the same reason it always was.
+            'import os\nclass C:\n    def m(self):\n        os.chdir("../..")\n'
+            'C().m()\nprint(open("auth/auth.db").read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        for ordinary in (
+            # A method nothing calls is still deferred, and so is a plain function.
+            'import os\nclass C:\n    def m(self):\n        os.chdir("../..")\n'
+            'print(open("auth/config.json").read())',
+            'import os\ndef f():\n    os.chdir("../..")\nprint(open("auth/config.json").read())',
+            'import os\nclass C:\n    x = 1\nprint(open("notes.txt").read())',
+        ):
+            assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

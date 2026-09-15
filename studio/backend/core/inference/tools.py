@@ -3307,11 +3307,15 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
 
 
 def _calls_in_uncalled_scopes(tree) -> "set[int]":
-    """Ids of calls sitting in a function, lambda or class body that nothing in *code* calls.
+    """Ids of calls sitting in a function or lambda body that nothing in *code* calls.
 
     Deliberately narrow. A body whose name IS called anywhere in the snippet stays live, because the
     move is then real and only the ordering is unknown, and the conservative reading is what a guard
     wants. A branch is not a scope: `if cond: os.chdir(...)` may well run, so it keeps moving.
+
+    A CLASS body is not deferred at all: python executes it when the class statement runs, whether
+    or not anything instantiates the class, so `class C: os.chdir("../..")` moves the process. Only
+    the methods inside it are deferred, and those are function bodies reached in their own right.
     """
     called: "set[str]" = set()
     for node in ast.walk(tree):
@@ -3324,7 +3328,7 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
             called.add(func.attr)
     inert: "set[int]" = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in called:
                 continue
         elif not isinstance(node, ast.Lambda):
