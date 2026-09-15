@@ -2190,7 +2190,20 @@ STUB_EOF
         if command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
             # cmd.exe rather than powershell.exe: one fewer interpreter start, and it cannot be the
             # thing a policy blocks. The trailing CR is cmd's, not ours.
-            _css_win_temp_raw=$(cmd.exe /c echo %TEMP% 2>/dev/null | tr -d '\r\n') || _css_win_temp_raw=""
+            #
+            # /d, because without it cmd runs the AutoRun command out of
+            # HKCU\Software\Microsoft\Command Processor before anything else, on the same stdout.
+            # Clink sets one, so Cmder does, and so do plenty of corporate images; its banner would
+            # be glued to the front of the path, wslpath would reject that and the whole shortcut
+            # would be skipped. Those users got a shortcut before this block existed, so leaving
+            # AutoRun enabled would be a regression that only shows up on their machines.
+            #
+            # Last line rather than the whole stream for whatever still prints (an AutoRun invoked
+            # some other way, a login banner), and trailing blanks go because Win32 strips them
+            # from a path while [ -d ] does not. The || is not dead code: this file runs under
+            # set -e, where a failed substitution would end the install.
+            _css_win_temp_raw=$(cmd.exe /d /c echo %TEMP% 2>/dev/null \
+                | tr -d '\r' | tail -n 1 | sed 's/[[:space:]]*$//') || _css_win_temp_raw=""
             case "$_css_win_temp_raw" in
                 ""|"%TEMP%") _css_win_temp="" ;;
                 *) _css_win_temp=$(wslpath -u "$_css_win_temp_raw" 2>/dev/null) || _css_win_temp="" ;;

@@ -46,22 +46,40 @@ WINTEMP=$(mktemp -d)
 cleanup() { rm -rf "$STUBS" "$WINTEMP"; }
 trap cleanup EXIT
 
-# wslpath -u <windows path> -> our fake mount point. Mirrors the real contract closely enough: the
-# block only ever calls `wslpath -u` on the string cmd.exe printed.
-cat > "$STUBS/wslpath" <<STUB
+# wslpath -u <windows path> -> our fake mount point.
+#
+# INPUT-SENSITIVE, and that is the whole point of the stub. A wslpath that returns the fake
+# Windows temp whatever it is handed cannot tell "install.sh read the path correctly" from
+# "install.sh read a banner and a path glued together", so every case below about WHAT cmd.exe
+# printed would pass against a block that got it wrong. Only the exact string maps; anything
+# else maps somewhere that does not exist, which is what the real wslpath does with a string
+# that is not a path.
+# $1 = the only string that maps, $2 = where it maps to.
+make_wslpath_stub() {
+    cat > "$STUBS/wslpath" <<STUB
 #!/bin/sh
 [ "\$1" = "-u" ] || exit 1
-printf '%s' "$WINTEMP"
+if [ "\$2" = '$1' ]; then printf '%s' '$2'; else printf '%s' '$2/not-what-cmd-printed'; fi
 STUB
-chmod +x "$STUBS/wslpath"
+    chmod +x "$STUBS/wslpath"
+}
 
+# $1 is what `echo %TEMP%` prints, and is also the only string wslpath will map. $2, when given,
+# is an AutoRun banner that precedes it on the SAME stdout unless cmd.exe is passed /d.
 make_cmd_stub() {
     cat > "$STUBS/cmd.exe" <<STUB
 #!/bin/sh
 # Real cmd.exe emits CRLF; the block strips it, so emit one here or the test would not cover that.
+# It also runs the AutoRun command from HKCU\\Software\\Microsoft\\Command Processor first, on this
+# same stdout, unless /d is passed. Clink sets one, so Cmder does, and so do corporate images.
+_autorun=1
+for _a in "\$@"; do [ "\$_a" = "/d" ] && _autorun=0; done
+[ "\$_autorun" = 1 ] && [ -n '${2:-}' ] && printf '%s\r\n' '${2:-}'
 printf '%s\r\n' '$1'
 STUB
     chmod +x "$STUBS/cmd.exe"
+    # Trailing blanks are not part of the path: Win32 strips them, so the block has to.
+    make_wslpath_stub "$(printf '%s' "$1" | sed 's/[[:space:]]*$//')" "$WINTEMP"
 }
 
 run_block() {
@@ -118,21 +136,44 @@ assert_eq "unexpanded %TEMP% is rejected" "" "$(printf '%s' "$OUT" | sed -n 1p)"
 assert_eq "unexpanded %TEMP% allocates nothing" "" "$(printf '%s' "$OUT" | sed -n 2p)"
 
 # 4. cmd.exe prints a path that does not exist: wslpath succeeds, the directory does not.
-cat > "$STUBS/wslpath" <<STUB
-#!/bin/sh
-[ "\$1" = "-u" ] || exit 1
-printf '%s' "$WINTEMP/definitely-absent"
-STUB
-chmod +x "$STUBS/wslpath"
 make_cmd_stub 'C:\Users\ci\AppData\Local\Temp'
+make_wslpath_stub 'C:\Users\ci\AppData\Local\Temp' "$WINTEMP/definitely-absent"
 OUT=$(run_block)
 assert_eq "a %TEMP% that is not a directory is rejected" "" "$(printf '%s' "$OUT" | sed -n 1p)"
+
+# 5. cmd.exe runs an AutoRun command first, on the same stdout.
+#
+#    HKCU\Software\Microsoft\Command Processor\AutoRun runs before anything else unless /d is
+#    passed, and `cmd /c` is not exempt. Clink sets one, so Cmder does, and so do plenty of
+#    corporate images. Reading the whole stream glues the banner to the front of the path, which
+#    wslpath then rejects, and every one of those users silently loses the shortcut they used to
+#    get. The fix is /d, not parsing harder, so the stub only suppresses the banner for /d.
+make_cmd_stub 'C:\Users\ci\AppData\Local\Temp' 'clink v1.6.20 is available.'
+OUT=$(run_block)
+assert_eq "an AutoRun banner does not corrupt %TEMP%" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+[ -n "$(printf '%s' "$OUT" | sed -n 2p)" ] \
+    && ok "an AutoRun banner still allocates the script" \
+    || bad "an AutoRun banner cost the user their shortcut"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
+# 6. Trailing blanks on the value. Win32 strips them from a path, [ -d ] does not, so a %TEMP%
+#    set with one would otherwise resolve to a directory that appears not to exist.
+make_cmd_stub 'C:\Users\ci\AppData\Local\Temp   '
+OUT=$(run_block)
+assert_eq "trailing blanks are trimmed off %TEMP%" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
 else
     echo "  SKIP: the four resolution cases need the block above; see the failure printed there"
 fi
 
 # --- Static half: what the shipped file may and may not contain. -------------------------------
+
+# /d on the cmd.exe that reads %TEMP%, so no AutoRun command gets to print onto the stdout this
+# block is reading. Static as well as behavioural: the case above proves the block survives a
+# banner, this proves it survives it the cheap way rather than by out-parsing whatever prints.
+assert_contains "the %TEMP% probe disables AutoRun" \
+    "$(grep 'cmd.exe .* echo %TEMP%' "$INSTALL_SH")" "cmd.exe /d /c"
 
 LAUNCH=$(grep -n 'powershell.exe -NoProfile -ExecutionPolicy .* -File "\$_css_ps1_win"' "$INSTALL_SH" || true)
 assert_contains "the shortcut launch uses RemoteSigned" "$LAUNCH" "-ExecutionPolicy RemoteSigned"
