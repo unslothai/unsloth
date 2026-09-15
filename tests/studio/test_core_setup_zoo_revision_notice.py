@@ -78,7 +78,11 @@ def _lookup_timeout_seconds() -> int:
 
 
 def _run_notice(
-    tmp_path: Path, *, git_exit: int, git_stdout: str, git_sleep: int = 0
+    tmp_path: Path,
+    *,
+    git_exit: int,
+    git_stdout: str,
+    git_sleep: int = 0,
 ) -> subprocess.CompletedProcess:
     """Execute the notice block with `git` stubbed, under the step's own flags."""
     stub_dir = tmp_path / "bin"
@@ -111,7 +115,10 @@ def _run_notice(
     env = {"PATH": f"{stub_dir}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path)}
     return subprocess.run(
         ["bash", str(script), str(tmp_path)],
-        capture_output = True, text = True, timeout = 60, env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+        env = env,
     )
 
 
@@ -157,9 +164,9 @@ def test_the_matching_revision_is_not_reported_as_stale(tmp_path):
     proc = _run_notice(tmp_path, git_exit = 0, git_stdout = f"{same}\trefs/heads/main\n")
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, combined[-2000:]
-    assert "::warning" not in combined, (
-        f"the pinned revision equals main and was still called stale:\n{combined[-2000:]}"
-    )
+    assert (
+        "::warning" not in combined
+    ), f"the pinned revision equals main and was still called stale:\n{combined[-2000:]}"
 
 
 def test_the_lookup_absorbs_its_failure_inside_the_substitution():
