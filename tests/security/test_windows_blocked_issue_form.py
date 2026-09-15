@@ -204,9 +204,9 @@ def test_every_line_that_can_carry_a_path_is_redacted() -> None:
     ):
         line = next((ln for ln in snippet.splitlines() if carrier in ln), None)
         assert line is not None, f"the collection script no longer prints {why} ({carrier})"
-        assert "Hide-Personal" in line, (
-            f"the line printing {why} is no longer redacted: {line.strip()}"
-        )
+        assert (
+            "Hide-Personal" in line
+        ), f"the line printing {why} is no longer redacted: {line.strip()}"
 
 
 def test_the_form_does_not_promise_more_privacy_than_it_delivers() -> None:
@@ -220,6 +220,6 @@ def test_the_form_does_not_promise_more_privacy_than_it_delivers() -> None:
         "the form claims again that the collection script touches no personal data, but it prints "
         "detection paths from the last two hours"
     )
-    assert "Read the output before you paste it" in description, (
-        "the form no longer tells the reporter to read the output before publishing it"
-    )
+    assert (
+        "Read the output before you paste it" in description
+    ), "the form no longer tells the reporter to read the output before publishing it"
