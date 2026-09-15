@@ -880,11 +880,11 @@ class TestAParkDuringPrefillIsExcusedToo:
 
     def test_the_first_item_grace_is_bounded(self):
         source = inspect.getsource(inference._aiter_llama_stream_items)
-        excuse = source.index("def _first_item_excused(")
-        window = source[excuse : excuse + 700]
+        excuse = source.index("def _deadline_excused(")
+        window = source[excuse : excuse + 900]
         assert "first_deadline_crossed_at" in window and "_RAW_PARK_STALL_CAP_S" in window
-        # Both ways the first read can time out ask it.
-        assert source.count("_first_item_excused(") == 3
+        # Both ways a read can time out ask it.
+        assert source.count("_deadline_excused(") == 3
 
 
 class TestTheGlobalOptOutBlocksAnAutoLaunch:
@@ -1114,7 +1114,7 @@ class TestTheGraceStartsAtTheDeadlineAndTheProbeLeavesTheLoopAlone:
     def test_the_grace_above_the_iterator_asks_off_the_loop_too(self):
         source = inspect.getsource(inference._aiter_llama_stream_items)
         assert "park_above.excuses_silence()" not in source
-        assert source.count("await _probe_off_the_loop(park_above.excuses_silence)") == 2
+        assert source.count("await _probe_off_the_loop(park_above.excuses_silence)") == 1
 
     def test_this_streams_own_park_excuses_it_without_asking_the_aggregate(self, monkeypatch):
         import httpcore

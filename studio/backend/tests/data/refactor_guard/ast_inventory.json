@@ -10,8 +10,26 @@
       "ReasoningTextIteratorStreamer": {
         "kind": "class"
       },
+      "_CLEANUP_SPAN_CHARS": {
+        "kind": "assign"
+      },
+      "_CLEANUP_SPAN_TOKENS": {
+        "kind": "assign"
+      },
+      "_CLEANUP_TAILS": {
+        "kind": "assign"
+      },
       "_GenerationThreadError": {
         "kind": "class"
+      },
+      "_StopSequenceStreamer": {
+        "kind": "class"
+      },
+      "_cleanup_join_pending": {
+        "kind": "def"
+      },
+      "_decoder_cleans_up": {
+        "kind": "def"
       },
       "_hf_token_for_loader": {
         "kind": "def"
@@ -161,6 +179,9 @@
       "_DEVICE_ROW_RE": {
         "kind": "assign"
       },
+      "_DEVICE_VISIBILITY_ENV": {
+        "kind": "assign"
+      },
       "_DOCTYPE_PREFIX": {
         "kind": "assign"
       },
@@ -204,6 +225,9 @@
         "kind": "assign"
       },
       "_FORCED_PLAN_INTENT": {
+        "kind": "assign"
+      },
+      "_GEMMA4V_CAUSAL_TEXT_N_EMBD": {
         "kind": "assign"
       },
       "_GEMMA_MTP_FAMILY_RE": {
@@ -272,6 +296,12 @@
       "_LEGACY_SPEC_MODE_MAP": {
         "kind": "assign"
       },
+      "_LISTED_DEVICE_RE": {
+        "kind": "assign"
+      },
+      "_LIST_DEVICES_HEADER": {
+        "kind": "assign"
+      },
       "_LIST_MARKER_ONLY": {
         "kind": "assign"
       },
@@ -305,6 +335,9 @@
       "_LOADS_IN_FLIGHT_LOCK": {
         "kind": "assign"
       },
+      "_LOAD_PROBE_STATE": {
+        "kind": "assign"
+      },
       "_LOCAL_DRAFT_FLAGS": {
         "kind": "assign"
       },
@@ -329,7 +362,13 @@
       "_MISS": {
         "kind": "assign"
       },
+      "_MISSING": {
+        "kind": "assign"
+      },
       "_MLA_MTP_FAST_ARCHS": {
+        "kind": "assign"
+      },
+      "_MMPROJ_NON_CAUSAL_IMAGE_TOKENS": {
         "kind": "assign"
       },
       "_MMPROJ_OFFLOAD_ENV_VAR": {
@@ -341,6 +380,9 @@
       "_MMPROJ_OFFLOAD_NEG_ENV_VAR": {
         "kind": "assign"
       },
+      "_MMPROJ_UNKNOWN_UBATCH": {
+        "kind": "assign"
+      },
       "_MTP_MIN_SIZE_B": {
         "kind": "assign"
       },
@@ -348,6 +390,9 @@
         "kind": "assign"
       },
       "_MTP_VRAM_RESERVE_FRAC": {
+        "kind": "assign"
+      },
+      "_NEEDS_ROCM_CLASSIFICATION": {
         "kind": "assign"
       },
       "_OFFLOADED_LAYERS_RE": {
@@ -399,6 +444,9 @@
         "kind": "assign"
       },
       "_RESPAWN_REAP_GRACE_S": {
+        "kind": "assign"
+      },
+      "_SELF_EVIDENTLY_DISCRETE": {
         "kind": "assign"
       },
       "_SERVER_KEEPALIVE_COMMENT": {
@@ -560,6 +608,9 @@
       "_argv_keeps_projector_on_gpu": {
         "kind": "def"
       },
+      "_arm_load_probe_memo": {
+        "kind": "def"
+      },
       "_artifact_spans": {
         "kind": "def"
       },
@@ -576,6 +627,9 @@
         "kind": "def"
       },
       "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_batch_ubatch_for_mmproj": {
         "kind": "def"
       },
       "_boundary_metadata": {
@@ -645,6 +699,9 @@
         "kind": "def"
       },
       "_conversation_recall_reserve": {
+        "kind": "def"
+      },
+      "_count_subsequence": {
         "kind": "def"
       },
       "_cpu_runtime_owner_alive": {
@@ -950,6 +1007,9 @@
       "_kv_unified_from_args": {
         "kind": "def"
       },
+      "_launch_required_ubatch": {
+        "kind": "def"
+      },
       "_lib_dir_has_ggml_backend": {
         "kind": "def"
       },
@@ -960,6 +1020,18 @@
         "kind": "def"
       },
       "_llama_predicted_n": {
+        "kind": "def"
+      },
+      "_load_probe_memo_armed": {
+        "kind": "def"
+      },
+      "_load_probe_memo_get": {
+        "kind": "def"
+      },
+      "_load_probe_memo_put": {
+        "kind": "def"
+      },
+      "_load_probe_memo_scope": {
         "kind": "def"
       },
       "_load_swa_cache": {
@@ -983,7 +1055,16 @@
       "_mmproj_env_is_audio_only": {
         "kind": "def"
       },
+      "_mmproj_required_ubatch": {
+        "kind": "def"
+      },
+      "_mtp_drafter_loads_standalone": {
+        "kind": "def"
+      },
       "_mtp_head_borrows": {
+        "kind": "def"
+      },
+      "_named_batch_sizes": {
         "kind": "def"
       },
       "_named_preempt_ram_mib": {
@@ -1014,6 +1095,9 @@
         "kind": "def"
       },
       "_paravirtual_strip_gpu_overrides": {
+        "kind": "def"
+      },
+      "_parse_listed_devices": {
         "kind": "def"
       },
       "_period_from_layer_types": {
@@ -1065,6 +1149,9 @@
         "kind": "def"
       },
       "_quant_label_for_endian": {
+        "kind": "def"
+      },
+      "_read_gguf_embedding_length": {
         "kind": "def"
       },
       "_recall_top_k": {
@@ -1184,6 +1271,9 @@
       "_text_outside_think": {
         "kind": "def"
       },
+      "_unknown_projector_ubatch": {
+        "kind": "def"
+      },
       "_usage_with_earlier_attempts": {
         "kind": "def"
       },
@@ -1197,6 +1287,9 @@
         "kind": "def"
       },
       "_without_subsequence": {
+        "kind": "def"
+      },
+      "_write_direct_stream_key": {
         "kind": "def"
       },
       "_wsl_system_rocm_lib_dirs": {
@@ -1719,6 +1812,9 @@
         "kind": "assign"
       },
       "_MARKUP_OPENERS": {
+        "kind": "assign"
+      },
+      "_MAX_FENCE_CHARS": {
         "kind": "assign"
       },
       "_MAX_GEMMA_PREFIX_TAIL": {

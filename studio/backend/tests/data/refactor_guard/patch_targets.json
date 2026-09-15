@@ -1,4 +1,22 @@
 {
+  "core.data_recipe.export._resolve_recipe_artifact_path": [
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py",
+    "tests/test_data_recipe_dataset_download.py"
+  ],
+  "core.data_recipe.export._write_jsonl_from_parquet": [
+    "tests/test_data_recipe_dataset_download.py"
+  ],
   "core.export.get_export_backend": [
     "tests/test_diffusion_training.py",
     "tests/test_gpu_selection.py",
@@ -38,13 +56,11 @@
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
   ],
   "core.inference.chat_template_helpers.detect_think_prefill": [
-    "tests/test_mlx_inference_backend.py",
-    "tests/test_mlx_inference_backend.py",
-    "tests/test_mlx_inference_backend.py",
-    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
@@ -325,6 +341,9 @@
   "core.inference.llama_cpp.subprocess.run": [
     "tests/test_amd_apu_unified_memory.py",
     "tests/test_amd_apu_unified_memory.py",
+    "tests/test_dgx_spark_gguf_context.py",
+    "tests/test_dgx_spark_gguf_context.py",
+    "tests/test_dgx_spark_gguf_context.py",
     "tests/test_llama_cpp_mtp_detection.py",
     "tests/test_llama_cpp_mtp_detection.py",
     "tests/test_llama_cpp_mtp_detection.py",
@@ -410,6 +429,26 @@
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py"
+  ],
+  "core.inference.mcp_client.close_mcp_sessions": [
+    "tests/test_account_retired_workspace_recreated.py",
+    "tests/test_account_storage.py",
+    "tests/test_account_storage.py",
+    "tests/test_job_accounts.py"
+  ],
+  "core.inference.mcp_client.invalidate_tool_cache": [
+    "tests/test_account_retired_workspace_recreated.py",
+    "tests/test_account_storage.py",
+    "tests/test_account_storage.py",
+    "tests/test_job_accounts.py"
+  ],
+  "core.inference.mlx_inference._mlx_stream_detokenizer": [
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py"
+  ],
+  "core.inference.mlx_inference._mlx_vlm_decodes_video": [
+    "tests/test_openai_auto_switch.py",
+    "tests/test_openai_auto_switch.py"
   ],
   "core.inference.mlx_inference._temporary_mlx_adapter_state": [
     "tests/test_mlx_inference_backend.py"
@@ -607,6 +646,12 @@
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_tool_loop_preempt_resume.py",
     "tests/test_no_progress_tool_results.py",
     "tests/test_no_progress_tool_results.py",
@@ -702,6 +747,16 @@
   "core.research_runs._peek_inference_backend": [
     "tests/test_web_page_cap_fits_window.py",
     "tests/test_web_page_cap_fits_window.py"
+  ],
+  "core.research_runs.retire_account_research": [
+    "tests/test_job_accounts.py",
+    "tests/test_job_accounts.py",
+    "tests/test_job_accounts.py",
+    "tests/test_job_accounts.py",
+    "tests/test_job_accounts.py",
+    "tests/test_job_accounts.py",
+    "tests/test_rag_folder_sync_retirement.py",
+    "tests/test_rag_ingestion_retirement.py"
   ],
   "core.training.diffusion_checkpoint.read_checkpoint": [
     "tests/test_diffusion_train_perf.py"
@@ -894,10 +949,14 @@
   ],
   "hub.utils.hf_cache_state.iter_repo_cache_dirs": [
     "tests/test_cached_gguf_routes.py",
-    "tests/test_cached_gguf_routes.py"
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_training_ambient_hf_token.py",
+    "tests/test_training_ambient_hf_token.py",
+    "tests/test_training_ambient_hf_token.py"
   ],
   "hub.utils.hf_cache_state.latest_snapshot_from_cache_path": [
-    "tests/test_models_get_model_config_case_resolution.py"
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_training_ambient_hf_token.py"
   ],
   "hub.utils.hf_cache_state.repo_cache_dir_has_incomplete_blobs": [
     "tests/test_offline_embedding_minimal.py"
@@ -1106,6 +1165,9 @@
     "tests/test_training_vram_coexistence.py"
   ],
   "utils.hardware.ensure_hardware_detected": [
+    "tests/test_training_ambient_hf_token.py",
+    "tests/test_training_ambient_hf_token.py",
+    "tests/test_training_ambient_hf_token.py",
     "tests/test_training_cached_start.py",
     "tests/test_training_start_offload.py"
   ],
@@ -1626,6 +1688,15 @@
   "utils.native_tls.activate_native_tls": [
     "tests/test_diffusion_training.py"
   ],
+  "utils.openai_auto_switch_settings.get_auto_unload_api_only": [
+    "tests/multi_account/test_chat_unload_ownership.py"
+  ],
+  "utils.openai_auto_switch_settings.get_auto_unload_idle_seconds": [
+    "tests/multi_account/test_chat_unload_ownership.py"
+  ],
+  "utils.openai_auto_switch_settings.get_auto_unload_keep_kv": [
+    "tests/multi_account/test_chat_unload_ownership.py"
+  ],
   "utils.openai_auto_switch_settings.get_openai_auto_download_enabled": [
     "tests/test_openai_auto_switch.py"
   ],
@@ -1795,15 +1866,19 @@
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
     "tests/test_transformers_version.py"
   ],
   "utils.transformers_version._load_config_json": [
     "tests/test_capability_detection.py",
+    "tests/test_gpu_selection.py",
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
-    "tests/test_transformers_version.py"
+    "tests/test_transformers_version.py",
+    "tests/test_vram_estimation.py"
   ],
   "utils.transformers_version._probe_tier": [
     "tests/test_transformers_version.py",

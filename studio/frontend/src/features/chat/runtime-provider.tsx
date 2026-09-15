@@ -135,6 +135,7 @@ import {
 } from "./utils/chat-generation-recovery";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { mergeContextTruncation } from "./utils/context-truncation";
+import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -1682,6 +1683,8 @@ function useStudioRuntimeAdapters(
 ): StudioRuntimeAdapters {
   const signalReady = useAppShellReadySignal();
   const aui = useAui();
+
+  useEffect(() => registerLiveThreadView(aui), [aui]);
 
   useEffect(() => {
     const recoverCurrentThread = () => {
