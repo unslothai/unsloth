@@ -76,7 +76,21 @@ _real_loggers = _backend_root / "loggers"
 if _real_loggers.is_dir() and "loggers" not in sys.modules:
     _loggers_pkg = _types.ModuleType("loggers")
     _loggers_pkg.__path__ = [str(_real_loggers)]
-    _loggers_pkg.get_logger = lambda name: logging.getLogger(name)
+    # Matches `loggers.handlers.get_logger`, which returns `structlog.get_logger(name)`.
+    # A stdlib logger is NOT a drop-in: the backend logs structured kwargs
+    # (`logger.error(msg, error = exc)`), and `logging.Logger._log` rejects those with
+    # TypeError. The 86 in-file stubs use the stdlib lambda and got away with it only
+    # because they applied to far fewer modules; settling `loggers` once for the session
+    # makes the shape universal, so it has to be the real one.
+    def _get_logger(name):
+        try:
+            import structlog
+
+            return structlog.get_logger(name)
+        except ImportError:  # pragma: no cover - minimal env without structlog
+            return logging.getLogger(name)
+
+    _loggers_pkg.get_logger = _get_logger
     # `main.py` and the app factory call this at import; a no-op keeps them importable
     # without the real handlers module.
     _loggers_pkg.install_uvicorn_duplicate_exception_filter = lambda *a, **k: None

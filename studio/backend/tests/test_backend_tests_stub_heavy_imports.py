@@ -2264,15 +2264,29 @@ def test_settling_loggers_does_not_drag_in_the_handlers():
     is that SETTLING `loggers` does not require it -- i.e. the registered module is the
     stand-in, not the real package re-exporting the real handler factory.
     """
-    import logging
     import sys
 
-    loggers = sys.modules["loggers"]
-    made = loggers.get_logger("probe-for-the-stub-shape")
-    assert isinstance(made, logging.Logger), (
-        "conftest registered something other than the lightweight `get_logger` "
-        "stand-in, so settling `loggers` now costs the handlers the 84 stubs avoid"
+    assert sys.modules["loggers"].__name__ == "loggers"
+    # The stand-in is a plain ModuleType, not the real package: the real one is a package
+    # whose __file__ is loggers/__init__.py and whose get_logger comes from .handlers.
+    assert getattr(sys.modules["loggers"], "__file__", None) is None, (
+        "the real `loggers/__init__` was imported to settle it, which costs the handlers "
+        "the 86 stubs exist to avoid; conftest should register the stand-in instead"
     )
+
+
+def test_the_stand_in_get_logger_takes_structured_kwargs():
+    """It must match `loggers.handlers.get_logger`, which returns a structlog logger.
+
+    A stdlib `logging.Logger` is not a drop-in: the backend logs
+    `logger.error(msg, error = exc)`, and `Logger._log` raises TypeError on those. Caught
+    in CI rather than locally, where the modules that log that way were not reached.
+    """
+    import sys
+
+    logger = sys.modules["loggers"].get_logger("probe-for-the-stub-shape")
+    # Must not raise: this is the exact call shape the backend uses.
+    logger.error("probe", error = "structured-value", detail = 1)
 
 
 def test_the_structlog_in_sys_modules_can_make_a_logger():
