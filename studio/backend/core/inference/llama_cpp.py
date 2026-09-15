@@ -11757,7 +11757,7 @@ class LlamaCppBackend:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
-                env = child_env_without_native_path_secret(),
+                env = utf8_child_env(child_env_without_native_path_secret()),
                 **_windows_hidden_subprocess_kwargs(),
             )
             payload = json.loads(result.stdout or "null")

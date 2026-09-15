@@ -266,7 +266,9 @@ class TestTheEmbeddingServerKeepsTheGpu:
     def test_embeddings_offload_when_only_nvml_answers(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
         probe_script(_payload([_row(0, 8000)]))
-        monkeypatch.setattr(embed_mod.sys, "platform", "linux")  # Metal answers on a Mac
+        import utils.hardware as hardware
+
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)  # Metal answers on a Mac
         monkeypatch.setattr(embed_mod.config, "embed_device_preference", lambda: "auto")
         monkeypatch.setattr(
             LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda binary: []), raising = False
