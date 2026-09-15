@@ -3229,19 +3229,24 @@ _has_local_llama_server() {
 
 # The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
 # `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
-# One string field of the install marker ($2), or nothing.
-_installed_prebuilt_field() {
-    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
-    python - "$1/UNSLOTH_PREBUILT_INFO.json" "$2" <<'PY' 2>/dev/null || true
+# Whether the install marker's $2 names the pinned ref $3, by the installer's own alias and
+# commit-prefix matching (refs/tags/b8508 is b8508, a short commit matches the full one).
+_installed_prebuilt_ref_matches() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
+    python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" <<'PY' 2>/dev/null
+import importlib.util
 import json
 import sys
 
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
 try:
-    marker = json.load(open(sys.argv[1], encoding="utf-8"))
+    marker = json.load(open(sys.argv[2], encoding="utf-8"))
 except Exception:
     marker = {}
-value = marker.get(sys.argv[2]) if isinstance(marker, dict) else None
-print(value.strip() if isinstance(value, str) else "")
+value = marker.get(sys.argv[3]) if isinstance(marker, dict) else None
+sys.exit(0 if isinstance(value, str) and installer.refs_match(value.strip(), sys.argv[4]) else 1)
 PY
 }
 
@@ -3310,11 +3315,11 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     # An explicit version pin asked for that version; the old install satisfies it only
     # when its marker records the same one.
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
-        [ "$(_installed_prebuilt_field "$install_dir" release_tag)" = "$UNSLOTH_LLAMA_RELEASE_TAG" ] || return 1
+        _installed_prebuilt_ref_matches "$install_dir" release_tag "$UNSLOTH_LLAMA_RELEASE_TAG" || return 1
     fi
     case "${UNSLOTH_LLAMA_TAG:-}" in
         ""|latest|master) ;;
-        *) [ "$(_installed_prebuilt_field "$install_dir" tag)" = "$UNSLOTH_LLAMA_TAG" ] || return 1 ;;
+        *) _installed_prebuilt_ref_matches "$install_dir" tag "$UNSLOTH_LLAMA_TAG" || return 1 ;;
     esac
     _has_local_llama_server "$install_dir" || return 1
     backend="$(_installed_prebuilt_backend "$install_dir")"
@@ -3994,13 +3999,14 @@ else
                         if [ -n "$_smi_bin" ]; then
                             _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
-                        # nvidia-smi absent or stale: the driver library lists the same capabilities.
-                        if [ -z "$_raw_caps" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] \
+                        CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
+                        # nvidia-smi absent, stale or answering N/A: the driver library lists the capabilities.
+                        if [ -z "$CUDA_ARCHS" ] && [ "${UNSLOTH_NVIDIA_LIBRARY_PROBE:-1}" != "0" ] \
                                 && [ -f "$SCRIPT_DIR/nvidia_probe.py" ] && command -v python3 >/dev/null 2>&1; then
                             _raw_caps=$(_setup_run_smi python3 -I "$SCRIPT_DIR/nvidia_probe.py" 2>/dev/null \
                                 | sed -n 's/.*(compute \([0-9][0-9]*\.[0-9][0-9]*\)).*/\1/p' || true)
+                            CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "")"
                         fi
-                        CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
 
                         if [ -n "$CUDA_ARCHS" ]; then
                             CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"

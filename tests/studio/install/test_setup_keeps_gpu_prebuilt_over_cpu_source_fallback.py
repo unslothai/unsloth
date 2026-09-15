@@ -31,7 +31,7 @@ requires_bash = pytest.mark.skipif(BASH is None, reason = "a working bash is req
 
 _FUNCTIONS = (
     "_has_local_llama_server() {",
-    "_installed_prebuilt_field() {",
+    "_installed_prebuilt_ref_matches() {",
     "_installed_prebuilt_backend() {",
     "_gpu_prebuilt_to_keep_over_cpu_build() {",
 )
@@ -91,6 +91,8 @@ def _decide(tmp_path, install_dir, **env):
         "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}",
         "_LLAMA_FORCE_COMPILE": "0",
         "_LLAMA_PR": "",
+        # The pin comparison imports install_llama_prebuilt.py from beside setup.sh.
+        "SCRIPT_DIR": str(SETUP_SH.parent),
         "_setup_nvidia_physical": "false",
         "_setup_amd_detected": "false",
     }
@@ -158,6 +160,8 @@ class TestTheKeepDecision:
         nvidia = {"_setup_nvidia_physical": "true"}
         assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b8508", **nvidia) == "KEEP cuda"
         assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b8509", **nvidia) == "REPLACE"
+        # The installer's own matching: a qualified tag ref names the same release.
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "refs/tags/b8508", **nvidia) == "KEEP cuda"
         assert (
             _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b8508-mix", **nvidia)
             == "KEEP cuda"
@@ -477,8 +481,9 @@ def test_the_flags_are_initialised_for_set_u():
 def test_the_source_build_reads_capabilities_from_the_driver_library_too():
     """setup.sh's CUDA source build turned CUDA off without nvidia-smi (#5854); the probe
     module beside it lists the same capabilities."""
-    start = SETUP_TEXT.index('_raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap')
-    end = SETUP_TEXT.index('CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps"', start)
+    start = SETUP_TEXT.index('CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"')
+    end = SETUP_TEXT.index('if [ -n "$CUDA_ARCHS" ]; then', start)
     between = SETUP_TEXT[start:end]
-    assert 'nvidia_probe.py' in between and '[ -z "$_raw_caps" ]' in between
+    # After the first resolution, so an nvidia-smi answering N/A falls back as an absent one does.
+    assert 'nvidia_probe.py' in between and '[ -z "$CUDA_ARCHS" ]' in between
     assert 'UNSLOTH_NVIDIA_LIBRARY_PROBE' in between
