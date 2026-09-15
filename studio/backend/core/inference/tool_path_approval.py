@@ -2045,7 +2045,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             given = first
             if given is None:
                 given = next((kw.value for kw in node.keywords if kw.arg == "files"), None)
-            for element in (given.elts if isinstance(given, (ast.List, ast.Tuple)) else [given]):
+            for element in given.elts if isinstance(given, (ast.List, ast.Tuple)) else [given]:
                 add(element, False)
         elif name in _PY_PATH_READ_CALLS:
             add(first, False)

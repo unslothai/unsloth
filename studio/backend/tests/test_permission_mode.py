@@ -3557,7 +3557,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # The keyword spelling of fileinput's argument, and its sequence form.
     "import fileinput\nfor line in fileinput.input(files = '/media/kuser/MEDIA_SSD/p.txt'):\n    print(line)",
     # An annotated binding is the same binding.
-    "reader: object = open\nreader('/media/kuser/MEDIA_SSD/private.txt').read()"
+    "reader: object = open\nreader('/media/kuser/MEDIA_SSD/private.txt').read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
