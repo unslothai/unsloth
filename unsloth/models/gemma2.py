@@ -10,6 +10,10 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import (
+    original_apply_qkv,
+    original_apply_o,
+)
 from ._utils import __version__
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
@@ -97,7 +101,7 @@ def Gemma2Attention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -191,7 +195,7 @@ def Gemma2Attention_fast_forward(
             else slow_attention_softcapping
         )
         A = fx(Q, K, V, causal_mask, self, bsz, kv_seq_len)
-    A = self.apply_o(self, A)
+    A = getattr(self, "apply_o", original_apply_o)(self, A)
     return A, None, past_key_value
 
 
