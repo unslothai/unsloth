@@ -576,6 +576,31 @@ function Get-LlamaUpdateFailReason {
     return "download failed"
 }
 
+# The marker's backend as setup.sh _installed_prebuilt_backend reads it: backend, then the
+# llama_backend request, then the asset name of a marker from before the field existed.
+function Get-PrebuiltMarkerBackend {
+    param([string]$Marker)
+    if (-not (Test-PathQuiet $Marker "Leaf")) { return "" }
+    try { $payload = Get-Content -LiteralPath $Marker -Raw | ConvertFrom-Json } catch { return "" }
+    if ($null -eq $payload -or $payload -isnot [System.Management.Automation.PSCustomObject]) { return "" }
+    $field = {
+        param($name)
+        if ($payload.PSObject.Properties.Name -ccontains $name -and $payload.$name -is [string]) {
+            $value = $payload.$name.Trim().ToLowerInvariant()
+            if ($value -eq "hip") { "rocm" } else { $value }
+        } else { "" }
+    }
+    $answer = & $field "backend"
+    if (-not $answer -and (& $field "llama_backend") -in @("cuda", "rocm", "vulkan", "cpu")) { $answer = & $field "llama_backend" }
+    if (-not $answer) {
+        $asset = & $field "asset"
+        foreach ($value in @("cuda", "rocm", "vulkan", "cpu")) {
+            if ($asset -like "*-$value*" -or ($value -eq "rocm" -and $asset -like "*-hip*")) { $answer = $value; break }
+        }
+    }
+    return $answer
+}
+
 # The backend of an installed GPU prebuilt that still runs on a host that still has that GPU,
 # else "" (nothing to keep, GPU gone, or this run asked for something else). Twin of setup.sh.
 function Get-GpuPrebuiltToKeepOverSourceBuild {
@@ -583,9 +608,8 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1" -or $LlamaPr -or $explicitLlamaSourceBackend) { return "" }
     if ($env:UNSLOTH_LLAMA_RELEASE_TAG) { return "" }
     if ("$($env:UNSLOTH_LLAMA_TAG)".Trim() -notin @("", "latest", "master")) { return "" }
-    $marker = Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json"
-    if (-not (Test-PathQuiet $marker "Leaf")) { return "" }
-    try { $backend = [string](Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json).backend } catch { return "" }
+    $backend = Get-PrebuiltMarkerBackend -Marker (Join-Path $InstallDir "UNSLOTH_PREBUILT_INFO.json")
+    if (-not $backend) { return "" }
     $nvidia = $HasNvidiaSmi
     $amd = $HasROCm -or [bool]$script:ROCmGfxArch
     $present = switch ($backend) {

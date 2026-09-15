@@ -124,7 +124,7 @@ Write-Host ""
 Write-Host "=== studio/setup.ps1 ==="
 foreach ($src in (Get-HelperSources $setupPs1 @("Get-NvidiaCu126Verdict", "Get-CudaFamilyCappedForPreTuring",
         "Get-PytorchCudaTag", "Get-CudaComputeCapability", "Get-LlamaUpdateFailReason",
-        "Get-GpuPrebuiltToKeepOverSourceBuild"))) {
+        "Get-PrebuiltMarkerBackend", "Get-GpuPrebuiltToKeepOverSourceBuild"))) {
     Invoke-Expression $src
 }
 
@@ -194,6 +194,16 @@ $HasROCm = $true
 Check "a Vulkan prebuilt is kept for any GPU vendor" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "cpu"}'
 Check "a CPU prebuilt has nothing to keep" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+# Markers from before the backend field, read as setup.sh reads them.
+$HasNvidiaSmi = $true
+Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"llama_backend": "cuda"}'
+Check "a legacy marker naming the request is kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "cuda")
+Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"asset": "app-b8508-mix-windows-x64-cuda13-newer.zip"}'
+Check "a legacy marker naming only the asset is kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "cuda")
+Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "HIP"}'
+Check "hip reads as rocm, case-insensitively" ((Get-PrebuiltMarkerBackend -Marker (Join-Path $install "UNSLOTH_PREBUILT_INFO.json")) -eq "rocm")
+Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value ''
+Check "an empty marker has no backend" ((Get-PrebuiltMarkerBackend -Marker (Join-Path $install "UNSLOTH_PREBUILT_INFO.json")) -eq "")
 Remove-Item -LiteralPath $install -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
