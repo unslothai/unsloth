@@ -47,6 +47,11 @@ MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
+# Keep parsing/chunking work ahead of the serialized embedder without allowing a
+# linked-folder pass to materialize an unbounded number of documents at once. The
+# reconciliation code clamps this value to a small safe range before constructing
+# its executor.
+FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
 
 # Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
 PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"
