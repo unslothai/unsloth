@@ -74,8 +74,6 @@ function isCodeBlock(block: string): boolean {
 }
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
-// Still the first line of a single block, for `updateLinkDefinitionParity` below.
-const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -229,9 +227,41 @@ const createRepairParity = (
 // Marked keeps link reference definitions in one document-wide map and emits no token for a label
 // it has already seen, so a definition retained while its twin is still live would be lexed apart
 // and shown as a literal line. Keeping every definition in the live tail makes the two lexes agree.
-// Marked reads a fenced block as code, so those do not count.
-function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
-  if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
+//
+// The hold-set reuses the same cached Streamdown split `documentProse` already paid for. A
+// `[...]:` in this live tail block counts as a definition only when that line sits in a non-code
+// block of `blocksOf(fullMarkdown)`. Parsing the tail fragment in isolation is what treated
+// `list[str]:` inside a list-nested fence as a definition and stalled ordinary replies onto the
+// sticky full-document path; a top-level fence body split out of the opener looks like a
+// definition the same way. Container definitions Marked still registers (`- [foo]: /url`,
+// `> [foo]: /url`, nested lists) stay in that split as prose, so they still hold.
+function hasLinkDefinitionOutsideFence(
+  text: string,
+  fullMarkdown: string,
+): boolean {
+  if (!LINK_DEFINITION_RE.test(text)) {
+    return false;
+  }
+  const tailLines = new Set(text.split("\n"));
+  for (const block of blocksOf(fullMarkdown)) {
+    if (isCodeBlock(block)) {
+      continue;
+    }
+    for (const line of block.split("\n")) {
+      if (LINK_DEFINITION_LINE_RE.test(line) && tailLines.has(line)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function updateLinkDefinitionParity(
+  parity: RepairParity,
+  text: string,
+  fullMarkdown: string,
+): void {
+  if (hasLinkDefinitionOutsideFence(text, fullMarkdown)) {
     parity.linkDefinition = true;
   }
 }
@@ -713,8 +743,12 @@ function updateInlineMathParity(parity: RepairParity, text: string): void {
   }
 }
 
-function updateRepairParity(parity: RepairParity, text: string): void {
-  updateLinkDefinitionParity(parity, text);
+function updateRepairParity(
+  parity: RepairParity,
+  text: string,
+  fullMarkdown: string,
+): void {
+  updateLinkDefinitionParity(parity, text, fullMarkdown);
   updateEmphasisParity(parity, text);
   updateTripleAsteriskParity(parity, text);
   updateInlineCodeParity(parity, text);
@@ -1097,6 +1131,7 @@ function findCommitBoundary(
   blocks: string[],
   candidateCount: number,
   latex: RetainedLatexState,
+  fullMarkdown: string,
 ): CommitBoundary {
   // The tail does not start at the top of the document, so the scan starts where the retained
   // prefix left remend's math scan. Only the LaTeX state can be anything but neutral there, and it
@@ -1117,7 +1152,7 @@ function findCommitBoundary(
       break;
     }
     exactLength += block.length;
-    updateRepairParity(parity, block);
+    updateRepairParity(parity, block, fullMarkdown);
     if (hasNeutralRepairParity(parity)) {
       commit.count = index + 1;
       commit.length = exactLength;
@@ -1320,10 +1355,21 @@ export class IncrementalMarkdownCache {
     // full-document mode -- answer without it, and the precise scope costs a lex of everything
     // received so far. Reaching this point means the reply is still a retention candidate,
     // which is the only case where the answer is used.
+    //
+    // Scope is read off the repaired document, not the unrepaired source. remend
+    // synthesises the closing bracket of a mid-stream `[label][ref`, and the
+    // suite invariant evaluates `parseMarkdownIntoRenderableBlocks` on that
+    // repaired text. Using the source instead kept a prefix committed across
+    // those frames, so the incremental split was `[committed, tail]` while the
+    // repaired split was already one document.
+    const repairedDocument =
+      this.committedLength === 0
+        ? repaired
+        : markdown.slice(0, this.committedLength) + repaired;
     if (
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired) ||
-      markdownRenderScope(markdown) === "document"
+      markdownRenderScope(repairedDocument) === "document"
     ) {
       return this.renderFullDocument(markdown);
     }
@@ -1340,6 +1386,7 @@ export class IncrementalMarkdownCache {
       blocks,
       candidateCount,
       this.context.latex,
+      markdown,
     );
 
     // A mid-string repair can never become a raw prefix on a later append, so
