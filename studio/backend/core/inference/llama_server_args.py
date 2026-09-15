@@ -111,8 +111,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--log-file"}),
     frozenset({"--log-disable"}),
     # Slot-state dir: Unsloth owns it for KV persistence across idle unload. Endpoint exposure (--slots, --props) is
-    # deliberately NOT denied alongside it: Unsloth reads GET /props and never /slots, so either is the user's own
-    # call.
+    # deliberately NOT denied alongside it: GET /props is always served and GET /slots is on by default in every build
+    # that can start here (ggml-org/llama.cpp#15630), so these flags only turn things OFF, which is the user's own
+    # call. --no-slots does cost the residency probe its reading, and preemption then runs on the ledger alone.
     frozenset({"--slot-save-path"}),
     # These print and exit instead of serving, so the load would "succeed" with no server behind it and only time out
     # later
@@ -659,6 +660,24 @@ def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[in
     except ValueError:
         return None
     return max(0, parsed)
+
+
+def parse_batch_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``-b`` / ``--batch-size`` value, or None.
+
+    The launcher emits its own flag before the extras, so a copy in the extras is the
+    batch the child runs; a reserve sized from the field alone under-holds the prefill."""
+    try:
+        value = _last_flag_value(args, _BATCH_FLAGS)
+    except ValueError:
+        return None
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:

@@ -14,11 +14,99 @@ import os
 import re
 import threading
 import time
+import json
 import urllib.request
 
 # Prometheus body lines: "llamacpp:<name>[{labels}] <value>" (skip "#" HELP/TYPE).
 _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MULTILINE)
 _OFF = {"0", "false", "no", "off"}
+
+
+def fetch_llama_slots(
+    base_url,
+    timeout_s = 3.0,
+    headers = None,
+):
+    """One ``GET /slots`` read as a list, or None if it could not be read.
+
+    ``headers`` carries the backend's ``Authorization``, since llama.cpp exempts only
+    ``/health`` from ``--api-key`` and an unauthenticated read answers 401, which reads
+    back as "cannot tell" and switches the residency probe off in a supported mode.
+
+    A slots poller rather than the /metrics scraper the original design called for:
+    /metrics says nothing about cells still held by IDLE slots, and llama.cpp keeps a
+    slot's prompt cache after its request finishes. This is the only endpoint that can say.
+
+    None means "cannot tell" -- endpoint disabled, older build, socket error -- and must
+    never be read as "the cache is empty".
+    """
+    url = f"{str(base_url).rstrip('/')}/slots"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
+        ) as r:
+            if r.status != 200:
+                return None
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, list) else None
+
+
+def erase_llama_slot(
+    base_url,
+    slot_id,
+    timeout_s = 3.0,
+    headers = None,
+) -> int:
+    """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
+
+    Cheaper than preempting: the cache belongs to a finished request, so this costs a
+    future prefix-cache hit rather than a running conversation's progress.
+    """
+    url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
+    try:
+        # Authorized for the same reason the read above is: a 401 returns 0 tokens erased,
+        # so a paused slot's cells are never released.
+        request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
+        with urllib.request.urlopen(request, timeout = timeout_s) as r:
+            if r.status != 200:
+                return 0
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return 0
+    try:
+        return max(0, int(payload.get("n_erased") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def scrape_llama_metrics(base_url, timeout_s = 3.0):
+    """One /metrics read as a {name: float} dict, or None if it could not be read.
+
+    Split out of the daemon's own scrape so a caller needing a single sample reuses this
+    parser rather than adding a second one. None covers every reason the read did not
+    happen and must be read as "cannot tell", never as "nothing is running".
+    """
+    url = f"{str(base_url).rstrip('/')}/metrics"
+    try:
+        with urllib.request.urlopen(url, timeout = timeout_s) as r:
+            if r.status != 200:
+                return None
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    out = {}
+    for k, v in _METRIC_RE.findall(body):
+        try:  # a malformed value must not kill the daemon thread
+            value = float(v)
+        except ValueError:
+            continue
+        # float() overflows a long digit string to inf without raising; _env_float
+        # refuses the same text. No printed double reaches 1.8e308, so nothing is lost.
+        if math.isfinite(value):
+            out[k] = value
+    return out
 
 
 class LlamaServerStatsLogger:
@@ -35,7 +123,8 @@ class LlamaServerStatsLogger:
         interval_s = 10.0,
         stall_timeout_s = 600.0,
     ):
-        self._url = f"{base_url.rstrip('/')}/metrics"
+        self._base_url = base_url.rstrip("/")
+        self._url = f"{self._base_url}/metrics"
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
@@ -56,24 +145,7 @@ class LlamaServerStatsLogger:
         self._stop.set()
 
     def _scrape(self):
-        try:
-            with urllib.request.urlopen(self._url, timeout = 3) as r:
-                if r.status != 200:
-                    return None
-                body = r.read().decode("utf-8", "replace")
-        except Exception:
-            return None
-        out = {}
-        for k, v in _METRIC_RE.findall(body):
-            try:  # a malformed value must not kill the daemon thread
-                value = float(v)
-            except ValueError:
-                continue
-            # float() overflows a long digit string to inf without raising; _env_float
-            # refuses the same text. No printed double reaches 1.8e308, so nothing is lost.
-            if math.isfinite(value):
-                out[k] = value
-        return out
+        return scrape_llama_metrics(self._base_url)
 
     @staticmethod
     def _prompt_rate(base, tokens, seconds):
