@@ -26,7 +26,13 @@ from routes import inference, video
 from state import active_generations
 from utils.account_context import bind_account, current_account_id, reset_account
 
-from ..test_diffusion_backend import _FakePipeline, fake_runtime  # noqa: F401
+from ..test_diffusion_backend import _FakePipeline
+from ..test_diffusion_backend import fake_runtime as _fake_runtime
+
+# Re-exported under its own name because pytest resolves a fixture by NAME, not by reference: the
+# tests below take `fake_runtime` as a parameter and never load the import, which reads to
+# scripts/verify_import_hoist.py as a hoisted import nothing uses.
+fake_runtime = _fake_runtime
 
 
 def client_for(account):
