@@ -7,7 +7,7 @@ Trains a tiny LoRA to imprint a distinctive phrase, exports a full-model q8_0 GG
   * if a `llama-cli` binary is available: runs one bounded generation and asserts the trained
     phrase round-trips through HF -> GGUF -> quantize -> inference.
 
-Skipped without CUDA (the export needs a real train + merge). The llama-cli step is skipped
+Skipped without an accelerator (the export needs a real train + merge). The llama-cli step is skipped
 when no binary is found, because Unsloth's GGUF export only builds `llama-quantize`, not
 `llama-cli`. The generation is hard-bounded (byte cap + watchdog kill) because recent
 `llama-cli` builds are conversation-first and otherwise spin on empty stdin.
@@ -22,7 +22,9 @@ import subprocess
 import threading
 
 import pytest
-import torch
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth import FastLanguageModel
 
@@ -32,8 +34,8 @@ from unsloth import FastLanguageModel
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
-        not torch.cuda.is_available(),
-        reason = "GGUF export smoke test needs a GPU to train + merge",
+        not has_real_accelerator(),
+        reason = "GGUF export smoke test needs an accelerator to train + merge",
     ),
 ]
 
