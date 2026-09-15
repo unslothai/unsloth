@@ -14,7 +14,31 @@ import {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
 } from "../src/features/chat/utils/pre-stream-run-reservation.ts";
+
+test("parked send subscribers observe failed preflight release and cancellation", () => {
+  const observed: boolean[] = [];
+  const unsubscribe = subscribePreStreamRunReservations(() => {
+    observed.push(hasPreStreamRunReservation(["parked-follow-up"]));
+  });
+  try {
+    const token = reservePreStreamRun(["parked-follow-up"]);
+    assert.ok(token);
+    releasePreStreamRunReservation(token);
+    const second = reservePreStreamRun(["parked-follow-up"]);
+    assert.ok(second);
+    cancelPreStreamRunReservations([second]);
+    assert.deepEqual(observed, [true, false, true, false]);
+  } finally {
+    unsubscribe();
+    releasePreStreamRunForThreadIds(["parked-follow-up"]);
+  }
+  const afterUnsubscribe = reservePreStreamRun(["parked-follow-up"]);
+  assert.ok(afterUnsubscribe);
+  releasePreStreamRunReservation(afterUnsubscribe);
+  assert.equal(observed.length, 4);
+});
 
 test("adapter thread ids never mix an identified background run with the visible chat", () => {
   assert.deepEqual(
