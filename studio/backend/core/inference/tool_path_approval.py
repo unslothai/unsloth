@@ -783,8 +783,16 @@ _PATH_FLAG_SPECS = {
     },
     # `make --help`: `-f FILE` reads that makefile and `-C DIR` changes to that directory first, so
     # both select what make reads and executes. The bare positionals are TARGETS, not paths.
-    "make": {"-f": "read", "--file": "read", "--makefile": "read", "-C": "read",
-             "--directory": "read", "-j": "skip", "--jobs": "skip", "-l": "skip"},
+    "make": {
+        "-f": "read",
+        "--file": "read",
+        "--makefile": "read",
+        "-C": "read",
+        "--directory": "read",
+        "-j": "skip",
+        "--jobs": "skip",
+        "-l": "skip",
+    },
     "install": {
         "-t": "write",
         "--target-directory": "write",
