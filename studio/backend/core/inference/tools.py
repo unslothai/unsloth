@@ -2763,6 +2763,55 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
+_GLOB_META_RE = re.compile(r"[?*\[]")
+# Where the memoised node list is parked on a parsed tree (see _tree_nodes).
+_TREE_NODES_ATTR = "_unsloth_walk_nodes"
+
+
+@functools.lru_cache(maxsize = 2048)
+def _token_command_base(token: str) -> str:
+    """The command name a shell token would run: separators stripped, directory dropped, folded to
+    lower case.
+
+    Several scans recompute this for every token of every command, and the tokens repeat heavily
+    (`cat`, `-la`, `|`), so the result is memoised. Pure function of the token text.
+    """
+    return os.path.basename(token.strip(";&|()`{}")).lower()
+
+
+@functools.lru_cache(maxsize = 64)
+def _parse_python(code: str):
+    """``(tree, None)`` or ``(None, SyntaxError)`` for a snippet, parsed at most once.
+
+    Classifying one python tool call parses the same source two or three times over: the safety
+    check parses it, the classifier parses it again, and the ``python -c`` path parses it a third
+    time before delegating. The tree is only ever read, so one parse serves all of them. The cache
+    is bounded and keyed on the source text, so it cannot go stale.
+    """
+    try:
+        return ast.parse(code), None
+    except SyntaxError as exc:
+        return None, exc
+
+
+def _tree_nodes(tree) -> list:
+    """``list(ast.walk(tree))``, computed once per parsed tree.
+
+    The python classifiers each sweep the whole tree a dozen times looking for a different node
+    shape, and every ``ast.walk`` rebuilds the same traversal from scratch. The node list is
+    identical for all of them, so it is built once and parked on the tree itself: the classifiers
+    only read the AST, and each call parses its own tree, so nothing can go stale. Falls back to a
+    plain walk if the attribute cannot be set.
+    """
+    nodes = getattr(tree, _TREE_NODES_ATTR, None)
+    if nodes is None:
+        nodes = list(ast.walk(tree))
+        try:
+            setattr(tree, _TREE_NODES_ATTR, nodes)
+        except (AttributeError, TypeError):
+            pass
+    return nodes
 
 
 def _references_sensitive_path(text: str) -> bool:
@@ -2770,14 +2819,17 @@ def _references_sensitive_path(text: str) -> bool:
     via parent traversal."""
     if len(text) > _MAX_PATH_SCAN_CHARS:
         return True
+    if _PARENT_TRAVERSAL_RE.search(text) or _SENSITIVE_PATH_RE.search(text):
+        return True
+    # The redundant-slash and de-bracketed rewrites exist to defeat `cat /etc//passwd` and
+    # `cat /etc/pass[w]d`. Both are identity for an ordinary command, and re-scanning a string the
+    # pattern has already rejected cannot change the answer, so only a rewrite that actually
+    # changed the text is worth a second pass.
     norm = _REDUNDANT_SLASH_RE.sub("", text)
+    if norm != text and _SENSITIVE_PATH_RE.search(norm):
+        return True
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
-    return bool(
-        _PARENT_TRAVERSAL_RE.search(text)
-        or _SENSITIVE_PATH_RE.search(text)
-        or _SENSITIVE_PATH_RE.search(norm)
-        or _SENSITIVE_PATH_RE.search(debracket)
-    )
+    return bool(debracket != text and _SENSITIVE_PATH_RE.search(debracket))
 
 
 def _pattern_matches_dir(pattern: str, target: str) -> bool:
@@ -2793,6 +2845,11 @@ def _pattern_matches_dir(pattern: str, target: str) -> bool:
 def _glob_token_sensitive(token: str) -> bool:
     """True if a single ? / * / [..] glob token could expand to a sensitive file or a file under a
     secret/credential directory. Shared by the terminal scan and the Python glob check."""
+    # Only a glob can expand into something else, and none of the rewrites below introduce a
+    # metacharacter that was not already in the raw token (the POSIX-class rewrite needs a '['
+    # itself), so a token without one cannot match whatever the rewrites do to it.
+    if not _GLOB_META_RE.search(token):
+        return False
     token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
     # A POSIX class ([[:lower:]]) matches one char, like `?`, but fnmatch treats it as a literal set; normalize so cat
     # /etc/pass[[:lower:]]d resolves.
@@ -2819,10 +2876,54 @@ def _glob_token_sensitive(token: str) -> bool:
 def _glob_hits_sensitive(command: str) -> bool:
     """True if any glob token in a command could expand to a sensitive file, so `cat /e??/passwd`
     asks even without a literal sensitive path."""
+    # Splitting and scanning every token is wasted on the overwhelmingly common command that
+    # contains no glob at all: each token would reach the same early return.
+    if not _GLOB_META_RE.search(command):
+        return False
     return any(
         _glob_token_sensitive(token)
         for token in command.replace(";", " ").replace("|", " ").split()
     )
+
+
+# A drive path is absolute only with a separator: `C:\x` is rooted, while `C:x` is relative to the drive's current
+# directory, so the separator is required rather than optional.
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# The separator-less spelling, `D:notes.txt`, which is drive D's own current directory.
+_WIN_DRIVE_RELATIVE_JOIN_RE = re.compile(r"^[A-Za-z]:(?![\\/:])[^:\s]+$")
+
+
+def _posix_join(parts) -> str:
+    """Join folded path pieces the way ``os.path.join`` and ``Path(...)`` actually resolve them.
+
+    An absolute component DISCARDS everything before it: `os.path.join("/usr", "/media/x")` opens
+    `/media/x`, not `/usr/media/x`. Doing this at the join keeps the distinction from a doubled
+    separator inside one literal, which the OS simply collapses -- `/home/alice//usr/report.txt` is
+    `/home/alice/usr/report.txt` and has nothing to do with `/usr`. Inferring the join from `//`
+    after the fact could not tell those apart, and read `/usr` out of the literal.
+    """
+    out = ""
+    for part in parts:
+        if not out:
+            out = part
+        elif _WIN_DRIVE_RE.match(part) or _WIN_DRIVE_RELATIVE_JOIN_RE.match(part):
+            # Any drive-qualified operand discards the left, `C:\\Windows` joined with `D:notes.txt`
+            # being drive D's file and not a file under C. `ntpath.join` agrees; keeping the left
+            # placed a drive-D reference inside an allowed drive-C directory.
+            out = part
+        elif part[:2] == "\\\\":
+            # A UNC share is its own root: joining it onto a drive kept `C:` in front of `\\\\server`.
+            out = part
+        elif part[:1] in ("/", "\\"):
+            # A leading backslash is ROOTED on Windows, on the current drive: `C:\\Windows` joined
+            # with `\\Users\\alice` opens `C:\\Users\\alice`, so the drive survives and everything
+            # after it does not. Without this the fold kept the path under the read-silent
+            # `C:\\Windows`.
+            drive = _WIN_DRIVE_RE.match(out)
+            out = (out[:2] if drive else "") + part
+        else:
+            out = out.rstrip("/") + "/" + part
+    return out
 
 
 def _expand_shell_assignments(command: str) -> str:
@@ -3098,8 +3199,10 @@ def _folded_path(
             right = fold(node.right)
             left = "\x00" if left is None else left
             right = "\x00" if right is None else right
-            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
-            return left + "/" + right if isinstance(node.op, ast.Div) else left + right
+            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates. The `/` operator is
+            # a JOIN, so an absolute right side discards the left exactly as os.path.join does:
+            # Path("/usr") / "/media/x" opens /media/x.
+            return _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
             template = fold(node.left)
@@ -3130,11 +3233,14 @@ def _folded_path(
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr == "joinpath":
-                # Path('/etc').joinpath('passwd') -> receiver and args are pieces.
+                # Path('/etc').joinpath('passwd') -> receiver and args are pieces. Joined with the
+                # same POSIX rule the `/` operator and os.path.join use: an absolute piece DISCARDS
+                # everything to its left, so `Path('/usr').joinpath('/media/x')` is `/media/x` and
+                # not a path under the read-silent `/usr`.
                 base = fold(func.value)
                 parts = [base if base is not None else "\x00"]
                 parts += [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             if isinstance(func, ast.Attribute) and func.attr in ("glob", "rglob", "iglob"):
                 # Path('/etc').glob('passw?') -> the receiver dir joined with the glob pattern; _glob_token_sensitive
                 # then tests /etc/passw?.
@@ -3177,19 +3283,22 @@ def _folded_path(
                     and isinstance(node.args[0], (ast.List, ast.Tuple))
                 ):
                     pieces = [(fold(e) or "\x00") for e in node.args[0].elts]
+                    # `str.join` CONCATENATES, whatever the separator: `"/".join(["/a", "/usr/b"])`
+                    # is `/a//usr/b`, not `/usr/b`. Only os.path.join and pathlib let a later
+                    # absolute piece discard the earlier ones.
                     return sep.join(pieces)
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # A bare os.path.join alias (from os.path import join): join(*pieces).
             if isinstance(func, ast.Name) and func.id in join_names:
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # A bare/qualified/aliased pathlib constructor (Path(...), P(...)).
             if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
                 isinstance(func, ast.Name) and func.id in ctors
             ):
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args).
             if isinstance(func, ast.Attribute) and func.attr == "format":
                 template = fold(func.value)
@@ -3252,10 +3361,14 @@ def _command_references_sensitive(command: str) -> bool:
     after undoing the shell expansions that would hide it: quotes/backslash escapes,
     brace/parameter/ANSI-C expansion and NAME=value prefixes."""
     stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    candidates = []
+    # The three base forms and their four expansions collapse to the same string for an ordinary
+    # command (nothing to unquote, no $'..', no ${x:-y}, no braces, no NAME=value), so scanning the
+    # list verbatim runs the same superlinear pattern up to twelve times over identical text. A set
+    # keeps every distinct candidate and drops only exact repeats, so the answer is unchanged.
+    candidates = set()
     for c in (command, stripped, _decode_ansi_c(command)):
         c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+        candidates.update((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
@@ -3294,13 +3407,21 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         scan_tokens = tokens
     # find/fd group with (...) which resets command context, so a trailing -delete/-exec could slip past; scan every
     # token when find/fd appears.
-    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
+    if any(_token_command_base(t) in ("find", "fd") for t in scan_tokens):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
             return True
     # A recursive reader rooted outside the sandbox reads host files, as do the always-recursive walkers (tree /home,
     # du /); ask. Bash expands ~/~user to a home dir after this decision, so a tilde root is a sandbox escape too.
+    # An absolute operand outside the silent roots reaches the user's own filesystem; the sandbox workdir only
+    # contains RELATIVE paths. Run unconditionally, matching _terminal_is_high_risk: gating this on a leading / or ~
+    # would skip every Windows spelling (C:\..., \\server\share) and every attached redirection, leaving the stricter
+    # classifier weaker than the looser one.
+    if _terminal_reaches_outside_sandbox(tokens, command) or (
+        scan_tokens is not tokens and _terminal_reaches_outside_sandbox(scan_tokens, command)
+    ):
+        return True
     if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
-        token_bases = [os.path.basename(t.strip(";&|()`{}")).lower() for t in tokens]
+        token_bases = [_token_command_base(t) for t in tokens]
         if any(b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS for b in token_bases):
             return True
         # ls only walks the whole subtree with -R/--recursive; a non-recursive ls /home lists one level and stays
@@ -3414,10 +3535,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # confirmation first.
     if _check_code_safety(code) is not None:
         return True
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    tree, _parse_error = _parse_python(code)
+    if _parse_error is not None:
         return False  # runs into a normal traceback; nothing to guard
+    # An absolute read/write outside the silent roots leaves the session workdir, which only ever holds relative
+    # paths. Kept in step with the high-risk gate so the two classifiers agree on filesystem scope.
+    if _python_reaches_outside_sandbox(tree, code):
+        return True
     # Names bound to the builtin open (f = open; f, _ = (open, print)) so an aliased writer call is still checked
     # below. builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
@@ -3552,7 +3676,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # call is checked, so a later benign reassignment would otherwise mask the earlier sensitive value and
     # auto-approve. Count every binding target up front and poison multiply-bound names to the escape sentinel.
     assign_counts: "dict[str, int]" = {}
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         binding_targets = []
         if isinstance(node, ast.Assign):
             binding_targets = node.targets
@@ -3563,7 +3687,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 if isinstance(sub, ast.Name):
                     assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "builtins":
@@ -3823,7 +3947,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     _module_names = set(_AUTO_UNSAFE_PY_LOAD_MODULES)  # receivers: yaml.load
     _bare_names = set(_AUTO_UNSAFE_YAML_LOADERS)  # loaders named on their own
     _imported_modules = set()  # only the module itself, for the return rule
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _root = alias.name.split(".")[0]
@@ -3851,7 +3975,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             node = node.value
         return isinstance(node, ast.Name) and node.id in _module_names
 
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Attribute):
             if node.attr in _AUTO_UNSAFE_YAML_LOADERS:
                 return True
@@ -3868,7 +3992,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             if isinstance(_out, ast.Name) and _out.id in _imported_modules:
                 return True
     try:
-        for node in ast.walk(tree):
+        for node in _tree_nodes(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
@@ -5512,9 +5636,7 @@ def _inline_python_is_high_risk(code: str) -> bool:
     """Screen a `python -c` payload with the same analyzer the python tool uses, so an ordinary
     one-liner runs and a destructive one still asks. Source that does not parse fails closed:
     shell quoting may have mangled it, leaving nothing to screen."""
-    try:
-        ast.parse(code)
-    except SyntaxError:
+    if _parse_python(code)[1] is not None:
         return True
     return _python_is_high_risk(code)
 
@@ -5602,18 +5724,21 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             tokens = list(lexer)
         except ValueError:
             return True
+        # The sandbox directory is a working directory, not a boundary, so an absolute operand outside the silent
+        # roots reads or rewrites the user's own files. Runs per expansion pass, so a path assembled from a variable
+        # is judged on its resolved form too.
+        if _terminal_reaches_outside_sandbox(tokens, text):
+            return True
         recursive = any(
             t in ("-R", "--recursive")
             or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
             for t in tokens
         )
-        find_like = any(
-            os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
-        )
+        find_like = any(_token_command_base(t) in ("find", "fd") for t in tokens)
         # Shared out over the sed words present, so a lone sed reads its whole argument list and a line packed with
         # them stays linear (_sed_scan_limit).
         sed_scan_limit = _sed_scan_limit(
-            sum(1 for t in tokens if os.path.basename(t.strip(";&|()`{}")).lower() in _SED_COMMANDS)
+            sum(1 for t in tokens if _token_command_base(t) in _SED_COMMANDS)
         )
         # Built at most once per pass, and only when a sed program actually names a variable, so a line packed with
         # sed words stays linear.
@@ -5631,9 +5756,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             return True
         # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a command (including hard-blocked ones)
         # inside an argument.
-        if any(
-            os.path.basename(t.strip(";&|()`{}")).lower() in _ARG_EXEC_FLAG_OWNERS for t in tokens
-        ) and any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
+        if any(_token_command_base(t) in _ARG_EXEC_FLAG_OWNERS for t in tokens) and any(
+            t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens
+        ):
             return True
         # An interpreter serving on the network exposes the session workdir; the sandbox keeps no network namespace.
         if _LISTENER_PY_MODULE_RE.search(text) or _LISTENER_BIN_AT_CMD_RE.search(text):
@@ -6173,14 +6298,17 @@ def _python_is_high_risk(code: str) -> bool:
     # refusal.
     if _check_code_safety(code) is not None:
         return True
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    tree, _parse_error = _parse_python(code)
+    if _parse_error is not None:
         # Unparsable code never runs, but scan the raw text anyway.
         return _references_sensitive_path(code)
+    # The session workdir confines RELATIVE paths only: an absolute path outside the silent roots reads or rewrites
+    # the user's own files, which is the same loss the terminal `rm` gate already asks about.
+    if _python_reaches_outside_sandbox(tree, code):
+        return True
     # A credential basename only names a file when it appears in a string, so match it there rather than across the
     # source: `credentials = {}` and `def load_credentials()` do no I/O and must not prompt.
-    for _node in ast.walk(tree):
+    for _node in _tree_nodes(tree):
         if (
             isinstance(_node, ast.Constant)
             and isinstance(_node.value, str)
@@ -6193,7 +6321,7 @@ def _python_is_high_risk(code: str) -> bool:
     # Modules whose handles end processes; tracked so an unrelated .kill() on a user-defined object is not mistaken
     # for one.
     psutil_names: "set[str]" = set()
-    for _node in ast.walk(tree):
+    for _node in _tree_nodes(tree):
         if isinstance(_node, ast.Import):
             for _a in _node.names:
                 if _a.name.split(".")[0] in _PY_PROCESS_MODULES:
@@ -6227,7 +6355,7 @@ def _python_is_high_risk(code: str) -> bool:
             and value.args[0].value in ("os", "posix", "nt")
         )
 
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.ImportFrom) and node.module in _PY_DESTRUCTIVE_FS_MODULES:
             for alias in node.names:
                 if alias.name in _PY_DESTRUCTIVE_FS_IMPORT_NAMES:
@@ -6294,7 +6422,7 @@ def _python_is_high_risk(code: str) -> bool:
 
     # `rm = getattr(os, "remove")` stores the lookup and calls it later, so the direct getattr(...)(...) shape never
     # sees it. Bind the name here instead.
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not (
             isinstance(node, ast.Assign)
             and isinstance(node.value, ast.Call)
@@ -6317,7 +6445,7 @@ def _python_is_high_risk(code: str) -> bool:
     # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gated via the handle name, not the bare `.truncate`
     # attribute: pandas DataFrame.truncate() is common here and non-destructive.
     file_handles: "set[str]" = set()
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if (
             isinstance(node, ast.Assign)
             and isinstance(node.value, ast.Call)
@@ -6339,7 +6467,7 @@ def _python_is_high_risk(code: str) -> bool:
                 ):
                     file_handles.add(item.optional_vars.id)
     if file_handles:
-        for node in ast.walk(tree):
+        for node in _tree_nodes(tree):
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -6350,7 +6478,7 @@ def _python_is_high_risk(code: str) -> bool:
                 return True
     # A bound reference (f = os.remove; f(x)) hides the call site behind a plain Name, so record the target name as a
     # destructive alias to catch f(...) below.
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Subscript):
             if _is_module_dict_lookup(node.value):
                 for tgt in node.targets:
@@ -6369,7 +6497,7 @@ def _python_is_high_risk(code: str) -> bool:
             # An annotated binding (f: object = os.remove) is the same alias.
             if _is_destructive_attr(node.value.attr, node.value.value):
                 destructive_fs_aliases.add(node.target.id)
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -6410,7 +6538,7 @@ def _python_is_high_risk(code: str) -> bool:
     # above, so fold the string-literal variables through _folded_path and re-check. An unresolved fragment folds to a
     # sentinel so a partial fold never false-positives.
     str_vars: "dict[str, str]" = {}
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -6427,14 +6555,14 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and "\x00" not in folded and "\x02" not in folded:
                 str_vars[node.targets[0].id] = folded
 
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
     # exec/eval/compile/__import__ of a non-literal runs whatever it builds at runtime, past the static checks above;
     # ask. A literal eval("1+1") is harmless and runs.
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -13176,9 +13304,9 @@ def _check_signal_escape_patterns(code: str):
     """Check for patterns that could escape signal-based timeouts. Returns (safe: bool, details:
     dict). Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo (needs GPU
     drivers; fails on Apple Silicon)."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
+    tree, _parse_error = _parse_python(code)
+    if _parse_error is not None:
+        e = _parse_error
         return False, {
             "error": f"SyntaxError: {e}",
             "signal_tampering": [],
@@ -13779,7 +13907,7 @@ def _check_signal_escape_patterns(code: str):
     )
 
     def _module_has_hf_import(tree: ast.AST) -> bool:
-        for n in ast.walk(tree):
+        for n in _tree_nodes(tree):
             if isinstance(n, ast.Import):
                 for alias in n.names:
                     if alias.name.split(".", 1)[0] in _HF_IMPORT_MODULES:
@@ -16075,3 +16203,14 @@ def _bash_exec(
                 os.unlink(os.path.join(workdir, _scratch_name))
             except OSError:
                 pass
+
+
+# The out-of-sandbox approval subsystem lives in its own module: the silent roots, the shared
+# `_path_needs_approval` predicate and the two operand scanners. Imported at the END because the two
+# modules reference each other, and bound by name here so the call sites below read unchanged.
+from . import tool_path_approval as _path_gate  # noqa: E402
+
+_path_gate._bind(globals())
+_PATH_FLAG_SPECS = _path_gate._PATH_FLAG_SPECS
+_python_reaches_outside_sandbox = _path_gate._python_reaches_outside_sandbox
+_terminal_reaches_outside_sandbox = _path_gate._terminal_reaches_outside_sandbox
