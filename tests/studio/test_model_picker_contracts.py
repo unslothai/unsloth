@@ -3999,3 +3999,26 @@ def test_a_download_only_pick_claims_no_label_rollback():
     for tail in installs:
         assert "downloadOnlyPick" in tail, "a download-only pick installs an optimistic label"
     assert "const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;" in src
+
+
+def test_a_routed_download_only_arrival_claims_nothing():
+    """A ?model= arrival from the chat picker or the Hub takes the page like a direct pick. Under
+    Download only it must not: claiming there revokes the token of a load that is already staging,
+    and resumePendingLoad then drops that load once its files have finished arriving."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const handledRouteModel = useRef(.*?)\n  \]\);", src, re.S)
+    assert body, "the routed-pick effect was not found; this guard has gone stale"
+    text = body.group(1)
+    assert 'const downloadOnlyPick = modelSelectionAction === "download";' in text
+    assert "const token = downloadOnlyPick ? undefined : pickGuard.claim();" in text
+    # And no optimistic label either: quantRevert is the staged load's slot, not this arrival's.
+    assert "const revert: PickRevert | null = downloadOnlyPick" in text
+
+
+def test_a_refused_download_only_pick_leaves_the_staged_rollback_alone():
+    """abandonPick() reverts and clears quantRevert. A Download only pick refused for being an
+    unsupported repo never claimed the page, so what it would clear is the staged load's own
+    baseline: that load would then resume with the previous resident's steps and guidance and have
+    nothing left to commit."""
+    src = " ".join(_read("features/images/images-page.tsx").split())
+    assert "if (!downloadOnlyPick) abandonPick();" in src

@@ -2885,8 +2885,11 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
-    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
-    const token = pickGuard.claim();
+    // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot
+    // land on top -- unless it is a Download only arrival, which owns nothing and must leave a load
+    // already staging with its claim, or resumePendingLoad drops that load once its files arrive.
+    const downloadOnlyPick = modelSelectionAction === "download";
+    const token = downloadOnlyPick ? undefined : pickGuard.claim();
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it
     // rather than routing it as a filename.
@@ -2909,13 +2912,18 @@ export function ImagesPage({
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
-    // the Default recipe, and a load that never becomes resident rolls both back.
-    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-    quantRevert.current = revert;
-    setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
-    applyImageModelDefaults(wanted);
+    // the Default recipe, and a load that never becomes resident rolls both back. A Download only
+    // arrival owns neither, and quantRevert is one slot a staged load may already hold.
+    const revert: PickRevert | null = downloadOnlyPick
+      ? null
+      : (quantRevert.current ?? { prev: quant, steps, guidance });
+    if (revert) {
+      quantRevert.current = revert;
+      setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
+      applyImageModelDefaults(wanted);
+    }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
-      if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
+      if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
         quantRevert.current = null;
       }
@@ -2929,6 +2937,7 @@ export function ImagesPage({
     routeSearch?.ggufQuant,
     loadOrStage,
     loadGgufRepoPick,
+    modelSelectionAction,
     navigateSelf,
     pickGuard,
     quant,
@@ -3105,8 +3114,10 @@ export function ImagesPage({
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
+        // A refused Download only pick retires nothing: it never claimed the page, and the rollback
+        // slot it would clear belongs to whatever load is still staging.
         toast.error("Only unsloth or on-device image models can be loaded here");
-        abandonPick();
+        if (!downloadOnlyPick) abandonPick();
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
