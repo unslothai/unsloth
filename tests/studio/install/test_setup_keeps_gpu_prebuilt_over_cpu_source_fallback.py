@@ -286,6 +286,25 @@ class TestTheKeptBundleMustStillCoverTheCard:
             marker, _linux_host(ilp, compute_caps = ["8.9", "12.0"])
         )
 
+    def test_a_masked_card_is_checked_by_its_physical_sms(self):
+        ilp = _load_ilp()
+        marker = {"backend": "cuda", "supported_sms": ["8.9"]}
+        masked = _linux_host(ilp, compute_caps = [], physical_compute_caps = ["12.0"])
+        assert not ilp._kept_install_covers_host(marker, masked)
+        assert ilp._kept_install_covers_host(
+            marker, _linux_host(ilp, compute_caps = [], physical_compute_caps = ["8.9"])
+        )
+
+    def test_a_cuda_bundle_is_kept_only_while_the_driver_runs_its_runtime(self):
+        ilp = _load_ilp()
+        marker = {"backend": "cuda", "runtime_line": "cuda13", "supported_sms": ["8.9"]}
+        host = lambda v: _linux_host(ilp, compute_caps = ["8.9"], driver_cuda_version = v)
+        assert ilp._kept_install_covers_host(marker, host((13, 1)))
+        assert not ilp._kept_install_covers_host(marker, host((12, 8)))
+        # cuda12 runs on a 13 driver; an unknown driver cannot tell.
+        assert ilp._kept_install_covers_host({**marker, "runtime_line": "cuda12"}, host((13, 1)))
+        assert ilp._kept_install_covers_host(marker, host(None))
+
     def test_a_rocm_bundle_is_kept_for_its_mapped_targets_or_family(self):
         ilp = _load_ilp()
         marker = {

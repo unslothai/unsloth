@@ -8133,15 +8133,26 @@ def _binary_image_runs(
 def _kept_install_covers_host(marker: "dict[str, Any] | None", host: HostInfo) -> bool:
     """Whether the bundle's recorded GPU coverage still includes this host's GPU.
 
-    A same-vendor card swap passes the vendor checks, and `--version` runs no kernels, so
-    the recorded supported_sms / mapped_targets are the only record of the arch the bundle
-    was built for. A marker without them (CPU, Vulkan, older) cannot tell and passes.
+    A same-vendor card swap or a driver downgrade passes the vendor checks, and `--version`
+    runs no kernels, so the recorded supported_sms / mapped_targets / runtime_line are the
+    only record of what the bundle was built for. A marker without them (CPU, Vulkan,
+    older) cannot tell and passes, as does a host whose driver or SMs are unknown.
     """
     marker = marker or {}
     backend = marker_backend(marker)
     if backend == "cuda":
+        line = marker.get("runtime_line")
+        if isinstance(line, str) and line.startswith("cuda") and host.driver_cuda_version:
+            lines = (
+                compatible_windows_runtime_lines(host)
+                if host.is_windows
+                else compatible_linux_runtime_lines(host)
+            )
+            if line not in lines:
+                return False
         supported = set(normalize_compute_caps(marker.get("supported_sms") or []))
-        host_sms = normalize_compute_caps(host.compute_caps or [])
+        # Under a mask the visible caps are empty; the physical ones are what the card is.
+        host_sms = normalize_compute_caps(host.compute_caps or host.physical_compute_caps or [])
         return not supported or not host_sms or all(sm in supported for sm in host_sms)
     if backend == "rocm":
         mapped = {
