@@ -665,13 +665,13 @@ def test_an_unparseable_probe_result_is_not_silently_dropped() -> None:
     start = body.index("$json = Join-Path $out")
     end = body.index("if ($rows.Count -eq 0)", start)
     collection = body[start:end]
-    assert "ConvertFrom-Json -ErrorAction Stop" in collection, (
-        "the probe result is still parsed without erroring, so an invalid file yields a null row"
-    )
+    assert (
+        "ConvertFrom-Json -ErrorAction Stop" in collection
+    ), "the probe result is still parsed without erroring, so an invalid file yields a null row"
     assert "could not be parsed" in collection, (
         "a parse failure is not routed into the no-result list, so it shrinks the measured set "
         "instead of being accounted for"
     )
-    assert "carries no results" in collection, (
-        "a payload that parses but has no results is still accepted as a measured row"
-    )
+    assert (
+        "carries no results" in collection
+    ), "a payload that parses but has no results is still accepted as a measured row"
