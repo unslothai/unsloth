@@ -411,7 +411,11 @@ def _hide_personal_source() -> str:
     [
         # The two corruptions a bare substring replace causes. Both rewrite the exact evidence the
         # form exists to collect, and both look like a clean report to the person pasting it.
-        ("win", "Windows Defender Antivirus 4.18.24090.11", "Windows Defender Antivirus 4.18.24090.11"),
+        (
+            "win",
+            "Windows Defender Antivirus 4.18.24090.11",
+            "Windows Defender Antivirus 4.18.24090.11",
+        ),
         ("cat", "Trojan:Script/Wacatac.B!ml", "Trojan:Script/Wacatac.B!ml"),
         # Still redacted where it is genuinely the account.
         ("alice", r"C:\Users\alice\Downloads\x.ps1", r"C:\Users\<user>\Downloads\x.ps1"),
@@ -453,9 +457,9 @@ def test_redaction_only_fires_on_a_real_account_component(
         env = {**_os.environ, "UNSLOTH_LINE": line},
     )
     assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
-    assert done.stdout.strip() == expected, (
-        f"account {username!r} turned {line!r} into {done.stdout.strip()!r}"
-    )
+    assert (
+        done.stdout.strip() == expected
+    ), f"account {username!r} turned {line!r} into {done.stdout.strip()!r}"
 
 
 def test_the_probe_does_not_change_the_callers_error_preference() -> None:
@@ -471,6 +475,6 @@ def test_the_probe_does_not_change_the_callers_error_preference() -> None:
         "session the reporter pasted it into"
     )
     assert snippet.endswith("}"), "the script block is not closed"
-    assert (
-        snippet.index("$ErrorActionPreference") > snippet.index("& {")
+    assert snippet.index("$ErrorActionPreference") > snippet.index(
+        "& {"
     ), "the preference is set outside the block that was supposed to contain it"
