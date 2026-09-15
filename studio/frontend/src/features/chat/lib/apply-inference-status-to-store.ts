@@ -525,7 +525,9 @@ export function applyActiveModelStatusToStore(
       (status.is_mlx === true
         ? {
             mlxKvBits: status.mlx_kv_bits_requested ?? null,
+            mlxTurboQuant: status.mlx_turboquant ?? false,
             loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+            loadedMlxTurboQuant: status.mlx_turboquant ?? false,
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
@@ -534,6 +536,7 @@ export function applyActiveModelStatusToStore(
         : {
             // The verdict retires; the editable width is dormant, not wrong.
             loadedMlxKvBitsRequested: null,
+            loadedMlxTurboQuant: false,
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
@@ -549,7 +552,9 @@ export function applyActiveModelStatusToStore(
       prevState.mlxKvQuantReason === null &&
       prevState.chatTemplateOverrideReason === null && {
         mlxKvBits: status.mlx_kv_bits_requested ?? null,
+        mlxTurboQuant: status.mlx_turboquant ?? false,
         loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+        loadedMlxTurboQuant: status.mlx_turboquant ?? false,
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,

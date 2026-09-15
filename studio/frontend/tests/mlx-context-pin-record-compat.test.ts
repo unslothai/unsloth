@@ -472,3 +472,16 @@ test("BACKWARDS COMPAT: an old record still pins under the new code, on either b
   // And it is not reported as default, so it survives savePerModelConfig's delete-if-default.
   assert.equal(isDefaultConfig(config), false);
 });
+
+// 3.5 is a width of its own, so a record written with one has to read back as the same number.
+for (const mlxKvBits of [2, 3, 3.5, 4, null]) {
+  test(`TurboQuant ${mlxKvBits} survives the saved model record`, () => {
+    store.clear();
+    savePerModelConfig(MODEL, null, {
+      ...DEFAULT_PER_MODEL_CONFIG, mlxTurboQuant: true, mlxKvBits,
+    });
+    const read = resolveInitialConfig(MODEL, null).config;
+    assert.equal(read.mlxTurboQuant, true);
+    assert.equal(read.mlxKvBits, mlxKvBits);
+  });
+}

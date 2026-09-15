@@ -13,6 +13,7 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
   MLX_KV_BITS,
+  MLX_TURBOQUANT_BITS,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
@@ -46,6 +47,7 @@ export type PresetLoadConfig = Pick<
   | "maxSeqLength"
   | "kvCacheDtype"
   | "mlxKvBits"
+  | "mlxTurboQuant"
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
@@ -72,6 +74,7 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   maxSeqLength: null,
   kvCacheDtype: null,
   mlxKvBits: null,
+  mlxTurboQuant: false,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -150,9 +153,10 @@ export function normalizePresetLoadConfig(
   const normalized: PresetLoadConfig = {
     customContextLength: requestableContextLength(partial.customContextLength),
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
+    mlxTurboQuant: partial.mlxTurboQuant === true,
     mlxKvBits:
       typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
+      (partial.mlxTurboQuant ? MLX_TURBOQUANT_BITS : MLX_KV_BITS).includes(partial.mlxKvBits)
         ? partial.mlxKvBits
         : null,
     kvCacheDtype:
@@ -264,6 +268,7 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     maxSeqLength: isMlx ? null : normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
     mlxKvBits: snapshot.mlxKvBits ?? null,
+    mlxTurboQuant: snapshot.mlxTurboQuant ?? false,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
@@ -330,6 +335,7 @@ export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
       customContextLength: config.customContextLength ?? null,
       kvCacheDtype: config.kvCacheDtype ?? null,
       mlxKvBits: config.mlxKvBits ?? null,
+      mlxTurboQuant: config.mlxTurboQuant ?? false,
       speculativeType: config.speculativeType ?? null,
       specDraftNMax: config.specDraftNMax ?? null,
       nParallel: config.nParallel ?? null,

@@ -22,6 +22,7 @@ export interface PerModelConfig {
   kvCacheDtype: string | null;
   /** MLX KV cache quantization width. Optional so older blobs still parse. */
   mlxKvBits?: number | null;
+  mlxTurboQuant?: boolean;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
@@ -62,6 +63,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   maxSeqLength: null,
   kvCacheDtype: null,
   mlxKvBits: null,
+  mlxTurboQuant: false,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -258,6 +260,8 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
+export const MLX_TURBOQUANT_BITS: readonly number[] = [4, 3.5, 3, 2];
+
 // Every width mx.quantize supports. By bit width, not a dtype name, hence separate from KV_CACHE_DTYPES.
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
@@ -343,6 +347,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "maxSeqLength",
   "kvCacheDtype",
   "mlxKvBits",
+  "mlxTurboQuant",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -938,9 +943,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
+    mlxTurboQuant: partial.mlxTurboQuant === true,
     mlxKvBits:
       typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
+      (partial.mlxTurboQuant ? MLX_TURBOQUANT_BITS : MLX_KV_BITS).includes(partial.mlxKvBits)
         ? partial.mlxKvBits
         : null,
     kvCacheDtype:
@@ -1197,6 +1203,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
+    !config.mlxTurboQuant &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

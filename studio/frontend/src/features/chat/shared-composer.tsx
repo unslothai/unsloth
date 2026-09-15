@@ -1584,6 +1584,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          mlx_turboquant: ownConfig.mlxTurboQuant ?? false,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:

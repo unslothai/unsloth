@@ -137,6 +137,7 @@ const MANUAL_MODE = {
 };
 
 const FIELDS: FieldCase[] = [
+  { key: "mlxTurboQuant", statusKey: "mlx_turboquant", same: true, different: false },
   {
     key: "customContextLength",
     statusKey: "requested_context_length",

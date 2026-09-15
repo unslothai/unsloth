@@ -2317,8 +2317,10 @@ type ChatRuntimeStore = {
   toolCallTimeout: number;
   kvCacheDtype: string | null;
   mlxKvBits: number | null;
+  mlxTurboQuant?: boolean;
   /** Width the backend was last asked for; the verdict belongs beside it. */
   loadedMlxKvBitsRequested: number | null;
+  loadedMlxTurboQuant: boolean;
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
@@ -4008,7 +4010,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvBits: null,
+  mlxTurboQuant: false,
   loadedMlxKvBitsRequested: null,
+  loadedMlxTurboQuant: false,
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
@@ -4920,7 +4924,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
       mlxKvBits: null,
+      mlxTurboQuant: false,
       loadedMlxKvBitsRequested: null,
+      loadedMlxTurboQuant: false,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,

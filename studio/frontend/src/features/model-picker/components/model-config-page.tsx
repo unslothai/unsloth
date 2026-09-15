@@ -142,6 +142,7 @@ import {
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
   MLX_KV_BITS,
+  MLX_TURBOQUANT_BITS,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -1005,13 +1006,23 @@ function MlxAdvancedSettings({
     <div className="flex flex-col gap-1">
       {servedByMlx && (
         <>
+      <label className={ROW_CLASS}>
+        <span className={LABEL_CLASS}>TurboQuant</span>
+        <Checkbox
+          checked={config.mlxTurboQuant ?? false}
+          onCheckedChange={(checked) => update({
+            mlxTurboQuant: checked === true,
+            mlxKvBits: null,
+          })}
+        />
+      </label>
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            Lower KV cache precision to save memory at the cost of some
-            quality. Auto keeps full precision; 8-bit is the safest reduction,
-            and lower widths save more memory.
+            {config.mlxTurboQuant
+              ? "Auto keeps the cache unquantized. Select a bit width to use TurboQuant. 3.5-bit uses 3-bit keys and 4-bit values. Sliding-window and recurrent layers keep their native cache."
+              : "Lower KV cache precision to save memory at the cost of some quality. Auto keeps full precision; 8-bit is the safest reduction."}
           </InfoHint>
         </div>
         <Select
@@ -1030,7 +1041,7 @@ function MlxAdvancedSettings({
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
             <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
-            {MLX_KV_BITS.map((bits) => (
+            {(config.mlxTurboQuant ? MLX_TURBOQUANT_BITS : MLX_KV_BITS).map((bits) => (
               <SelectItem key={bits} value={String(bits)}>
                 {bits}-bit
               </SelectItem>
@@ -1912,6 +1923,7 @@ export function ModelConfigPage({
     useShallow(selectResidentEstimateSettings),
   );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxTurboQuant = useChatRuntimeStore((s) => s.loadedMlxTurboQuant);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
   );
@@ -2054,6 +2066,7 @@ export function ModelConfigPage({
       : null;
   const mlxKvQuantOutcome =
     isActiveModel &&
+    (configState.mlxTurboQuant ?? false) === loadedMlxTurboQuant &&
     (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
       ?  // Both, not either: dropping the note promises savings before the offset where quantization actually starts.
         [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null

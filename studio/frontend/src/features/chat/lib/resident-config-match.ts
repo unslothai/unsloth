@@ -18,6 +18,7 @@ type ResidentRuntime = Pick<
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_bits_requested"
+  | "mlx_turboquant"
   | "speculative_type"
   | "spec_draft_n_max"
   | "requested_parallel_slots"
@@ -267,7 +268,8 @@ const SETTING_CHECKS: SettingCheck[] = [
     mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
-      (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
+      (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null) &&
+      (c.mlxTurboQuant ?? false) === (s.mlx_turboquant ?? false),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading

@@ -1282,6 +1282,9 @@ export function useChatModelRuntime() {
               ? selection.previousConfig
               : useChatRuntimeStore.getState();
           // Same reason: the rollback echo would overwrite an edit staged against it.
+          const previousMlxTurboQuant = (typeof selection !== "string" && selection.previousConfig
+            ? selection.previousConfig.mlxTurboQuant
+            : useChatRuntimeStore.getState().mlxTurboQuant) ?? false;
           const previousMlxKvBits =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.mlxKvBits ?? null)
@@ -1375,8 +1378,11 @@ export function useChatModelRuntime() {
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
           // Per-model, not a standing preference: eligibility is decided per model.
+          let loadMlxTurboQuant = pendingLoadConfig?.mlxTurboQuant ?? stateBeforeUnload.mlxTurboQuant ?? false;
           let loadMlxKvBits =
-            pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
+            pendingLoadConfig
+              ? pendingLoadConfig.mlxKvBits ?? null
+              : stateBeforeUnload.mlxKvBits;
           // gpuMemoryMode is a standing preference; the rest are per-model knobs the reset below clears, so
           // they are re-baselined there in lock-step with the store. A GGUF native context can exceed
           // maxSeqLength, so sizing on raw maxSeqLength could pass, unload, then have /load refuse it. A
@@ -1708,6 +1714,7 @@ export function useChatModelRuntime() {
               };
               // Both payload-only. The store keeps its values: a width is dormant preset state off MLX, and a
               // completed load rewrites both anyway.
+              loadMlxTurboQuant = pendingLoadConfig?.mlxTurboQuant ?? false;
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
@@ -1801,6 +1808,7 @@ export function useChatModelRuntime() {
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
               mlx_kv_bits: loadMlxKvBits ?? null,
+              mlx_turboquant: loadMlxTurboQuant ?? false,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
@@ -2166,6 +2174,7 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
                   mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
+                  mlx_turboquant: stateBeforeUnload.loadedMlxTurboQuant,
                   speculative_type:
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -2270,6 +2279,7 @@ export function useChatModelRuntime() {
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
                   // nParallel above.
                   mlxKvBits: previousMlxKvBits,
+                  mlxTurboQuant: previousMlxTurboQuant,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),

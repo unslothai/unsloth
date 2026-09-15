@@ -34,6 +34,7 @@ export interface ApiModelOverride {
   kv_cache_dtype?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_kv_bits?: number;
+  mlx_turboquant?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -302,7 +303,10 @@ export function fromApiOverride(
       ? (override.max_seq_length ?? null)
       : local.maxSeqLength,
     kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
-    mlxKvBits: override.mlx_kv_bits ?? local.mlxKvBits,
+    mlxKvBits: override.mlx_turboquant !== undefined
+      ? override.mlx_kv_bits ?? null
+      : override.mlx_kv_bits ?? local.mlxKvBits,
+    mlxTurboQuant: override.mlx_turboquant ?? local.mlxTurboQuant,
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
     specDraftCacheDtype:
@@ -357,6 +361,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
   // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX model at full precision.
+  payload.mlx_turboquant = config.mlxTurboQuant ?? false;
   if (config.mlxKvBits != null) {
     payload.mlx_kv_bits = config.mlxKvBits;
   }

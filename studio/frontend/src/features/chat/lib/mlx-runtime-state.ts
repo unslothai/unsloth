@@ -7,6 +7,7 @@ type MlxRuntimeResponse = Pick<
   LoadModelResponse,
   | "is_mlx"
   | "mlx_kv_bits_requested"
+  | "mlx_turboquant"
   | "mlx_kv_quant_reason"
   | "chat_template_override_reason"
   | "mlx_kv_quant_note"
@@ -17,7 +18,9 @@ type MlxRuntimeResponse = Pick<
  *  the round-trip. */
 export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxKvBits?: number | null;
+  mlxTurboQuant?: boolean;
   loadedMlxKvBitsRequested: number | null;
+  loadedMlxTurboQuant: boolean;
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
@@ -25,6 +28,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   if (resp.is_mlx !== true) {
     return {
       loadedMlxKvBitsRequested: null,
+      loadedMlxTurboQuant: false,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
@@ -33,7 +37,9 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   return {
     // Requested, not applied: a refusal has a reason but no width.
     mlxKvBits: resp.mlx_kv_bits_requested ?? null,
+    mlxTurboQuant: resp.mlx_turboquant ?? false,
     loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
+    loadedMlxTurboQuant: resp.mlx_turboquant ?? false,
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
     chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
