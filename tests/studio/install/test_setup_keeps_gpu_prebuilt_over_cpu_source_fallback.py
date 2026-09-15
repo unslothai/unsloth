@@ -490,5 +490,31 @@ def test_the_source_build_reads_capabilities_from_the_driver_library_too():
     end = SETUP_TEXT.index('if [ -n "$CUDA_ARCHS" ]; then', start)
     between = SETUP_TEXT[start:end]
     # After the first resolution, so an nvidia-smi answering N/A falls back as an absent one does.
-    assert 'nvidia_probe.py' in between and '[ -z "$CUDA_ARCHS" ]' in between
-    assert 'UNSLOTH_NVIDIA_LIBRARY_PROBE' in between
+    assert "_probe_compute_caps" in between and '[ -z "$CUDA_ARCHS" ]' in between
+    assert "UNSLOTH_NVIDIA_LIBRARY_PROBE" in between
+
+
+@requires_bash
+@pytest.mark.parametrize(
+    "listing, expected",
+    [
+        ("GPU 0: A (compute 8.9)\nGPU 1: B (compute 12.0)\n", "8.9\n12.0\n"),
+        # One GPU without a readable capability voids the list, as the Python side does.
+        ("GPU 0: A (compute 8.9)\nGPU 1: B (compute )\n", ""),
+        ("", ""),
+    ],
+)
+def test_the_probe_capabilities_are_all_or_nothing(tmp_path, listing, expected):
+    start = SETUP_TEXT.index("_probe_compute_caps() {")
+    body = SETUP_TEXT[start : SETUP_TEXT.index("\n}\n", start) + 3]
+    (tmp_path / "python3").write_text(f"#!/bin/sh\nprintf '%b' {listing!r}\n", encoding = "utf-8")
+    (tmp_path / "python3").chmod(0o755)
+    (tmp_path / "nvidia_probe.py").write_text("", encoding = "utf-8")
+    script = "_setup_run_smi() { \"$@\"; }\n" + body + "\n_probe_compute_caps\n"
+    result = subprocess.run(
+        [BASH, "-c", script],
+        env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}", "SCRIPT_DIR": str(tmp_path)},
+        stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True, timeout = 60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
