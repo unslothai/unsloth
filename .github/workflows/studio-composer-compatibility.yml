@@ -29,13 +29,21 @@ concurrency:
 
 jobs:
   composer:
-    name: Composer (${{ matrix.os }})
+    name: Composer (${{ matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            suite: browsers
+          - os: macos-latest
+            suite: browsers
+          - os: windows-latest
+            suite: browsers
+          - os: macos-latest
+            suite: safari
     defaults:
       run:
         shell: bash
@@ -65,14 +73,19 @@ jobs:
           echo "TMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
           echo "TEMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
           python -m venv temp/queue-validation/venv
-          if [ "$RUNNER_OS" = Windows ]; then
-            bin="$PWD/temp/queue-validation/venv/Scripts"
-          else
-            bin="$PWD/temp/queue-validation/venv/bin"
-          fi
-          "$bin/python" -m pip install playwright==1.62.0 selenium==4.49.0
-          echo "$bin" >> "$GITHUB_PATH"
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          folder = "Scripts" if os.name == "nt" else "bin"
+          executable = "python.exe" if os.name == "nt" else "python"
+          bin_dir = (Path("temp/queue-validation/venv") / folder).resolve()
+          subprocess.check_call([str(bin_dir / executable), "-m", "pip", "install", "playwright==1.62.0", "selenium==4.49.0"])
+          with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as path_file:
+              path_file.write(str(bin_dir) + "\n")
+          PY
       - name: Install browser engines
+        if: matrix.suite == 'browsers'
         timeout-minutes: 10
         run: python -m playwright install chromium firefox webkit
       - name: Install Linux browser libraries
@@ -80,12 +93,14 @@ jobs:
         timeout-minutes: 10
         run: python -m playwright install-deps chromium firefox webkit
       - name: Queue engine and composer regressions
+        if: matrix.suite == 'browsers'
         working-directory: studio/frontend
         run: node --experimental-strip-types --test tests/composer-*.test.ts tests/prompt-queue-*.test.ts tests/model-lifecycle-gate.test.ts tests/pre-stream-run-reservation.test.ts tests/auto-compaction-settings.test.ts
       - name: Browser simulations
+        if: matrix.suite == 'browsers'
         run: python tests/studio/run_composer_compatibility.py
       - name: Native Safari simulations
-        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        if: ${{ !cancelled() && matrix.suite == 'safari' }}
         run: |
           sudo safaridriver --enable
           python tests/studio/selenium_composer_safari.py
@@ -93,7 +108,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: composer-${{ runner.os }}
+          name: composer-${{ runner.os }}-${{ matrix.suite }}
           path: temp/queue-validation/compatibility
           retention-days: 7
           if-no-files-found: warn

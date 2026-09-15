@@ -9,6 +9,7 @@ from selenium import webdriver
 from selenium.webdriver import ActionChains, Keys
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 
@@ -31,7 +32,9 @@ def main():
         wait = WebDriverWait(driver, 10)
 
         def label(name):
-            return wait.until(lambda d: d.find_element(By.CSS_SELECTOR, f'[aria-label="{name}"]'))
+            return wait.until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, f'[aria-label="{name}"]'))
+            )
 
         def order(ids):
             wait.until(
@@ -39,6 +42,9 @@ def main():
                     "return [...document.querySelectorAll('[data-queue-item-id]')].map(row => row.dataset.queueItemId)"
                 )
                 == ids
+            )
+            driver.execute_async_script(
+                "const done = arguments[0]; Promise.all([...document.querySelectorAll('[data-queue-item-id]')].flatMap(row => row.getAnimations()).map(a => a.finished.catch(() => {}))).then(done)"
             )
 
         def text_button(name):
@@ -52,8 +58,8 @@ def main():
         order(["q2", "q0", "q1"])
         label("More options for queued prompt 1").click()
         wait.until(
-            lambda d: d.find_element(
-                By.XPATH, '//*[@role="menuitem" and contains(.,"Edit message")]'
+            EC.element_to_be_clickable(
+                (By.XPATH, '//*[@role="menuitem" and contains(.,"Edit message")]')
             )
         ).click()
         editor = label("Edit queued prompt 1")
@@ -71,9 +77,24 @@ def main():
         )
         source = label("Reorder queued prompt 3 of 3")
         target = label("Reorder queued prompt 1 of 3")
-        ActionChains(driver).move_to_element(source).click_and_hold().move_to_element(target).pause(
-            0.1
-        ).release().perform()
+        points = driver.execute_script(
+            "return [...arguments].map(el => { const r = el.getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })",
+            source,
+            target,
+        )
+        report["drag_points"] = points
+        driver.execute_script(
+            "window.queuePointerTrace = []; for (const type of ['pointerdown', 'pointermove', 'pointerup']) document.addEventListener(type, e => window.queuePointerTrace.push({type, x:e.clientX, y:e.clientY}), true)"
+        )
+        actions = ActionChains(driver)
+        pointer = actions.w3c_actions.pointer_action
+        pointer.move_to_location(round(points[0]["x"]), round(points[0]["y"]))
+        pointer.pointer_down()
+        pointer.move_to_location(round(points[1]["x"]), round(points[1]["y"]))
+        pointer.pause(0.1)
+        pointer.pointer_up()
+        actions.perform()
+        report["pointer_trace"] = driver.execute_script("return window.queuePointerTrace")
         order(["q2", "q0", "q1"])
         label("Steer with queued prompt 1").click()
         order(["q0", "q1"])

@@ -5,6 +5,7 @@
 
 import re
 import json
+import time
 from playwright.sync_api import expect
 
 
@@ -107,9 +108,17 @@ def check_performance(browser, url):
     for size in (3, 25, 100, 500):
         page = browser.new_page(viewport = {"width": 1100, "height": 850})
         try:
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            started = time.monotonic()
             page.goto(f"{url}?size={size}")
             rows = page.locator("[data-queue-item-id]")
-            expect(rows).to_have_count(size)
+            # Cold Vite imports are outside the drag frame measurement.
+            expect(rows).to_have_count(size, timeout = 30000)
+            print(
+                f"MOUNT: rows={size}, cold_page_ms={round((time.monotonic() - started) * 1000)}",
+                flush = True,
+            )
             handle = rows.first.get_by_role("button", name = re.compile("^Reorder"))
             box = handle.bounding_box()
             x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
@@ -151,5 +160,6 @@ def check_performance(browser, url):
             }
             print("PERF: " + json.dumps(metrics), flush = True)
             assert metrics["p95_frame_ms"] < 250, "drag stalls for more than 250ms per frame"
+            assert not errors, errors
         finally:
             page.close()
