@@ -71,6 +71,7 @@ from core.inference.context_window import (
     tool_result_budget,
     turn_is_servable,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
     _CACHE_RAM_FLAGS,
@@ -2546,10 +2547,24 @@ def _resolve_swa_pattern(
 
 
 def _hf_repo_from_url(url: Optional[str]) -> Optional[str]:
-    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`."""
-    if not url or "huggingface.co/" not in url:
+    """Strip `https://huggingface.co/owner/name(/...)` -> `owner/name`.
+
+    A mirrored HF_ENDPOINT is recognised too, so a URL recorded on a mirror
+    still resolves to its repo id. huggingface.co stays accepted either way:
+    the same install can hold entries written before the mirror was set.
+    """
+    if not url:
         return None
-    tail = url.split("huggingface.co/", 1)[1].rstrip("/")
+    from utils.hf_endpoint import get_hf_endpoint
+
+    marker = "huggingface.co/"
+    if marker not in url:
+        mirror = get_hf_endpoint().split("://", 1)[-1].rstrip("/") + "/"
+        if mirror in url:
+            marker = mirror
+        else:
+            return None
+    tail = url.split(marker, 1)[1].rstrip("/")
     parts = tail.split("/")
     if len(parts) < 2:
         return None
@@ -33009,7 +33024,7 @@ class LlamaCppBackend:
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
-                payload["tools"] = safe_tools
+                payload["tools"] = llama_grammar_tools(safe_tools)
                 payload["tool_choice"] = requested_choice
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
@@ -36354,7 +36369,7 @@ class LlamaCppBackend:
                     # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
-                        template_body["tools"] = tools
+                        template_body["tools"] = llama_grammar_tools(tools)
                     # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs
