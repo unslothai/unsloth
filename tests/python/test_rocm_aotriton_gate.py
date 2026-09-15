@@ -1,22 +1,14 @@
 """Unsloth and Studio both open the ROCm AOTriton SDPA gate, whatever loaded first.
 
-Torch reads TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL late: into a function-local
-`static const bool` inside `check_flash_attention_hardware_support` and
-`check_mem_efficient_hardware_support`
-(`aten/src/ATen/native/transformers/cuda/sdp_utils.cpp`, unchanged from 2.8 through 2.11
-and main), so it is fixed at the first ROCm SDPA capability probe, not while the C++
-extension loads. `import torch` before `import unsloth` is therefore still in time, and
-that is the order `studio/backend/core/training/trainer.py` uses. Skipping the write there
-leaves the gate shut and finetuning back on the quadratic MATH path #8819 measured.
+Torch fixes TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL at the first ROCm SDPA probe, not at
+extension load (function-local `static const bool` in the `check_*_hardware_support` helpers
+of `aten/src/ATen/native/transformers/cuda/sdp_utils.cpp`, unchanged 2.8 through main), so
+`import torch` first, the order `studio/backend/core/training/trainer.py` uses, is still in
+time; skipping the write leaves the quadratic MATH path #8819 measured.
 
-The write is also a bare `os.environ.setdefault` in both files, asserted below. Deciding
-from the torch build or the GPU architecture would mean importing torch: on the Studio side
-that lands on the app-import path `utils/torch_warmup.py` exists to keep clear, and on
-either side it would shadow a matrix that lives in the AOTriton binary inside the wheel.
-That matrix moves between AOTriton releases and differs between the v2 and v3 builds of the
-same release, so no allowlist written here can track it. Torch already does the filtering
-that matters: it asks AOTriton for a kernel for this GPU, then asks whether the
-architecture is experimental, and only then reads the variable.
+The write is a bare `os.environ.setdefault` in both files, asserted below: any version or
+architecture policy would have to import torch and would shadow AOTriton's experimental
+matrix, which ships inside the wheel and moves between releases and builds.
 """
 
 import ast
@@ -50,8 +42,8 @@ def _gate_statement(path):
 
 
 def _open_gate(path, modules, environ):
-    """Run that statement against a synthetic `sys.modules` / environment. Running it
-    rather than grepping its source is what keeps a re-added guard visible."""
+    """Exec the statement against a synthetic `sys.modules` / environ; running it rather than
+    grepping the source keeps a re-added guard visible."""
     scope = {
         "os": types.SimpleNamespace(environ = environ),
         "sys": types.SimpleNamespace(modules = modules),
@@ -87,8 +79,8 @@ def test_an_unset_gate_is_opened(path):
 
 @_GATE_FILES
 def test_an_already_imported_torch_does_not_skip_the_write(path):
-    """The regression a `"torch" not in sys.modules` guard reintroduces. Torch has not read
-    the variable yet at that point, so the write still decides the gate."""
+    """The regression a `"torch" not in sys.modules` guard reintroduces: torch has not read
+    the variable yet, so the write still decides the gate."""
     environ = {}
     _open_gate(path, {"torch": types.ModuleType("torch")}, environ)
     assert environ.get(_GATE) == "1"
@@ -97,8 +89,7 @@ def test_an_already_imported_torch_does_not_skip_the_write(path):
 @_GATE_FILES
 @pytest.mark.parametrize("value", ["0", "1"])
 def test_an_explicit_value_is_never_overwritten(path, value):
-    """`c10::utils::check_env` reads "0" as false and "1" as true, so "0" is the opt-out and
-    it has to survive both orderings."""
+    """`c10::utils::check_env` reads "0" as the opt-out, so it must survive both orderings."""
     for modules in ({}, {"torch": types.ModuleType("torch")}):
         environ = {_GATE: value}
         _open_gate(path, modules, environ)
@@ -107,9 +98,8 @@ def test_an_explicit_value_is_never_overwritten(path, value):
 
 @_GATE_FILES
 def test_the_gate_is_a_bare_setdefault_that_cannot_reach_torch(path):
-    """No helper, no probe, no version or architecture allowlist: the statement is exactly
-    `os.environ.setdefault(<name>, "1")` with two literals, so nothing it runs can import
-    torch, read the wheel, or grow a policy that has to track AOTriton's experimental set."""
+    """Exactly `os.environ.setdefault(<name>, "1")` with two literals, so nothing it runs can
+    import torch or grow a policy that has to track AOTriton's experimental set."""
     node = _gate_statement(path)
     assert isinstance(node, ast.Expr), ast.unparse(node)
     call = node.value
@@ -121,8 +111,7 @@ def test_the_gate_is_a_bare_setdefault_that_cannot_reach_torch(path):
 
 @_GATE_FILES
 def test_the_gate_precedes_the_files_own_torch_import(path):
-    """The variable is only read at the first SDPA probe, but staying above every torch
-    import keeps it that way even if something imported here probes on the way in."""
+    """Only read at the first SDPA probe, but staying above every torch import keeps it so."""
     assert _gate_statement(path).lineno < _first_torch_import(path)
 
 
@@ -135,8 +124,7 @@ def test_studio_opens_the_gate_before_route_and_hardware_imports():
 
 
 def test_all_studio_launches_converge_on_the_main_gate():
-    """`run.py` execs the app rather than setting anything itself, so the launcher and a
-    direct `uvicorn main:app` cannot disagree about the gate."""
+    """`run.py` execs the app, so it cannot disagree with a direct `uvicorn main:app`."""
     source = _source(_STUDIO_RUN)
     assert _GATE not in source
     assert "from main import app" in source

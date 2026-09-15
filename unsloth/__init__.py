@@ -13,10 +13,9 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Opt Unsloth into ROCm AOTriton kernels that PyTorch still gates as experimental.
-# PyTorch keeps its normal hardware and backend checks, so this changes eligibility without
-# forcing a kernel. Avoid probing torch here: the value is read lazily during ROCm SDPA checks,
-# non-ROCm builds ignore it, and `setdefault` preserves an explicit override, including "0".
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
