@@ -78,10 +78,9 @@ try {
     $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
     Check "no nvml.dll on disk keeps the bare name" ((Get-NvidiaNvmlLibraryPath) -eq "nvml.dll")
     Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
-    $expected = (Join-Path $nvsmi "nvml.dll").Replace('\', '\\')
-    Check "an NVSMI-only nvml.dll is named by path, escaped for the C# literal" ((Get-NvidiaNvmlLibraryPath) -eq $expected)
+    Check "an NVSMI-only nvml.dll is named by its path" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $nvsmi "nvml.dll"))
     Set-Content -Path (Join-Path $sys32 "nvml.dll") -Value ""
-    Check "System32 wins when both exist" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll").Replace('\', '\\'))
+    Check "System32 wins when both exist" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll"))
 } finally {
     $env:SystemRoot = $savedRoot; $env:ProgramFiles = $savedPf
     Remove-Item -LiteralPath $pathRoot -Recurse -Force -ErrorAction SilentlyContinue
