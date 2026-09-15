@@ -60,6 +60,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.uiFont.label",
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
+    "settings.appearance.custom.chatWidth.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
@@ -267,6 +268,10 @@ export function createSettingsSearchIndex({
       // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
+    ],
+    appearance: [
+      ...SETTINGS_SEARCH_INDEX.appearance,
+      "settings.appearance.custom.interfaceScale.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

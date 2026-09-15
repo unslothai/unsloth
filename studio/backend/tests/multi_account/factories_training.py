@@ -230,6 +230,12 @@ FACTORIES = {
     "routes.data_recipe.jobs:GET:/jobs/{job_id}/dataset": Factory(
         "training-recipe-job", fragment = SENTINEL
     ),
+    "routes.data_recipe.jobs:GET:/jobs/{job_id}/download-url": Factory(
+        "training-recipe-job", fragment = "/download?"
+    ),
+    "routes.data_recipe.jobs:GET:/jobs/{job_id}/download": Factory(
+        "training-recipe-job", fragment = SENTINEL
+    ),
     "routes.data_recipe.jobs:POST:/jobs/{job_id}/cancel": Factory(
         "training-recipe-job", fragment = RECIPE_JOB_ID
     ),

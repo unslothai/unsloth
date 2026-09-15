@@ -92,7 +92,7 @@ env:
 
 jobs:
   pytest:
-    name: (Python ${{ matrix.python }})
+    name: (Python ${{ matrix.python }}, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     # 45 guards against a hang; it is not a performance budget. The comment this replaces
     # claimed 14.1 to 15.0 minutes against a limit of 30, but this step now measures 22.5 to
@@ -114,8 +114,16 @@ jobs:
     # its work in six minutes. The per-test --timeout below is what actually names a hang;
     # this stays as the backstop for a wedge the per-test timer cannot see, such as one in
     # collection or in a worker that never comes up.
+    #
+    # Unchanged by the split below, deliberately. A shard does less work than the leg it
+    # came from, so 45 only gets looser, and retuning it on a prediction is the failure
+    # this number was raised to fix: the sharded spread has not been measured on a runner
+    # yet. Retune it once there are runs to retune it against.
     timeout-minutes: 45
     strategy:
+      # fail-fast off: three shards of one suite, and cancelling the other two on the first
+      # failure would hide which of them were also red. It was already off for the
+      # 3.13/3.11 pair, for the same reason.
       fail-fast: false
       matrix:
         # 3.13 only, on pull requests and on main alike.
@@ -138,22 +146,81 @@ jobs:
         # away: two interpreters that both accept a line can still behave differently on
         # it, and a sys.version_info branch is only ever parsed, never taken.
         #
-        # So the branches were counted rather than assumed. Seven files in the backend
-        # carry one, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by
-        # the old matrix, whose oldest leg was 3.10, so every leg took the same side of
-        # them and removing legs loses nothing there. 3.14 is above every leg there has
-        # ever been. What is genuinely lost is the PRE-3.12 side of three files, and that
-        # is small enough to keep executing directly.
+        # So the branches were counted rather than assumed. Seven backend files carry one, at
+        # 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by the old matrix
+        # (oldest leg 3.10), and 3.14 is above every leg there has ever been. What is
+        # genuinely lost is the PRE-3.12 side of three files.
         #
-        # Hence the second entry: 3.11, the newest version that still takes that side,
-        # running those three files and nothing else. Roughly 40 tests in under ten
-        # seconds, not a second copy of the suite, and it runs beside the full leg rather
-        # than in front of it, so the critical path is unchanged.
+        # Hence the second entry: 3.11, the newest version still on that side, running those
+        # three files and nothing else. Roughly 40 tests in under ten seconds, beside the full
+        # leg rather than in front of it, so the critical path is unchanged.
+        #
+        # The 3.13 leg is three shards of one selection, balanced on measured time rather than
+        # file count, for the reason repo-cpu-tests was split below: it is now the longest
+        # thing a pull request waits for, at 763-822s parallel plus 201-234s serial.
+        #
+        # Summed test time is 1886.1s across 922 files (`--durations=0 --durations-min=0`,
+        # -n 16; the default 0.005s cutoff hides ~105,000 durations and is unusable here),
+        # split on the first letter after `test_`:
+        #
+        #   a-k                        542.8s   396 files   28.8%
+        #   l-r                        693.7s   318 files   36.8%
+        #   s-z + every subdirectory   649.6s   208 files   34.4%
+        #
+        # so the longest shard is 1.103x an ideal third. The letters are lumpy (l is 217.2s,
+        # t is 280.4s, multi_account's 159.3s is stuck in the catch-all) and no contiguous
+        # split does better. A hand-picked letter SET reaches 1.001x and is not worth it: an
+        # allowlist tuned to one measurement is what the shape below exists to avoid.
+        #
+        # The shape. All three shards root at `tests/` and differ only in what they ignore:
+        # `--ignore=FILE` does NOT filter a file passed as an explicit argument (checked
+        # against pytest), so a shard rooted at an expanded glob would drag the twelve serial
+        # files back in past the shared --ignore list below. Shards 1 and 2 name their range
+        # and exclude everything else, including names outside a-z and anything below a
+        # subdirectory. Shard 3 is "tests/ minus the other two ranges", never an allowlist, so
+        # a new file lands in exactly one shard with no workflow edit: test_apple.py in 1,
+        # test_monkey.py in 2, and test_snake.py, tests/a_new_dir/test_x.py, foo_test.py and
+        # test_Zebra.py in 3. test_ci_backend_pytest_shards.py fails if that stops holding,
+        # and test_backend_ci_parallel_isolation.py fails if a shard collects one of the twelve.
+        #
+        # Two name shapes the split cannot absorb, forbidden by name in that guard rather than
+        # left to be discovered: a subdirectory called test_*, and a file matching BOTH
+        # discovery patterns (test_api_test.py). Each lands in no shard, because fnmatch's *
+        # crosses / and the suffix rule cannot say "unless it starts with test_" in one pattern.
+        # Diverging per prefix character was tried and reverted: it fixes test_api_test.py but
+        # over-consumes te_test.py into BOTH ranged shards, and completing it needs nine globs
+        # per shard for a filename this repo does not use.
+        #
+        # Verified at the level of the test id, not the count: the unsharded selection and the
+        # three shards run with --junitxml and the reports diffed gave 13,073 + 17,483 + 12,053
+        # = 42,609 against the baseline's 42,609, no id in two shards or in neither, and the
+        # same 332 skipped and 386 errored.
         include:
           - python: '3.13'
             scope: full
+            shard: a-k
+            selection: >-
+              tests/
+              --ignore-glob=tests/*/*
+              --ignore-glob=tests/*_test.py
+              --ignore-glob=tests/test_[!a-k]*.py
+          - python: '3.13'
+            scope: full
+            shard: l-r
+            selection: >-
+              tests/
+              --ignore-glob=tests/*/*
+              --ignore-glob=tests/*_test.py
+              --ignore-glob=tests/test_[!l-r]*.py
+          - python: '3.13'
+            scope: full
+            shard: rest
+            selection: >-
+              tests/
+              --ignore-glob=tests/test_[a-r]*.py
           - python: '3.11'
             scope: floor-spot-check
+            shard: floor
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -284,9 +351,20 @@ jobs:
         # Reproduced with a test forking a child that never exits: unwrapped it hangs
         # silently, wrapped it exits 124 through execnet safe_terminate -> workerpool.waitall.
         # Expect a stuck FRAME, not always a test name. 1500s is ~3x the 8-10 minute norm.
+        #
+        # The thirteen --ignore flags and the -k filter stay HERE rather than moving into
+        # the matrix: they are the selection every shard inherits, and one copy of them is
+        # what makes "the twelve serial files are ignored by every parallel shard" a
+        # property of the step instead of three lists that have to agree. The shards differ
+        # only in `${{ matrix.selection }}`.
+        #
+        # The outer 1500s is not retuned on a prediction, for the reason repo-cpu-tests
+        # gives below: a bound that lands inside the real spread is the failure this kind of
+        # number exists to prevent, and the sharded spread has not been measured on a runner
+        # yet. It only ever gets looser as the work per shard drops.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest tests/ -q --tb=short -n 4 --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -303,7 +381,12 @@ jobs:
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
-        if: matrix.scope == 'full'
+        # One shard, one process, the same twelve files. Not split and not redistributed:
+        # whether any of them could go back into the parallel run was asked separately and
+        # the answer was no, so this step is carried unchanged and only has to be carried
+        # ONCE. a-k because it is the shortest shard at 28.8% of summed test time, and this
+        # step is 201-234s: it lands there rather than on the 36.8% shard.
+        if: matrix.scope == 'full' && matrix.shard == 'a-k'
         working-directory: studio/backend
         # Relative timing against a reference measured in the same process. Serial, so the
         # comparison is between two implementations rather than between two schedulings.

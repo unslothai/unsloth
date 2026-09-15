@@ -1040,6 +1040,13 @@ export const ptBR = {
         minimal: "Minimalista",
       },
       custom: {
+        chatWidth: {
+          label: "Largura do chat",
+          description: "Defina a largura das mensagens e do campo de texto. A largura total usa o espaço entre as barras laterais.",
+          standard: "Padrão",
+          wide: "Ampla",
+          full: "Largura total",
+        },
         reset: "Redefinir",
         resetAll: "Redefinir personalização",
         preferencesTitle: "Preferências",
@@ -1087,6 +1094,10 @@ export const ptBR = {
           errorLimit: "Você pode importar até 3 fontes.",
           errorStorageFull: "Sem espaço de armazenamento local para esta fonte. Remova uma fonte importada primeiro.",
           errorFailed: "Não foi possível carregar este arquivo de fonte.",
+        },
+        interfaceScale: {
+          label: "Escala da interface",
+          description: "Redimensione todos os elementos da interface.",
         },
         uiFontSize: {
           label: "Tamanho da fonte da interface",

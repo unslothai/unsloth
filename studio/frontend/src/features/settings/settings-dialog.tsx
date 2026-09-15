@@ -206,7 +206,6 @@ const TABS: TabDef[] = [
     id: "remote-lan",
     labelKey: "settings.tabs.remoteLan",
     icon: HomeWifiIcon,
-    badgeKey: "common.new",
   },
   {
     id: "connections",
@@ -232,7 +231,6 @@ const TABS: TabDef[] = [
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
     icon: EnergyRectangleIcon,
-    badgeKey: "common.new",
   },
   {
     id: "debugging",
