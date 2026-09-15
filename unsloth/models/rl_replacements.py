@@ -920,6 +920,43 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
     return {"enabled": enabled, "dtype": dtype}
 
 
+# TRL wraps whatever the singular `image` column holds in a list of its own, so a cell
+# holding two images arrives at the processor as [[[img, img]]]. Both
+# make_nested_list_of_images and the processor reject that shape with "Invalid input type.
+# Must be a single image, a list of images, or a list of batches of images.". A list cell
+# is simply the plural `images` form, which TRL already supports, so normalise it into
+# that path. See unslothai/unsloth#3605.
+def _unsloth_grpo_image_cell(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _unsloth_reject_grpo_image_list(inputs):
+    """Refuse a multi image singular `image` cell that could not be normalised.
+
+    The normalisation above is a rewrite of TRL's own extraction, so it only lands on the
+    spellings TRL has actually used. When the installed TRL spells it some other way the
+    rewrite does not apply and the batch would die inside the processor with a message
+    that names neither the column nor the fix, so name them here instead.
+    """
+    try:
+        first = inputs[0]
+        value = first.get("image", None) if isinstance(first, dict) else None
+    except Exception:
+        return
+    if isinstance(value, (list, tuple)) and len(value) > 1:
+        raise ValueError(
+            f"Unsloth: GRPO received a singular `image` column holding {len(value)} "
+            "images, and this TRL version cannot be normalised to the plural path. "
+            "Rename the column to `images`, which TRL reads as the per example list of "
+            "images, or keep one image per row. "
+            "See https://github.com/unslothai/unsloth/issues/3605"
+        )
+
+
 def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
@@ -1165,12 +1202,8 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             _target_line + _metadata_extraction,
         )
 
-    # This path is for TRL 0.24.0: `images` is a variable exclusive to that version.
-    string_to_find = """        if images is not None:
-            output["num_images"] = num_images"""
-
-    replacement_string = """        if images is not None:
-            output["num_images"] = num_images
+    # This path is for TRL 0.24.0 and later: `images` is a variable exclusive to those.
+    _output_extras = """
         if max_left_pad is not None:
             output["max_left_pad"] = torch.tensor(prompt_ids.shape[0] * [max_left_pad]).unsqueeze(-1)
         try:
@@ -1179,7 +1212,29 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         except NameError:
             output["sampling_per_token_logps"] = None"""
 
-    function = function.replace(string_to_find, replacement_string)
+    # Longest anchor first. TRL 1.7.0 grew a nested num_tiles line inside this block, and
+    # matching only the first two lines leaves it stranded inside the try/except above, so
+    # num_tiles never reached the inputs dict and the tile indexed slicing had nothing to
+    # index with. See unslothai/unsloth#6960.
+    _num_images_anchors = (
+        """        if images is not None:
+            output["num_images"] = num_images
+            if num_tiles is not None:
+                output["num_tiles"] = num_tiles""",
+        """        if images is not None:
+            output["num_images"] = num_images""",
+    )
+    for _anchor in _num_images_anchors:
+        if _anchor in function:
+            function = function.replace(_anchor, _anchor + _output_extras)
+            break
+    else:
+        if "output[\"num_images\"]" in function:
+            _warn_once(
+                "grpo_output_num_images",
+                "Unsloth: the GRPO num_images output block changed shape, so "
+                "max_left_pad and the vLLM sampling logprobs are not being saved.",
+            )
 
     if trl_version >= Version("0.24.0"):
         string_to_find = "        rewards_per_func = self._calculate_rewards(inputs, prompts, completions, completion_ids_list)"
@@ -1274,6 +1329,64 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             '            output["tool_mask"] = tool_mask\n'
             "        return output",
         )
+
+    # A singular `image` cell may hold a list of images; route it through TRL's plural
+    # `images` handling instead of letting TRL wrap it once more. unslothai/unsloth#3605.
+    _image_cell_anchors = (
+        # TRL >= 1.0.0 reads the column directly.
+        (
+            'images = [[example.get("image")] if example.get("image") is not None else None for example in inputs]',
+            "images = [_unsloth_grpo_image_cell(example.get(\"image\")) for example in inputs]",
+        ),
+        # TRL 0.22.x - 0.23.x builds the processor kwargs itself.
+        (
+            'kwargs = {"images": [[img] for img in images]}',
+            'kwargs = {"images": [_unsloth_grpo_image_cell(img) for img in images]}',
+        ),
+    )
+    _image_cell_normalised = False
+    for _old_cell, _new_cell in _image_cell_anchors:
+        if _old_cell in function:
+            function = function.replace(_old_cell, _new_cell)
+            _image_cell_normalised = True
+
+    # TRL 0.22.x - 0.23.x inserts exactly one image placeholder per example, which no
+    # longer matches once a cell carries several images.
+    _placeholder_old = (
+        "            for prompt in prompts:\n"
+        "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
+        "                    prepare_multimodal_messages(prompt, num_images=1)"
+    )
+    _placeholder_new = (
+        "            for prompt, _unsloth_cell in zip(prompts, kwargs[\"images\"]):\n"
+        "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
+        "                    prepare_multimodal_messages(\n"
+        "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 1\n"
+        "                    )"
+    )
+    if _placeholder_old in function:
+        function = function.replace(_placeholder_old, _placeholder_new)
+
+    if not _image_cell_normalised:
+        # Nothing to rewrite, so guard at runtime rather than fail inside the processor.
+        _signature = re.search(
+            r"([ \t]*)def _generate_and_score_completions\((?:[^()]|\([^()]*\))*\)[^\n]*:\n",
+            function,
+        )
+        if _signature is None:
+            _warn_once(
+                "grpo_image_column",
+                "Unsloth: could not install the GRPO singular `image` column "
+                "normalisation; a column holding a list of images may fail inside the "
+                "processor. See https://github.com/unslothai/unsloth/issues/3605",
+            )
+        else:
+            _indent = _signature.group(1) + "    "
+            function = (
+                function[: _signature.end()]
+                + f"{_indent}_unsloth_reject_grpo_image_list(inputs)\n"
+                + function[_signature.end() :]
+            )
 
     return function
 
@@ -1411,22 +1524,42 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             compute_aux_loss = kwargs.get("compute_aux_loss", None)
 
-            pixel_values, image_grid_thw = (
-                kwargs.get("pixel_values", None),
-                kwargs.get("image_grid_thw", None),
-            )
-            pixel_attention_mask, image_sizes = (
-                kwargs.get("pixel_attention_mask", None),
-                kwargs.get("image_sizes", None),
-            )
-            num_images = kwargs.get("num_images", None)
+            # One key tuple, owned by unsloth_zoo and shared with the gradient pass in
+            # grpo_accumulated_loss, so neither path can forward a different set of
+            # multimodal inputs than the other. TRL passes everything the processor
+            # produced through **kwargs, including spatial_shapes (LFM2-VL), num_tiles
+            # (LFM2-VL and InternVL) and image_position_ids (Gemma 4). See
+            # unslothai/unsloth#6960. Body-local import: this function's source is copied
+            # into the generated UnslothGRPOTrainer cache without this module's imports.
+            _grpo_vision_chunks = None
+            try:
+                from unsloth_zoo.rl_replacements import (
+                    grpo_get_vision_inputs as _grpo_get_vision_inputs,
+                    grpo_vision_chunks as _grpo_vision_chunks,
+                )
+            except Exception:
+                _grpo_get_vision_inputs = None
+            if _grpo_vision_chunks is None:
+                if kwargs.get("pixel_values", None) is not None:
+                    raise RuntimeError(
+                        "Unsloth: vision GRPO needs an unsloth_zoo build that exports "
+                        "grpo_vision_chunks, the shared multimodal key tuple and chunker "
+                        "used by both GRPO logprob paths. Please upgrade unsloth_zoo."
+                    )
+                vision_inputs = {}
+            else:
+                vision_inputs = _grpo_get_vision_inputs(kwargs)
+            pixel_values = vision_inputs.get("pixel_values", None)
+            image_grid_thw = vision_inputs.get("image_grid_thw", None)
+            num_images = vision_inputs.get("num_images", None)
             # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models.
-            token_type_ids = kwargs.get("token_type_ids", None)
-            mm_token_type_ids = kwargs.get("mm_token_type_ids", None)
+            token_type_ids = vision_inputs.get("token_type_ids", None)
+            mm_token_type_ids = vision_inputs.get("mm_token_type_ids", None)
             if mm_token_type_ids is not None or image_grid_thw is not None:
                 mm_token_type_ids = _unsloth_fix_mm_token_type_ids(
                     self.processing_class, input_ids, mm_token_type_ids
                 )
+                vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
 
@@ -1472,116 +1605,27 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             else:
                 max_left_pad = 0
 
-            def slice_sample_axis(value, start, end):
-                if value is None:
-                    return None
-                return value[start:end]
-
             import math
 
             total_samples = input_ids.shape[0]
             batch_size = math.ceil(total_samples / B)
-            if isinstance(num_images, torch.Tensor):
-                num_images = num_images.detach().cpu().reshape(-1).tolist()
-            if image_grid_thw is not None and pixel_values is not None and num_images is not None:
-                rows_per_image = image_grid_thw.prod(dim = -1)
-                rows_per_sample = torch.split(rows_per_image, num_images)
-                rows_per_sample = torch.stack([s.sum() for s in rows_per_sample])
-                # cum_rows is indexed via .item() inside the per-chunk loop, so keeping it on CPU avoids a per-iteration GPU->CPU sync.
-                cum_rows = torch.cat(
-                    [
-                        torch.tensor([0], device = rows_per_sample.device),
-                        rows_per_sample.cumsum(0),
-                    ]
-                ).cpu()
-                cum_imgs = torch.tensor([0] + num_images).cumsum(0)
-            else:
-                cum_rows = None
-                cum_imgs = None
-
-            def _first_dim_len(value):
-                if value is None:
-                    return None
-                if hasattr(value, "shape"):
-                    return value.shape[0]
-                try:
-                    return len(value)
-                except TypeError:
-                    return None
-
-            total_images = sum(num_images) if num_images is not None else None
-            _image_sizes_n = _first_dim_len(image_sizes)
 
             input_ids_chunks = []
             attention_mask_chunks = []
-            pixel_values_chunks = []
-            image_grid_thw_chunks = []
-            pixel_attention_mask_chunks = []
-            image_sizes_chunks = []
-            token_type_ids_chunks = []
-            mm_token_type_ids_chunks = []
-
-            current_pixel_idx = 0
             for start in range(0, total_samples, batch_size):
                 end = min(start + batch_size, total_samples)
-
                 input_ids_chunks.append(input_ids[start:end])
                 attention_mask_chunks.append(attention_mask[start:end])
-                token_type_ids_chunks.append(slice_sample_axis(token_type_ids, start, end))
-                mm_token_type_ids_chunks.append(slice_sample_axis(mm_token_type_ids, start, end))
 
-                if image_grid_thw is not None and pixel_values is not None:
-                    if num_images is None:
-                        grid_slice = image_grid_thw[start:end]
-                        batch_pixel_count = grid_slice.prod(dim = -1).sum().item()
-                        start_pixel_idx = current_pixel_idx
-                        end_pixel_idx = current_pixel_idx + batch_pixel_count
-                        current_pixel_idx = end_pixel_idx
-                        img_start = img_end = None
-                    else:
-                        start_pixel_idx = cum_rows[start].item()
-                        end_pixel_idx = cum_rows[end].item()
-                        img_start = cum_imgs[start].item()
-                        img_end = cum_imgs[end].item()
-                        grid_slice = image_grid_thw[img_start:img_end]
-                    image_grid_thw_chunks.append(grid_slice)
-
-                    pixel_values_chunks.append(pixel_values[start_pixel_idx:end_pixel_idx])
-
-                    if image_sizes is None:
-                        image_sizes_chunks.append(None)
-                    elif (
-                        num_images is not None
-                        and _image_sizes_n == total_images
-                        and img_start is not None
-                    ):
-                        image_sizes_chunks.append(image_sizes[img_start:img_end])
-                    else:
-                        image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
-
-                    if pixel_attention_mask is None:
-                        pixel_attention_mask_chunks.append(None)
-                    elif (
-                        num_images is not None
-                        and img_start is not None
-                        and pixel_attention_mask.shape[0] == image_grid_thw.shape[0]
-                    ):
-                        pixel_attention_mask_chunks.append(pixel_attention_mask[img_start:img_end])
-                    elif (
-                        pixel_attention_mask.shape[0] == pixel_values.shape[0]
-                        and pixel_attention_mask.shape[0] != input_ids.shape[0]
-                    ):
-                        pixel_attention_mask_chunks.append(
-                            pixel_attention_mask[start_pixel_idx:end_pixel_idx]
-                        )
-                    else:
-                        pixel_attention_mask_chunks.append(pixel_attention_mask[start:end])
-
-                else:
-                    pixel_values_chunks.append(None)
-                    image_grid_thw_chunks.append(None)
-                    pixel_attention_mask_chunks.append(None)
-                    image_sizes_chunks.append(slice_sample_axis(image_sizes, start, end))
+            # Shared with the gradient pass, so the two cannot slice the same tensors
+            # differently, and so a model whose metadata key is not image_grid_thw still
+            # gets its pixel_values forwarded rather than silently dropped.
+            if _grpo_vision_chunks is None:
+                vision_chunks = [{} for _ in input_ids_chunks]
+            else:
+                vision_chunks = _grpo_vision_chunks(
+                    vision_inputs, total_samples, batch_size
+                )
 
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
@@ -1603,12 +1647,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             zipped_inputs = zip(
                 input_ids_chunks,
                 attention_mask_chunks,
-                pixel_values_chunks,
-                image_grid_thw_chunks,
-                pixel_attention_mask_chunks,
-                image_sizes_chunks,
-                token_type_ids_chunks,
-                mm_token_type_ids_chunks,
+                vision_chunks,
             )
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
 
@@ -2049,18 +2088,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 for (
                     input_ids_chunk,
                     attention_mask_chunk,
-                    pixel_values_chunk,
-                    image_grid_thw_chunk,
-                    pixel_attention_mask_chunk,
-                    image_sizes_chunk,
-                    token_type_ids_chunk,
-                    mm_token_type_ids_chunk,
+                    vision_chunk,
                 ) in zipped_inputs:
-                    _extra_vision_kwargs = {}
-                    if token_type_ids_chunk is not None:
-                        _extra_vision_kwargs["token_type_ids"] = token_type_ids_chunk
-                    if mm_token_type_ids_chunk is not None:
-                        _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
                     with torch.amp.autocast(
                         device_type = "cuda",
                         dtype = self._autocast_dtype,
@@ -2070,11 +2099,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
-                                pixel_values = pixel_values_chunk,
-                                image_grid_thw = image_grid_thw_chunk,
-                                pixel_attention_mask = pixel_attention_mask_chunk,
-                                image_sizes = image_sizes_chunk,
-                                **_extra_vision_kwargs,
+                                **vision_chunk,
                             )
 
                             logits_chunk = outputs.logits
@@ -2114,12 +2139,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
-                                pixel_values = pixel_values_chunk,
-                                image_grid_thw = image_grid_thw_chunk,
-                                pixel_attention_mask = pixel_attention_mask_chunk,
-                                image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
-                                **_extra_vision_kwargs,
+                                **vision_chunk,
                             )
 
                             logits_chunk = outputs.logits
@@ -2332,6 +2353,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidd
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_image_cell))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image_list))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
@@ -2394,18 +2417,31 @@ def grpo_trainer_compute_loss(function_name, function):
             inputs["completion_ids"],
             inputs["completion_mask"],
         )
-        pixel_values, image_grid_thw = (
-            inputs.get("pixel_values", None),
-            inputs.get("image_grid_thw", None),
-        )
-        pixel_attention_mask, image_sizes = (
-            inputs.get("pixel_attention_mask", None),
-            inputs.get("image_sizes", None),
-        )
-        num_images = inputs.get("num_images", None)
+        # Same key tuple the logprob pass reads, so nothing the processor produced is
+        # dropped on the way to the gradient pass. See unslothai/unsloth#6960.
+        try:
+            from unsloth_zoo.rl_replacements import grpo_get_vision_inputs as _grpo_get_vision_inputs
+            _vision_inputs = _grpo_get_vision_inputs(inputs)
+        except Exception:
+            # Same names as unsloth_zoo's GRPO_VISION_KEYS, in case the installed zoo
+            # predates it. Keeping the two in step matters: a key missing here is a key
+            # the gradient pass never sees.
+            _vision_inputs = {
+                key: inputs.get(key, None)
+                for key in (
+                    "pixel_values", "image_grid_thw", "pixel_attention_mask",
+                    "image_sizes", "spatial_shapes", "num_tiles", "image_position_ids",
+                    "num_images", "token_type_ids", "mm_token_type_ids",
+                )
+            }
+        pixel_values = _vision_inputs.get("pixel_values", None)
+        image_grid_thw = _vision_inputs.get("image_grid_thw", None)
+        pixel_attention_mask = _vision_inputs.get("pixel_attention_mask", None)
+        image_sizes = _vision_inputs.get("image_sizes", None)
+        num_images = _vision_inputs.get("num_images", None)
         # Transformers 5.x needs token_type_ids/mm_token_type_ids for some vision models.
-        token_type_ids = inputs.get("token_type_ids", None)
-        mm_token_type_ids = inputs.get("mm_token_type_ids", None)
+        token_type_ids = _vision_inputs.get("token_type_ids", None)
+        mm_token_type_ids = _vision_inputs.get("mm_token_type_ids", None)
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
@@ -2425,6 +2461,10 @@ def grpo_trainer_compute_loss(function_name, function):
                 mm_token_type_ids,
                 completion_ids = completion_ids,
             )
+            _vision_inputs["mm_token_type_ids"] = mm_token_type_ids
+        # Only the keys the processor actually produced, so an older unsloth_zoo never
+        # sees a kwarg it does not know.
+        _vision_inputs = {k: v for k, v in _vision_inputs.items() if v is not None}
         logits_to_keep = completion_ids.size(
             1
         )  # we only need to compute the logits for the completion tokens
@@ -2593,11 +2633,6 @@ def grpo_trainer_compute_loss(function_name, function):
                 ) = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
-                    pixel_values = pixel_values,
-                    image_grid_thw = image_grid_thw,
-                    pixel_attention_mask = pixel_attention_mask,
-                    image_sizes = image_sizes,
-                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -2620,8 +2655,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     current_gradient_accumulation_steps = current_gradient_accumulation_steps,
                     num_processes = num_processes,
                     sampling_per_token_logps = sampling_per_token_logps,
-                    token_type_ids = token_type_ids,
-                    mm_token_type_ids = mm_token_type_ids,
+                    **_vision_inputs,
                     **_grpo_accumulated_loss_kwargs,
                 )
             else:
@@ -2629,11 +2663,6 @@ def grpo_trainer_compute_loss(function_name, function):
                 loss, completion_length, mean_kl, coef_1, completion_mask = grpo_accumulated_loss(
                     trainer = self,
                     input_ids = _input_ids,
-                    pixel_values = pixel_values,
-                    image_grid_thw = image_grid_thw,
-                    pixel_attention_mask = pixel_attention_mask,
-                    image_sizes = image_sizes,
-                    num_images = num_images,
                     logits_to_keep = logits_to_keep,
                     completion_mask = completion_mask,
                     advantages = advantages,
@@ -2645,8 +2674,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     logit_scale_multiply = logit_scale_multiply,
                     logit_scale_divide = logit_scale_divide,
                     attention_mask = attention_mask,
-                    token_type_ids = token_type_ids,
-                    mm_token_type_ids = mm_token_type_ids,
+                    **_vision_inputs,
                     **_grpo_accumulated_loss_kwargs,
                 )
         if "train" in self._metrics:

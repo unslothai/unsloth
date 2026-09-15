@@ -1456,6 +1456,16 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     forward_signature = inspect.signature(original_forward)
     model_name = type(target_model).__name__
 
+    # Body-local: this function's source is extracted and exec'd without this module's
+    # imports by the GRPO hidden-state test harnesses.
+    import functools
+
+    # functools.wraps, so inspect.signature follows __wrapped__ back to the real forward.
+    # transformers' generate() validates its kwargs against inspect.signature(self.forward),
+    # so a bare (*args, **kwargs) wrapper makes every vision kwarg that the model takes
+    # only on forward look unused: LFM2-VL GRPO died on "The following `model_kwargs` are
+    # not used by the model: ['pixel_values', 'pixel_attention_mask', 'spatial_shapes']".
+    @functools.wraps(original_forward)
     def wrapped_forward(*args, **kwargs):
         # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False), called every GRPO step, rebinds the forward as MethodType, so the module arrives as a leading positional argument; original_forward is already bound, so drop it.
         while len(args) != 0 and args[0] is target_model:
