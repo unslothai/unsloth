@@ -69,4 +69,4 @@ if [[ -s "$INITIAL" ]] && ! password_stored; then
     IFS= read -r -d '' UNSLOTH_STUDIO_PASSWORD < "$INITIAL" || true
     export UNSLOTH_STUDIO_PASSWORD
 fi
-exec "${STUDIO_HOME}/bin/unsloth" studio -H 0.0.0.0 -p 8000
+exec "${STUDIO_HOME}/bin/unsloth" studio -H 0.0.0.0 -p "${UNSLOTH_STUDIO_PORT:-8000}"

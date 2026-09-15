@@ -2,7 +2,7 @@
 # Default CMD of the full Unsloth image (Dockerfile.studio).
 #
 # Bootstraps the three services managed by supervisord:
-#   studio   port 8000   user unsloth; password from UNSLOTH_STUDIO_PASSWORD, or
+#   studio   port UNSLOTH_STUDIO_PORT (8000)   user unsloth; password from UNSLOTH_STUDIO_PASSWORD, or
 #                        the generated one printed in `docker logs` (studio-password)
 #   jupyter  port 8888   password from JUPYTER_PASSWORD, or a random one
 #                        printed in `docker logs` when unset
@@ -21,13 +21,19 @@
 set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
-# Studio is fixed at 8000 (studio_run.sh); JupyterLab starts first and wins the bind, so
-# Studio silently falls back to an unpublished 8001. Compared as traitlets does, via int():
-# whitespace, leading zeros, a leading + and underscores ("08000", " 8000", "8_000") all bind 8000.
+export UNSLOTH_STUDIO_PORT="${UNSLOTH_STUDIO_PORT:-8000}"
+if ! [[ "$UNSLOTH_STUDIO_PORT" =~ ^[0-9]+$ ]] || (( 10#$UNSLOTH_STUDIO_PORT < 1 || 10#$UNSLOTH_STUDIO_PORT > 65535 )); then
+    printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=%s is not a port number (1-65535).\n" "$UNSLOTH_STUDIO_PORT" >&2
+    exit 1
+fi
+UNSLOTH_STUDIO_PORT=$(( 10#$UNSLOTH_STUDIO_PORT ))
+# JupyterLab starts first and wins the bind, so Studio silently falls back to an unpublished
+# port. Compared as traitlets does, via int(): whitespace, leading zeros, a leading + and
+# underscores ("08000", " 8000", "8_000") all bind 8000.
 jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
 jupyter_port_digits="${jupyter_port_digits#+}"
-if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == 8000 )); then
-    printf "\033[1;31mERROR:\033[0m JUPYTER_PORT=8000 is Unsloth Studio's port inside the container.\n" >&2
+if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == UNSLOTH_STUDIO_PORT )); then
+    printf "\033[1;31mERROR:\033[0m JUPYTER_PORT=%s is Unsloth Studio's port inside the container (UNSLOTH_STUDIO_PORT).\n" "$UNSLOTH_STUDIO_PORT" >&2
     printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
     exit 1
 fi
@@ -142,7 +148,7 @@ else
 fi
 unset UNSLOTH_STUDIO_PASSWORD
 export UNSLOTH_STUDIO_PASSWORD_STATE  # read by unsloth-studio-password
-echo "Unsloth Studio  -> http://localhost:8000   (${STUDIO_NOTE})"
+echo "Unsloth Studio  -> http://localhost:${UNSLOTH_STUDIO_PORT}   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
     echo "JupyterLab tunnel-> enabled; public trycloudflare URL appears below once it is up"
