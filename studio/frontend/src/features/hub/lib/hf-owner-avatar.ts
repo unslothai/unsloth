@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
-import { usePlatformStore } from "@/config/env";
-import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -166,8 +165,7 @@ export function useHfOwnerAvatar(
 ): string | null {
   const key = owner?.trim() ?? "";
   const online = useOnlineStatus();
-  // In the effect identity, so a late endpoint reruns the lookup.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
     return { key, url: readCachedUrl(key) };
   });

@@ -20,6 +20,8 @@ const {
   getHfEndpoint,
   resetHfEndpoints,
   setHfEndpoints,
+  useHfDatasetsServer,
+  useHfEndpoint,
 } = await import("../src/lib/hf-endpoint.ts");
 
 const { isHuggingFaceOffline, markRemoteNetworkOffline, clearRemoteBackoff } =
@@ -37,6 +39,19 @@ test("before /api/health answers, both endpoints are the official ones", () => {
     DEFAULT_DATASETS_SERVER,
     "https://datasets-server.huggingface.co",
   );
+});
+
+test("the hooks React subscribes to are the same state the getters read", () => {
+  // The point of holding this in a store: a component cannot be left on the host
+  // that was configured when it last rendered. The hooks are thin useStore
+  // wrappers, so what matters here is that they read the one store the setter
+  // writes, rather than a second copy that has to be kept in sync by hand.
+  resetHfEndpoints();
+  assert.equal(typeof useHfEndpoint, "function");
+  assert.equal(typeof useHfDatasetsServer, "function");
+  setHfEndpoints("https://hf-mirror.com", "https://ds.example.com");
+  assert.equal(getHfEndpoint(), "https://hf-mirror.com");
+  assert.equal(getHfDatasetsServerBase(), "https://ds.example.com");
 });
 
 test("a mirror reported by the backend is applied to both getters", () => {

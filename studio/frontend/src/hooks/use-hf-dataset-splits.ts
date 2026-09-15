@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
 import { authFetch } from "@/features/auth";
-import { getHfDatasetsServerBase } from "@/lib/hf-endpoint";
+import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
 import { useEffect, useState } from "react";
 import {
   type DatasetSplitFetchers,
@@ -144,10 +143,9 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(datasetName !== null);
   const [error, setError] = useState<string | null>(null);
-  // In the request identity: the URL comes from a plain module read React cannot
-  // see change, so a server arriving later would leave the selector on the
-  // official one, or on the failure it reached there.
-  const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
+  // In the request identity, or a server arriving later leaves the selector on
+  // the official one, or on the failure it reached there.
+  const hfDatasetsServer = useHfDatasetsServer();
   const requestKey = JSON.stringify([
     datasetName,
     options?.preferLocalCache === true,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,7 +26,6 @@ import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
-import { usePlatformStore } from "@/config/env";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
@@ -478,8 +478,7 @@ function RowActions({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
-  // From the store, not getHfEndpoint(): these rows are memoized.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
     "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";

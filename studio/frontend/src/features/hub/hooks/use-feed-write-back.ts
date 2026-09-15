@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useRef } from "react";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import type { ChannelId } from "../lib/channels";
-import { usePlatformStore } from "@/config/env";
 import { feedIdentity, useHubFeedStore } from "../stores/hub-feed-store";
 import type { HfModelResult } from "./use-hub-model-search";
 
@@ -15,7 +15,7 @@ export function useFeedWriteBack(opts: {
 }): void {
   const { channelId, results, isLoading, accessToken } = opts;
   const setChannelEntry = useHubFeedStore((s) => s.setChannelEntry);
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const tokenFingerprint = useMemo(
     () => feedIdentity(hfEndpoint, accessToken),
     [hfEndpoint, accessToken],

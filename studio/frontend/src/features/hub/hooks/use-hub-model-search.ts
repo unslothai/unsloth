@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
-import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
 import {
@@ -652,8 +652,7 @@ export function useHubModelSearch(
     };
   }, [query]);
 
-  // From the store, not the module read React cannot see change: in the iterator's identity, a late mirror restarts the search.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const createIter = useCallback(
     (signal: AbortSignal) => {
       // Channel scoping bypasses the unsloth-merge iterator: a hard owner/tag filter shows that slice.

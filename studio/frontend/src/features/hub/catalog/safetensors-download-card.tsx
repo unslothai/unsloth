@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { usePlatformStore } from "@/config/env";
 import { useEffect, useState } from "react";
 import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
@@ -74,8 +74,7 @@ export function SafetensorsDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
-  // In the identity so a late mirror refetches rather than keeping the official host's download size.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
   const [modelSize, setModelSize] = useState<{
     key: string;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
+import { useHfDatasetsServer } from "@/lib/hf-endpoint";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { useEffect, useState } from "react";
@@ -18,8 +18,7 @@ export function useDatasetSize(
   const enabled = options.enabled ?? true;
   const token = options.token || undefined;
   const repoKey = repoId ?? "";
-  // In the identity so a server arriving after this effect ran refetches.
-  const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
+  const hfDatasetsServer = useHfDatasetsServer();
   const key = repoKey
     ? `${hfDatasetsServer}::${repoKey}::${fingerprintToken(token)}`
     : "";

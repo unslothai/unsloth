@@ -3,14 +3,13 @@
 
 import { useEffect, useState } from "react";
 
-import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getHfDatasetsServerBase } from "@/lib/hf-endpoint";
+import { getHfDatasetsServerBase, useHfDatasetsServer } from "@/lib/hf-endpoint";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -68,8 +67,7 @@ export function shortExampleLabel(label: string): string {
 
 function ExamplePreviews({ repo }: { repo: string }) {
   const [urls, setUrls] = useState<string[] | null>(null);
-  // In the effect identity, or nothing asks for the previews again.
-  const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
+  const hfDatasetsServer = useHfDatasetsServer();
   useEffect(() => {
     let cancelled = false;
     void fetchPreviews(repo).then((u) => {

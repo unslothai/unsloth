@@ -2,11 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
-import {
-  getHfDatasetsServerBase,
-  getHfEndpoint,
-  setHfEndpoints,
-} from "@/lib/hf-endpoint";
+import { setHfEndpoints } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -46,10 +42,6 @@ interface PlatformState {
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
-  // Mirrored from the backend's HF_ENDPOINT / HF_DATASETS_SERVER so frontend Hub
-  // calls hit the same host. Defaults until /api/health answers.
-  hfEndpoint: string;
-  hfDatasetsServer: string;
   fetched: boolean;
   // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
   // until a first-use operation detects, so the sidebar polls on this.
@@ -86,8 +78,6 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
-  hfEndpoint: "https://huggingface.co",
-  hfDatasetsServer: "https://datasets-server.huggingface.co",
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
@@ -189,10 +179,6 @@ export async function fetchDeviceType(options?: {
       // would otherwise never route its Hub calls.
       setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
-        usePlatformStore.setState({
-          hfEndpoint: getHfEndpoint(),
-          hfDatasetsServer: getHfDatasetsServerBase(),
-        });
         return usePlatformStore.getState().deviceType;
       }
       const previous = usePlatformStore.getState();
@@ -225,11 +211,6 @@ export async function fetchDeviceType(options?: {
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
-        // Older backends carry neither field: keep what the store holds.
-        // What setHfEndpoints accepted, never the raw reply: the store and the
-        // module getter must not name different hosts.
-        hfEndpoint: getHfEndpoint(),
-        hfDatasetsServer: getHfDatasetsServerBase(),
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),
       });

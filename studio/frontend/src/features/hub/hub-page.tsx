@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
@@ -763,7 +764,7 @@ export function ModelsPage() {
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
-  const hubHfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hubHfEndpoint = useHfEndpoint();
   const tokenFingerprint = useMemo(
     () => feedIdentity(hubHfEndpoint, apiHfToken),
     [hubHfEndpoint, apiHfToken],

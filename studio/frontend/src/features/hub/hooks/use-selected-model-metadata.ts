@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
 import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
-import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import { cachedModelInfo } from "../lib/hf-cache";
 import { useEffect, useState } from "react";
 import { toHfModelResult } from "../lib/view-models";
@@ -28,8 +27,7 @@ export function useSelectedModelMetadata(
     error: boolean;
   }>(() => ({ repoId: "", result: null, error: false }));
 
-  // In the effect identity, so a late mirror refetches rather than stranding the pane on the default hub's answer.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
 
   useEffect(() => {
     if (!(repoId && enabled && online)) {

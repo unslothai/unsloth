@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { Spinner } from "@/components/ui/spinner";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
@@ -356,8 +356,7 @@ export function ModelReadme({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
-  // In the key so a late mirror restarts the lookup instead of keeping the default host's card.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const stateKey = useMemo(
     () => `${hfEndpoint}::${kind}::${repoId}::${tokenFingerprint}`,
     [hfEndpoint, kind, repoId, tokenFingerprint],

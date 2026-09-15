@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { getHfEndpoint, useHfEndpoint } from "@/lib/hf-endpoint";
 import { fetchWithTimeout } from "../lib/network";
 import type { HubModelType } from "../types";
 import { listDatasets } from "@huggingface/hub";
 import { useCallback, useMemo } from "react";
 
-import { usePlatformStore } from "@/config/env";
 import { useHubPaginatedSearch } from "./use-hub-paginated-search";
 
 interface DatasetInfoSplit {
@@ -421,8 +420,7 @@ export function useHubDatasetSearch(
   } = options ?? {};
   const hasQuery = query.trim().length > 0;
   const useCuratedOnly = !hasQuery && !!modelType;
-  // From the store, not the module read React cannot see change: in the iterator's identity, a late mirror restarts the search.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const createIter = useCallback(
     (signal: AbortSignal) => {
       if (useCuratedOnly) {

@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
 import { type ChannelId, findChannel } from "../lib/channels";
-import { usePlatformStore } from "@/config/env";
 import {
   feedIdentity,
   isChannelEntryFresh,
@@ -62,8 +62,7 @@ export function useHubFeed(opts: {
   deviceType: string | null;
 }): UseHubFeedResult {
   const { accessToken, online, enabled, deviceType } = opts;
-  // See feedIdentity: the freshness check, clearForToken and these deps key off this, so a changed endpoint refetches.
-  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfEndpoint = useHfEndpoint();
   const tokenFingerprint = useMemo(
     () => feedIdentity(hfEndpoint, accessToken),
     [hfEndpoint, accessToken],
