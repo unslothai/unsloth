@@ -384,12 +384,18 @@ def _a_local_model_would_load_through_diffusers() -> bool:
 
     ``predict_engine`` is the same predicate selection and the download planner use, and it is
     documented to activate nothing and install nothing, so asking it here cannot perturb a
-    resident model. A non-GGUF pick short-circuits it: only a GGUF can go native."""
+    resident model. A non-GGUF pick short-circuits it: only a GGUF can go native.
+
+    The family comes from ``detected_image_family``, the resolver the listing and locality
+    routes already share, rather than ``detect_family`` on the id: a local GGUF can carry its
+    family only in the FILENAME (``/models/custom/model.gguf`` holding ``z-image``), which
+    ``detect_family`` cannot see, and treating that as unknown would prewarm on exactly the
+    sd.cpp host this gate exists to spare."""
     from core.inference.diffusion_engine_router import (  # noqa: PLC0415
         ENGINE_DIFFUSERS,
         predict_engine,
     )
-    from core.inference.diffusion_families import detect_family  # noqa: PLC0415
+    from core.inference.media_locality import detected_image_family  # noqa: PLC0415
     from core.inference.media_model_index import (  # noqa: PLC0415
         available_media_model_ids,
         resolve_local_media_model,
@@ -402,7 +408,7 @@ def _a_local_model_would_load_through_diffusers() -> bool:
                 continue
             if (pick.model_kind or ("gguf" if pick.gguf_filename else None)) != "gguf":
                 return True  # only a GGUF can go native
-            family = detect_family(pick.model_id)
+            family = detected_image_family(pick)
             if family is None:
                 return True  # unknown family: diffusers is where the load would land
             if predict_engine(family, model_kind = "gguf") == ENGINE_DIFFUSERS:

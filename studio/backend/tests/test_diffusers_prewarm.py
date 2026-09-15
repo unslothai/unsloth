@@ -81,9 +81,9 @@ def _stub_gate(
     router.predict_engine = lambda fam, model_kind = None: engine
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_engine_router", router)
 
-    fams = types.ModuleType("core.inference.diffusion_families")
-    fams.detect_family = lambda repo_id, override = None: object()
-    monkeypatch.setitem(sys.modules, "core.inference.diffusion_families", fams)
+    loc = types.ModuleType("core.inference.media_locality")
+    loc.detected_image_family = lambda pick: object()
+    monkeypatch.setitem(sys.modules, "core.inference.media_locality", loc)
 
 
 def _stub_diffusers(monkeypatch, *, raises = False):
@@ -221,6 +221,32 @@ def test_a_non_gguf_model_still_prewarms_on_a_native_host(warm, monkeypatch):
     _stub_diffusers(monkeypatch)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is True
+
+
+def test_a_gguf_whose_family_is_only_in_its_filename_is_still_recognised():
+    """The layout `detect_family` cannot see: an opaque directory whose family keyword lives
+    only in the .gguf filename. Treating it as unknown would prewarm on exactly the sd.cpp host
+    this gate exists to spare, so the gate must use the same pick-aware resolver the listing and
+    the loader use. Driven through the REAL resolver, since a stub of it could not show this."""
+    from core.inference.media_locality import detected_image_family
+
+    opaque = types.SimpleNamespace(
+        model_id = "local/custom", model_path = "/models/custom",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf", model_kind = "gguf", ambiguous = False,
+    )
+    assert detected_image_family(opaque) is not None, (
+        "the filename-only family went unrecognised; the gate would prewarm on an sd.cpp host"
+    )
+
+
+def test_the_gate_uses_the_pick_aware_family_resolver():
+    """Not `detect_family(pick.model_id)`: that misses the filename-only layout above."""
+    import inspect
+    from utils import torch_warmup
+
+    body = inspect.getsource(torch_warmup._a_local_model_would_load_through_diffusers)
+    assert "detected_image_family" in body
+    assert "detect_family(" not in body, "the id-only resolver misses filename-only families"
 
 
 def test_the_gate_uses_the_routers_own_prediction():
