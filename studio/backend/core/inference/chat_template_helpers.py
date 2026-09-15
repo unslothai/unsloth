@@ -1017,7 +1017,7 @@ def neutralize_control_markup_in_messages(
     cache: dict = None,
     markup = None,
 ) -> list:
-    """Neutralize control markup in message content and tool-result names (#7066). User / system /
+    """Neutralize control markup in message content and names (#7066). User / system /
     tool turns lose every marker; assistant turns lose only turn boundaries and keep the think /
     channel / tool markup replayed history legitimately holds. Returns the same list object when
     nothing changed, so the prompt stays byte-for-byte what it was. Pass a ``sweep_cache()`` when
@@ -1082,7 +1082,7 @@ def neutralize_control_markup_in_messages(
             if new_result_id != result_id:
                 updates["tool_call_id"] = new_result_id
         name = msg.get("name")
-        if role == "tool" and isinstance(name, str) and name:
+        if isinstance(name, str) and name:
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
