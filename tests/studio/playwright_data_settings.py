@@ -60,7 +60,7 @@ FIXTURE = """(() => {
             const suffix = url.pathname.split('/gallery')[1];
             if (suffix && (method === 'PATCH' || method === 'DELETE')) {
                 if (fixture.holdMutation) await new Promise(resolve => { fixture.releaseMutation = resolve; });
-                if (fixture.failMutation) { status = 503; body = { detail: 'Mutation unavailable' }; }
+                if (fixture.failMutation || fixture.failMutationId === decodeURIComponent(suffix.slice(1))) { status = 503; body = { detail: 'Mutation unavailable' }; }
                 else {
                     const id = decodeURIComponent(suffix.slice(1));
                     body = entries.find(row => row.id === id) ?? {};
@@ -96,7 +96,7 @@ def run(page):
 
     def reset(**options):
         page.evaluate("window.__settingsSmoke.close()")
-        expect(page.get_by_role("dialog")).to_have_count(0)
+        expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
         page.evaluate(
             """options => {
             const f = window.__dataFixture;
@@ -274,6 +274,7 @@ def run(page):
     checks.extend(run_library_locales(page))
     checks.extend(run_library_selection(page))
     checks.extend(run_library_collation(page))
+    checks.extend(run_restore_notifications(page))
 
     errors = page.evaluate("window.__settingsSmoke.errors()")
     resize_notice = "ResizeObserver loop completed with undelivered notifications."
@@ -287,7 +288,7 @@ def run_libraries(page):
 
     def seed(shelf, **options):
         page.evaluate("window.__settingsSmoke.close()")
-        expect(page.get_by_role("dialog")).to_have_count(0)
+        expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
         page.evaluate(
             """({shelf, options}) => {
             const f = window.__dataFixture;
@@ -603,7 +604,7 @@ def run_library_locales(page):
             assert text["noProject"] == "Sin proyecto"
         for shelf in ["manage", "chats", "images", "videos", "audio"]:
             page.evaluate("window.__settingsSmoke.close()")
-            expect(page.get_by_role("dialog")).to_have_count(0)
+            expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
             page.evaluate(
                 """shelf => {
                 const f = window.__dataFixture;
@@ -737,7 +738,7 @@ def run_library_locales(page):
 
 def run_library_selection(page):
     page.evaluate("window.__settingsSmoke.close()")
-    expect(page.get_by_role("dialog")).to_have_count(0)
+    expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
     page.evaluate("""() => {
         const f = window.__dataFixture;
         Object.assign(f, {requests: [], failMutation: false, holdMutation: false, listFail: false});
@@ -808,7 +809,7 @@ def run_library_collation(page):
     titles = ["阿", "八", "中", "张", "曾", "Zebra", "苹果", "橙子", "東京", "大阪"]
     for shelf in ["manage", "chats", "images", "videos", "audio"]:
         page.evaluate("window.__settingsSmoke.close()")
-        expect(page.get_by_role("dialog")).to_have_count(0)
+        expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
         page.evaluate(
             """async ({shelf, titles}) => {
             await (await import('/src/i18n/index.ts')).setLocale('en');
@@ -854,6 +855,65 @@ def run_library_collation(page):
                 page.keyboard.press("Escape")
                 checks.append(f"{shelf}-projects-{locale}")
     page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('en');}")
+    return checks
+
+
+def run_restore_notifications(page):
+    checks = []
+    page.evaluate("""() => {
+        window.addEventListener('unsloth:gallery-changed', event => {
+            window.__dataFixture.notifications.push(event.detail.kind);
+        });
+    }""")
+    for kind in ["images", "videos", "audio"]:
+        for count, action, failure_index in [
+            (23, "restore", None),
+            (23, "restore", 2),
+            (23, "restore", 0),
+            (1, "restore", None),
+            (3, "delete", None),
+        ]:
+            page.evaluate("window.__settingsSmoke.close()")
+            expect(page.get_by_role("dialog", include_hidden = True)).to_have_count(0)
+            page.evaluate(
+                """({kind, count, failureIndex}) => {
+                    const f = window.__dataFixture;
+                    Object.assign(f, {requests: [], notifications: [], failMutation: false,
+                        holdMutation: false, failPage: false, stallPage: false,
+                        failMutationId: failureIndex === null ? null : `${kind}-${failureIndex}`});
+                    f.media[kind] = Array.from({length: count}, (_, i) => ({
+                        id: `${kind}-${i}`, prompt: `Restore ${i}`, url: '/unused',
+                        created_at: kind === 'images' ? 1700000000 : '2023-11-14T22:13:20Z',
+                    }));
+                    window.__settingsSmoke.openArchived(kind);
+                }""",
+                {"kind": kind, "count": count, "failureIndex": failure_index},
+            )
+            trigger = "Unarchive all" if action == "restore" else "Delete all"
+            page.get_by_role("button", name = trigger, exact = True).click()
+            dialog = page.get_by_role("alertdialog")
+            heading = "Unarchive items" if action == "restore" else "Delete archived items"
+            expect(dialog.get_by_role("heading")).to_have_text(f"{heading} ({count})")
+            confirm = "Unarchive" if action == "restore" else "Delete"
+            dialog.get_by_role("button", name = confirm, exact = True).click()
+            expect(dialog).to_have_count(0)
+            completed = count if failure_index is None else failure_index
+            expected_events = [kind] if completed and action == "restore" else []
+            observed = page.evaluate("window.__dataFixture.notifications")
+            assert observed == expected_events, {
+                "kind": kind,
+                "completed": completed,
+                "events": observed,
+            }
+            assert (
+                page.evaluate("kind => window.__dataFixture.media[kind].length", kind)
+                == count - completed
+            )
+            mutations = page.evaluate(
+                "window.__dataFixture.requests.filter(r => ['PATCH', 'DELETE'].includes(r.method)).length"
+            )
+            assert mutations == completed + (failure_index is not None)
+            checks.append(f"{kind}-{action}-{count}-notification-failure-{failure_index}")
     return checks
 
 

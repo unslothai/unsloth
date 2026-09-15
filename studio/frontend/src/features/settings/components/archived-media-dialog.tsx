@@ -389,7 +389,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
   const dropRow = useCallback(
-    (id: string, backToGallery: boolean) => {
+    (id: string) => {
       putRows(rowsRef.current.filter((r) => r.id !== id));
       // Every drop shifts the rows behind it up by one, so an offset taken before this point is
       // now short. `showMore` uses the counter to notice and re-page instead of skipping a row.
@@ -411,13 +411,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         delete next[id];
         return next;
       });
-      // The page that owns this gallery is mounted persistently and only loads on mount, so a
-      // restore has to be announced or the strip stays stale until a reload. A delete does not:
-      // the item was archived, so it was never on that strip, and refetching would only cost the
-      // user the pages they had scrolled to.
-      if (backToGallery) notifyGalleryChanged(kind);
     },
-    [kind, putRows],
+    [putRows],
   );
 
   async function handleRestore(row: ArchivedRow) {
@@ -429,7 +424,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
       else if (isAudio) await setAudioClipFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
-      dropRow(row.id, true);
+      dropRow(row.id);
       pendingMutations.current -= 1;
       return true;
     } catch (err) {
@@ -450,7 +445,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       if (isImages) await deleteGalleryImage(row.id);
       else if (isAudio) await deleteAudioClip(row.id);
       else await deleteGalleryVideo(row.id);
-      dropRow(row.id, false);
+      dropRow(row.id);
       pendingMutations.current -= 1;
       return true;
     } catch (err) {
@@ -528,6 +523,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     if (running.current) return;
     running.current = true;
     setBusy(true);
+    let restored = false;
     try {
       for (const row of targets) {
         const succeeded =
@@ -535,8 +531,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             ? await handleDelete(row)
             : await handleRestore(row);
         if (!succeeded) break;
+        if (action === "restore") restored = true;
       }
     } finally {
+      // refresh the persistent gallery once, including after a partially successful batch.
+      if (restored) notifyGalleryChanged(kind);
       running.current = false;
       setBusy(false);
       setConfirming(null);
