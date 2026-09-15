@@ -306,8 +306,10 @@ assert.deepEqual(
   curatedRowLabelFor("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", IMAGE_CATALOG, "dense-quant"),
   { name: "Z-Image-Turbo", tags: ["bnb-4bit"] },
 );
+// Every diffusion GGUF is the slow row on a host that can also place the dense pipeline, not just
+// H3's: the native engine has no low-precision tensor-core path to reach.
 assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG, "dense-quant"), {
-  name: "Z-Image-Turbo-GGUF",
+  name: "Z-Image-Turbo-GGUF (Slow)",
   tags: [],
 });
 // Hosts without dense quant read exactly the same, minus the qualifier.
@@ -1316,7 +1318,7 @@ assert.deepEqual(curatedRowLabelFor(zTurboId, IMAGE_CATALOG, "dense-quant", ["fp
   tags: ["BF16"],
 });
 assert.deepEqual(curatedRowLabelFor(zTurboId, IMAGE_CATALOG, "dense-quant", ["int8"]), {
-  name: "Z-Image-Turbo (Fast INT8)",
+  name: "Z-Image-Turbo (Fast FP8)",
   tags: ["BF16"],
 });
 assert.equal(
@@ -1334,7 +1336,7 @@ assert.equal(
 assert.equal(
   catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["int8"]).find((o) => o.id === zTurboId)
     ?.name,
-  "Z-Image-Turbo (Fast INT8)",
+  "Z-Image-Turbo (Fast FP8)",
 );
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant", ["fp8"]),
@@ -1351,7 +1353,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "dense-quant", ["int8"]),
-  { name: "MiniMax H3 (Fast INT8)", tags: ["BF16"] },
+  { name: "MiniMax H3 (Fast FP8)", tags: ["BF16"] },
 );
 assert.equal(
   curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name,

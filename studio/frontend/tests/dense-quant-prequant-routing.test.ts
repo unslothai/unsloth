@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AUDIO_CATALOG,
   IMAGE_CATALOG,
   VIDEO_CATALOG,
   artifactForRepoId,
@@ -153,7 +154,7 @@ test("the row names the scheme the host runs", () => {
   );
   assert.equal(
     curatedRowLabelFor(Z_TURBO, IMAGE_CATALOG, "dense-quant", ["int8"])?.name,
-    "Z-Image-Turbo (Fast INT8)",
+    "Z-Image-Turbo (Fast FP8)",
   );
   assert.equal(
     curatedRowLabelFor(Z_TURBO, IMAGE_CATALOG, "dense-quant", [])?.name,
@@ -171,7 +172,7 @@ test("the row names the scheme the host runs", () => {
     catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["int8"]).find(
       (option) => option.id === Z_TURBO,
     )?.name,
-    "Z-Image-Turbo (Fast INT8)",
+    "Z-Image-Turbo (Fast FP8)",
   );
 });
 
@@ -186,7 +187,7 @@ test("the H3 pipeline row names its precision again", () => {
   assert.deepEqual(
     curatedRowLabelFor(H3, VIDEO_CATALOG, "dense-quant", ["int8"]),
     {
-      name: "MiniMax H3 (Fast INT8)",
+      name: "MiniMax H3 (Fast FP8)",
       tags: ["BF16"],
     },
   );
@@ -199,6 +200,60 @@ test("the H3 pipeline row names its precision again", () => {
     )?.name,
     "MiniMax-H3-GGUF (Slow)",
   );
+});
+
+test("every diffusion GGUF row is tagged Slow, not only H3's", () => {
+  for (const [repoId, catalog, name] of [
+    ["unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG, "Z-Image-Turbo-GGUF (Slow)"],
+    ["unsloth/FLUX.1-schnell-GGUF", IMAGE_CATALOG, "FLUX.1-schnell-GGUF (Slow)"],
+    ["unsloth/LTX-2.3-GGUF", VIDEO_CATALOG, "LTX-2.3-GGUF (Slow)"],
+  ] as const) {
+    assert.equal(
+      curatedRowLabelFor(repoId, catalog, "dense-quant", ["fp8"])?.name,
+      name,
+      repoId,
+    );
+    assert.equal(
+      curatedRowLabelFor(repoId, catalog, "accelerated")?.name,
+      name,
+      repoId,
+    );
+    assert.equal(
+      curatedDisplayNameFor(repoId, catalog, "dense-quant", ["fp8"]),
+      name,
+      repoId,
+    );
+  }
+});
+
+test("a host with no accelerator is not told which row is slow", () => {
+  // Off an accelerator the GGUF is the only thing that runs, so there is nothing to be slower
+  // than and the qualifier would only read as a warning about the user's one option.
+  for (const host of ["gguf-only", "unknown"] as const) {
+    for (const [repoId, catalog] of [
+      ["unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG],
+      ["unsloth/LTX-2.3-GGUF", VIDEO_CATALOG],
+      ["unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG],
+    ] as const) {
+      const name = curatedRowLabelFor(repoId, catalog, host, ["fp8"])?.name;
+      assert.equal(name?.includes("Slow"), false, `${repoId} ${host}`);
+    }
+  }
+});
+
+test("an audio GGUF keeps its plain name, since it has no dense sibling", () => {
+  for (const repoId of [
+    "unsloth/orpheus-3b-0.1-ft-GGUF",
+    "unslothai/Qwen3-ASR-0.6B-GGUF",
+  ]) {
+    for (const group of AUDIO_CATALOG) {
+      if (!group.artifacts.some((a) => a.repoId === repoId)) continue;
+      const name = curatedRowLabelFor(repoId, AUDIO_CATALOG, "dense-quant", [
+        "fp8",
+      ])?.name;
+      assert.equal(name?.includes("Slow"), false, repoId);
+    }
+  }
 });
 
 test("the scheme reaches the name and never the chip", () => {

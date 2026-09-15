@@ -74,11 +74,36 @@ const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
 /** The speed qualifier for a dense-quant row, naming the precision that will actually run. An empty
  *  list (an older backend) falls back to the bare "Fast" rather than claiming a precision the load
  *  might not honour. Only the first entry is read; the backend reports them best-first. */
+/** Dense 8-bit schemes that share the one user-facing label; see ``densePerfSuffix``. */
+const DENSE_EIGHT_BIT = new Set(["int8", "fp8", "mxfp8"]);
+
 export function densePerfSuffix(
   denseQuantSchemes?: readonly string[] | null,
 ): string {
   const scheme = normalizeDenseQuantSchemes(denseQuantSchemes)[0];
-  return scheme ? `Fast ${scheme.toUpperCase()}` : "Fast";
+  if (!scheme) return "Fast";
+  // The row names the fast TIER, not the scheme the load will settle on. int8 and mxfp8 both
+  // render as FP8 because "FP8" is the name users know for the 8-bit fast path, and a row that
+  // flips its label when the ladder is reordered reads as a different model rather than the same
+  // one. What actually loaded is reported by the resolved record on the loaded-models card, which
+  // keeps naming the real scheme. A 4-bit scheme still names itself, since it is a different
+  // quality tier and must not hide behind the 8-bit label.
+  return DENSE_EIGHT_BIT.has(scheme) ? "Fast FP8" : `Fast ${scheme.toUpperCase()}`;
+}
+
+/** Speed qualifier for a GGUF diffusion row. A GGUF runs the native engine, which has no
+ *  low-precision tensor-core path and no compiled dense transformer, so it is the slow row wherever
+ *  a dense row exists beside it. Null off an accelerator: there the GGUF is the only thing that
+ *  runs, and calling the one available row slow compares it to nothing the user can pick. */
+export function ggufPerfSuffix(host: HostClass): string | null {
+  return hostIsAccelerated(host) ? "Slow" : null;
+}
+
+/** Whether the Precision control should offer the dense low-precision schemes. A Mac or CPU-only
+ *  host is refused them at load, so it is not offered them. An "unknown" host keeps the full list:
+ *  an older backend that reports no capability must not lose controls it can honour. */
+export function hostOffersDensePrecision(host: HostClass): boolean {
+  return host !== "gguf-only";
 }
 
 /** Speed qualifier for H3 artifacts, naming its precision from the same host scheme list. */

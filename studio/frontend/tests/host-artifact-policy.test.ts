@@ -8,8 +8,10 @@ import {
   classifyHost,
   curatedArtifactIsOfferable,
   densePerfSuffix,
+  ggufPerfSuffix,
   h3PerfSuffix,
   hostIsAccelerated,
+  hostOffersDensePrecision,
   hostRunsDenseQuant,
 } from "../src/features/model-picker/components/model-selector/host-artifact-policy.ts";
 import { normalizeDenseQuantSchemes } from "../src/lib/dense-quant-schemes.ts";
@@ -142,11 +144,15 @@ test("the speed suffixes name the two H3 rows on an accelerated host", () => {
   assert.equal(h3PerfSuffix("unsloth/MiniMax-H3-GGUF", "accelerated"), "Slow");
 });
 
-test("the suffix names the scheme the host reported", () => {
+test("every dense 8-bit scheme shares the one FP8 label", () => {
   assert.equal(densePerfSuffix(["fp8"]), "Fast FP8");
-  assert.equal(densePerfSuffix(["int8"]), "Fast INT8");
+  assert.equal(densePerfSuffix(["int8"]), "Fast FP8");
+  assert.equal(densePerfSuffix(["mxfp8"]), "Fast FP8");
+  // Reordering the ladder must not rename the row: the label is the tier, and the resolved
+  // record is what names the scheme that actually loaded.
   assert.equal(densePerfSuffix(["fp8", "int8"]), "Fast FP8");
-  assert.equal(densePerfSuffix(["int8", "fp8"]), "Fast INT8");
+  assert.equal(densePerfSuffix(["int8", "fp8"]), "Fast FP8");
+  // A 4-bit scheme is a different quality tier and keeps its own name.
   assert.equal(densePerfSuffix(["nvfp4"]), "Fast NVFP4");
 });
 
@@ -160,7 +166,7 @@ test("a host that names no scheme keeps the bare qualifier", () => {
 
 test("the H3 pipeline row names its precision from the same scheme list", () => {
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant", ["fp8"]), "Fast FP8");
-  assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant", ["int8"]), "Fast INT8");
+  assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "dense-quant", ["int8"]), "Fast FP8");
   assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", "accelerated", ["fp8"]), "Fast FP8");
   for (const schemes of [["fp8"], ["int8"], []]) {
     assert.equal(
@@ -198,5 +204,19 @@ test("a gguf-only or undiscovered host gets no suffix at all", () => {
     assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", host), null, host);
     assert.equal(h3PerfSuffix("unsloth/MiniMax-H3-GGUF", host), null, host);
     assert.equal(h3PerfSuffix("MiniMaxAI/MiniMax-H3", host, ["fp8"]), null, host);
+    assert.equal(ggufPerfSuffix(host), null, host);
   }
+});
+
+test("a GGUF row is the slow one wherever a dense row can run beside it", () => {
+  assert.equal(ggufPerfSuffix("accelerated"), "Slow");
+  assert.equal(ggufPerfSuffix("dense-quant"), "Slow");
+});
+
+test("the dense precisions are offered exactly where they can run", () => {
+  assert.equal(hostOffersDensePrecision("dense-quant"), true);
+  assert.equal(hostOffersDensePrecision("accelerated"), true);
+  // An older backend reports nothing; keep the controls rather than remove ones it can honour.
+  assert.equal(hostOffersDensePrecision("unknown"), true);
+  assert.equal(hostOffersDensePrecision("gguf-only"), false);
 });

@@ -14,6 +14,7 @@ import {
   type HostClass,
   curatedArtifactIsOfferable,
   densePerfSuffix,
+  ggufPerfSuffix,
   h3PerfSuffix,
   hostRunsDenseQuant,
 } from "./host-artifact-policy.ts";
@@ -932,6 +933,14 @@ function curatedPerfSuffix(
   host: HostClass,
   denseQuantSchemes: readonly string[],
 ): string | null {
+  // Every diffusion GGUF is the slow row, not just H3's. Audio is left out: its GGUF rows run the
+  // whisper.cpp sidecar, which has no dense sibling to be slow against.
+  if (
+    hit.artifact.format === "gguf" &&
+    (hit.group.scope === "image" || hit.group.scope === "video")
+  ) {
+    return ggufPerfSuffix(host);
+  }
   if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) {
     return densePerfSuffix(denseQuantSchemes);
   }
