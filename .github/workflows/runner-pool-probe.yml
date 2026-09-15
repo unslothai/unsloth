@@ -1,0 +1,36 @@
+name: Runner pool probe
+
+# Does the runner label change how long a job waits? Identical no-op cells dispatched in
+# the same second from one matrix, so the label is the only variable. Re-run it after any
+# relabelling, to check the advantage did not just move with the crowd.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/runner-pool-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.label }})
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        label:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - ubuntu-24.04-arm
+          - windows-latest
+          - windows-2022
+          - macos-latest
+          - macos-15
+          - macos-26
+          - macos-15-intel
+    steps:
+      - name: Report
+        shell: bash
+        run: echo "label=${{ matrix.label }} runner=$RUNNER_NAME arch=$(uname -m)"
