@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 # An area, not an edge, so portrait and landscape clips get the same budget.
 MAX_FRAME_PIXELS = 640 * 360
+# llama-server's own --video-fps default. Re-encoding above the rate anything
+# will sample spends bytes on frames mtmd drops, and those bytes count against
+# max_bytes: a legal 53 MB 12-minute 1080p30 upload transcodes to over 64 MB,
+# trips the cap guard below and is forwarded at full size after a 25s ffmpeg
+# pass. Capping at llama-server's default keeps every configuration whole --
+# Studio asks for 1 fps, a build too old for --video-fps samples at 4.
+MAX_FRAME_RATE = 4
 _PROBE_TIMEOUT_S = 30
 _SHRINK_TIMEOUT_S = 300
 
@@ -41,7 +48,12 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
     )
 
 
-def _frame_area(ffprobe: str, clip: Path) -> Optional[int]:
+def _frame_geometry(ffprobe: str, clip: Path) -> tuple[Optional[int], Optional[float]]:
+    """The first video stream's pixel area and its average frame rate.
+
+    Either may be None when ffprobe cannot answer, which the caller treats the
+    same way it treats a failed conversion: leave the clip alone.
+    """
     result = _run(
         [
             ffprobe,
@@ -50,7 +62,7 @@ def _frame_area(ffprobe: str, clip: Path) -> Optional[int]:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height",
+            "stream=width,height,avg_frame_rate",
             "-of",
             "json",
             str(clip),
@@ -58,19 +70,49 @@ def _frame_area(ffprobe: str, clip: Path) -> Optional[int]:
         _PROBE_TIMEOUT_S,
     )
     if result.returncode != 0:
-        return None
-    streams = json.loads(result.stdout or b"{}").get("streams") or []
-    if not streams:
-        return None
+        return None, None
+    # ffprobe answers `-of json` with an object, but a build that hands back
+    # anything else must fall back rather than raise AttributeError past the
+    # caller's except clause.
+    payload = json.loads(result.stdout or b"{}")
+    streams = payload.get("streams") or [] if isinstance(payload, dict) else []
+    if not streams or not isinstance(streams[0], dict):
+        return None, None
     width = int(streams[0].get("width") or 0)
     height = int(streams[0].get("height") or 0)
-    return width * height if width > 0 and height > 0 else None
+    area = width * height if width > 0 and height > 0 else None
+    return area, _frame_rate(streams[0].get("avg_frame_rate"))
+
+
+def _frame_rate(value: object) -> Optional[float]:
+    """ffprobe's `num/den` rate as a float; None when it is absent or 0/0."""
+    if not isinstance(value, str) or "/" not in value:
+        return None
+    numerator, _, denominator = value.partition("/")
+    try:
+        den = float(denominator)
+        return float(numerator) / den if den else None
+    except ValueError:
+        return None
 
 
 def _scale_filter(max_pixels: int) -> str:
     # ffmpeg applies display rotation before filters, so use filter-time dimensions.
     factor = f"sqrt({max_pixels}/(iw*ih))"
     return f"scale=w='max(2,trunc(iw*{factor}/2)*2)':h='max(2,trunc(ih*{factor}/2)*2)':flags=area"
+
+
+def _filter_chain(max_pixels: int, source_rate: Optional[float]) -> str:
+    """Drop to MAX_FRAME_RATE before scaling, but only ever downwards.
+
+    `fps` DUPLICATES frames when asked for more than the source has, so a
+    timelapse recorded at 1 fps would come back four times heavier. Only cap a
+    rate we have measured to be above the ceiling.
+    """
+    scale = _scale_filter(max_pixels)
+    if source_rate is not None and source_rate > MAX_FRAME_RATE:
+        return f"fps={MAX_FRAME_RATE},{scale}"
+    return scale
 
 
 def shrink_video_for_llama(
@@ -80,8 +122,9 @@ def shrink_video_for_llama(
 ) -> str:
     """Shrink oversized frames and return the clip as bare base64.
 
-    Keeps only video and preserves timing. Missing tools, conversion failures,
-    and a result that would not fit in ``max_bytes`` return the input unchanged.
+    Keeps only video, preserves timing, and caps the frame rate at the highest
+    rate llama-server will sample. Missing tools, conversion failures, and a
+    result that would not fit in ``max_bytes`` return the input unchanged.
     """
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -95,9 +138,14 @@ def shrink_video_for_llama(
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
             source = Path(tmp) / "clip"
             source.write_bytes(raw)
-            area = _frame_area(ffprobe, source)
+            area, rate = _frame_geometry(ffprobe, source)
             if area is None or area <= max_pixels:
                 return video_b64
+            # The source bytes are on disk now, and holding the decoded copy to
+            # the end just to log its length keeps 64 MiB alive alongside the
+            # output and both base64 strings.
+            raw_bytes = len(raw)
+            del raw
             shrunk = Path(tmp) / "shrunk.mkv"
             result = _run(
                 [
@@ -114,10 +162,12 @@ def shrink_video_for_llama(
                     "-sn",
                     "-dn",
                     "-vf",
-                    _scale_filter(max_pixels),
+                    _filter_chain(max_pixels, rate),
                     "-c:v",
                     "mpeg4",
-                    # Widely available, but can outgrow a low-bitrate source, hence -fs.
+                    # Widely available, but still outgrows a low-bitrate source:
+                    # -fs only bounds the result at the upload cap, it does not
+                    # keep it near the original size.
                     "-q:v",
                     "5",
                     "-fs",
@@ -144,7 +194,7 @@ def shrink_video_for_llama(
                 "Shrunk video clip frames from %d to at most %d pixels (%d to %d bytes)",
                 area,
                 max_pixels,
-                len(raw),
+                raw_bytes,
                 shrunk.stat().st_size,
             )
             return base64.b64encode(shrunk.read_bytes()).decode("ascii")

@@ -22,6 +22,7 @@ from core.inference import llama_video_input  # noqa: E402
 from core.inference.llama_cpp import _LLAMA_VIDEO_FPS, _video_fps_flags  # noqa: E402
 from core.inference.llama_video_input import (  # noqa: E402
     MAX_FRAME_PIXELS,
+    MAX_FRAME_RATE,
     shrink_video_for_llama,
 )
 from test_llama_flag_catalog import _probe_with_help  # noqa: E402
@@ -136,13 +137,16 @@ def _clip(
     name: str,
     size: str,
     rotation: int = 0,
+    rate: int = 10,
+    seconds: int = 2,
 ) -> str:
     path = tmp_path / name
     ffmpeg = ["ffmpeg", "-nostdin", "-loglevel", "error", "-y"]
     subprocess.run(
         [
             *ffmpeg,
-            *("-f", "lavfi", "-i", f"testsrc2=size={size}:rate=10", "-t", "2"),
+            *("-f", "lavfi", "-i", f"testsrc2=size={size}:rate={rate}"),
+            *("-t", str(seconds)),
             *("-pix_fmt", "yuv420p", str(path)),
         ],
         check = True,
@@ -235,6 +239,85 @@ def test_a_shrunk_clip_that_outgrows_the_cap_is_forwarded_untouched(tmp_path):
     assert shrink_video_for_llama(clip, 20_000) is clip
 
 
+def _frame_count(tmp_path: Path, clip_b64: str, name: str) -> int:
+    path = tmp_path / name
+    path.write_bytes(base64.b64decode(clip_b64))
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "json",
+            str(path),
+        ],
+        check = True,
+        capture_output = True,
+    )
+    return int(json.loads(result.stdout)["streams"][0]["nb_read_frames"])
+
+
+@needs_ffmpeg
+def test_frames_beyond_the_sampled_rate_are_not_re_encoded(tmp_path):
+    # Re-encoding at the source rate spends the byte budget on frames mtmd
+    # drops, which is what pushed a long clip over the cap and threw the whole
+    # conversion away. 30 fps in, MAX_FRAME_RATE out.
+    clip = _clip(tmp_path, "fast.mp4", "1280x720", rate = 30, seconds = 2)
+    assert _frame_count(tmp_path, clip, "fast-source") == 60
+
+    shrunk = shrink_video_for_llama(clip, _CAP)
+
+    assert _frame_count(tmp_path, shrunk, "fast-shrunk") == MAX_FRAME_RATE * 2
+    # The clip still spans the same time, so llama-server samples the same
+    # moments it would have sampled before.
+    assert _probe(tmp_path, shrunk)["duration"] == pytest.approx(2.0, abs = 0.3)
+
+
+@needs_ffmpeg
+def test_a_clip_slower_than_the_cap_keeps_every_frame(tmp_path):
+    # ffmpeg's fps filter DUPLICATES frames when asked for more than the source
+    # has, so a timelapse must not be padded up to the ceiling.
+    clip = _clip(tmp_path, "slow.mp4", "1280x720", rate = 2, seconds = 3)
+    assert _frame_count(tmp_path, clip, "slow-source") == 6
+
+    shrunk = shrink_video_for_llama(clip, _CAP)
+
+    assert _frame_count(tmp_path, shrunk, "slow-shrunk") == 6
+
+
+@needs_ffmpeg
+def test_a_long_clip_still_fits_the_cap_and_is_really_shrunk(tmp_path):
+    # The regression that motivated the frame-rate cap: a clip long enough that
+    # a source-rate re-encode outgrows max_bytes, so the guard forwarded the
+    # original at full size after paying for the whole conversion.
+    clip = _clip(tmp_path, "long.mp4", "1280x720", rate = 30, seconds = 30)
+
+    shrunk = shrink_video_for_llama(clip, _CAP)
+
+    assert shrunk is not clip
+    assert len(base64.b64decode(shrunk)) < len(base64.b64decode(clip))
+    assert _probe(tmp_path, shrunk)["width"] == 640
+
+
+def test_a_probe_that_is_not_an_object_forwards_the_clip_untouched(monkeypatch):
+    # `-of json` answers with an object, but a build that returns anything else
+    # must fall back rather than raise AttributeError past the caller's except.
+    class _Result:
+        returncode = 0
+        stdout = b"[]"
+        stderr = b""
+
+    monkeypatch.setattr(llama_video_input, "_run", lambda *a, **k: _Result())
+    monkeypatch.setattr(llama_video_input.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert shrink_video_for_llama("AAAA", _CAP) == "AAAA"
+
+
 @needs_ffmpeg
 def test_an_undecodable_clip_is_forwarded_untouched(tmp_path):
     clip = base64.b64encode(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64).decode("ascii")
@@ -268,8 +351,87 @@ def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injecti
     )
     start = source.index('"Video provided but the current GGUF model cannot take video input. "')
     check = source.index("_video_b64_rejection(payload.video_base64)", start)
-    shrink = source.index(
-        "await asyncio.to_thread(shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES)", start
-    )
+    shrink = source.index("shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES", start)
     inject = source.index("_inject_video_part(gguf_messages, video_b64)", start)
     assert check < shrink < inject
+
+
+def test_the_conversions_result_is_what_gets_injected():
+    """The ordering test above matches source text, so it cannot see whether the
+    conversion's RESULT is used. Dropping just the assignment silently disables
+    the whole feature -- the clip is still converted, then thrown away and the
+    original injected -- while every substring it searches for stays put.
+
+    Read the structure instead: the awaited call must be bound to a name, and
+    that same name must be the one handed to _inject_video_part.
+    """
+    import ast
+
+    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+
+    def is_shrink_call(node) -> bool:
+        call = node.value if isinstance(node, ast.Await) else node
+        if not isinstance(call, ast.Call):
+            return False
+        return any(isinstance(a, ast.Name) and a.id == "shrink_video_for_llama" for a in call.args)
+
+    bound_to = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and is_shrink_call(node.value)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert bound_to, (
+        "shrink_video_for_llama's result is not assigned to anything: the clip "
+        "is converted and then discarded, leaving the original to be injected"
+    )
+
+    injected = {
+        arg.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_inject_video_part"
+        for arg in node.args
+        if isinstance(arg, ast.Name)
+    }
+    assert bound_to & injected, (
+        f"the shrunk clip is bound to {sorted(bound_to)} but _inject_video_part "
+        f"is given {sorted(injected)}"
+    )
+
+
+def test_the_route_hands_the_helper_bare_base64_with_any_data_header_gone():
+    """`shrink_video_for_llama` documents a bare-base64 contract, and the route
+    is what has to honour it. A data: URL reaching ffmpeg would decode to
+    garbage and be forwarded unchanged, losing the speedup silently.
+    """
+    import routes.inference as inference_route
+
+    payload = base64.b64encode(b"not-really-a-clip").decode("ascii")
+
+    bare, rejection = inference_route._video_b64_rejection(f"data:video/mp4;base64,{payload}")
+    assert rejection is None
+    assert bare == payload
+
+    already_bare, rejection = inference_route._video_b64_rejection(payload)
+    assert rejection is None
+    assert already_bare == payload
+
+
+def test_an_oversize_upload_is_refused_before_any_conversion_runs():
+    """The 413 has to come first: spawning ffmpeg for a clip the route is about
+    to reject burns a worker thread and up to the shrink timeout for nothing.
+    """
+    import routes.inference as inference_route
+
+    too_big = "A" * (inference_route._MAX_VIDEO_B64_CHARS + 4)
+
+    _, rejection = inference_route._video_b64_rejection(too_big)
+
+    assert rejection is not None
+    assert rejection[0] == 413

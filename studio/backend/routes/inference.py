@@ -23343,7 +23343,17 @@ async def produce_openai_chat_completions(
             video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
             if video_rejection is not None:
                 raise _reject(*video_rejection)
-            video_b64 = await asyncio.to_thread(shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES)
+            try:
+                video_b64 = await asyncio.to_thread(
+                    shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES
+                )
+            except Exception as e:
+                # The helper absorbs its own ffmpeg failures, so reaching here
+                # means something it does not model went wrong. Reject through
+                # _reject like the audio path above, rather than letting a raw
+                # 500 escape and leak the monitor entry with it.
+                logger.warning("Video preprocessing failed: %s", e, exc_info = True)
+                raise _reject(400, "Could not process the provided video file.")
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
