@@ -25,7 +25,12 @@ else:
     SPEC.loader.exec_module(m)
 
 
-def host(system = "Windows", caps = ("89",), driver = (13, 0), **extra):
+def host(
+    system = "Windows",
+    caps = ("89",),
+    driver = (13, 0),
+    **extra,
+):
     args = dict(
         system = system,
         machine = "AMD64" if system == "Windows" else "x86_64",
@@ -46,7 +51,15 @@ def host(system = "Windows", caps = ("89",), driver = (13, 0), **extra):
     return m.HostInfo(**args)
 
 
-def artifact(name, line, profile, sms, coverage = "targeted", rank = 100, kind = "windows-cuda"):
+def artifact(
+    name,
+    line,
+    profile,
+    sms,
+    coverage = "targeted",
+    rank = 100,
+    kind = "windows-cuda",
+):
     caps = [str(s) for s in sms]
     return m.PublishedLlamaArtifact(
         asset_name = name,
@@ -113,7 +126,9 @@ def profiles(h):
 
 
 class TestDetectedRuntimeDllsOnlyOrderTheLines:
-    def test_a_pascal_card_beside_cuda13_dlls_still_gets_the_cuda12_legacy_bundle(self, monkeypatch):
+    def test_a_pascal_card_beside_cuda13_dlls_still_gets_the_cuda12_legacy_bundle(
+        self, monkeypatch
+    ):
         pascal = host(caps = ("61",))
         assert profiles(pascal) == ["cuda12-legacy"]
         # torch or another app installed the CUDA 13 runtime; the card is still Pascal.
@@ -147,7 +162,9 @@ def checksums(choice):
         release_tag = BUNDLE.release_tag,
         upstream_tag = BUNDLE.upstream_tag,
         artifacts = {
-            choice.name: m.ApprovedArtifactHash(choice.name, "a" * 64, choice.repo, choice.install_kind)
+            choice.name: m.ApprovedArtifactHash(
+                choice.name, "a" * 64, choice.repo, choice.install_kind
+            )
         },
     )
 
@@ -212,12 +229,20 @@ class TestTheKeepPathsRequireSmCoverage:
     ):
         # An empty CUDA_VISIBLE_DEVICES hides the caps from the profile; the physical caps
         # are the only record that an sm_89 card became an sm_120 one.
-        masked = host(system, (), physical_compute_caps = ["89"], has_usable_nvidia = False,
-                      visible_cuda_devices = "")
+        masked = host(
+            system,
+            (),
+            physical_compute_caps = ["89"],
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+        )
         swapped = dataclasses.replace(masked, physical_compute_caps = ["120"])
         root = tmp_path / "llama"
-        seed_install(root, masked, choice_for(dataclasses.replace(masked, compute_caps = ["89"],
-                                                                 has_usable_nvidia = True)))
+        seed_install(
+            root,
+            masked,
+            choice_for(dataclasses.replace(masked, compute_caps = ["89"], has_usable_nvidia = True)),
+        )
         monkeypatch.setattr(m, "_download_host_latest_release_tag", lambda *a: BUNDLE.release_tag)
         assert m.host_profile(masked) == m.host_profile(swapped)
         monkeypatch.setattr(m, "detect_host", lambda **k: masked)
