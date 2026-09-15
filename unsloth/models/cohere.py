@@ -10,6 +10,10 @@
 # limitations under the License.
 
 from .llama import *
+from .llama import (
+    original_apply_qkv,
+    original_apply_o,
+)
 from ._utils import __version__
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype, Version
@@ -106,7 +110,7 @@ def CohereAttention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim).transpose(1, 2)
     K = K.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -165,7 +169,7 @@ def CohereAttention_fast_forward(
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
-    attn_output = self.apply_o(self, attn_output)
+    attn_output = getattr(self, "apply_o", original_apply_o)(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 
