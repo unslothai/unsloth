@@ -373,13 +373,12 @@ test("no Block renders outside the renderer boundary", () => {
    *
    * `Block` is the only thing that loads a chunk at render time, so EVERY place
    * it is rendered has to be inside the narrower boundary. Checking only the
-   * places that have controls beside them is not enough: `getCodeFence` needs
-   * the CLOSING fence, so a fence that is still streaming falls past the fence
-   * branch to the bare `Block` at the end of `StreamdownBlockContent`, and that
-   * is precisely when the highlighter is first requested and fails. Leaving that
-   * one unguarded let the whole-block boundary catch and LATCH, so the block
-   * never re-entered `FenceBlock` when its closing fence arrived and the copy
-   * and download bar never mounted.
+   * places that have controls beside them is not enough: before open fences
+   * rendered as a plain shell, a streaming fence fell past the fence branch to
+   * the bare `Block` at the end of `StreamdownBlockContent`, which first
+   * requested the highlighter. Leaving that one unguarded let the whole-block
+   * boundary catch and LATCH, so the block never re-entered `FenceBlock` when
+   * its closing fence arrived and the copy and download bar never mounted.
    *
    * Measured before this assertion existed: a streamed abort produced a document
    * identical to the commit before the inner boundary was added, 1350 elements
@@ -462,4 +461,23 @@ test("a carriage return only closes a fence as the closing line's last character
 
   const closing = markdownBlockFallback("```py\nx\n```\r");
   assert.equal(closing.text, "x", "a CR as the closing line's last character does close it");
+});
+
+test("a streaming open fence renders as a plain shell, not through Block", () => {
+  const markdownText = readFileSync(MARKDOWN_TEXT_PATH, "utf8");
+  assert.ok(
+    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return \(\s*<StreamingFenceShell/m.test(
+      markdownText,
+    ),
+    "an open fence that is still streaming must bypass Block until its closing delimiter arrives",
+  );
+  const shell = markdownText.slice(
+    markdownText.indexOf("function StreamingFenceShell("),
+    markdownText.indexOf("function FenceBlock("),
+  );
+  assert.ok(
+    /code\.highlight\(\s*\{\s*code: trimTrailingNewlines\(source\),/.test(shell) &&
+      shell.includes("<DeferredFenceShell"),
+    "the shell must keep the tokenizer cache warm, or closing a large fence tokenizes the whole body in one task",
+  );
 });
