@@ -269,8 +269,27 @@ jobs:
               # Mark of the web, so block-at-first-sight consults the cloud rather than treating a
               # local file as trusted. A zero-prevalence script from the Internet zone is exactly what
               # the reporter in #10805 had, and it is the condition the heuristics are harshest under.
-              Set-Content -LiteralPath "$($file.FullName):Zone.Identifier" -Encoding ascii `
-                -Value "[ZoneTransfer]`r`nZoneId=3" -ErrorAction SilentlyContinue
+              #
+              # -Stream, and -Path rather than -LiteralPath. That is the only documented way to
+              # address an alternate data stream, and it is what release-desktop.yml:1470 already
+              # does. Appending ":Zone.Identifier" to -LiteralPath instead relies on the path being
+              # taken "exactly as typed", and if it does not bind, -ErrorAction SilentlyContinue
+              # swallows it: the mark is never applied, block-at-first-sight never consults the
+              # cloud, and the run still prints "clean". A silent downgrade of the very condition
+              # this step exists to create.
+              $stamped = $false
+              try {
+                "[ZoneTransfer]`r`nZoneId=3" |
+                  Set-Content -Path $file.FullName -Stream Zone.Identifier -Encoding Ascii -ErrorAction Stop
+                $stamped = $true
+              } catch {
+                Write-Host "::warning::could not stamp mark-of-the-web on $($file.Name): $($_.Exception.Message)"
+              }
+              if (-not $stamped) {
+                # Said out loud rather than swallowed. A scan of a MyComputer-zone file is a weaker
+                # test than the one this lane claims to run, and a reader has to know which they got.
+                Write-Host "::warning::$side/$($file.Name) was scanned WITHOUT mark-of-the-web, so block-at-first-sight did not consult the cloud. This is a weaker scan than intended."
+              }
               # -DisableRemediation, or a detection deletes the file and the next step reports it
               # missing rather than flagged.
               $text = (& $mp -Scan -ScanType 3 -File $file.FullName -DisableRemediation 2>&1 | Out-String)

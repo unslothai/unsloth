@@ -247,3 +247,35 @@ def test_the_laid_out_copies_keep_the_bytes_that_ship() -> None:
         "CRLF-rewritten content reads as HashMismatch, which is worse than unsigned."
     )
     assert shipped[:3] != b"\xef\xbb\xbf", "install.ps1 gained a BOM"
+
+
+def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
+    """`-Stream`, not a stream suffix appended to `-LiteralPath`.
+
+    PowerShell documents exactly one way to address an alternate data stream, and
+    `release-desktop.yml:1470` already uses it. The suffix form relies on the path being taken
+    "exactly as typed" -- and if it does not bind, the `-ErrorAction SilentlyContinue` next to it
+    swallows the error, the mark is never applied, block-at-first-sight never consults the cloud,
+    and the step still prints "clean". That is a silent downgrade of the exact condition this lane
+    exists to create, which is the worst failure shape available here.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert "-Stream Zone.Identifier" in body, (
+        "the mark-of-the-web stamp no longer uses -Stream, which is the only documented way to "
+        "address an alternate data stream"
+    )
+    # Comment lines stripped before the ban is applied. The comment right above the fixed code
+    # explains what the broken form looked like, and naming it is the point of that comment -- a
+    # substring search over the raw file matches the explanation and fails. That has now happened
+    # three times while writing these guards, which is a good argument for never grepping a file
+    # for a string its own prose is obliged to contain.
+    code = "\n".join(
+        line for line in body.splitlines() if not line.strip().startswith("#")
+    )
+    assert ':Zone.Identifier"' not in code, (
+        "the workflow appends a stream name to a path again; use -Stream"
+    )
+    assert "was scanned WITHOUT mark-of-the-web" in body, (
+        "a failed stamp is no longer reported. A scan of a MyComputer-zone file is a weaker test "
+        "than this lane claims to run, and a reader has to know which one they got."
+    )
