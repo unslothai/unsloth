@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 _ENVELOPE_VERSION = "v1"
 _ENVELOPE_PARTS = 4
-# Pins an envelope to this protocol and version, as the at-rest secrets do.
 _ENVELOPE_AAD = b"unsloth-studio-provider-key-v1"
 
 _private_key: rsa.RSAPrivateKey | None = None
@@ -121,12 +120,7 @@ def _b64decode_part(value: str, *, what: str, validate: bool) -> bytes:
 
 
 def decrypt_api_key(encrypted_b64: str) -> str:
-    """Decrypt an API key encrypted with the public key.
-
-    Accepts ``v1.<wrapped AES key>.<nonce>.<ciphertext||tag>``, each part base64, and the
-    bare RSA-OAEP ciphertext frontend builds predating the envelope send. Base64 has no
-    ``.``, so the two can never be confused.
-    """
+    """Accepts the ``v1.``-prefixed envelope or a bare legacy RSA-OAEP ciphertext; base64 has no ``.``, so the two cannot be confused."""
     if _private_key is None:
         raise RuntimeError("Key pair not initialized. Call init_key_pair() first.")
 
@@ -161,8 +155,7 @@ def decrypt_api_key(encrypted_b64: str) -> str:
             )
             raise
     else:
-        # Lenient, as this path was before the envelope: tightening it could reject a key
-        # that works today.
+        # Lenient as this path was before the envelope: tightening it could reject a working key.
         legacy_ciphertext = _b64decode_part(encrypted_b64, what = "legacy", validate = False)
         plaintext = _unwrap_oaep(legacy_ciphertext, what = "legacy")
 

@@ -47,7 +47,6 @@ _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
     try:
         from peft import PeftModel, PeftModelForCausalLM
-        from transformers.modeling_utils import PushToHubMixin
         import torch
     except Exception as _torch_exc:
         _TORCH_IMPORT_ERROR = _torch_exc
@@ -452,8 +451,7 @@ def _ensure_hub_repo_private(hf_api, repo_id):
         raise RuntimeError(
             f"private=True was requested but {repo_id!r} could not be confirmed private "
             "(the token likely lacks `write:repo_settings`, or the repository belongs to "
-            "someone else). Refusing to upload rather than publish the GGUF files to a "
-            "public repository."
+            "someone else). Refusing to upload rather than publish to a public repository."
         ) from exception
 
 
@@ -491,11 +489,17 @@ class ExportBackend:
             return False
 
     def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
+        self, outputs_dir: Optional[str] = None
     ) -> List[Tuple[str, List[Tuple[str, str]]]]:
-        """Scan the outputs folder for training runs and their checkpoints, as [(model_name,
-        [(display_name, checkpoint_path), ...]), ...]."""
+        """
+        Scan outputs folder for training runs and their checkpoints.
+
+        Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
+        """
+        if outputs_dir is None:
+            outputs_dir = str(outputs_root())
         from utils.models.checkpoints import scan_checkpoints
+
         return scan_checkpoints(outputs_dir = outputs_dir)
 
     def load_checkpoint(
@@ -506,8 +510,11 @@ class ExportBackend:
         trust_remote_code: bool = False,
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
+        base_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
+
+        ``base_model`` is the caller's authorized adapter base; it wins over adapter_config.json.
 
         ``hf_token`` authenticates the actual weight load for gated/private checkpoints, matching
         the token the worker used for the security preflight (otherwise a gated repo passes scanning
@@ -529,11 +536,12 @@ class ExportBackend:
             checkpoint_path_obj = Path(checkpoint_path)
 
             adapter_config = checkpoint_path_obj / "adapter_config.json"
-            base_model = None
             if adapter_config.exists():
-                base_model = get_base_model_from_lora(checkpoint_path)
+                base_model = base_model or get_base_model_from_lora(checkpoint_path)
                 if not base_model:
                     return False, "Could not determine base model for adapter"
+            else:
+                base_model = None
 
             model_id = base_model or checkpoint_path
 
@@ -943,12 +951,10 @@ class ExportBackend:
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
                     # redo the expensive quantization.
                     hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     content = MODEL_CARD.format(
                         username = repo_id.split("/")[0],
                         base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
@@ -1066,12 +1072,10 @@ class ExportBackend:
                     )
 
                     hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
+                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    repo_id = getattr(repo_url, "repo_id", repo_id)
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     username = repo_id.split("/")[0]
 
                     content = MODEL_CARD.format(
