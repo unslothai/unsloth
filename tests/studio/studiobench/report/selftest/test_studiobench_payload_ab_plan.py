@@ -60,3 +60,38 @@ def test_header_is_still_the_run_meta_row_and_counts_agree():
 def test_absent_ab_plan_is_an_empty_mapping():
     built = _assemble([ROWS[0], ROWS[2]])
     assert built["ab_plan"] == {}
+
+
+# `--resume` appends to the same payload and emits its own plan for the work it was asked to
+# do. Collapsing the section to `[0]` would name only the first session's cells while
+# `record_counts` reported two plans, which is the bug above one layer down.
+RESUMED_ROWS = [
+    *ROWS,
+    {
+        "row_type": "ab_plan",
+        "treatment_ref": "bbb",
+        "order": ["treatment", "base", "base_10k", "treatment_10k"],
+        "balanced": True,
+    },
+]
+
+
+def test_a_resumed_session_does_not_lose_the_cells_it_added():
+    built = _assemble(RESUMED_ROWS)
+    assert built["record_counts"]["ab_plan"] == 2
+    # Every id from both plans, first-seen order, and the two the resume re-declared are not
+    # doubled. A plain `[0]` gives ["base", "treatment"] and fails here.
+    assert built["ab_plan"]["order"] == ["base", "treatment", "base_10k", "treatment_10k"]
+    assert built["ab_plan"]["treatment_ref"] == "bbb"
+
+
+def test_one_unbalanced_session_makes_the_experiment_unbalanced():
+    """ANDed, not taken from the first plan.
+
+    An odd `--reps` on the resume charges linear drift to whichever side ran second, and the
+    run says so out loud. Reading `balanced` off a balanced first plan would silently take
+    that back for the combined ladder.
+    """
+    rows = [*ROWS, {**RESUMED_ROWS[-1], "balanced": False}]
+    assert _assemble(rows)["ab_plan"]["balanced"] is False
+    assert _assemble(RESUMED_ROWS)["ab_plan"]["balanced"] is True

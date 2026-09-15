@@ -24,6 +24,7 @@ breakage was already handled.
 
 import ast
 import builtins
+import importlib
 import pathlib
 import sys
 from unittest import mock
@@ -332,6 +333,12 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
         "partially initialized module 'torchvision.transforms' has no attribute "
         "'InterpolationMode'",
         "partially initialized module 'torchvision.io.image' has no attribute 'decode_jpeg'",
+        # CPython 3.13 and newer name the file in the same message; 3.12 and older do not.
+        "partially initialized module 'torchvision' from "
+        "'/usr/lib/python3/site-packages/torchvision/__init__.py' has no attribute 'extension' "
+        "(most likely due to a circular import)",
+        "partially initialized module 'torchvision.ops' from "
+        "'/opt/venv/lib/torchvision/ops/__init__.py' has no attribute 'nms'",
     ],
 )
 def test_partially_initialized_torchvision_is_recognised(message):
@@ -370,6 +377,8 @@ def test_the_lazy_module_wrapper_around_it_is_recognised():
         "partially initialized module 'torchvisionfoo' has no attribute 'x'",
         "partially initialized module 'not_torchvision' has no attribute 'x'",
         "partially initialized module 'mytorchvision' has no attribute 'extension'",
+        # The widened `from '...'` clause must not let another module's path carry the match.
+        "partially initialized module 'numpy' from '/x/torchvision/numpy.py' has no attribute 'a'",
         "module 'os' has no attribute 'extension'",
     ],
 )
@@ -393,3 +402,77 @@ def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
     """`import unsloth` must not be turned into "reinstall torchvision" by an
     AttributeError that carries no evidence of a half-imported module."""
     _probe_with_import_raising(AttributeError("module 'torchvision' has no attribute 'extension'"))
+
+
+def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
+    tmp_path, monkeypatch
+):
+    """A stray `torchvision.py` raises the same words a half-loaded extension does.
+
+    CPython says "partially initialized module 'torchvision' has no attribute ..." for any
+    module that touches itself mid-import, and the metadata table upstream still reports the
+    installed distribution, so the binary branch would answer this with "reinstall
+    torchvision" -- advice that cannot ever fix it, because the file wins the name either way.
+
+    Driven through a real import of a real file rather than a fabricated exception: what the
+    fix turns on is which file the finders resolve, and only a real one exercises that. Note
+    the import failing removes the module from sys.modules again, which is why the resolution
+    is by find_spec.
+    """
+    (tmp_path / "torchvision.py").write_text("import torchvision\ntorchvision.extension\n")
+    with mock.patch.dict(sys.modules):
+        for name in [n for n in sys.modules if n.startswith("torchvision")]:
+            sys.modules.pop(name, None)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        assert import_fixes._shadowing_torchvision_path() == str(tmp_path / "torchvision.py")
+        with pytest.raises(ImportError) as excinfo:
+            import_fixes._probe_torchvision_binary("2.11.0", "0.26.0", (0, 26))
+        text = str(excinfo.value)
+
+    assert str(tmp_path / "torchvision.py") in text, text
+    assert "reinstalling torchvision will not change which one wins" in text, text
+    # The repair advice the binary branch would have given, and must not give here.
+    assert "force-reinstall" not in text, text
+    assert isinstance(excinfo.value.__cause__, AttributeError)
+
+
+def test_the_real_torchvision_is_not_mistaken_for_a_shadow():
+    """The other half: a package resolves to an __init__.py, so the binary branch still runs.
+
+    Without this the fix would be indistinguishable from deleting the partially-initialized
+    detection outright.
+    """
+    pytest.importorskip("torchvision")
+    assert import_fixes._shadowing_torchvision_path() is None
+    assert import_fixes._is_broken_torchvision_error(
+        AttributeError("partially initialized module 'torchvision' has no attribute 'extension'")
+    )
+
+
+def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkeypatch):
+    """Generated from a real circular import here, not copied from a bug report.
+
+    The wording is CPython's and it moves: 3.12.3 raises "partially initialized module 'X'
+    has no attribute 'Y'", 3.13.12 raises "partially initialized module 'X' from '<file>' has
+    no attribute 'Y'". A pattern written against one of those silently stops matching on the
+    other, and a detection that matches nothing looks exactly like a box with no problem. So
+    provoke the error on the interpreter running the suite and check the marker against it,
+    which fails on whichever version the pattern was not written for.
+    """
+    package = tmp_path / "tvshape"
+    package.mkdir()
+    (package / "__init__.py").write_text("import tvshape\ntvshape.extension\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with mock.patch.dict(sys.modules):
+        sys.modules.pop("tvshape", None)
+        with pytest.raises(AttributeError) as excinfo:
+            importlib.import_module("tvshape")
+
+    produced = str(excinfo.value)
+    assert "partially initialized" in produced, produced
+    # Same shape, torchvision's name. Only the name differs between this and the real break.
+    assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
+        produced.replace("tvshape", "torchvision")
+    ), produced
+    # And it is the NAME doing the work, not the shape alone.
+    assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced

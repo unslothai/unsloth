@@ -240,6 +240,36 @@ ROW_TYPE_SECTIONS: Mapping[str, str] = {
 }
 
 
+def merged_ab_plan(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """One plan out of however many sessions wrote one.
+
+    `--resume` appends to the same payload and emits a fresh `ab_plan` for the work THAT
+    session was asked to do, so the cells a later session added are named only in a later
+    row. Taking `[0]` would drop their order while `record_counts` still reports the plans
+    exist, which is the same silent loss that moving this row out of `header` was for, one
+    layer down.
+
+    `order` is concatenated in session order, skipping ids an earlier plan already names, so
+    a resume that re-declares a completed rung does not double it. `balanced` is ANDed: one
+    unbalanced session is an unbalanced experiment, and letting a balanced first plan speak
+    for it would hide the drift warning the run printed. Everything else comes from the first
+    plan, which is where the refs are; a resume whose refs disagree is refused upstream, so
+    there is nothing to reconcile here.
+    """
+
+    if not rows:
+        return {}
+    plan = dict(rows[0])
+    order: list[Any] = []
+    for row in rows:
+        for cell_id in row.get("order", []):
+            if cell_id not in order:
+                order.append(cell_id)
+    plan["order"] = order
+    plan["balanced"] = all(bool(row.get("balanced")) for row in rows)
+    return plan
+
+
 def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
     """Assemble a payload from the HARNESS layer's row stream (`row_type`, not `kind`).
 
@@ -284,7 +314,7 @@ def assemble_rows(path: str | Path, *, validate: bool = True) -> dict[str, Any]:
         "surfaces": sections.get("surfaces", []),
         "aborted_cells": sections.get("aborted_cells", []),
         "comparability": (sections["comparability"][0] if sections.get("comparability") else {}),
-        "ab_plan": (sections["ab_plan"][0] if sections.get("ab_plan") else {}),
+        "ab_plan": merged_ab_plan(sections.get("ab_plan", [])),
         "crashes": sections.get("crashes", []),
         "arms": [],
         "unknown_rows": unknown,
