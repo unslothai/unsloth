@@ -953,18 +953,25 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    state = {"accepted": 0, "lines": 0}
+    # Bytes, never whole header lines: whole lines hit http.client's _MAXHEADERS cap of 100
+    # and end the call themselves in ~2s, passing against a build with no deadline at all.
+    chunk = b"x"
+    # urllib's per-socket-operation timeout is reset by any traffic. While max_gap stays under
+    # it no per-operation timeout can have fired, so a probe that returned anyway returned on
+    # the whole-request deadline. That is the only thing here that tells the two bounds apart.
+    state = {"accepted": 0, "lines": 0, "chunk": chunk, "max_gap": 0.0, "last_write": None}
     stop = threading.Event()
 
     def drip(conn):
         try:
             conn.recv(4096)
-            # One header line that is never terminated, a byte at a time.
-            # Whole header LINES would hit http.client's own _MAXHEADERS cap of 100 and end the call on their own at
-            # about two seconds, which would make this fixture pass against a build that has no deadline at all.
             conn.sendall(b"HTTP/1.1 200 OK\r\nX-Pad: ")
             while not stop.is_set():
-                conn.sendall(b"x")
+                conn.sendall(chunk)
+                now = time.monotonic()
+                if state["last_write"] is not None:
+                    state["max_gap"] = max(state["max_gap"], now - state["last_write"])
+                state["last_write"] = now
                 state["lines"] += 1
                 time.sleep(0.02)
         except Exception:
@@ -1022,21 +1029,41 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
     urlopen has not returned, so nothing inside it is running yet and only urllib's
     per-socket-operation timeout applies, which a peer resets by dribbling. The budget is
     whole-request for that reason: connect, headers and body under one deadline."""
+    socket_timeout = 0.5
     mod = _load(tmp_path, monkeypatch)
     base, state, shutdown = _serve_trickling_headers()
     monkeypatch.setattr(mod, "BASE", base)
     try:
-        returned, value, elapsed = _probe_bounded(mod, "/api/liveness", timeout = 0.5, wait = 6.0)
+        returned, value, elapsed = _probe_bounded(
+            mod, "/api/liveness", timeout = socket_timeout, wait = 6.0
+        )
+        probe_ended = time.monotonic()
+        lines, max_gap, last_write = state["lines"], state["max_gap"], state["last_write"]
     finally:
         shutdown()
-    # Fixture preconditions first, so a server that stopped trickling fails loudly instead of letting the probe return
-    # fast and passing for free.
+
     assert state["accepted"] >= 1, "fixture never accepted a connection"
-    assert state["lines"] >= 3, f"fixture stopped trickling headers after {state['lines']} bytes"
-    assert state["lines"] < 100, (
+    assert b"\n" not in state["chunk"] and b"\r" not in state["chunk"], (
         "fixture is sending whole header lines again; http.client's _MAXHEADERS would "
-        "end the call by itself and this would pass without any deadline"
+        f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
+
+    # Contention that breaks the gap invariant yields no evidence, not a failure: report that
+    # rather than pass on a build with no deadline or go red on a busy machine.
+    trickled_throughout = (
+        lines >= 3
+        and last_write is not None
+        and max_gap < socket_timeout
+        and probe_ended - last_write < socket_timeout
+    )
+    if not trickled_throughout:
+        pytest.skip(
+            "fixture could not keep inside the per-operation timeout on this runner, so a "
+            f"timeout here would not distinguish the two bounds: {lines} bytes, "
+            f"max gap {max_gap:.3f}s, last write {probe_ended - (last_write or probe_ended):.3f}s "
+            f"before the probe returned, socket timeout {socket_timeout}s"
+        )
+
     assert returned, "probe never returned: urlopen is outside the deadline again"
     assert value[2] == "timeout", value
     assert 0.4 <= elapsed < 4.0, f"probe took {elapsed:.2f}s against a 0.5s whole-request budget"

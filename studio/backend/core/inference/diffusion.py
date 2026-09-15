@@ -35,6 +35,7 @@ from core._torchao_stub import (
     install_xformers_windows_rocm_stub,
 )
 from loggers import get_logger
+from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
 from .diffusion_families import (
@@ -253,6 +254,37 @@ def _hf_token_in_play(hf_token: Optional[str]) -> bool:
         return bool(get_token_to_send(None))
     except Exception:  # noqa: BLE001 -- assume none; at worst the message says "add a token"
         return False
+
+
+_DYNAMO_PARTIAL_RE = re.compile(
+    r"partially initialized module 'torch\._dynamo'|"
+    r"module 'torch\._dynamo' has no attribute 'utils'"
+)
+
+
+def dynamo_partial_init_message(exc: BaseException) -> Optional[str]:
+    """Rewrite the half-initialised ``torch._dynamo`` failure into the step that unblocks the
+    user, else None so an unrelated load error keeps its own text. Same contract as
+    ``hub_access_message``: only the toast changes, the raw exception still reaches the log.
+
+    Worth special-casing because the raw text names a private torch module and reads as a bug in
+    the model, while the actual remedy is a restart and nothing else. Measured on torch 2.10:
+    once a process loses this import race the state does not recover, so retrying the load in
+    the same process fails the same way (0 of 14 retries resolved)."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if _DYNAMO_PARTIAL_RE.search(str(exc)):
+            return (
+                "PyTorch's compiler module (torch._dynamo) ended up half-initialised in this "
+                "process, so the image model could not finish loading. Restart Unsloth and load "
+                "it again; this state does not clear on its own."
+            )
+        # Same walk as _gated_in_chain: `raise ... from None` means the raiser deliberately hid
+        # the inner error, so following __context__ past it would answer a visible, unrelated
+        # failure (corrupt weights, say) with restart advice that does not apply to it.
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    return None
 
 
 def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
@@ -1181,6 +1213,8 @@ class DiffusionBackend:
         self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak
         self._active_generate_cancel: Optional[threading.Event] = None
+        # Bound with the event under the same lock, so a cancel cannot land on the wrong generation.
+        self._active_generate_account: Optional[str] = None
         # Queued requests; cancel_generate() decides which Stop may signal.
         self._queued_generate_cancels: set[threading.Event] = set()
         self._generation_owns_slot = False
@@ -1275,6 +1309,7 @@ class DiffusionBackend:
                             if not cancelled:
                                 self._queued_generate_cancels.discard(cancel)
                                 self._active_generate_cancel = cancel
+                                self._active_generate_account = current_account_id()
                                 self._generation_owns_slot = True
                                 admitted = True
                     else:
@@ -1289,12 +1324,15 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._teardown_drained.wait(timeout = 0.1):
                         break
+            from hub.services.models.account_access import media_generation_slot
             try:
-                yield
+                with media_generation_slot("diffusion"):
+                    yield
             finally:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_account = None
                     self._generation_owns_slot = False
                     self._generate_lock.release()
         finally:
@@ -2003,7 +2041,7 @@ class DiffusionBackend:
             # Seed with the family fallback; the worker resolves the real base and updates this.
             self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
 
-        threading.Thread(
+        account_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
@@ -2176,7 +2214,16 @@ class DiffusionBackend:
             # A cancelled/superseded load raised below; don't log/stamp it onto the current load.
             if self._load_token != token:
                 return
-            logger.error("diffusion.load_failed: %s", exc)
+            # exc_info: the client only ever gets str(exc) (see below), so without the traceback
+            # here a one-line failure is unattributable to any call site. #10350 and #10963 both
+            # sat unreproducible for want of the frames this logs.
+            logger.error("diffusion.load_failed: %s", exc, exc_info = True)
+            if self._state is not None:
+                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from hub.services.models.account_access import restore_resident_metadata
+
+                restore_owner_account(DIFFUSION)
+                restore_resident_metadata(DIFFUSION)
             try:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001
@@ -2187,9 +2234,11 @@ class DiffusionBackend:
             from utils.native_path_leases import redact_native_paths
 
             try:
-                text = hub_access_message(
-                    exc, had_token = _hf_token_in_play(kwargs.get("hf_token"))
-                ) or str(exc)
+                text = (
+                    hub_access_message(exc, had_token = _hf_token_in_play(kwargs.get("hf_token")))
+                    or dynamo_partial_init_message(exc)
+                    or str(exc)
+                )
             except Exception:  # noqa: BLE001
                 text = str(exc)
             with self._lock:
@@ -2299,7 +2348,12 @@ class DiffusionBackend:
             return {}
 
     def _dit_prequant_plan_source(
-        self, fam: Any, kind: str, hf_token: Optional[str], kwargs: dict[str, Any]
+        self,
+        fam: Any,
+        kind: str,
+        hf_token: Optional[str],
+        kwargs: dict[str, Any],
+        failures_out: Optional[list] = None,
     ) -> Optional[tuple[str, str, int]]:
         """The hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the base repo's dense
         shards, as ``(repo, filename, declared_size)``, or None when no such artifact is used.
@@ -2393,9 +2447,25 @@ class DiffusionBackend:
                 for name in (source.filename, source.fallback_filename):
                     if name and name in sizes:
                         return (source.location, name, int(sizes[name]))
+                # The repo answered and holds NEITHER name. Not "no prequant is used" -- this pick
+                # is configured to use one and the dense shards are already excluded for it, so the
+                # plan names no transformer source at all and must say it is partial.
+                if failures_out is not None:
+                    failures_out.append(
+                        RuntimeError(
+                            f"prequant artifact missing from {source.location}: "
+                            f"{source.filename!r} / {source.fallback_filename!r}"
+                        )
+                    )
                 return None
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
+            # Best-effort for the UI, but NOT for a caller that must not download afterwards: the
+            # dense shards are already excluded for this pick, so a swallowed lookup leaves a plan
+            # naming neither transformer source and calling itself complete. Download only would
+            # then report success and the load would still pull multi-GB inline, or fail offline.
+            if failures_out is not None:
+                failures_out.append(exc)
             return None
 
     @staticmethod
@@ -2712,7 +2782,9 @@ class DiffusionBackend:
         # footprint the plan would otherwise never report. Sized against the RESOLVED base, as the load passes it: a
         # variant base picks its own prequant repo.
         dit_prequant = (
-            self._dit_prequant_plan_source(fam, kind, hf_token, {**load_kwargs, "base_repo": base})
+            self._dit_prequant_plan_source(
+                fam, kind, hf_token, {**load_kwargs, "base_repo": base}, plan_failures
+            )
             if allow_device_probe
             else None
         )
@@ -3359,6 +3431,22 @@ class DiffusionBackend:
         # budget, the un-indexed state.device) lands on the same card.
         apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
+
+        # Before the first `import diffusers` below, which is the earliest dynamo consumer on this
+        # path and therefore the only position that dominates the rest of them. Importing
+        # diffusers alone pulls in torch._dynamo (every module in diffusers.hooks evaluates
+        # @torch.compiler.disable() at class-body time), and so do the hook-based paths that
+        # follow: the FP8 text-encoder cast (diffusion_precision), the step cache
+        # (diffusion_cache), the compile cache, apply_speed_optims, and apply_memory_plan's
+        # offload. Whichever gets there first is the one that can lose the concurrent import
+        # race, and several of them swallow their own failure by design, so placing this after
+        # any of them would only observe an already-poisoned module (#10350, #10963).
+        # Normally a no-op: the background torch warm already did it at boot.
+        try:
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            logger.debug("dynamo pre-import skipped: %r", exc)
 
         import diffusers
 
@@ -6134,6 +6222,7 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_account = None
 
                 # Components are offloaded and transfer copies dropped; return the pages now.
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
@@ -6167,6 +6256,7 @@ class DiffusionBackend:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_account = None
                 with self._lock:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves
                     # the UI stuck.
@@ -6191,18 +6281,20 @@ class DiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
-    def cancel_generate(self) -> bool:
-        """Signal the in-flight generation to stop at its next step boundary. The denoise loop
-        already watches this event (``_on_step`` sets diffusers' ``_interrupt``, and the
-        per-chunk check discards a partial batch), but until now only unload() and a superseding
-        load could set it. Returns False when nothing is running, which the route reports so the
-        UI can settle its button back to Generate. Best effort by construction: the sampler stops
-        at the NEXT step callback, so a cancel during the VAE decode or the encode that precedes
-        step 0 lands when that finishes."""
+    def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
+        """Stop the in-flight generation at its next step boundary; False when nothing is running.
+
+        Best effort: the sampler stops at the NEXT step callback, so a cancel during the VAE
+        decode or the encode before step 0 lands when that finishes."""
         with self._generation_cancel_lock:
             # Stop targets the denoising generation, not a serialized waiter.
             active = self._active_generate_cancel
             if active is not None:
+                if expected_account is not None and self._active_generate_account not in (
+                    None,
+                    expected_account,
+                ):
+                    return False
                 active.set()
                 return True
             if self._generation_owns_slot:
@@ -6218,8 +6310,21 @@ class DiffusionBackend:
                 cancel.set()
             return True
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
+            if expected_account is not None:
+                from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
+                from hub.services.models.account_access import require_resident_control
+
+                # Recheck under the generation-admitting lock before setting any cancel event.
+                if (
+                    self._active_generate_cancel is not None
+                    and self._active_generate_account != expected_account
+                ):
+                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                require_resident_control(
+                    DIFFUSION, self._state.repo_id if self._state is not None else None
+                )
             # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py:
             # begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer
             # watches.

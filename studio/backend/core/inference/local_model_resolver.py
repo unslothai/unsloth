@@ -22,6 +22,7 @@ from typing import Optional
 
 from core.inference.model_ids import public_model_id
 from loggers import get_logger
+from utils.account_context import account_thread, current_account_id, is_owner_context
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,27 @@ _CACHE_TTL_S = 5.0
 # other.
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+_EMPTY_SCAN: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+# One snapshot per managed account: scanned roots are account private, so a shared snapshot would
+# answer the next account with the previous one's paths. The owner keeps ``_scan``.
+_managed_scans: dict[str, tuple[float, dict[str, _LocalGgufEntry]]] = {}
+
+
+def _snapshot() -> tuple[float, dict[str, _LocalGgufEntry]]:
+    """The acting account's published index snapshot."""
+    if is_owner_context():
+        return _scan
+    return _managed_scans.get(current_account_id(), _EMPTY_SCAN)
+
+
+def _publish(snapshot: tuple[float, dict[str, _LocalGgufEntry]]) -> None:
+    global _scan
+    if is_owner_context():
+        _scan = snapshot
+    else:
+        _managed_scans[current_account_id()] = snapshot
+
+
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
 # Repos that finished downloading but are not in the published index yet: nothing else covers them until the next scan,
@@ -79,7 +101,11 @@ def _advertised_loader_id(info) -> Optional[str]:
     """The id to advertise for a scanned model: prefer a client-facing alias over
     an absolute filesystem path so /v1/models and the override key never expose a
     host path (the ./models and LM Studio scanners report the path as info.id)."""
+    from hub.services.models.ollama import is_ollama_manifest_ref
+
     raw_id = getattr(info, "id", None)
+    if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
+        return getattr(info, "model_id", None)
     if not raw_id or not _is_abs_path_id(raw_id):
         return raw_id
     for alt in (getattr(info, "model_id", None), getattr(info, "display_name", None)):
@@ -117,13 +143,7 @@ def _resolve_load_dir(p, loader_id: Optional[str] = None):
 
 
 def _resolve_gguf_load_snapshot(p):
-    """Newest complete snapshot in this exact cache repo, or the selector fallback.
-
-    A later Hub revision can contain only a newly fetched companion such as an
-    MTP drafter or mmproj while the complete model weights remain in an older
-    snapshot. The generic resolver intentionally picks the newest snapshot, but
-    doing that for GGUF discovery makes the repo disappear from ``/v1/models``.
-    """
+    """Newest *complete* snapshot: a newer revision may hold only a companion, not weights."""
     snapshots = p / "snapshots"
     try:
         if not snapshots.is_dir():
@@ -131,8 +151,7 @@ def _resolve_gguf_load_snapshot(p):
     except OSError:
         return None
 
-    # Reuse the Hub inventory's selection rule, scoped to the row's exact repo
-    # directory so case-colliding repos cannot cross-load or trigger another root scan.
+    # Scoped to this exact repo dir so case-colliding repos cannot cross-load.
     from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
 
     selected = select_gguf_cache_snapshot_for_repo_dir(p)
@@ -142,13 +161,6 @@ def _resolve_gguf_load_snapshot(p):
 
 
 def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> tuple[str, ...]:
-    """Trusted sibling snapshots for a repo-level HF cache resolution.
-
-    The selected snapshot remains first so a colocated companion wins. Other
-    revisions are returned newest first for the case where a later download
-    contains only a compatible mmproj. Exact revision paths and paths outside
-    an exact ``models--*`` cache-repo layout never widen their companion search.
-    """
     from pathlib import Path
     from hub.utils.hf_cache_state import snapshot_selection_key
 
@@ -181,7 +193,6 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
 
 
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
-    """File metadata for trusted snapshots, including newly completed companions."""
     from pathlib import Path
 
     state = []
@@ -572,6 +583,19 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Entry for whichever backend can serve *info* from disk, GGUF first."""
+    from hub.services.models.ollama import is_ollama_manifest_ref, ollama_model_ref_files
+
+    raw_id = getattr(info, "id", None)
+    if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
+        if getattr(info, "source", None) != "ollama":
+            return None
+        # Raises when the tag's layers are gone or unsupported, withholding rather than advertising.
+        try:
+            ollama_model_ref_files(raw_id)
+        except (OSError, ValueError):
+            return None
+        # No quants: an Ollama tag names one file, so there is no ":<quant>" to pin.
+        return _LocalGgufEntry(loader_id, raw_id, ())
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
@@ -586,15 +610,32 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
     from pathlib import Path
 
     path = getattr(info, "path", None)
-    # Ollama-link entries come from a scanner _build_index intentionally skips (it creates symlinks on the request
-    # path), so their advertised ids never resolve. Don't report them as servable, or /v1/models would list unswitchable
-    # models.
+    # A link an earlier load materialized, rescanned: the manifest row already has those weights.
     if isinstance(path, str) and any(
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
         return None
     entry = _local_servable_entry(getattr(info, "id", "") or "", info)
-    return (entry.is_gguf, entry.variants) if entry is not None else None
+    if entry is None:
+        return None
+    if not _advertises_this_ollama_row(info):
+        return None
+    return (entry.is_gguf, entry.variants)
+
+
+def _advertises_this_ollama_row(info) -> bool:
+    """Whether an Ollama row's catalog id is the one the resolver loads for it: two roots can hold
+    one tag. Asks the index, so it cannot be called from inside a scan."""
+    from hub.services.models.ollama import is_ollama_manifest_ref
+
+    raw_id = getattr(info, "id", None)
+    if not isinstance(raw_id, str) or not is_ollama_manifest_ref(raw_id):
+        return True
+    model_id = getattr(info, "model_id", None)
+    if not model_id:
+        return False
+    resolved = resolve_local_gguf(model_id)
+    return bool(resolved and resolved[0] == raw_id)
 
 
 def local_load_dir(path: Optional[str]) -> Optional[str]:
@@ -619,9 +660,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
 
     Scans the same roots Unsloth's model picker lists (./models, the active plus
     legacy/default HF caches, LM Studio and Hermes dirs, and user scan folders) so a named
-    local model is never missed and silently served as the loaded one. Ollama's
-    scanner is skipped: it creates symlinks as a side effect and this runs on the
-    request path.
+    local model is never missed and silently served as the loaded one. The Ollama scan only reads
+    manifests: the ``.gguf`` link its blobs need is materialized by the load.
     """
     # Lazy import: routes.models imports core.inference, so import at call time.
     from pathlib import Path
@@ -629,6 +669,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _scan_models_dir,
         _scan_hf_cache,
         _scan_lmstudio_dir,
+        _scan_ollama_dir,
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
@@ -697,6 +738,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
+        from utils.paths import ollama_model_dirs
+        for ollama_dir in ollama_model_dirs():
+            found += _scan_ollama_dir(ollama_dir, materialize_links = False)
+    except Exception as exc:
+        logger.debug("auto-switch: Ollama scan failed: %s", exc)
+    try:
         from storage.studio_db import list_scan_folders
 
         custom_found = []
@@ -704,7 +751,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             try:
                 fp = Path(folder["path"])
                 custom_found += dedupe_custom_gguf_rows(
-                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                    _scan_models_dir(fp, limit = 200)
+                    + _scan_hf_once(fp)
+                    + _scan_lmstudio_dir(fp)
+                    + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
@@ -728,8 +778,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         entry = _local_servable_entry(loader_id, info)
         if entry is None:
             continue
-        # Repo and display aliases intentionally select across revisions. An inactive-cache row's absolute id and
-        # basename name one exact revision instead: index them only when that revision has its own complete weights.
+        # Path-shaped ids name one exact revision, so index them only if that revision has complete weights.
         path_alias_entry = entry
         if entry.repo_level_companions and _is_abs_path_id(raw_id):
             from types import SimpleNamespace
@@ -847,11 +896,18 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     with _lock:
         now = time.monotonic()
         _generation += 1
-        timestamp, retained = _scan
-        # Publish entries and their trust state together. A lock-free reader sees either the complete old snapshot or
-        # the complete invalidated one, never a fresh timestamp paired with already-revoked trust.
-        stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
-        _scan = (stamp, retained)
+
+        def _invalidated(snapshot):
+            timestamp, retained = snapshot
+            # Entries and trust state publish together: a lock-free reader never sees a fresh
+            # timestamp paired with revoked trust.
+            stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
+            return (stamp, retained)
+
+        # Every account's snapshot: what changed on disk is not scoped to whoever noticed.
+        _scan = _invalidated(_scan)
+        for account_id, snapshot in list(_managed_scans.items()):
+            _managed_scans[account_id] = _invalidated(snapshot)
     # This may have waited out a scan on _lock, so the warmer that just published can still own the slot with a snapshot
     # that is stale again. See _warm_pending.
     with _warm_lock:
@@ -860,12 +916,11 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
-    global _scan
     # Build under the lock so concurrent callers with an expired cache don't all run the (multi-dir) scan at once; the
     # rest wait and reuse the fresh result.
     with _lock:
         now = time.monotonic()
-        ts, cached = _scan
+        ts, cached = _snapshot()
         # `ts > 0`: monotonic() counts from boot, so under a TTL of uptime an invalidated stamp reads as recent and
         # would serve what was just revoked
         if ts > 0.0 and now - ts < _CACHE_TTL_S:
@@ -874,7 +929,7 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on an install with many local models
         # can itself exceed the TTL, which would store the cache already expired and make every request rebuild the
         # index.
-        _scan = (time.monotonic(), fresh)
+        _publish((time.monotonic(), fresh))
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
         return fresh
@@ -887,7 +942,7 @@ def index_is_built() -> bool:
     park the request path on the scan it is trying to stay off. Safe because
     ``_scan`` is only ever rebound, never mutated.
     """
-    return _scan[0] > 0.0
+    return _snapshot()[0] > 0.0
 
 
 def resolve_trusted_cached_local_gguf(
@@ -904,16 +959,16 @@ def resolve_trusted_cached_local_gguf(
     With ``include_companion_scope=True``, append whether sibling snapshots belong
     to this repo-level resolution and may be searched for compatible companions.
     """
-    snapshot = _scan
+    snapshot = _snapshot()
     resolved = _resolve_from_index(
         requested,
         snapshot[1],
         include_companion_scope = include_companion_scope,
     )
-    if resolved is None or _scan is not snapshot:
+    if resolved is None or _snapshot() is not snapshot:
         return None
     trusted = _snapshot_is_trusted(snapshot[0], time.monotonic())
-    return resolved if trusted and _scan is snapshot else None
+    return resolved if trusted and _snapshot() is snapshot else None
 
 
 def warm_index_soon() -> None:
@@ -925,7 +980,7 @@ def warm_index_soon() -> None:
     for the life of the process. Never blocks, and never touches ``_lock``.
     """
     global _warming, _warm_pending
-    stamp = _scan[0]
+    stamp = _snapshot()[0]
     if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
         return
     with _warm_lock:
@@ -958,7 +1013,8 @@ def warm_index_soon() -> None:
                 with _warm_lock:
                     _warming = _warm_pending = False
 
-    threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+    # Pinned to the caller's account, or the rebuild would publish under the owner's scope.
+    account_thread(target = _run, name = "local-model-index-warm", daemon = True).start()
 
 
 def resolve_local_gguf(
@@ -969,7 +1025,7 @@ def resolve_local_gguf(
 ) -> Optional[tuple]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
-    ``load_path`` is the concrete on-disk path to hand /load (so it never fetches a remote),
+    ``load_path`` is the local path or ``ollama-manifest:`` ref to hand /load (never a remote),
     ``loader_id`` is the advertised id used as the launch-override key, and ``gguf_variant`` is None
     for a non-GGUF checkpoint, which has no quant to pin. ``requested`` is ``repo`` or
     ``repo:VARIANT``: an exact id match wins first (so ids containing a colon still resolve), else
@@ -986,7 +1042,7 @@ def resolve_local_gguf(
         return None
     requested = requested.strip()
     try:
-        index = _index() if allow_scan else _scan[1]
+        index = _index() if allow_scan else _snapshot()[1]
         return _resolve_from_index(
             requested,
             index,
@@ -1064,7 +1120,7 @@ def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = No
             pass
     if not isinstance(loader_id, str) or not loader_id.strip():
         return True
-    entry = _scan[1].get(loader_id.strip().lower())
+    entry = _snapshot()[1].get(loader_id.strip().lower())
     return entry.is_gguf if entry is not None else True
 
 
