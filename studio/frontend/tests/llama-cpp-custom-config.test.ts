@@ -222,6 +222,9 @@ test("selector suggestions never implicitly select a sole named section", () => 
   assert.deepEqual(customConfigSections("[*]\n[only]\nctx-size=56000"), [
     "only",
   ]);
+  assert.deepEqual(customConfigSections("[ preset]\nctx-size=56000"), [
+    "preset",
+  ]);
   assert.deepEqual(
     normalizeLlamaCppConfig({ ...custom, section: null })?.mode,
     "custom",

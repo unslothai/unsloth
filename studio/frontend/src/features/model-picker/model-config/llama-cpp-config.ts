@@ -44,7 +44,7 @@ export function normalizeLlamaCppConfig(
 export function customConfigSections(ini: string): string[] {
   return [
     ...new Set(
-      [...ini.matchAll(/^\s*\[([^\]\r\n]+)\]\s*(?:[#;].*)?$/gm)]
+      [...ini.matchAll(/^\[[ \t]*([^\]\r\n]+)\][ \t]*(?:[#;].*)?$/gm)]
         .map((match) => match[1])
         .filter((name) => name !== "*"),
     ),
