@@ -67,7 +67,12 @@ def _no_gguf():
     )
 
 
-def _client(monkeypatch, backend = None, *, prefix = "/v1"):
+def _client(
+    monkeypatch,
+    backend = None,
+    *,
+    prefix = "/v1",
+):
     async def _no_switch(*_a, **_k):
         return None
 
@@ -82,7 +87,11 @@ def _client(monkeypatch, backend = None, *, prefix = "/v1"):
     return TestClient(app, raise_server_exceptions = False)
 
 
-def _part_body(*urls, text = "what happens here?", **extra):
+def _part_body(
+    *urls,
+    text = "what happens here?",
+    **extra,
+):
     parts = [{"type": "video_url", "video_url": {"url": u}} for u in urls]
     parts.append({"type": "text", "text": text})
     return {
@@ -93,7 +102,11 @@ def _part_body(*urls, text = "what happens here?", **extra):
     }
 
 
-def _field_body(clip = _DATA_URI, text = "what happens here?", **extra):
+def _field_body(
+    clip = _DATA_URI,
+    text = "what happens here?",
+    **extra,
+):
     return {
         "model": "test/model.gguf",
         "stream": False,
@@ -124,7 +137,8 @@ def _detail(response) -> str:
 def _sent_parts(backend, index = -1):
     """Parts of a dispatched user turn. A system turn is prepended, so index from the user ones."""
     user_turns = [
-        m for m in backend.dispatched[0]["messages"]
+        m
+        for m in backend.dispatched[0]["messages"]
         if m.get("role") == "user" and isinstance(m.get("content"), list)
     ]
     return user_turns[index]["content"]
@@ -190,7 +204,8 @@ def test_every_clip_in_a_turn_is_translated(monkeypatch):
     with _client(monkeypatch, backend) as client:
         client.post("/v1/chat/completions", json = _part_body(_DATA_URI, _REMOTE))
     assert [p["input_video"] for p in _sent_media(backend)] == [
-        {"data": _CLIP_B64}, {"url": _REMOTE}
+        {"data": _CLIP_B64},
+        {"url": _REMOTE},
     ]
 
 
@@ -408,7 +423,6 @@ def test_a_remote_url_is_not_measured_against_the_64_mb_cap(monkeypatch):
 def test_admission_prices_a_remote_clip_at_llama_cpp_s_download_ceiling():
     """10 MB, matching common_remote_params.max_size in handle_media."""
     import math
-
     assert inference_route._REMOTE_VIDEO_ADMISSION_B64_CHARS == 4 * math.ceil(
         (10 * 1024 * 1024) / 3
     )
@@ -543,7 +557,6 @@ def test_the_rolling_context_does_not_price_a_clip_as_text():
     """Trimming counts a turn to decide what to drop; a clip counted as text would evict the
     conversation around it."""
     from core.inference.context_window import _UNPRICED_MEDIA_TYPES
-
     assert {"video_url", "input_video"} <= set(_UNPRICED_MEDIA_TYPES)
 
 

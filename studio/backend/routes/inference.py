@@ -20348,7 +20348,7 @@ def _local_video_clip(payload, model_info) -> str:
         raise HTTPException(
             status_code = 400,
             detail = "A remote video URL is only supported on a local GGUF model. "
-                     "Send the clip as a data URI instead.",
+            "Send the clip as a data URI instead.",
         )
     video_b64, rejection = _video_b64_rejection(clips[0])
     if rejection is not None:
@@ -20533,7 +20533,7 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
         return None
     # ':' is not in the base64 alphabet, so a colon near the front is what separates a URL
     # from a bare base64 clip, which llama-server accepts as payload and we still allow.
-    head = clip[:_MAX_VIDEO_SCHEME_CHARS + 1]
+    head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
     if ":" not in head:
         return None
     return (
@@ -20576,9 +20576,7 @@ def _translate_video_parts(messages: list[dict]) -> None:
             # a file:// clip as opaque payload would still be read as a path by handle_media.
             scheme_rejection = _video_scheme_rejection(url)
             if scheme_rejection is not None:
-                raise HTTPException(
-                    status_code = scheme_rejection[0], detail = scheme_rejection[1]
-                )
+                raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
             media = (
                 {"url": url} if _is_remote_video(url) else {"data": _video_b64_rejection(url)[0]}
             )
