@@ -178,6 +178,16 @@ def standardize_chat_format(
     return result
 
 
+def _content_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return cell_text(content)
+
+
 def convert_chatml_to_alpaca(
     dataset,
     batch_size = 1000,
@@ -214,7 +224,7 @@ def convert_chatml_to_alpaca(
             turns = []
             for msg in convo or []:
                 role = roles.get(msg.get("role") or msg.get("from"))
-                content = msg.get("content") or msg.get("value")
+                content = _content_text(msg.get("content") or msg.get("value"))
                 if role is None or not content:
                     continue
                 if turns and turns[-1][0] == role:

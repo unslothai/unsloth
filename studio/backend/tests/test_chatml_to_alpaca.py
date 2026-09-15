@@ -133,6 +133,40 @@ def test_streaming_conversion_splits_replies_the_same_way(stream):
     assert list(converted) == _expected(1) + _expected(2)
 
 
+def test_structured_content_converts_to_text():
+    structured = [
+        {"role": message["role"], "content": [{"type": "text", "text": message["content"]}]}
+        for message in _messages(1)
+    ]
+    dataset = Dataset.from_dict({"messages": [structured]})
+
+    converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
+
+    assert converted.to_list() == _expected(1)
+
+
+def test_alpaca_format_with_a_processor_keeps_the_system_prompt():
+    class _Processor(_Tokenizer):
+        image_processor = object()
+
+    dataset = Dataset.from_dict({"conversations": [_sharegpt(1)]})
+
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Gemma3ForConditionalGeneration",
+        tokenizer = _Processor(),
+        format_type = "alpaca",
+        batch_size = 1,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert result["final_format"] == "alpaca"
+    texts = list(result["dataset"]["text"])
+    assert len(texts) == 3
+    assert "### Input:\nSYS-1\n\nUser: Q1-1\nAssistant: A1-1\n" in texts[2]
+
+
 def test_alpaca_format_trains_on_every_sharegpt_exchange():
     dataset = Dataset.from_dict({"conversations": [_sharegpt(1), _sharegpt(2)]})
 
