@@ -40,6 +40,17 @@ for _dir in (_BACKEND_DIR, _STUDIO_DIR):
 # setup.sh/setup.ps1 invoke this by path, so its directory is sys.path[0].
 import install_manifest  # noqa: E402
 
+try:
+    import nvidia_probe as _nvidia_probe  # noqa: E402
+except Exception:  # an older checkout beside a newer setup script
+    _nvidia_probe = None
+
+
+def _nvidia_library_inventory():
+    """The NVML / CUDA driver inventory, or None. A seam, so tests can hide the real host."""
+    return _nvidia_probe.probe() if _nvidia_probe is not None else None
+
+
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -2533,7 +2544,9 @@ def _has_usable_nvidia_gpu() -> bool:
                 return True
         except OSError:
             pass
-    return False
+    # Last: the driver's own libraries, which ship without the nvidia-smi utility.
+    inventory = _nvidia_library_inventory()
+    return bool(inventory is not None and inventory.devices)
 
 
 # Which probe answered the last _detect_amd_gfx_codes() call: only rocminfo is subject
@@ -3452,21 +3465,27 @@ def _span_covers(span: "tuple[int, int]", sms: "list[int]") -> bool:
     return all(span[0] <= sm <= span[1] for sm in sms)
 
 
-def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
+def _cap_cuda_family_for_pre_turing(
+    family: str,
+    exe: "str | None",
+    sms: "list[int] | None" = None,
+) -> str:
     """Use cu126 when it covers every physical GPU missed by the selected family.
 
     CUDA_VISIBLE_DEVICES is intentionally ignored. Non-x86_64 hosts retain the
-    driver-derived family because their wheel matrices differ.
+    driver-derived family because their wheel matrices differ. `sms` is the inventory
+    already in hand (the library probe); otherwise it is read from `exe`.
     """
     if platform.machine().lower() not in ("x86_64", "amd64"):
         return family
     span = _cuda_family_sm_range(family)
-    if span is None or exe is None:
+    if span is None or (exe is None and sms is None):
         return family
     if span[0] <= _CU126_SM_RANGE[0]:
         return family  # nothing lower to fall back to
     floor = span[0]
-    sms = _nvidia_compute_sms(exe)
+    if sms is None:
+        sms = _nvidia_compute_sms(exe)
     if not sms or all(sm >= floor for sm in sms):
         return family  # no GPU here sits under the family's floor
     if not _span_covers(_CU126_SM_RANGE, sms):
@@ -3482,6 +3501,21 @@ def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
         f"PyTorch 2.11's {family} wheels ship no kernels for them"
     )
     return "cu126"
+
+
+def _torch_family_for_cuda_version(major: int, minor: int) -> str:
+    """install.sh::get_torch_index_url's CUDA ladder, from the driver's CUDA version."""
+    if major >= 13:
+        return "cu130"
+    if major == 12 and minor >= 8:
+        return "cu128"
+    if major == 12 and minor >= 6:
+        return "cu126"
+    if major >= 12:
+        return "cu124"
+    if major >= 11:
+        return "cu118"
+    return "cpu"  # ancient driver: no usable CUDA wheels
 
 
 def _detect_cuda_torch_index_url() -> str:
@@ -3531,20 +3565,26 @@ def _detect_cuda_torch_index_url() -> str:
         m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
         if m is None:
             continue
-        major, minor = int(m.group(1)), int(m.group(2))
-        if major >= 13:
-            tag = "cu130"
-        elif major == 12 and minor >= 8:
-            tag = "cu128"
-        elif major == 12 and minor >= 6:
-            tag = "cu126"
-        elif major >= 12:
-            tag = "cu124"
-        elif major >= 11:
-            tag = "cu118"
-        else:
-            tag = "cpu"  # ancient driver: no usable CUDA wheels
+        tag = _torch_family_for_cuda_version(int(m.group(1)), int(m.group(2)))
         return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
+    # No nvidia-smi answered. The driver libraries carry the same version (and the SMs), and
+    # on Linux the kernel module's release still bounds it; defaulting to cu126 here is what
+    # handed Blackwell hosts a wheel with no kernels.
+    inventory = _nvidia_library_inventory()
+    if inventory is not None and inventory.cuda_driver_version:
+        tag = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
+        sms = []
+        for row in inventory.devices:
+            m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
+            if m is None:
+                sms = []
+                break
+            sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+        return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, None, sms or None)}"
+    if _nvidia_probe is not None and _nvidia_probe.enabled() and sys.platform != "win32":
+        bound = _nvidia_probe.cuda_version_for_driver(_nvidia_probe.proc_driver_version())
+        if bound is not None:
+            return f"{_PYTORCH_WHL_BASE}/{_torch_family_for_cuda_version(*bound)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 

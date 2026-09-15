@@ -53,6 +53,30 @@ if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
 import prebuilt_core as _core  # noqa: E402
+
+try:
+    import nvidia_probe as _nvidia_probe  # noqa: E402
+except Exception:  # an older checkout beside a newer setup script
+    _nvidia_probe = None
+
+
+def nvidia_library_inventory():
+    """The NVML / CUDA driver inventory, or None. A seam, so tests can hide the real host."""
+    return _nvidia_probe.probe() if _nvidia_probe is not None else None
+
+
+def proc_driver_version() -> str:
+    if _nvidia_probe is None or not _nvidia_probe.enabled():
+        return ""
+    return _nvidia_probe.proc_driver_version()
+
+
+def cuda_version_for_driver(driver_version: str) -> tuple[int, int] | None:
+    if _nvidia_probe is None:
+        return None
+    return _nvidia_probe.cuda_version_for_driver(driver_version)
+
+
 from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     INSTALL_KIND_BACKENDS,
     REQUESTABLE_BACKENDS,
@@ -2660,10 +2684,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     # nvidia-smi is absent from PATH, wedged, or failing is still recognised as
     # NVIDIA. Mirrors the fallback added to install.sh / install_python_stack.py
     # in PR 6174 so the prebuilt installer does not misroute such hosts to ROCm
-    # or CPU. driver_cuda_version / compute_caps stay unset here; downstream
-    # CUDA asset selection treats unknown SMs as "prefer portable" and an
-    # unknown driver runtime line as "no published CUDA match" (returns None,
-    # no crash), so planning falls back to a source build with GGML_CUDA=ON.
+    # or CPU. driver_cuda_version / compute_caps are filled below where they can be.
     if is_linux and not has_physical_nvidia:
         try:
             proc_gpu_dir = "/proc/driver/nvidia/gpus"
@@ -2672,6 +2693,47 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 has_usable_nvidia = visible_device_tokens != []
         except OSError:
             pass
+
+    # What nvidia-smi could not say, the driver's own libraries can: absent from PATH,
+    # a stale copy, a timeout or a non-zero exit all left driver_cuda_version unset, and
+    # "runnable by this driver=none" then sent a CUDA host to a source build or the CPU.
+    # NVML lists the physical inventory as nvidia-smi does, so the mask is applied here.
+    if (is_linux or is_windows) and (
+        not has_physical_nvidia or driver_cuda_version is None or not physical_compute_caps
+    ):
+        inventory = nvidia_library_inventory()
+        if inventory is not None and inventory.devices:
+            log(
+                f"NVIDIA inventory read through {inventory.source}: "
+                f"{len(inventory.devices)} GPU(s), CUDA driver {inventory.cuda_driver_version}"
+            )
+            rows = [(d["index"], d["uuid"], d["compute_cap"]) for d in inventory.devices]
+            if inventory.source == "nvml":
+                visible_rows = select_visible_gpu_rows(rows, visible_device_tokens)
+            else:
+                visible_rows = rows
+            if not has_physical_nvidia:
+                has_physical_nvidia = True
+                has_usable_nvidia = bool(visible_rows)
+            for _index, _uuid, cap in rows:
+                normalized_cap = normalize_compute_cap(cap)
+                if normalized_cap is not None and normalized_cap not in physical_compute_caps:
+                    physical_compute_caps.append(normalized_cap)
+            if not compute_caps:
+                for _index, _uuid, cap in visible_rows:
+                    normalized_cap = normalize_compute_cap(cap)
+                    if normalized_cap is not None and normalized_cap not in compute_caps:
+                        compute_caps.append(normalized_cap)
+        if inventory is not None and driver_cuda_version is None:
+            driver_cuda_version = inventory.cuda_driver_version
+    if is_linux and has_physical_nvidia and driver_cuda_version is None:
+        # The kernel module names its release even when every library call fails, and the
+        # release bounds the CUDA major (R580 carries 13, R525 carries 12).
+        driver_cuda_version = cuda_version_for_driver(proc_driver_version())
+        if driver_cuda_version is not None:
+            log(
+                f"CUDA driver version {driver_cuda_version} inferred from /proc/driver/nvidia/version"
+            )
 
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed.
     # NVIDIA takes precedence for automatic selection: when an NVIDIA GPU is
