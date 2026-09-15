@@ -559,6 +559,75 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(warm, monke
     p.join(5)
 
 
+def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(warm, monkeypatch, restore_diffusers_modules):
+    """Held CONTINUOUSLY, not merely held again by the time the purge runs.
+
+    Writing the try around the ``with`` instead of inside it releases the lock when the scope
+    exits on the exception and reacquires it in the handler. A request already waiting wakes up
+    in that gap, re-imports against the submodules the failed import left behind, and republishes
+    the malformed package, at which point ``purge_partial_import`` declines because the leftovers
+    now belong to a live importer. Asserting the purge ran under the lock does not catch this,
+    because the handler has reacquired by then; only the timeline does.
+    """
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines", types.ModuleType("diffusers.pipelines"))
+
+    real_lm = warm._ModuleLockManager
+    real_purge = warm.purge_partial_import
+    timeline = []
+
+    class _RecordingLockManager:
+        def __init__(self, name):
+            self._name = name
+            self._inner = real_lm(name)
+
+        def __enter__(self):
+            timeline.append(("enter", self._name))
+            return self._inner.__enter__()
+
+        def __exit__(self, *exc):
+            timeline.append(("exit", self._name))
+            return self._inner.__exit__(*exc)
+
+    def _recording_purge(package):
+        timeline.append(("purge", package))
+        return real_purge(package)
+
+    monkeypatch.setattr(warm, "_ModuleLockManager", _RecordingLockManager)
+    monkeypatch.setattr(warm, "purge_partial_import", _recording_purge)
+
+    class _Boom:
+        def find_spec(self, name, path = None, target = None):
+            if name == "diffusers":
+                raise ImportError("simulated half-built diffusers")
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+
+    purge_at = next(
+        i for i, (what, name) in enumerate(timeline)
+        if what == "purge" and name == "diffusers"
+    )
+    # Everything before the purge, from the first acquisition onwards, must be acquisitions:
+    # a matching release in there is the gap. Reentrant acquires (purge_partial_import takes the
+    # same lock through its own decorator) are fine and expected.
+    enter_at = next(
+        i for i, (what, name) in enumerate(timeline)
+        if what == "enter" and name == "diffusers"
+    )
+    released_early = [
+        i for i, (what, name) in enumerate(timeline)
+        if what == "exit" and name == "diffusers" and enter_at < i < purge_at
+    ]
+    assert not released_early, (
+        "the diffusers lock was released between the failed import and the purge, so a waiting "
+        f"importer could take it in the gap (timeline: {timeline})"
+    )
+
+
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
     """The case presence alone gets wrong. A CPU or MPS host with a runnable native binary, or
     UNSLOTH_DIFFUSION_ENGINE=sd_cpp, serves a supported GGUF through sd.cpp and imports no
