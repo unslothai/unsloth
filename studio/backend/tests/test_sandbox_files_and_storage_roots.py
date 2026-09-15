@@ -1090,14 +1090,15 @@ def test_a_stalled_migration_does_not_grow_a_lock_per_chat(tmp_path, monkeypatch
         tools._migrate_one_legacy_session(root, f"__LOCALID_never_there{index}")
 
     assert legacy.is_dir(), "this test needs the legacy root to still be there"
-    assert set(tools._legacy_session_locks) == set(), (
-        f"chats with nothing at the legacy root left locks behind: {sorted(tools._legacy_session_locks)}"
-    )
+    assert (
+        set(tools._legacy_session_locks) == set()
+    ), f"chats with nothing at the legacy root left locks behind: {sorted(tools._legacy_session_locks)}"
 
     # The chat that does have one still migrates, and is still allowed its entry.
     tools._migrate_one_legacy_session(root, "__LOCALID_had_one")
     assert (Path(root) / "__LOCALID_had_one" / "data.csv").is_file(), "the real move did not happen"
     assert set(tools._legacy_session_locks) == {"__LOCALID_had_one"}
+
 
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
