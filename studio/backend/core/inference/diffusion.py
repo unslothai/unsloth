@@ -1861,6 +1861,19 @@ class DiffusionBackend:
         from .diffusion_engine_router import family_buildable_here
 
         if not family_buildable_here(fam, model_kind = kind):
+            # Same reason as the video validator: assert_pipeline_class_available imports
+            # diffusers and probes a lazy pipeline attribute, and validation runs on the REQUEST
+            # thread, well before load_pipeline's guard. So an /images/load or
+            # /images/download-plan issued while the background warm is still inside
+            # `import torch._dynamo` reaches the window through here (#10350, #10963). Only on
+            # the branch that actually touches diffusers: a GGUF routed to native sd.cpp does
+            # not, and must keep paying nothing.
+            try:
+                from utils.torch_warmup import close_dynamo_import_window
+                close_dynamo_import_window(logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                logger.debug("dynamo pre-import skipped: %r", exc)
+
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # Families whose single file IS the whole pipeline have no GGUF path; reject before eviction
         if kind == "gguf" and fam.single_file_is_pipeline:

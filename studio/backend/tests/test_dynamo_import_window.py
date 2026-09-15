@@ -233,6 +233,30 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
         )
 
 
+def test_image_validation_closes_the_window_before_its_own_diffusers_probe():
+    """validate_load_request reaches diffusers before load_pipeline ever runs.
+
+    It calls ``assert_pipeline_class_available``, which imports diffusers and probes a lazy
+    pipeline attribute, and it does so on the REQUEST thread. An /images/load or
+    /images/download-plan arriving during the background warm therefore reaches the window
+    through validation, not through the load. Guarding load_pipeline alone leaves that open.
+    """
+    src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8").splitlines()
+    probes = [
+        n for n, line in enumerate(src, 1)
+        if "assert_pipeline_class_available(" in line and "import" not in line
+    ]
+    guards = [n for n, line in enumerate(src, 1) if "close_dynamo_import_window(" in line]
+
+    assert probes, "diffusion.py no longer probes the pipeline class; re-check this test"
+    for probe in probes:
+        above = [g for g in guards if g < probe]
+        assert above, f"the diffusers probe at diffusion.py:{probe} has no dynamo guard above it"
+        assert probe - max(above) < 40, (
+            f"the guard for diffusion.py:{probe} is too far above it to be the one protecting it"
+        )
+
+
 def test_load_failure_is_logged_with_a_traceback():
     """The client only ever receives str(exc), so without exc_info here a one-line failure
     cannot be attributed to any call site. Both issues stalled for exactly this reason."""
