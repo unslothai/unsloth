@@ -232,11 +232,47 @@ def test_the_decision_runs_again_at_the_swap():
     assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=true" in window
 
 
-def test_the_kept_tree_is_validated_the_way_a_source_build_is():
+def test_the_kept_tree_is_checked_offline_the_way_the_updater_checks_it():
     keep = _between("_gpu_prebuilt_to_keep_over_cpu_build() {", "\n}\n")
     assert '_installed_prebuilt_runs "$install_dir" || return 1' in keep
     runs = _between("_installed_prebuilt_runs() {", "\n}\n")
-    assert '--validate-install "$1"' in runs and '"$_rc" -eq 4' in runs
+    # Not --validate-install: that downloads its probe model, and the update just failed
+    # for want of a download.
+    assert '--check-installed "$1"' in runs and "--validate-install" not in runs
+
+
+@requires_bash
+def test_check_installed_answers_with_the_updaters_own_check(tmp_path, monkeypatch):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "keep_check_ilp", PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
+    )
+    ilp = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ilp
+    spec.loader.exec_module(ilp)
+    seen = {}
+    monkeypatch.setattr(ilp, "detect_host", lambda **k: "host")
+
+    def runs(install_dir, host):
+        seen["args"] = (install_dir, host)
+        return seen["answer"]
+
+    monkeypatch.setattr(ilp, "_existing_install_runs", runs)
+    monkeypatch.setattr(
+        sys, "argv", ["install_llama_prebuilt.py", "--check-installed", str(tmp_path)]
+    )
+    seen["answer"] = True
+    assert ilp.main() == 0
+    assert seen["args"] == (tmp_path, "host")
+    seen["answer"] = False
+    assert ilp.main() == 2
+    # Nothing about a check may download: no fetch helper is reached.
+    monkeypatch.setattr(ilp, "download_file", lambda *a, **k: pytest.fail("downloaded"))
+    monkeypatch.setattr(
+        ilp, "_existing_install_runs", lambda d, h: (_ for _ in ()).throw(OSError("x"))
+    )
+    assert ilp.main() == 2
 
 
 def test_an_intel_host_on_cpu_is_named_too():

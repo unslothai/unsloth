@@ -2969,13 +2969,12 @@ print(answer)
 PY
 }
 
-# The same smoke test the source build gets: a tree with a marker and an executable is
-# not proof it still loads (a quarantined library, a stripped runtime file).
+# The updater's own completeness check, offline: a marker and an executable are not proof
+# the tree still loads (a quarantined library, a stripped runtime file, no quantizer). Not
+# --validate-install, which downloads its probe model and the update just failed for want
+# of a download.
 _installed_prebuilt_runs() {
-    local _rc=0
-    python "$SCRIPT_DIR/install_llama_prebuilt.py" --validate-install "$1" >/dev/null 2>&1 || _rc=$?
-    # 4 is a full disk, which cannot be read as a bad install; the CPU rebuild needs more.
-    [ "$_rc" -eq 0 ] || [ "$_rc" -eq 4 ]
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" --check-installed "$1" >/dev/null 2>&1
 }
 
 # An Intel GPU by DRM vendor id, the probe the prebuilt router uses for the Vulkan route.
