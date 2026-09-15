@@ -509,9 +509,9 @@ def test_engines_that_answered_in_a_newer_bucket_still_count() -> None:
     stats["type-unsupported"] = 5
     stats["failure"] = 2
     after = vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines
-    assert after == before + 7, (
-        f"engines that answered in a newer bucket were not counted: {before} -> {after}"
-    )
+    assert (
+        after == before + 7
+    ), f"engines that answered in a newer bucket were not counted: {before} -> {after}"
 
     # The bucket-only case, which used to read as unanalysed and void the run.
     only_new = copy.deepcopy(vtd._BASELINE_FIXTURE)
@@ -528,3 +528,40 @@ def test_a_non_numeric_bucket_cannot_inflate_the_engine_count() -> None:
     payload["data"]["attributes"]["last_analysis_stats"]["weird"] = True
     payload["data"]["attributes"]["last_analysis_stats"]["odd"] = "12"
     assert vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines == clean
+
+
+def test_an_engine_that_did_not_answer_has_not_cleared_us() -> None:
+    """Absence from the candidate's results is not a clean verdict from that engine.
+
+    Skyhigh is the one engine that actually flags this file, so "Skyhigh no longer flags it" is the
+    single most consequential sentence this report can print. Deriving it from a set difference
+    made a sparse or older candidate analysis -- one where Skyhigh simply had not run -- say
+    exactly that, and exit 0.
+    """
+    base_payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    base_payload["data"]["attributes"]["last_analysis_results"] = {
+        "Skyhigh": {"category": "malicious", "result": "BehavesLike.PS.Suspicious.gr"},
+        "Microsoft": {"category": "undetected", "result": None},
+    }
+    baseline = _snap(base_payload, "baseline", "a" * 64)
+
+    # Skyhigh did not run on the candidate at all.
+    silent = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    silent["data"]["attributes"]["last_analysis_results"] = {
+        "Microsoft": {"category": "undetected", "result": None},
+    }
+    delta = vtd.compare(baseline, _snap(silent))
+    assert not any("no longer flag" in row for row in delta.better), (
+        f"an engine that never answered was reported as having cleared the candidate: {delta.better}"
+    )
+    assert any("NOT cleared" in row for row in delta.same), delta.same
+
+    # And the real improvement still reads as one: Skyhigh answered, and answered undetected.
+    cleared = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    cleared["data"]["attributes"]["last_analysis_results"] = {
+        "Skyhigh": {"category": "undetected", "result": None},
+        "Microsoft": {"category": "undetected", "result": None},
+    }
+    delta = vtd.compare(baseline, _snap(cleared))
+    assert any("no longer flag" in row for row in delta.better), delta.better
+    assert any("Skyhigh" in row for row in delta.better), delta.better

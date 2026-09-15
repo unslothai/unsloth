@@ -85,6 +85,10 @@ class Snapshot:
     size: int = 0
     first_seen: str = ""
     engines: list[str] = field(default_factory = list)
+    # Every engine that returned a verdict of ANY kind. Needed because an engine missing from the
+    # candidate's results has not cleared it -- it did not look -- and a set difference against the
+    # flagging engines alone cannot tell those two apart.
+    responders: set[str] = field(default_factory = set)
     malicious: int = 0
     suspicious: int = 0
     total_engines: int = 0
@@ -103,6 +107,17 @@ def sha256_of(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def responding_engines(raw: object) -> set[str]:
+    """Names of every engine that returned a verdict, flagging or not."""
+    if not isinstance(raw, dict):
+        return set()
+    return {
+        str(engine)
+        for engine, result in raw.items()
+        if isinstance(result, dict) and result.get("category")
+    }
 
 
 def count_all_verdicts(raw: object, stats) -> int:
@@ -188,6 +203,7 @@ def snapshot_from_payload(label: str, sha256: str, payload: object) -> Snapshot:
     snap.suspicious = stats.suspicious
     snap.total_engines = count_all_verdicts(attributes.get("last_analysis_stats"), stats)
     snap.engines = parse_detections(attributes.get("last_analysis_results"))
+    snap.responders = responding_engines(attributes.get("last_analysis_results"))
     snap.sigma = parse_sigma(attributes.get("sigma_analysis_stats"))
     snap.yara = parse_yara(attributes.get("crowdsourced_yara_results"))
     size = attributes.get("size")
@@ -297,7 +313,13 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
     base_engines = {e.split(" (")[0] for e in baseline.engines}
     cand_engines = {e.split(" (")[0] for e in candidate.engines}
     new_engines = sorted(cand_engines - base_engines)
-    gone_engines = sorted(base_engines - cand_engines)
+    # An engine that flagged the baseline and is simply ABSENT from the candidate's results has not
+    # cleared it: it did not evaluate it. Older or sparser analyses do this routinely, and counting
+    # it as an improvement is how a vendor that never looked turns into a vendor that passed us.
+    # Only an engine that answered on the candidate, and answered without flagging, has cleared it.
+    cleared = base_engines & candidate.responders - cand_engines
+    silent = base_engines - candidate.responders
+    gone_engines = sorted(cleared)
     if new_engines:
         delta.worse.append(
             f"engines that did not flag the baseline and now flag the candidate: "
@@ -307,6 +329,13 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
         delta.better.append(
             f"engines that flagged the baseline and no longer flag the candidate: "
             f"{', '.join(gone_engines)}"
+        )
+    if silent:
+        # Not an improvement and not a regression: an unanswered question. Reported so the summary
+        # cannot read as though the vendor that matters most had cleared us.
+        delta.same.append(
+            f"engines that flagged the baseline and returned no verdict at all on the candidate, "
+            f"so they have NOT cleared it: {', '.join(sorted(silent))}"
         )
     if not new_engines and not gone_engines:
         delta.same.append(
