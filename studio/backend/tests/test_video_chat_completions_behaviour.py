@@ -808,3 +808,69 @@ def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
     assert seen == [_CLIP_B64, _CLIP_B64], "both spellings must reach the transcoder"
     assert _sent_media(part_backend) == _sent_media(field_backend)
     assert _sent_media(part_backend) == [{"type": "input_video", "input_video": {"data": "SHRUNK"}}]
+
+
+def test_several_clips_are_capped_in_aggregate_not_only_per_clip():
+    """Every clip is transcoded and shrink_video_for_llama allows 300s each, so N clips just
+    under the per-clip limit is N*300s of ffmpeg for one request."""
+    from models.inference import ChatCompletionRequest
+
+    half = "data:video/mp4;base64," + "A" * (inference_route._MAX_VIDEO_B64_CHARS // 2 + 10)
+    one = ChatCompletionRequest.model_validate(_part_body(half))
+    assert inference_route._request_video_rejection(one) is None
+    two = ChatCompletionRequest.model_validate(_part_body(half, half))
+    rejection = inference_route._request_video_rejection(two)
+    assert rejection is not None and rejection[0] == 413
+    assert "per request" in rejection[1]
+
+
+def test_the_aggregate_cap_counts_the_legacy_field_too():
+    """Otherwise the field plus a part could exceed it together."""
+    from models.inference import ChatCompletionRequest
+
+    half = "data:video/mp4;base64," + "A" * (inference_route._MAX_VIDEO_B64_CHARS // 2 + 10)
+    body = _part_body(half)
+    body["video_base64"] = half
+    rejection = inference_route._request_video_rejection(ChatCompletionRequest.model_validate(body))
+    assert rejection is not None and rejection[0] == 413
+
+
+def test_recosting_drops_a_clip_the_conversation_has_evicted():
+    """truncate_oldest can evict the turn that carried the clip. Charging it from the opening
+    payload kept every later round reserved at the full budget for media no longer sent."""
+    from models.inference import ChatCompletionRequest
+
+    clip = "data:video/mp4;base64," + "A" * 40_000
+    payload = ChatCompletionRequest.model_validate(_part_body(clip))
+    opening = inference_route._openai_llama_admission_media_tokens(payload)
+    assert opening > 1000
+
+    evicted = inference_route._openai_llama_admission_media_tokens(
+        payload, message_video_clips = inference_route._conversation_video_clips([])
+    )
+    assert evicted == 0
+
+
+def test_recosting_still_charges_a_clip_the_conversation_kept():
+    """Reading video_url alone would find nothing post-translation and charge no video at all."""
+    from models.inference import ChatCompletionRequest
+
+    clip = "A" * 40_000
+    payload = ChatCompletionRequest.model_validate(_part_body("data:video/mp4;base64," + clip))
+    conversation = [
+        {"role": "user", "content": [{"type": "input_video", "input_video": {"data": clip}}]}
+    ]
+    kept = inference_route._openai_llama_admission_media_tokens(
+        payload, message_video_clips = inference_route._conversation_video_clips(conversation)
+    )
+    assert kept == len(clip) // 4
+
+
+def test_the_legacy_field_is_still_charged_during_recosting():
+    """It is not in the message list, so the conversation cannot show it either way."""
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(
+        _field_body("data:video/mp4;base64," + "A" * 4000)
+    )
+    assert inference_route._openai_llama_admission_media_tokens(payload, message_video_clips = []) > 0

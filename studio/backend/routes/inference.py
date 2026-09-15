@@ -2064,11 +2064,35 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
     return estimate_messages, image_parts
 
 
+def _conversation_video_clips(messages) -> list[str]:
+    """Clips still present in a tool-loop conversation, in either spelling.
+
+    The loop recosts AFTER ``_translate_video_parts`` has renamed the part, so reading
+    ``video_url`` alone would find nothing and charge no video at all.
+    """
+    clips: list[str] = []
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            media = part.get(part.get("type") or "")
+            if part.get("type") not in _ADMISSION_VIDEO_PART_TYPES or not isinstance(media, dict):
+                continue
+            value = media.get("data") or media.get("url") or ""
+            if isinstance(value, str) and value:
+                clips.append(value)
+    return clips
+
+
 def _openai_llama_admission_media_tokens(
     payload,
     *,
     message_image_parts: int = 0,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    message_video_clips: Optional[list[str]] = None,
 ) -> int:
     """Estimate media KV usage without charging transport bytes as prompt tokens.
 
@@ -2089,9 +2113,16 @@ def _openai_llama_admission_media_tokens(
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)
-    for clip in _message_video_urls(getattr(payload, "messages", None)):
-        length = len(clip)
-        extra += max(1, length // 4)
+    # Recosting passes the CURRENT conversation: a clip on a turn that truncate_oldest has since
+    # evicted is no longer sent, and charging it from the opening payload kept every later round
+    # reserved at the full budget. Images already come from the conversation via message_image_parts.
+    clips = (
+        message_video_clips
+        if message_video_clips is not None
+        else _message_video_urls(getattr(payload, "messages", None))
+    )
+    for clip in clips:
+        extra += max(1, len(clip) // 4)
     return extra
 
 
@@ -2306,6 +2337,7 @@ def _openai_llama_admission_recost(
             payload,
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            message_video_clips = _conversation_video_clips(conversation),
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
@@ -20651,6 +20683,14 @@ def _local_video_clip(payload, model_info) -> str:
     return video_b64
 
 
+def _video_payload_chars(clip: str) -> int:
+    """Base64 length without the data URI header, measured rather than sliced."""
+    if clip[:5].lower() != "data:":
+        return len(clip)
+    comma = clip.find(",")
+    return len(clip) - comma - 1 if comma != -1 else 0
+
+
 def _video_size_rejection(clip: str) -> Optional[tuple[int, str]]:
     """``_video_b64_rejection``'s verdict, measured rather than sliced.
 
@@ -20658,10 +20698,7 @@ def _video_size_rejection(clip: str) -> Optional[tuple[int, str]]:
     wants the verdict. Slicing the header off to get it copied the whole payload each time:
     89 MB and 47 ms for a clip at the 64 MB limit, against 0 MB here.
     """
-    payload_len = len(clip)
-    if clip[:5].lower() == "data:":
-        comma = clip.find(",")
-        payload_len = payload_len - comma - 1 if comma != -1 else 0
+    payload_len = _video_payload_chars(clip)
     if not payload_len:
         return (400, "Could not read the provided video file.")
     if payload_len > _MAX_VIDEO_B64_CHARS:
@@ -20866,6 +20903,7 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
 
 
 def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
+    total = 0
     for clip in _request_video_clips(payload):
         if _is_remote_video(clip):
             return _REMOTE_VIDEO_REFUSAL
@@ -20875,6 +20913,12 @@ def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
         rejection = _video_size_rejection(clip)
         if rejection is not None:
             return rejection
+        total += _video_payload_chars(clip)
+        # Per-clip alone bounds nothing: every clip is transcoded, and shrink_video_for_llama
+        # allows 300s each, so N clips just under the limit is N*300s of ffmpeg for one request.
+        # The cap is therefore per request, not per clip.
+        if total > _MAX_VIDEO_B64_CHARS:
+            return (413, "Videos are too large (max 64 MB per request).")
     return None
 
 

@@ -37,6 +37,10 @@ if _BACKEND_DIR not in sys.path:
 # Mirror test_preview.py: the real `loggers` package pulls in heavy handlers.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+# __path__ so `loggers.media_progress` still resolves to the real submodule. Without it the stub
+# shadows the package rather than its __init__, and any module importing a submodule dies with
+# "'loggers' is not a package" as soon as this file shares a pytest process with it (#10995).
+_loggers_stub.__path__ = [str(Path(_BACKEND_DIR) / "loggers")]
 sys.modules.setdefault("loggers", _loggers_stub)
 
 from fastapi import FastAPI, HTTPException
