@@ -324,13 +324,11 @@ const STALL_MS = 400;
 
 /**
  * Run the poll loop once, with the first read at least `healthyAfterMs` in
- * reporting progress and every other read unreadable. Reports how long the loop
- * survived, when the healthy read actually landed, and the longest gap between
- * two reads.
+ * reporting progress and every other read unreadable.
  *
  * Milliseconds, not reads: the window is defined in time (`Date.now() -
  * lastHealthy >= stallMs`), and a read count is that divided by poll cost,
- * which is the one thing here that varies by platform.
+ * the one thing here that varies by platform.
  */
 async function settlingRun(healthyAfterMs: number): Promise<{
   totalMs: number;
@@ -368,23 +366,19 @@ async function settlingRun(healthyAfterMs: number): Promise<{
 }
 
 test("a healthy read resets the stall window", async (t) => {
-  // One run, and no comparison against a second one. Subtracting two separately
-  // scheduled runs re-imports the noise this test is trying to escape: a stall
-  // during the baseline fails healthy code, and a stall during the other run
-  // passes broken code.
-  //
-  // Assert the mechanism instead. The source restarts the window at the healthy
-  // read, so the loop must then survive a further full window from THAT moment.
-  // Both sides of that come from this one run, and a stall can only make
-  // totalMs larger, so the bound is one-sided: delay cannot fail healthy code.
+  // One run: subtracting two separately scheduled runs re-imports the noise this
+  // escapes, failing healthy code when a stall lands in one and passing broken
+  // code when it lands in the other. The source restarts the window at the
+  // healthy read, so the loop must outlast THAT moment by a full window. Both
+  // sides come from this run, and a stall only grows totalMs, so the bound is
+  // one-sided: delay cannot fail healthy code.
   const run = await settlingRun(STALL_MS / 2);
   assert.ok(run.resetAtMs !== null, "the fixture never got to report progress");
 
-  // The loop only tests its deadline at a poll boundary, so it may end up to one
-  // gap early. Subtracting the observed gap makes the bound exact rather than
-  // approximate -- but a gap large enough to swallow the signal means the runner
-  // stalled mid-loop, and then this run cannot tell a restarted window from a
-  // stalled one. That is no evidence rather than a verdict, so say so.
+  // The deadline is only tested at a poll boundary, so the loop may end one gap
+  // early; subtracting the observed gap makes the bound exact. A gap near the
+  // signal means the runner stalled, and then the run is no evidence rather than
+  // a verdict.
   if (run.maxGapMs > STALL_MS / 8) {
     t.skip(
       `runner stalled ${run.maxGapMs}ms mid-loop, which is too close to the ` +
