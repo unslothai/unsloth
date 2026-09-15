@@ -2220,6 +2220,16 @@ STUB_EOF
             # stays literal and only these three separators split the line.
             _css_win_temp_list=$(cmd.exe /d /c 'echo "%TEMP%"&echo "%LOCALAPPDATA%\Temp"&echo "%SystemRoot%\Temp"' 2>/dev/null \
                 | tr -d '\r') || _css_win_temp_list=""
+            # Mapped network drives too, not only UNC spellings. Z:\Temp is the same share and the
+            # same remote zone as \\server\share\Temp -- install.ps1:3419-3431 treats
+            # DriveType.Network as remote for exactly this reason -- and a candidate on one would
+            # otherwise be accepted and then refused by RemoteSigned at launch. `net use` lists the
+            # mapped letters; if it cannot be read the set is empty and only the UNC check applies,
+            # which is the previous behaviour rather than a new failure.
+            _css_net_drives=$(cmd.exe /d /c 'net use' 2>/dev/null | tr -d '\r' \
+                | awk '/\\\\/ { for (i = 1; i <= NF; i++) if ($i ~ /^[A-Za-z]:$/) print substr($i, 1, 1) }' \
+                | tr 'a-z' 'A-Z') || _css_net_drives=""
+
             _css_old_ifs=$IFS
             IFS='
 '
@@ -2238,6 +2248,13 @@ STUB_EOF
                     # are the remote zone.
                     ""|'%'*'%'*|'\\'*) continue ;;
                 esac
+                # Drive letter against the mapped-network set, before anything else looks at it.
+                _css_cand_letter=$(printf '%s' "$_css_cand" | cut -c1 | tr 'a-z' 'A-Z')
+                _css_is_net=0
+                for _css_nd in $_css_net_drives; do
+                    [ "$_css_nd" = "$_css_cand_letter" ] && _css_is_net=1 && break
+                done
+                [ "$_css_is_net" = 1 ] && continue
                 _css_cand_unix=$(wslpath -u "$_css_cand" 2>/dev/null) || continue
                 [ -d "$_css_cand_unix" ] || continue
                 _css_win_temp=$_css_cand_unix

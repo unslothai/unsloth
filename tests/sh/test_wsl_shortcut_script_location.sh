@@ -307,6 +307,51 @@ OUT=$(run_block)
 assert_eq "an IP-literal UNC %TEMP% also falls through" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
 rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
+# A mapped network drive is the same share and the same remote zone as its UNC spelling, so a
+# %TEMP% on Z: has to fall through too. $1 = %TEMP%, $2 = %LOCALAPPDATA%, $3 = the `net use` output.
+make_mapped_drive_stub() {
+    cat > "$STUBS/cmd.exe" <<STUB
+#!/bin/sh
+for _a in "\$@"; do
+    case "\$_a" in
+        *"net use"*) printf '%s\r\n' '$3'; exit 0 ;;
+    esac
+done
+printf '%s\r\n' '"$1"'
+printf '%s\r\n' '"$2\\Temp"'
+printf '%s\r\n' '"C:\\Windows\\Temp"'
+exit 0
+STUB
+    chmod +x "$STUBS/cmd.exe"
+    # Maps BOTH the mapped-drive path and the local one to real directories, so the mapped drive is
+    # genuinely usable. Otherwise the old code would fall through for the wrong reason -- an
+    # unmappable path -- and the case could never show the difference.
+    cat > "$STUBS/wslpath" <<STUB
+#!/bin/sh
+[ "\$1" = "-u" ] || exit 1
+case "\$2" in
+    '$1') printf '%s' '$NETTEMP' ;;
+    "$2\\Temp") printf '%s' '$WINTEMP' ;;
+    *) printf '%s' '$WINTEMP/not-what-cmd-printed' ;;
+esac
+STUB
+    chmod +x "$STUBS/wslpath"
+}
+
+NETTEMP=$(mktemp -d)
+trap 'rm -rf "$STUBS" "$WINTEMP" "$NETTEMP"' EXIT
+make_mapped_drive_stub 'Z:\Temp' 'C:\Users\ci\AppData\Local' 'OK           Z:        \\fileserver\profiles    Microsoft Windows Network'
+OUT=$(run_block)
+assert_eq "a mapped network drive %TEMP% falls through to a local directory" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
+# And a LOCAL drive letter must not be rejected just because some other letter is mapped.
+make_mapped_drive_stub 'C:\Users\ci\AppData\Local\Temp' 'C:\Users\ci\AppData\Local' 'OK           Z:        \\fileserver\profiles    Microsoft Windows Network'
+make_wslpath_stub 'C:\Users\ci\AppData\Local\Temp' "$WINTEMP"
+OUT=$(run_block)
+assert_eq "an unmapped local %TEMP% is still accepted" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
+rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
+
 echo ""
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
