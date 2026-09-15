@@ -1109,9 +1109,17 @@ _uv_cache_usable() {
         # index, while the level below it grows with every package.
         case "$_uvu_name" in
             simple-* | wheels-*)
-                for _uvu_shard in "$_uvu_bucket"/*/; do
-                    _uvu_shard=${_uvu_shard%/}
-                    [ -d "$_uvu_shard" ] || continue
+                for _uvu_shard in "$_uvu_bucket"/*; do
+                    if [ ! -d "$_uvu_shard" ]; then
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, a plain file OR a dangling symlink at simple-v24/pypi or
+                        # wheels-v6/pypi aborts with "Failed to write to the client cache",
+                        # exit 2. A `*/` glob skips both, which called the cache usable.
+                        { [ -e "$_uvu_shard" ] || [ -L "$_uvu_shard" ]; } || continue
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
                     if ! _uv_cache_probe_writable "$_uvu_shard"; then
                         unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
                         return 1

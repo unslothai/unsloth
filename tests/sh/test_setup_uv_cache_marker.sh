@@ -366,6 +366,25 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
         chmod 0755 "$SHARD/simple-v20/pypi/deeper" 2>/dev/null || true
     fi
 
+    # A non-directory AT the index leaf. Measured on the pinned uv 0.12.1: a plain file and a
+    # dangling symlink at simple-*/pypi or wheels-*/pypi both abort with "Failed to write to
+    # the client cache", exit 2. A `*/` glob matched neither, so the cache read as usable.
+    LEAFND="$CASE/leaf not a dir/uv"
+    warm "$LEAFND"
+    mkdir -p "$LEAFND/simple-v20"
+    : > "$LEAFND/simple-v20/pypi"
+    record "$HOME_DIR" "$LEAFND\\n"
+    assert_eq "$shell: a file at the index leaf is not a usable cache" \
+        "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+    rm -f "$LEAFND/simple-v20/pypi"
+    ln -s "$LEAFND/nowhere" "$LEAFND/simple-v20/pypi"
+    assert_eq "$shell: nor a dangling symlink there" \
+        "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+    rm -f "$LEAFND/simple-v20/pypi"
+    mkdir -p "$LEAFND/simple-v20/pypi"
+    assert_eq "$shell: and it is adopted once the leaf is a directory" \
+        "$LEAFND" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+
     # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
     # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
     # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one

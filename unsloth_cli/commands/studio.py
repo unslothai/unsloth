@@ -3404,7 +3404,13 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
             # 0.12.1 lays this out as `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a
             # 0555 `wheels-v6/pypi/requests` one deeper installs fine. Bounded on purpose.
             if entry.name.lower().startswith(("simple-", "wheels-")):
-                probes.extend(shard for shard in entry.iterdir() if shard.is_dir())
+                for shard in entry.iterdir():
+                    if not shard.is_dir():
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, both abort with "Failed to write to the client cache".
+                        return False
+                    probes.append(shard)
     except OSError:
         return False
     for target in probes:
