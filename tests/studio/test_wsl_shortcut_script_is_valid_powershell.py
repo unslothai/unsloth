@@ -53,7 +53,7 @@ needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs Po
 # apostrophe the surrounding single-quoted PowerShell literals have to be doubling.
 _RENDER_VARS = {
     "_css_sc_target": "wt.exe",
-    "_css_sc_args_ps": "wsl.exe -d \"O''Brien 24.04\" -- bash -l -c \"exec /home/u/launch.sh\"",
+    "_css_sc_args_ps": 'wsl.exe -d "O\'\'Brien 24.04" -- bash -l -c "exec /home/u/launch.sh"',
     "_css_lnk_name_ps": "Unsloth Studio (WSL - O''Brien 24.04).lnk",
     "_css_wsl_ico_win_ps": "C:\\Users\\ci\\unsloth.ico",
 }
@@ -122,7 +122,9 @@ def test_the_icon_refresh_emit_sequence_builds_a_callable_type() -> None:
     # Retargeted, not rewritten: only the library, the symbol and its signature change, so the
     # call sequence under test is the shipped one character for character.
     body = emit.group(1)
-    body = body.replace("'SHChangeNotify', 'shell32.dll', 'SHChangeNotify'", "'getpid', 'libc', 'getpid'")
+    body = body.replace(
+        "'SHChangeNotify', 'shell32.dll', 'SHChangeNotify'", "'getpid', 'libc', 'getpid'"
+    )
     body = re.sub(r"\[System\.Void\],", "[int],", body)
     body = re.sub(r"@\(\[int\], \[uint32\], \[string\], \[IntPtr\]\),", "@(),", body)
     body = body.replace(
