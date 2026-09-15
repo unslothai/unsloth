@@ -129,6 +129,57 @@ def test_hasattr_and_getattr_default_are_unaffected(patched_torch):
     assert getattr(patched_torch, "unsloth_probe_dtype", "fallback") == "fallback"
 
 
+def test_a_failed_probe_does_not_re_read_the_installed_metadata(patched_torch, monkeypatch):
+    """A missing attribute is not always fatal, so the wrapper has to stay cheap.
+
+    `hasattr(torch, name)` and `getattr(torch, name, default)` are how these same
+    libraries feature-probe, and both reach the wrapper. Resolving a distribution
+    version walks sys.path and costs about 850 microseconds on a normal install,
+    which is a thousand times a failed lookup, so it is asked once per package and
+    remembered. Counted rather than timed: a timing threshold on a shared runner is
+    a flake.
+    """
+    calls = []
+
+    def counting_version(package):
+        calls.append(package)
+        return "9.9.9"
+
+    import_fixes._installed_version.cache_clear()
+    monkeypatch.setattr(import_fixes, "importlib_version", counting_version)
+    try:
+        for _ in range(25):
+            assert not hasattr(patched_torch, "unsloth_probe_dtype")
+        # transformers is not in the frames above (hasattr here is attributed to
+        # this test module), so drive the diagnosing path explicitly too.
+        for _ in range(25):
+            with pytest.raises(import_fixes.UnslothTorchTooOldError):
+                _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+        assert sorted(set(calls)) == ["transformers"], calls
+        assert len(calls) == 1, (
+            f"the installed version was resolved {len(calls)} times for one package; "
+            f"it cannot change inside a process and this path runs on every failed "
+            f"attribute lookup"
+        )
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
+def test_an_unresolvable_package_still_reports_a_version_word(patched_torch, monkeypatch):
+    """"unknown" rather than a traceback, and cached like any other answer."""
+    def always_raises(package):
+        raise RuntimeError("no metadata here")
+
+    import_fixes._installed_version.cache_clear()
+    monkeypatch.setattr(import_fixes, "importlib_version", always_raises)
+    try:
+        with pytest.raises(import_fixes.UnslothTorchTooOldError) as raised:
+            _access_from("transformers.integrations.finegrained_fp8", "unsloth_probe_dtype")
+        assert "transformers==unknown" in str(raised.value)
+    finally:
+        import_fixes._installed_version.cache_clear()
+
+
 def test_installing_twice_wraps_once(patched_torch):
     first = patched_torch.__dict__["__getattr__"]
     assert import_fixes.patch_torch_missing_attribute_error() is True

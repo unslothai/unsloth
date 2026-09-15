@@ -1895,19 +1895,33 @@ class UnslothTorchTooOldError(AttributeError):
     """
 
 
+@functools.lru_cache(maxsize = None)
+def _installed_version(package):
+    """The installed version of `package`, or "unknown", asked at most once.
+
+    Cached because this sits on a path the interpreter takes for EVERY attribute
+    access on torch that normal lookup missed, and a missing attribute is not
+    always fatal: `hasattr(torch, name)` and `getattr(torch, name, default)` are
+    how these same libraries feature-probe, and both come through here. Measured
+    on this workspace, `importlib.metadata.version` costs about 850 microseconds
+    per call because it walks sys.path, so an uncached lookup turned a failed
+    probe from roughly 0.8 microseconds into roughly 850, a thousandfold, for a
+    string that cannot change inside one process. With the cache the wrapper is
+    back to the cost of building the message.
+    """
+    try:
+        return importlib_version(package)
+    except Exception:
+        return "unknown"
+
+
 def _torch_too_old_message(attribute, package, exception):
     # torch.__version__ rather than the metadata version, because it carries the
     # build (2.6.0+cu124) and that is what the user reads in every other message.
     torch_version = getattr(sys.modules.get("torch"), "__version__", None)
     if not torch_version:
-        try:
-            torch_version = importlib_version("torch")
-        except Exception:
-            torch_version = "unknown"
-    try:
-        package_version = importlib_version(package)
-    except Exception:
-        package_version = "unknown"
+        torch_version = _installed_version("torch")
+    package_version = _installed_version(package)
 
     floor = _TORCH_ATTRIBUTE_FLOORS.get(attribute)
     requirement = f'"torch>={floor}"' if floor else '"torch"'
