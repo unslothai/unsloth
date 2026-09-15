@@ -269,13 +269,23 @@ def test_setup_bat_clears_the_mark_before_loading_under_remotesigned() -> None:
         for line in text.splitlines()
         if line.strip() and not line.strip().lower().startswith(("rem ", "@echo", "rem\t"))
     ]
-    launches = [line for line in lines if "-File" in line and "setup.ps1" in line]
+    # The path and the policy both travel in variables now, so match on the flags rather than on a
+    # literal filename: the path is an environment variable so an apostrophe in the install
+    # directory cannot break the quoting, and the policy is chosen by a probe that steps down to
+    # Bypass only for a script on a remote share (see
+    # test_setup_bat_steps_down_to_bypass_only_for_a_remote_script).
+    launches = [line for line in lines if "-File" in line and "-ExecutionPolicy" in line]
     assert len(launches) == 1, f"expected exactly one setup.ps1 launch, found {launches}"
     launch = launches[0]
 
-    assert (
-        "-ExecutionPolicy RemoteSigned" in launch
-    ), f"studio/setup.bat must load setup.ps1 under RemoteSigned, not a relaxed policy: {launch}"
+    assert "-ExecutionPolicy %UNSLOTH_SETUP_POLICY%" in launch, (
+        f"studio/setup.bat must load setup.ps1 under the probed policy, not a hardcoded relaxed "
+        f"one: {launch}"
+    )
+    assert 'set "UNSLOTH_SETUP_POLICY=RemoteSigned"' in text, (
+        "the probed policy no longer DEFAULTS to RemoteSigned. That default is what makes a probe "
+        "which fails to run leave the tightened policy in place instead of restoring the relaxed one."
+    )
     assert "-NoProfile" not in launch, (
         "studio/setup.bat must keep loading profiles for setup.ps1. "
         "tests/studio/test_amd_venv_repair_loop.ps1 drives a profile that sets Set-StrictMode "
@@ -824,3 +834,86 @@ def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
     assert "Get-StudioLexicalPath" in text
     # Constrained Language Mode forbids defining types at all, by emit as by Add-Type.
     assert '$languageMode -ne "FullLanguage"' in text
+
+
+# ---------------------------------------------------------------------------
+# studio/setup.bat
+# ---------------------------------------------------------------------------
+
+def _setup_bat_probe() -> str:
+    """The PowerShell that setup.bat embeds to clear the mark and choose a policy."""
+    for line in _text("studio/setup.bat").splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("rem") or stripped.startswith("@rem"):
+            continue
+        if "-Command" not in line:
+            continue
+        body = line.split('-Command "', 1)[1]
+        return body[: body.rindex('"`)')]
+    raise AssertionError(
+        "studio/setup.bat no longer embeds a -Command probe. It needs one: Unblock-File has to run "
+        "before setup.ps1 is loaded under RemoteSigned, and the remote-path check has to happen "
+        "before a policy is chosen."
+    )
+
+
+def test_the_setup_bat_probe_parses() -> None:
+    """It is one long line inside a batch `for /f` backquote block, which is a quoting minefield.
+
+    A syntax error here does not fail loudly: the `for /f` captures nothing, the batch default of
+    RemoteSigned stands, and the mark of the web is never cleared -- so a user who unzipped a
+    download gets a refusal with no hint that the probe was the thing that broke.
+    """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    probe = _setup_bat_probe()
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "probe.ps1"
+        path.write_text(probe, encoding = "utf-8")
+        result = _run_pwsh_parse(pwsh, path)
+    assert result.returncode == 0, (
+        f"the probe embedded in studio/setup.bat does not parse:\n{result.stdout}\n{result.stderr}"
+    )
+
+
+def _run_pwsh_parse(pwsh: str, path: Path):
+    import os
+    from unsloth_pwsh_runner import run_pwsh
+    script = (
+        "$errors = $null; $tokens = $null; "
+        "$null = [System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:UNSLOTH_TARGET, [ref]$tokens, [ref]$errors); "
+        "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }"
+    )
+    return run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True, text = True, timeout = 120,
+        env = {**os.environ, "UNSLOTH_TARGET": str(path)},
+    )
+
+
+def test_setup_bat_steps_down_to_bypass_only_for_a_remote_script() -> None:
+    """The one case where RemoteSigned is a real regression, handled the way install.ps1 handles it.
+
+    Execution policy is judged on the script file's ZONE. A dotted-FQDN UNC, a DFS path or an
+    IP-literal share is the Internet zone, where RemoteSigned refuses an unsigned script and
+    `Unblock-File` cannot help: with no `Zone.Identifier` stream present the path decides, and there
+    is nothing to clear. `install.ps1` already steps down to Bypass for exactly this when it writes
+    the shortcut; reusing that logic beats inventing a second answer.
+    """
+    probe = _setup_bat_probe()
+    assert "DriveInfo" in probe and "Network" in probe, (
+        "the probe no longer detects a mapped network drive, so a script on H:/Z: would be refused"
+    )
+    assert "-like '\\\\*'" in probe, "the probe no longer detects a UNC path"
+    assert "'Bypass'" in probe and "'RemoteSigned'" in probe, (
+        "the probe no longer chooses between the two policies"
+    )
+    assert "Unblock-File" in probe, (
+        "the probe no longer clears the mark of the web, so an unzipped download is refused"
+    )
+
+    # The launch line, the -NoProfile asymmetry and the Unblock-File ordering are asserted by
+    # test_setup_bat_clears_the_mark_before_loading_under_remotesigned above; not repeated here.
