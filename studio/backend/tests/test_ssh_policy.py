@@ -645,3 +645,44 @@ def test_remote_command_options_are_not_local_ssh_configuration():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import asyncio; asyncio.run(asyncio.create_subprocess_exec('ssh','-F','none','approved.example'))",
+        "import asyncio as a; a.run(a.create_subprocess_shell('ssh -F none approved.example'))",
+        "from asyncio import create_subprocess_exec as launch; launch('ssh','-F','none','approved.example')",
+        "import asyncio; launch=asyncio.create_subprocess_exec; launch('ssh','-F','none','approved.example')",
+        "from asyncio.subprocess import create_subprocess_exec; create_subprocess_exec('ssh','-F','none','approved.example')",
+        "import asyncio; asyncio.create_subprocess_shell(cmd='ssh -F none approved.example')",
+    ],
+)
+def test_asyncio_requires_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import asyncio; asyncio.create_subprocess_exec('echo', 'hello')",
+        "import asyncio; asyncio.create_subprocess_shell('echo hello')",
+    ],
+)
+def test_asyncio_local_commands_remain_allowed(code):
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import asyncio; asyncio.create_subprocess_exec(*argv)",
+        "import asyncio; asyncio.create_subprocess_shell(command)",
+        "from asyncio import create_subprocess_shell as launch; launch(command)",
+        "import asyncio; launch = asyncio.create_subprocess_exec; launch(*argv)",
+    ],
+)
+def test_asyncio_dynamic_commands_fail_closed(code):
+    assert _check_code_safety(code, session_id = "review") is not None

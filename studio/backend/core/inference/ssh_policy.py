@@ -119,6 +119,8 @@ _SHELL_EXEC_FUNCS = frozenset(
         "os.spawnvpe",
         "os.posix_spawn",
         "os.posix_spawnp",
+        "asyncio.create_subprocess_exec",
+        "asyncio.create_subprocess_shell",
         "subprocess.run",
         "subprocess.call",
         "subprocess.check_call",
@@ -129,7 +131,7 @@ _SHELL_EXEC_FUNCS = frozenset(
     }
 )
 
-_CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+_CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file", "program", "cmd"})
 
 
 def _extract_host_from_endpoint(token: str) -> Optional[str]:
@@ -411,6 +413,8 @@ def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
     root, sep, rest = name.partition(".")
     name = bindings.get(name, bindings.get(root, root) + (sep + rest if sep else ""))
     return {
+        "asyncio.subprocess.create_subprocess_exec": "asyncio.create_subprocess_exec",
+        "asyncio.subprocess.create_subprocess_shell": "asyncio.create_subprocess_shell",
         "paramiko.transport.Transport": "paramiko.Transport",
         "paramiko.client.SSHClient": "paramiko.SSHClient",
     }.get(name, name)
@@ -548,11 +552,15 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "os":
-                    aliases[alias.asname or "os"] = "os"
-                elif alias.name == "subprocess":
-                    aliases[alias.asname or "subprocess"] = "subprocess"
-        elif isinstance(node, ast.ImportFrom) and node.module in {"os", "subprocess"}:
+                if alias.name in {"os", "subprocess", "asyncio", "asyncio.subprocess"}:
+                    local = alias.asname or alias.name.split(".")[0]
+                    aliases[local] = alias.name if alias.asname else local
+        elif isinstance(node, ast.ImportFrom) and node.module in {
+            "os",
+            "subprocess",
+            "asyncio",
+            "asyncio.subprocess",
+        }:
             module = node.module
             for alias in node.names:
                 if alias.name == "*":
@@ -561,7 +569,10 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
     for target, value in _assignment_pairs(tree):
         name = _fq_name(target)
         symbol = _bound_name(value, aliases)
-        if name and (symbol in {"os", "subprocess"} or symbol in _SHELL_EXEC_FUNCS):
+        if name and (
+            symbol in {"os", "subprocess", "asyncio", "asyncio.subprocess"}
+            or symbol in _SHELL_EXEC_FUNCS
+        ):
             aliases[name] = symbol
     return aliases
 
@@ -697,10 +708,17 @@ def _scan_ssh_python_usage(
 
             if (
                 shell_func
-                and shell_func.startswith(("os.exec", "os.spawn", "os.posix_spawn"))
+                and (
+                    shell_func.startswith(("os.exec", "os.spawn", "os.posix_spawn"))
+                    or shell_func == "asyncio.create_subprocess_exec"
+                )
                 and shell_func in _SHELL_EXEC_FUNCS
             ):
-                argv_nodes = _os_process_argv(node, shell_func)
+                if shell_func == "asyncio.create_subprocess_exec":
+                    program = next((kw.value for kw in node.keywords if kw.arg == "program"), None)
+                    argv_nodes = list(node.args) or ([program] if program is not None else [])
+                else:
+                    argv_nodes = _os_process_argv(node, shell_func)
                 argv = [text for arg in argv_nodes for text in _literal_strings_from_node(arg)]
                 found, unknown = _ssh_from_argv_literals(argv)
                 if found or unknown:

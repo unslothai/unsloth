@@ -60,6 +60,8 @@ import urllib.request
 
 from core.inference.ssh_policy import (
     _SHELL_EXEC_FUNCS,
+    _shell_exec_aliases,
+    _bound_name,
     check_ssh_command_access,
     check_ssh_python_access,
     filter_ssh_approved_network_blocks,
@@ -13265,7 +13267,7 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file", "program", "cmd"})
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -13279,14 +13281,12 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
+    process_aliases = _shell_exec_aliases(tree)
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
             self.signal_aliases = {"signal"}
-            self.os_aliases = {"os"}
-            self.subprocess_aliases = {"subprocess"}
-            # Bare name -> fully-qualified form for from-import tracking (e.g. "system" -> "os.system").
-            self.shell_exec_aliases: dict[str, str] = {}
             self.loop_depth = 0
 
         def visit_Import(self, node):
@@ -13295,10 +13295,6 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
-                elif alias.name == "os":
-                    self.os_aliases.add(alias.asname or "os")
-                elif alias.name == "subprocess":
-                    self.subprocess_aliases.add(alias.asname or "subprocess")
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -13316,16 +13312,6 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
-            elif node.module in ("os", "subprocess"):
-                if node.module == "os":
-                    self.os_aliases.add("os")
-                else:
-                    self.subprocess_aliases.add("subprocess")
-                # Track from-imports of dangerous functions.
-                for alias in node.names:
-                    fq = f"{node.module}.{alias.name}"
-                    if fq in _SHELL_EXEC_FUNCS:
-                        self.shell_exec_aliases[alias.asname or alias.name] = fq
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -13387,17 +13373,7 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
-            shell_func = None
-            if isinstance(func, ast.Attribute):
-                if isinstance(func.value, ast.Name):
-                    if func.value.id in self.os_aliases:
-                        shell_func = f"os.{func.attr}"
-                    elif func.value.id in self.subprocess_aliases:
-                        shell_func = f"subprocess.{func.attr}"
-            elif isinstance(func, ast.Name):
-                # from-import aliases: from os import system; system(...)
-                shell_func = self.shell_exec_aliases.get(func.id)
+            shell_func = _bound_name(func, process_aliases)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
