@@ -20675,6 +20675,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         if combined_text is None:
             continue
         chat_message = {"role": msg.role, "content": combined_text}
+        if msg.name:
+            chat_message["name"] = msg.name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
@@ -21868,6 +21870,7 @@ async def _proxy_to_external_provider(
     # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
     # `model_fields_set` separates "asked for 20" from "said nothing", and the provider keeps
     # its own default for the latter. Read before ANY write: a setattr marks a field explicit.
+    _top_p_explicit = payload.top_p if "top_p" in payload.model_fields_set else None
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (
@@ -21927,7 +21930,7 @@ async def _proxy_to_external_provider(
     async def _stream():
         _provider_kwargs = dict(
             temperature = payload.temperature,
-            top_p = payload.top_p,
+            top_p = _top_p_explicit,
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets
             # a limit instead of falling back to the provider default.
@@ -31918,7 +31921,12 @@ def _set_or_prepend_system_message(
     # Drop existing system/developer turns so the backend never sees duplicate
     # or conflicting system instructions, then prepend the resolved prompt.
     others = [dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")]
-    return [{"role": "system", "content": system_prompt}, *others]
+    system = {"role": "system", "content": system_prompt}
+    # One shared name or none: a single turn cannot answer to two.
+    names = {msg.get("name") for msg in safe_messages if msg.get("role") in ("system", "developer")}
+    if len(names) == 1 and (name := names.pop()):
+        system["name"] = name
+    return [system, *others]
 
 
 @router.post("/messages")
@@ -34367,6 +34375,8 @@ def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
         if m.get("role") == "user" and out and out[-1].get("role") == "user":
             prev = dict(out[-1])
             prev["content"] = _merge_user_content(prev.get("content"), m.get("content"))
+            if prev.get("name") != m.get("name"):
+                prev.pop("name", None)
             out[-1] = prev
             continue
         out.append(m)
@@ -34431,6 +34441,9 @@ def _merge_stranded_local_assistant_turns(messages: list[tuple[dict, bool]]) -> 
             continue
 
         merged = dict(message)
+        # One shared name or none: the fragments fold into a single turn.
+        if pending.get("name") != message.get("name"):
+            merged.pop("name", None)
         old_content = pending.get("content")
         new_content = merged.get("content")
         if old_content or new_content:

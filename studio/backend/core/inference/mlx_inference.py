@@ -3912,6 +3912,7 @@ class MLXInferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
+        # No name: mlx-vlm rebuilds non-tool turns from role and text, dropping anything else.
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
