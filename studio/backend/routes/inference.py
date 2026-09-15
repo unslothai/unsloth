@@ -2511,7 +2511,8 @@ def _openai_llama_admission_retry_max_tokens(
 
     One lease covers both attempts with no re-cost between, so pricing the retry afresh
     would hand a grown prompt the flat allowance on top of the charge. With
-    ``first_messages`` it writes at most ``allowance - growth``, floored at one.
+    ``first_messages`` it writes at most ``allowance - growth``. Zero means the
+    retry must be skipped; None means no admission bound applies.
     """
     if admission_output_allowance is None:
         return None
@@ -2539,7 +2540,7 @@ def _openai_llama_admission_retry_max_tokens(
             markup = _openai_llama_admission_markup(llama_backend),
         )
         growth = max(0, prompt_tokens - first_prompt_tokens)
-        bound = max(1, min(bound, admission_output_allowance - growth))
+        bound = max(0, min(bound, admission_output_allowance - growth))
     current = _positive_int_or_none(retry_body.get("max_tokens"))
     return bound if current is None else min(current, bound)
 
@@ -34868,18 +34869,23 @@ async def _anthropic_passthrough_non_streaming(
                 # One lease covers both attempts: the retry writes what is left.
                 first_messages = body.get("messages") or [],
             )
-            if _retry_bound is not None:
-                retry_body["max_tokens"] = _retry_bound
-            try:
-                retry_resp = await _post(retry_body)
-                if retry_resp.status_code == 200:
-                    retry_data = retry_resp.json()
-                    if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
-                        data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
-                    else:
-                        data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
-            except (httpx.RequestError, ValueError) as exc:
-                logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
+            if _retry_bound != 0:
+                if _retry_bound is not None:
+                    retry_body["max_tokens"] = _retry_bound
+                try:
+                    retry_resp = await _post(retry_body)
+                    if retry_resp.status_code == 200:
+                        retry_data = retry_resp.json()
+                        if response_has_promotable_calls(retry_data, _allowed_tools, openai_tools):
+                            data = _sum_passthrough_attempt_stats(
+                                first_data, retry_data, retry_data
+                            )
+                        else:
+                            data = _sum_passthrough_attempt_stats(
+                                first_data, retry_data, first_data
+                            )
+                except (httpx.RequestError, ValueError) as exc:
+                    logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -36913,23 +36919,24 @@ async def _openai_passthrough_non_streaming_upstream(
             # One lease covers both attempts: the retry writes what is left, not a fresh one.
             first_messages = body.get("messages") or [],
         )
-        if _retry_bound is not None:
-            retry_body["max_tokens"] = _retry_bound
-        try:
-            retry_resp = await _post(retry_body)
-            if retry_resp.status_code == 200:
-                retry_data = retry_resp.json()
-                if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
-                    resp = retry_resp
-                    data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
-                else:
-                    data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
-                usage_aggregated = data is not first_data and data is not retry_data
-        except asyncio.CancelledError:
-            api_monitor.finish(monitor_id, "cancelled")
-            raise
-        except (httpx.RequestError, ValueError) as exc:
-            logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
+        if _retry_bound != 0:
+            if _retry_bound is not None:
+                retry_body["max_tokens"] = _retry_bound
+            try:
+                retry_resp = await _post(retry_body)
+                if retry_resp.status_code == 200:
+                    retry_data = retry_resp.json()
+                    if response_has_promotable_calls(retry_data, _allowed_tools, body.get("tools")):
+                        resp = retry_resp
+                        data = _sum_passthrough_attempt_stats(first_data, retry_data, retry_data)
+                    else:
+                        data = _sum_passthrough_attempt_stats(first_data, retry_data, first_data)
+                    usage_aggregated = data is not first_data and data is not retry_data
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+            except (httpx.RequestError, ValueError) as exc:
+                logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
     changed = usage_aggregated
     if _context_was_truncated and isinstance(data, dict):

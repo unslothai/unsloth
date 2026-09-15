@@ -1355,10 +1355,10 @@ class TestARetryThatGrewItsPrompt:
             first_messages = first_messages,
         )
         growth = retry_prompt - first_prompt
-        assert bound == max(1, allowance - growth)
+        assert bound == max(0, allowance - growth)
         assert bound < unbounded
         # What the retry adds to the prompt it inherited is what the lease still holds.
-        assert bound <= max(1, charge - retry_prompt)
+        assert bound <= max(0, charge - retry_prompt)
 
     def test_a_retry_that_grew_a_little_keeps_the_rest_of_its_allowance(self):
         """An over-share prompt is charged prompt + the flat allowance, and a short
@@ -1760,13 +1760,13 @@ class TestBothPassthroughsPriceTheirRetry:
         backend = self._backend()
         payload = ChatCompletionRequest(
             model = "default",
-            messages = [{"role": "user", "content": "word " * 2400}],
+            messages = [{"role": "user", "content": "word " * 4000}],
             tools = [self._TOOL],
             max_tokens = 16384,
             nudge_tool_calls = True,
         )
         client = self._Scripted(
-            [self._reply(self._GARBAGE + " blah" * 1200), self._reply(self._GARBAGE)]
+            [self._reply(self._GARBAGE + " blah" * 40), self._reply(self._GARBAGE)]
         )
         monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
 
@@ -1779,7 +1779,7 @@ class TestBothPassthroughsPriceTheirRetry:
 
     def test_the_anthropic_passthrough_prices_its_retry(self, monkeypatch):
         backend = self._backend()
-        messages = [{"role": "user", "content": "word " * 2400}]
+        messages = [{"role": "user", "content": "word " * 4000}]
         payload = _Payload(messages = messages, max_tokens = 16384)
         allowance = _openai_llama_admission_enforced_max_tokens(
             payload,
@@ -1790,7 +1790,7 @@ class TestBothPassthroughsPriceTheirRetry:
         )
         assert allowance is not None
         client = self._Scripted(
-            [self._reply(self._GARBAGE + " blah" * 1200), self._reply(self._GARBAGE)]
+            [self._reply(self._GARBAGE + " blah" * 40), self._reply(self._GARBAGE)]
         )
         monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
 
@@ -1810,6 +1810,69 @@ class TestBothPassthroughsPriceTheirRetry:
             )
         )
         self._assert_retry_stays_inside_the_lease(backend, client.posts)
+
+    @pytest.mark.parametrize("surface", ["openai", "anthropic"])
+    def test_expanded_replay_without_room_keeps_the_first_response(self, monkeypatch, surface):
+        backend = self._backend()
+        messages = [{"role": "user", "content": "word " * 2400}]
+        content = self._GARBAGE + "<|im_start|>" * 300
+        first = self._reply(content)
+        client = self._Scripted([first, self._reply("unexpected retry")])
+        payload = ChatCompletionRequest(
+            messages = messages,
+            tools = [self._TOOL],
+            max_tokens = 16384,
+            nudge_tool_calls = True,
+        )
+        allowance = _openai_llama_admission_enforced_max_tokens(
+            payload,
+            request = None,
+            llama_backend = backend,
+            conversation = messages,
+            injected_tools = [self._TOOL],
+        )
+        replay = inf_mod._nudge_retry_messages({"messages": messages}, first, {"lookup"})
+        growth = _openai_llama_admission_wire_prompt_tokens(
+            replay
+        ) - _openai_llama_admission_wire_prompt_tokens(messages)
+        assert growth > allowance + _RESERVE
+        assert inf_mod.nudge_should_retry(first, {"lookup"}, [self._TOOL])
+
+        if surface == "openai":
+            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+            response = asyncio.run(
+                inf_mod._openai_passthrough_non_streaming_upstream(
+                    backend,
+                    payload,
+                    "gguf",
+                    monitor_id = None,
+                )
+            )
+            result = json.loads(response.body)
+            assert result["choices"][0]["message"]["content"] == content
+            assert result["usage"] == first["usage"]
+        else:
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+            response = asyncio.run(
+                inf_mod._anthropic_passthrough_non_streaming(
+                    backend,
+                    messages,
+                    [self._TOOL],
+                    0.7,
+                    0.95,
+                    None,
+                    allowance,
+                    "msg_test",
+                    "gguf",
+                    nudge_tool_calls = True,
+                    admission_output_allowance = allowance,
+                )
+            )
+            result = json.loads(response.body)
+            assert result["content"] == [{"type": "text", "text": content}]
+            assert result["usage"]["input_tokens"] == first["usage"]["prompt_tokens"]
+            assert result["usage"]["output_tokens"] == first["usage"]["completion_tokens"]
+        assert len(client.posts) == 1, "a retry whose prompt exceeds the lease was sent"
 
 
 class TestTheLoopSizesAgainstTheAdmittedAllowance:
