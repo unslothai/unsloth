@@ -3868,9 +3868,8 @@ get_torch_index_url() {
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
                 # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare assignment never reaches the re-run (the #8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
-                # Only for arches TheRock actually builds, so Polaris is never pointed at
-                # wheels that do not exist. Untested by us on any of these: no RDNA1 card
-                # has reported back, which is why nothing routes here on its own.
+                # Only arches TheRock actually builds, so Polaris is never pointed at
+                # wheels that do not exist. Untested: nothing routes here on its own.
                 if _amd_therock_extra=$(_therock_device_extra_for_gfx "$_amd_unsup_gfx" 2>/dev/null); then
                     echo "[INFO] Untested: AMD's TheRock publishes nightly $_amd_unsup_gfx wheels. To try them, export both and re-run:" >&2
                     echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL=$THEROCK_MIRROR" >&2
@@ -4069,16 +4068,14 @@ _previous_torch_pin() {
     echo "torch==$_ptp_base"
 }
 
-# TheRock's multi-arch index. Unlike repo.amd.com, which publishes one index per gfx family,
-# it serves every target from a single URL and selects with a package extra
-# (torch[device-gfx1010]). Nothing routes here automatically; it exists so the advice below
-# can name a real URL. Override for a mirror or an air-gapped install.
+# TheRock's multi-arch index: one URL for every target, selected by a package extra
+# (torch[device-gfx1010]), unlike repo.amd.com's per-family indexes. Nothing routes here
+# automatically; it exists so the message can name a real URL. Override for a mirror.
 THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-multi-arch/}"
 
-# The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only the
-# arches Unsloth's own indexes do not cover, so this never competes with get_torch_index_url.
-# gfx803 is absent on purpose: TheRock has no Polaris target, so Polaris keeps the message
-# it already has rather than being pointed at wheels that do not exist.
+# The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
+# Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
+# absent because TheRock has no Polaris target.
 _therock_device_extra_for_gfx() {
     case "$1" in
         gfx1010|gfx1011|gfx1012) echo "device-$1" ;;
@@ -4086,18 +4083,17 @@ _therock_device_extra_for_gfx() {
     esac
 }
 
-# Insert a package extra into a requirement: torch>=2.4,<2.11.0 -> torch[X]>=2.4,<2.11.0.
-# Splits on the first character of any version operator, so it holds for ==, >=, ~= and a
-# bare name. Empty extra returns the spec untouched, which is every default path.
+# Insert a package extra: torch>=2.4,<2.11.0 -> torch[X]>=2.4,<2.11.0. Splits at the first
+# version-operator character, so ==, >=, ~= and bare names all work. An empty extra is a
+# no-op, which is every default path.
 _torch_spec_with_extra() {
     _tswe_spec="$1"
     [ -n "${_TORCH_EXTRA:-}" ] || { printf '%s' "$_tswe_spec"; return; }
     _tswe_name="${_tswe_spec%%[<>=~!]*}"
     _tswe_rest="${_tswe_spec#"$_tswe_name"}"
     case "$_tswe_name" in
-        # A spec that already carries an extra takes a second one in the same
-        # bracket: torch[a][b] is not PEP 508, torch[a,b] is. No caller passes
-        # one today, so this only keeps the helper total for the next one.
+        # torch[a][b] is not PEP 508, torch[a,b] is. No caller passes an extra
+        # today; this only keeps the helper total for the next one.
         *"]")
             printf '%s,%s]%s' "${_tswe_name%?}" "$_TORCH_EXTRA" "$_tswe_rest"
             ;;
@@ -4107,13 +4103,11 @@ _torch_spec_with_extra() {
     esac
 }
 
-# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN
-# set, TORCH_CONSTRAINT is the exact previous release; fall back to the supported range
-# if the index lacks it (pruned mirror) rather than failing. Used by every --default-index
-# path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac, ROCm repairs) so preservation is
-# uniform. Extra args (e.g. --force-reinstall) are passed through to uv.
-# torchaudio is never given the extra: TheRock's documented invocation leaves it bare and
-# it reaches the right build through torch's own rocm[libraries] dependency.
+# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN set,
+# TORCH_CONSTRAINT is the exact previous release; fall back to the supported range if a
+# pruned mirror lacks it. Shared by every --default-index path so preservation is uniform;
+# extra args pass through to uv. torchaudio stays bare, as TheRock's documented invocation
+# leaves it, reaching the right build through torch's own rocm[libraries] dependency.
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
         # Pair companions with the kept torch minor (torchaudio no longer exact-pins torch).
@@ -4473,11 +4467,9 @@ fi
 # Created here, not inside get_torch_index_url: that runs in a command substitution, so only a file outlives it. mktemp -d, never a $$-derived name: a predictable path under a world-writable /tmp can be pre-created as a symlink, feeding the probe a chosen version.
 _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null) \
     && _ROCM_TAG_MEMO="$_ROCM_TAG_MEMO_DIR/tag" || _ROCM_TAG_MEMO=""
-# UNSLOTH_TORCH_EXTRA selects a build on indexes that publish every target from one URL and
-# discriminate by package extra (TheRock's whl-multi-arch). Gated on a pinned index because
-# no index this script picks by itself publishes extras, so honouring it unpinned would only
-# ever turn a working resolve into "provides no extra". Every default path keeps _TORCH_EXTRA
-# empty and _torch_spec_with_extra a no-op.
+# UNSLOTH_TORCH_EXTRA selects a build on indexes that discriminate by package extra
+# (TheRock's whl-multi-arch). Gated on a pinned index: no index this script picks by itself
+# publishes extras, so an unpinned extra could only break a working resolve.
 _TORCH_EXTRA=""
 _te_trim="${UNSLOTH_TORCH_EXTRA:-}"
 _te_trim="${_te_trim#"${_te_trim%%[![:space:]]*}"}"; _te_trim="${_te_trim%"${_te_trim##*[![:space:]]}"}"
@@ -5287,11 +5279,10 @@ if [ "$_MIGRATED" = true ]; then
         fi
         _gfx906_bnb_prune
     fi
-    # The ROCm repair above cannot reach an extras pin: whl-multi-arch is not a pip ROCm
-    # family leaf, so _torch_index_is_rocm_family is false and the migrated install resolves
-    # torch from PyPI instead, silently replacing the build the pin asked for. The pin is the
-    # only signal that a specific build was wanted, so repair on it. Inert by default, because
-    # every default path leaves _TORCH_EXTRA empty.
+    # The ROCm repair above cannot reach an extras pin: whl-multi-arch is not a pip ROCm family
+    # leaf, so _torch_index_is_rocm_family is false and the migrated install silently resolves
+    # torch from PyPI. The pin is the only signal a specific build was wanted, so repair on it.
+    # Inert by default: every default path leaves _TORCH_EXTRA empty.
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
         substep "reinstalling torch from the pinned index (UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA)..."
         _install_torch_default_index --force-reinstall
@@ -5596,18 +5587,13 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     fi
 fi
 
-# An extras pin lands on a leaf nothing above recognises, so the flavor enforcement skipped
-# it: _expected_torch_flavor_tag has no tag for an unknown index, and a custom pin must never
-# be force-reinstalled. Staying silent is wrong here, because finding out whether the build
-# works IS the reason to pin an extra. Ask torch instead of reading the version label: these
-# indexes need not carry a +rocm local tag, and a bare version reads as "cpu" to
-# _torch_flavor_tag, which would report a working install as broken. Bounded because a
-# half-working HIP runtime can hang the probe.
+# An extras pin lands on a leaf the flavor enforcement above does not recognise, so it skips
+# the pin, yet whether the build works IS the reason to pin an extra. Ask torch rather than
+# read the version label: these indexes need not carry a +rocm local tag, which
+# _torch_flavor_tag would read as "cpu". Bounded: a half-working HIP runtime can hang it.
 if [ "$SKIP_TORCH" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
-    # A sentinel line, not all of stdout. A venv carrying a sitecustomize or an import hook
-    # prints before torch does, and command substitution keeps that text, so the equality
-    # below failed and a working GPU was reported as "training will run on CPU". The same
-    # reason _PREV_TORCH_VER above takes only its own line.
+    # A sentinel line, not all of stdout: a sitecustomize or import hook prints before torch
+    # does, and that text made the equality below fail on a working GPU (as for _PREV_TORCH_VER).
     _extra_probe=$(_run_bounded "$_VENV_PY" -c \
         "import torch; print('UNSLOTH_CUDA_OK=%s' % torch.cuda.is_available())" 2>/dev/null \
         | sed -n 's/^UNSLOTH_CUDA_OK=//p' | tail -n 1 || true)
