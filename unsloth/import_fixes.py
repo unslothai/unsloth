@@ -2687,9 +2687,10 @@ def disable_torchcodec_if_broken():
         if importlib.util.find_spec("torchcodec") is None:
             return  # absent or already disabled
 
-        # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
+        # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
+        # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
         from torchcodec.decoders import AudioDecoder
-    except (ImportError, RuntimeError, OSError):
+    except Exception:
         if mismatch_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.

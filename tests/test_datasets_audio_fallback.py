@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import io
+import re
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,40 @@ def test_the_stream_index_selects_the_track(broken_torchcodec):
     assert abs(_dominant_hz(second["array"], second["sampling_rate"]) - 880) < 20
     with pytest.raises(Exception, match = "stream"):
         import_fixes._audio_read_mono(io.BytesIO(raw), stream_index = 5)
+
+
+def test_a_wheel_that_raises_anything_at_import_is_disabled(broken_torchcodec, monkeypatch, tmp_path):
+    # A damaged torchcodec need not raise ImportError or RuntimeError; the installer already calls
+    # every failure "broken", so the library must disable it and seat the fallback the same way.
+    import sys
+
+    pkg = tmp_path / "torchcodec"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding = "utf-8")
+    (pkg / "decoders.py").write_text("raise AttributeError('damaged wheel')\n", encoding = "utf-8")
+    for name in [n for n in sys.modules if n == "torchcodec" or n.startswith("torchcodec.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(import_fixes, "_torchcodec_version_mismatch_hint", lambda: None)
+    monkeypatch.setattr(import_fixes, "_torchcodec_provenance_hint", lambda: None)
+    import_fixes.disable_torchcodec_if_broken()
+    from datasets.features.audio import Audio
+
+    assert sys.modules["torchcodec"] is None
+    assert getattr(Audio, "_unsloth_audio_fallback", False) is True
+
+
+def test_the_audio_extras_carry_the_fallback_decoders():
+    # `unsloth[audio-torch2xx]` must install what decodes when torchcodec cannot load, or the
+    # fallback re-raises libsndfile's error on exactly the containers it exists for.
+    tomllib = pytest.importorskip("tomllib")
+    with open(_REPO / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    audio = {k: v for k, v in extras.items() if k.startswith("audio-torch")}
+    assert audio
+    for name, specs in audio.items():
+        names = {re.split(r"[ ;<>=!~\[]", spec, 1)[0] for spec in specs}
+        assert {"torchcodec", "soundfile", "av"} <= names, name
 
 
 def _normalized(path: Path, name: str, rename: dict) -> str:
