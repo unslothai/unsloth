@@ -753,9 +753,18 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     )
 
 
-# Sliced back out to rebuild the function this replaced, so parity is measured against the real predecessor. The
-# comments go with the guard: they do not execute, but leaving them behind would make the reconstruction something
-# this test invented rather than the merge-base function.
+# Sliced back out to prove the guard is load-bearing rather than decorative. This used to rebuild the
+# predecessor for a parity comparison, which worked while the predecessor was still in the file:
+# removing the fast path left the native GetConsoleMode path behind, and the two had to agree.
+#
+# That is no longer what removing it leaves. The native path is gone, so the remainder is a bare
+# `$Host.UI.SupportsVirtualTerminal` read, and that property answers True on a redirected stream --
+# which is exactly why the early return exists and is checked BEFORE it. Comparing the two variants
+# therefore compares the shipped answer against a known-wrong one and fails by construction.
+#
+# So the contract is asserted directly on the code that ships, where it is stronger anyway: a
+# redirected stream is answered False and no escape byte reaches the pipe. Deleting the fast path
+# still fails this test, which is the regression the parity comparison existed to catch.
 _VT_FAST_PATH = re.compile(
     r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
     r"(?:^[ \t]*#.*\n)*"
@@ -783,30 +792,39 @@ def _vt_verdict(err: str) -> str:
 @windows_only
 @powershell_51_only
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
-def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path) -> None:
-    """Skipping csc.exe must not change one byte the user sees.
+def test_a_redirected_stream_is_answered_false_and_gets_no_escape_bytes(path: Path) -> None:
+    """The branch the desktop app actually takes, asserted on the code that ships.
 
-    This probe is the changed branch, not a bystander: install.rs spawns with a pipe, so
-    `$script:StudioStdoutRedirected` is true here and the early return is what runs. The
-    reconstructed predecessor reaches Add-Type instead, and has to land on the same verdict.
+    install.rs spawns the installer with a pipe, so `$script:StudioStdoutRedirected` is true and
+    the early return is what runs. Getting this wrong is not subtle: the Unsloth log panel is that
+    pipe, and a True here puts raw escape sequences in front of a user.
+
+    `$Host.UI.SupportsVirtualTerminal` does NOT answer this question on its own. It reports True on
+    a redirected stream, which is why the redirect check is consulted first and why deleting it
+    would be a user-visible regression rather than a tidy-up. That is measured below rather than
+    asserted from the source: the fast path is removed and the remainder must disagree.
     """
-    new_code, new_raw, new_err = _run_console_less(path)
-    old_code, old_raw, old_err = _run_console_less(
-        path, source = _probe_without_the_vt_fast_path(path)
+    code, raw, err = _run_console_less(path)
+    assert code == 0, f"the shipped probe exited {code}{_explain(path, code, raw, err)}"
+    assert _vt_verdict(err) == "False", (
+        f"a redirected stream was told it can render VT ({_vt_verdict(err)}). install.rs reads this "
+        f"pipe, so the banner would arrive with escape sequences in it."
+        + _explain(path, code, raw, err)
     )
-    assert new_code == old_code == 0, (
-        f"probe exit codes {new_code} (with the fast path) and {old_code} (without)"
-        f"{_explain(path, new_code, new_raw, new_err)}"
-        # Both sides. Reporting only the new run hid the whole failure once: the new run was
-        # the one that passed, and the reconstruction's stderr, which named the missing
-        # command, was never printed.
-        f"\n  reconstructed predecessor stderr:\n{old_err}"
+    assert b"\x1b" not in raw, (
+        "an escape byte reached the pipe even though the verdict was False, so something downstream "
+        "of Enable-StudioVirtualTerminal is colouring unconditionally"
+        + _explain(path, code, raw, err)
     )
-    assert _vt_verdict(new_err) == _vt_verdict(old_err) == "False", (
-        f"a redirected stream cannot render VT: the fast path returned "
-        f"{_vt_verdict(new_err)} where the compile returned {_vt_verdict(old_err)}"
-    )
-    assert new_raw == old_raw, (
-        "the banner bytes moved. Same verdict in, same bytes out is the whole contract of "
-        "this change" + _explain(path, new_code, new_raw, new_err)
+
+    # The guard is load-bearing, and this is what says so. Without it the property alone decides,
+    # and on a redirected stream it says True. If this ever stops differing, the early return has
+    # become redundant and the comment above it is wrong.
+    bare_code, _, bare_err = _run_console_less(path, source = _probe_without_the_vt_fast_path(path))
+    assert bare_code == 0, f"the fast-path-less probe exited {bare_code}:\n{bare_err}"
+    assert _vt_verdict(bare_err) == "True", (
+        f"without the redirect check the property answered {_vt_verdict(bare_err)}, not True. The "
+        f"early return in Enable-StudioVirtualTerminal is documented as load-bearing because the "
+        f"property cannot see a redirected stream; if that has changed, update the comment there "
+        f"and this test together.\n{bare_err}"
     )
