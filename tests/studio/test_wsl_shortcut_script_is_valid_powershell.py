@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import sys
 import shutil
 import subprocess
 from pathlib import Path
@@ -48,6 +49,18 @@ REPO = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO / "install.sh"
 
 needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+
+# What `_render` produces is a pure function of install.sh's bytes and the four values below, so the
+# Linux and macOS legs cover the subject completely and a Windows leg adds no coverage of it. What a
+# Windows leg does add is a different shell: `bash` there is Git Bash or the WSL stub in System32,
+# neither of which install.sh is ever run by -- its WSL arm is gated on /proc/version naming
+# microsoft, so the shell that reads this here-string is always a POSIX one inside the distro. The
+# repository already draws this line the same way for its other bash-driven installer tests
+# (tests/python/test_install_uv_override_space.py:21,
+# tests/studio/install/test_selection_logic.py:4185).
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason = "renders install.sh with bash; POSIX shell installer test",
+)
 
 # Values install.sh would interpolate, chosen to be awkward: a distro name with a space, and the
 # apostrophe the surrounding single-quoted PowerShell literals have to be doubling.
@@ -82,7 +95,14 @@ def _render() -> str:
     # the real ones do, and Python's repr quotes for Python.
     assigns = "".join(f"{k}={shlex.quote(v)}\n" for k, v in _RENDER_VARS.items())
     script = assigns + "cat << WSLPS1_EOF\n" + body.group(1) + "WSLPS1_EOF\n"
-    done = subprocess.run(["bash", "-c", script], capture_output = True, text = True, check = True)
+    # check = False, then asserted. CalledProcessError carries the command and the return code and
+    # drops the shell's own diagnostic, so a rendering that fails to render reported a 6 KB repr of
+    # the script and not the one line saying what was wrong with it.
+    done = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert done.returncode == 0, (
+        f"bash could not render the here-string (exit {done.returncode}):\n"
+        f"{done.stderr.strip()}\n{done.stdout.strip()[:2000]}"
+    )
     assert "SHChangeNotify" in done.stdout, done.stdout
     return done.stdout
 
