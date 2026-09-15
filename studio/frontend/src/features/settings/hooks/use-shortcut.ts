@@ -172,7 +172,9 @@ export function useShortcut(
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (isImeComposing(event)) return;
-      const hit = bindings.find((binding) => matchesBinding(binding, event));
+      const hit = bindings.find((binding) =>
+        matchesBinding(binding, event, undefined, id),
+      );
       if (!hit) return;
       // The exception is for a chord that types nothing there. Decline ships on Escape; rebound to
       // Enter or a letter, the same pass would deny the request as the user edits the prompt.
@@ -196,6 +198,7 @@ export function useShortcut(
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindings, enabled, skipInTextFields, textFieldException, repeats]);
 }
 
