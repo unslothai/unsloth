@@ -571,12 +571,12 @@ def build_profile(
     device_filters = _path_filters(_DEVICES)
     # The workdir too, since TMPDIR points into it and an AF_UNIX bind is
     # network-bind, not a file operation.
-    tmp_subpaths = " ".join(
+    tmp_subpaths = tuple(
         f"(subpath {_sbpl_string(spelling)})"
         for path in (private_tmp, workdir)
         for spelling in _sbpl_spellings(path)
     )
-    mdns_filters = " ".join(_literal_filters((_MDNSRESPONDER_SOCKET,)))
+    mdns_filters = _literal_filters((_MDNSRESPONDER_SOCKET,))
     # resolve = False so an /etc/gitconfig symlinked into the home does not turn
     # a config read allowance into a home one.
     # The editable import roots ride here rather than in read_filters because a
@@ -644,12 +644,13 @@ def build_profile(
         # bind mounts. "*:*" still leaves TCP and UDP, v4 and v6, open.
         '(allow network-outbound (remote ip "*:*"))',
         # The AF_UNIX destinations the ip filter no longer covers.
-        f"(allow network-bind (local unix-socket {tmp_subpaths}))",
-        f"(allow network-outbound (remote unix-socket {tmp_subpaths}))",
+        # Each endpoint takes one path filter; combining paths breaks multiprocessing on macOS 15.
+        *(f"(allow network-bind (local unix-socket {path}))" for path in tmp_subpaths),
+        *(f"(allow network-outbound (remote unix-socket {path}))" for path in tmp_subpaths),
         # Both filter forms are accepted and which one a macOS release matches is
         # untestable here, while a missed DNS socket looks like a resolver bug.
-        f"(allow network-outbound {mdns_filters})",
-        f"(allow network-outbound (remote unix-socket {mdns_filters}))",
+        _rule("allow network-outbound", mdns_filters),
+        *(f"(allow network-outbound (remote unix-socket {path}))" for path in mdns_filters),
         _rule("allow sysctl-read", sysctl_filters),
         '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup\n"

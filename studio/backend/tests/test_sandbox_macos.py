@@ -233,11 +233,15 @@ def test_ip_egress_is_unrestricted_but_unix_sockets_are_not(profile):
     assert "proxy" not in profile.lower()
     # connect()/bind() on a unix socket is network-outbound / network-bind, not a
     # file operation, so multiprocessing needs its own rule.
-    assert f'(allow network-outbound (remote unix-socket (subpath "{_PRIVATE_TMP}")' in profile
-    assert f'(allow network-bind (local unix-socket (subpath "{_PRIVATE_TMP}")' in profile
+    for root in (_PRIVATE_TMP, _WORKDIR):
+        for path in (root, f"/private{root}"):
+            assert f'(allow network-outbound (remote unix-socket (subpath "{path}")))' in lines
+            assert f'(allow network-bind (local unix-socket (subpath "{path}")))' in lines
     # Both spellings for the DNS socket: no test here can pick the right one.
     assert '(allow network-outbound (literal "/private/var/run/mDNSResponder")' in profile
     assert "(allow network-outbound (remote unix-socket (literal " in profile
+    for path in ("/var/run/mDNSResponder", "/private/var/run/mDNSResponder"):
+        assert f'(allow network-outbound (remote unix-socket (literal "{path}")))' in lines
     assert '(literal "/var/run/mDNSResponder")' in profile
     assert "docker.sock" not in profile
 
@@ -700,7 +704,9 @@ def test_a_standalone_interpreter_in_the_workdir_is_denied_writes(tmp_path, monk
         monkeypatch.setattr(sys, attribute, str(workdir))
     monkeypatch.setattr(sys, "executable", str(executable))
 
-    assert backend.runtime_paths_under(str(workdir)) == (str(executable),)
+    paths = backend.runtime_paths_under(str(workdir))
+    assert str(executable) in paths
+    assert all(os.path.samefile(path, executable) for path in paths)
     profile = backend.build_profile(
         workdir = str(workdir), private_tmp = str(tmp_path / "tmp"), runtime_paths = ()
     )
