@@ -1084,9 +1084,9 @@ def test_rope_scaling_setter_patch_is_idempotent():
     owner = _rope_scaling_property_owner()
     fix_transformers_rope_scaling_drops_theta()
     if owner is None:
-        assert _rope_scaling_property_owner() is None, (
-            "the fix created a rope_scaling property on a build that had none"
-        )
+        assert (
+            _rope_scaling_property_owner() is None
+        ), "the fix created a rope_scaling property on a build that had none"
         return
     before = owner.__dict__["rope_scaling"]
     fix_transformers_rope_scaling_drops_theta()
@@ -1094,9 +1094,9 @@ def test_rope_scaling_setter_patch_is_idempotent():
     assert after is before, "DRIFT DETECTED: the rope_scaling property was replaced twice."
     inner = getattr(after.fset, "__wrapped__", None)
     assert inner is not None, "the patched setter must keep the original reachable"
-    assert not getattr(inner, _ROPE_SCALING_PATCH_FLAG, False), (
-        "DRIFT DETECTED: the rope_scaling setter is wrapped twice."
-    )
+    assert not getattr(
+        inner, _ROPE_SCALING_PATCH_FLAG, False
+    ), "DRIFT DETECTED: the rope_scaling setter is wrapped twice."
 
 
 def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
@@ -1180,9 +1180,9 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     parameters = {"rope_type": "default"}
     config = SimpleNamespace(rope_parameters = parameters, rope_theta = 10000.0)
     assert carry(config, 1000000.0) == 10000.0
-    assert config.rope_theta == 10000.0, (
-        "the carry overwrote a base frequency the caller set deliberately"
-    )
+    assert (
+        config.rope_theta == 10000.0
+    ), "the carry overwrote a base frequency the caller set deliberately"
     assert parameters["rope_theta"] == 10000.0
 
 

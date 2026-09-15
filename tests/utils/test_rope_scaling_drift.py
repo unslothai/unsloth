@@ -546,9 +546,7 @@ def test_object_style_rope_scaling_on_config_delegates_correctly():
 
 def _linear_inv_freq(base, factor):
     """transformers' linear RoPE, written out, so a base can be asserted directly."""
-    inv_freq = 1.0 / (
-        base ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM)
-    )
+    inv_freq = 1.0 / (base ** (torch.arange(0, HEAD_DIM, 2, dtype = torch.int64).float() / HEAD_DIM))
     return inv_freq / factor
 
 
@@ -571,9 +569,7 @@ def test_replacing_rope_scaling_keeps_the_base_frequency():
     replaced = _make_config(dict(scaling))
     replaced.rope_scaling = dict(scaling)
     inv_freq, _attention_factor = ROPE_INIT_FUNCTIONS["linear"](replaced, torch.device("cpu"))
-    assert torch.allclose(
-        inv_freq.float().cpu(), expected.float().cpu(), rtol = 1e-4, atol = 1e-6
-    ), (
+    assert torch.allclose(inv_freq.float().cpu(), expected.float().cpu(), rtol = 1e-4, atol = 1e-6), (
         "replacing config.rope_scaling lost the RoPE base frequency, so scaled models "
         "run with the wrong inverse frequencies (issue #2405).\n"
         f"got[:6]={inv_freq[:6].tolist()}\nexpected[:6]={expected[:6].tolist()}"

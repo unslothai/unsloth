@@ -143,9 +143,7 @@ def test_a_missing_triton_does_not_fail_in_gpu_init():
     _needs_unsloth()
     result = _import_without_triton()
     combined = result.stdout + result.stderr
-    triton_frames = [
-        line for line in combined.splitlines() if line.startswith("TRITON_FRAME ")
-    ]
+    triton_frames = [line for line in combined.splitlines() if line.startswith("TRITON_FRAME ")]
     offending = [line for line in triton_frames if GPU_INIT_NAME in line]
     assert not offending, (
         "importing unsloth without triton still raises at the `import triton` in "
