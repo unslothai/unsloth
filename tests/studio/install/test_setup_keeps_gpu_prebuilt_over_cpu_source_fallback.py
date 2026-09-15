@@ -38,8 +38,9 @@ _FUNCTIONS = (
 _HARNESS = """
 set -u
 . "$1"
-# Stubbed: the real one reads this host's /sys/class/drm.
+# Stubbed: the real ones read this host's /sys/class/drm and start llama-server.
 _setup_has_intel_gpu() { [ "${_setup_intel_gpu:-false}" = true ]; }
+_installed_prebuilt_runs() { [ "${_setup_prebuilt_runs:-true}" = true ]; }
 if _kept="$(_gpu_prebuilt_to_keep_over_cpu_build "$2")"; then
     printf 'KEEP %s' "$_kept"
 else
@@ -154,6 +155,44 @@ class TestTheKeepDecision:
         install_dir = _install(tmp_path, marker)
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
 
+    @pytest.mark.parametrize(
+        ("marker", "backend"),
+        [
+            (
+                {"llama_backend": "vulkan", "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz"},
+                "vulkan",
+            ),
+            ({"llama_backend": "hip", "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz"}, "rocm"),
+            ({"asset": "app-b6210-linux-x64-cuda12.tar.gz"}, "cuda"),
+            ({"asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz"}, "rocm"),
+            ({"llama_backend": "auto", "asset": "app-b1-linux-x64-cuda13-newer.tar.gz"}, "cuda"),
+        ],
+        ids = ["llama_backend", "hip-spelling", "asset-cuda", "asset-rocm", "auto-request"],
+    )
+    def test_a_legacy_marker_names_its_backend_elsewhere(self, tmp_path, marker, backend):
+        # Shapes from before #8520 (tests/studio/install/test_keep_install_backcompat_9979.py).
+        install_dir = _install(tmp_path, marker)
+        both = {"_setup_nvidia_physical": "true", "_setup_amd_detected": "true"}
+        assert _decide(tmp_path, install_dir, **both) == f"KEEP {backend}"
+
+    def test_a_legacy_cpu_marker_is_replaced(self, tmp_path):
+        install_dir = _install(tmp_path, {"asset": "llama-b6099-bin-ubuntu-x64.tar.gz"})
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+        install_dir = _install(
+            tmp_path, {"backend": "sycl", "asset": "app-b1-linux-x64-cuda12.tar.gz"}
+        )
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+
+    def test_a_prebuilt_that_no_longer_runs_is_replaced(self, tmp_path):
+        # A quarantined library leaves the marker and the executable behind.
+        install_dir = _install(tmp_path, {"backend": "cuda"})
+        assert (
+            _decide(
+                tmp_path, install_dir, _setup_nvidia_physical = "true", _setup_prebuilt_runs = "false"
+            )
+            == "REPLACE"
+        )
+
     def test_a_tree_without_a_server_is_not_worth_keeping(self, tmp_path):
         install_dir = _install(tmp_path, {"backend": "cuda"}, server = False)
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
@@ -191,6 +230,18 @@ def test_the_decision_runs_again_at_the_swap():
     assert '[ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]' in window
     assert '_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR"' in window
     assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=true" in window
+
+
+def test_the_kept_tree_is_validated_the_way_a_source_build_is():
+    keep = _between("_gpu_prebuilt_to_keep_over_cpu_build() {", "\n}\n")
+    assert '_installed_prebuilt_runs "$install_dir" || return 1' in keep
+    runs = _between("_installed_prebuilt_runs() {", "\n}\n")
+    assert '--validate-install "$1"' in runs and '"$_rc" -eq 4' in runs
+
+
+def test_an_intel_host_on_cpu_is_named_too():
+    window = _between("caught here, after the fact", "# Swap only after build succeeds")
+    assert "_setup_has_intel_gpu" in window
 
 
 def test_a_kept_prebuilt_is_not_reported_as_a_failed_build():

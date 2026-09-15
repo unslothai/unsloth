@@ -2935,18 +2935,47 @@ _has_local_llama_server() {
 }
 
 # The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
+# `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
 _installed_prebuilt_backend() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
     python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
 import json
 import sys
 
+KNOWN = ("cuda", "rocm", "vulkan", "cpu")
 try:
-    backend = json.load(open(sys.argv[1], encoding="utf-8")).get("backend")
+    marker = json.load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
-    backend = None
-print(backend.strip().lower() if isinstance(backend, str) else "")
+    marker = {}
+if not isinstance(marker, dict):
+    marker = {}
+def _field(key):
+    value = marker.get(key)
+    value = value.strip().lower() if isinstance(value, str) else ""
+    return "rocm" if value == "hip" else value
+
+# A recorded backend is final, known to this script or not; llama_backend was the request.
+answer = _field("backend")
+if not answer and _field("llama_backend") in KNOWN:
+    answer = _field("llama_backend")
+if not answer:
+    asset = marker.get("asset")
+    asset = asset.lower() if isinstance(asset, str) else ""
+    for value in KNOWN:
+        if f"-{value}" in asset or (value == "rocm" and "-hip" in asset):
+            answer = value
+            break
+print(answer)
 PY
+}
+
+# The same smoke test the source build gets: a tree with a marker and an executable is
+# not proof it still loads (a quarantined library, a stripped runtime file).
+_installed_prebuilt_runs() {
+    local _rc=0
+    python "$SCRIPT_DIR/install_llama_prebuilt.py" --validate-install "$1" >/dev/null 2>&1 || _rc=$?
+    # 4 is a full disk, which cannot be read as a bad install; the CPU rebuild needs more.
+    [ "$_rc" -eq 0 ] || [ "$_rc" -eq 4 ]
 }
 
 # An Intel GPU by DRM vendor id, the probe the prebuilt router uses for the Vulkan route.
@@ -2973,6 +3002,7 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
                 || _setup_has_intel_gpu || return 1 ;;
         *) return 1 ;;
     esac
+    _installed_prebuilt_runs "$install_dir" || return 1
     printf '%s' "$backend"
 }
 
@@ -3856,7 +3886,8 @@ else
             if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
                 step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source build fell back to the CPU" "$C_WARN"
                 BUILD_OK=false
-            elif [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ]; then
+            elif [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ] \
+                    || _setup_has_intel_gpu; then
                 _LLAMA_CPU_ONLY_ON_GPU_HOST=true
             fi
         fi
