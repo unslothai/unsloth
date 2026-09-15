@@ -82,7 +82,28 @@ function Submit-ToCompiler {
         $null = [scriptblock]::Create($Text)
     } catch {
         $result.errorType = $_.Exception.GetType().FullName
-        $result.errorId = [string]$_.FullyQualifiedErrorId
+        # The OUTER record is useless for this decision. Calling a .NET static method from
+        # PowerShell wraps whatever it threw in a MethodInvocationException whose
+        # FullyQualifiedErrorId is the generic 'ParseException', while the id that says WHY -- and
+        # so whether a scanner refused this or the script simply does not parse -- lives on the
+        # inner ParseException's Errors collection. Verified by execution: a deliberate syntax error
+        # gives outer 'ParseException' and inner ErrorId 'IfStatementMissingCondition'. Matching the
+        # outer id alone meant ScriptContainedMaliciousContent was never seen, so not even the
+        # positive control could fire and the lane could only ever report that it had not measured.
+        $ids = New-Object System.Collections.Generic.List[string]
+        $ids.Add([string]$_.FullyQualifiedErrorId)
+        $inner = $_.Exception
+        while ($inner) {
+            if ($inner.PSObject.Properties.Name -contains 'Errors' -and $inner.Errors) {
+                foreach ($e in $inner.Errors) {
+                    if ($e.ErrorId) { $ids.Add([string]$e.ErrorId) }
+                }
+            }
+            $inner = $inner.InnerException
+        }
+        # Joined, so the recorded id still reads usefully in the summary and a match below can key
+        # on any level of the chain.
+        $result.errorId = ($ids | Where-Object { $_ } | Select-Object -Unique) -join '/'
         # Truncated: a provider can echo a long span of the submitted script back, and the whole
         # point of this work is to avoid writing suspicious-looking text into files.
         $msg = [string]$_.Exception.Message

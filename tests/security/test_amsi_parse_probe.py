@@ -814,3 +814,50 @@ def test_the_defender_lane_does_not_claim_block_at_first_sight() -> None:
     assert "ON-DEMAND cloud scan" in body, (
         "the lane no longer says what kind of cloud scan it actually performed"
     )
+
+
+def test_the_probe_reports_the_inner_parse_error_id(tmp_path: Path) -> None:
+    """The outer record carries only the generic `ParseException`.
+
+    Calling a .NET static method from PowerShell wraps whatever it threw in a
+    `MethodInvocationException`, so `$_.FullyQualifiedErrorId` on the outer record is
+    `ParseException` no matter why the parse failed. The id that distinguishes a scanner refusal
+    (`ScriptContainedMaliciousContent`) from an ordinary syntax error lives on the inner
+    `ParseException`'s `Errors` collection. Matching only the outer id meant nothing was ever
+    recognised as blocked, including the positive control, so the lane could only report that it
+    had not measured.
+
+    Driven through the shipped probe against a real syntax error, because that is the one inner id
+    this host can produce without an AMSI provider.
+    """
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    bad = tmp_path / "broken.ps1"
+    bad.write_text("if (\n", encoding = "utf-8")
+    out = tmp_path / "result.json"
+    done = run_pwsh(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(PROBE),
+            "-Path",
+            str(bad),
+            "-OutFile",
+            str(out),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 180,
+    )
+    assert out.exists(), f"the probe wrote no result:\n{done.stdout}\n{done.stderr}"
+    data = json.loads(out.read_text(encoding = "utf-8"))
+    row = next(r for r in data["results"] if not str(r["label"]).startswith("control"))
+    assert row["blocked"] is False, "a syntax error was misreported as a scanner verdict"
+    assert "IfStatementMissingCondition" in str(row["errorId"]), (
+        f"the probe recorded only the outer generic id, so a real AMSI refusal would be invisible "
+        f"too: {row['errorId']!r}"
+    )
