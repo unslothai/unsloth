@@ -50,32 +50,18 @@ except (OSError, TypeError, AttributeError):  # pragma: no cover
 
 @functools.lru_cache(maxsize = 1)
 def abstract_scope_supported() -> bool:
-    """Whether the scope can actually be APPLIED here, not whether the ABI has it.
+    """Cache whether a child can apply the scope, not just query its ABI.
 
-    The two differ, and the difference disqualified a working sandbox. An outer
-    sandbox or an exhausted nesting limit lets the ABI query succeed while
-    create_ruleset or restrict_self is denied; apply_abstract_scope() cannot
-    report that, since it runs post-fork in the child. Both callers then behaved
-    as if the scope were in force: LIMITATIONS dropped
-    host_abstract_sockets_reachable, and the probe armed a negative control that
-    could not pass, so the whole bubblewrap backend was reported unavailable and
-    auto gave up filesystem and PID isolation it could have had.
-
-    So this proves it in a forked child that applies the scope for real. The
-    child is where restrict_self is irreversible, which is exactly why the answer
-    cannot be taken in this process. Cached: it costs a fork, both callers ask,
-    and it cannot change without a restart.
+    Outer sandboxes and nesting limits can deny application. Probe in a child
+    because restrict_self is irreversible. Failure retains the abstract-socket
+    limitation without disabling filesystem and PID isolation.
     """
     if _libc is None:
         return False
     if not _abi_reports_scope():
         return False
-    # The listener is bound HERE, in the unscoped parent, so it sits outside the
-    # child's Landlock domain. That is the whole test: the scope stops a domain
-    # reaching sockets outside itself and leaves its own alone, so a child that
-    # binds and connects its own name is permitted and proves nothing. Measured:
-    # scoped child -> parent's socket is EPERM, scoped child -> its own socket
-    # connects.
+    # Bind in the unscoped parent: the child may reach its own sockets, but must
+    # not reach sockets outside its Landlock domain.
     import socket as _socket
 
     name = b"\0unsloth-scope-" + os.urandom(6).hex().encode()
@@ -110,14 +96,8 @@ def abstract_scope_supported() -> bool:
     os.close(write_fd)
     answer = b""
     try:
-        # Deadlined, and the child is killed rather than waited on: this forks a
-        # MULTITHREADED server, and the child then runs real Python and libc
-        # work, so a lock another thread held at fork time can leave it never
-        # writing and never exiting. An unbounded read here is not one hung
-        # probe, it is every tool call for the life of the process, since the
-        # capability is asked for before any of them and the answer is cached.
-        # No answer is a NO: the scope is unproven, LIMITATIONS keeps
-        # host_abstract_sockets_reachable, and the launch still happens.
+        # A forked child can deadlock on inherited locks. Bound the read and kill
+        # a stalled child; timeout leaves the scope unproven, not tools disabled.
         if select.select([read_fd], [], [], _PROBE_TIMEOUT_SECONDS)[0]:
             answer = os.read(read_fd, 1)
     except OSError:
@@ -159,17 +139,10 @@ def _abi_reports_scope() -> bool:
 
 
 def apply_abstract_scope() -> None:
-    """Runs in the forked child, so it must never raise or log. Success cannot be
-    inferred from the ABI version, since an outer sandbox or the nesting limit can
-    still deny restrict_self; the live probe decides.
+    """Apply in the forked child without raising or logging; the probe checks success.
 
-    Everything allocatable is built at IMPORT and reused here. This is a pre-exec,
-    so it runs after fork() in a process whose other threads are gone but whose
-    locks are not, and an allocation that wants one of them deadlocks the child
-    before exec -- where Popen is still waiting on the error pipe and its own
-    timeout has not started. That does not make this async-signal-safe, which no
-    Python pre-exec is, but it is the difference between the work this adds and
-    the setsid the tool launches already did on main.
+    Reuse import-time allocations to reduce inherited-lock deadlocks before
+    exec, when Popen's timeout has not started. This is not async-signal-safe.
     """
     if _libc is None:
         return

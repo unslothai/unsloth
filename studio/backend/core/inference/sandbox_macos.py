@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The macOS half of the tool sandbox: a Seatbelt profile driven by sandbox-exec.
+"""Default-deny Seatbelt profiles for sandbox-exec.
 
-``(deny default)``. IP egress is deliberately unconfined, matching Linux;
-AF_UNIX is not, because a connect() to a host socket such as Docker's is
-governed by no file rule. Three hazards are invisible until they bite (dual path
-spellings, ancestor metadata, optional literals), each commented where it is
-implemented, and only ``test_profile_compiles_under_sandbox_exec`` checks the
-SBPL grammar, on Darwin only.
+IP egress is unrestricted. AF_UNIX needs separate rules because file rules do
+not block socket connections. SBPL grammar is tested on Darwin.
 """
 
 from __future__ import annotations
@@ -89,11 +85,7 @@ _READ_ROOTS = (
 )
 # SYSTEM keychains only; the login keychain stays unreadable.
 _TLS_TRUST_PATHS = (
-    # The PUBLIC components one by one, never /etc/ssl whole. A locally managed
-    # OpenSSL keeps its private keys in a directory beside the certificates, and
-    # this grants recursive file-read* while the network stays open, so a whole
-    # -tree rule is an exfiltratable key. The Linux backend names them separately
-    # for exactly this reason and macOS did not, which is the asymmetry here.
+    # Allow public TLS components individually; /etc/ssl can also hold private keys.
     "/private/etc/ssl/cert.pem",
     "/private/etc/ssl/certs",
     "/private/etc/ssl/openssl.cnf",
@@ -118,9 +110,8 @@ _OPTIONAL_READ_ROOTS = (
 )
 # Homebrew prefixes are user-owned; check target containment rather than ownership.
 _OPTIONAL_ROOT_PREFIXES = ("/usr/local", "/opt/homebrew")
-# HAZARD 3, optional literals. Under (deny default) an absent file yields
-# EPERM rather than ENOENT and git aborts, and the existence-filtered path
-# rules cannot carry these.
+# Allow missing optional files so git gets ENOENT, not a fatal EPERM.
+# Existence-filtered rules would omit these paths.
 _OPTIONAL_READ_LITERALS = (
     "/etc/gitconfig",
     "/etc/gitattributes",
@@ -273,12 +264,11 @@ def _rule(operations: str, filters: list[str]) -> str:
 
 
 def _sbpl_spellings(path: str, *, resolve: bool = True) -> tuple[str, ...]:
-    """HAZARD 1, dual path spellings. /etc, /tmp and /var are symlinks into
-    /private and Seatbelt evaluates the spelling it was GIVEN, so a rule written
-    against only one form EPERMs anything using the other. Both are generated
-    rather than trusted to realpath, so the pair is complete where the symlink is
-    missing. ``resolve = False`` drops the target, so an /etc/gitconfig symlinked
-    into ~/dotfiles cannot put a home path in the read set."""
+    """Include both /private aliases even when the symlink is absent.
+
+    Seatbelt needs both spellings. ``resolve = False`` excludes symlink targets,
+    preventing an /etc/gitconfig link from granting access to home files.
+    """
     selected = [posixpath.abspath(_validated(path))]
     if resolve:
         # Validated: a newline in a symlink target would end up inside a quoted string.
@@ -328,11 +318,10 @@ def _literal_filters(paths: tuple[str, ...], *, resolve: bool = True) -> list[st
 
 
 def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
-    """HAZARD 2, ancestor metadata. Resolving /a/b/c stats /a and /a/b, so a
-    readable leaf with un-stat-able ancestors fails mid-path with EPERM.
-    file-read-metadata only, so the directories stay unlistable. Takes spellings,
-    not paths, so the caller decides whether symlinks were followed. posixpath,
-    since on Windows ntpath.dirname("/") returns "/" but os.path.sep does not."""
+    """Allow ancestor metadata for path resolution, without directory listing.
+
+    Accept caller-resolved spellings; use posixpath for Windows-hosted tests.
+    """
     filters: list[str] = []
     seen: set[str] = set()
     for spelling in spellings:
@@ -350,12 +339,7 @@ def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
 
 
 def _trusted_system_dir(path: str) -> bool:
-    """A real directory owned by root that no one else can write.
-
-    The toolchain is granted recursive reads, so "it exists" is not enough: the
-    point of the check is that a path the invoking user controls cannot be turned
-    into a read rule over their own home.
-    """
+    """Require a root-owned directory writable only by root before granting reads."""
     try:
         info = os.stat(path)
     except OSError:
@@ -405,15 +389,10 @@ def _developer_paths() -> tuple[str, ...]:
 
 
 def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
-    """*workdir* is excluded by ORIGIN: dropping only the resolved form would skip
-    ``<workdir>/venv/lib`` and grant file-read* on the ~/.ssh behind it.
+    """Exclude candidates under either workdir spelling before resolving them.
 
-    Both SPELLINGS of the workdir, for the mirror image of the Linux twin's case:
-    there sys.prefix held the alias and the caller passed the canonical root,
-    here the caller passes the alias and sys.prefix or sysconfig may hold the
-    canonical one. Either way a lexical test against one spelling does not see a
-    candidate written in the other, and the loop then resolves it and adds
-    whatever is behind it to the read roots.
+    Otherwise a venv/lib symlink could grant reads of an external target such as
+    ~/.ssh. sys.prefix may retain either spelling, independently of the caller.
     """
     candidates: list[str] = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),

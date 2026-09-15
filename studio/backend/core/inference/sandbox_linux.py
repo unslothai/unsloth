@@ -128,12 +128,9 @@ _NIX_STORE = "/nix/store"
 
 
 def _trusted_system_file(path: str) -> bool:
-    """A real, root-owned, non-user-writable regular file, reached without a symlink.
+    """Require a root-owned, non-user-writable regular file with no symlink hops.
 
-    The point of the checks is that this path is bound into a jail whose whole
-    claim is that the user's home is not readable. An /etc/gitconfig that is a
-    symlink into $HOME, or that the invoking user can rewrite, would carry
-    whatever they aimed it at straight back in.
+    Otherwise a config bind could expose a user-controlled path outside the jail.
     """
     try:
         info = os.lstat(path)
@@ -262,15 +259,10 @@ def _runtime_read_paths(
     system_roots: tuple[str, ...],
     alias: str | None = None,
 ) -> tuple[str, ...]:
-    """Asked of the interpreter, not ``sys.path``, which carries whatever the
-    caller inherited.
+    """Find runtime roots from the interpreter, not inherited ``sys.path``.
 
-    *alias* is the caller's spelling of the workdir when it differs from the
-    canonical one. The as-written exclusion below has to see both: a venv reached
-    through a symlinked workdir keeps the ALIAS in sys.prefix, which is not
-    lexically beneath the canonical root, so <alias>/venv/lib was not excluded
-    and the loop then bound whatever it resolved to -- a ~/.ssh behind it
-    included, which is the exact case the exclusion exists to stop.
+    Exclude both workdir spellings before resolving candidates. Otherwise a
+    venv under *alias* could expose an external symlink target such as ~/.ssh.
     """
     # All four: for a uv-managed interpreter base_prefix and base_exec_prefix are
     # different spellings, and lib-dynload hangs off the alias one alone.
@@ -580,11 +572,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--bind", workdir, inner]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
-        # After BOTH writable binds, and at BOTH spellings. A read-only mount
-        # placed before the second bind is hidden by it, and one placed at a
-        # spelling the jail has not bound yet has no mount point to land on:
-        # bwrap then dies with "Can't mkdir parents ... Read-only file system"
-        # and the launch fails outright. See _runtime_paths_under.
+        # Protect both runtime spellings after both writable binds, so neither
+        # hides the protection or leaves its mount point missing.
         for path in workdir_runtime_paths:
             argv += ["--ro-bind", path, path]
             if inner != workdir:

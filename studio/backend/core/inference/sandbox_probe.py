@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The live probe that decides whether a sandbox backend actually confines anything.
+"""Validate isolation against controls first verified on the host.
 
-Every control is paired with the same control run on the HOST first, so a typo
-in a path cannot read as a boundary, nor a quirk of the machine as a breakage.
-
-"A write outside the workdir must raise" is wrong: bwrap mounts a private tmpfs
-over /tmp, where this probe's scratch root usually lives. What must not happen
-is the byte arriving on the host, checked from out here after the run.
+Check outside writes from the host: a private tmpfs may accept a write without
+changing host files, so requiring an exception would reject valid isolation.
 """
 
 from __future__ import annotations
@@ -94,13 +90,9 @@ def must_raise(label, fn):
 def _negative_controls(
     sentinel: str, escape: str, outside: str, interpreter_writable: bool, abstract: "bytes | None"
 ) -> str:
-    """What a confined process must NOT be able to do.
+    """Attempt direct and symlink sentinel reads, an outside write, and socket access.
 
-    The sentinel is read twice, directly and through a workdir symlink, since a
-    boundary drawn on a path's spelling lets the second one out. The outside write
-    is NOT required to raise (a private tmpfs may accept it); the host decides
-    afterwards. The abstract-socket leg proves the Landlock scope took hold,
-    which the ABI version cannot say.
+    The host checks write escapes; the socket check verifies applied Landlock scope.
     """
     interpreter_leg = ""
     if interpreter_writable:

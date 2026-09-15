@@ -193,15 +193,8 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     """Asserted about the OUTER process: under bubblewrap the payload is not a
     session leader, so asking it about its own sid only passes on a fallback."""
-    # One call OUTSIDE the window first. Everything this platform initialises
-    # lazily then happens before anything is counted: the capability probe spawns
-    # a real launch, and on macOS _developer_paths() shells out to xcode-select.
-    # Both are one-time, and counting them made this fail 4 == 2 on macos-14
-    # while passing on Linux. What the assertion is for is per-CALL behaviour, so
-    # a warm-up is what separates the two: a genuine per-call spawn survives it,
-    # which is how the extra fork this test caught before was found.
-    # Both kinds, since the terminal path initialises its own shell lookup and a
-    # python-only warm-up left that inside the window.
+    # Warm both executors before counting per-call spawns. Capability probes,
+    # xcode-select and shell discovery are one-time initialization costs.
     tools._python_exec("pass", None, 60, _SESSION)
     tools._bash_exec("true", None, 60, _SESSION)
 
@@ -218,11 +211,8 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    # Tool launches carry a pre-exec; the bookkeeping spawns do not. macOS adds a
-    # `ps` liveness check per call, which no warm-up removes because it is not a
-    # one-time cost, and counting it made this fail 4 == 2 there while passing on
-    # Linux. Both halves are asserted, so an extra TOOL launch still fails the
-    # count and an extra bookkeeping spawn has to be a known one.
+    # Count pre-exec tool launches separately from known bookkeeping spawns,
+    # including macOS's per-call ps liveness check.
     launches = [preexec for _, preexec in seen if preexec is not None]
     bookkeeping = [argv for argv, preexec in seen if preexec is None]
     # The argv is in the message because a count alone cannot say WHICH extra

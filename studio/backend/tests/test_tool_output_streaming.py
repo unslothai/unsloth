@@ -88,21 +88,11 @@ def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
 
 
 def _os_isolated_tools() -> bool:
-    """Whether a tool launch on this host is reaped by its own PID namespace.
+    """Whether PID-namespace teardown reaps descendants when the leader exits.
 
-    The grandchild tests below all reproduce the same pathology: the foreground
-    leader exits while a detached descendant still holds stdout, and tools.py has
-    to kill the process group it captured or that descendant runs on. Inside a
-    PID namespace the kernel does that teardown itself, the moment the leader
-    exits, so the pathology cannot be staged and the call returns with the
-    leader's output instead of a timeout or a cancellation. The invariant is the
-    same on both paths and is asserted on both: nothing of the tool call outlives
-    it. Only the mechanism, and therefore the result string, differs.
-
-    Keyed on the backend's own limitation, not on "is a sandbox available":
-    Seatbelt is available and has no PID namespace, and says so by reporting
-    detached_descendant_cleanup_unverified. A macOS host therefore behaves like
-    the unisolated path here and has to take the unisolated expectations.
+    This changes expected output from timeout/cancellation to the leader's output,
+    but descendants must die either way. Check the capability flag, not sandbox
+    availability: Seatbelt has no PID namespace.
     """
     from core.inference import os_sandbox
 

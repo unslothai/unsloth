@@ -47,7 +47,7 @@ _FULL_SAFEGUARDS = ("timeout", "cancellation", "reaping", "cleanup")
 
 
 class SandboxUnavailableError(RuntimeError):
-    """``required`` on a host that cannot provide it. Never raised in ``auto``."""
+    """OS isolation is unavailable or the requested launch was refused."""
 
     def __init__(
         self,
@@ -89,7 +89,7 @@ class SandboxCapability:
 
 @dataclass(frozen = True)
 class ToolExecutionRecord:
-    """``requested_mode`` and ``effective_mode`` differ exactly when ``auto`` fell back."""
+    """Record the requested policy and the isolation and safeguards actually applied."""
 
     requested_mode: ToolExecutionMode
     effective_mode: str
@@ -187,13 +187,11 @@ CACHE_SCAN_SECONDS = 3.0
 
 
 def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | None:
-    """Why *root* carries a way out of itself, or None. Never raises.
+    """Return a host-access hazard under *root*, or None; never raise.
 
-    A socket or device node under it is a channel no path rule closes, a hard link
-    to an inode also named outside is a writable path out, and a nested mount is
-    storage both backends grant writes across. *root* being a mount point itself
-    is fine. Sockets, FIFOs and exceeding the budget count even though a tool call
-    can create them, since the scan cannot tell those apart from the host's.
+    Reject sockets, devices, FIFOs, external hard links, nested mounts and scan overruns.
+    Tool-created entries cannot be distinguished from host entries. The root
+    itself may be a mount point.
     """
     deadline = time.monotonic() + seconds
     entries = 0
@@ -244,18 +242,11 @@ def scan_workdir_for_host_channels(workdir: str) -> None:
 
 
 def cache_share_hazard(path: str) -> str | None:
-    """Why this host cache directory must not be shared into the jail, or None.
+    """Return a reason not to share this writable cache component, or None.
 
-    Same hazards as the workdir and for the same reason: the model cache is bound
-    WRITABLE, so a pathname socket under it is connectable from inside (a
-    read-only bind does not stop connect(), and the network namespace is shared),
-    and a file hard-linked to one outside the cache is writable through the cache
-    name. Both measured before this existed.
-
-    A hazard DROPS the component from the binds rather than failing the launch.
-    The cache is an optimisation: without it the call re-downloads, which is what
-    every call did before the cache was shared at all. Refusing instead would let
-    anything able to write one socket into the cache end every later tool call.
+    Apply the workdir's host-access checks: sockets and hard links can expose
+    host resources. Unsafe components are omitted, not launch failures, so a
+    planted socket cannot disable later calls. Missing caches are re-downloaded.
     """
     return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS)
 

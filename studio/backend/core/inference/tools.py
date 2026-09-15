@@ -9265,10 +9265,7 @@ def _note_tool_execution(record) -> None:
 
 
 def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
-    """``disable_sandbox`` is the ONLY way to reach "full": the safe environment,
-    the analysis and the rlimit pre-exec are all selected from it before this is
-    consulted, so a caller-supplied "full" would skip only the OS sandbox and
-    then label the run "security restrictions disabled"."""
+    """Require disable_sandbox for full access; it also selects env and software guards."""
     if disable_sandbox:
         return "full"
     if tool_execution_mode == "full":
@@ -9281,23 +9278,14 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 
 
 def _with_session_packages(env: dict, workdir: str) -> dict:
-    """Only when ``<workdir>/.unsloth-packages`` already exists, so a host that
-    never isolated is handed back exactly the environment it handed in. The bin
-    directory goes LAST on PATH: it is writable by the tool call, and a planted
-    binary must not shadow a bare command the approval logic allows."""
+    """Reuse existing session packages without letting their binaries shadow PATH."""
     packages = os.path.join(workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
     if not os.path.isdir(packages):
         return env
     updated = dict(env)
-    # site imports `usercustomize` from sys.path at interpreter startup whenever
-    # ENABLE_USER_SITE is on, which it is for any non-venv interpreter. This
-    # directory is writable by the tool call, so without this a call could leave a
-    # usercustomize.py behind and have it execute on the host at the START of
-    # every later unisolated call, before that call's own script was analysed.
-    # Measured on a system python3: the payload ran ahead of the script, and this
-    # variable is what stops it. `sitecustomize` needs no equivalent because
-    # _build_safe_env puts the shim directory FIRST on PYTHONPATH, so the shipped
-    # one is found before anything planted here; the test pins that ordering.
+    # Block planted usercustomize.py from running before analysis on later
+    # unisolated calls. In safe mode, the trusted sitecustomize shim stays first
+    # on PYTHONPATH so a planted copy cannot shadow it.
     updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
         ("PYTHONPATH", packages),
@@ -9308,7 +9296,7 @@ def _with_session_packages(env: dict, workdir: str) -> dict:
 
 
 def _software_safeguards_launch(plan, fault: str):
-    """Byte-identical to main, with *fault* named in the record as the reason."""
+    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
     full = plan.requested_mode == "full"
     return os_sandbox.PreparedSandboxLaunch(
         argv = plan.argv,
@@ -9348,15 +9336,14 @@ def _software_safeguards_launch(plan, fault: str):
 
 
 def _prepare_tool_launch(plan):
-    """``auto`` cannot fail: the sandbox machinery breaking becomes a
-    software-safeguards launch. A backend REFUSING a workdir is not covered by
-    that; see the handler."""
+    """Allow auto fallback for unavailable backends or unexpected planner errors.
+
+    Unsafe workdirs and backend construction failures always refuse execution.
+    """
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
-            # A dropped pre-exec leaves the OUTER process in Unsloth's own
-            # group, and every kill path here is killpg based, so a tool timeout
-            # would SIGKILL the server. Silent until that first timeout.
+            # Preserve setsid so timeout cleanup cannot kill the server's process group.
             logger.warning(
                 "Sandbox backend %s dropped the launch pre-exec; restoring it",
                 prepared.backend,
@@ -9367,10 +9354,7 @@ def _prepare_tool_launch(plan):
             prepared.env = _with_session_packages(prepared.env, plan.workdir)
         return prepared
     except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
-        # Answering these by running on the host hands model-authored code a
-        # switch for its own boundary. Told apart by TYPE, since a transient
-        # probe failure would re-open the very channel the scan just found.
-        # SandboxBuildError rides along: its errno is reachable from in the jail.
+        # These failures can be tool-induced; fallback would let code remove its own boundary.
         raise
     except os_sandbox.SandboxUnavailableError:
         # Any other refusal means the backend stopped being available.
@@ -9383,7 +9367,7 @@ def _prepare_tool_launch(plan):
             exc_info = True,
         )
         return _software_safeguards_launch(plan, "sandbox_became_unavailable")
-    except Exception as exc:  # noqa: BLE001 - auto never refuses; see the docstring
+    except Exception as exc:  # noqa: BLE001 - auto falls back on unexpected planner errors
         logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
         if plan.requested_mode == "required":
             raise os_sandbox.SandboxUnavailableError(
