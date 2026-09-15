@@ -197,7 +197,21 @@ from hub.utils.host_paths import redact_host_paths, scrub_paths
 from utils.utils import anonymous_and_offline
 
 
-_UNAUTHORIZED_OFFLINE = "This request cannot be authorized without network access."
+# Says both halves, because with the local cache no longer gated on reaching the Hub, this is
+# what reaching here means: the credential could not be established AND the repo is not on this
+# disk. The earlier wording sent operators looking for a credential problem that was not there.
+_UNAUTHORIZED_OFFLINE = (
+    "This request cannot be authorized without network access, and this repository is not in "
+    "the local cache."
+)
+
+# Reached when the operator's disk could answer this read and this caller may not. Says which of
+# the two it is: "unauthorized" alone reads as a broken credential, and the repository refusing
+# this caller is not the same thing as the caller having sent the wrong token.
+_UNAUTHORIZED_CACHED_MODEL = (
+    "This model is cached on this host, but this repository does not authorize this caller to "
+    "read it."
+)
 
 
 def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
@@ -2220,7 +2234,9 @@ async def get_model_config(
         ):
             # Inside the context, not before: the guard forces offline itself when the hub
             # is unreachable, and every probe below then resolves from disk.
-            if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+            if not is_local_path(model_name) and anonymous_and_offline(
+                hf_token, repo_id = canonical_model_repo_id(model_name)
+            ):
                 raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
             if not is_local_path(model_name):
                 resolved = resolve_cached_repo_id_case(model_name)
@@ -2378,7 +2394,9 @@ async def scan_model_remote_code(
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     # Offline the scanner's hf_hub_download calls resolve config.json and the repo's
     # Python out of the cache, and the response carries source snippets.
-    if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+    if not is_local_path(model_name) and anonymous_and_offline(
+        hf_token, repo_id = canonical_model_repo_id(model_name)
+    ):
         raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
     try:
         from utils.security import (
@@ -2430,7 +2448,7 @@ async def scan_model_remote_code(
         ):
             raise HTTPException(
                 status_code = 404,
-                detail = "This model is not available to an unauthorized caller.",
+                detail = _UNAUTHORIZED_CACHED_MODEL,
             )
         scan_target = model_name
         exact_snapshot_path = (
@@ -2520,7 +2538,7 @@ async def scan_model_remote_code(
             ):
                 raise HTTPException(
                     status_code = 404,
-                    detail = "This model is not available to an unauthorized caller.",
+                    detail = _UNAUTHORIZED_CACHED_MODEL,
                 )
             if _target not in consent_load_subdirs:
                 security_targets.append(_target)
@@ -2572,7 +2590,7 @@ async def scan_model_remote_code(
                 ):
                     raise HTTPException(
                         status_code = 404,
-                        detail = "This model is not available to an unauthorized caller.",
+                        detail = _UNAUTHORIZED_CACHED_MODEL,
                     )
                 external_refs.append(_ext)
                 _mark_scan_created(_ext)

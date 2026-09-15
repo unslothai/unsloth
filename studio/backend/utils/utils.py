@@ -35,10 +35,33 @@ def hf_env_offline() -> bool:
     return False
 
 
-def anonymous_and_offline(hf_token) -> bool:
-    """The one condition under which a Hub-reaching request can only be answered by disk. ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets both resolve a previously downloaded private repo without ever authorizing, and a caller holding the anonymous sentinel has no network to establish access over, so every downstream read is a disk read it never earned. Guarding this at the route entry rather than at each call site is deliberate: the per-site version was fixed six times (the snapshot walk, the config probes, the embedding marker, the GGUF listing, the preview slices, AutoConfig) and each fix only moved the boundary to the next reader, so this states the rule once, before any of them run."""
-    from hub.utils.hf_tokens import is_anonymous
-    return is_anonymous(hf_token) and hf_env_offline()
+def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
+    """The one condition under which a Hub-reaching request can only be answered by disk. ``token=False`` denies authentication, not the cache: offline, huggingface_hub and datasets both resolve a previously downloaded private repo without ever authorizing, and a caller holding the anonymous sentinel has no network to establish access over, so every downstream read is a disk read it never earned. Guarding this at the route entry rather than at each call site is deliberate: the per-site version was fixed six times (the snapshot walk, the config probes, the embedding marker, the GGUF listing, the preview slices, AutoConfig) and each fix only moved the boundary to the next reader, so this states the rule once, before any of them run.
+
+    Given the repo the caller named, the rule is the shared cached-read one rather than a
+    blanket refusal. Offline is not a posture change: what this protects is a read the
+    operator's disk could answer and this caller may not, so a PUBLIC repo the sentinel was
+    always entitled to read is not one of them, and a repo that is not on the disk at all has
+    nothing to leak. Without the repo id there is nothing to ask about and the blanket answer
+    stands, which is also what the rule's own test pins.
+    """
+    from hub.utils.hf_tokens import cached_read_refused, is_anonymous
+    if not is_anonymous(hf_token):
+        return False
+    if not hf_env_offline():
+        # Online behaviour is left exactly as it was: this guard has always been the offline
+        # precondition, and the per-reader gates answer the online question.
+        return False
+    if repo_id is None:
+        return True
+    # is_cached is True because these routes read whatever the cache holds: the question left
+    # is authorization, and offline that resolves against the disk rather than the Hub.
+    return cached_read_refused(
+        hf_token,
+        repo_id = repo_id,
+        is_cached = lambda: True,
+        offline = True,
+    )
 
 
 def canonical_model_repo_id(model_name: str) -> str:

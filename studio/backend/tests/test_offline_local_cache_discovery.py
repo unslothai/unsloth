@@ -494,3 +494,55 @@ def test_one_unreadable_cache_root_does_not_make_every_repo_present(monkeypatch,
 
     _counting_probe(monkeypatch, True, offline = True)
     assert cache_reads_authorized(API_KEY_TOKEN, repo_id = ON_DISK) is False
+
+
+# ---------------------------------------------------------------------------------------
+# The route-entry rule, which no change inside hf_tokens can reach
+# ---------------------------------------------------------------------------------------
+
+
+def _offline_route_guard(monkeypatch, tmp_path, repo_id: str, *, on_disk: bool):
+    """``utils.utils.anonymous_and_offline`` under the conditions the routes call it in."""
+    import utils.utils as utils_module
+
+    root = _cache_root(monkeypatch, tmp_path)
+    if on_disk:
+        _materialize_repo(root, repo_id)
+    monkeypatch.setattr(utils_module, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: True)
+    return utils_module.anonymous_and_offline(False, repo_id = repo_id)
+
+
+def test_the_route_entry_guard_serves_a_repo_that_is_on_disk(monkeypatch, tmp_path):
+    """The blanket version refused every cached model at the route entry, before any of the
+    per-reader gates ran, so fixing the gates alone left the operator with the same 404.
+
+    `GET /api/models/config` and the remote-code scan are the two routes; both reach this."""
+    assert _offline_route_guard(monkeypatch, tmp_path, ON_DISK, on_disk = True) is False
+
+
+def test_the_route_entry_guard_still_refuses_a_repo_that_is_not_on_disk(monkeypatch, tmp_path):
+    """Nothing local to decide with, and saying yes would only authorize a network fetch."""
+    assert _offline_route_guard(monkeypatch, tmp_path, ABSENT, on_disk = False) is True
+
+
+def test_the_route_entry_guard_keeps_its_blanket_answer_without_a_repo_id(monkeypatch, tmp_path):
+    """A caller that names no repo has nothing to resolve against, so the old answer stands."""
+    import utils.utils as utils_module
+
+    monkeypatch.setattr(utils_module, "hf_env_offline", lambda: True)
+    assert utils_module.anonymous_and_offline(False) is True
+    assert utils_module.anonymous_and_offline(None) is False
+
+
+def test_the_route_entry_guard_leaves_online_behaviour_exactly_as_it_was(monkeypatch, tmp_path):
+    """This guard has always been the offline precondition. Online, the per-reader gates own
+    the question, and this must not start putting a probe in front of every request."""
+    import utils.utils as utils_module
+
+    root = _cache_root(monkeypatch, tmp_path)
+    _materialize_repo(root, ON_DISK)
+    monkeypatch.setattr(utils_module, "hf_env_offline", lambda: False)
+    probes = _counting_probe(monkeypatch, False)
+    assert utils_module.anonymous_and_offline(False, repo_id = ON_DISK) is False
+    assert probes["n"] == 0
