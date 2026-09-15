@@ -403,7 +403,9 @@ def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injecti
     )
     start = source.index('"Video provided but the current GGUF model cannot take video input. "')
     check = source.index("_video_b64_rejection(payload.video_base64)", start)
-    shrink = source.index("shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES", start)
+    # Bare name: the call has been reflowed twice, and each time this line
+    # raised ValueError rather than reporting an ordering problem.
+    shrink = source.index("shrink_video_for_llama,", start)
     inject = source.index("_inject_video_part(gguf_messages, video_b64)", start)
     assert check < shrink < inject
 
@@ -487,3 +489,42 @@ def test_an_oversize_upload_is_refused_before_any_conversion_runs():
 
     assert rejection is not None
     assert rejection[0] == 413
+
+
+def test_the_requested_rate_is_read_from_the_extras_and_the_environment():
+    from core.inference.llama_cpp import requested_video_fps
+
+    assert requested_video_fps(None, env = {}) is None
+    assert requested_video_fps(["--video-fps", "8"], env = {}) == 8
+    assert requested_video_fps(["--video-fps=8"], env = {}) == 8
+    # llama.cpp resolves a repeated flag last-wins, so the encoder must agree.
+    assert requested_video_fps(["--video-fps", "8", "--video-fps", "2"], env = {}) == 2
+    # Studio emits no flag at all when the environment sets one, so it wins.
+    assert requested_video_fps(["--video-fps", "2"], env = {"LLAMA_ARG_VIDEO_FPS": "8"}) == 8
+    # Garbage must not raise, and must not pretend to be a rate.
+    assert requested_video_fps(["--video-fps", "abc"], env = {}) is None
+    assert requested_video_fps(["--video-fps", "0"], env = {}) is None
+    assert requested_video_fps(["--video-fps"], env = {}) is None
+
+
+def test_a_higher_requested_rate_raises_the_encode_ceiling():
+    # The server samples AFTER this transcode, so a rate the transcode dropped
+    # can only come back as duplicates. Below the default the ceiling holds, so
+    # the sub-second floor and the long-clip guard keep their measured shape.
+    chain = llama_video_input._filter_chain(MAX_FRAME_PIXELS, 30.0, 5.0, True, 8.0)
+    assert "fps=8" in chain
+    assert llama_video_input._rate_ceiling(None) == MAX_FRAME_RATE
+    assert llama_video_input._rate_ceiling(1.0) == MAX_FRAME_RATE
+    assert llama_video_input._rate_ceiling(2.0) == MAX_FRAME_RATE
+    assert llama_video_input._rate_ceiling(24.0) == 24.0
+
+
+@needs_ffmpeg
+def test_an_eight_fps_override_keeps_eight_fps_of_frames(tmp_path):
+    clip = _clip(tmp_path, "fast8.mp4", "1280x720", rate = 30, seconds = 2)
+
+    default = shrink_video_for_llama(clip, _CAP)
+    override = shrink_video_for_llama(clip, _CAP, sampled_fps = 8.0)
+
+    assert _frame_count(tmp_path, default, "d8") == MAX_FRAME_RATE * 2
+    assert _frame_count(tmp_path, override, "o8") == 8 * 2

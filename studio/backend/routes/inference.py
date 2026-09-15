@@ -125,6 +125,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.llama_cpp import requested_video_fps
 from core.inference.llama_video_input import shrink_video_for_llama
 
 
@@ -23344,8 +23345,14 @@ async def produce_openai_chat_completions(
             if video_rejection is not None:
                 raise _reject(*video_rejection)
             try:
+                # The transcode runs BEFORE llama-server samples, and the server
+                # can only duplicate frames dropped here, so an explicit rate in
+                # the advanced arguments has to reach the encoder.
                 video_b64 = await asyncio.to_thread(
-                    shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES
+                    shrink_video_for_llama,
+                    video_b64,
+                    _MAX_VIDEO_BYTES,
+                    sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
                 )
             except Exception as e:
                 # The helper absorbs its own ffmpeg failures, so reaching here

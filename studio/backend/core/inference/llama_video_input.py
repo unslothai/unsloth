@@ -125,8 +125,25 @@ def _scale_filter(max_pixels: int) -> str:
     return f"scale=w='max(2,trunc(iw*{factor}/2)*2)':h='max(2,trunc(ih*{factor}/2)*2)':flags=area"
 
 
+def _rate_ceiling(sampled_fps: Optional[float]) -> float:
+    """The highest rate worth encoding: never below llama-server's own default.
+
+    MAX_FRAME_RATE covers the two rates Studio can produce on its own (it asks
+    for 1, a build too old for the flag samples at 4). A user who asks for more
+    than that in the advanced arguments has to raise it, because the server
+    samples AFTER this transcode and can only duplicate what was dropped here.
+    """
+    if sampled_fps is not None and sampled_fps > MAX_FRAME_RATE:
+        return float(sampled_fps)
+    return float(MAX_FRAME_RATE)
+
+
 def _filter_chain(
-    max_pixels: int, source_rate: Optional[float], duration: Optional[float], oversized: bool
+    max_pixels: int,
+    source_rate: Optional[float],
+    duration: Optional[float],
+    oversized: bool,
+    sampled_fps: Optional[float] = None,
 ) -> str:
     """Tail pad, then rate cap, then scale -- each only when it is needed.
 
@@ -144,11 +161,12 @@ def _filter_chain(
     Scaling is skipped for a clip already inside the budget, since the factor
     would be greater than one and `scale` would happily UPSCALE it.
     """
+    ceiling = _rate_ceiling(sampled_fps)
     chain = []
     if duration is not None and 0 < duration < MIN_SAMPLED_SECONDS:
         chain.append(f"tpad=stop_mode=clone:stop_duration={MIN_SAMPLED_SECONDS - duration:.3f}")
-    if source_rate is not None and source_rate > MAX_FRAME_RATE:
-        chain.append(f"fps={MAX_FRAME_RATE}")
+    if source_rate is not None and source_rate > ceiling:
+        chain.append(f"fps={ceiling:g}")
     if oversized:
         chain.append(_scale_filter(max_pixels))
     return ",".join(chain)
@@ -158,12 +176,14 @@ def shrink_video_for_llama(
     video_b64: str,
     max_bytes: int,
     max_pixels: int = MAX_FRAME_PIXELS,
+    sampled_fps: Optional[float] = None,
 ) -> str:
     """Make a clip cheap and safe for llama-server to sample, as bare base64.
 
     Shrinks oversized frames, caps the frame rate at the highest rate anything
-    will sample, and pads a sub-second clip out far enough that one frame still
-    survives the sampler. Keeps only video and preserves the timing of every
+    will sample (``sampled_fps`` raises that ceiling when the user asked
+    llama-server for more), and pads a sub-second clip out far enough that one
+    frame still survives the sampler. Keeps only video and preserves the timing of every
     real frame. Missing tools, conversion failures, and a result that would not
     fit in ``max_bytes`` return the input unchanged.
     """
@@ -207,7 +227,7 @@ def shrink_video_for_llama(
                     "-sn",
                     "-dn",
                     "-vf",
-                    _filter_chain(max_pixels, rate, duration, oversized),
+                    _filter_chain(max_pixels, rate, duration, oversized, sampled_fps),
                     "-c:v",
                     "mpeg4",
                     # Widely available, but still outgrows a low-bitrate source:

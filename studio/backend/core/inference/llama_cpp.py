@@ -4996,6 +4996,39 @@ def _video_fps_flags(
     return ["--video-fps", _LLAMA_VIDEO_FPS]
 
 
+def requested_video_fps(
+    extra_args: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> Optional[float]:
+    """The frame rate the USER asked llama-server for, if they asked at all.
+
+    Preprocessing has to know this: it transcodes before llama-server samples,
+    and the server can only duplicate frames the transcode already dropped. So
+    an explicit 8 fps has to reach the encoder, or the override silently buys
+    nothing but duplicates.
+
+    Environment first, because Studio suppresses its own flag entirely when
+    LLAMA_ARG_VIDEO_FPS is set. Otherwise the LAST --video-fps in the extras,
+    which is how llama.cpp resolves a repeated flag (verified against b10976:
+    it warns "only last value will be used"). None when the user said nothing.
+    """
+    source = os.environ if env is None else env
+    raw = source.get(_VIDEO_FPS_ENV_VAR)
+    if raw is None:
+        args = [str(a) for a in (extra_args or ())]
+        for i in range(len(args) - 1, -1, -1):
+            if args[i] == "--video-fps" and i + 1 < len(args):
+                raw = args[i + 1]
+                break
+            if args[i].startswith("--video-fps="):
+                raw = args[i].split("=", 1)[1]
+                break
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return rate if rate > 0 else None
+
+
 def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
     """True when the child's environment names the projector placement at all.
 
