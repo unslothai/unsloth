@@ -47,8 +47,18 @@ export const BUDGET = {
   // 1,690,000 leaves 64.8 KB (4.1%), the proportion #8964 shipped with, which absorbed 17
   // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
   // together instead of each dragging main red on its own.
-  transferBytes: 1_690_000,
-  rawBytes: 5_500_000,
+  //
+  // That is the re-measure. raw ran out first and main is red on its own: at 5fbbd61e6f main
+  // measures 5,377.2 KB raw / 1,607.9 KB transfer, 6.1 KB past the raw ceiling, with nothing
+  // on a branch to blame. Both halves move together as the note above intended, to the same
+  // 4.1% headroom: 5,730,000 leaves 218.5 KB raw and 1,715,000 leaves 66.9 KB transfer.
+  //
+  // Nothing became eager again. The eager chunk set is still 84 chunks with the same members
+  // and the same top five, so there is still nothing here to lazy-load; the raw total grew
+  // inside chunks that were already eager. Measured on one machine, one build per side, so
+  // the two numbers are comparable to each other rather than to a CI runner's.
+  transferBytes: 1_715_000,
+  rawBytes: 5_730_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
