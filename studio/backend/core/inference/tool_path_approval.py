@@ -1091,7 +1091,12 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
 
 
-def _token_is_always_quoted(token: str, text: "str | None", *, double: bool = True) -> bool:
+def _token_is_always_quoted(
+    token: str,
+    text: "str | None",
+    *,
+    double: bool = True,
+) -> bool:
     """Whether EVERY occurrence of *token* in *text* is a quoted one.
 
     Counted rather than searched: the same word can appear twice, once as data and once as syntax.
