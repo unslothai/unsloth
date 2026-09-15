@@ -185,8 +185,8 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = "Durable chat runs are available only for local inference",
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a clip carried as a video_url part
-    # needs _request_has_video to be caught.
+    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
+    # needs _request_has_video.
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
         or _messages_have_input_audio(request.messages)

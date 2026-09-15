@@ -18307,8 +18307,8 @@ async def generate_audio(
             "messages",
             "Audio input is not supported here; this route speaks the message text.",
         )
-    # video_url is a known tag now, so the guard above no longer covers it and the clip would be
-    # dropped with the text spoken as if nothing were attached.
+    # A known tag now, so the guard above no longer covers it: the clip would be dropped and
+    # the text spoken alone.
     if _request_has_video(payload):
         _raise_unsupported_openai_parameter(
             "messages",
@@ -19665,8 +19665,8 @@ _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
 # Flooring instead refused a file of exactly the size the composer allows.
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
-# llama-server's remote download ceiling (handle_media, tools/server/server-common.cpp). A remote
-# clip's bytes never reach us, so the 64 MB cap cannot apply and this is the only limit that holds.
+# llama-server's remote download ceiling (handle_media). A remote clip's bytes never reach us,
+# so the 64 MB cap cannot apply and this is the only limit that holds.
 _REMOTE_VIDEO_ADMISSION_B64_CHARS = 4 * math.ceil((10 * 1024 * 1024) / 3)
 # Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
@@ -20340,8 +20340,7 @@ def _local_video_clip(payload, model_info) -> str:
     clips = _request_video_clips(payload)
     if not clips:
         raise HTTPException(status_code = 400, detail = "Could not read the provided video file.")
-    # Only llama-server fetches a clip itself; this backend is handed bytes, so a remote URL
-    # would arrive as its own text rather than as the video.
+    # This backend is handed bytes, so a remote URL would arrive as its own text.
     if _is_remote_video(clips[0]):
         raise HTTPException(
             status_code = 400,
@@ -20512,7 +20511,7 @@ def _request_has_video(payload) -> bool:
 
 
 def _is_remote_video(url: str) -> bool:
-    # Schemes are case-insensitive, and a clip is megabytes: read the prefix, not a copy.
+    # Schemes are case-insensitive and a clip is megabytes: read the prefix, not a copy.
     return url[:8].lower().startswith(("http://", "https://"))
 
 
@@ -20525,8 +20524,7 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     """
     if not clip or clip[:5].lower() == "data:" or _is_remote_video(clip):
         return None
-    # ':' is not in the base64 alphabet, so an early colon is what marks a URL rather than the
-    # bare base64 llama-server also accepts.
+    # ':' is not in the base64 alphabet, so an early colon marks a URL, not payload.
     head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
     if ":" not in head:
         return None
@@ -20539,8 +20537,7 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
 
 def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
     for clip in _request_video_clips(payload):
-        # llama-server fetches a remote clip, so the 64 MB cap cannot see its bytes; llama.cpp's
-        # own 10 MB ceiling governs there.
+        # llama-server fetches it, so the cap cannot see its bytes; llama.cpp's 10 MB governs.
         if _is_remote_video(clip):
             continue
         rejection = _video_scheme_rejection(clip)
@@ -20565,8 +20562,7 @@ def _translate_video_parts(messages: list[dict]) -> None:
             video_url = part.get("video_url")
             url = video_url.get("url") if isinstance(video_url, dict) else video_url
             url = url if isinstance(url, str) else ""
-            # _request_video_rejection already settled this; restated so no caller reaching here
-            # by another route can hand llama-server a file:// path.
+            # Restated: no caller reaching here by another route may hand it a file:// path.
             scheme_rejection = _video_scheme_rejection(url)
             if scheme_rejection is not None:
                 raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])

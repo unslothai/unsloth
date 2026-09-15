@@ -160,8 +160,7 @@ async def _serve_chat(
 ):
     path = _resolve_or_4xx(run, checkpoint)
     _reject_unsupported_content_parts(payload)
-    # A preview target is a training checkpoint on the non-GGUF backend, which cannot read a
-    # clip, so refuse here rather than after the load the refusal would otherwise follow.
+    # A checkpoint cannot read a clip: refuse before the load the refusal would otherwise follow.
     if _request_has_video(payload):
         raise HTTPException(
             status_code = 400,

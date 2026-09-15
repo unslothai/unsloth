@@ -223,9 +223,6 @@ def test_both_video_checks_share_one_rule():
     assert source.count("= _request_video_rejection(payload)") == 2
 
 
-# ── OpenAI-style video_url parts: the same gates and wire shape as video_base64 ──
-
-
 def _video_url_request(
     *urls,
     text = "what happens here?",

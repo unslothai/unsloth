@@ -1900,8 +1900,8 @@ class ChatMessage(BaseModel):
             raise ValueError('"tool_calls" is only valid on role="assistant" messages.')
         if self.tool_call_id is not None and self.role != "tool":
             raise ValueError('"tool_call_id" is only valid on role="tool" messages.')
-        # OpenAI places media on user turns only. llama-server renders the marker into
-        # whatever turn carried it, so anywhere else the result is template-dependent.
+        # llama-server renders the marker into whatever turn carried it, so off a user turn the
+        # result is template-dependent.
         if (
             self.role != "user"
             and isinstance(self.content, list)

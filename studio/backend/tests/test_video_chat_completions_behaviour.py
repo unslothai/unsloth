@@ -3,16 +3,15 @@
 
 """What a client gets back when it attaches a clip, by status code and wire shape.
 
-The other video tests assert that a line is present in ``routes/inference.py``. That pins the
-source but not the behaviour, which is how the non-GGUF regression went unnoticed: the source
-assertion passed while the request 400'd. These drive the real router through ``TestClient``,
-taking the ``messages`` kwarg of ``generate_chat_completion`` as the JSON llama-server receives.
+The other video tests assert a line is present in ``routes/inference.py``, which is how the
+non-GGUF regression went unnoticed: the source assertion passed while the request 400'd. These
+take the ``messages`` kwarg of ``generate_chat_completion`` as the JSON llama-server receives.
 
 Invariant, asserted per route: a ``video_url`` part and the legacy ``video_base64`` field behave
-identically everywhere. Picking a spelling must not pick a different set of refusals.
+identically, so picking a spelling cannot pick a different set of refusals.
 
-Wire shapes follow llama.cpp ``tools/server/server-common.cpp``, where ``handle_media`` reads
-``input_video`` as ``data`` else ``url`` and caps a remote download at 10 MB.
+Wire shapes follow llama.cpp ``handle_media``: ``input_video`` is ``data`` else ``url``, remote
+downloads cap at 10 MB.
 """
 
 from __future__ import annotations
@@ -34,9 +33,6 @@ from .llama_backend_double import FakeLlamaCppBackend  # noqa: E402
 _CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header
 _DATA_URI = f"data:video/mp4;base64,{_CLIP_B64}"
 _REMOTE = "https://example.com/clip.mp4"
-
-
-# ── harness ──────────────────────────────────────────────────────────────────────
 
 
 class _VideoGguf(FakeLlamaCppBackend):
@@ -150,9 +146,6 @@ def _sent_media(backend):
     ]
 
 
-# ── the wire shape llama-server receives ─────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "url, expected",
     [
@@ -162,7 +155,7 @@ def _sent_media(backend):
         ("data:video/webm;base64,REVG", {"data": "REVG"}),
         # Bare base64 with no header: handle_media's final fallback treats it as payload.
         (_CLIP_B64, {"data": _CLIP_B64}),
-        # Remote is forwarded whole, for llama-server to fetch under its own 10 MB ceiling.
+        # Remote is forwarded whole; llama-server fetches it under its own 10 MB ceiling.
         (_REMOTE, {"url": _REMOTE}),
         ("http://example.com/clip.mp4", {"url": "http://example.com/clip.mp4"}),
         ("HTTPS://EXAMPLE.COM/clip.mp4", {"url": "HTTPS://EXAMPLE.COM/clip.mp4"}),
@@ -219,7 +212,7 @@ def test_a_clip_in_an_older_turn_is_translated_too(monkeypatch):
     }
     with _client(monkeypatch, backend) as client:
         client.post("/v1/chat/completions", json = body)
-    # The clip stayed on the turn that carried it, translated in place.
+    # Translated in place, on the turn that carried it.
     assert _sent_parts(backend, 0)[0]["type"] == "input_video"
     assert len(_sent_media(backend)) == 1
 
@@ -242,9 +235,6 @@ def test_both_spellings_of_the_same_clip_produce_the_same_wire_shape(monkeypatch
         client.post("/v1/chat/completions", json = _field_body())
 
     assert _sent_media(part_backend) == _sent_media(field_backend)
-
-
-# ── backend capability ───────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
@@ -279,9 +269,8 @@ def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(mon
     with _client(monkeypatch, None) as client:
         response = client.post("/v1/chat/completions", json = body)
 
-    # The gate saw the clip, and nothing downstream then refused it for not being GGUF. The
-    # second half is the half that matters: a blanket refusal placed after the gate still lets
-    # the gate run, so "was it reached" alone cannot tell the regression from the fix.
+    # Reached-the-gate alone cannot tell the regression from the fix: a blanket refusal placed
+    # after the gate still lets the gate run.
     assert reached == [{"is_vision": True, "has_video_input": True}]
     assert "only supported on a local GGUF model" not in _detail(response)
     assert inference_route._VIDEO_INPUT_REFUSAL not in _detail(response)
@@ -325,9 +314,6 @@ def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
     assert "remote video URL" in exc.value.detail
 
 
-# ── URL schemes ──────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -351,7 +337,7 @@ def test_an_unsupported_scheme_is_refused_by_name(monkeypatch, url):
 def test_a_bare_path_is_refused_without_naming_a_scheme(monkeypatch):
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body("/tmp/clip.mp4"))
-    # No colon, so it is indistinguishable from base64 payload and llama-server owns the verdict.
+    # No colon: indistinguishable from base64 payload, so llama-server owns the verdict.
     assert response.status_code == 200
 
 
@@ -365,9 +351,6 @@ def test_bare_base64_is_not_mistaken_for_a_scheme(monkeypatch):
     assert _sent_media(backend) == [
         {"type": "input_video", "input_video": {"data": "QUJDREVGR0hJSktM"}}
     ]
-
-
-# ── size ─────────────────────────────────────────────────────────────────────────
 
 
 def test_an_oversized_clip_is_refused_in_either_spelling():
@@ -417,9 +400,6 @@ def test_admission_prices_a_remote_clip_at_llama_cpp_s_download_ceiling():
     assert inference_route._REMOTE_VIDEO_ADMISSION_B64_CHARS == 4 * math.ceil(
         (10 * 1024 * 1024) / 3
     )
-
-
-# ── routes that cannot serve a clip ──────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
@@ -518,9 +498,6 @@ def test_a_durable_chat_run_still_takes_a_plain_text_turn():
     assert _sanitize_request(run) is not None
 
 
-# ── message roles ────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("role", ["system", "assistant"])
 def test_a_clip_on_a_non_user_turn_is_refused(monkeypatch, role):
     """OpenAI places media on user turns only, and llama-server renders the marker into whichever
@@ -543,9 +520,6 @@ def test_a_clip_on_a_user_turn_is_accepted(monkeypatch):
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
     assert response.status_code == 200
-
-
-# ── accounting ───────────────────────────────────────────────────────────────────
 
 
 def test_admission_charges_each_clip_once_and_not_as_prompt_text():
@@ -581,9 +555,6 @@ def test_the_rolling_context_does_not_price_a_clip_as_text():
     conversation around it."""
     from core.inference.context_window import _UNPRICED_MEDIA_TYPES
     assert {"video_url", "input_video"} <= set(_UNPRICED_MEDIA_TYPES)
-
-
-# ── the behaviour this replaced ──────────────────────────────────────────────────
 
 
 def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
