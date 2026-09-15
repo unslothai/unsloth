@@ -161,6 +161,44 @@ def test_gemma_prompt_still_declares_nested_fields(template):
     assert "Pagination for the next page" in rendered
 
 
+@pytest.mark.parametrize("template", ["gemma-4.jinja", "gemma-4-edge.jinja"])
+@pytest.mark.parametrize("keyword", ["anyOf", "oneOf", "$ref"])
+def test_gemma_prompt_preserves_direct_fields_beside_composition(template, keyword):
+    sandbox = pytest.importorskip("jinja2.sandbox")
+    source = (Path(_BACKEND_DIR) / "assets" / "chat_templates" / template).read_text(
+        encoding = "utf-8"
+    )
+    view = copy.deepcopy(_VIEW_BRANCH)
+    view[keyword] = (
+        "#/$defs/View"
+        if keyword == "$ref"
+        else [
+            {**copy.deepcopy(_VIEW_BRANCH), "required": ["mode", "view_url", field]}
+            for field in ("start_cursor", "page_size")
+        ]
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"data": view},
+        "required": ["data"],
+        "$defs": {"View": copy.deepcopy(_VIEW_BRANCH)},
+    }
+    tools = [_tool(parameters, name = "query")]
+    original = copy.deepcopy(tools)
+    environment = sandbox.ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    compiled = environment.from_string(source)
+    context = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "add_generation_prompt": True,
+        "bos_token": "<bos>",
+    }
+    expected = compiled.render(tools = tools, **context)
+    assert "start_cursor" in expected
+    assert 'required:[<|"|>mode<|"|>,<|"|>view_url<|"|>]' in expected
+    assert compiled.render(tools = llama_grammar_tools(tools), **context) == expected
+    assert tools == original
+
+
 def test_flat_parameters_are_returned_unchanged():
     parameters = {
         "type": "object",

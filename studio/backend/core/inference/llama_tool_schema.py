@@ -54,9 +54,13 @@ _OBJECT_ONLY = (
 
 def _wrap(schema: dict) -> _RelaxedUnion:
     if "$ref" in schema or "anyOf" in schema or "oneOf" in schema:
-        # Templates read annotations off the node itself; the grammar ignores them next to anyOf.
-        notes = {key: schema[key] for key in _ANNOTATIONS if key in schema}
-        wrapped = _RelaxedUnion({**notes, "anyOf": [dict(_PERMISSIVE_OBJECT), schema]})
+        # templates read these outer fields; the grammar takes anyOf before them.
+        fields = {
+            key: schema[key]
+            for key in (*_ANNOTATIONS, "type", "properties", "required")
+            if key in schema
+        }
+        wrapped = _RelaxedUnion({**fields, "anyOf": [dict(_PERMISSIVE_OBJECT), schema]})
     else:
         # Chat templates read the node's own type/properties/required; llama.cpp's grammar takes
         # anyOf before them, so both stay. A type list keeps each other type with its own constraints,
