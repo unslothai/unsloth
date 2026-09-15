@@ -22,6 +22,7 @@ from ._utils import *
 from ._utils import apply_unsloth_gradient_checkpointing
 from ._utils import __version__, importlib_version
 from ._utils import move_to_device
+from ._utils import per_layer_device
 from ._utils import (
     _get_inference_mode_context_manager,
     _prepare_model_for_qat,
@@ -1266,8 +1267,8 @@ def _LlamaModel_fast_forward_inference(
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
-            device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
-            X, residual, position_ids = move_to_device(device_index, X, residual, position_ids)
+            layer_device, device_index = per_layer_device(decoder_layer)
+            X, residual, position_ids = move_to_device(layer_device, X, residual, position_ids)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,

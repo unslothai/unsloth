@@ -2539,6 +2539,88 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
 
 
+_PER_LAYER_DEVICE_MISSING = object()
+
+
+def _as_torch_device(value):
+    """`torch.device(value)`, or None when that value cannot name a device.
+
+    Not a bare call: on torch 2.6 `torch.device(0)` raises
+    "RuntimeError: Cannot access accelerator device when none is available" on a
+    host with no visible accelerator, and a bogus string raises too.
+    """
+    try:
+        return torch.device(value)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _device_of_parameters(module):
+    """The device this module's parameters actually sit on, or None."""
+    for parameter in module.parameters():
+        return parameter.device
+    return None
+
+
+def per_layer_device(module, default = 0):
+    """Where this decoder layer lives, as (device, buffer_index).
+
+    `unsloth_zoo.patching_utils.verify_and_set_device` records a layer's device so
+    the pipeline-parallel inference paths can move activations onto it. It
+    publishes two attributes: `_per_layer_device`, the `torch.device`, and
+    `_per_layer_device_index`, which is an int for an indexed accelerator and the
+    device type otherwise. The index is needed on its own because gemma, gemma2
+    and cohere also use it to pick this layer's float32 layernorm buffer out of a
+    per-device tuple, which a `torch.device` cannot subscript.
+
+    Three shapes have to be handled, so the resolution is a probe of what is on
+    the module rather than a version check:
+
+    * Both attributes present, which is current unsloth_zoo. The device wins.
+    * Only the index, which is any unsloth_zoo old enough to predate this. An int
+      or a device type resolves straight to a device.
+    * Only the index, and it is None, which is that same older unsloth_zoo on a
+      CPU-offloaded or not-yet-materialised layer. `move_to_device` rejects None,
+      which is how a sampling callback inside a trainer ended up with
+      "ValueError: Invalid target device: None" (unslothai/unsloth#3538). Read the
+      placement off the layer instead.
+
+    A layer with neither attribute keeps the historical behaviour and resolves to
+    `default`, since that is what every reader's `getattr(layer, ..., 0)` did.
+
+    Returns the device to move tensors to, and an int for subscripting a tuple
+    with one entry per accelerator. The two disagree only for a layer that is not
+    on an indexed accelerator, which has no per-device buffer of its own.
+    """
+    device = getattr(module, "_per_layer_device", None)
+    index  = getattr(module, "_per_layer_device_index", _PER_LAYER_DEVICE_MISSING)
+
+    if not isinstance(device, torch.device):
+        device = None
+    if device is None:
+        if index is None:
+            device = _device_of_parameters(module)
+        elif isinstance(index, (int, str)) and not isinstance(index, bool):
+            device = _as_torch_device(index)
+    if device is None:
+        # Nothing usable was recorded, so keep the historical default, which is
+        # what every reader's `getattr(layer, ..., 0)` resolved to. It falls back
+        # to the layer itself because `torch.device(default)` is not guaranteed to
+        # be constructible, and to cpu because a device is still owed.
+        device = (
+            _as_torch_device(default)
+            or _device_of_parameters(module)
+            or torch.device("cpu")
+        )
+
+    buffer_index = device.index
+    if buffer_index is None:
+        # Not on an indexed accelerator, so there is no buffer of its own. Keep
+        # the historical subscript so the per-device tuples stay in range.
+        buffer_index = index if isinstance(index, int) and not isinstance(index, bool) else default
+    return device, buffer_index
+
+
 def move_to_device(target_device, *tensors):
     """Move tensors to target_device (returns same objects if already there)."""
     if isinstance(target_device, int):
