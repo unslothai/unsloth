@@ -70,7 +70,8 @@ def _render() -> str:
     body = re.search(
         # The body is captured into a variable now, because it is either written to a file or piped
         # to powershell on stdin depending on whether a Windows directory is reachable.
-        r'(?ms)^            _css_ps1_body=\$\(cat << WSLPS1_EOF\n(.*?)^WSLPS1_EOF$', text
+        r"(?ms)^            _css_ps1_body=\$\(cat << WSLPS1_EOF\n(.*?)^WSLPS1_EOF$",
+        text,
     )
     assert body, (
         "could not find the WSLPS1_EOF here-string in install.sh. Either the WSL shortcut script "
