@@ -25,7 +25,9 @@ sys.path.insert(0, _backend)
 from core.inference.tool_call_parser import parse_tool_calls_from_text
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
+    make_reasoning_normalizer,
     detect_reasoning_channel_markers,
+    detect_reasoning_channel_markers_from_template,
     detect_reasoning_channel_markers_from_model_info,
     detect_think_prefill,
     neutralize_control_markup_in_messages,
@@ -47,6 +49,35 @@ except ImportError:
 
 
 QWEN_PROMPT = "<|im_start|>user\nHi!<|im_end|>\n<|im_start|>assistant\n"
+
+# Marker tuples contain the opener followed by the primary closer and any accepted
+# alternate closers for that channel.
+IFM_MARKERS = {
+    "high": ("<ifm|think>", "</ifm|think>"),
+    "medium": ("<ifm|think_fast>", "</ifm|think_fast>", "</ifm|think>"),
+    "low": ("<ifm|think_faster>", "</ifm|think_faster>", "</ifm|think>"),
+}
+IFM_TEMPLATE = (
+    "{% if reasoning_effort == 'high' %}<ifm|think>\\n"
+    "{% elif reasoning_effort == 'medium' %}<ifm|think_fast>\\n"
+    "{% else %}<ifm|think_faster>\\n{% endif %}"
+)
+
+
+class IfmTokenizer:
+    chat_template = IFM_TEMPLATE
+
+
+def _ifm_render_result(prompt):
+    return render_with_native_template_fallback(
+        formatted_prompt = prompt,
+        tokenizer = IfmTokenizer(),
+        model_info = {},
+        active_model_name = "k2-horizon-test",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = None,
+        return_metadata = True,
+    )
 
 
 def test_open_think_prefill_reemitted():
@@ -158,6 +189,116 @@ def test_gemma_channel_detection_uses_active_template_not_token_metadata():
         is None
     )
     assert detect_reasoning_channel_markers(TokenMetadataOnly()) is None
+
+
+def test_ifm_template_detection_uses_rendered_prompt_to_resolve_tier():
+    tokenizer = IfmTokenizer()
+
+    # The K2-like template contains all three branches, so detection without the final prompt
+    # must not guess a tier. A rendered tail makes the selected channel unambiguous.
+    assert detect_reasoning_channel_markers(tokenizer) is None
+    assert (
+        detect_reasoning_channel_markers_from_template(
+            IFM_TEMPLATE,
+            prompt = "assistant\n<ifm|think>\n",
+        )
+        == IFM_MARKERS["high"]
+    )
+
+
+@pytest.mark.parametrize("effort", ["high", "medium", "low"])
+def test_ifm_render_metadata_resolves_the_selected_tier_markers(effort):
+    markers = IFM_MARKERS[effort]
+    opening = markers[0]
+    result = _ifm_render_result(f"assistant\n{opening}\n")
+
+    assert result.reasoning_channel_markers == markers
+
+
+@pytest.mark.parametrize("markers", list(IFM_MARKERS.values()))
+def test_ifm_prompt_open_state_accepts_whitespace_after_selected_opener(markers):
+    opening = markers[0]
+
+    assert prompt_opens_reasoning_channel(f"assistant\n{opening}\n", markers)
+    assert prompt_opens_reasoning_channel(f"assistant\n{opening} \t\n", markers)
+    assert not prompt_opens_reasoning_channel(f"assistant\n{opening}\nreasoning", markers)
+
+
+@pytest.mark.parametrize("markers", list(IFM_MARKERS.values()))
+def test_ifm_reasoning_normalizes_to_canonical_think_markup(markers):
+    opening = markers[0]
+    parser = make_reasoning_normalizer(markers)
+    assert parser.feed(f"{opening}\nreasoning{markers[1]}answer") + parser.finish() == (
+        "<think>reasoning</think>answer"
+    )
+
+    # A native template may have already written the opener into the prompt; generated text
+    # then begins with reasoning and the native close marker.
+    prefilled = make_reasoning_normalizer(markers, in_reasoning = True)
+    assert prefilled.feed(f"reasoning{markers[1]}answer") + prefilled.finish() == (
+        "<think>reasoning</think>answer"
+    )
+
+
+@pytest.mark.parametrize("effort", ["medium", "low"])
+def test_ifm_accelerated_reasoning_accepts_generic_think_closer(effort):
+    markers = IFM_MARKERS[effort]
+    parser = make_reasoning_normalizer(markers)
+
+    assert parser.feed(f"{markers[0]}\nreasoning</ifm|think>answer") + parser.finish() == (
+        "<think>reasoning</think>answer"
+    )
+
+
+def test_ifm_alternate_closer_split_across_stream_chunks():
+    parser = make_reasoning_normalizer(IFM_MARKERS["medium"])
+    output = ""
+
+    for chunk in ("<ifm|think_fast>\nreasoning</ifm|thi", "nk>answer"):
+        output += parser.feed(chunk)
+    output += parser.finish()
+
+    assert output == "<think>reasoning</think>answer"
+
+
+def test_ifm_generic_closer_is_not_global_without_an_active_channel():
+    parser = make_reasoning_normalizer(IFM_MARKERS["medium"])
+
+    assert parser.feed("</ifm|think>answer") + parser.finish() == "</ifm|think>answer"
+
+
+def test_ifm_empty_prefilled_reasoning_does_not_leak_native_close_marker():
+    opening = IFM_MARKERS["low"][0]
+    closing = IFM_MARKERS["low"][1]
+    prompt = f"assistant\n{opening}\n"
+    result = _ifm_render_result(prompt)
+    assert result.reasoning_channel_markers == IFM_MARKERS["low"]
+
+    snapshots = []
+    raw = ""
+    for piece in (closing, "Hello!"):
+        raw += piece
+        snapshots.append(raw)
+    normalized = list(
+        normalize_reasoning_snapshots(
+            iter(snapshots),
+            markers = result.reasoning_channel_markers,
+            prompt = result.prompt,
+        )
+    )[-1]
+
+    assert "Hello!" in normalized
+    assert "<ifm|" not in normalized
+    assert "</ifm|" not in normalized
+
+
+def test_ifm_vocabulary_tokens_without_template_protocol_stay_undetected():
+    class TokenMetadataOnly:
+        chat_template = "plain assistant template"
+        all_special_tokens = [marker for pair in IFM_MARKERS.values() for marker in pair]
+
+    prompt = "assistant\n<ifm|think_faster>\n"
+    assert detect_reasoning_channel_markers(TokenMetadataOnly(), prompt = prompt) is None
 
 
 def test_gemma_channel_detection_tries_no_argument_getter_fallback():

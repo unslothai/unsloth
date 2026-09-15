@@ -288,14 +288,20 @@ _ARG_FIXTURES = {
     "brace_pos": lambda text: max(text.find("{"), 0),
     "paren_start": lambda text: max(text.find("("), 0),
     "start": lambda text: max(text.find("["), 0),
+    "stop": lambda text: len(text),
     "pos": lambda text: len(text),
     "body_start": lambda text: max(text.find("[") + 1, 0),
     "body_end": lambda text: len(text),
     "end": lambda text: len(text),
+    "envelope_close": lambda text: (
+        text.find("</ifm|tool_calls>") if "</ifm|tool_calls>" in text else len(text)
+    ),
+    "arg_type": lambda text: "string",
     # Nothing to restore: the masker's own output is what pairs with it, and an invented
     # list would pin a substitution the corpus never produced.
     "bodies": lambda text: [],
     "body": lambda text: text,
+    "protected": lambda text: [],
     "hard_stop": lambda text: len(text),
     "i": lambda text: 0,
     "idx": lambda text: 0,
@@ -327,6 +333,18 @@ _ARG_FIXTURES = {
 }
 
 
+# IFM scanners take different delimiter origins; a shared ``start`` offset would exercise
+# the function but never its successful branch. These are still derived from each corpus
+# entry, matching the offset-fixture convention above.
+_FUNCTION_ARG_FIXTURES = {
+    ("_ifm_find_call_close", "start"): lambda text: max(text.find("<ifm|tool_call>"), 0),
+    ("_ifm_find_value_close", "start"): lambda text: max(
+        text.find("<ifm|arg_value>") + len("<ifm|arg_value>"), 0
+    ),
+    ("_ifm_parse_call_at", "start"): lambda text: max(text.find("<ifm|tool_call>"), 0),
+}
+
+
 # Offsets a predicate is asked about. One offset is not coverage for a function whose job
 # is to answer differently at different positions.
 _SWEEP_PARAMS = frozenset({"pos"})
@@ -337,8 +355,44 @@ _VARIANTS_KEY = "@variants"
 # Boolean parameters driven at both values rather than at one.
 _BOTH_WAYS = ("final", "seg_final", "with_spans", "allow_incomplete", "gemma_quotes")
 
+
+def _ifm_guard_xml(text: str) -> str:
+    """A structurally valid IFM value whose payload varies with the corpus entry."""
+    return (
+        "<ifm|tool_calls><ifm|tool_call>python"
+        "<ifm|arg_key>value</ifm|arg_key><ifm|arg_value>"
+        + text
+        + "</ifm|arg_value></ifm|tool_call></ifm|tool_calls>"
+    )
+
+
+def _ifm_guard_reasoning(text: str) -> str:
+    """A closed IFM reasoning channel with variable content."""
+    return "<ifm|think_fast>" + text + "</ifm|think>answer"
+
+
+def _ifm_guard_json(text: str) -> str:
+    return json.dumps({"value": text}, ensure_ascii = False)
+
+
+def _ifm_guard_finite_float(text: str) -> str:
+    return f"{len(text)}.25"
+
+
 # Function name -> what to hand it in place of the raw corpus entry.
-_TEXT_ADAPTERS = {"_gemma_arguments_to_json": lambda text: _gemma_argument_body(text)}
+_TEXT_ADAPTERS = {
+    "_gemma_arguments_to_json": lambda text: _gemma_argument_body(text),
+    "_ifm_find_call_close": _ifm_guard_xml,
+    "_ifm_find_envelope_close": _ifm_guard_xml,
+    "_ifm_find_value_close": _ifm_guard_xml,
+    "_ifm_json_loads": _ifm_guard_json,
+    "_ifm_parse_call_at": _ifm_guard_xml,
+    "_ifm_parse_envelope_at": _ifm_guard_xml,
+    "_ifm_reasoning_spans": _ifm_guard_reasoning,
+    "_parse_ifm_finite_float": _ifm_guard_finite_float,
+    "_parse_ifm_tool_calls": _ifm_guard_xml,
+    "_parse_ifm_tool_calls_with_spans": _ifm_guard_xml,
+}
 
 
 def _sweep_offsets(text: str):
@@ -413,14 +467,16 @@ def _drive(func, text: str):
             continue
         if params[extra].default is not inspect.Parameter.empty:
             continue
-        fixture = _ARG_FIXTURES.get(extra)
+        fixture = _FUNCTION_ARG_FIXTURES.get((getattr(func, "__name__", ""), extra))
+        if fixture is None:
+            fixture = _ARG_FIXTURES.get(extra)
         if fixture is None:
             return "<undrivable>"
         if extra in _SWEEP_PARAMS:
             sweep = extra
             args.append(None)
             continue
-        args.append(fixture(text))
+        args.append(fixture(args[0]))
 
     def _call(extra):
         merged = dict(kwargs, **extra)

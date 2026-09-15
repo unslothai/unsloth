@@ -14,7 +14,7 @@ import re
 import string
 import weakref
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,21 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\n",
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
+)
+
+# K2-Horizon selects one of these reasoning channels in the rendered prompt. Keep the complete
+# marker tuples private: vocabulary/control-token presence is not enough to opt a model into the
+# channel parser, and the rendered prompt tail is needed when a template contains all three branches.
+_IFM_THINK_OPEN = "<ifm|think>"
+_IFM_THINK_CLOSE = "</ifm|think>"
+_IFM_THINK_FAST_OPEN = "<ifm|think_fast>"
+_IFM_THINK_FAST_CLOSE = "</ifm|think_fast>"
+_IFM_THINK_FASTER_OPEN = "<ifm|think_faster>"
+_IFM_THINK_FASTER_CLOSE = "</ifm|think_faster>"
+_IFM_REASONING_CHANNEL_MARKERS = (
+    (_IFM_THINK_OPEN, _IFM_THINK_CLOSE),
+    (_IFM_THINK_FAST_OPEN, _IFM_THINK_FAST_CLOSE, _IFM_THINK_CLOSE),
+    (_IFM_THINK_FASTER_OPEN, _IFM_THINK_FASTER_CLOSE, _IFM_THINK_CLOSE),
 )
 
 # Muse Glimmer's recipient-addressed blocks; see RecipientChannelNormalizer. Both header prefixes occur: generation
@@ -89,6 +104,13 @@ _ATEM_TAGS = (
 # escapes keep this file ASCII).
 _CONTROL_MARKUP = re.compile(
     r"<(?="
+    # IFM namespaces its turn-end marker as <|ifm|im_end|>, so it needs an exact
+    # alternative rather than the flat <|name|> families below.
+    r"\|ifm\|im_end\|>|"
+    # IFM tool syntax uses a pipe inside a bare tag (<ifm|tool_calls>), so it does not fit the
+    # flat <name> family. Break every native tool tag in untrusted message/catalog text while
+    # leaving assistant tool_calls history to be rendered structurally by the template.
+    r"/?ifm\|(?:tools|tool_calls|tool_call|arg_key|arg_type|arg_value)>|"
     # "/?" after the bar: Phi-4 Mini closes with "<|/tool|>" / "<|/tool_call|>" rather than a separate closing name,
     # so an MCP description carrying one closed the catalog and rose to system level (#7066).
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)|tool(?:_call|_response)?"
@@ -162,6 +184,7 @@ _CONTROL_MARKUP = re.compile(
 # markers, the Zephyr / Phi-3 sentinels, Granite, Llama-4, Command-R and Mistral pairs are all in.
 _TURN_BOUNDARY_MARKUP = re.compile(
     r"<(?="
+    r"\|ifm\|im_end\|>|"
     r"\|/?(?:(?:start|end)_(?:header_id|of_role)"
     # Kimi spells a turn "<|im_user|>user<|im_middle|>...<|im_end|>", so the role sentinels are boundaries exactly as
     # im_system and im_middle already are.
@@ -2011,34 +2034,59 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
 
 
 def _detect_reasoning_channel_markers_from_templates(
-    templates: tuple[str, ...],
+    templates: tuple[str, ...], prompt: Optional[str] = None
 ) -> Optional[tuple[str, ...]]:
     """Return native reasoning markers only when a template emits them."""
     if any(opener in template for template in templates for opener in _GEMMA_TEMPLATE_OPENERS):
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
     if any(_ATEM_TEMPLATE_OPENER in template for template in templates):
         return _ATEM_REASONING_RECIPIENT, _ATEM_REPLY_RECIPIENT
+
+    ifm_markers = tuple(
+        markers
+        for markers in _IFM_REASONING_CHANNEL_MARKERS
+        if any(markers[0] in template for template in templates)
+    )
+    if not ifm_markers:
+        return None
+    if prompt is None:
+        # A template may contain all three IFM branches. Without the final rendered prompt,
+        # selecting one would route a response through the wrong tier.
+        return ifm_markers[0] if len(ifm_markers) == 1 else None
+    for markers in ifm_markers:
+        opening_marker = markers[0]
+        opened_at = prompt.rfind(opening_marker)
+        if opened_at >= 0 and not prompt[opened_at + len(opening_marker) :].strip():
+            return markers
     return None
 
 
-def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, ...]]:
+def detect_reasoning_channel_markers(
+    tokenizer,
+    tools = None,
+    prompt: Optional[str] = None,
+) -> Optional[tuple[str, ...]]:
     """Return the native reasoning-channel markers a tokenizer's template emits. Detection uses the
     active chat template rather than model names or vocabulary membership: some models expose
     Gemma control tokens without using the native thought-channel response protocol, and those
-    must keep normal ``skip_special_tokens`` streaming."""
+    must keep normal ``skip_special_tokens`` streaming. For a template with multiple IFM
+    branches, pass the final rendered prompt so its trailing opener selects the exact pair."""
     for obj in _tokenizer_objects(tokenizer):
         templates = _selected_chat_template_strings(obj, tools)
         if templates:
-            return _detect_reasoning_channel_markers_from_templates(templates)
+            return _detect_reasoning_channel_markers_from_templates(templates, prompt)
     return None
 
 
 def detect_reasoning_channel_markers_from_template(
-    template, tools = None
+    template,
+    tools = None,
+    prompt: Optional[str] = None,
 ) -> Optional[tuple[str, ...]]:
     """Return native reasoning-channel markers from a raw template value."""
     return _detect_reasoning_channel_markers_from_templates(
-        _selected_template_strings_from_value(template, tools)
+        _selected_template_strings_from_value(template, tools),
+        prompt,
     )
 
 
@@ -2046,9 +2094,10 @@ def detect_reasoning_channel_markers_from_model_info(
     tokenizer,
     model_info: Optional[dict] = None,
     tools = None,
+    prompt: Optional[str] = None,
 ) -> Optional[tuple[str, ...]]:
     """Return reasoning markers from the active or cached native template."""
-    markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    markers = detect_reasoning_channel_markers(tokenizer, tools = tools, prompt = prompt)
     if markers is not None or not isinstance(model_info, dict):
         return markers
 
@@ -2057,7 +2106,7 @@ def detect_reasoning_channel_markers_from_model_info(
         (model_info.get("chat_template_info") or {}).get("template"),
     )
     for template in native_templates:
-        markers = detect_reasoning_channel_markers_from_template(template, tools)
+        markers = detect_reasoning_channel_markers_from_template(template, tools, prompt)
         if markers is not None:
             return markers
     return None
@@ -2102,6 +2151,28 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
         if text.endswith(marker[:length]):
             return text[:-length], text[-length:]
     return text, ""
+
+
+def _split_partial_markers(text: str, markers: tuple[str, ...]) -> tuple[str, str]:
+    """Hold the longest suffix that may become any marker in the next chunk."""
+    stable, held = text, ""
+    for marker in markers:
+        candidate, tail = _split_partial_marker(text, marker)
+        if len(tail) > len(held):
+            stable, held = candidate, tail
+    return stable, held
+
+
+def _find_earliest_marker(text: str, markers: tuple[str, ...]) -> tuple[int, str]:
+    """Return the first configured marker in ``text``, preferring the longer marker on a tie."""
+    index, selected = -1, ""
+    for marker in markers:
+        found = text.find(marker)
+        if found >= 0 and (
+            index < 0 or found < index or (found == index and len(marker) > len(selected))
+        ):
+            index, selected = found, marker
+    return index, selected
 
 
 def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
@@ -2238,17 +2309,22 @@ class ReasoningChannelNormalizer:
     """Incrementally convert one native reasoning channel to ``<think>``. The parser follows
     mlx-vlm's streaming boundary behavior but emits Unsloth's canonical text contract. Only the
     configured opening and closing markers are consumed; tool-call and other control markers
-    remain available to downstream parsers."""
+    remain available to downstream parsers. A channel may provide one primary closing marker
+    plus alternate valid closers."""
 
     def __init__(
         self,
         opening_marker: str,
-        closing_marker: str,
+        closing_marker: Union[str, tuple[str, ...]],
         *,
         in_reasoning: bool = False,
     ):
         self._opening_marker = opening_marker
-        self._closing_marker = closing_marker
+        if isinstance(closing_marker, str):
+            closing_markers = (closing_marker,)
+        else:
+            closing_markers = tuple(closing_marker)
+        self._closing_markers = tuple(dict.fromkeys(closing_markers))
         self._buffer = ""
         self._in_reasoning = in_reasoning
         self._reasoning_done = False
@@ -2278,10 +2354,14 @@ class ReasoningChannelNormalizer:
                 if not self._buffer:
                     break
 
-            marker = self._closing_marker if self._in_reasoning else self._opening_marker
-            index = self._buffer.find(marker)
+            if self._in_reasoning:
+                index, marker = _find_earliest_marker(self._buffer, self._closing_markers)
+            else:
+                marker = self._opening_marker
+                index = self._buffer.find(marker)
             if index < 0:
-                stable, self._buffer = _split_partial_marker(self._buffer, marker)
+                partial_markers = self._closing_markers if self._in_reasoning else (marker,)
+                stable, self._buffer = _split_partial_markers(self._buffer, partial_markers)
                 output.append(stable)
                 break
 
@@ -2503,12 +2583,12 @@ def make_reasoning_normalizer(markers: tuple[str, ...], *, in_reasoning: bool = 
         # This protocol cannot start mid-block: its generation prompt ends at "<|start|>assistant", so the model
         # always writes its own header.
         return RecipientChannelNormalizer(*markers)
-    return ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
+    return ReasoningChannelNormalizer(markers[0], markers[1:], in_reasoning = in_reasoning)
 
 
 def prompt_opens_reasoning_channel(
     prompt: Optional[str],
-    markers: Optional[tuple[str, str]],
+    markers: Optional[tuple[str, ...]],
     continued: bool = False,
 ) -> bool:
     """Whether a rendered prompt *ends* by opening the native reasoning channel.
@@ -2707,6 +2787,92 @@ def _split_parallel_tool_calls(messages: list) -> list:
         out.extend(pending)
         i = j
     return out
+
+
+_IFM_REASONING_HISTORY_FIELDS = (
+    "think",
+    "think_fast",
+    "think_faster",
+    "reasoning_content",
+    "reasoning",
+)
+_IFM_CANONICAL_THINK_PREFIX = re.compile(r"\A\s*<think>(?P<thought>.*?)</think>", re.DOTALL)
+
+
+def _ifm_template_has_tool_history(tokenizer, tools) -> bool:
+    """Whether the selected native template uses IFM reasoning/tool history fields."""
+    return any(
+        any(
+            marker in template
+            for marker in (
+                "<ifm|think>",
+                "<ifm|think_fast>",
+                "<ifm|think_faster>",
+                "<ifm|tool_calls>",
+                "<ifm|tool_call>",
+            )
+        )
+        for template in _selected_chat_template_strings(tokenizer, tools)
+    )
+
+
+def _repair_ifm_tool_history(messages: list, tokenizer, tools) -> list:
+    """Give strict IFM assistant-history templates the thinking field they require.
+
+    IFM templates read one of their native thinking fields before rendering every assistant
+    message, including an assistant tool-call message produced by Studio. The generic loop stores
+    the canonical streamed ``<think>...</think>`` in ``content`` instead. Only a template that
+    actually selects the IFM tool grammar is repaired, and the original list/messages are left
+    untouched when no repair is needed.
+    """
+    if not messages or not _ifm_template_has_tool_history(tokenizer, tools):
+        return messages
+
+    out: list = []
+    mutated = False
+    for message in messages:
+        if (
+            not isinstance(message, dict)
+            or message.get("role") != "assistant"
+            or not message.get("tool_calls")
+            or (
+                any(field in message for field in _IFM_REASONING_HISTORY_FIELDS)
+                and all(
+                    isinstance(message.get(field), str)
+                    for field in _IFM_REASONING_HISTORY_FIELDS
+                    if field in message
+                )
+            )
+        ):
+            out.append(message)
+            continue
+
+        present_fields = [field for field in _IFM_REASONING_HISTORY_FIELDS if field in message]
+        valid_fields = [field for field in present_fields if isinstance(message.get(field), str)]
+        invalid_fields = [field for field in present_fields if field not in valid_fields]
+        content = message.get("content")
+        thought = ""
+        new_content = content
+        if isinstance(content, str):
+            match = _IFM_CANONICAL_THINK_PREFIX.match(content)
+            if match is not None:
+                thought = match.group("thought")
+                new_content = content[match.end() :]
+
+        repaired = {**message}
+        if invalid_fields:
+            # Reuse existing reasoning when the template exposed a valid alias; otherwise use
+            # the canonical thought extracted from content, or the empty string.
+            replacement = message[valid_fields[0]] if valid_fields else thought
+            for field in invalid_fields:
+                repaired[field] = replacement
+        else:
+            repaired["reasoning_content"] = thought
+        if not valid_fields and new_content != content:
+            repaired["content"] = new_content
+        out.append(repaired)
+        mutated = True
+    return out if mutated else messages
 
 
 _MARKUP_BY_TOKENIZER: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
@@ -3229,6 +3395,15 @@ def apply_chat_template_for_generation(
         split = _split_parallel_tool_calls(normalized)
         if split is not normalized:
             candidates.append(split)
+        # Some strict native IFM templates require a thinking field on every assistant history
+        # message. The loop's generic assistant representation keeps canonical thinking in
+        # content, so try the smallest template-derived repair after the existing generic repairs.
+        repair_bases = [messages]
+        repair_bases.extend(candidates)
+        for base in repair_bases:
+            repaired = _repair_ifm_tool_history(base, tokenizer, tools)
+            if repaired is not base:
+                candidates.append(repaired)
         for candidate in candidates:
             try:
                 return _render_with_fallback(candidate)
@@ -3366,7 +3541,8 @@ def render_native_template(
         return ChatTemplateRenderResult(
             with_tools,
             _detect_reasoning_channel_markers_from_templates(
-                _selected_template_strings_from_value(native_tpl, tools)
+                _selected_template_strings_from_value(native_tpl, tools),
+                with_tools,
             ),
             # The NATIVE profile decided this render's catalog: it can drop a tool the active profile kept, so callers
             # must gate healing and tool execution on this list rather than on the one they sanitized themselves. With
@@ -3403,7 +3579,11 @@ def render_with_native_template_fallback(
     backends so both advertise tools consistently. ``hf_token`` is forwarded so a gated/private
     model's native template can still be fetched. With ``return_metadata``, returns the selected
     prompt plus reasoning-channel markers for the exact template used by this request."""
-    live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    live_markers = detect_reasoning_channel_markers(
+        tokenizer,
+        tools = tools,
+        prompt = formatted_prompt,
+    )
 
     def _result(
         prompt: str,
@@ -3428,7 +3608,7 @@ def render_with_native_template_fallback(
         markers = live_markers
         if markers is None:
             markers = detect_reasoning_channel_markers_from_model_info(
-                tokenizer, model_info, tools = None
+                tokenizer, model_info, tools = None, prompt = formatted_prompt
             )
         return _result(formatted_prompt, markers)
     if apply_fn is None:

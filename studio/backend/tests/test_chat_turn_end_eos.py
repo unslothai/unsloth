@@ -44,6 +44,7 @@ class _FakeTokenizer:
 # ---- resolve_chat_turn_end_eos_ids ---------------------------------------
 
 _CHATML = "{% for m in messages %}<|im_start|>{{m.role}}\n{{m.content}}<|im_end|>{% endfor %}"
+_IFM = "{% for m in messages %}<|ifm|im_start|>{{m.role}}\n{{m.content}}<|ifm|im_end|>{% endfor %}"
 
 
 def test_qwen35_adds_im_end_from_template():
@@ -57,6 +58,16 @@ def test_marker_in_vocab_but_not_in_template_is_ignored():
     # it, so it must not become a stop token.
     tok = _FakeTokenizer(248044, chat_template = "{{ messages }}", token_ids = {"<|im_end|>": 248046})
     assert resolve_chat_turn_end_eos_ids(tok) == [248044]
+
+
+def test_ifm_im_end_from_template_is_added_to_eos_ids():
+    tok = _FakeTokenizer(1, chat_template = _IFM, token_ids = {"<|ifm|im_end|>": 250019})
+    assert resolve_chat_turn_end_eos_ids(tok) == [1, 250019]
+
+
+def test_ifm_im_end_in_vocab_but_not_in_template_is_ignored():
+    tok = _FakeTokenizer(1, chat_template = "{{ messages }}", token_ids = {"<|ifm|im_end|>": 250019})
+    assert resolve_chat_turn_end_eos_ids(tok) == [1]
 
 
 def test_harmony_template_is_left_untouched():

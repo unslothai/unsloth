@@ -20,6 +20,7 @@ from typing import Optional
 # Canonical assistant-turn-end markers per chat family.
 _CHAT_TURN_END_TOKENS = (
     "<|im_end|>",
+    "<|ifm|im_end|>",
     "<|eot_id|>",
     "<|eom_id|>",
     "<end_of_turn>",

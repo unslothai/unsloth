@@ -285,8 +285,31 @@ def test_request_reasoning_marker_preserves_component_or_full_special_token(open
             "}",
             "<tool_call|>",
         ],
+        [
+            "<ifm|tool_calls>",
+            "<ifm|tool_call>",
+            "terminal",
+            "<ifm|arg_key>",
+            "command",
+            "</ifm|arg_key>",
+            "<ifm|arg_value>",
+            "id",
+            "</ifm|arg_value>",
+            "</ifm|tool_call>",
+            "</ifm|tool_calls>",
+        ],
     ],
-    ids = ["qwen", "llama", "mistral", "deepseek", "kimi", "tml", "glm", "gemma"],
+    ids = [
+        "qwen",
+        "llama",
+        "mistral",
+        "deepseek",
+        "kimi",
+        "tml",
+        "glm",
+        "gemma",
+        "ifm",
+    ],
 )
 def test_native_protocol_families_parse_after_special_token_decode(parts):
     controls = {
@@ -327,6 +350,65 @@ def test_transformers_reasoning_stream_preserves_reasoning_and_tool_ids_but_not_
     decoded = "".join(streamer)
 
     assert decoded == "<think>reasoned</think><|tool_call>call:terminal{command:id}<tool_call|>"
+    executed, _events = _run_tool_loop(decoded)
+    assert executed == [("terminal", {"command": "id"})]
+
+
+def test_transformers_ifm_tool_ids_survive_reasoning_stream():
+    parts = [
+        "<ifm|think_fast>",
+        "reasoned",
+        "</ifm|think>",
+        "<ifm|tool_calls>",
+        "<ifm|tool_call>",
+        "terminal",
+        "<ifm|arg_key>",
+        "command",
+        "</ifm|arg_key>",
+        "<ifm|arg_value>",
+        "id",
+        "</ifm|arg_value>",
+        "</ifm|tool_call>",
+        "</ifm|tool_calls>",
+        "<|ifm|im_end|>",
+    ]
+    preserved = {
+        "<ifm|think_fast>",
+        "</ifm|think_fast>",
+        "</ifm|think>",
+        "<|ifm|im_end|>",
+    }
+    controls = {
+        index
+        for index, part in enumerate(parts, start = 1)
+        if part in NATIVE_TOOL_CONTROL_TOKENS or part in preserved
+    }
+    tokenizer = _PieceTokenizer(parts, controls)
+    from core.inference.inference import InferenceBackend
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    streamer = backend._make_text_streamer(
+        tokenizer,
+        reasoning_channel_markers = (
+            "<ifm|think_fast>",
+            "</ifm|think_fast>",
+            "</ifm|think>",
+        ),
+        reasoning_channel_markers_resolved = True,
+        skip_prompt = False,
+        preserve_tool_tokens = True,
+    )
+    streamer.put(torch.tensor(range(1, len(parts) + 1)))
+    streamer.end()
+    decoded = "".join(streamer)
+
+    assert decoded == (
+        "<think>reasoned</think>"
+        "<ifm|tool_calls><ifm|tool_call>terminal"
+        "<ifm|arg_key>command</ifm|arg_key>"
+        "<ifm|arg_value>id</ifm|arg_value>"
+        "</ifm|tool_call></ifm|tool_calls>"
+    )
     executed, _events = _run_tool_loop(decoded)
     assert executed == [("terminal", {"command": "id"})]
 
