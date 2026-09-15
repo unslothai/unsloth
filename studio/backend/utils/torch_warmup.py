@@ -402,6 +402,12 @@ def _a_local_model_would_load_through_diffusers() -> bool:
         resolve_local_media_model,
     )
 
+    # Scope limit, deliberate: the media index is keyed on current_account_id(), and this runs on
+    # a boot thread with no bound account, so it answers for the owner. On a multi-user install
+    # where only a non-owner has an image model, the gate says no and that user's first load
+    # still pays the import. Not worth fixing here: building an index per configured account
+    # means a filesystem scan per account on the boot thread, which is the cost this gate exists
+    # to avoid, and the failure mode is only the absence of a speedup, exactly as today.
     for task in _MEDIA_PREWARM_TASKS:
         for model_id in available_media_model_ids(task):
             pick = resolve_local_media_model(model_id, task = task)
@@ -483,6 +489,13 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
     if _diffusers_prewarmed:
         return False
     if os.environ.get(DIFFUSERS_PREWARM_DISABLE_ENV_VAR) == "1":
+        return False
+    # The torch opt-out covers this too. start_background_warm() declines under DISABLE_ENV_VAR,
+    # but join_background_warm() reports True when no worker ever ran, so the post-warm thread
+    # arrives here regardless; importing diffusers imports torch, which is precisely what that
+    # variable exists to prevent. Checked here rather than at the call site so every caller gets
+    # it, and so the warm-window tests that assert no unsolicited torch import keep holding.
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
     with _diffusers_prewarm_lock:
         if _diffusers_prewarmed:

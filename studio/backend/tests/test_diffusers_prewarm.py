@@ -196,6 +196,19 @@ def test_a_video_family_we_cannot_identify_still_prewarms(warm, monkeypatch):
     assert warm.prewarm_diffusers_if_image_models_exist() is True
 
 
+def test_the_torch_warm_opt_out_also_disables_the_prewarm(warm, monkeypatch):
+    """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 means no unsolicited torch import, and importing
+    diffusers imports torch. start_background_warm() declines under that variable, but
+    join_background_warm() reports True when no worker ever ran, so the post-warm thread reaches
+    the prewarm anyway. Without this check the opt-out would be defeated by the new code."""
+    monkeypatch.setenv(warm.DISABLE_ENV_VAR, "1")
+    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+    assert "diffusers" not in sys.modules, "the torch-warm opt-out did not stop the prewarm"
+
+
 def test_the_kill_switch_is_honoured(warm, monkeypatch):
     monkeypatch.setenv(warm.DIFFUSERS_PREWARM_DISABLE_ENV_VAR, "1")
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
