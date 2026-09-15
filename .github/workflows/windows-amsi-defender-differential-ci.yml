@@ -356,6 +356,17 @@ jobs:
             exit 0
           }
 
+          # Real-time protection acts on open and on write, and -DisableRemediation governs only the
+          # explicit scan, so a live provider can quarantine a laid-out copy while it is being
+          # stamped or opened and turn a detection into a missing file, which this non-required lane
+          # then exits zero for. Exempt the directory holding the copies, exactly as
+          # release-desktop.yml:1437-1444 does, and for the same stated reason: the verdict is
+          # unaffected because -DisableRemediation ignores file exclusions. -ErrorAction Continue
+          # because a hosted runner may refuse the change, and that is not a reason to stop.
+          if ($env:ROOT) {
+            Add-MpPreference -ExclusionPath $env:ROOT -ErrorAction Continue
+          }
+
           # The control first, and everything after it is conditional on it. Assembled from three
           # fragments so this repository does not itself carry the EICAR signature, the same way
           # release-desktop.yml does it.
@@ -366,7 +377,13 @@ jobs:
           try {
             Set-Content -LiteralPath $controlFile -Encoding ascii -NoNewline -Value (
               'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
-            $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile 2>&1 | Out-String)
+            # -DisableRemediation on the CONTROL too, so it is the same invocation the candidates
+            # get. It is not only about remediation: release-desktop.yml records that the flag makes
+            # the explicit scan ignore file exclusions (:1295, :1440-1442), and the hosted images
+            # this lane describes ship with both drive roots excluded. Without it the control scan
+            # of $RUNNER_TEMP can be skipped entirely, the control reads as silent, and the step
+            # exits without testing candidates whose own scans would have worked.
+            $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile -DisableRemediation 2>&1 | Out-String)
             $fired = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
             if (-not $fired -and -not (Test-Path -LiteralPath $controlFile)) {
               # Quarantined before the scan could open it. Real-time protection is live, which is a

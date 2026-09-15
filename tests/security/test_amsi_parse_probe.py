@@ -675,3 +675,40 @@ def test_an_unparseable_probe_result_is_not_silently_dropped() -> None:
     assert "carries no results" in collection, (
         "a payload that parses but has no results is still accepted as a measured row"
     )
+
+
+def test_the_defender_control_is_scanned_the_way_the_candidates_are() -> None:
+    """A control that runs a different command than the measurement does not vouch for it.
+
+    `-DisableRemediation` is not only about remediation: this repository's release scanner records
+    that it makes the explicit scan ignore file exclusions
+    (`.github/workflows/release-desktop.yml:1295` and `:1440-1442`), and the hosted images this lane
+    describes ship with both drive roots excluded. The control scan therefore could be skipped
+    while the candidate scans worked, leaving the step to exit without measuring anything.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    scans = [line for line in body.splitlines() if "-Scan -ScanType 3" in line]
+    assert scans, "nothing scans any more"
+    for line in scans:
+        assert "-DisableRemediation" in line, (
+            f"this scan does not use the same flags as the others, so the control and the "
+            f"measurement are not comparable:\n{line.strip()}"
+        )
+
+
+def test_the_laid_out_copies_are_exempt_from_on_access_scanning() -> None:
+    """On-access quarantine turns a detection into a missing file, which this lane exits zero for.
+
+    Real-time protection acts on open and on write, and `-DisableRemediation` governs only the
+    explicit scan, so a live provider can take a copy away while it is being stamped or opened.
+    release-desktop.yml adds filesystem exclusions for exactly this reason and notes that the
+    verdict is unaffected, because the explicit scan ignores exclusions anyway.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    start = body.index("Add-MpPreference -ExclusionPath")
+    assert start < body.index("$controlOut = (& $mp -Scan"), (
+        "the exclusion is added after the control has already been scanned"
+    )
+    assert "$env:ROOT" in body[start : start + 120], (
+        "the exclusion does not cover the directory the base and head copies were laid out in"
+    )
