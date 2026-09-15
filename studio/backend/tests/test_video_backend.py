@@ -9223,7 +9223,12 @@ def test_denoise_completes_even_when_the_loop_ticks_fewer_times_than_steps(fake_
     seen: dict = {}
     original_call = pipe.__class__.__call__
 
-    def _one_tick_short(self, *, num_inference_steps = None, **kwargs):
+    def _one_tick_short(
+        self,
+        *,
+        num_inference_steps = None,
+        **kwargs,
+    ):
         out = original_call(self, num_inference_steps = int(num_inference_steps) - 1, **kwargs)
         seen["at_end_of_loop"] = int(backend._gen.get("step") or 0)
         return out

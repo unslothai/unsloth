@@ -480,6 +480,7 @@ def _record_cuda_event() -> Any:
     """
     try:
         import torch
+
         if not torch.cuda.is_available():
             return None
         if torch.cuda.is_current_stream_capturing():
@@ -550,7 +551,7 @@ class _CompletedStepTicker:
         with self._lock:
             if not self._event_backed:
                 return self._enqueued
-            pending = self._events[self._scanned:]
+            pending = self._events[self._scanned :]
             done, scanned = self._done, self._scanned
         for enqueued, event in pending:
             try:
@@ -576,7 +577,11 @@ def _cuda_graph_capture_in_progress() -> bool:
 
 
 @contextlib.contextmanager
-def _completed_step_poller(ticker: _CompletedStepTicker, report: Any, poll_seconds: float = 0.1):
+def _completed_step_poller(
+    ticker: _CompletedStepTicker,
+    report: Any,
+    poll_seconds: float = 0.1,
+):
     """Keep advancing the reported step from the GPU while the caller sits inside ``pipe()``.
 
     The host-side ticks stop the moment the loop has enqueued its last step, so after that nothing
@@ -634,6 +639,7 @@ def _decode_phase(pipe: Any, on_decode: Any):
                 fired["done"] = True
                 on_decode()
             return original(*args, **kwargs)
+
         return _decode
 
     for name in _DECODE_ATTRS:
