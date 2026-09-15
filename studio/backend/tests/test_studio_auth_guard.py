@@ -1718,8 +1718,9 @@ def test_a_shell_variable_supplying_the_cd_target(monkeypatch, tmp_path):
         assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
             tools._STUDIO_CREDENTIAL_BLOCKED
         )
-        assert tools._bash_exec(
-            'd=build; cd "$d"; make', None, 30, _SESSION, disable_sandbox = True
-        ) != tools._STUDIO_CREDENTIAL_BLOCKED
+        assert (
+            tools._bash_exec('d=build; cd "$d"; make', None, 30, _SESSION, disable_sandbox = True)
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
     finally:
         tools._studio_auth_markers_cache = None

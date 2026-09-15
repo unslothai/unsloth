@@ -3453,7 +3453,9 @@ def _process_module_aliases(tree) -> "tuple[dict, set]":
 
 
 def _launches_a_child_process(
-    node: "ast.Call", aliases: "dict | None" = None, bare: "set | None" = None
+    node: "ast.Call",
+    aliases: "dict | None" = None,
+    bare: "set | None" = None,
 ) -> bool:
     """True for a call that starts a process, by module attribute or by a bare imported name.
 
