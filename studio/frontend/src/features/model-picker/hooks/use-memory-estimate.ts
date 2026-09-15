@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import {
   type MemoryEstimate,
   type MemoryEstimateRequest,
@@ -57,6 +58,7 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
  *  cannot overwrite a newer one. */
 export function useMemoryEstimate(
   request: MemoryEstimateRequest | null,
+  { refreshMemory = false }: { refreshMemory?: boolean } = {},
 ): MemoryEstimateState {
   const key = estimateKey(request);
   // Computed during render, not read from a ref the effect updates after paint: the effect below
@@ -71,11 +73,15 @@ export function useMemoryEstimate(
           tokenIdentity(request.hfToken),
           request.nativePathToken,
         );
-  const [state, setState] = useState<MemoryEstimateState & { identity: string | null }>({
+  const [state, setState] = useState<MemoryEstimateState & {
+    identity: string | null;
+    probeKey: string | null;
+  }>({
     estimate: null,
     loading: false,
     stale: false,
     identity: null,
+    probeKey: null,
   });
   // Read inside the effect so it depends on the key alone: `request` is a fresh object every
   // render and would restart the debounce on any keystroke.
@@ -90,7 +96,7 @@ export function useMemoryEstimate(
     const pending = latestRequest.current;
     if (key == null || pending == null) {
       shownModel.current = null;
-      setState({ estimate: null, loading: false, stale: false, identity: null });
+      setState({ estimate: null, loading: false, stale: false, identity: null, probeKey: null });
       return;
     }
     const identity = resolveEstimateSourceIdentity(
@@ -102,33 +108,42 @@ export function useMemoryEstimate(
     const modelChanged = shownModel.current !== identity;
     setState((current) =>
       modelChanged
-        ? { estimate: null, loading: true, stale: false, identity }
+        ? { estimate: null, loading: true, stale: false, identity, probeKey: null }
         : { ...current, loading: current.estimate == null, stale: true, identity },
     );
     const controller = new AbortController();
     const timer = setTimeout(() => {
       fetchMemoryEstimate(pending, controller.signal)
-        .then((estimate) => {
+        .then(async (estimate) => {
+          if (controller.signal.aborted) return;
+          if (refreshMemory && estimate.available) {
+            const probe = await fetchSystemInfo({ refreshMemory: true });
+            if (!probe?.memory_refreshed) throw new Error("Memory probe unavailable");
+          }
           if (controller.signal.aborted) return;
           shownModel.current = identity;
-          setState({ estimate, loading: false, stale: false, identity });
+          setState({ estimate, loading: false, stale: false, identity, probeKey: refreshMemory ? key : null });
         })
         .catch(() => {
           if (controller.signal.aborted) return;
           // A failed estimate is not a failed panel; drop the row.
           shownModel.current = identity;
-          setState({ estimate: null, loading: false, stale: false, identity });
+          setState({ estimate: null, loading: false, stale: false, identity, probeKey: null });
         });
     }, ESTIMATE_DEBOUNCE_MS);
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [key]);
+  }, [key, refreshMemory]);
 
   // State that belongs to a different source is not shown at all, not even for the frame before the effect clears it.
   if (state.identity !== currentIdentity) {
     return { estimate: null, loading: currentIdentity != null, stale: false };
   }
-  return { estimate: state.estimate, loading: state.loading, stale: state.stale };
+  return {
+    estimate: state.estimate,
+    loading: state.loading,
+    stale: state.stale || (refreshMemory && state.probeKey !== key),
+  };
 }

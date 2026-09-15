@@ -186,6 +186,34 @@ export const fr = {
     },
   },
   settings: {
+    accounts: {
+      title: "Comptes",
+      description: "Créez des comptes Studio privés. Les nouveaux utilisateurs se connectent avec un code de configuration à usage unique et choisissent un mot de passe.",
+      username: "Nom d'utilisateur",
+      create: "Créer un compte",
+      setupCode: "Code de configuration",
+      setupFor: "Code de configuration pour {username}",
+      shownOnce: "Copiez ce code maintenant et transmettez-le au titulaire du compte. Il n'est affiché qu'ici et ne peut être utilisé qu'une seule fois dans les 60 minutes.",
+      expires: "Expire {expiry}",
+      copy: "Copier le code de configuration",
+      copied: "Copié",
+      copyFailed: "Impossible de copier. Sélectionnez et copiez le code de configuration ci-dessus.",
+      dismiss: "Terminé",
+      owner: "Propriétaire de l'installation",
+      active: "Actif",
+      inactive: "Inactif",
+      regenerate: "Régénérer le code de configuration",
+      resetTitle: "Réinitialiser le mot de passe de {username} ?",
+      resetDescription: "Régénérer le code de configuration remplace le mot de passe de {username}, ferme ses sessions et révoque ses clés API. Donnez-lui le nouveau code pour qu'il choisisse à nouveau un mot de passe.",
+      deactivate: "Désactiver",
+      reactivate: "Réactiver",
+      delete: "Supprimer le compte",
+      deleteTitle: "Supprimer {username} ?",
+      deleteDescription: "Cette action révoque les sessions de {username} et annule ses travaux en cours. Ses conversations, réglages, identifiants, envois, jeux de données, entraînements, sorties, exports, galeries, bacs à sable, projets et fichiers temporaires sont retirés. Les répertoires sont renommés à part, jamais supprimés. Recréer ce nom d'utilisateur démarre un nouveau compte sans aucune de ces données.",
+      cancel: "Annuler",
+      retry: "Actualiser les comptes",
+      failed: "La requête de compte a échoué.",
+    },
     title: "Paramètres",
     dialog: {
       title: "Paramètres",
@@ -197,6 +225,7 @@ export const fr = {
       panelReload: "Recharger",
     },
     tabs: {
+      accounts: "Comptes",
       general: "Général",
       profile: "Profil",
       appearance: "Apparence",
@@ -469,6 +498,17 @@ export const fr = {
       droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
       morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
       staleSession: "La journalisation dans un fichier est desactivee : il s'agit d'une session anterieure, qui ne sera pas mise a jour.",
+      downloadAllLogs: "Télécharger tous les journaux (.zip)",
+      downloadingAllLogs: "Préparation de l'archive...",
+      exportMaskedNote: "Les identifiants sont masqués dans les fichiers exportés. Les journaux très volumineux ne conservent que leurs lignes les plus récentes, et certains peuvent être omis entièrement ; voir EXPORT_WARNINGS.txt dans l'archive.",
+      downloadedTo: "Enregistré dans {path}",
+      downloadedToBrowser: "Téléchargement lancé.",
+      showInFolder: "Afficher dans le dossier",
+      openLogsFolder: "Ouvrir le dossier des journaux",
+      openLogsFolderFailed: "Le dossier des journaux n'a pas pu être ouvert.",
+      exportFailed: "Les journaux n'ont pas pu être téléchargés.",
+      exportTooOld: "Le backend Unsloth en cours d'exécution est trop ancien pour exporter les journaux. Mettez-le à jour et redémarrez-le.",
+      exportForbidden: "Le téléchargement de tous les journaux nécessite une session Studio connectée. Une clé d'API ne suffit pas.",
       keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
@@ -944,7 +984,11 @@ export const fr = {
         currentStreak: "Série en cours",
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
-        activityDescription: "{total} au cours des {weeks} dernières",
+        activityDescription: {
+          daily: "{total} au cours des {weeks} dernières",
+          weekly: "Semaine record {total} · {weeks} dernières",
+          cumulative: "{total} cumulés sur les {weeks} dernières",
+        },
         mode: {
           daily: "Quotidienne",
           weekly: "Hebdomadaire",
@@ -1221,8 +1265,8 @@ export const fr = {
         keepResidentDescription: "Reste en VRAM entre les messages.",
         keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et, lorsque les poids résident réellement en RAM hôte (mémoire unifiée ou déchargement GPU partiel), passe aussi --mlock afin que le système ne les décharge pas pour les retransférer au prochain message.",
         noRamReserve: "Ne pas réserver de RAM système pour le modèle",
-        noRamReserveDescription: "Ne garde aucune copie complète en RAM.",
-        noRamReserveHint: "Transfère les poids vers la VRAM au lieu d'en garder une copie complète en RAM. Conserve le chargement mappé en mémoire de llama.cpp et supprime --no-mmap et --mlock.",
+        noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
+        noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
@@ -1282,6 +1326,7 @@ export const fr = {
       copy: "Copier",
       copied: "Copié",
       commandBuilder: "Générateur de commande",
+      commandShell: "Shell pour toutes les commandes",
       agent: "Agent de codage",
       model: "Modèle",
       searchModels: "Rechercher des modèles GGUF...",
@@ -1299,9 +1344,8 @@ export const fr = {
       docs: "Documentation",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1410,6 +1454,7 @@ export const fr = {
           "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
         chatWithFiles: "Discuter avec des fichiers (RAG)",
         mcp: "MCP",
+        skills: "Compétences des agents",
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
@@ -1754,7 +1799,7 @@ export const fr = {
         desktopAvailable:
           "La version {version} de l’application de bureau est disponible",
         desktopAvailableDescription:
-          "Mettez à jour maintenant pour la préparer en arrière-plan. Vous continuez à travailler et redémarrez lorsqu’elle est prête.",
+          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
           "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
         desktopManualInstall:
@@ -1765,20 +1810,11 @@ export const fr = {
         desktopCurrent: "L’application de bureau est à jour",
         desktopCurrentDescription:
           "Unsloth continuera à rechercher automatiquement les mises à jour.",
-        desktopPreparingDescription:
-          "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
-        desktopReadyToRestartDescription:
-          "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
-        desktopReadyToInstallDescription:
-          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
         checking: "Vérification...",
-        preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
-        restartToUpdate: "Redémarrer pour mettre à jour",
-        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",
@@ -1948,6 +1984,7 @@ export const fr = {
       sourceHfCache: "Cache HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Dossier personnalisé",
       sourceLocalModel: "Modèle local",
       vramOomBadge: "OOM",
@@ -2206,6 +2243,7 @@ export const fr = {
       memoryEfficient: "Économe en mémoire",
       weightDecomposed: "Poids décomposés",
       notSupportedAppleSilicon: "Non pris en charge sur Apple Silicon",
+      doraNeedsVisionLayersOff: "Désactivez l'entraînement des couches de vision pour utiliser DoRA",
       optimization: "Optimisation",
       schedule: "Planification",
       memory: "Mémoire",
@@ -2522,5 +2560,23 @@ export const fr = {
     kvRate: "KV réservé, ~{rate}/token",
     oomLikely: "Avec les réglages actuels, un dépassement de mémoire est probable",
     tooLarge: "Plus volumineux que la VRAM, sera déchargé sur le CPU. Une quantification plus petite est plus rapide",
+  },
+  skills: {
+    title: "Compétences des agents",
+    description: "Les compétences sont détectées dans vos dossiers d'agents standard. Activez-les ici, puis tapez @ dans le chat pour en mentionner une.",
+    precedence: "~/.agents/skills est prioritaire par rapport à ~/.claude/skills.",
+    refresh: "Actualiser",
+    empty: "Aucune compétence d'agent trouvée. Ajoutez un dossier SKILL.md dans ~/.agents/skills ou ~/.claude/skills, puis actualisez.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Intégrée",
+    shadowed: "Masquée",
+    invalid: "Non valide",
+    compatibility: "Compatibilité : {value}",
+    shadowedBy: "Une autre compétence ({source}) portant ce nom est prioritaire.",
+    enable: "Activer {name}",
+    disable: "Désactiver {name}",
+    updateError: "Impossible de mettre à jour la compétence d'agent",
+    mentions: "Compétences des agents",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

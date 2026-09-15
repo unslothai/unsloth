@@ -60,6 +60,47 @@ def _fit(messages, **kwargs):
     return fit_checkpoint_context(messages, **kwargs)
 
 
+def _turn(**overrides):
+    """One stored conversation turn, with per-test overrides."""
+    return {
+        "id": "a2",
+        "parentId": "user-1",
+        "role": "assistant",
+        "content": "Done.",
+        "metadata": _checkpoint_metadata(18),
+        **overrides,
+    }
+
+
+def _pending_turn(
+    *,
+    id = "a1",
+    parentId = "u1",
+    role = "assistant",
+    content = "Done.",
+    generationStatus = "completed",
+):
+    """A stored turn carrying only a generation status, with per-test overrides."""
+    return {
+        "id": id,
+        "parentId": parentId,
+        "role": role,
+        "content": content,
+        "metadata": {"generationStatus": generationStatus},
+    }
+
+
+def _row(**overrides):
+    """One stored conversation row without metadata, with per-test overrides."""
+    return {
+        "id": "u1",
+        "parentId": None,
+        "role": "user",
+        "content": "Continue",
+        **overrides,
+    }
+
+
 def test_a_reset_keeps_the_system_turn_and_the_newest_user_turn():
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
@@ -1468,19 +1509,16 @@ def test_a_wire_shaped_tool_branch_restores_the_stored_rows_boundary(monkeypatch
             "role": "user",
             "content": [{"type": "text", "text": "What happened?"}],
         },
-        {
-            "id": "assistant-retry",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "An abandoned retry on a sibling branch.",
-            "metadata": _checkpoint_metadata(99),
-        },
-        {
-            "id": "user-retry",
-            "parentId": "assistant-retry",
-            "role": "user",
-            "content": "A sibling question the request did not select.",
-        },
+        _turn(
+            id = "assistant-retry",
+            content = "An abandoned retry on a sibling branch.",
+            metadata = _checkpoint_metadata(99),
+        ),
+        _row(
+            id = "user-retry",
+            parentId = "assistant-retry",
+            content = "A sibling question the request did not select.",
+        ),
     ]
     branch = [
         {"role": "user", "content": "Run the diagnostic."},
@@ -1515,13 +1553,7 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
     from routes import inference as inference_routes
 
     def _reply(identifier, boundary):
-        return {
-            "id": identifier,
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": _checkpoint_metadata(boundary),
-        }
+        return _turn(id = identifier, metadata = _checkpoint_metadata(boundary))
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "Do the work."},
@@ -1554,38 +1586,11 @@ def test_repeated_text_on_one_parent_chain_uses_only_the_newest_state(monkeypatc
     from routes import inference as inference_routes
 
     rows = [
-        {
-            "id": "user-1",
-            "parentId": None,
-            "role": "user",
-            "content": "First task.",
-        },
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
-        {
-            "id": "user-2",
-            "parentId": "assistant-1",
-            "role": "user",
-            "content": "Second task.",
-        },
-        {
-            "id": "assistant-2",
-            "parentId": "user-2",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": _checkpoint_metadata(5),
-        },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "What happened?",
-        },
+        _row(id = "user-1", content = "First task."),
+        _pending_turn(id = "assistant-1", parentId = "user-1"),
+        _row(id = "user-2", parentId = "assistant-1", content = "Second task."),
+        _turn(id = "assistant-2", parentId = "user-2", metadata = _checkpoint_metadata(5)),
+        _row(id = "user-3", parentId = "assistant-2", content = "What happened?"),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1603,26 +1608,18 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First task."},
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "The common-prefix reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
-        {
-            "id": "user-old",
-            "parentId": "assistant-1",
-            "role": "user",
-            "content": "The question before it was edited.",
-        },
-        {
-            "id": "assistant-old",
-            "parentId": "user-old",
-            "role": "assistant",
-            "content": "An unmatched old-branch reply.",
-            "metadata": _checkpoint_metadata(12),
-        },
+        _pending_turn(id = "assistant-1", parentId = "user-1", content = "The common-prefix reply."),
+        _row(
+            id = "user-old",
+            parentId = "assistant-1",
+            content = "The question before it was edited.",
+        ),
+        _turn(
+            id = "assistant-old",
+            parentId = "user-old",
+            content = "An unmatched old-branch reply.",
+            metadata = _checkpoint_metadata(12),
+        ),
     ]
     branch = [
         {"role": "user", "content": "First task."},
@@ -1697,27 +1694,19 @@ def test_the_newest_authoritative_state_controls_the_old_epoch(monkeypatch, meta
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "The epoch started here.",
-            "metadata": _checkpoint_metadata(6),
-        },
+        _turn(
+            id = "assistant-1",
+            content = "The epoch started here.",
+            metadata = _checkpoint_metadata(6),
+        ),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "Continue."},
-        {
-            "id": "assistant-2",
-            "parentId": "user-2",
-            "role": "assistant",
-            "content": "The newest reply.",
-            "metadata": metadata,
-        },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "Continue again.",
-        },
+        _turn(
+            id = "assistant-2",
+            parentId = "user-2",
+            content = "The newest reply.",
+            metadata = metadata,
+        ),
+        _row(id = "user-3", parentId = "assistant-2", content = "Continue again."),
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]
     _stub_studio_db(monkeypatch, rows)
@@ -1735,13 +1724,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
 
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "First question."},
-        {
-            "id": "assistant-1",
-            "parentId": "user-1",
-            "role": "assistant",
-            "content": "The old epoch reply.",
-            "metadata": _checkpoint_metadata(6),
-        },
+        _turn(id = "assistant-1", content = "The old epoch reply.", metadata = _checkpoint_metadata(6)),
         {"id": "user-2", "parentId": "assistant-1", "role": "user", "content": "More work."},
         {
             "id": "assistant-2",
@@ -1761,12 +1744,7 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
                 **_checkpoint_metadata(12, checkpoint_started = True),
             },
         },
-        {
-            "id": "user-3",
-            "parentId": "assistant-2",
-            "role": "user",
-            "content": "Continue after stopping.",
-        },
+        _row(id = "user-3", parentId = "assistant-2", content = "Continue after stopping."),
     ]
     # The adapter omits an unfinished local card, but user-3 durably descends from its row.
     assert conversation_archive._as_wire([rows[3]]) == []
@@ -1826,14 +1804,7 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     for retry in range(3):
-        rows.append(
-            {
-                "id": f"fu{retry}",
-                "parentId": "a1",
-                "role": "user",
-                "content": f"A retried follow-up {retry}.",
-            }
-        )
+        rows.append(_row(id = f"fu{retry}", parentId = "a1", content = f"A retried follow-up {retry}."))
         assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
@@ -1847,13 +1818,7 @@ def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypat
     from core.inference import checkpoint, llama_cpp
 
     def _reply(identifier, boundary):
-        return {
-            "id": identifier,
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": _checkpoint_metadata(boundary),
-        }
+        return _turn(id = identifier, parentId = "u1", metadata = _checkpoint_metadata(boundary))
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
@@ -1884,20 +1849,8 @@ def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monk
     for status in ("cancelled", "running"):
         rows = [
             {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-            {
-                "id": "a-live",
-                "parentId": "u1",
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": {"generationStatus": status},
-            },
-            {
-                "id": "a-abandoned",
-                "parentId": "u1",
-                "role": "assistant",
-                "content": "Done.",
-                "metadata": _checkpoint_metadata(18),
-            },
+            _pending_turn(id = "a-live", generationStatus = status),
+            _turn(id = "a-abandoned", parentId = "u1"),
         ]
         branch = [
             {"role": "user", "content": "Do the work."},
@@ -1921,21 +1874,9 @@ def test_a_rewound_turn_does_not_match_an_assistant_reply_of_the_same_text(monke
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "The shared reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "The shared reply."),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Continue.",
-            "metadata": _checkpoint_metadata(18),
-        },
+        _turn(parentId = "u2", content = "Continue."),
     ]
     branch = [
         {"role": "user", "content": "Do the work."},
@@ -1962,21 +1903,9 @@ def test_a_chain_that_skips_past_the_settled_proof_is_refused(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "The shared reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "The shared reply."),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Take the next step."},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Abandoned reply.",
-            "metadata": _checkpoint_metadata(18),
-        },
+        _turn(parentId = "u2", content = "Abandoned reply."),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue."},
     ]
     branch = [
@@ -2003,21 +1932,9 @@ def test_a_repeated_text_earlier_in_the_request_cannot_admit_an_abandoned_row(mo
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Same",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "Same"),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Q"},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Same",
-            "metadata": _checkpoint_metadata(18),
-        },
+        _turn(parentId = "u2", content = "Same"),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue"},
     ]
     branch = [
@@ -2039,13 +1956,12 @@ def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "First question."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "The epoch reply.",
-            "metadata": _checkpoint_metadata(6),
-        },
+        _turn(
+            id = "a1",
+            parentId = "u1",
+            content = "The epoch reply.",
+            metadata = _checkpoint_metadata(6),
+        ),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue."},
         {
             "id": "a2",
@@ -3595,13 +3511,7 @@ def test_a_cancelled_reply_that_reached_text_is_still_validated(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Q"},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "A1",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(content = "A1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3671,21 +3581,9 @@ def test_a_stored_reply_is_not_justified_by_a_user_turn_of_the_same_words(monkey
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue"},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "Continue",
-            "metadata": _checkpoint_metadata(30),
-        },
+        _turn(parentId = "u2", content = "Continue", metadata = _checkpoint_metadata(30)),
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Next"},
     ]
     branch = [
@@ -3723,13 +3621,7 @@ def test_a_completed_tool_turn_past_the_tip_is_validated_by_its_results(monkeypa
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3757,13 +3649,7 @@ def test_a_replayed_row_that_renders_no_text_is_refused_rather_than_trusted(monk
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {
             "id": "a2",
             "parentId": "a1",
@@ -3796,22 +3682,15 @@ def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypat
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "The first wording."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "An abandoned reply.",
-            "metadata": _checkpoint_metadata(44),
-        },
+        _turn(
+            id = "a1",
+            parentId = "u1",
+            content = "An abandoned reply.",
+            metadata = _checkpoint_metadata(44),
+        ),
         # The edit: a root of its own, not a child of the branch it replaced.
         {"id": "u2", "parentId": None, "role": "user", "content": "The second wording."},
-        {
-            "id": "a2",
-            "parentId": "u2",
-            "role": "assistant",
-            "content": "The live reply.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a2", parentId = "u2", content = "The live reply."),
     ]
     branch = [
         {"role": "user", "content": "The second wording."},
@@ -3837,13 +3716,7 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Start."},
-        {
-            "id": "a1",
-            "parentId": "u1",
-            "role": "assistant",
-            "content": "Done.",
-            "metadata": {"generationStatus": "completed"},
-        },
+        _pending_turn(id = "a1"),
         {
             "id": "a2",
             "parentId": "a1",

@@ -84,9 +84,8 @@ async function fetchOpenAIAutoSwitchSettings(): Promise<OpenAIAutoSwitchSettings
   return fromApi(await res.json());
 }
 
-// Bumped on every invalidation. A response that was already in flight when the
-// cache was cleared must not refill it, or the pre-toggle value would be served
-// indefinitely.
+// Bumped on every invalidation. A response that was already in flight when the cache was cleared
+// must not refill it, or the pre-toggle value would be served indefinitely.
 let cacheGeneration = 0;
 
 function cacheSettings(settings: OpenAIAutoSwitchSettings, generation: number) {
@@ -174,9 +173,8 @@ export async function updateOpenAIAutoSwitchSettings(
       body[key] = value;
     }
   }
-  // Read BEFORE the request: idleUnloadActive depends on the Model Memory
-  // setting, so a residency write landing mid-flight makes this response stale
-  // even though it is our own write's reply.
+  // Read BEFORE the request: idleUnloadActive depends on the Model Memory setting, so a residency
+  // write landing mid-flight makes this response stale even though it is our own write's reply.
   const generation = cacheGeneration;
   const res = await authFetch("/api/settings/openai-auto-switch", {
     method: "PUT",
