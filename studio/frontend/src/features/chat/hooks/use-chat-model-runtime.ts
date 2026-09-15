@@ -33,7 +33,7 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
-  isOllamaLinkPath,
+  isOllamaModelId,
   modelDisplayName,
 } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
@@ -1226,7 +1226,7 @@ export function useChatModelRuntime() {
         // token must not gate a local or cached-LoRA load. An Ollama row's id is an opaque
         // `ollama-manifest:` reference rather than a path, so isLocalModelPath does not recognise it.
         const mayReachHub =
-          !isLocal && !isOllamaLinkPath(modelId) && nativePathToken == null;
+          !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
         if (mayReachHub) {
           const preparedToken = await prepareHfTokenForUse(hfToken);
           if (!preparedToken.proceed) {
