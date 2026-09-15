@@ -54,6 +54,9 @@ on:
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
+      # The wsl job runs its install inside this watcher, so a change to it changes what that
+      # job can detect.
+      - '.github/scripts/Watch-ForCompiler.ps1'
       # setup.sh (727) and setup.ps1 (2343, 3630, 3916) call these directly and the
       # overlay makes them THIS ref's code, so they decide whether a clean machine gets
       # a native prebuilt or a toolchain-dependent fallback.
@@ -85,6 +88,7 @@ on:
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
+      - '.github/scripts/Watch-ForCompiler.ps1'
       - 'studio/install_*_prebuilt.py'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'
@@ -958,10 +962,34 @@ jobs:
             Write-Host "installer source in WSL: $wslPath"
             wsl -d unsloth-ci -u root -- cp "$wslPath" /root/install.sh
           }
-          # Piped, the `curl ... | sh` shape, so an early exit still exposes the broken pipe.
-          wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 | Tee-Object -FilePath logs/wsl-install.log
-          $installRc = $LASTEXITCODE
+          # Watched LIVE while it runs, not inspected afterwards. The shortcut path runs
+          # powershell.exe on the Windows side, so a compile would happen here, and CodeDom deletes
+          # its whole intermediate directory once the assembly is loaded -- Watch-ForCompiler.ps1
+          # records that a before-and-after listing "saw nothing at all while 4688 recorded
+          # csc.exe". A post-hoc search for .cmdline files therefore cannot fail for the case this
+          # lane exists to catch, and a control that plants persistent files only proves the search
+          # can traverse a directory.
+          . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
+          $seen = Invoke-WithCompilerWatch -Name 'wsl-install' -EvidenceRoot "$PWD/logs" -Action {
+            # Piped, the `curl ... | sh` shape, so an early exit still exposes the broken pipe.
+            wsl -d unsloth-ci -u root -- sh -c 'cd /root && cat install.sh | sh' 2>&1 |
+              Tee-Object -FilePath logs/wsl-install.log
+            $global:installRc = $LASTEXITCODE
+          }
+          $installRc = $global:installRc
           Write-Host "installer exit: $installRc"
+          if ($seen.Compilers) {
+            Write-Host "::error::a C# compiler ran during the WSL install: $($seen.Compilers -join ', ')"
+            Write-Host '::error::install.sh must declare SHChangeNotify through reflection emit, never Add-Type -MemberDefinition'
+            exit 1
+          }
+          if ($seen.TempLibraries) {
+            # The other end of the same chain, and the one the Bitdefender report in #10540 keyed
+            # on: Add-Type leaves a freshly built DLL in the temp directory.
+            Write-Host "::error::a compiled library was dropped in the Windows temp during the WSL install: $($seen.TempLibraries -join ', ')"
+            exit 1
+          }
+          Write-Host 'live watch: no compiler process and no compiled library during the install'
 
           if (-not (Test-Path logs/wsl-install.log)) {
             Write-Host '::error::the WSL install produced no log'
@@ -1094,16 +1122,20 @@ jobs:
             Write-Host "::error::the generated shortcut script was not cleaned up: $($leftovers.Name -join ', ')"
             exit 1
           }
+          # Leftovers only. The compile itself is judged by the live watch around the install step,
+          # because CodeDom cleans up after itself and this listing would see nothing either way.
+          # Kept because it catches what IS left behind, which is the other half of the union
+          # Watch-ForCompiler.ps1 describes.
           $compiled = @(
             Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue |
               Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }
           )
           if ($compiled.Count) {
-            Write-Host "::error::a C# compiler ran during the WSL install: $($compiled.FullName -join ', ')"
+            Write-Host "::error::compiler intermediates were left in the Windows TEMP: $($compiled.FullName -join ', ')"
             Write-Host '::error::install.sh must declare SHChangeNotify through reflection emit, never Add-Type -MemberDefinition'
             exit 1
           }
-          Write-Host 'no compiler intermediates in the Windows TEMP, and no generated script left behind'
+          Write-Host 'no compiler intermediates left behind, and no generated script left behind'
 
       - name: Tear the distro down
         if: always()

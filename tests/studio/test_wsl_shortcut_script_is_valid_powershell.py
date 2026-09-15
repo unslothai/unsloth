@@ -156,3 +156,40 @@ def test_the_icon_refresh_emit_sequence_builds_a_callable_type() -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
+    """A search run after the install cannot see the compile it is looking for.
+
+    CodeDom deletes its whole intermediate directory once the assembly is loaded, which
+    `.github/scripts/Watch-ForCompiler.ps1` records as a before-and-after diff seeing "nothing at
+    all while 4688 recorded csc.exe". So a post-hoc listing of `*.cmdline` cannot fail for the case
+    this lane exists to catch, and a positive control that plants persistent files only proves the
+    search can traverse a directory. The install has to run INSIDE the watcher.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "clean-machine-install-ci.yml").read_text(encoding="utf-8")
+    )
+    steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in (job.get("steps") or [])
+        # The WSL leg specifically. The Linux container legs run the same piped install and
+        # have no Windows side to watch.
+        if "cat install.sh | sh" in str(step.get("run", ""))
+        and "wsl -d unsloth-ci" in str(step.get("run", ""))
+    ]
+    assert steps, "nothing runs the piped WSL install any more"
+    for step in steps:
+        run = str(step["run"])
+        assert "Invoke-WithCompilerWatch" in run, (
+            "the WSL install is not wrapped in the live compiler watch, so a compile that cleans up "
+            "after itself would go unseen and the lane would report it clean"
+        )
+        assert "$seen.Compilers" in run, "the watch result is never inspected"
+        assert "$seen.TempLibraries" in run, (
+            "the dropped-library half is never inspected, and that is the half the Bitdefender "
+            "report in #10540 keyed on"
+        )
