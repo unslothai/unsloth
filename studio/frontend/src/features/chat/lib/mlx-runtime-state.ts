@@ -31,7 +31,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
     };
   }
   return {
-    // Requested, not applied: a refusal applies no width but still has a reason.
+    // Requested, not applied: a refusal has a reason but no width.
     mlxKvBits: resp.mlx_kv_bits_requested ?? null,
     loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,

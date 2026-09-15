@@ -367,6 +367,8 @@ CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 # Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
 VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
+# Mirrors MLX_TURBOQUANT_BITS_CHOICES: its own set, not a subset of the mx.quantize widths.
+VALID_MLX_TURBOQUANT_BITS = frozenset({4, 3.5, 3, 2})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py.
 PARALLEL_SLOTS_MIN = 1
@@ -430,8 +432,15 @@ def normalize_model_override(
 
     # MLX quantizes by bit width, not by a llama.cpp dtype name, so it is its own field.
     mlx_kv_bits = payload.get("mlx_kv_bits")
-    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in VALID_MLX_KV_BITS:
-        entry["mlx_kv_bits"] = int(mlx_kv_bits)
+    turboquant = payload.get("mlx_turboquant") is True
+    if isinstance(payload.get("mlx_turboquant"), bool):
+        entry["mlx_turboquant"] = turboquant
+    choices = VALID_MLX_TURBOQUANT_BITS if turboquant else VALID_MLX_KV_BITS
+    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in choices:
+        # Stored as written, so a record from a JSON 4.0 reads back equal to one from 4.
+        entry["mlx_kv_bits"] = (
+            int(mlx_kv_bits) if float(mlx_kv_bits).is_integer() else float(mlx_kv_bits)
+        )
 
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
@@ -582,6 +591,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
         ("mlx_kv_bits", "mlx_kv_bits"),
+        ("mlx_turboquant", "mlx_turboquant"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("reasoning_budget", "reasoning_budget"),

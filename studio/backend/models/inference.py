@@ -104,10 +104,11 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
-    mlx_kv_bits: Optional[int] = Field(
+    mlx_turboquant: bool = False
+    mlx_kv_bits: Optional[float] = Field(
         None,
         description = (
-            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
+            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2; TurboQuant: 2, 3, 3.5 or 4). MLX takes a bit "
             "width rather than a llama.cpp dtype name, so this is separate from "
             "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
             "backends; a model whose cache layout cannot be quantized reports "
@@ -1212,10 +1213,11 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
-    mlx_kv_bits: Optional[int] = Field(
+    mlx_turboquant: bool = False
+    mlx_kv_bits: Optional[float] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
     )
-    mlx_kv_bits_requested: Optional[int] = Field(
+    mlx_kv_bits_requested: Optional[float] = Field(
         None,
         description = (
             "MLX KV quantization bit width the load asked for. Differs from "

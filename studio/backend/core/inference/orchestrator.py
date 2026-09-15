@@ -101,6 +101,7 @@ def _audio_generation_timeout(
 
 _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_bits",
+    "mlx_turboquant",
     "mlx_kv_bits_requested",
     "mlx_kv_quant_eligibility",
     "mlx_kv_quant_reason",
@@ -1492,7 +1493,8 @@ class InferenceOrchestrator:
         subject: Optional[str] = None,
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
-        mlx_kv_bits: Optional[int] = None,
+        mlx_turboquant: bool = False,
+        mlx_kv_bits: Optional[float] = None,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
@@ -1534,6 +1536,7 @@ class InferenceOrchestrator:
                 if mlx_distributed
                 else None,
                 "mlx_kv_bits": mlx_kv_bits,
+                "mlx_turboquant": mlx_turboquant,
                 "chat_template_override": chat_template_override,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,

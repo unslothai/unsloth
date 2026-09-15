@@ -806,7 +806,8 @@ class ModelOverridePayload(BaseModel):
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
     # A discrete set, enforced by the normalizer; these bounds only block absurd values.
-    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
+    mlx_turboquant: Optional[bool] = None
+    mlx_kv_bits: Optional[float] = Field(default = None, ge = 2, le = 8)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
@@ -1918,6 +1919,7 @@ def update_openai_auto_switch_override(
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
                 mlx_kv_bits = payload.mlx_kv_bits,
+                mlx_turboquant = payload.mlx_turboquant,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,

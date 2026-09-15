@@ -405,7 +405,10 @@ class ChatPresetLoadConfig(BaseModel):
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
-    mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
+    # Both schemes' widths, since mlxTurboQuant beside it decides which set applies. A mismatched
+    # pair loads unquantized rather than being rejected.
+    mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2, 3.5]] = None
+    mlxTurboQuant: bool = False
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
