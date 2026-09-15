@@ -3,7 +3,7 @@
 
 """The context intent the recipe load gates compare, executed rather than restated.
 
-`contextIntent` lives in a module that cannot be imported on its own, so
+`contextIntent` lives inside a React hook module that cannot be imported on its own, so
 it is sliced out of the real source and run. Restating the predicate here would pass
 just as happily with the source deleted.
 
@@ -28,18 +28,17 @@ from _node_harness import (
 )
 
 RECIPES = source_path("studio/frontend/src/features/recipe-studio/hooks/use-recipe-executions.ts")
-RESIDENCY = source_path("studio/frontend/src/features/recipe-studio/lib/local-model-residency.ts")
 
 TEMP = WORKDIR / "temp" / "recipe_context_intent"
 
-SOURCES = (RESIDENCY,)
+SOURCES = (RECIPES,)
 
 
 def _harness_source() -> str:
-    return "// @ts-nocheck\n" + slice_between(
-        read(RESIDENCY),
-        "export function contextIntent(",
-        "\nasync function localSelectionMatchesResident(",
+    return "// @ts-nocheck\nexport " + slice_between(
+        read(RECIPES),
+        "function contextIntent(",
+        "\nexport async function isLocalModelAlreadyLoaded(",
     )
 
 
@@ -77,9 +76,8 @@ def test_only_mlx_reads_a_positive_context_echo_as_a_pin():
 
 def test_both_load_gates_ask_the_backend_before_comparing_intent():
     """The predicate is only correct if both callers pass the flag; neither may drop it."""
-    residency = read(RESIDENCY)
-    assert "contextIntent(requestedContextLength, residentIsMlx)" in residency
-    assert "contextIntent(status.requested_context_length, residentIsMlx)" in residency
-    recipes = read(RECIPES)
-    assert "contextIntent(left.requestedContextLength, left.isMlx)" in recipes
-    assert "contextIntent(right.requestedContextLength, right.isMlx)" in recipes
+    source = read(RECIPES)
+    assert "contextIntent(requestedContextLength, residentIsMlx)" in source
+    assert "contextIntent(status.requested_context_length, residentIsMlx)" in source
+    assert "contextIntent(left.requestedContextLength, left.isMlx)" in source
+    assert "contextIntent(right.requestedContextLength, right.isMlx)" in source

@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
-import { getInferenceStatus, loadModel } from "@/features/chat";
+import { getInferenceStatus, loadModel, validateModel } from "@/features/chat";
 import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { isOllamaModelId } from "@/features/hub/lib/model-identity";
 import { DEFAULT_MAX_SEQ_LENGTH, isServedByMlx } from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
@@ -39,11 +41,6 @@ import {
 import { createBaseExecutionRecord } from "../executions/runtime";
 import { trackRecipeExecution } from "../executions/tracker";
 import {
-  type LocalModelSelection,
-  contextIntent,
-  isLocalModelAlreadyLoaded,
-} from "../lib/local-model-residency";
-import {
   type RecipeRunSettings,
   useRecipeExecutionsStore,
 } from "../stores/recipe-executions";
@@ -71,6 +68,14 @@ function collectUsedLlmModelAliases(payload: RecipePayload): Set<string> {
   }
   return aliases;
 }
+
+type LocalModelSelection = {
+  target: string;
+  ggufVariant: string;
+  aliases: string[];
+  requestedContextLength?: number | null;
+  isMlx?: boolean;
+};
 
 type LocalModelLoadPlan =
   | { selection: LocalModelSelection; error: null; legacyAliases?: never }
@@ -195,6 +200,94 @@ function getLocalModelLoadPlan(
 
   const selection = [...selections.values()][0];
   return selection ? { selection, error: null } : null;
+}
+
+function isDirectGgufTarget(target: string): boolean {
+  return target.toLowerCase().endsWith(".gguf");
+}
+
+function localSelectionMatchesActive(input: {
+  target: string;
+  ggufVariant: string;
+  activeModel: string | null | undefined;
+  activeVariant: string;
+}): boolean {
+  const { target, ggufVariant, activeModel, activeVariant } = input;
+  if (!activeModel || activeModel.toLowerCase() !== target.toLowerCase()) {
+    return false;
+  }
+  return (
+    activeVariant === ggufVariant ||
+    (isDirectGgufTarget(target) && !ggufVariant)
+  );
+}
+
+/** One blob has three spellings and can carry two tags, so a disagreement is put to the server. */
+async function localSelectionMatchesResident(input: {
+  target: string;
+  ggufVariant: string;
+  activeModel: string | null | undefined;
+  activeVariant: string;
+}): Promise<boolean> {
+  if (localSelectionMatchesActive(input)) {
+    return true;
+  }
+  if (!isOllamaModelId(input.target)) {
+    return false;
+  }
+  try {
+    const validated = await validateModel({
+      // biome-ignore lint/style/useNamingConvention: api schema
+      model_path: input.target,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      hf_token: null,
+      // Only `resident` is read; these are what /validate assumes when a caller sends none.
+      // biome-ignore lint/style/useNamingConvention: api schema
+      max_seq_length: 0,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      load_in_4bit: true,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      is_lora: false,
+    });
+    return validated.resident === true;
+  } catch {
+    return false;
+  }
+}
+
+/** A context request, read only where it pins: llama.cpp echoes n_ctx while Auto, MLX does not. */
+function contextIntent(
+  value: number | null | undefined,
+  isMlx: boolean | null | undefined,
+): number | null {
+  return isMlx && typeof value === "number" && value > 0 ? value : null;
+}
+
+export async function isLocalModelAlreadyLoaded(
+  selection: LocalModelSelection,
+): Promise<boolean> {
+  const { target, ggufVariant, requestedContextLength } = selection;
+  try {
+    const status = await getInferenceStatus();
+    if (
+      !(await localSelectionMatchesResident({
+        target,
+        ggufVariant,
+        activeModel: status.model_identifier ?? status.active_model,
+        activeVariant: status.gguf_variant?.trim() ?? "",
+      }))
+    ) {
+      return false;
+    }
+    // A different context intent is a different load: asking for nothing inherits no pin.
+    const residentIsMlx = status.is_mlx ?? false;
+    return (
+      contextIntent(requestedContextLength, residentIsMlx) ===
+      contextIntent(status.requested_context_length, residentIsMlx)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function loadLocalModelSelection(
