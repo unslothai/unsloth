@@ -377,15 +377,15 @@ def test_every_field_that_asks_for_a_path_says_the_issue_is_public() -> None:
     for name in ("error-text", "probe", "file-path"):
         attributes = fields[name]["attributes"]
         text = f"{attributes.get('label', '')}\n{attributes.get('description', '')}"
-        assert "public" in text.lower(), (
-            f"the {name} field asks for a filesystem path without saying the issue is public"
-        )
+        assert (
+            "public" in text.lower()
+        ), f"the {name} field asks for a filesystem path without saying the issue is public"
     # The probe is exempt from this second one: `Hide-Personal` substitutes the profile and user
     # name before anything is written, so there is nothing for the reporter to rewrite by hand.
     # These two are pasted unaided, and a warning with no worked replacement tends to be answered by
     # dropping the field rather than by editing it.
     for name in ("error-text", "file-path"):
         description = fields[name]["attributes"].get("description", "")
-        assert "<me>" in description, (
-            f"the {name} field warns that the issue is public but never shows what to write instead"
-        )
+        assert (
+            "<me>" in description
+        ), f"the {name} field warns that the issue is public but never shows what to write instead"
