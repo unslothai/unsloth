@@ -1511,23 +1511,21 @@ class InferenceBackend:
             user_message = "Describe this image." if image else "Hello"
 
         if image:
-            # Ordinary vision turns keep the historic collapse; full history is unbounded.
             has_tool_history = messages_have_tool_history(messages)
             # Client-tools route signature: tool_choice="none" and a forced unknown name
             # also arrive tools=None, and the catalog alone missed them (#10092).
             folded_system = not system_prompt and any(
                 isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
+            # Rebuilding from newest user TEXT dropped the system turn and the tool
+            # history an OpenAI tool loop replays (#10092).
+            vision_messages = messages_with_attached_image(
+                messages,
+                system_prompt = system_prompt,
+                fallback_user_text = user_message,
+                structured_content = True,
+            )
             if bool(tools) or has_tool_history or folded_system:
-                # Rebuilding from newest user TEXT dropped the system turn and the tool
-                # history an OpenAI tool loop replays (#10092).
-                vision_messages = messages_with_attached_image(
-                    messages,
-                    system_prompt = system_prompt,
-                    fallback_user_text = user_message,
-                    structured_content = True,
-                )
-
                 # The conversation the LAST render used, not the no-tools probe's (#10092).
                 rendered_with: dict = {"messages": vision_messages}
 
@@ -1594,50 +1592,21 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                user_msg = {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-                if system_prompt:
-                    vision_messages = [
-                        {
-                            "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}],
-                        },
-                        user_msg,
-                    ]
-                else:
-                    vision_messages = [user_msg]
-
-                # Resume the partial answer instead of opening a new turn.
-                if continue_partial:
-                    vision_messages.append(
-                        {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": continue_partial}],
-                        }
-                    )
-
-                # Processor's own template skips the choke point (#7066). Rebind user_msg
-                # so the no-system retry keeps the copy.
+                # Processor's own template skips the choke point (#7066).
                 from core.inference.chat_template_helpers import markup_for_tokenizer
 
                 vision_messages = neutralize_control_markup_in_messages(
                     vision_messages, None, markup_for_tokenizer(processor)
                 )
-                user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
 
-                def _render_collapsed_vision(msgs):
+                def _render_plain_vision(msgs):
                     # Partial taken from the swept msgs, not the raw pre-sweep capture.
                     return render_prompt_with_boundary(
                         processor, msgs, continue_final_message = bool(continue_partial)
                     )
 
                 try:
-                    input_text = _render_collapsed_vision(vision_messages)
+                    input_text = _render_plain_vision(vision_messages)
                 except Exception as e:
                     # Safe here: no catalog and no tool history to hide a failure behind.
                     if system_prompt:
@@ -1646,7 +1615,7 @@ class InferenceBackend:
                             f"system messages; retrying without. Original error: {e}"
                         )
                         vision_messages = [m for m in vision_messages if m.get("role") != "system"]
-                        input_text = _render_collapsed_vision(vision_messages)
+                        input_text = _render_plain_vision(vision_messages)
                     else:
                         raise
             inputs = processor(

@@ -1907,6 +1907,13 @@ elif DEVICE_TYPE == "xpu":
     else:
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "npu":
+    # Named, not left to the else: same 2.4-only API, but this says why it failed.
+    if Version(torch_version) < Version("2.4.0"):
+        raise RuntimeError("torch.npu currently only supports torch.version >= 2.4.0")
+    else:
+        torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
+        torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 else:
     # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)
@@ -2032,6 +2039,9 @@ elif DEVICE_TYPE == "hip":
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
+elif DEVICE_TYPE == "npu":
+    # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
+    SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 try:
     _xformers_logger = logging.getLogger("xformers")
@@ -2448,11 +2458,13 @@ def get_statistics(local_files_only = False):
         disabled = True
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    total_memory = (
-        torch.xpu.get_device_properties(0).total_memory
-        if DEVICE_TYPE == "xpu"
-        else torch.cuda.get_device_properties(0).total_memory
-    )
+    if DEVICE_TYPE == "xpu":
+        total_memory = torch.xpu.get_device_properties(0).total_memory
+    elif DEVICE_TYPE == "npu":
+        # from_pretrained always calls this; a NPU build cannot answer the else arm.
+        total_memory = torch.npu.get_device_properties(0).total_memory
+    else:
+        total_memory = torch.cuda.get_device_properties(0).total_memory
     vram = total_memory / 1024 / 1024 / 1024
     if vram <= 8:
         vram = 8

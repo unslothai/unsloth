@@ -53,6 +53,8 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.client_ip import client_ip
+from utils.hf_endpoint import client_reachable_endpoint, get_hf_endpoint
 from utils.host_policy import dial_host, self_request_host
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
@@ -445,6 +447,26 @@ def _normalize_run_name(value: Any) -> str | None:
     return trimmed[:120]
 
 
+def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
+    """Fill in the HF endpoint for a backend-executed seed fetch, in place.
+
+    Data Designer fetches the seed in this process, so the endpoint must be the
+    one THIS machine can reach. A client that sends none (the normal case) gets
+    HF_ENDPOINT resolved here, which matters for a remote browser: /api/health
+    reports the public default to it for a loopback mirror, and shipping that
+    back would bypass the mirror on the deployments that need it most. An
+    endpoint the user typed into the seed node is left alone.
+    """
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return
+    if not str(source.get("endpoint") or "").strip():
+        source["endpoint"] = get_hf_endpoint()
+
+
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
 def create_job(
     payload: RecipePayload,
@@ -482,6 +504,8 @@ def create_job(
                 event = "data_recipe.jobs.run_config_invalid",
                 log = logger,
             ) from exc
+
+    _resolve_seed_endpoint(recipe)
 
     try:
         internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
@@ -808,6 +832,7 @@ def download_job_dataset(
     response_model = PublishDatasetResponse,
 )
 def publish_job_dataset(
+    request: Request,
     job_id: str,
     payload: PublishDatasetRequest,
     allow_ambient: bool = Depends(allow_ambient_hf_token),
@@ -856,6 +881,9 @@ def publish_job_dataset(
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
+            # client_ip, not the socket peer: through the managed tunnel the peer
+            # is the local cloudflared process, not the visitor.
+            link_endpoint = client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:
         raise log_and_http_error(
