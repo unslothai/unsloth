@@ -35,7 +35,7 @@ from unittest.mock import patch
 
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    has_real_accelerator,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from datasets import Dataset, IterableDataset
@@ -1053,7 +1053,9 @@ def test_enable_sample_packing_only_requires_torch_call():
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "builds a real 4bit model on a CUDA device")
+# has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
+# and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
+@pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
 def test_enable_sample_packing_trl_collator(tmp_path):
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -1115,7 +1117,9 @@ def test_enable_padding_free_metadata():
     assert trainer.args.remove_unused_columns is False
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "builds a real 4bit model on a CUDA device")
+# has_real_accelerator(), not has_real_cuda(): the body below picks xpu when cuda is absent
+# and _build_packed_training_setup has an xpu dtype arm, so this is real XPU coverage.
+@pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real 4bit model on an accelerator")
 def test_packing_sdpa(tmp_path):
     if torch.cuda.is_available():
         device = torch.device("cuda")

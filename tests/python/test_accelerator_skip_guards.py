@@ -148,32 +148,60 @@ def _is_negated_real_accelerator(node: ast.AST) -> bool:
     )
 
 
-def _unguarded_spoofed_calls(node: ast.AST, guarded: bool = False):
+def _gate_named(node: ast.AST, negated: bool) -> str:
+    """The recorded-answer probe this conjunct gates on, or "" if it is not one."""
+    if negated:
+        if not (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)):
+            return ""
+        node = node.operand
+    if not isinstance(node, ast.Call):
+        return ""
+    name = _dotted(node.func)[-1:]
+    return name[0] if name and name[0] in _REAL_PROBES else ""
+
+
+def _satisfying_gates(call: ast.Call) -> frozenset[str]:
+    """Which recorded-answer probes are strong enough to dominate this probe.
+
+    A torch.cuda.* call needs has_real_cuda(). has_real_accelerator() is true on an XPU-only
+    or Ascend NPU-only host, so it lets a CUDA-only API through to be evaluated on a machine
+    with no CUDA at all, where it raises or hands back the spoof's answer. That is the same
+    defect as gating a CUDA-only test on the broad probe, one level up in the decorator.
+    """
+    if _dotted(call.func)[:2] == ("torch", "cuda"):
+        return frozenset({"has_real_cuda"})
+    return frozenset(_REAL_PROBES)
+
+
+def _unguarded_spoofed_calls(node: ast.AST, gates: frozenset[str] = frozenset()):
     """Spoofable probes in `node` whose value the spoof is still free to decide.
 
-    Python's `and` / `or` short-circuit, so a probe is safe once an earlier conjunct in
-    the same chain has already settled the CPU-only case:
+    Python's `and` / `or` short-circuit, so a probe is safe once an earlier conjunct in the
+    same chain has settled the case it would otherwise be asked about:
 
-        skipif(not has_real_accelerator() or torch.cuda.device_count() < 2)
-        skipif(has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12)
+        skipif(not has_real_cuda() or torch.cuda.device_count() < 2)
+        skipif(has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12)
 
-    In both, `torch.cuda.*` is reached only on a machine that really has a card, and
-    there the spoof has nothing left to lie about. Flagging those would push guards
-    towards the unguarded spelling, which is the opposite of the point.
+    `gates` carries the probes already established at this point in the chain. Which of them
+    suffices depends on the namespace being called into; see `_satisfying_gates`.
     """
     if isinstance(node, ast.BoolOp):
-        is_and = isinstance(node.op, ast.And)
-        gate = _is_real_accelerator_call if is_and else _is_negated_real_accelerator
-        seen_gate = guarded
+        negated = not isinstance(node.op, ast.And)
+        seen = gates
         for value in node.values:
-            yield from _unguarded_spoofed_calls(value, seen_gate)
-            if gate(value):
-                seen_gate = True
+            yield from _unguarded_spoofed_calls(value, seen)
+            named = _gate_named(value, negated)
+            if named:
+                seen = seen | {named}
         return
-    if isinstance(node, ast.Call) and _dotted(node.func) in _SPOOFED_CALLS and not guarded:
+    if (
+        isinstance(node, ast.Call)
+        and _dotted(node.func) in _SPOOFED_CALLS
+        and not (gates & _satisfying_gates(node))
+    ):
         yield node
     for child in ast.iter_child_nodes(node):
-        yield from _unguarded_spoofed_calls(child, guarded)
+        yield from _unguarded_spoofed_calls(child, gates)
 
 
 def _python_test_files():
@@ -440,15 +468,15 @@ def _offenders_in(condition: str) -> list[str]:
 @pytest.mark.parametrize(
     "condition",
     [
-        # Short-circuits before the torch call on a machine with no accelerator, so the
-        # spoof never gets to answer. Both polarities, and nested one level down.
-        "not has_real_accelerator() or torch.cuda.device_count() < 2",
-        "has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12",
-        # has_real_cuda() gates on the same terms: it is recorded pre-spoof too.
+        # Short-circuits before the torch call on a machine with no CUDA, so the spoof never
+        # gets to answer. Both polarities, and nested one level down.
         "not has_real_cuda() or torch.cuda.device_count() < 2",
         "has_real_cuda() and torch.cuda.get_device_capability()[0] >= 12",
-        "not has_real_accelerator() or (torch.cuda.device_count() < 2 or x)",
-        "has_real_accelerator() and not torch.cuda.is_bf16_supported()",
+        "not has_real_cuda() or (torch.cuda.device_count() < 2 or x)",
+        "has_real_cuda() and not torch.cuda.is_bf16_supported()",
+        # Outside the torch.cuda namespace the broad probe is the matching one.
+        "not has_real_accelerator() or not torch.xpu.is_available()",
+        "has_real_accelerator() and torch.accelerator.is_available()",
     ],
 )
 def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
@@ -464,7 +492,11 @@ def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
         ("has_real_accelerator() or torch.cuda.device_count() < 2", "and-gate under or"),
         ("not has_real_accelerator() and torch.cuda.device_count() < 2", "or-gate under and"),
         ("torch.cuda.device_count() < 2", "no gate at all"),
-        ("x if has_real_accelerator() else torch.cuda.device_count() < 2", "not a bool chain"),
+        ("x if has_real_cuda() else torch.cuda.device_count() < 2", "not a bool chain"),
+        # The broad probe is true on an XPU-only or Ascend NPU-only host, so it does not
+        # settle whether torch.cuda is there to answer. Only has_real_cuda() does.
+        ("not has_real_accelerator() or torch.cuda.device_count() < 2", "broad gate on cuda"),
+        ("has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12", "broad gate on cuda"),
     ],
 )
 def test_a_gate_that_does_not_short_circuit_is_still_an_offender(condition):
@@ -472,12 +504,31 @@ def test_a_gate_that_does_not_short_circuit_is_still_an_offender(condition):
     assert _offenders_in(expression), f"missed: {why}"
 
 
+_OTHER_ACCELERATOR_DEVICES = ("xpu", "npu", "mps", "hpu")
+
+
 def _names_a_cuda_device(node: ast.AST) -> list[int]:
     """Lines where the body asks for a cuda device by name.
 
     Only the device string itself, so a test that merely mentions cuda in a message is not
     swept up: `device = "cuda"`, `.to("cuda:1")`, `torch.device("cuda")`.
+
+    A body that also names xpu or npu as a device picks its device at run time and is not
+    CUDA-only, whatever it calls the CUDA branch. tests/utils/test_packing.py is the case:
+    it falls through to torch.device("xpu"), and _build_packed_training_setup has an xpu
+    dtype arm, so narrowing its gate would have dropped real XPU coverage.
     """
+    strings = [
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    ]
+    if any(
+        s == other or s.startswith(other + ":")
+        for s in strings
+        for other in _OTHER_ACCELERATOR_DEVICES
+    ):
+        return []
     return [
         child.lineno
         for child in ast.walk(node)
@@ -552,3 +603,12 @@ def test_the_cuda_gate_scanner_would_catch_a_regression():
     # A cuda mention that is not a device string must not be swept up.
     prose = "@pytest.mark.skipif(not has_real_accelerator(), reason = 'x')\ndef test_x():\n    assert True, 'cuda is not required here'\n"
     assert offenders(head + prose) == []
+
+    # Nor may a test that picks its own device: naming cuda in one branch and xpu in another
+    # makes it device-generic, and narrowing its gate would drop the XPU coverage it has.
+    generic = (
+        "@pytest.mark.skipif(not has_real_accelerator(), reason = 'x')\n"
+        "def test_x():\n"
+        "    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('xpu')\n"
+    )
+    assert offenders(head + generic) == []
