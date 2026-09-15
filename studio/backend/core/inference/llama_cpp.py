@@ -11776,9 +11776,10 @@ class LlamaCppBackend:
                 total_mib = int(row.get("memory_total_mib") or 0)
             except (KeyError, TypeError, ValueError):
                 return []
-            if free_mib <= 0:
-                # One visible GPU without a reading voids the answer: a partial list would
-                # place and split across fewer GPUs than the child enumerates.
+            if total_mib <= 0:
+                # The probe writes a failed reading as total 0. One visible GPU without a
+                # reading voids the answer: a partial list would place and split across
+                # fewer GPUs than the child enumerates. A full card (free 0) is a reading.
                 return []
             gpus.append((idx, free_mib, total_mib))
         gpus.sort(key = lambda g: g[0])

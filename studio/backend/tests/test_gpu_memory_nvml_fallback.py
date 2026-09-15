@@ -232,11 +232,15 @@ class TestTheMemoryProbeFallsBackToNvml:
         assert LlamaCppBackend._get_gpu_memory() == []
         probe_script(_payload([_row(0, 0, 0)]))
         assert LlamaCppBackend._get_gpu_memory() == []
-        # One visible GPU without a reading voids the answer rather than shrinking the host.
+        # One visible GPU without a reading voids the answer rather than shrinking the host;
+        # a full card (free 0, a total) is a reading and stays listed.
         probe_script(_payload([_row(0, 8000), _row(1, 0, 0)]))
         assert LlamaCppBackend._get_gpu_memory() == []
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 8000, 24576)]
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+        probe_script(_payload([_row(0, 8000), _row(1, 0)]))
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 8000, 24576), (1, 0, 24576)]
 
     def test_a_working_nvidia_smi_is_not_second_guessed(self, monkeypatch, probe_script):
         probe_script(_payload([_row(5, 1)]))
