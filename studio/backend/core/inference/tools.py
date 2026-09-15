@@ -2925,6 +2925,18 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
     return bool(following) and following[0] not in ";&|\n"
 
 
+def _inside_quotes(text: str, index: int) -> bool:
+    """Whether *index* sits inside a quoted region, where an assignment is DATA and binds nothing."""
+    quote = ""
+    for character in text[:index]:
+        if quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+    return bool(quote)
+
+
 def _rebinds_the_studio_home_first(text: str) -> bool:
     """True when *text* assigns a studio home variable BEFORE any use of it.
 
@@ -2937,6 +2949,10 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
     lowered = text.lower()
     assignments: "dict[str, int]" = {}
     for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
+        # `echo " H=/tmp;"; cat "$H/auth/auth.db"` only PRINTS the assignment, so the later
+        # expansion still uses the inherited home and rewriting it hid a real credential read.
+        if _inside_quotes(text, match.start()):
+            continue
         # A PREFIX assignment (`H=/tmp cmd "$H/auth/auth.db"`) does not govern the expansion of its
         # own command's arguments: the shell expands the word list before the assignment takes
         # effect, so that read still happens under the INHERITED home. Only an assignment that

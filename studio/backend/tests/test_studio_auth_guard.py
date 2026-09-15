@@ -2057,6 +2057,9 @@ def test_a_shell_local_studio_home_wins_over_the_backend_one(studio_home):
         'UNSLOTH_STUDIO_HOME=/tmp sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
         'UNSLOTH_STUDIO_HOME=/tmp/project cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
         f'UNSLOTH_STUDIO_HOME={home}; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"',
+        # A quoted assignment is DATA that `echo` prints, so the later expansion still uses the
+        # inherited home and the database read is a real one.
+        'echo " UNSLOTH_STUDIO_HOME=/tmp;"; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
     ):
         assert tools._bash_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
             tools._STUDIO_CREDENTIAL_BLOCKED
