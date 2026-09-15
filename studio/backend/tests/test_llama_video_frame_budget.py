@@ -29,6 +29,7 @@ from test_mmproj_placement_policy import _backend, _launch, _write_gguf  # noqa:
 
 _HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 needs_ffmpeg = pytest.mark.skipif(not _HAS_FFMPEG, reason = "ffmpeg and ffprobe are not on PATH")
+_CAP = 64 * 1024 * 1024
 
 
 # --- the frame rate -------------------------------------------------------------
@@ -206,7 +207,7 @@ def _probe(tmp_path: Path, clip_b64: str) -> dict:
 def test_a_720p_clip_is_shrunk_to_the_frame_budget(tmp_path):
     clip = _clip(tmp_path, "wide.mp4", "1280x720")
 
-    shrunk = shrink_video_for_llama(clip)
+    shrunk = shrink_video_for_llama(clip, _CAP)
 
     info = _probe(tmp_path, shrunk)
     assert info["width"] * info["height"] <= MAX_FRAME_PIXELS
@@ -220,7 +221,7 @@ def test_a_rotated_phone_clip_comes_out_upright(tmp_path):
     clip = _clip(tmp_path, "portrait.mp4", "1280x720", rotation = 90)
     assert _probe(tmp_path, clip)["rotation"] != 0
 
-    info = _probe(tmp_path, shrink_video_for_llama(clip))
+    info = _probe(tmp_path, shrink_video_for_llama(clip, _CAP))
 
     assert (info["width"], info["height"]) == (360, 640)
     assert info["rotation"] == 0
@@ -230,14 +231,21 @@ def test_a_rotated_phone_clip_comes_out_upright(tmp_path):
 def test_a_clip_already_within_the_budget_is_forwarded_untouched(tmp_path):
     clip = _clip(tmp_path, "small.mp4", "640x360")
 
-    assert shrink_video_for_llama(clip) is clip
+    assert shrink_video_for_llama(clip, _CAP) is clip
+
+
+@needs_ffmpeg
+def test_a_shrunk_clip_that_outgrows_the_cap_is_forwarded_untouched(tmp_path):
+    clip = _clip(tmp_path, "wide.mp4", "1280x720")
+
+    assert shrink_video_for_llama(clip, 20_000) is clip
 
 
 @needs_ffmpeg
 def test_an_undecodable_clip_is_forwarded_untouched(tmp_path):
     clip = base64.b64encode(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64).decode("ascii")
 
-    assert shrink_video_for_llama(clip) is clip
+    assert shrink_video_for_llama(clip, _CAP) is clip
 
 
 def test_a_machine_without_ffmpeg_forwards_the_clip_untouched(monkeypatch):
@@ -245,7 +253,7 @@ def test_a_machine_without_ffmpeg_forwards_the_clip_untouched(monkeypatch):
     called = []
     monkeypatch.setattr(llama_video_input, "_run", lambda *a, **k: called.append(a))
 
-    assert shrink_video_for_llama("AAAA") == "AAAA"
+    assert shrink_video_for_llama("AAAA", _CAP) == "AAAA"
     assert called == []
 
 
@@ -257,7 +265,7 @@ def test_a_timed_out_shrink_forwards_the_clip_untouched(monkeypatch):
 
     monkeypatch.setattr(llama_video_input, "_run", timeout)
 
-    assert shrink_video_for_llama("AAAA") == "AAAA"
+    assert shrink_video_for_llama("AAAA", _CAP) == "AAAA"
 
 
 def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injection():
@@ -267,6 +275,8 @@ def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injecti
     )
     start = source.index('"Video provided but the current GGUF model cannot take video input. "')
     check = source.index("_video_b64_rejection(payload.video_base64)", start)
-    shrink = source.index("await asyncio.to_thread(shrink_video_for_llama, video_b64)", start)
+    shrink = source.index(
+        "await asyncio.to_thread(shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES)", start
+    )
     inject = source.index("_inject_video_part(gguf_messages, video_b64)", start)
     assert check < shrink < inject

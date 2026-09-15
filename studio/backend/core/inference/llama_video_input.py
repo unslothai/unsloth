@@ -75,11 +75,15 @@ def _scale_filter(max_pixels: int) -> str:
     return f"scale=w='max(2,trunc(iw*{factor}/2)*2)':h='max(2,trunc(ih*{factor}/2)*2)':flags=area"
 
 
-def shrink_video_for_llama(video_b64: str, max_pixels: int = MAX_FRAME_PIXELS) -> str:
+def shrink_video_for_llama(
+    video_b64: str,
+    max_bytes: int,
+    max_pixels: int = MAX_FRAME_PIXELS,
+) -> str:
     """Shrink oversized frames and return the clip as bare base64.
 
-    Keeps only video and preserves timing. Missing tools or conversion failures
-    return the input unchanged.
+    Keeps only video and preserves timing. Missing tools, conversion failures,
+    and a result that would not fit in ``max_bytes`` return the input unchanged.
     """
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
@@ -115,9 +119,11 @@ def shrink_video_for_llama(video_b64: str, max_pixels: int = MAX_FRAME_PIXELS) -
                     _scale_filter(max_pixels),
                     "-c:v",
                     "mpeg4",
-                    # Widely available; q=5 avoids inflating low-bitrate inputs.
+                    # Widely available, but can outgrow a low-bitrate source, hence -fs.
                     "-q:v",
                     "5",
+                    "-fs",
+                    str(max_bytes),
                     "-f",
                     "matroska",
                     str(shrunk),
@@ -128,6 +134,12 @@ def shrink_video_for_llama(video_b64: str, max_pixels: int = MAX_FRAME_PIXELS) -
                 logger.warning(
                     "Could not shrink the video clip, forwarding it unchanged: %s",
                     (result.stderr or b"").decode("utf-8", "replace").strip()[-500:],
+                )
+                return video_b64
+            if shrunk.stat().st_size >= max_bytes:
+                logger.warning(
+                    "The shrunk video clip reached the %d byte cap, forwarding it unchanged",
+                    max_bytes,
                 )
                 return video_b64
             logger.info(

@@ -19648,7 +19648,8 @@ _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
 # Flooring instead refused a file of exactly the size the composer allows.
-_MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
+_MAX_VIDEO_BYTES = 64 * 1024 * 1024
+_MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
 _MAX_AUDIO_SECONDS = 30 * 60
 # The duration cap alone is rate-relative, so a high-rate container retains far
 # more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
@@ -23342,7 +23343,7 @@ async def produce_openai_chat_completions(
             video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
             if video_rejection is not None:
                 raise _reject(*video_rejection)
-            video_b64 = await asyncio.to_thread(shrink_video_for_llama, video_b64)
+            video_b64 = await asyncio.to_thread(shrink_video_for_llama, video_b64, _MAX_VIDEO_BYTES)
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
