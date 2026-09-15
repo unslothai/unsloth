@@ -5053,6 +5053,9 @@ const Composer: FC<{
                 isComposing ||
                 hasPendingAttachments
               }
+              audioUploadDisabled={
+                disabled || isComposing || hasPendingAttachments
+              }
               // disableQueue (project new-chat composer) also blocks the queue
               // button, so a running thread shows Stop instead of Queue.
               queueDisabled={
@@ -6826,6 +6829,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
 const ComposerRightControls: FC<{
   disabled?: boolean;
+  audioUploadDisabled?: boolean;
   queueDisabled?: boolean;
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
@@ -6838,6 +6842,7 @@ const ComposerRightControls: FC<{
   queueThreadIds: string[];
 }> = ({
   disabled,
+  audioUploadDisabled,
   queueDisabled,
   onQueueClick,
   onSendClick,
@@ -6923,7 +6928,7 @@ const ComposerRightControls: FC<{
             model={audioUpload.model}
             language={audioUpload.language}
             busy={audioUpload.busy}
-            disabled={disabled}
+            disabled={audioUploadDisabled}
             onFileSelected={audioUpload.selectFile}
             onCancel={audioUpload.cancel}
             className="size-9 rounded-full"

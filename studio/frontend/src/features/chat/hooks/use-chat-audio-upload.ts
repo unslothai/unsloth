@@ -60,18 +60,34 @@ export function useChatAudioUpload({
     writeDraftRef.current = writeDraft;
   }, [owner, readDraft, writeDraft]);
 
-  const cancel = useCallback(() => {
+  const invalidate = useCallback(() => {
     generationRef.current += 1;
     activeFenceRef.current = null;
     controllerRef.current?.abort();
     controllerRef.current = null;
-    setBusy(false);
   }, []);
+
+  const cancel = useCallback(() => {
+    invalidate();
+    setBusy(false);
+  }, [invalidate]);
 
   useEffect(() => {
     const fence = activeFenceRef.current;
     if (fence && fence.owner !== owner) cancel();
   }, [cancel, owner]);
+
+  useEffect(() => {
+    if (disabled) {
+      invalidate();
+      const invalidatedGeneration = generationRef.current;
+      queueMicrotask(() => {
+        if (generationRef.current === invalidatedGeneration) {
+          setBusy(false);
+        }
+      });
+    }
+  }, [disabled, invalidate]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;

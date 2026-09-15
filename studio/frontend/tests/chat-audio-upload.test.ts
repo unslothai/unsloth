@@ -4,12 +4,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { readSrc } from "./helpers/kit.ts";
+
 import {
   appendChatAudioTranscript,
   chatAudioUploadFenceMatches,
   chatAudioUploadFileError,
   completeChatAudioUpload,
 } from "../src/features/chat/utils/chat-audio-upload.ts";
+
+const hookSource = readSrc("features/chat/hooks/use-chat-audio-upload.ts");
+const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
+const threadSource = readSrc("components/assistant-ui/thread.tsx");
 
 test("audio upload rejects empty and oversized files", () => {
   assert.equal(chatAudioUploadFileError({ size: 0 }), "The selected audio file is empty.");
@@ -105,4 +111,79 @@ test("a current result commits exactly once and empty audio commits nothing", as
   assert.deepEqual(committed, ["hello"]);
   assert.equal(await run("   "), "empty");
   assert.deepEqual(committed, ["hello"]);
+});
+
+test("the main composer does not use empty-draft sendability to disable audio upload", () => {
+  const callStart = threadSource.indexOf("<ComposerRightControls");
+  assert.notEqual(callStart, -1);
+  const call = threadSource.slice(callStart, threadSource.indexOf("/>", callStart));
+  assert.match(
+    call,
+    /audioUploadDisabled=\{\s*disabled \|\| isComposing \|\| hasPendingAttachments\s*\}/,
+  );
+
+  const controlsStart = threadSource.indexOf("const ComposerRightControls:");
+  const controls = threadSource.slice(controlsStart, threadSource.indexOf("const ", controlsStart + 40));
+  assert.match(controls, /audioUploadDisabled\?: boolean/);
+  assert.match(threadSource, /<ChatAudioUpload[\s\S]*?disabled=\{audioUploadDisabled\}/);
+});
+
+test("a later disabled transition cancels the active upload", () => {
+  assert.match(
+    hookSource,
+    /useEffect\(\(\) => \{\s*if \(disabled\) \{\s*invalidate\(\);[\s\S]*?queueMicrotask\([\s\S]*?setBusy\(false\);[\s\S]*?\}\);\s*\}\s*\}, \[disabled, invalidate\]\);/,
+  );
+});
+
+test("Compare uses the upload-busy dictation guard for button and shortcut", () => {
+  const wrapperStart = sharedComposerSource.indexOf("const startDictation = useCallback");
+  assert.notEqual(wrapperStart, -1);
+  const wrapper = sharedComposerSource.slice(
+    wrapperStart,
+    sharedComposerSource.indexOf(");", wrapperStart) + 2,
+  );
+  assert.match(wrapper, /if \(audioUpload\.busy\) return;/);
+  assert.match(wrapper, /startDictationSession\(\)/);
+  assert.match(sharedComposerSource, /onClick=\{startDictation\}/);
+
+  const shortcutStart = sharedComposerSource.indexOf('useShortcut(\n    "startDictation"');
+  const shortcut = sharedComposerSource.slice(
+    shortcutStart,
+    sharedComposerSource.indexOf("\n  );", shortcutStart),
+  );
+  assert.match(shortcut, /startDictation\(\)/);
+});
+
+test("Compare automatic queue takeovers invalidate the previous draft upload", () => {
+  assert.match(
+    sharedComposerSource,
+    /audioUpload\.cancel\(\);\s*setText\(next\);\s*setTimeout\(\(\) => \{ sendRef\.current\?\.\(\); \}, 100\);/,
+  );
+  const runListStart = sharedComposerSource.indexOf("onRunList={(items) => {");
+  const runList = sharedComposerSource.slice(
+    runListStart,
+    sharedComposerSource.indexOf("        }}", runListStart),
+  );
+  const incompleteModelGuard = runList.indexOf("if (hasCompareHandles && !isGeneralizedCompare)");
+  const cancel = runList.indexOf("audioUpload.cancel()");
+  const replace = runList.indexOf("setText(filtered[0])");
+  assert.ok(incompleteModelGuard >= 0 && incompleteModelGuard < cancel);
+  assert.ok(cancel >= 0 && cancel < replace);
+});
+
+test("Compare cancels uploads only after a send reaches an accepted effect", () => {
+  const sendStart = sharedComposerSource.indexOf("async function send() {");
+  const send = sharedComposerSource.slice(
+    sendStart,
+    sharedComposerSource.indexOf("sendRef.current = send", sendStart),
+  );
+  const cancellations = [...send.matchAll(/audioUpload\.cancel\(\)/g)];
+  assert.equal(cancellations.length, 2);
+  for (const cancellation of cancellations) {
+    assert.match(send.slice(cancellation.index, cancellation.index + 100), /audioUpload\.cancel\(\);\s*clearSubmittedDraft\(\);/);
+  }
+  assert.doesNotMatch(
+    send.slice(0, send.indexOf("if (isGeneralizedCompare)")),
+    /audioUpload\.cancel\(\)/,
+  );
 });

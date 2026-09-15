@@ -879,7 +879,7 @@ export function SharedComposer({
   const {
     isDictating,
     isFinalizing: isDictationFinalizing,
-    start: startDictation,
+    start: startDictationSession,
     stop: stopDictation,
   } = useDictation(setText);
   const compareUploadInstanceId = useId();
@@ -893,6 +893,10 @@ export function SharedComposer({
     readDraft: readAudioUploadDraft,
     writeDraft: writeAudioUploadDraft,
   });
+  const startDictation = useCallback(() => {
+    if (audioUpload.busy) return;
+    startDictationSession();
+  }, [audioUpload.busy, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -927,6 +931,7 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
+    audioUpload.cancel();
     setText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
@@ -1105,7 +1110,6 @@ export function SharedComposer({
       resetPromptQueue();
       return;
     }
-    audioUpload.cancel();
     if (sendUnavailableReason) {
       resetPromptQueue();
       toast.error("Compare unavailable", {
@@ -1287,6 +1291,7 @@ export function SharedComposer({
         keepChangedDraft();
         return;
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
@@ -1888,6 +1893,7 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       for (const handle of handles) {
         handle.append(content);
@@ -2209,6 +2215,7 @@ export function SharedComposer({
           toast(`Prompt 1 / ${filtered.length}`, {
             description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
+          audioUpload.cancel();
           setText(filtered[0]);
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}
