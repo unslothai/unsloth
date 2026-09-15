@@ -42,7 +42,6 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
 
 
 def _frame_area(ffprobe: str, clip: Path) -> Optional[int]:
-    """Return the coded frame area of the first video stream."""
     result = _run(
         [
             ffprobe,
@@ -69,7 +68,6 @@ def _frame_area(ffprobe: str, clip: Path) -> Optional[int]:
 
 
 def _scale_filter(max_pixels: int) -> str:
-    """Build an even-dimension scale filter that preserves aspect ratio."""
     # ffmpeg applies display rotation before filters, so use filter-time dimensions.
     factor = f"sqrt({max_pixels}/(iw*ih))"
     return f"scale=w='max(2,trunc(iw*{factor}/2)*2)':h='max(2,trunc(ih*{factor}/2)*2)':flags=area"

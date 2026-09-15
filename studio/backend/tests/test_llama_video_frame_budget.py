@@ -32,9 +32,6 @@ needs_ffmpeg = pytest.mark.skipif(not _HAS_FFMPEG, reason = "ffmpeg and ffprobe 
 _CAP = 64 * 1024 * 1024
 
 
-# --- the frame rate -------------------------------------------------------------
-
-
 def _video_backend(tmp_path, **caps):
     backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
     probe = backend.probe_server_capabilities
@@ -132,9 +129,6 @@ def test_the_probe_reads_the_flag_from_help(monkeypatch, tmp_path):
         monkeypatch, older, "--top-k N                               top-k sampling (default: 40)\n"
     )
     assert without["supports_video_fps"] is False
-
-
-# --- the frame size -------------------------------------------------------------
 
 
 def _clip(
@@ -269,7 +263,6 @@ def test_a_timed_out_shrink_forwards_the_clip_untouched(monkeypatch):
 
 
 def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injection():
-    """The route validates the upload before replacing it with the shrunk clip."""
     source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )
