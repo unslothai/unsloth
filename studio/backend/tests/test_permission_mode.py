@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `/proc/<pid>/task/<tid>/root` resolves through the same kernel link as the process spelling.
+    f"cat /proc/$$/task/$$/root{_OUTSIDE_FILE}",
+    f"cat /proc/self/task/12/root{_OUTSIDE_FILE}",
     # A command substitution runs inside DOUBLE quotes too, and the quoted body arrives as one
     # token, so the command at its head was not read as a command at all.
     f'echo "`cat {_OUTSIDE_FILE}`"',
@@ -3488,6 +3491,12 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # Nothing dynamic in either: the container, the index and the path are all literals.
+    f"paths = [{_OUTSIDE_FILE!r}]\nopen(paths[0]).read()",
+    f"cfg = {{'db': {_OUTSIDE_FILE!r}}}\nopen(cfg['db']).read()",
+    f"open({{'p': {_OUTSIDE_FILE!r}}}['p']).read()",
+    # `io.FileIO(p)` opens the path exactly as `io.open(p)` does.
+    f"import io\nio.FileIO({_OUTSIDE_FILE!r}).read()",
     # An annotated instance assignment binds the reader exactly as the plain form does.
     f"import configparser\ncfg: configparser.ConfigParser = configparser.ConfigParser()\ncfg.read({_OUTSIDE_FILE!r})",
     # Called BEFORE the rebinding, so dropping the alias outright let the read through.
@@ -3598,6 +3607,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "cat /proc/self/status",
     'echo "`ls`"',
     "iconv -f utf8 -t ascii local.txt",
     "iconv -o out.txt local.txt",
@@ -3660,6 +3670,12 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "paths = ['notes.txt', 'data.csv']\nopen(paths[0]).read()",
+    "import io\nio.FileIO('notes.txt').read()",
+    # A child command the scan DOES classify, and one that takes no path operand at all: prompting
+    # here and not on the identical terminal command was a difference with no reason behind it.
+    "import subprocess\nsubprocess.run(['echo', '/home/alice/private.txt'])",
+    "import subprocess\nsubprocess.run(['printf', '%s', '/home/alice/private.txt'])",
     "import configparser\ncfg: configparser.ConfigParser = configparser.ConfigParser()\ncfg.read('settings.ini')",
     "base = 'local'\nbase = 'other'\nopen(base + '/report').read()",
     "import configparser\nc = configparser.ConfigParser()\nc.read(filenames = 'settings.ini')",

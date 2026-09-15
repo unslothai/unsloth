@@ -321,8 +321,11 @@ def _looks_absolute(text: str) -> bool:
 # The kernel symlinks under /proc that reach outside /proc: `root` is the process's root directory,
 # `cwd` its working directory, `fd/<n>` an open file. The shell's own PID spellings resolve to a
 # number before the path is opened, so they name the same links a literal number does.
+_PROC_ID_RE = r"(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)"
+# `/proc/<pid>/task/<tid>/root` resolves through the same kernel link the process-level spelling
+# does, so the task level is matched too.
 _PROC_MAGIC_LINK_RE = re.compile(
-    r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/(?:root|cwd|fd)(?:/|$)"
+    rf"/proc/{_PROC_ID_RE}/(?:task/{_PROC_ID_RE}/)?(?:root|cwd|fd)(?:/|$)"
 )
 
 
@@ -705,6 +708,28 @@ _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
 # Commands that turn their INPUT into another command's arguments, so a path arrives from the pipeline rather than
 # from an operand position.
 _PATH_FORWARDING_COMMANDS = frozenset({"xargs", "parallel"})
+
+
+@functools.lru_cache(maxsize = 1)
+def _classified_terminal_commands() -> frozenset:
+    """Every command this scan can reason about, path-bearing or not.
+
+    Used by the subprocess fallback to tell "the child accesses no path" from "the child is a name
+    nothing here models". `_AUTO_SAFE_TERMINAL_COMMANDS` is the second half of that: `echo` and
+    `printf` take no path operand, and treating their arguments as paths asked for approval on a
+    child that the identical terminal command runs silently.
+    """
+    return frozenset(
+        _PATH_READ_COMMANDS
+        | _PATH_WRITE_COMMANDS
+        | _PATH_DEST_LAST_COMMANDS
+        | _PATH_SCRIPT_COMMANDS
+        | _PATH_FLAG_ONLY_COMMANDS
+        | _PATH_ARCHIVE_COMMANDS
+        | _PATH_FORWARDING_COMMANDS
+        | frozenset(_PATH_FLAG_SPECS)
+        | frozenset(_tools._AUTO_SAFE_TERMINAL_COMMANDS)
+    )
 
 
 # What a flag's VALUE is, per command. "read"/"write" mean the value is a path with that access; "skip" means the
@@ -1477,6 +1502,10 @@ _PY_QUALIFIED_READ_CALLS = {
 # name identifies them. `ConfigParser().read(p)` opens the file it is handed (and accepts a LIST of
 # them), while `read` on anything else is an ordinary method, so the constructor is what says which
 # is which.
+# `io.FileIO(p)` opens the path directly, as `io.open` does.
+_PY_MODULE_OPEN_CTORS = {"FileIO"}
+
+
 _PY_INSTANCE_READ_CTORS = {
     "ConfigParser": frozenset({"read"}),
     "RawConfigParser": frozenset({"read"}),
@@ -2029,6 +2058,50 @@ def _capped_alternates(values) -> "list[str]":
     return (ranked[0] + ranked[1] + ranked[2])[:_MAX_REBOUND_ALTERNATES]
 
 
+def _python_literal_containers(tree) -> dict:
+    """Name -> the absolute-looking strings a literal list, tuple or dict assigned to it holds."""
+    containers: dict = {}
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        paths = _literal_container_paths(value)
+        if not paths:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                containers.setdefault(target.id, []).extend(paths)
+    return containers
+
+
+def _literal_container_paths(node) -> "list[str]":
+    """The absolute-looking strings a literal list, tuple or dict holds, values only for a dict."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        elements = node.elts
+    elif isinstance(node, ast.Dict):
+        elements = node.values
+    else:
+        return []
+    return [
+        element.value
+        for element in elements
+        if isinstance(element, ast.Constant)
+        and isinstance(element.value, str)
+        and _looks_absolute(element.value)
+    ]
+
+
+def _subscript_literal_paths(node, containers) -> "list[str]":
+    """The paths a subscript can resolve to, when everything about it is a literal."""
+    target = node.value
+    if isinstance(target, ast.Name):
+        return list(containers.get(target.id, ()))
+    return _literal_container_paths(target)
+
+
 def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     """Absolute path operands a python snippet reads or writes, as ``(path, writing)``.
 
@@ -2043,6 +2116,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
     function_aliases = _python_function_aliases(tree, module_aliases)
+    containers = _python_literal_containers(tree)
     operands: "list[tuple[str, bool]]" = []
 
     def add_subprocess_operands(call) -> None:
@@ -2067,9 +2141,16 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                     for path in rebound.get(piece.id, ()):
                         words.extend(path.split() or [path])
         if words:
-            operands.extend(_terminal_path_operands(words))
-            # A bare path with no recognised command around it still reaches the child.
-            operands.extend((word, False) for word in words if _looks_absolute(word))
+            from_command = _terminal_path_operands(words)
+            operands.extend(from_command)
+            # A bare path with no recognised command around it still reaches the child. Only then:
+            # once the scan has classified the child command, `subprocess.run(["echo", "/home/x"])`
+            # is the same nothing `echo /home/x` is at a terminal, and prompting on one and not the
+            # other was a difference with no reason behind it.
+            if not from_command and not any(
+                _token_command_base(word) in _classified_terminal_commands() for word in words
+            ):
+                operands.extend((word, False) for word in words if _looks_absolute(word))
 
     def add(node, writing: bool) -> None:
         if node is None:
@@ -2083,6 +2164,13 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             return
         if isinstance(folded, str) and folded:
             operands.append((folded, writing))
+        elif isinstance(node, ast.Subscript):
+            # `paths = ["/media/x"]; open(paths[0])` and `open({"p": "/media/x"}["p"])` name the
+            # path with nothing dynamic in them, and the fold has no value for a subscript. Every
+            # literal the container holds counts rather than the indexed one: the index is not
+            # always constant, and a container of paths is read through whichever element is picked.
+            for path in _subscript_literal_paths(node, containers)[:_MAX_REBOUND_ALTERNATES]:
+                operands.append((path, writing))
         # A name rebound elsewhere in the snippet reaches every path it ever held, and the scan
         # cannot order the statements, so each candidate counts.
         if isinstance(node, ast.Name) and node.id in rebound:
@@ -2131,7 +2219,11 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         )
         module_receiver = is_method and receiver_name in _PY_MODULE_PATH_RECEIVERS
         writing_default = name in _PY_PATH_WRITE_CALLS
-        if name in ("open", "fdopen"):
+        if name in _PY_MODULE_OPEN_CTORS and receiver_name in _PY_MODULE_OPEN_RECEIVERS:
+            # `io.FileIO(p)` opens the path the same way `io.open(p)` does; the mode argument is a
+            # string in the same position, so the write decision is the open one.
+            add(first, _open_call_writes(node, mode_index = 1))
+        elif name in ("open", "fdopen"):
             # The mode decides: `open(p)` reads, `open(p, 'w')` creates or truncates. As a METHOD
             # (Path(p).open('w')) the receiver is the path, so the mode moves to the first argument.
             # os.open is the low-level create and counts as a write either way.
