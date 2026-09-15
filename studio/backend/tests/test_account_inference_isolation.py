@@ -499,9 +499,13 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
         "org/private",
     )
     with client_for(BOB) as client:
-        for path in ["load-progress", "generate-progress"]:
-            response = client.get(f"/api/inference/{kind}/{path}")
-            assert response.json() == {"loaded": True, "yours": False}
+        assert client.get(f"/api/inference/{kind}/load-progress").json() == {
+            "loaded": True,
+            "yours": False,
+        }
+        # Hidden, but still the declared shape: `active` reads false, not KeyError.
+        hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
+        assert hidden["yours"] is False and hidden["active"] is False, hidden
         response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})
         assert response.status_code == 404, response.text
         assert client.post(f"/api/inference/{kind}/unload").status_code == 404

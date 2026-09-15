@@ -179,6 +179,61 @@ def test_the_windows_branch_gets_the_same_cache(monkeypatch, tmp_path, caches):
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
 
 
+def test_a_unicode_digit_version_is_not_a_bucket(monkeypatch, tmp_path, caches):
+    """str.isdigit() is true for Arabic-Indic and superscript digits; the sh `*[!0-9]*` case
+    and the PowerShell \\A[0-9]+\\z both reject them, and uv writes ASCII. Python was the
+    only one of the three that would have counted such a directory as warmth."""
+    studio = _studio()
+    assert studio._uv_is_bucket_name("archive-v0")
+    assert not studio._uv_is_bucket_name("archive-v\u0661")
+    assert not studio._uv_is_bucket_name("archive-v\u00b2")
+
+
+def test_a_bucket_lookalike_is_not_warmth_for_the_update_either(monkeypatch, tmp_path, caches):
+    """`archive-v0.backup` holds bytes uv cannot reuse, so a prefix match read a cache that is
+    cold in practice as warm. The installers check the whole `-v` suffix; this did not, and an
+    update could prefer the lookalike cache and redownload."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    default_cache.mkdir(parents = True, exist_ok = True)
+    (default_cache / "archive-v0.backup" / "pkg").mkdir(parents = True)
+    (default_cache / "archive-v0.backup" / "pkg" / "payload.so").write_text("x")
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_windows_keeps_uv_s_default_when_both_are_warm_and_unmarked(monkeypatch, tmp_path, caches):
+    """The same rule, asserted through the PowerShell spawn rather than the POSIX one."""
+    studio = _studio()
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        studio._studio_runtime_gate, "resolve_windows_powershell", lambda: "powershell.exe"
+    )
+    monkeypatch.setattr(studio, "_probe_profile_proxy_defaults", lambda hosts: None)
+    monkeypatch.setattr(studio, "_wait_for_windows_setup_process", lambda process: 0)
+    seen: dict = {}
+
+    class _Process:
+        pass
+
+    def _fake_popen(
+        argv,
+        env = None,
+        **kwargs,
+    ):
+        seen["env"] = env
+        return _Process()
+
+    monkeypatch.setattr(studio.subprocess, "Popen", _fake_popen)
+    studio._run_setup_script(repo_root = _setup_tree(tmp_path))
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
 def test_the_seeding_does_not_leak_into_this_process(monkeypatch, tmp_path, caches):
     """_ensure_studio_env_exported mutates os.environ on purpose; this must not, or a
     later `unsloth studio` in the same process would look like a caller override to
@@ -249,12 +304,53 @@ def test_a_studio_mode_install_wins_over_a_cold_default(monkeypatch, tmp_path, c
 
 
 def test_two_warm_caches_and_no_marker_keep_uv_s_default(monkeypatch, tmp_path, caches):
-    """An install that predates the marker cannot say which cache it used, and content
-    cannot tell either: one on-demand wheel warms the Studio cache (install.sh:705). uv's
-    default is what it has been updating from, and it cannot record its way out."""
+    """An install with no marker cannot say which cache it used, and content cannot either.
+
+    The marker arrived in b66d2a4c8 and the installer's early UV_CACHE_DIR block only in
+    e12963071 the day after, so an install old enough to have no marker is old enough that
+    `shared` was reachable, and there the launch repoint leaves backend wheels in the Studio
+    cache while Torch and CUDA sit in uv's default. So the default keeps its priority when both
+    are warm, and the installers order the same three candidates the same way.
+    """
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_warm_studio_cache_still_wins_when_the_default_is_cold(monkeypatch, tmp_path, caches):
+    """The other half: the pre-marker install this rule exists for, whose user never filled
+    uv's own cache. Nothing is lost by keeping the cache that has the bytes."""
+    studio_cache, _default_cache = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_stale_marker_is_no_more_evidence_than_no_marker(monkeypatch, tmp_path, caches):
+    """A marker naming a directory that is gone is a stale pointer, not a decision, so it gets
+    the same ordering as an absent one rather than promoting the Studio cache."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", tmp_path / "deleted-cache")
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_cold_recorded_cache_that_still_exists_keeps_losing(monkeypatch, tmp_path, caches):
+    """The other half: a marker naming a cache that EXISTS and has gone cold is still a
+    decision, so the machine that really moved on still reaches uv's default."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    cold = tmp_path / "coldrec"
+    cold.mkdir()
+    _record(tmp_path / "StudioHome", cold)
     seen = _run_posix(monkeypatch, tmp_path)
 
     assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
@@ -885,3 +981,291 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
     (cache / "simple-v20" / "index.msgpack").write_bytes(b"\0")
 
     assert studio._uv_cache_has_packages(cache) is False
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
+    monkeypatch, tmp_path, caches
+):
+    """setup treats the value this hands it as the caller's choice and never probes it
+    again, and uv aborts on a cache it cannot write, so a share remounted read-only since
+    the install has to lose here."""
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    studio_cache, _default = caches
+    recorded = tmp_path / "shared-uv"
+    _fill(recorded)
+    _fill(studio_cache)
+    (studio.STUDIO_HOME / "cache").mkdir(parents = True, exist_ok = True)
+    (studio.STUDIO_HOME / "cache" / "uv-cache-dir").write_text(f"{recorded}\n", encoding = "utf-8")
+    recorded.chmod(0o555)
+    try:
+        seen = _run_posix(monkeypatch, tmp_path)
+    finally:
+        recorded.chmod(0o755)
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
+    recorded.chmod(0o755)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UV_CACHE_DIR"] == str(recorded)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path, caches):
+    """The last fallback was the one branch here that never probed.
+
+    setup.sh treats any UV_CACHE_DIR it inherits as the caller's choice and skips its own
+    write probe, so handing it a Studio cache uv cannot write aborts every uv command in
+    the update. Leaving the variable alone lets setup.sh probe and fall back to uv's
+    default, which is what it does when it runs standalone.
+    """
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    studio_cache, _default = caches
+    # Neither the marker nor uv's default can settle it, so the Studio cache is the choice.
+    studio_cache.parent.mkdir(parents = True, exist_ok = True)
+    studio_cache.mkdir(parents = True, exist_ok = True)
+    studio_cache.chmod(0o555)
+    try:
+        seen = _run_posix(monkeypatch, tmp_path)
+    finally:
+        studio_cache.chmod(0o755)
+    assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
+
+    # Writable again, and it is handed over as before.
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+def test_a_store_with_a_two_digit_version_is_probed(tmp_path):
+    """uv 0.12.1 names its registry store simple-v24, so the probe's `*-v[0-9]*` has to reach
+    two-digit versions as well as one-digit ones."""
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    (cache / "simple-v24").mkdir()
+    (cache / "simple-v24").chmod(0o555)
+    try:
+        assert studio._uv_cache_is_writable(cache) is False
+    finally:
+        (cache / "simple-v24").chmod(0o755)
+    assert studio._uv_cache_is_writable(cache) is True
+
+
+def test_a_mistyped_studio_home_is_not_materialised_by_the_probe(monkeypatch, tmp_path):
+    """setup.sh fails fast on a STUDIO_HOME override that does not exist, so a typo cannot
+    leave an empty workspace behind. Creating the cache under it first satisfies that guard
+    and the update runs on against a tree with no venv."""
+    studio = _studio()
+    missing = tmp_path / "typo studio home"
+    monkeypatch.setattr(studio, "STUDIO_HOME", missing)
+    monkeypatch.delenv("UV_CACHE_DIR", raising = False)
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: tmp_path / "no default")
+
+    env = studio._with_studio_uv_cache(None)
+
+    assert not missing.exists(), sorted(p.name for p in tmp_path.iterdir())
+    # Still named, so setup.sh is told the same path it would have picked itself.
+    assert env["UV_CACHE_DIR"] == str(missing / "cache" / "uv")
+
+
+def test_a_file_where_a_store_belongs_makes_the_cache_unusable(tmp_path):
+    """An existing non-directory is an existing path to mkdir, so uv cannot create the store and
+    aborts: measured on uv 0.10.7, a plain file at archive-v0 exits 1 and at interpreter-v4,
+    sdists-v9, simple-v20 or wheels-v6 exits 2. Skipping it reports the cache writable."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    blocked = cache / "interpreter-v4"
+    blocked.write_bytes(b"")
+    assert studio._uv_cache_is_writable(cache) is False
+    blocked.unlink()
+    assert studio._uv_cache_is_writable(cache) is True
+
+
+def test_a_dangling_symlink_where_a_store_belongs_is_rejected(tmp_path):
+    """Same reason, and the shape a moved cache leaves behind: mkdir fails on the link itself."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    (cache / "simple-v24").symlink_to(tmp_path / "gone")
+    assert studio._uv_cache_is_writable(cache) is False
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+def test_a_case_folded_store_name_is_probed(monkeypatch, tmp_path):
+    """On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`. This box is ext4,
+    so the fold is stubbed: what is under test is that the probe acts on the answer, not that
+    it can measure a folding filesystem it does not have."""
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    odd = cache / "Interpreter-V4"
+    odd.mkdir()
+    odd.chmod(0o555)
+    try:
+        monkeypatch.setattr(studio, "_uv_cache_folds_case", lambda cache_dir: False)
+        assert studio._uv_cache_is_writable(cache) is True, "case-sensitive: not uv's path"
+        monkeypatch.setattr(studio, "_uv_cache_folds_case", lambda cache_dir: True)
+        assert studio._uv_cache_is_writable(cache) is False, "folding: uv opens this one"
+    finally:
+        odd.chmod(0o755)
+
+
+def test_the_fold_probe_leaves_nothing_behind(tmp_path):
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    before = sorted(p.name for p in cache.iterdir())
+    studio._uv_cache_folds_case(cache)
+    assert sorted(p.name for p in cache.iterdir()) == before
+
+
+def test_a_lock_that_is_not_a_regular_file_makes_the_cache_unusable(tmp_path):
+    """uv cannot open it at all. Measured on uv 0.10.7: a `.lock` directory, and a symlink to
+    one, both exit 2 with "Could not acquire lock ... Is a directory". is_file() skipped both."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    lock = cache / ".lock"
+    lock.mkdir()
+    assert studio._uv_cache_is_writable(cache) is False
+    lock.rmdir()
+    assert studio._uv_cache_is_writable(cache) is True
+    (tmp_path / "lock target").mkdir()
+    lock.symlink_to(tmp_path / "lock target")
+    assert studio._uv_cache_is_writable(cache) is False
+    lock.unlink()
+    assert studio._uv_cache_is_writable(cache) is True
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+@pytest.mark.parametrize(
+    "store", ["binaries-v0", "osv-v0", "environments-v2", "python-v0", "flat-index-v2"]
+)
+def test_a_store_pip_install_never_writes_does_not_condemn_the_cache(tmp_path, store):
+    """setup.sh runs only `uv pip install`. Measured on uv 0.10.7 at 0555: binaries-v0, osv-v0,
+    environments-v2, flat-index-v2, git-v0 and python-v0 all install fine, so probing the ones
+    pip never writes only threw away the warm cache this path exists to find."""
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    (cache / store).mkdir()
+    (cache / store).chmod(0o555)
+    try:
+        assert studio._uv_cache_is_writable(cache) is True
+    finally:
+        (cache / store).chmod(0o755)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+@pytest.mark.parametrize("store", ["archive-v0", "git-v0", "builds-v0"])
+def test_a_store_pip_install_does_write_still_condemns_it(tmp_path, store):
+    """git-v0 and builds-v0 count: a `git+` requirement writes both."""
+    if getattr(os, "geteuid", lambda: 1)() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    _fill(cache)
+    (cache / store).mkdir(exist_ok = True)
+    (cache / store).chmod(0o555)
+    try:
+        assert studio._uv_cache_is_writable(cache) is False
+    finally:
+        (cache / store).chmod(0o755)
+
+
+def _simulate_case_folding(monkeypatch):
+    """Make lookups fold, as APFS and NTFS do, without a folding filesystem to hand.
+
+    A symlink will NOT do: on a folding filesystem there is ONE directory entry, and adding a
+    lowercase link creates a second one that the case-SENSITIVE code path matches directly. A
+    test built that way passes with the fold removed, which is how the first version of this
+    got through its own mutation check.
+    """
+    real = Path.samefile
+
+    def folding_samefile(self, other):
+        if str(self).lower() == str(other).lower():
+            return True
+        return real(self, other)
+
+    monkeypatch.setattr(Path, "samefile", folding_samefile)
+
+
+def test_a_folded_bucket_name_counts_as_warmth(tmp_path, monkeypatch):
+    """On APFS or NTFS `Archive-V0` IS the directory uv writes at `archive-v0`. A case-sensitive
+    match called such a cache cold while studio/setup.sh, which folds, called it warm, so the
+    two chose different caches on exactly the platform Studio ships a Mac build for."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    (cache / "Archive-V0" / "pkg").mkdir(parents = True)
+    (cache / "Archive-V0" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
+
+    # On a filesystem that really folds (APFS, NTFS) the bytes are already where uv looks, and
+    # asserting the case-SENSITIVE answer first would fail there. Ask the filesystem rather than
+    # assume: this was green on ext4 and red on the macOS runner until it did.
+    if (cache / "archive-v0").exists():
+        assert studio._uv_cache_has_packages(cache) is True
+        return
+    # Case-sensitive: uv opens archive-v0, which is not there, so those bytes are unreachable.
+    assert studio._uv_cache_has_packages(cache) is False
+    _simulate_case_folding(monkeypatch)
+    assert studio._uv_cache_has_packages(cache) is True
+
+
+def test_a_folded_lookalike_is_still_not_a_bucket(tmp_path, monkeypatch):
+    """Folding must not smuggle in a name that is not uv's either way."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    (cache / "Archive-V0.backup" / "pkg").mkdir(parents = True)
+    (cache / "Archive-V0.backup" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
+    # Holds on a folding filesystem and a case-sensitive one alike: the name is not uv's either
+    # way, so the stub only has to make the folding case reachable on ext4.
+    _simulate_case_folding(monkeypatch)
+    assert studio._uv_cache_has_packages(cache) is False
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_no_cache_mode_removes_a_blank_inherited_cache_dir(monkeypatch, tmp_path, caches, blank):
+    """uv parses an exported EMPTY UV_CACHE_DIR as `--cache-dir ''` even under --no-cache, and
+    exits 2 with "a value is required for '--cache-dir'" (measured on uv 0.10.7, both `uv cache
+    dir` and `uv pip install`). setup.sh unsets it in its own no-cache branch; setup.ps1 has no
+    cache handling at all, so on Windows the blank reached uv and failed the update."""
+    studio = _studio()
+    monkeypatch.setenv("UV_CACHE_DIR", blank)
+    monkeypatch.setenv("UV_NO_CACHE", "1")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"] is not None, "inheriting os.environ would keep the blank value"
+    assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
+
+
+def test_no_cache_mode_still_leaves_a_real_caller_value_alone(monkeypatch, tmp_path, caches):
+    """--no-cache outranks --cache-dir inside uv; a caller's explicit path is still not ours
+    to strip, and uv accepts the pair."""
+    studio = _studio()
+    chosen = str(tmp_path / "caller cache")
+    monkeypatch.setenv("UV_CACHE_DIR", chosen)
+    monkeypatch.setenv("UV_NO_CACHE", "1")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"] is None or seen["env"]["UV_CACHE_DIR"] == chosen

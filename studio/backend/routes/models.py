@@ -4480,6 +4480,10 @@ async def get_gguf_variants(
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                     ),
+                    pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
+                    pending_drafter_size_bytes = int(
+                        getattr(v, "pending_drafter_size_bytes", 0) or 0
+                    ),
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
@@ -4495,6 +4499,7 @@ async def get_gguf_variants(
                 else None
             ),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),
         )
