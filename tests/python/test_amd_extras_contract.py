@@ -10,8 +10,10 @@ as a generic crash, not as a missing extra.
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -47,6 +49,14 @@ def _extras_referenced_by_the_audit_workflow() -> set[str]:
     for listed in re.findall(r"^\s*for extra in ([^;]+); do\s*$", source, re.MULTILINE):
         names |= {word for word in listed.split() if word}
     return names
+
+
+def _inline_python_blocks() -> list[str]:
+    """Every `python ... <<'PY'` heredoc in security-audit.yml, dedented."""
+    source = SECURITY_AUDIT.read_text(encoding = "utf-8")
+    blocks = re.findall(r"^[ \t]*python[^\n]*<<'PY'[^\n]*\n(.*?)^[ \t]*PY[ \t]*$", source, re.MULTILINE | re.DOTALL)
+    assert blocks, "expected security-audit.yml to embed python heredocs"
+    return [textwrap.dedent(b) for b in blocks]
 
 
 def _project_name(spec: str) -> str:
@@ -117,18 +127,27 @@ class TestSecurityAuditWorkflowStaysInSync:
     def test_every_lookup_is_guarded(self):
         """A bare index is the failure mode this file exists for.
 
-        Any lookup outside the two guarded call sites raises a bare KeyError, which reads as
-        a generic crash. Allowlist them by exact line so a third one has to be looked at.
+        Parse every inline Python block and require each optional-dependencies subscript
+        to sit inside a try/except, so deleting a guard fails here rather than in CI.
         """
-        guarded = {
-            'return d["project"]["optional-dependencies"][name]',
-            'specs = d["project"]["optional-dependencies"][extra]',
-        }
-        bare = [
-            line.strip()
-            for line in SECURITY_AUDIT.read_text(encoding = "utf-8").splitlines()
-            if 'optional-dependencies"][' in line
-            and not line.strip().startswith("#")
-            and line.strip() not in guarded
-        ]
+        bare = []
+        for block in _inline_python_blocks():
+            tree = ast.parse(block)
+            for node in ast.walk(tree):
+                for child in ast.iter_child_nodes(node):
+                    child.parent = node  # type: ignore[attr-defined]
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Subscript)):
+                    continue
+                key = node.value.slice
+                if not (isinstance(key, ast.Constant) and key.value == "optional-dependencies"):
+                    continue
+                guarded, parent = False, getattr(node, "parent", None)
+                while parent is not None:
+                    if isinstance(parent, ast.Try):
+                        guarded = True
+                        break
+                    parent = getattr(parent, "parent", None)
+                if not guarded:
+                    bare.append(ast.get_source_segment(block, node))
         assert not bare, f"unguarded optional-dependencies lookups in security-audit.yml: {bare}"
