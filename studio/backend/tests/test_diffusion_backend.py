@@ -7472,7 +7472,14 @@ def test_a_failed_prequant_lookup_marks_the_plan_incomplete(monkeypatch):
     _no_cache(monkeypatch)
     boom = RuntimeError("model_info timed out")
 
-    def failing_source(self, fam, kind, hf_token, kwargs, failures_out = None):
+    def failing_source(
+        self,
+        fam,
+        kind,
+        hf_token,
+        kwargs,
+        failures_out = None,
+    ):
         if failures_out is not None:
             failures_out.append(boom)
         return None
@@ -7486,7 +7493,9 @@ def test_a_failed_prequant_lookup_marks_the_plan_incomplete(monkeypatch):
         base_repo = "unsloth/Z-Image-Turbo",
     )
 
-    assert plan["plan_failed"] is True, "a swallowed prequant lookup left the plan calling itself complete"
+    assert (
+        plan["plan_failed"] is True
+    ), "a swallowed prequant lookup left the plan calling itself complete"
 
 
 def test_a_prequant_lookup_that_finds_nothing_is_not_a_failure(monkeypatch):
