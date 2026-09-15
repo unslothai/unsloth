@@ -405,7 +405,6 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             return False
         try:
             from core.inference.media_model_index import available_media_model_ids  # noqa: PLC0415
-
             if not any(available_media_model_ids(task) for task in _MEDIA_PREWARM_TASKS):
                 # Nothing to load, so the import would be pure cost. Not latched: a model
                 # downloaded later should let the next lifespan reconsider.

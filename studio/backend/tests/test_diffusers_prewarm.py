@@ -190,26 +190,32 @@ def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monke
     from utils import torch_warmup
 
     fake = types.SimpleNamespace(
-        id = "unsloth/Z-Image-GGUF", model_id = "unsloth/Z-Image-GGUF",
-        display_name = "Z-Image-GGUF", path = "/nonexistent/z-image",
-        model_format = None, partial = False,
+        id = "unsloth/Z-Image-GGUF",
+        model_id = "unsloth/Z-Image-GGUF",
+        display_name = "Z-Image-GGUF",
+        path = "/nonexistent/z-image",
+        model_format = None,
+        partial = False,
     )
     routes_models = sys.modules.setdefault("routes.models", types.ModuleType("routes.models"))
-    monkeypatch.setattr(routes_models, "collect_local_models", lambda _root: [fake],
-                        raising = False)
-    monkeypatch.setattr(routes_models, "_local_model_task",
-                        lambda _info: "text-to-image", raising = False)
+    monkeypatch.setattr(routes_models, "collect_local_models", lambda _root: [fake], raising = False)
+    monkeypatch.setattr(
+        routes_models, "_local_model_task", lambda _info: "text-to-image", raising = False
+    )
     # _name_keys and the on-disk checks would reject a path that does not exist, so stand in
     # for the registration step; the task comparison above it is what is under test.
     monkeypatch.setattr(idx, "_name_keys", lambda _info: ("z-image-gguf",), raising = False)
     monkeypatch.setattr(idx, "_resolve_load_dir", lambda p: p, raising = False)
-    monkeypatch.setattr(idx, "_add_gguf_picks",
-                        lambda index, info, keys, on_disk, load_dir: False, raising = False)
+    monkeypatch.setattr(
+        idx, "_add_gguf_picks", lambda index, info, keys, on_disk, load_dir: False, raising = False
+    )
     monkeypatch.setattr(idx, "_loadable_directory", lambda _d: True, raising = False)
     idx.invalidate_index()
 
-    found = {task: idx.available_media_model_ids(task)
-             for task in (*torch_warmup._MEDIA_PREWARM_TASKS, "image", "video")}
+    found = {
+        task: idx.available_media_model_ids(task)
+        for task in (*torch_warmup._MEDIA_PREWARM_TASKS, "image", "video")
+    }
     idx.invalidate_index()
 
     assert found["text-to-image"], "the gate's identifier finds nothing in the real index"
