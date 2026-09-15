@@ -1514,7 +1514,7 @@ export const ar = {
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف تصدير من Open WebUI أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
+        "استيراد ملفات JSON أو JSONL أو NDJSON أو CSV إلى الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
       importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
@@ -1602,6 +1602,27 @@ export const ar = {
       alwaysDeleteFiles: "حذف الملفات دائمًا",
       alwaysDeleteFilesDescription:
         "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+      chatsSection: "المحادثات والأرشيف",
+      transferSection: "الاستيراد والتصدير",
+      deletionSection: "الحذف",
+      archives: "الأرشيف",
+      archiveChatsLabel: "المحادثات",
+      archiveVideosLabel: "الفيديو",
+      exportFormatsSummary:
+        "تصدير المحادثات الأخيرة ومحادثات المشاريع بالتنسيق المفضل لديك.",
+      trainingSummary: "تحويل محادثاتك إلى مجموعة بيانات للضبط الدقيق.",
+      confirmDeletionSummary: "طلب التأكيد قبل حذف المحادثات الفردية.",
+      sandboxFiles: "ملفات بيئة المحادثة المعزولة",
+      sandboxFilesDescription: "الإجراء الافتراضي عند حذف محادثة.",
+      keepSandboxFiles: "الاحتفاظ بملفات البيئة المعزولة",
+      deleteSandboxFiles: "حذف ملفات البيئة المعزولة",
+      projectFilesKept:
+        "البيئات المعزولة هي مجلدات تُنشأ لكل محادثة. تُحفظ الملفات الموجودة في مساحات عمل المشاريع.",
+      deleteAllAction: "حذف الكل",
+      deleteChatsOnly: "حذف المحادثات فقط…",
+      deleteChatsAndSandboxes: "حذف المحادثات والبيئات المعزولة…",
+      deleteSandboxFilesDescription:
+        "حذف مجلد البيئة المعزولة لكل محادثة والملفات الموجودة فيه أيضًا. تُحفظ الملفات الموجودة في مساحات عمل المشاريع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:

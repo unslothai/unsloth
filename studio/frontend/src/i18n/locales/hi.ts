@@ -1520,7 +1520,7 @@ export const hi = {
       exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
-        "Open WebUI, JSONL, NDJSON या CSV एक्सपोर्ट को Recents में इंपोर्ट करें।",
+        "JSON, JSONL, NDJSON या CSV फ़ाइलों को Recents में इंपोर्ट करें।",
       importChatsAction: "इंपोर्ट करें",
       importNoConversations: "फ़ाइल में कोई वार्तालाप नहीं मिला।",
       importedOneChat: "1 वार्तालाप हाल के सेक्शन में इंपोर्ट किया गया।",
@@ -1608,6 +1608,27 @@ export const hi = {
       alwaysDeleteFiles: "फ़ाइलें हमेशा हटाएँ",
       alwaysDeleteFilesDescription:
         "चैट हटाने पर उसका अपना सैंडबॉक्स फ़ोल्डर भी डिस्क से हट जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+      chatsSection: "चैट और संग्रह",
+      transferSection: "इंपोर्ट और एक्सपोर्ट",
+      deletionSection: "हटाना",
+      archives: "संग्रह",
+      archiveChatsLabel: "चैट",
+      archiveVideosLabel: "वीडियो",
+      exportFormatsSummary:
+        "Recents और प्रोजेक्ट की चैट को अपने पसंदीदा फ़ॉर्मैट में एक्सपोर्ट करें।",
+      trainingSummary: "अपनी चैट से फ़ाइन-ट्यूनिंग के लिए डेटासेट बनाएँ।",
+      confirmDeletionSummary: "अलग-अलग चैट हटाने से पहले पुष्टि माँगें।",
+      sandboxFiles: "चैट की सैंडबॉक्स फ़ाइलें",
+      sandboxFilesDescription: "चैट हटाते समय डिफ़ॉल्ट कार्रवाई।",
+      keepSandboxFiles: "सैंडबॉक्स फ़ाइलें रखें",
+      deleteSandboxFiles: "सैंडबॉक्स फ़ाइलें हटाएँ",
+      projectFilesKept:
+        "सैंडबॉक्स अलग-अलग चैट के लिए बनाए गए फ़ोल्डर हैं। प्रोजेक्ट के कार्यक्षेत्रों में सहेजी गई फ़ाइलें रखी जाती हैं।",
+      deleteAllAction: "सभी हटाएँ",
+      deleteChatsOnly: "केवल चैट हटाएँ…",
+      deleteChatsAndSandboxes: "चैट और सैंडबॉक्स हटाएँ…",
+      deleteSandboxFilesDescription:
+        "हर चैट का सैंडबॉक्स फ़ोल्डर और उसके अंदर की फ़ाइलें भी हटाएँ। प्रोजेक्ट के कार्यक्षेत्रों की फ़ाइलें रखी जाती हैं।",
       filesSection: "फ़ाइलें",
       uploadedFiles: "अपलोड की गई फ़ाइलें",
       uploadedFilesDescription:

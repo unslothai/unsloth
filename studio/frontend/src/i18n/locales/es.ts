@@ -1546,7 +1546,7 @@ export const es = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importa una exportación de Open WebUI, JSONL, NDJSON o CSV a Recientes.",
+        "Importa archivos JSON, JSONL, NDJSON o CSV a Recientes.",
       importChatsAction: "Importar",
       importNoConversations: "No se encontraron conversaciones en el archivo.",
       importedOneChat: "Se importó 1 conversación a Recientes.",
@@ -1636,6 +1636,27 @@ export const es = {
       alwaysDeleteFiles: "Eliminar siempre los archivos",
       alwaysDeleteFilesDescription:
         "Al eliminar un chat también se quita del disco su carpeta de entorno aislado. Los archivos que haya escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
+      chatsSection: "Chats y archivos",
+      transferSection: "Importar y exportar",
+      deletionSection: "Eliminación",
+      archives: "Archivos",
+      archiveChatsLabel: "Chats",
+      archiveVideosLabel: "Vídeos",
+      exportFormatsSummary:
+        "Exporta los chats de Recientes y proyectos en el formato que prefieras.",
+      trainingSummary: "Convierte tus chats en un conjunto de datos para ajuste fino.",
+      confirmDeletionSummary: "Pedir confirmación antes de eliminar chats individuales.",
+      sandboxFiles: "Archivos del entorno aislado",
+      sandboxFilesDescription: "Acción predeterminada al eliminar un chat.",
+      keepSandboxFiles: "Conservar archivos del entorno",
+      deleteSandboxFiles: "Eliminar archivos del entorno",
+      projectFilesKept:
+        "Los entornos aislados son carpetas creadas para cada chat. Se conservan los archivos guardados en los espacios de trabajo de los proyectos.",
+      deleteAllAction: "Eliminar todo",
+      deleteChatsOnly: "Eliminar solo los chats…",
+      deleteChatsAndSandboxes: "Eliminar chats y entornos aislados…",
+      deleteSandboxFilesDescription:
+        "Elimina también la carpeta del entorno aislado de cada chat y sus archivos. Se conservan los archivos de los espacios de trabajo de los proyectos.",
       filesSection: "Archivos",
       uploadedFiles: "Archivos subidos",
       uploadedFilesDescription:

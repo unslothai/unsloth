@@ -1530,7 +1530,7 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортируйте экспорт Open WebUI, JSONL, NDJSON или CSV в Недавние.",
+        "Импортируйте файлы JSON, JSONL, NDJSON или CSV в Недавние.",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
@@ -1617,6 +1617,27 @@ export const ru = {
       alwaysDeleteFiles: "Всегда удалять файлы",
       alwaysDeleteFilesDescription:
         "При удалении чата с диска удаляется и его собственная папка песочницы. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
+      chatsSection: "Чаты и архивы",
+      transferSection: "Импорт и экспорт",
+      deletionSection: "Удаление",
+      archives: "Архивы",
+      archiveChatsLabel: "Чаты",
+      archiveVideosLabel: "Видео",
+      exportFormatsSummary: "Экспортируйте чаты из Недавних и проектов в нужном формате.",
+      trainingSummary: "Создайте из чатов набор данных для дообучения.",
+      confirmDeletionSummary:
+        "Запрашивать подтверждение перед удалением отдельных чатов.",
+      sandboxFiles: "Файлы песочниц чатов",
+      sandboxFilesDescription: "Действие по умолчанию при удалении чата.",
+      keepSandboxFiles: "Сохранять файлы песочниц",
+      deleteSandboxFiles: "Удалять файлы песочниц",
+      projectFilesKept:
+        "Песочницы представляют собой папки, созданные для отдельных чатов. Файлы в рабочих пространствах проектов сохраняются.",
+      deleteAllAction: "Удалить всё",
+      deleteChatsOnly: "Удалить только чаты…",
+      deleteChatsAndSandboxes: "Удалить чаты и песочницы…",
+      deleteSandboxFilesDescription:
+        "Также удалить папку песочницы каждого чата и файлы в ней. Файлы в рабочих пространствах проектов сохраняются.",
       filesSection: "Файлы",
       uploadedFiles: "Загруженные файлы",
       uploadedFilesDescription:

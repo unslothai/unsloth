@@ -1552,7 +1552,7 @@ export const fr = {
       exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
-        "Importez un export Open WebUI, JSONL, NDJSON ou CSV dans Récents.",
+        "Importez des fichiers JSON, JSONL, NDJSON ou CSV dans Récents.",
       importChatsAction: "Importer",
       importNoConversations: "Aucune conversation trouvée dans le fichier.",
       importedOneChat: "1 conversation importée dans Récents.",
@@ -1644,6 +1644,29 @@ export const fr = {
       alwaysDeleteFiles: "Toujours supprimer les fichiers",
       alwaysDeleteFilesDescription:
         "La suppression d'une discussion retire aussi son dossier bac à sable du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+      chatsSection: "Discussions et archives",
+      transferSection: "Importation et exportation",
+      deletionSection: "Suppression",
+      archives: "Archives",
+      archiveChatsLabel: "Discussions",
+      archiveVideosLabel: "Vidéos",
+      exportFormatsSummary:
+        "Exportez les discussions de Récents et des projets dans le format de votre choix.",
+      trainingSummary:
+        "Transformez vos discussions en jeu de données pour le réglage fin.",
+      confirmDeletionSummary: "Demander confirmation avant de supprimer une discussion.",
+      sandboxFiles: "Fichiers du bac à sable",
+      sandboxFilesDescription:
+        "Action par défaut lors de la suppression d’une discussion.",
+      keepSandboxFiles: "Conserver les fichiers du bac à sable",
+      deleteSandboxFiles: "Supprimer les fichiers du bac à sable",
+      projectFilesKept:
+        "Les bacs à sable sont des dossiers créés pour chaque discussion. Les fichiers enregistrés dans les espaces de travail des projets sont conservés.",
+      deleteAllAction: "Tout supprimer",
+      deleteChatsOnly: "Supprimer uniquement les discussions…",
+      deleteChatsAndSandboxes: "Supprimer les discussions et les bacs à sable…",
+      deleteSandboxFilesDescription:
+        "Supprime aussi le dossier du bac à sable de chaque discussion et son contenu. Les fichiers des espaces de travail des projets sont conservés.",
       filesSection: "Fichiers",
       uploadedFiles: "Fichiers importés",
       uploadedFilesDescription:

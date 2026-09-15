@@ -1555,7 +1555,7 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
+        "JSON-, JSONL-, NDJSON- oder CSV-Dateien in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
@@ -1646,6 +1646,27 @@ export const de = {
       alwaysDeleteFiles: "Dateien immer löschen",
       alwaysDeleteFilesDescription:
         "Beim Löschen eines Chats wird auch dessen eigener Sandbox-Ordner von der Festplatte entfernt. Dateien, die er in einem Projekt erstellt hat, bleiben im Arbeitsbereich dieses Projekts.",
+      chatsSection: "Chats und Archive",
+      transferSection: "Import und Export",
+      deletionSection: "Löschen",
+      archives: "Archive",
+      archiveChatsLabel: "Chats",
+      archiveVideosLabel: "Videos",
+      exportFormatsSummary:
+        "Exportiere Chats aus Zuletzt und Projekten im gewünschten Format.",
+      trainingSummary: "Erstelle aus deinen Chats einen Datensatz für das Fine-Tuning.",
+      confirmDeletionSummary: "Vor dem Löschen einzelner Chats nachfragen.",
+      sandboxFiles: "Sandbox-Dateien der Chats",
+      sandboxFilesDescription: "Standardaktion beim Löschen eines Chats.",
+      keepSandboxFiles: "Sandbox-Dateien behalten",
+      deleteSandboxFiles: "Sandbox-Dateien löschen",
+      projectFilesKept:
+        "Sandboxen sind Ordner für einzelne Chats. Dateien in Projektarbeitsbereichen bleiben erhalten.",
+      deleteAllAction: "Alle löschen",
+      deleteChatsOnly: "Nur Chats löschen…",
+      deleteChatsAndSandboxes: "Chats und Sandboxen löschen…",
+      deleteSandboxFilesDescription:
+        "Auch den Sandbox-Ordner jedes Chats samt Dateien löschen. Dateien in Projektarbeitsbereichen bleiben erhalten.",
       filesSection: "Dateien",
       uploadedFiles: "Hochgeladene Dateien",
       uploadedFilesDescription:

@@ -1534,7 +1534,7 @@ export const ptBR = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importe um export do Open WebUI, JSONL, NDJSON ou CSV para Recentes.",
+        "Importe arquivos JSON, JSONL, NDJSON ou CSV para Recentes.",
       importChatsAction: "Importar",
       importNoConversations: "Nenhuma conversa encontrada no arquivo.",
       importedOneChat: "1 conversa foi importada para Recentes.",
@@ -1620,6 +1620,27 @@ export const ptBR = {
       alwaysDeleteFiles: "Sempre excluir os arquivos",
       alwaysDeleteFilesDescription:
         "Excluir uma conversa também remove do disco a pasta de sandbox dela. Os arquivos escritos dentro de um projeto permanecem no espaço de trabalho desse projeto.",
+      chatsSection: "Chats e arquivos",
+      transferSection: "Importação e exportação",
+      deletionSection: "Exclusão",
+      archives: "Arquivos",
+      archiveChatsLabel: "Chats",
+      archiveVideosLabel: "Vídeos",
+      exportFormatsSummary:
+        "Exporte os chats de Recentes e dos projetos no formato que preferir.",
+      trainingSummary: "Transforme seus chats em um conjunto de dados para ajuste fino.",
+      confirmDeletionSummary: "Pedir confirmação antes de excluir chats individuais.",
+      sandboxFiles: "Arquivos da sandbox dos chats",
+      sandboxFilesDescription: "Ação padrão ao excluir um chat.",
+      keepSandboxFiles: "Manter arquivos da sandbox",
+      deleteSandboxFiles: "Excluir arquivos da sandbox",
+      projectFilesKept:
+        "Sandboxes são pastas criadas para cada chat. Os arquivos salvos nos espaços de trabalho dos projetos são mantidos.",
+      deleteAllAction: "Excluir tudo",
+      deleteChatsOnly: "Excluir apenas os chats…",
+      deleteChatsAndSandboxes: "Excluir chats e sandboxes…",
+      deleteSandboxFilesDescription:
+        "Exclui também a pasta da sandbox de cada chat e os arquivos nela. Os arquivos nos espaços de trabalho dos projetos são mantidos.",
       filesSection: "Arquivos",
       uploadedFiles: "Arquivos enviados",
       uploadedFilesDescription:

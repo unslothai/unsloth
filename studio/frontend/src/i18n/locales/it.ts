@@ -1519,7 +1519,7 @@ export const it = {
       exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
-        "Importa un export Open WebUI, JSONL, NDJSON o CSV in Recenti.",
+        "Importa file JSON, JSONL, NDJSON o CSV in Recenti.",
       importChatsAction: "Importa",
       importNoConversations: "Nessuna conversazione trovata nel file.",
       importedOneChat: "1 conversazione importata nei Recenti.",
@@ -1609,6 +1609,27 @@ export const it = {
       alwaysDeleteFiles: "Elimina sempre i file",
       alwaysDeleteFilesDescription:
         "L'eliminazione di una chat rimuove dal disco anche la sua cartella sandbox. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
+      chatsSection: "Chat e archivi",
+      transferSection: "Importazione ed esportazione",
+      deletionSection: "Eliminazione",
+      archives: "Archivi",
+      archiveChatsLabel: "Chat",
+      archiveVideosLabel: "Video",
+      exportFormatsSummary:
+        "Esporta le chat di Recenti e dei progetti nel formato che preferisci.",
+      trainingSummary: "Trasforma le chat in un dataset per il fine-tuning.",
+      confirmDeletionSummary: "Chiedi conferma prima di eliminare le singole chat.",
+      sandboxFiles: "File della sandbox delle chat",
+      sandboxFilesDescription: "Azione predefinita quando elimini una chat.",
+      keepSandboxFiles: "Conserva i file della sandbox",
+      deleteSandboxFiles: "Elimina i file della sandbox",
+      projectFilesKept:
+        "Le sandbox sono cartelle create per le singole chat. I file salvati negli spazi di lavoro dei progetti vengono conservati.",
+      deleteAllAction: "Elimina tutto",
+      deleteChatsOnly: "Elimina solo le chat…",
+      deleteChatsAndSandboxes: "Elimina chat e sandbox…",
+      deleteSandboxFilesDescription:
+        "Elimina anche la cartella sandbox di ogni chat e i file al suo interno. I file negli spazi di lavoro dei progetti vengono conservati.",
       filesSection: "File",
       uploadedFiles: "File caricati",
       uploadedFilesDescription:
