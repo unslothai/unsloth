@@ -1679,6 +1679,10 @@ _PY_PATH_SUBPROCESS_CALLS = frozenset(
 
 
 # Callables whose SECOND argument is the destination (shutil.copy(src, dst), os.rename(a, b)).
+# The members of the table below that REMOVE the source: after one, the source path is gone.
+_PY_PATH_MOVE_CALLS = frozenset({"move", "rename", "renames", "replace"})
+
+
 _PY_PATH_DEST_SECOND_CALLS = frozenset(
     {
         "copy",
@@ -2095,6 +2099,23 @@ def _capped_alternates(values) -> "list[str]":
     return (ranked[0] + ranked[1] + ranked[2])[:_MAX_REBOUND_ALTERNATES]
 
 
+def _sequence_elements(node, containers) -> "list":
+    """The elements of a literal sequence, or the node itself when it is not one.
+
+    A NAME holding one counts: `paths = ["/media/x"]; cfg.read(paths)` passes the same list the
+    inline form passes, and handing the bare name to the fold resolved nothing. The paths come from
+    the literal containers already collected for subscripts, so there is one place that knows what a
+    name holds.
+    """
+    if node is None:
+        return []
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return list(node.elts)
+    if isinstance(node, ast.Name) and node.id in containers:
+        return [ast.Constant(value = path) for path in containers[node.id]]
+    return [node]
+
+
 def _call_keywords(node) -> "list":
     """A call's keywords, with a LITERAL `**{...}` splat expanded into the keywords it stands for.
 
@@ -2313,7 +2334,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # `os.rename(...)` is spelled as an attribute but is the FUNCTION form, so its receiver is
             # a module and both paths are arguments.
             receiver_is_path = is_method and not module_receiver
-            add(func.value if receiver_is_path else first, False)
+            # A move REMOVES its source, so that side is a write too: `os.rename('/models/w.gguf',
+            # 'stolen.gguf')` takes the file out of a read-silent root with a relative destination.
+            # A copy leaves its source alone, which is why this is not the whole table.
+            add(func.value if receiver_is_path else first, name in _PY_PATH_MOVE_CALLS)
             add(first if receiver_is_path else second, True)
         elif name in _PY_PATH_SERIALIZE_CALLS and _serializes_to_second_arg(func, module_aliases):
             # torch.save(obj, path) / joblib.dump(obj, path) put the DESTINATION second, the opposite of
@@ -2333,7 +2357,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         ):
             # `cfg = ConfigParser(); cfg.read(p)`, the chained `ConfigParser().read(p)`, and the
             # list form `cfg.read([a, b])`.
-            for element in first.elts if isinstance(first, (ast.List, ast.Tuple)) else [first]:
+            for element in _sequence_elements(first, containers):
                 add(element, False)
         elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()) or (
             not is_method and name in qualified_readers
@@ -2349,7 +2373,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             given = first
             if given is None:
                 given = next((kw.value for kw in _call_keywords(node) if kw.arg == "files"), None)
-            for element in given.elts if isinstance(given, (ast.List, ast.Tuple)) else [given]:
+            for element in _sequence_elements(given, containers):
                 add(element, False)
         elif name in _PY_PATH_READ_CALLS:
             add(first, False)
@@ -2361,8 +2385,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             if keyword.arg in _PY_PATH_KWARGS_BY_CALL.get(name, ()):
                 # A parameter name only this callable uses, so it is read per call rather than from the
                 # shared list: `ConfigParser.read(filenames = ...)` takes a sequence as readily as a str.
-                value = keyword.value
-                for element in value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]:
+                for element in _sequence_elements(keyword.value, containers):
                     add(element, False)
             elif keyword.arg in _PY_PATH_DEST_KWARGS:
                 add(keyword.value, True)

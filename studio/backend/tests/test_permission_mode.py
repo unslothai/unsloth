@@ -3499,6 +3499,13 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # A move REMOVES its source, so the source side is a write wherever it sits.
+    f"import os\nos.rename({_OUTSIDE_FILE!r}, 'stolen.txt')",
+    f"import pathlib\npathlib.Path({_OUTSIDE_FILE!r}).rename('stolen.txt')",
+    f"import shutil\nshutil.move({_OUTSIDE_FILE!r}, 'stolen.txt')",
+    # A literal sequence held in a NAME is the same list the inline form passes.
+    f"import configparser\ncfg = configparser.ConfigParser()\npaths = [{_OUTSIDE_FILE!r}]\ncfg.read(paths)",
+    f"import fileinput\npaths = [{_OUTSIDE_FILE!r}]\nfor line in fileinput.input(files = paths):\n    print(line)",
     # A literal `**{...}` passes the path under its own parameter name, and the splat arrives as a
     # keyword whose `arg` is None, so the name was never matched.
     f"import pandas as pd\npd.read_csv(**{{'filepath_or_buffer': {_OUTSIDE_FILE!r}}})",
@@ -3687,6 +3694,9 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import shutil\nshutil.copy('/usr/share/doc/x.txt', 'copy.txt')",
+    "import os\nos.rename('a.txt', 'b.txt')",
+    "import configparser\ncfg = configparser.ConfigParser()\npaths = ['a.ini']\ncfg.read(paths)",
     "import pandas as pd\npd.read_csv(**{'filepath_or_buffer': 'data.csv'})",
     "import fileinput as fi\nfor line in fi.input('notes.txt'):\n    print(line)",
     "value = input('/data directory: ')",
