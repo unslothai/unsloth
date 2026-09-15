@@ -96,6 +96,7 @@ from core.inference.context_window import (
     estimate_messages_tokens_dense,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
+from core.inference.llama_tool_schema import llama_grammar_tools
 from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
@@ -33484,7 +33485,7 @@ def _build_passthrough_payload(
         forced_tools = forced_tool_catalog(tool_choice, safe_tools)
         if forced_tools:
             safe_tools, tool_choice = forced_tools, "required"
-        body["tools"] = _llama_compatible_tools(safe_tools)
+        body["tools"] = llama_grammar_tools(_llama_compatible_tools(safe_tools))
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     _apply_seeded_llama_request(body, seed)
