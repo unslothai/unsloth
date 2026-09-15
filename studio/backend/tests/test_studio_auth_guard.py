@@ -2217,7 +2217,10 @@ def test_ordinary_directory_work_is_not_read_as_a_move_to_the_studio_root(monkey
     # `auth`. Each read below is the project's OWN auth file, not Studio's.
     home = tmp_path / "studio-home"
     (home / "auth").mkdir(parents = True)
-    (home / "Auth").mkdir()
+    # A case-INSENSITIVE filesystem (Windows, macOS) already has this directory: `Auth` and `auth`
+    # are the same one there, which is exactly why the case check below only runs elsewhere.
+    if tools._CASE_SENSITIVE_PATHS:
+        (home / "Auth").mkdir()
     (home / "sandbox" / _SESSION / "subdir").mkdir(parents = True)
     (tmp_path / "backup").mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
