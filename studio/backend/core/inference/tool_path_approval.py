@@ -580,6 +580,7 @@ _PATH_SCRIPT_COMMANDS = frozenset(
         "duckdb",
         "curl",
         "wget",
+        "date",
         # `unzip` READS its archive; the extraction destination is a flag (`-d`) handled above.
         "unzip",
     }
@@ -864,14 +865,25 @@ _PATH_FLAG_SPECS = {
     "tail": {"-n": "skip", "--lines": "skip", "-c": "skip", "--bytes": "skip"},
     "openssl": {"-in": "read", "-out": "write"},
     "du": {"--exclude": "skip"},
+    # `date -f DATEFILE` processes every line of that file, and an invalid line is echoed back in the
+    # diagnostic, so the contents reach tool output (`date --help`).
+    "date": {"-f": "read", "--file": "read", "-d": "skip", "--date": "skip", "-s": "skip"},
     "tree": {"-o": "write", "-P": "skip", "-I": "skip"},
-    "curl": {"-o": "write", "--output": "write"},
-    "wget": {"-O": "write", "--output-document": "write"},
     "cd": {},
 }
 
 
 # Archive tools: creating writes the archive, extracting reads it.
+
+# ripgrep's own path-bearing options, on top of the grep spec it inherits below. `rg --help` gives
+# `--ignore-file=PATH` as a gitignore-formatted rules file, which is read.
+_RG_EXTRA_FLAG_SPEC = {
+    "--ignore-file": "read",
+    "--pre": "skip",
+    "--type-add": "skip",
+    "--colors": "skip",
+}
+
 
 for _alias, _base in (
     ("egrep", "grep"),
@@ -886,6 +898,7 @@ for _alias, _base in (
     ("pushd", "cd"),
 ):
     _PATH_FLAG_SPECS[_alias] = _PATH_FLAG_SPECS[_base]
+_PATH_FLAG_SPECS["rg"] = {**_PATH_FLAG_SPECS["rg"], **_RG_EXTRA_FLAG_SPEC}
 
 _PATH_ARCHIVE_COMMANDS = frozenset({"tar", "zip", "7z"})
 
@@ -1581,14 +1594,44 @@ def _python_module_aliases(tree) -> dict:
     """Local name -> real module, for `import io as stream` and `import os.path as p`.
 
     Only the ROOT module is recorded, which is what the receiver tables are keyed on.
+
+    `from PIL import Image as I` counts too: `Image` is itself a modelled receiver, so `I.open(p)`
+    has to resolve back to it or the call reads as a Path-style method and the filename argument is
+    never looked at.
     """
     aliases: dict = {}
     for node in _tree_nodes(tree):
+        if isinstance(node, ast.ImportFrom):
+            for entry in node.names:
+                if entry.asname and entry.name in _PY_MODULE_PATH_RECEIVERS:
+                    aliases[entry.asname] = entry.name
+            continue
         if not isinstance(node, ast.Import):
             continue
         for entry in node.names:
             root = entry.name.split(".", 1)[0]
             aliases[entry.asname or root] = root
+    return aliases
+
+
+def _python_qualified_read_aliases(tree) -> "set[str]":
+    """Local names bound from a module whose reader is only modelled QUALIFIED.
+
+    `numpy.load` takes a filename while every other `load` in these tables takes an open file, so the
+    name is keyed on its module. `from numpy import load` and `from numpy import load as read_array`
+    drop that module, and the call arrives as a bare Name the reader table deliberately omits.
+    """
+    aliases: "set[str]" = set()
+    for node in _tree_nodes(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = (node.module or "").split(".")[0]
+        readers = _PY_QUALIFIED_READ_CALLS.get(module)
+        if not readers:
+            continue
+        for entry in node.names:
+            if entry.name in readers:
+                aliases.add(entry.asname or entry.name)
     return aliases
 
 
@@ -1736,6 +1779,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     resolve yields nothing here; the dynamic-alias checks elsewhere cover those.
     """
     ctors, joins = _python_path_fold_aliases(tree)
+    qualified_readers = _python_qualified_read_aliases(tree)
     bindings = _python_path_bindings(tree, ctors, joins)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
@@ -1860,7 +1904,9 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             add(first, True)
             if is_method:
                 add(func.value, True)
-        elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()):
+        elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()) or (
+            not is_method and name in qualified_readers
+        ):
             # Qualified, because the bare name is ambiguous: `numpy.load(p)` opens a path while
             # `json.load(f)`, `pickle.load(f)` and `torch.load(f)` all take an already-open file.
             add(first, False)

@@ -3447,6 +3447,12 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # Asserted on every host, because what a path text means must not depend on the classifier's OS.
     r"cat C:\Users\alice\Documents\private.txt",
     r"type \\server\share\private.txt",
+    # `wget -P DIR` saves into DIR; a duplicate table key had dropped that classification.
+    "wget -P /usr/share/models https://example.com/m.bin",
+    # `date -f DATEFILE` reads every line and echoes an invalid one back.
+    "date -f /media/kuser/MEDIA_SSD/private.txt",
+    # ripgrep's own path option, absent from the grep spec it inherits.
+    "rg --ignore-file=/media/kuser/MEDIA_SSD/private.rules needle .",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
