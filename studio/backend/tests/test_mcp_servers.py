@@ -2209,3 +2209,19 @@ def test_hidden_large_mcp_tool_does_not_offer_the_schema_tool(tmp_path, monkeypa
     hidden["_meta"] = {"ui": {"visibility": ["app"]}}
     _cache_server_tools(tmp_path, monkeypatch, [{"name": "ping"}, hidden])
     assert [s["function"]["name"] for s in tools_mod.cached_mcp_tools()[0]] == ["mcp__srv1__ping"]
+
+
+def test_mcp_tool_schema_does_not_reveal_an_app_only_tool(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    hidden = {
+        "name": "widget_refresh",
+        "description": "Refresh the widget.",
+        "_meta": {"ui": {"visibility": ["app"]}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool(), hidden])
+    assert "mcp_tool_schema" in [s["function"]["name"] for s in tools_mod.cached_mcp_tools()[0]]
+    assert (
+        tools_mod.execute_tool("mcp_tool_schema", {"name": "mcp__srv1__widget_refresh"})
+        == "Error: MCP server 'A' does not list a tool named 'widget_refresh'"
+    )

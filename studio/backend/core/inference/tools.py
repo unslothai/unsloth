@@ -10165,7 +10165,7 @@ def _mcp_tool_schema_text(display: str, tool: dict) -> str:
 
 def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     for tool in get_cached_tools(server["id"]) or []:
-        if tool.get("name") == tool_name:
+        if tool.get("name") == tool_name and _mcp_tool_model_visible(tool):
             return tool
     return None
 
