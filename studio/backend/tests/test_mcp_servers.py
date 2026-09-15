@@ -704,6 +704,28 @@ def test_mcp_alias_is_shown_to_the_user_by_its_raw_name(tmp_path, monkeypatch):
     assert controller.provisional_tool_provenance(plain)["mcp_tool"] == "get_weather"
 
 
+def test_in_flight_alias_still_dispatches_after_the_tool_cache_is_evicted(tmp_path, monkeypatch):
+    from core.inference import mcp_client
+    from core.inference import tool_loop_controller as controller
+    from core.inference import tools as tools_mod
+
+    server, tools = _cache_backstage_tools(
+        tmp_path, monkeypatch, ["catalog.get-catalog-entity", "delete.catalog-entity"]
+    )
+    calls = []
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs["name"]) or "ok"
+    )
+    names = [spec["function"]["name"] for spec in tools_mod._mcp_specs_for_server(server, tools)]
+    mcp_servers_db.update_server(server["id"], {"headers_json": '{"Authorization": "Bearer new"}'})
+    mcp_client.invalidate_tool_cache(server["id"])
+    assert mcp_client.get_cached_tools(server["id"]) is None
+    assert tools_mod.is_potentially_unsafe_tool_call(names[1], {})
+    assert controller.mcp_display_parts(names[0]) == ("Backstage", "catalog.get-catalog-entity")
+    assert tools_mod.execute_tool(names[0], {}) == "ok"
+    assert calls == ["catalog.get-catalog-entity"]
+
+
 def test_mcp_specs_skip_empty_tool_name():
     from core.inference.tools import _mcp_specs_for_server
 

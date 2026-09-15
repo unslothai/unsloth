@@ -10094,11 +10094,13 @@ def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     return names
 
 
+# Aliases already shown to a model. Kept apart from the tool cache so an in-flight call still resolves after an edit
+# evicts it.
+_MCP_TOOL_ALIASES: dict[str, str] = {}
+
+
 def _mcp_raw_tool_name(name: str) -> str:
-    parts = name.split("__", 2)
-    server = mcp_servers_db.get_server_for_tool(parts[1]) if len(parts) == 3 else None
-    tools = get_cached_tools(server["id"]) if server else None
-    return _mcp_tool_names(server, tools).get(name, parts[-1]) if tools else parts[-1]
+    return _MCP_TOOL_ALIASES.get(name) or name.split("__", 2)[-1]
 
 
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
@@ -10123,6 +10125,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         seen_names.add(name)
         description = tool.get("description") or ""
         if name.split("__", 2)[2] != raw_name:
+            _MCP_TOOL_ALIASES[name] = raw_name
             description = f"({raw_name}) {description}"
         specs.append(
             {
