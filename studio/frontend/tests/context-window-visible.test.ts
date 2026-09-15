@@ -149,7 +149,7 @@ test("the header renders the bar on the window alone, with usage optional", () =
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(
     page,
-    /view\.mode === "single" && \(contextUsage \|\| contextWindowKnown\)/,
+    /showContextWindowUsage &&\s*view\.mode === "single" &&\s*\(contextUsage \|\| contextWindowKnown\)/,
   );
   assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
 });

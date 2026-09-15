@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Composer compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/src/components/assistant-ui/**'
+      - 'studio/frontend/src/features/chat/**'
+      - 'studio/frontend/src/features/settings/components/composer-settings.tsx'
+      - 'studio/frontend/src/index.css'
+      - 'studio/frontend/smoke-*'
+      - 'studio/frontend/tests/**'
+      - 'studio/frontend/package*.json'
+      - 'studio/frontend/vite.config.ts'
+      - 'tests/studio/*composer*'
+      - 'tests/studio/*prompt_queue*'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/workflows/studio-composer-compatibility.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  composer:
+    name: Composer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/temp/queue-validation/browsers
+      PIP_CACHE_DIR: ${{ github.workspace }}/temp/queue-validation/pip-cache
+      npm_config_cache: ${{ github.workspace }}/temp/queue-validation/npm-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Audit dependencies
+        run: python scripts/lockfile_supply_chain_audit.py
+      - name: Install frontend dependencies without lifecycle scripts
+        working-directory: studio/frontend
+        run: npm ci --ignore-scripts --no-fund --no-audit
+      - name: Create isolated test environment
+        run: |
+          mkdir -p temp/queue-validation/tmp
+          echo "TMPDIR=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          echo "TMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          echo "TEMP=$GITHUB_WORKSPACE/temp/queue-validation/tmp" >> "$GITHUB_ENV"
+          python -m venv temp/queue-validation/venv
+          if [ "$RUNNER_OS" = Windows ]; then
+            bin="$PWD/temp/queue-validation/venv/Scripts"
+          else
+            bin="$PWD/temp/queue-validation/venv/bin"
+          fi
+          "$bin/python" -m pip install playwright==1.62.0 selenium==4.49.0
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Install browser engines
+        timeout-minutes: 10
+        run: python -m playwright install chromium firefox webkit
+      - name: Install Linux browser libraries
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: python -m playwright install-deps chromium firefox webkit
+      - name: Queue engine and composer regressions
+        working-directory: studio/frontend
+        run: node --experimental-strip-types --test tests/composer-*.test.ts tests/prompt-queue-*.test.ts tests/model-lifecycle-gate.test.ts tests/pre-stream-run-reservation.test.ts tests/auto-compaction-settings.test.ts
+      - name: Browser simulations
+        run: python tests/studio/run_composer_compatibility.py
+      - name: Native Safari simulations
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          sudo safaridriver --enable
+          python tests/studio/selenium_composer_safari.py
+      - name: Upload simulation reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: composer-${{ runner.os }}
+          path: temp/queue-validation/compatibility
+          retention-days: 7
+          if-no-files-found: warn

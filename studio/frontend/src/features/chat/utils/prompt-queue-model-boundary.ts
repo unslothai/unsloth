@@ -1,3 +1,5 @@
+import { chatModelLifecycleGate } from "./model-lifecycle-gate.ts";
+
 export class PromptQueueModelBoundary {
   private generation = 0;
 
@@ -58,10 +60,11 @@ export function shouldAbortPendingQueueForModelBoundary({
   capturedGeneration: number;
   usesLocalModel: boolean;
 }): boolean {
-  // Loading delays dispatch; model changes invalidate older factories.
+  // Preparation can still clear queues at the final model-switch boundary.
   return (
     usesLocalModel &&
-    capturedGeneration !== localPromptQueueModelBoundary.capture()
+    (!chatModelLifecycleGate.canQueue() ||
+      capturedGeneration !== localPromptQueueModelBoundary.capture())
   );
 }
 

@@ -326,7 +326,10 @@ def main():
             options = {"headless": True}
             if os.environ.get("PW_EXECUTABLE"):
                 options["executable_path"] = os.environ["PW_EXECUTABLE"]
+            if os.environ.get("PW_CHANNEL"):
+                options["channel"] = os.environ["PW_CHANNEL"]
             browser = getattr(pw, engine).launch(**options)
+            print(f"Browser: {os.environ.get('PW_CHANNEL', engine)} {browser.version}", flush = True)
             try:
                 page = browser.new_page(viewport = {"width": 1100, "height": 800})
                 errors = []
@@ -334,6 +337,9 @@ def main():
                 page.goto(url)
                 check_actions(page)
                 check_motion(page)
+                from _prompt_queue_edge_cases import check_edge_cases
+
+                check_edge_cases(page)
                 assert not errors, errors
                 reduced_context = browser.new_context(
                     reduced_motion = "reduce", viewport = {"width": 1100, "height": 800}
@@ -346,6 +352,9 @@ def main():
                     reduced_context.close()
                 if engine == "chromium":
                     check_touch(browser, url)
+                from _prompt_queue_edge_cases import check_performance
+
+                check_performance(browser, url)
             finally:
                 browser.close()
     finally:

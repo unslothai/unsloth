@@ -163,7 +163,11 @@ export function PromptQueueList({
                     rows={2}
                     onChange={(event) => setDraft(event.currentTarget.value)}
                     onKeyDown={(event) => {
-                      if (event.nativeEvent.isComposing) return;
+                      if (
+                        event.nativeEvent.isComposing ||
+                        event.nativeEvent.keyCode === 229 ||
+                        event.repeat
+                      ) return;
                       if (
                         event.key === "Enter" &&
                         (event.metaKey || event.ctrlKey)

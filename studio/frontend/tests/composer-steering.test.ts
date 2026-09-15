@@ -10,6 +10,7 @@ import {
 import { snapshotQueuedChatRunSettings } from "../src/features/chat/utils/queued-chat-run-settings.ts";
 import { reorderPromptQueueItems } from "../src/features/chat/utils/prompt-queue-reorder.ts";
 import { steeringInsertionIndex } from "../src/features/chat/utils/composer-preferences.ts";
+import { chatModelLifecycleGate } from "../src/features/chat/utils/model-lifecycle-gate.ts";
 import {
   planUserPromptQueueStop,
   userStopTargetCancelMode,
@@ -45,6 +46,8 @@ const names = [
   "handlePromptQueueRunState",
   "isPromptQueueRunTargetRunning",
   "advancePromptQueue",
+  "handlePromptQueueRunFailed",
+  "retainPendingPromptQueueItemsAfterFailure",
 ];
 const declarations = names
   .map((name) => {
@@ -134,6 +137,7 @@ function world() {
     PROMPT_QUEUE_INDEXING_RETRY_MS: 1,
     deletePromptQueueRun: (run: Run) => runs.delete(run.id),
     toast: { info: noop },
+    discardQueuedChatRunSettingsForThread: noop,
     targetHasIndexingDocuments: () => indexing(),
     appendQueuedPrompt: (_run: Run, item: Item) => {
       appended.push(item.prompt);
@@ -142,8 +146,13 @@ function world() {
   };
   const engine = new Function(
     ...Object.keys(deps),
-    `${js}\nreturn {startPromptQueue, steerPromptQueueItem, dispatchQueuedPrompt, isPromptQueueRunReadyToDispatch, handlePromptQueueRunState};`,
+    `${js}\nreturn {startPromptQueue, steerPromptQueueItem, dispatchQueuedPrompt, isPromptQueueRunReadyToDispatch, handlePromptQueueRunState, handlePromptQueueRunFailed, resumePromptQueueRun};`,
   )(...Object.values(deps)) as {
+    handlePromptQueueRunFailed: (
+      threadId?: string,
+      localOnly?: boolean,
+    ) => void;
+    resumePromptQueueRun: (threadIds?: string[]) => void;
     startPromptQueue: (
       items: string[],
       target: Target,
@@ -516,6 +525,146 @@ test("three follow-ups are accepted and reorderable during loading, then dispatc
   assert.equal(w.runs.size, 0);
 });
 
+test("model preparation keeps a follow-up draft until the final switch boundary", async () => {
+  const w = world();
+  const target = makeTarget("chat");
+  const lease = chatModelLifecycleGate.tryAcquire("preparing");
+  assert.notEqual(lease, null);
+  try {
+    const accept = hydratedFactory(w, target);
+    let cleared = false;
+    accept(["keep this draft"], true, () => {
+      cleared = true;
+    });
+    await Promise.resolve();
+    assert.equal(
+      cleared,
+      false,
+      "preflight must not clear a draft into a queue the switch will delete",
+    );
+    assert.equal(w.runs.size, 0);
+    localPromptQueueModelBoundary.advance();
+    localPromptQueueModelBoundary.advance();
+    chatModelLifecycleGate.markLoading(lease!);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    accept(["keep this draft"], true, () => {
+      cleared = true;
+    });
+    await Promise.resolve();
+    assert.equal(cleared, true);
+    assert.deepEqual(
+      w.run().items.map((item) => item.prompt),
+      ["keep this draft"],
+    );
+  } finally {
+    chatModelLifecycleGate.release(lease!);
+  }
+});
+
+test("a failed initial load pauses accepted follow-ups for recovery", async () => {
+  for (const waitForInitial of [true, false]) {
+    const w = world();
+    const target = makeTarget("chat", false);
+    w.startPromptQueue(
+      ["recover first", "recover second"],
+      target,
+      waitForInitial,
+    );
+    const run = w.run();
+    const ids = run.items.map((item) => item.id);
+    w.handlePromptQueueRunFailed("chat");
+    assert.equal(w.runs.size, 1, "accepted prompts must survive a failed load");
+    assert.equal(run.paused, true);
+    assert.equal(w.isPromptQueueRunReadyToDispatch(run), false);
+    assert.deepEqual(
+      run.items.map((item) => item.id),
+      ids,
+    );
+    w.handlePromptQueueRunFailed("chat");
+    assert.deepEqual(
+      run.items.map((item) => item.id),
+      ids,
+    );
+    w.resumePromptQueueRun(["chat"]);
+    assert.equal(run.index, 0);
+    await w.dispatchQueuedPrompt(run, run.items[0]);
+    assert.deepEqual(w.appended, ["recover first"]);
+  }
+});
+
+test("a failed manual load cannot send queued local prompts on the rollback model", async () => {
+  const w = world();
+  const local = makeTarget("chat", false);
+  const external = makeTarget("external", false);
+  external.usesLocalModel = false;
+  w.startPromptQueue(["wait for chosen model"], local);
+  w.startPromptQueue(["external still works"], external);
+  const run = w.run();
+  w.handlePromptQueueRunFailed(undefined, true);
+  await w.dispatchQueuedPrompt(run, run.items[0]);
+  assert.deepEqual(
+    w.appended,
+    [],
+    "rollback must not silently change the queued model",
+  );
+  const sibling = [...w.runs.values()][1];
+  await w.dispatchQueuedPrompt(sibling, sibling.items[0]);
+  assert.deepEqual(w.appended, ["external still works"]);
+  w.resumePromptQueueRun(["chat"]);
+  await w.dispatchQueuedPrompt(run, run.items[0]);
+  assert.deepEqual(w.appended, [
+    "external still works",
+    "wait for chosen model",
+  ]);
+});
+
+test("a mixed queue finishes its external response before blocking the local follow-up", async () => {
+  const w = world();
+  const external = makeTarget("chat", false);
+  external.usesLocalModel = false;
+  const local = makeTarget("chat", false);
+  w.startPromptQueue(["external response"], external);
+  w.startPromptQueue(["local follow-up"], local);
+  const run = w.run();
+  await w.dispatchQueuedPrompt(run, run.items[0]);
+  external.running = true;
+  w.handlePromptQueueRunState(run, {});
+  w.handlePromptQueueRunFailed(undefined, true);
+  assert.equal(external.cancels, 0);
+  assert.equal(external.permanentCancels, 0);
+  external.running = false;
+  w.handlePromptQueueRunState(run, {});
+  assert.equal(run.index, 1);
+  assert.equal(w.isPromptQueueRunReadyToDispatch(run), false);
+  await w.dispatchQueuedPrompt(run, run.items[1]);
+  assert.deepEqual(w.appended, ["external response"]);
+  w.resumePromptQueueRun(["chat"]);
+  await w.dispatchQueuedPrompt(run, run.items[1]);
+  assert.deepEqual(w.appended, ["external response", "local follow-up"]);
+});
+
+test("load failure invalidates a local document probe without duplicate dispatch on resume", async () => {
+  const w = world();
+  const target = makeTarget("chat", false);
+  w.startPromptQueue(["pending"], target);
+  const run = w.run();
+  let resolve!: (indexing: boolean) => void;
+  w.setIndexing(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const pending = w.dispatchQueuedPrompt(run, run.items[0]);
+  w.handlePromptQueueRunFailed(undefined, true);
+  w.resumePromptQueueRun(["chat"]);
+  w.setIndexing(async () => false);
+  await w.dispatchQueuedPrompt(run, run.items[0]);
+  resolve(false);
+  await pending;
+  assert.deepEqual(w.appended, ["pending"]);
+});
+
 test("steering during loading leaves the queued prompt pending until loading finishes", async () => {
   const w = world();
   w.setModelLoading(true);
@@ -529,6 +678,63 @@ test("steering during loading leaves the queued prompt pending until loading fin
   await w.dispatchQueuedPrompt(run, run.items[0]);
   assert.deepEqual(w.appended, ["steer next"]);
 });
+
+for (const phase of ["preparing", "loading", "unloading"] as const) {
+  for (const local of [true, false]) {
+    for (const boundaryChanges of [0, 1, 2]) {
+      test(`hydration: ${phase}, local=${local}, boundaries=${boundaryChanges}`, async () => {
+        const w = world();
+        const target = makeTarget("chat");
+        target.usesLocalModel = local;
+        const lease = chatModelLifecycleGate.tryAcquire(phase)!;
+        let resolve!: (target: Target) => void;
+        try {
+          const accept = hydratedFactory(
+            w,
+            target,
+            () =>
+              new Promise((r) => {
+                resolve = r;
+              }),
+          );
+          let started = 0;
+          let aborted = 0;
+          accept(
+            ["saved follow-up"],
+            true,
+            () => {
+              started++;
+            },
+            () => {
+              aborted++;
+            },
+          );
+          accept(
+            ["saved follow-up"],
+            true,
+            () => {
+              started++;
+            },
+            () => {
+              aborted++;
+            },
+          );
+          for (let n = 0; n < boundaryChanges; n++)
+            localPromptQueueModelBoundary.advance();
+          resolve(target);
+          await new Promise<void>((r) => setImmediate(r));
+          const accepted =
+            !local || (phase === "loading" && boundaryChanges === 0);
+          assert.equal(started, Number(accepted));
+          assert.equal(aborted, Number(!accepted));
+          assert.equal(w.runs.size, Number(accepted));
+        } finally {
+          chatModelLifecycleGate.release(lease);
+        }
+      });
+    }
+  }
+}
 
 test("an external queue still dispatches while the local model loads", async () => {
   const w = world();

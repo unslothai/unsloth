@@ -131,7 +131,13 @@ def main():
             options = {"headless": True}
             if os.environ.get("PW_EXECUTABLE"):
                 options["executable_path"] = os.environ["PW_EXECUTABLE"]
+            if os.environ.get("PW_CHANNEL"):
+                options["channel"] = os.environ["PW_CHANNEL"]
             browser = getattr(pw, os.environ.get("PW_ENGINE", "chromium")).launch(**options)
+            print(
+                f"Browser: {os.environ.get('PW_CHANNEL', os.environ.get('PW_ENGINE', 'chromium'))} {browser.version}",
+                flush = True,
+            )
             try:
                 page = browser.new_page(viewport = {"width": 1100, "height": 850})
                 errors = []

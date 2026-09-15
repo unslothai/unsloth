@@ -580,7 +580,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "if (failedRun)" in queue_failure_handler
     assert "retainPendingPromptQueueItemsAfterFailure(failedRun)" in queue_failure_handler
-    assert "deletePromptQueueRun(failedRun);" in queue_failure_handler
+    assert "pausePromptQueueRun([threadId]);" in queue_failure_handler
     retained_failure = _between(
         THREAD,
         "function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun)",
@@ -629,14 +629,25 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "const ejectModel = useCallback(",
     )
     assert (
-        select_model.index("beginModelLoading()")
+        select_model.index('beginModelLoading("preparing")')
         < select_model.index("await confirmStopRunningChatsIfNeeded(")
         < select_model.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < select_model.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
     )
-    assert "beginModelLoading()" in eject
+    assert 'beginModelLoading("unloading")' in eject
     assert "endModelLoading(lifecycleLease)" in eject
-    assert "beginModelLoading()" in SHARED_COMPOSER
+    assert 'beginModelLoading("preparing")' in SHARED_COMPOSER
+    assert MODEL_RUNTIME.index(
+        "chatModelLifecycleGate.markLoading(lifecycleLease)"
+    ) > MODEL_RUNTIME.index("requestLocalPromptQueueStop();")
+    failure = MODEL_RUNTIME.split("notifyLocalPromptQueueLoadFailed(lifecycleLease);", 1)[1]
+    assert failure.index("if (abortCtrl.signal.aborted)") < failure.index(
+        "const rollbackResponse = await loadModel("
+    )
+    cancellation = MODEL_RUNTIME.split("const cancelLoading = useCallback(", 1)[1]
+    assert cancellation.index("notifyLocalPromptQueueLoadFailed(") < cancellation.index(
+        "loadAbortRef.current?.abort()"
+    )
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
     compare_upgrade = _between(
@@ -687,7 +698,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "requestLocalPromptQueueStop" in eject
     assert (
-        eject.index("beginModelLoading()")
+        eject.index('beginModelLoading("unloading")')
         < eject.index("await confirmStopRunningChatsIfNeeded(")
         < eject.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < eject.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
@@ -769,7 +780,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         gpu_discovery_index,
     )
     assert (
-        send_flow.index("beginModelLoading()")
+        send_flow.index('beginModelLoading("preparing")')
         < confirm_index
         < first_draft_check
         < gpu_discovery_index

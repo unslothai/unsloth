@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Native Safari smoke test. Remote automation must already be enabled."""
+
+import json
+from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver import ActionChains, Keys
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
+
+
+def main():
+    output = Path("temp/queue-validation/compatibility")
+    output.mkdir(parents = True, exist_ok = True)
+    server = driver = None
+    report = {"browser": "native Safari", "passed": False}
+    try:
+        server = start_vite(5423)
+        base = "http://127.0.0.1:5423"
+        wait_for_smoke_page(
+            base + "/smoke-prompt-queue-actions.html",
+            "/smoke-prompt-queue-actions-main.tsx",
+            proc = server,
+        )
+        driver = webdriver.Safari()
+        driver.set_window_size(1100, 900)
+        report["version"] = driver.capabilities.get("browserVersion")
+        wait = WebDriverWait(driver, 10)
+
+        def label(name):
+            return wait.until(lambda d: d.find_element(By.CSS_SELECTOR, f'[aria-label="{name}"]'))
+
+        def order(ids):
+            wait.until(
+                lambda d: d.execute_script(
+                    "return [...document.querySelectorAll('[data-queue-item-id]')].map(row => row.dataset.queueItemId)"
+                )
+                == ids
+            )
+
+        def text_button(name):
+            return wait.until(
+                lambda d: d.find_element(By.XPATH, f'//button[normalize-space(.)="{name}"]')
+            )
+
+        driver.get(base + "/smoke-prompt-queue-actions.html")
+        order(["q0", "q1", "q2"])
+        label("Reorder queued prompt 3 of 3").send_keys(Keys.HOME)
+        order(["q2", "q0", "q1"])
+        label("More options for queued prompt 1").click()
+        wait.until(
+            lambda d: d.find_element(
+                By.XPATH, '//*[@role="menuitem" and contains(.,"Edit message")]'
+            )
+        ).click()
+        editor = label("Edit queued prompt 1")
+        editor.clear()
+        editor.send_keys("Edited in Safari")
+        editor.send_keys(Keys.COMMAND, Keys.ENTER)
+        wait.until(
+            lambda d: "Edited in Safari"
+            in d.find_element(By.CSS_SELECTOR, '[data-queue-item-id="q2"]').text
+        )
+        text_button("Reset fixture").click()
+        order(["q0", "q1", "q2"])
+        driver.execute_async_script(
+            "const done = arguments[0]; Promise.all([...document.getAnimations()].map(a => a.finished.catch(() => {}))).then(done)"
+        )
+        source = label("Reorder queued prompt 3 of 3")
+        target = label("Reorder queued prompt 1 of 3")
+        ActionChains(driver).move_to_element(source).click_and_hold().move_to_element(target).pause(
+            0.1
+        ).release().perform()
+        order(["q2", "q0", "q1"])
+        label("Steer with queued prompt 1").click()
+        order(["q0", "q1"])
+        assert label("Steered prompt").text == "Third prompt"
+        label("Remove queued prompt 2").click()
+        order(["q0"])
+        driver.get(base + "/smoke-composer-settings.html")
+        label("Message")
+        driver.execute_script("localStorage.clear()")
+        driver.refresh()
+        label("Plain text composer").click()
+        editor = label("Message")
+        editor.send_keys("**Safari preview**")
+        wait.until(lambda d: "Safari preview" in label("Formatted preview").text)
+        label("Show context window usage").click()
+        text_button("Steer").click()
+        editor.send_keys(Keys.ENTER)
+        wait.until(
+            lambda d: json.loads(label("Submitted messages").get_attribute("textContent"))
+            == [{"text": "**Safari preview**", "behavior": "steer"}]
+        )
+        editor.send_keys("Queue once", Keys.COMMAND, Keys.ENTER)
+        wait.until(
+            lambda d: json.loads(label("Submitted messages").get_attribute("textContent"))[-1][
+                "behavior"
+            ]
+            == "queue"
+        )
+        driver.refresh()
+        assert label("Plain text composer").get_attribute("aria-checked") == "false"
+        assert label("Show context window usage").get_attribute("aria-checked") == "false"
+        report["passed"] = True
+        print(
+            "PASS: native Safari queue controls, keyboard, pointer, preview, shortcuts and persistence",
+            flush = True,
+        )
+    except Exception as error:
+        report["error"] = str(error)
+        if driver:
+            driver.save_screenshot(str(output / "native-safari-failure.png"))
+        raise
+    finally:
+        (output / "native-safari.json").write_text(
+            json.dumps(report, indent = 2) + "\n", encoding = "utf-8"
+        )
+        if driver:
+            driver.quit()
+        if server:
+            stop_process(server)
+
+
+if __name__ == "__main__":
+    main()

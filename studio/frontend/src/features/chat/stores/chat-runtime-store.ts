@@ -99,6 +99,7 @@ import {
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
+  type ModelLifecyclePhase,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
@@ -2445,7 +2446,7 @@ type ChatRuntimeStore = {
   // so a reload prompts re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  beginModelLoading: () => ModelLifecycleLease | null;
+  beginModelLoading: (phase?: ModelLifecyclePhase) => ModelLifecycleLease | null;
   endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
@@ -4259,8 +4260,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  beginModelLoading: () => {
-    const lease = chatModelLifecycleGate.tryAcquire();
+  beginModelLoading: (phase) => {
+    const lease = chatModelLifecycleGate.tryAcquire(phase);
     if (lease !== null) {
       set({ modelLoading: true });
     }

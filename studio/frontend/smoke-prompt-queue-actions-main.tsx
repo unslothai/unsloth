@@ -5,7 +5,7 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MotionConfig } from "motion/react";
-import { PromptQueueList } from "@/components/assistant-ui/prompt-queue-list";
+import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   type PromptQueueUIItem,
@@ -13,21 +13,26 @@ import {
 } from "@/features/chat";
 import "./src/index.css";
 
-const initialItems: PromptQueueUIItem[] = [
-  "First prompt",
-  "Second prompt",
-  "Third prompt",
-].map((prompt, index) => ({
-  id: `q${index}`,
-  runId: "smoke",
-  prompt,
-  position: index + 1,
-  total: 3,
-  status: "queued",
-  threadIds: ["smoke"],
-  canEdit: true,
-  canRemove: true,
-}));
+const queueSize = Math.max(
+  3,
+  Math.min(500, Number(new URLSearchParams(location.search).get("size")) || 3),
+);
+const initialItems: PromptQueueUIItem[] = Array.from(
+  { length: queueSize },
+  (_, index) => ({
+    id: `q${index}`,
+    runId: "smoke",
+    prompt:
+      ["First prompt", "Second prompt", "Third prompt"][index] ??
+      `Prompt ${index + 1}`,
+    position: index + 1,
+    total: queueSize,
+    status: "queued",
+    threadIds: ["smoke"],
+    canEdit: true,
+    canRemove: true,
+  }),
+);
 
 function App() {
   const [items, setItems] = useState(initialItems);

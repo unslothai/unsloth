@@ -1172,7 +1172,7 @@ export function SharedComposer({
     if (isGeneralizedCompare) {
       compareLifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (compareLifecycleLease === null) {
         toast.info("A model is loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -1194,7 +1194,7 @@ export function SharedComposer({
       }
       compareLifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (compareLifecycleLease === null) {
         throw new Error("Another model load started during comparison");
       }
