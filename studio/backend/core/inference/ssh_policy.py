@@ -356,6 +356,17 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
                     continue
                 local = alias.asname or alias.name
                 bindings[local] = f"{module}.{alias.name}"
+    for target, value in _assignment_pairs(tree):
+        name = _fq_name(target)
+        symbol = _bound_name(value, bindings)
+        if name and symbol.split(".", 1)[0] in _SSH_PY_ROOT_MODULES:
+            bindings[name] = symbol
+    clients = _ssh_client_bindings(tree, bindings)
+    for target, value in _assignment_pairs(tree):
+        name = _fq_name(target)
+        call = _resolve_ssh_call(value, bindings, clients)
+        if name and call:
+            bindings[name] = call
     return bindings
 
 
@@ -634,6 +645,19 @@ def _ssh_python_configuration_is_explicit(
         )
     if not isinstance(config, ast.Call) or config.args or len(config.keywords) != 1:
         return False
+    connect_kwargs = kwargs.get("connect_kwargs")
+    if connect_kwargs is not None and not (
+        isinstance(connect_kwargs, ast.Constant) and connect_kwargs.value is None
+    ):
+        if not isinstance(connect_kwargs, ast.Dict):
+            return False
+        for key, value in zip(connect_kwargs.keys, connect_kwargs.values):
+            if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                return False
+            if key.value == "sock" and not (
+                isinstance(value, ast.Constant) and value.value is None
+            ):
+                return False
     factory = _bound_name(config.func, bindings)
     lazy = config.keywords[0]
     return (
