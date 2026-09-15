@@ -339,3 +339,218 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"  # redirected
     cc.restore(ctx)
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
+
+
+# ------------------------------------------------------------------ background save worker
+# save_async hands the write to a single module-level daemon worker so a generation stops paying for it. These drive
+# the worker directly, gating the fake save_cache_artifacts on Events so ordering is asserted, never slept on.
+@pytest.fixture
+def drained():
+    """Leave the shared worker idle for the next test whatever this one did."""
+    yield
+    cc.wait_for_saves(timeout = 10.0)
+
+
+def _fake_logger():
+    class _L:
+        def __init__(self):
+            self.warnings: list[str] = []
+            self.infos: list[str] = []
+
+        def warning(self, fmt, *args):
+            self.warnings.append(fmt % args if args else fmt)
+
+        def info(self, fmt, *args):
+            self.infos.append(fmt % args if args else fmt)
+
+    return _L()
+
+
+def test_async_save_writes_the_same_bytes_as_sync(monkeypatch, tmp_path, fake_megacache, drained):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "sync"))
+    sync_ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.register_shape(sync_ctx, (1024, 1024, 1), static = True)
+    assert cc.save(sync_ctx) is True
+
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "async"))
+    async_ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.register_shape(async_ctx, (1024, 1024, 1), static = True)
+    assert cc.save_async(async_ctx) is True
+    assert cc.wait_for_saves(timeout = 10.0) is True
+
+    assert async_ctx.bundle.read_bytes() == sync_ctx.bundle.read_bytes()
+    a = json.loads(async_ctx.manifest_path.read_text())
+    b = json.loads(sync_ctx.manifest_path.read_text())
+    # "created" is a wall clock, everything else must match byte for byte.
+    a.pop("created"), b.pop("created")
+    assert a == b
+    assert async_ctx.saved is True
+
+
+def test_async_save_is_a_noop_on_a_clean_context(monkeypatch, tmp_path, fake_megacache, drained):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save_async(ctx) is True
+    assert cc.wait_for_saves(timeout = 10.0) is True
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert ctx2.hit is True and ctx2.saved is True
+    assert cc.save_async(ctx2) is False  # a hit has nothing to write
+
+
+def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacache, drained):
+    """One save in flight at a time: the second context waits in the queue, untouched."""
+    import threading
+
+    import torch
+
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[int] = []
+
+    def gated_save():
+        calls.append(1)
+        started.set()
+        release.wait(10)
+        return (b"ARTIFACT-BYTES", None)
+
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", gated_save, raising = False)
+
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "one"))
+    ctx1 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "two"))
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+
+    assert cc.save_async(ctx1) is True
+    assert started.wait(10) is True
+    assert cc.save_async(ctx2) is True
+    # Deterministic, no sleeping: ctx1 holds the worker and ctx2 is still queued behind it.
+    assert cc._worker_active is ctx1
+    assert [c is ctx2 for c, _ in cc._worker_queue] == [True]
+    assert len(calls) == 1
+    assert not ctx2.bundle.exists()
+
+    release.set()
+    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert len(calls) == 2
+    assert ctx1.bundle.exists() and ctx2.bundle.exists()
+
+
+def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_megacache, drained):
+    """A shape registered WHILE a save runs is not in that bundle, so it must get its own save."""
+    import threading
+
+    import torch
+
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+
+    started = threading.Event()
+    release = threading.Event()
+    saves: list[int] = []
+
+    def gated_save():
+        saves.append(1)
+        if len(saves) == 1:
+            started.set()
+            release.wait(10)
+        return (b"ARTIFACT-BYTES", None)
+
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", gated_save, raising = False)
+
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    assert cc.save_async(ctx) is True
+    assert started.wait(10) is True
+
+    # Second generation, new static shape, while the first save is mid-flight.
+    cc.register_shape(ctx, (768, 768, 1), static = True)
+    assert ctx.saved is False
+    assert cc.save_async(ctx) is True  # queued behind the running one, not dropped
+
+    release.set()
+    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert len(saves) == 2
+    # The in-flight save must NOT have claimed the context clean, and the rewritten manifest covers both shapes.
+    assert ctx.saved is True
+    assert json.loads(ctx.manifest_path.read_text())["shapes"] == [[768, 768, 1], [1024, 1024, 1]]
+
+
+def test_sync_env_switch_writes_inline(monkeypatch, tmp_path, fake_megacache, drained):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    assert cc.sync_saves() is True
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    assert cc.save_async(ctx) is True
+    # No worker involved: the bundle is on disk the moment save_async returns, as it was before the worker existed.
+    assert ctx.bundle.exists() and ctx.manifest_path.exists()
+    assert ctx.saved is True
+    assert cc._worker_active is None and not cc._worker_queue
+
+
+def test_worker_failure_is_swallowed_and_logged(monkeypatch, tmp_path, fake_megacache, drained):
+    import torch
+
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+
+    def boom():
+        raise RuntimeError("inductor exploded")
+
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", boom, raising = False)
+    log = _fake_logger()
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    assert cc.save_async(ctx, logger = log) is True  # queuing succeeds; the failure is the worker's
+    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert not ctx.bundle.exists()
+    assert ctx.saved is False
+    assert any("inductor exploded" in w for w in log.warnings)
+
+    # The worker survives its own failure and takes the next save.
+    monkeypatch.setattr(
+        torch.compiler, "save_cache_artifacts", lambda: (b"ARTIFACT-BYTES", None), raising = False
+    )
+    assert cc.save_async(ctx, logger = log) is True
+    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert ctx.bundle.exists()
+
+
+def test_atomic_write_never_publishes_a_partial_file(monkeypatch, tmp_path, fake_megacache):
+    """A save killed mid-write must leave the PREVIOUS bundle, not a truncated new one."""
+    monkeypatch.setenv(cc._ENV_MODE, "on")
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    good = ctx.bundle.read_bytes()
+
+    # Fail at the exact moment the finished temp file would be published.
+    def exploding_replace(src, dst):
+        raise OSError("killed mid-write")
+
+    monkeypatch.setattr(cc.os, "replace", exploding_replace)
+    ctx.saved = False
+    assert cc.save(ctx) is False
+    monkeypatch.undo()
+
+    assert ctx.bundle.read_bytes() == good  # the old bundle is still whole and still loadable
+    assert [p.name for p in ctx.dir.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_atomic_write_replaces_in_place(tmp_path):
+    target = tmp_path / "cache.bin"
+    cc._atomic_write(target, b"first")
+    cc._atomic_write(target, b"second")
+    assert target.read_bytes() == b"second"
+    assert list(tmp_path.iterdir()) == [target]  # no temp files left behind
