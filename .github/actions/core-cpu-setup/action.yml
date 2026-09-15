@@ -219,39 +219,19 @@ runs:
         pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
         pip show unsloth_zoo
 
-        # Say which revision this is, and say so loudly when it is not the current one.
-        #
-        # resolve-zoo-ref pins the sha in a separate gating job. `gh run rerun --failed`
-        # re-runs only the FAILED jobs and reuses the successful ones, so a re-run of a red
-        # Core zoo job keeps the sha that job was given the first time, however long ago.
-        # Re-running to confirm a fix that has since landed in unsloth_zoo therefore
-        # re-tests the revision from before the fix, fails again, and says nothing about
-        # why. Nothing here recorded the revision, so the only way to find out was to read
-        # the resolve job's log from the original attempt and notice its timestamp.
-        #
-        # A full re-run (no --failed) re-runs resolve-zoo-ref and picks up main.
-        # `|| true` inside the substitution, not after it. This step runs under
-        # `set -euxo pipefail`, so pipefail hands git's status to the pipeline, the
-        # pipeline's status becomes the assignment's, and -e kills the step. A network
-        # blip on a diagnostic would then fail a Core cell whose clone, install and
-        # tests had all already succeeded, which is the opposite of the point.
-        # tests/studio/test_core_setup_zoo_revision_notice.py runs this block against a
-        # failing git and fails if the step does not survive it.
-        # `timeout` as well as `|| true`: the guard covers a lookup that FAILS, this one
-        # covers a lookup that HANGS. git has no timeout of its own here and no low-speed
-        # limit is configured, so a connection that opens and then stalls would block this
-        # step until the job's own 25 or 35 minute limit killed the cell -- again after the
-        # clone, the install and the whole suite had passed. `timeout` exits 124, which the
-        # `|| true` absorbs like any other failure. Both jobs using this action run on
-        # ubuntu-24.04, where timeout is coreutils and always present.
+        # resolve-zoo-ref pins the sha in a separate gating job, and `gh run rerun --failed`
+        # reuses successful jobs, so a re-run of a red Core zoo cell silently re-tests the
+        # revision it was given the first time. A full re-run re-resolves and picks up main.
+        # Nothing here may fail the cell: the suite has already passed by this point.
+        # `|| true` INSIDE the substitution, because under `set -euxo pipefail` the
+        # pipeline's status becomes the assignment's and -e ends the step; `timeout` for the
+        # other half, a lookup that hangs rather than exits, which `|| true` cannot reach.
+        # Covered by tests/studio/test_core_setup_zoo_revision_notice.py.
         head="$( { timeout 15 git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null || true; } | cut -f1 )"
         pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
         echo "unsloth_zoo revision under test: $pinned"
         if [ -n "$head" ] && [ "$head" != "$pinned" ]; then
-          # Worded for both ways of getting here, because the action cannot tell them
-          # apart: resolve-zoo-ref hands it a sha either way, so a deliberate
-          # workflow_dispatch pin and a stale re-run look identical from here. Re-running
-          # is only the remedy for the second: rerun preserves the original inputs, so a
-          # pinned dispatch would resolve the same non-main ref again and warn again.
+          # A deliberate workflow_dispatch pin, a moving main and a stale re-run are
+          # indistinguishable here, and re-running is the remedy for only the last.
           echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this run pinned unsloth_zoo_ref deliberately, that is expected and re-running keeps the pin. Otherwise either main advanced between the resolve job and this step, or this is a --failed re-run that kept the revision resolved on the first attempt; for the latter, re-run ALL jobs to pick up main."
         fi

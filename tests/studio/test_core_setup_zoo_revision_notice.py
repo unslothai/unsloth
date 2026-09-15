@@ -2,20 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """The unsloth_zoo revision notice must never be the reason a Core cell goes red.
 
-It exists only to say which revision was tested, because `gh run rerun --failed` reuses
-the sha `resolve-zoo-ref` handed out on the first attempt and a re-run therefore re-tests
-a revision that can be days old. A diagnostic that can itself fail the job would cost more
-than it explains: the clone, the install and the whole suite have already passed by the
-time it runs.
-
-The hazard is not hypothetical. The step runs under `set -euxo pipefail`, and for
-`head="$(a | b)"` pipefail hands `a`'s status to the pipeline, the pipeline's status
-becomes the assignment's, and `-e` ends the step. So a `git ls-remote` that loses a DNS
-lookup takes a green cell down with it.
+It only says which revision was tested, and by the time it runs the clone, the install and
+the whole suite have passed. Under `set -euxo pipefail` that is easy to get wrong: for
+`head="$(a | b)"` the pipeline's status becomes the assignment's and `-e` ends the step, so
+a `git ls-remote` that loses a DNS lookup would take a green cell with it.
 
 Run rather than read: the block is extracted from the action and executed under the same
-shell flags with a `git` that fails, which is the only way to answer a question about
-`set -e` semantics.
+shell flags, which is the only way to answer a question about `set -e` semantics.
 """
 
 from __future__ import annotations
@@ -205,12 +198,8 @@ def test_the_lookup_absorbs_its_failure_inside_the_substitution():
 def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
     """A lookup that stalls rather than fails must not run out the job's clock.
 
-    `|| true` cannot help here: nothing has exited, so nothing is absorbed. git applies no
-    timeout to this itself and no low-speed limit is configured, so without an external
-    bound the step would sit here until the 25 or 35 minute job limit killed the cell,
-    long after the clone, the install and the suite had all passed.
-
-    Takes the bound in real time, which is why it is the slowest test in this file.
+    `|| true` cannot help: nothing has exited, so nothing is absorbed. Takes the bound in
+    real time, which is why it is the slowest test here.
     """
     bound = _lookup_timeout_seconds()
     began = time.monotonic()
@@ -231,12 +220,9 @@ def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
 
 
 def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
-    """A deliberately pinned unsloth_zoo_ref reaches this code looking exactly like a
-    stale re-run: resolve-zoo-ref hands over a sha either way, so the action cannot tell
-    them apart. Re-running is the remedy for only one of them, because a rerun preserves
-    the original inputs and a pinned dispatch resolves the same non-main ref again.
-
-    So the message has to hold for both readings rather than assert the one."""
+    """A pinned dispatch, a moving main and a stale re-run are indistinguishable by the
+    time the action sees a sha, and re-running is the remedy for only the last. So the
+    message has to hold for all three rather than assert one."""
     proc = _run_notice(
         tmp_path,
         git_exit = 0,
@@ -264,15 +250,10 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
 def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
     """A guard absent for the change it guards is not a guard.
 
-    This file reads .github/actions/core-cpu-setup/action.yml, and it runs under
-    tests/studio, which is Backend CI's `Repo tests (CPU, studio)`. Backend CI is
-    path-filtered. Without .github/actions in that filter, a PR touching only the action
-    ran Core -- which lists the action in its own filter but does not execute tests/studio
-    -- and skipped Backend CI, so nothing here ever ran against the change.
-
-    tests/studio/test_local_actions_are_in_path_filters.py enforces the neighbouring rule,
-    that a workflow lists the actions it `uses:`. This is the other direction: a workflow
-    must also list the actions its TESTS read.
+    Backend CI runs tests/studio and is path-filtered; without .github/actions in that
+    filter an action-only PR ran Core, which does not execute tests/studio, and skipped the
+    suite that does. test_local_actions_are_in_path_filters.py enforces that a workflow
+    lists the actions it `uses:`; this is the other direction, the ones its TESTS read.
     """
     workflow = yaml.safe_load(
         (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(encoding = "utf-8")
