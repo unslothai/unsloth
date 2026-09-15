@@ -727,11 +727,18 @@ _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
 
 # Long spellings of an archive command's create mode. The short forms are read letter by letter out
 # of the cluster; these carry the same meaning and are matched whole.
-_ARCHIVE_CREATE_LONG_FLAGS = frozenset({"--create", "--append", "--update"})
+# `tar --help`: `--delete` deletes members from the archive and `-A, --concatenate` appends other
+# archives to it, so both MUTATE the file `-f` names exactly as create, append and update do.
+_ARCHIVE_CREATE_LONG_FLAGS = frozenset(
+    {"--create", "--append", "--update", "--delete", "--concatenate", "--catenate"}
+)
 
 
 # The short spellings of the same three: create, append, update. All write the archive.
-_ARCHIVE_WRITE_SHORT_MODES = ("c", "r", "u")
+_ARCHIVE_WRITE_SHORT_MODES = ("c", "r", "u", "A")
+# `7z --help`: the FIRST word is the command, and `a` adds to (creating or updating) an archive,
+# `u` updates and `d` deletes from it. The tar-style mode letters mean nothing here.
+_SEVENZIP_WRITE_COMMANDS = frozenset({"a", "u", "d", "rn"})
 
 
 # Flags that supply the pattern or program themselves. `_PATH_ARG_SKIP` spends a positional on it by
@@ -1535,6 +1542,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     # `tar --help`: `-r` appends to the archive and `-u` updates it, so both MUTATE the file `-f`
     # names, exactly as `-c` does. Only `c` was read here, and an append to a read-silent root asked
     # for nothing.
+    if command in ("7z", "7za", "7zr"):
+        # `7z a out.7z src`: the archive is the first positional after the command word.
+        creating = bool(args) and args[0].lower() in _SEVENZIP_WRITE_COMMANDS
+        archive_from_flag = False
+        return _seven_zip_operands(args, creating)
     creating = command in _PATH_ARCHIVE_COMMANDS and (
         any(
             any(mode in arg.lstrip("-") for mode in _ARCHIVE_WRITE_SHORT_MODES)
@@ -1640,6 +1652,25 @@ def _shell_words(text: str) -> "list[str]":
     except ValueError:  # unbalanced quotes: the raw words are the best available reading
         words = text.split()
     return words or [text]
+
+
+def _seven_zip_operands(args, creating: bool) -> "list[tuple[str, bool]]":
+    """Operands of a 7-Zip invocation: `7z <command> <archive> [files...]`.
+
+    The archive is written whenever the command word adds to, updates, deletes from or renames in
+    it, and read otherwise (`x`, `l`, `t`). The remaining positionals are the files it packs.
+    """
+    positionals = [arg for arg in args[1:] if not arg.startswith("-")]
+    operands: "list[tuple[str, bool]]" = []
+    for index, arg in enumerate(positionals):
+        if _looks_absolute(arg):
+            operands.append((arg, creating if index == 0 else False))
+        else:
+            operands.extend(
+                (path, creating if index == 0 else False)
+                for path in _substitution_operand_paths(arg)
+            )
+    return operands
 
 
 def _serializes_to_second_arg(func, module_aliases: "dict | None" = None) -> bool:

@@ -3374,6 +3374,12 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `tar --help`: `--delete` removes members and `-A` appends archives, both mutating `-f`.
+    f"tar --delete -f {_OUTSIDE_DIR}/a.tar member",
+    f"tar -A -f {_OUTSIDE_DIR}/a.tar b.tar",
+    # `7z a` creates or updates the archive named first after the command word.
+    f"7z a {_OUTSIDE_DIR}/out.7z local.txt",
+    f"7z a out.7z {_OUTSIDE_DIR}/src",
     # `-c` only stops the operand being REWRITTEN; it is still opened.
     f"gzip -c {_OUTSIDE_DIR}/x",
     f"zstd {_OUTSIDE_DIR}/x",
@@ -3752,6 +3758,8 @@ _INDIRECT_BENIGN_TERMINAL = (
     "gzip -dc /usr/share/doc/archive.gz",
     "gunzip -c /usr/share/doc/archive.gz",
     "zstd out.txt",
+    "7z a out.7z src",
+    "7z x out.7z",
     "cat <(cat $(echo notes.txt))",
     "diff <(sort a) <(sort b)",
     # `test`/`[` only stat the operand of a FILE operator; the rest is string comparison.
