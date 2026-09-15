@@ -154,6 +154,10 @@ export interface VoiceSettingsState {
   ttsEngine: TtsEngine;
   setTtsEngine: (value: TtsEngine) => void;
 
+  /** Explicit TTS language (including Greek); "auto" preserves the engine default. */
+  ttsLanguage: string;
+  setTtsLanguage: (value: string) => void;
+
   /** Saved connection id used by the "custom" engine. */
   ttsProviderId: string;
   setTtsProviderId: (value: string) => void;
@@ -334,6 +338,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsEngine: "system",
       setTtsEngine: (ttsEngine) => set({ ttsEngine }),
 
+      ttsLanguage: "auto",
+      setTtsLanguage: (ttsLanguage) => set({ ttsLanguage }),
+
       ttsProviderId: "",
       setTtsProviderId: (ttsProviderId) => set({ ttsProviderId }),
       ttsProviderModel: "",
@@ -397,6 +404,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
             saved?.ttsEngine === "studio" || saved?.ttsEngine === "custom"
               ? saved.ttsEngine
               : "system",
+          ttsLanguage: asString(saved?.ttsLanguage, "auto"),
           ttsProviderId: asString(saved?.ttsProviderId, ""),
           ttsProviderModel: asString(saved?.ttsProviderModel, ""),
           ttsProviderVoice: asString(saved?.ttsProviderVoice, ""),

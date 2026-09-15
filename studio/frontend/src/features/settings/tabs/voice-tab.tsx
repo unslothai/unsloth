@@ -60,6 +60,7 @@ import { DictationDictionaryView } from "../components/dictation-dictionary-view
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { SPEECH_LANGUAGES, ttsPreviewText } from "../lib/speech-languages";
 import {
   isTrackingSttDownload,
   trackSttDownload,
@@ -70,41 +71,18 @@ import {
   RECOMMENDED_STT_MODELS,
   STT_MODELS,
   type SttModel,
+  type TtsEngine,
   getSttModelRepo,
   isCuratedSttModel,
   isSttModelId,
   isSttModelLanguageCompatible,
   sttModelName,
   sttModelSize,
-  type TtsEngine,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
 /** Backends that report a runtime name where a device would go. */
 const STT_RUNTIME_NAMES = new Set(["whisper.cpp", "llama.cpp"]);
-
-// Languages shared by browser speech recognition and local STT.
-const DICTATION_LANGUAGES: { value: string; label: string }[] = [
-  { value: "auto", label: "" }, // label rendered via i18n
-  { value: "en-US", label: "English (US)" },
-  { value: "en-GB", label: "English (UK)" },
-  { value: "zh-CN", label: "中文 (简体)" },
-  { value: "ja-JP", label: "日本語" },
-  { value: "ko-KR", label: "한국어" },
-  { value: "es-ES", label: "Español" },
-  { value: "fr-FR", label: "Français" },
-  { value: "de-DE", label: "Deutsch" },
-  { value: "it-IT", label: "Italiano" },
-  { value: "pt-BR", label: "Português (Brasil)" },
-  { value: "ru-RU", label: "Русский" },
-  { value: "hi-IN", label: "हिन्दी" },
-  { value: "ar-SA", label: "العربية" },
-];
-
-// Keep spoken preview content independent of the interface locale. The system
-// voice and loaded local model may not support the language used by the UI.
-const TTS_PREVIEW_TEXT =
-  "Hello from Unsloth! This is a preview of the selected voice.";
 
 /** Source repository shown under a model row. Curated models download from
  * the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */
@@ -420,6 +398,8 @@ export function VoiceTab() {
   const setDictationLanguage = useVoiceSettingsStore(
     (s) => s.setDictationLanguage,
   );
+  const ttsLanguage = useVoiceSettingsStore((s) => s.ttsLanguage);
+  const setTtsLanguage = useVoiceSettingsStore((s) => s.setTtsLanguage);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
   const ttsEngine = useVoiceSettingsStore((s) => s.ttsEngine);
@@ -459,8 +439,13 @@ export function VoiceTab() {
   const { devices, hasLabels, requestAccess } = useAudioInputDevices();
   const rawVoices = useSystemVoices();
   const voices = useMemo(
-    () => curateSystemVoices(rawVoices, ttsVoiceURI, dictationLanguage),
-    [rawVoices, ttsVoiceURI, dictationLanguage],
+    () =>
+      curateSystemVoices(
+        rawVoices,
+        ttsVoiceURI,
+        ttsLanguage === "auto" ? dictationLanguage : ttsLanguage,
+      ),
+    [rawVoices, ttsVoiceURI, ttsLanguage, dictationLanguage],
   );
   const [previewing, setPreviewing] = useState(false);
   // A studio preview generates the whole clip before it plays; separate from `previewing`
@@ -814,7 +799,10 @@ export function VoiceTab() {
           effectiveTtsEngine === "custom"
             ? generateCustomTtsAudio
             : generateStudioTtsAudio;
-        const url = await generate(TTS_PREVIEW_TEXT, controller.signal);
+        const url = await generate(
+          ttsPreviewText(effectiveTtsEngine === "custom" ? "auto" : ttsLanguage),
+          controller.signal,
+        );
         if (controller.signal.aborted) {
           releaseTtsAudioUrl(url);
           return;
@@ -855,7 +843,7 @@ export function VoiceTab() {
       toast.error(t("settings.voice.readAloud.notSupported"));
       return;
     }
-    const utterance = createConfiguredUtterance(TTS_PREVIEW_TEXT);
+    const utterance = createConfiguredUtterance(ttsPreviewText(ttsLanguage));
     utterance.addEventListener("end", () => {
       ownsSystemPreviewRef.current = false;
       markPreviewing(false);
@@ -1241,7 +1229,7 @@ export function VoiceTab() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {DICTATION_LANGUAGES.map(({ value, label }) => (
+              {SPEECH_LANGUAGES.map(({ value, label }) => (
                 <SelectItem key={value} value={value}>
                   {value === "auto"
                     ? t(
@@ -1336,6 +1324,32 @@ export function VoiceTab() {
                 </SelectContent>
               </Select>
             </SettingsRow>
+
+            {effectiveTtsEngine !== "custom" ? (
+              <SettingsRow
+                label={t("settings.voice.readAloud.languageLabel")}
+                description={t("settings.voice.readAloud.languageDescription")}
+              >
+                <Select value={ttsLanguage} onValueChange={setTtsLanguage}>
+                  <SelectTrigger
+                    aria-label={t("settings.voice.readAloud.languageLabel")}
+                    className="min-w-56 max-w-72"
+                    size="sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SPEECH_LANGUAGES.map(({ value, label }) => (
+                      <SelectItem key={value} value={value}>
+                        {value === "auto"
+                          ? t("settings.voice.dictation.languageAuto")
+                          : label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </SettingsRow>
+            ) : null}
 
             {effectiveTtsEngine === "custom" ? (
               <>
