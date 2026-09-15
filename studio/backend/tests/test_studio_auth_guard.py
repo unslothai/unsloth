@@ -2116,3 +2116,39 @@ def test_a_class_body_runs_at_definition_but_its_methods_do_not(monkeypatch, tmp
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_an_invoked_lambda_moves_and_so_does_the_platform_os_module(monkeypatch, tmp_path):
+    # `(lambda: os.chdir("../.."))()` runs its body right there, and `posix.chdir` is the same
+    # process primitive `os.chdir` is, under the platform module `os` is built on. Both were read as
+    # no move at all, so the database that followed resolved from the sandbox.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import os, sqlite3\n(lambda: os.chdir("../.."))()\n'
+            'print(sqlite3.connect("auth/auth.db"))',
+            'import posix\nposix.chdir("../..")\nprint(open("auth/auth.db").read())',
+            'import posix as p\np.chdir("../..")\nprint(open("auth/.desktop_secret").read())',
+            # Bound to a name and then called: the same body, one step further out.
+            'import os\nmove = lambda: os.chdir("../..")\nmove()\n'
+            'print(open("auth/auth.db").read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        for ordinary in (
+            # Defined and never called, which is what the inert rule is for.
+            'import os\nmove = lambda: os.chdir("../..")\nprint(open("auth/config.json").read())',
+            # A remote directory change leaves the local one alone.
+            'import ftplib\nftp = ftplib.FTP()\nftp.chdir("../..")\n'
+            'print(open("auth/config.json").read())',
+        ):
+            assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

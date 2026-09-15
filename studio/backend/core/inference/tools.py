@@ -3318,19 +3318,35 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
     the methods inside it are deferred, and those are function bodies reached in their own right.
     """
     called: "set[str]" = set()
+    # A lambda in the CALLED position runs immediately, and a lambda bound to a name runs when that
+    # name is called, so neither is inert.
+    invoked: "set[int]" = set()
+    lambda_names: "dict[str, int]" = {}
     for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node.value, ast.Lambda):
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        lambda_names[target.id] = id(node.value)
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Name):
+        if isinstance(func, ast.Lambda):
+            invoked.add(id(func))
+        elif isinstance(func, ast.Name):
             called.add(func.id)
         elif isinstance(func, ast.Attribute):
             called.add(func.attr)
+    invoked.update(node_id for name, node_id in lambda_names.items() if name in called)
     inert: "set[int]" = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name in called:
                 continue
+        elif isinstance(node, ast.Lambda) and id(node) in invoked:
+            # `(lambda: os.chdir("../.."))()` runs its body right there.
+            continue
         elif not isinstance(node, ast.Lambda):
             continue
         for inner in ast.walk(node):
@@ -3854,11 +3870,14 @@ def _chdir_modules(tree) -> "set[str]":
     `ftp.chdir('../..')` changes a remote directory and leaves the local one alone, so reading a
     project's own `auth/config.json` afterwards was refused for a move that never happened.
     """
-    modules = {"os", "contextlib"}
+    # `posix` on POSIX and `nt` on Windows are the platform modules `os` itself is built on, so
+    # `posix.chdir` is the same primitive under a different name.
+    known = ("os", "contextlib", "posix", "nt")
+    modules = set(known)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in ("os", "contextlib") and alias.asname:
+                if alias.name in known and alias.asname:
                     modules.add(alias.asname)
     return modules
 
