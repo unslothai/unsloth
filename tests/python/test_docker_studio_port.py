@@ -42,9 +42,7 @@ def _clean_env(bin_dir: Path) -> dict:
 
 def _launch(**env: str) -> subprocess.CompletedProcess:
     e = dict(_clean_env(Path("/nonexistent")), UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "1", **env)
-    return subprocess.run(
-        ["bash", str(LAUNCH)], capture_output = True, text = True, env = e, timeout = 120
-    )
+    return subprocess.run(["bash", str(LAUNCH)], capture_output = True, text = True, env = e, timeout = 120)
 
 
 def test_the_default_stays_8000():
@@ -123,7 +121,9 @@ def test_the_updater_waits_on_the_port():
 
 def test_the_image_default_and_the_host_wrapper_carry_the_variable():
     assert "UNSLOTH_STUDIO_PORT=8000" in (DOCKER / "Dockerfile.studio").read_text(encoding = "utf-8")
-    assert "ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)" in (DOCKER / "run.sh").read_text(encoding = "utf-8")
+    assert "ENV_FORWARD+=(-e UNSLOTH_STUDIO_PORT)" in (DOCKER / "run.sh").read_text(
+        encoding = "utf-8"
+    )
     assert "`UNSLOTH_STUDIO_PORT`" in (DOCKER / "DOCKERHUB.md").read_text(encoding = "utf-8")
 
 
