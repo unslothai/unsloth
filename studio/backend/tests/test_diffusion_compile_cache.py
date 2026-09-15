@@ -752,3 +752,34 @@ def test_a_manifest_from_before_content_addressing_still_hits(
     assert cc.save(reopened) is True
     assert not legacy.exists()
     assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+
+
+def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened_again(
+    monkeypatch, tmp_path, mutable_megacache
+):
+    # Two saves for one key inside the grace window: the first bundle is superseded but too young
+    # to collect, and the second save is the last thing that would ever have looked at it. Opening
+    # the key again is what collects it, so the window costs a delay rather than the disk.
+    ctx = _cold_pair(monkeypatch, tmp_path)
+    first = ctx.bundle
+
+    mutable_megacache["bytes"] = b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
+    ctx.saved = False
+    monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", 3600.0)
+    assert cc.save(ctx) is True
+    second = ctx.bundle
+
+    # Still there: inside an hour-long grace, the save left it alone.
+    assert second != first
+    assert first.exists()
+
+    # Next open of the same key, with that grace expired, takes it.
+    monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", 60.0)
+    import os as _os
+
+    _os.utime(first, (0, 0))
+    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert not first.exists()
+    assert second.exists()
+    assert reopened.hit is True
+    assert reopened.bundle == second

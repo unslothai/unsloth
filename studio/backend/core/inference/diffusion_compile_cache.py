@@ -324,6 +324,13 @@ def begin(
     if published is not None:
         ctx.bundle = _manifest_bundle(cdir, published)
 
+    # Collect here as well as after a save, because the grace window can otherwise leak a bundle for
+    # good: two saves for one key inside 60 s leave the first one too young to collect, and the
+    # second save is the last thing that ever looks. By the time this key is opened again that
+    # orphan is minutes or days old, the live bundle is spared by name, and anything a concurrent
+    # process is mid-save on is still inside its grace, so the same two rules decide it.
+    _collect_superseded(cdir, logger)
+
     # Try an exact-match load. A miss/mismatch is normal and non-fatal.
     if published is not None and ctx.bundle.exists():
         ctx.hit = _try_load(ctx, logger)
