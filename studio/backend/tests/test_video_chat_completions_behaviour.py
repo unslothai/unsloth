@@ -721,3 +721,35 @@ def test_the_pre_switch_validation_refuses_a_private_host_before_any_model_loads
     assert inference_route._request_video_rejection(
         ChatCompletionRequest.model_validate(_part_body(_REMOTE))
     ) is None
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["2130706433", "127.1", "0177.0.0.1", "0x7f000001", "0x7f.1", "017700000001"],
+)
+def test_a_legacy_numeric_form_of_loopback_is_refused_too(monkeypatch, host):
+    """ip_address reads dotted-quad only, but a resolver reads all of these as 127.0.0.1, so
+    classifying with ip_address alone left the guard bypassable."""
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(f"http://{host}/clip.mp4"))
+    assert response.status_code == 400
+    assert "must point at a public host" in _detail(response)
+
+
+@pytest.mark.parametrize("url", ["http://[::1", "http://[bad]/clip.mp4", "https://[::1]:x/c.mp4"])
+def test_a_malformed_remote_url_is_a_client_error_not_a_crash(monkeypatch, url):
+    """urlsplit raises on a broken authority; uncaught it would surface as a 500."""
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(url))
+    assert response.status_code == 400
+
+
+def test_a_public_numeric_host_is_still_allowed(monkeypatch):
+    """The numeric check must refuse loopback, not every address written as digits."""
+    backend = _VideoGguf()
+    with _client(monkeypatch, backend) as client:
+        response = client.post("/v1/chat/completions", json = _part_body("http://8.8.8.8/c.mp4"))
+    assert response.status_code == 200
+    assert _sent_media(backend) == [
+        {"type": "input_video", "input_video": {"url": "http://8.8.8.8/c.mp4"}}
+    ]

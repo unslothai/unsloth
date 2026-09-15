@@ -20560,14 +20560,19 @@ def _remote_video_destination_rejection(url: str) -> Optional[tuple[int, str]]:
     rebinds is out of reach from this side. Tracked for the image path in #11010.
     """
     import ipaddress
+    import socket
     from urllib.parse import urlsplit
 
-    host = (urlsplit(url).hostname or "").rstrip(".")
     refusal = (
         400,
         "A remote video URL must point at a public host. "
         "Send the clip as a data URI instead.",
     )
+    try:
+        host = (urlsplit(url).hostname or "").rstrip(".")
+    except ValueError:
+        # A malformed authority such as http://[::1 is a client error, not a 500.
+        return refusal
     if not host:
         return refusal
     if host == "localhost" or host.endswith(".localhost"):
@@ -20575,7 +20580,13 @@ def _remote_video_destination_rejection(url: str) -> Optional[tuple[int, str]]:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return None
+        # ip_address takes dotted-quad only, but a resolver also reads 2130706433, 127.1,
+        # 0177.0.0.1 and 0x7f000001 as 127.0.0.1. inet_aton reads that same legacy set, and
+        # rejects a real name, so it classifies the numeric forms without a lookup.
+        try:
+            ip = ipaddress.IPv4Address(socket.inet_aton(host))
+        except (OSError, ipaddress.AddressValueError):
+            return None
     # An IPv4 address wrapped in IPv6 is the same destination, and is_global reads the wrapper.
     for mapped in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
         if mapped is not None:
