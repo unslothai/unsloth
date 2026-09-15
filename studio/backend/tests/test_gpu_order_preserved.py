@@ -46,12 +46,19 @@ def test_reordered_parent_mask_reaches_the_child(monkeypatch, tmp_path):
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
 
 
-def test_reordered_parent_mask_survives_a_gpu_pick(monkeypatch, tmp_path):
-    """The picker owns the SET; the mask still owns the order within it."""
+def test_an_explicit_pick_outranks_the_inherited_mask(monkeypatch, tmp_path):
+    """Both name an order. The picker is the more explicit and more recent one."""
     backend, result = _run(monkeypatch, tmp_path, mask = "1,0", gpu_ids = [0, 1])
-    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
     # The ordinal -> physical map the buffer parser reads has to match what we emitted.
+    assert backend._child_gpu_physical_ids == (0, 1)
+
+
+def test_the_picked_order_is_the_child_order(monkeypatch, tmp_path):
+    backend, result = _run(monkeypatch, tmp_path, mask = None, gpu_ids = [1, 0])
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
     assert backend._child_gpu_physical_ids == (1, 0)
+    assert backend.requested_gpu_ids == [1, 0]
 
 
 def test_ascending_parent_mask_is_left_alone(monkeypatch, tmp_path):
