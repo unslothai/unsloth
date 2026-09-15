@@ -1082,7 +1082,7 @@ export const it = {
         },
         chatWidth: {
           label: "Larghezza della chat",
-          description: "Imposta la larghezza massima della colonna della chat. Si restringe comunque con la finestra.",
+          description: "100% è la colonna predefinita. I valori più alti la allargano fino a tutta la larghezza disponibile.",
         },
         fontSmoothing: {
           label: "Antialiasing dei caratteri",

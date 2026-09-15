@@ -1116,7 +1116,7 @@ export const fr = {
         },
         chatWidth: {
           label: "Largeur du chat",
-          description: "Définissez la largeur maximale de la colonne de chat. Elle se réduit toujours avec la fenêtre.",
+          description: "100 % correspond à la colonne par défaut. Les valeurs supérieures l'élargissent vers toute la largeur disponible.",
         },
         fontSmoothing: {
           label: "Lissage des polices",

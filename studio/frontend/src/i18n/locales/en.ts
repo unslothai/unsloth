@@ -1087,7 +1087,7 @@ export const en = {
         },
         chatWidth: {
           label: "Chat width",
-          description: "Set the maximum width of the chat column. It still narrows with the window.",
+          description: "100% is the default column. Higher values grow it toward the full width available.",
         },
         fontSmoothing: {
           label: "Font smoothing",

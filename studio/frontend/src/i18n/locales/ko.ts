@@ -1089,7 +1089,7 @@ export const ko = {
         },
         chatWidth: {
           label: "채팅 너비",
-          description: "채팅 열의 최대 너비를 설정합니다. 창 크기에 따라 계속 좁아집니다.",
+          description: "100%가 기본 열입니다. 값을 높이면 사용 가능한 전체 너비까지 넓어집니다.",
         },
         fontSmoothing: {
           label: "글꼴 다듬기",

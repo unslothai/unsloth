@@ -872,11 +872,12 @@ export function ChatWidthRow() {
   const chatWidth = useAppearanceCustomStore((s) => s.customization.chatWidth);
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <FontSizeInput
+    <SizeInput
       value={chatWidth}
       range={CHAT_WIDTH_RANGE}
       onCommit={(next) => patch({ chatWidth: next })}
       ariaLabel={t("settings.appearance.custom.chatWidth.label")}
+      unit="%"
     />
   );
 }

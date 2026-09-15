@@ -178,9 +178,12 @@
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
-	/* Cap, not a fixed width: the column is w-full under it, so it still
-	   tracks the window. Appearance settings overrides this on <html>. */
-	--studio-chat-width: 100rem;
+	/* Chat column. Interpolates from the 48rem default to the space actually
+	   available, so every setting differs at every window size; an absolute
+	   cap would look the same at 1600 and 2000 on a narrow one. Appearance
+	   settings overrides the fill on <html>. */
+	--studio-chat-fill: 0;
+	--studio-chat-width: calc(48rem + (100% - 48rem) * var(--studio-chat-fill));
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;

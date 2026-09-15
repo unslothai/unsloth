@@ -1117,7 +1117,7 @@ export const de = {
         },
         chatWidth: {
           label: "Chatbreite",
-          description: "Legen Sie die maximale Breite der Chatspalte fest. Sie verkleinert sich weiterhin mit dem Fenster.",
+          description: "100 % ist die Standardspalte. Höhere Werte vergrößern sie bis zur vollen verfügbaren Breite.",
         },
         fontSmoothing: {
           label: "Schriftglättung",

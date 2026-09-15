@@ -1075,7 +1075,7 @@ export const zhCN = {
         },
         chatWidth: {
           label: "聊天宽度",
-          description: "设置聊天栏的最大宽度。它仍会随窗口变窄。",
+          description: "100% 为默认栏宽。数值越大，栏宽越接近可用的全部宽度。",
         },
         fontSmoothing: {
           label: "字体平滑",

@@ -1102,7 +1102,7 @@ export const ptBR = {
         },
         chatWidth: {
           label: "Largura do chat",
-          description: "Defina a largura máxima da coluna do chat. Ela continua estreitando com a janela.",
+          description: "100% é a coluna padrão. Valores maiores a ampliam até toda a largura disponível.",
         },
         fontSmoothing: {
           label: "Suavização de fonte",

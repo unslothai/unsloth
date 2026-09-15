@@ -201,7 +201,7 @@ export type AppearanceCustomization = {
   uiFontSize: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
-  /** Cap on the chat column in px, not a fixed width. null = app default (1600). */
+  /** Chat column, percent. 100 = the 48rem default, 200 = the full width available. */
   chatWidth: number | null;
   /** 0–100; 50 is neutral (no adjustment). */
   contrast: number;
@@ -247,7 +247,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
-export const CHAT_WIDTH_RANGE = { min: 640, max: 2400, default: 1600 } as const;
+export const CHAT_WIDTH_RANGE = { min: 100, max: 200, default: 100 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
@@ -852,11 +852,13 @@ export function applyCustomizationToDocument(
     setVar("--custom-code-font-size", null);
   }
 
-  // Left unset at the default so stock stays on the :root value in index.css.
+  // Percent maps onto 0..1 of the room between the default column and the full
+  // width. Left unset at the default so stock stays on the :root value.
   if (c.chatWidth !== null && c.chatWidth !== CHAT_WIDTH_RANGE.default) {
-    setVar("--studio-chat-width", `${c.chatWidth}px`);
+    const fill = (c.chatWidth - CHAT_WIDTH_RANGE.default) / 100;
+    setVar("--studio-chat-fill", String(fill));
   } else {
-    setVar("--studio-chat-width", null);
+    setVar("--studio-chat-fill", null);
   }
 
   if (c.contrast !== 50) {

@@ -1112,7 +1112,7 @@ export const es = {
         },
         chatWidth: {
           label: "Ancho del chat",
-          description: "Define el ancho máximo de la columna del chat. Se sigue estrechando con la ventana.",
+          description: "100 % es la columna predeterminada. Los valores mayores la amplían hacia todo el ancho disponible.",
         },
         fontSmoothing: {
           label: "Suavizado de fuentes",

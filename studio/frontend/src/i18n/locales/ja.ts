@@ -1074,7 +1074,7 @@ export const ja = {
         },
         chatWidth: {
           label: "チャットの幅",
-          description: "チャット列の最大幅を設定します。ウィンドウに合わせて狭まります。",
+          description: "100% が既定の列幅です。値を大きくすると利用できる幅いっぱいまで広がります。",
         },
         fontSmoothing: {
           label: "フォントスムージング",
