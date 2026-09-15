@@ -513,6 +513,11 @@ export const ptBR = {
       title: "Voz",
       description: "Microfone, ditado, conversão de fala em texto e leitura em voz alta",
       dictation: {
+        audioUploadTitle: "Transcrever arquivo de áudio",
+        audioUploadDescription: "O arquivo de áudio escolhido será transcrito pelo modelo local mostrado abaixo neste servidor do Studio.",
+        audioUploadChooseFile: "Escolher arquivo de áudio",
+        audioUploadCancel: "Cancelar transcrição",
+        audioUploadTranscribing: "Transcrevendo áudio…",
         sectionTitle: "Ditado",
         engineLabel: "Mecanismo de ditado",
         engineBrowser: "Navegador",

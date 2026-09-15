@@ -513,6 +513,11 @@ export const ja = {
       title: "音声",
       description: "マイク、音声入力、音声認識、読み上げ",
       dictation: {
+        audioUploadTitle: "音声ファイルを文字起こし",
+        audioUploadDescription: "選択した音声ファイルは、以下のローカルモデルによってこのStudioサーバー上で文字起こしされます。",
+        audioUploadChooseFile: "音声ファイルを選択",
+        audioUploadCancel: "文字起こしをキャンセル",
+        audioUploadTranscribing: "音声を文字起こし中…",
         sectionTitle: "音声入力",
         engineLabel: "音声入力エンジン",
         engineBrowser: "ブラウザー",

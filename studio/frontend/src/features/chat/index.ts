@@ -378,6 +378,8 @@ export {
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
 export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export { ChatAudioUpload } from "./components/chat-audio-upload";
+export { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
 export {
   SKILL_MENTION_PATTERN,
   listSkills,

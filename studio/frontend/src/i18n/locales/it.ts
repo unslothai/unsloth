@@ -480,6 +480,11 @@ export const it = {
       description:
         "Microfono, dettatura, riconoscimento vocale e lettura ad alta voce",
       dictation: {
+        audioUploadTitle: "Trascrivi file audio",
+        audioUploadDescription: "Il file audio scelto verrà trascritto dal modello locale indicato di seguito su questo server Studio.",
+        audioUploadChooseFile: "Scegli file audio",
+        audioUploadCancel: "Annulla trascrizione",
+        audioUploadTranscribing: "Trascrizione audio in corso…",
         sectionTitle: "Dettatura",
         engineLabel: "Motore di dettatura",
         engineBrowser: "Browser",

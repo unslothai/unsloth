@@ -514,6 +514,11 @@ export const hi = {
       title: "आवाज़",
       description: "माइक्रोफ़ोन, डिक्टेशन, स्पीच-टू-टेक्स्ट और ज़ोर से पढ़ना",
       dictation: {
+        audioUploadTitle: "ऑडियो फ़ाइल को टेक्स्ट में बदलें",
+        audioUploadDescription: "आपकी चुनी हुई ऑडियो फ़ाइल को नीचे दिखाया गया स्थानीय मॉडल इस Studio सर्वर पर टेक्स्ट में बदलेगा।",
+        audioUploadChooseFile: "ऑडियो फ़ाइल चुनें",
+        audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",
+        audioUploadTranscribing: "ऑडियो को टेक्स्ट में बदला जा रहा है…",
         sectionTitle: "डिक्टेशन",
         engineLabel: "डिक्टेशन इंजन",
         engineBrowser: "ब्राउज़र",

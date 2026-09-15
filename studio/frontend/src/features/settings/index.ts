@@ -89,4 +89,10 @@ export {
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
+export { requestSttDownload } from "./stores/stt-download-prompt-store";
+export {
+  applyDictationDictionary,
+  recordRecentDictation,
+  useVoiceSettingsStore,
+} from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";

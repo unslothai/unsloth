@@ -130,7 +130,7 @@ export function notifyStudioDictationUnavailable(
   if (typeof window !== "undefined" && !window.isSecureContext) {
     toast.error("Voice typing needs a secure connection.", {
       description:
-        "Open Unsloth at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
+        "Use Transcribe audio file here, or open this Studio server through HTTPS to dictate live.",
     });
     return;
   }

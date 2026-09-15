@@ -112,7 +112,9 @@ import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { ChatAudioUpload } from "./components/chat-audio-upload";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -197,6 +199,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -876,9 +879,24 @@ export function SharedComposer({
   const {
     isDictating,
     isFinalizing: isDictationFinalizing,
-    start: startDictation,
+    start: startDictationSession,
     stop: stopDictation,
   } = useDictation(setText);
+  const compareUploadInstanceId = useId();
+  const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
+  const readAudioUploadDraft = useCallback(() => textRef.current, []);
+  const writeAudioUploadDraft = useCallback((value: string) => setText(value), []);
+  const audioUpload = useChatAudioUpload({
+    owner: audioUploadOwner,
+    chatId: null,
+    disabled: isDictating,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+  });
+  const startDictation = useCallback(() => {
+    if (audioUpload.busy) return;
+    startDictationSession();
+  }, [audioUpload.busy, startDictationSession]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -913,6 +931,7 @@ export function SharedComposer({
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
+    audioUpload.cancel();
     setText(next);
     setTimeout(() => { sendRef.current?.(); }, 100);
   }
@@ -1272,6 +1291,7 @@ export function SharedComposer({
         keepChangedDraft();
         return;
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model server-side; a later
       // failure must then clear the stale checkpoint.
@@ -1873,6 +1893,7 @@ export function SharedComposer({
           reservations.push(token);
         }
       }
+      audioUpload.cancel();
       clearSubmittedDraft();
       for (const handle of handles) {
         handle.append(content);
@@ -2194,6 +2215,7 @@ export function SharedComposer({
           toast(`Prompt 1 / ${filtered.length}`, {
             description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
           });
+          audioUpload.cancel();
           setText(filtered[0]);
           setTimeout(() => { sendRef.current?.(); }, 100);
         }}
@@ -2781,17 +2803,29 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
+                <>
+                  <ChatAudioUpload
+                    model={audioUpload.model}
+                    language={audioUpload.language}
+                    busy={audioUpload.busy}
+                    disabled={isDictating}
+                    onFileSelected={audioUpload.selectFile}
+                    onCancel={audioUpload.cancel}
+                    className="size-8 rounded-full"
+                  />
+                  <TooltipIconButton
+                    tooltip="Dictate"
+                    side="bottom"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-muted-foreground"
+                    disabled={audioUpload.busy}
+                    onClick={startDictation}
+                    aria-label="Dictate"
+                  >
+                    <MicIcon className="unsloth-dictate-icon size-4" />
+                  </TooltipIconButton>
+                </>
               ) : (
                 <TooltipIconButton
                   tooltip={

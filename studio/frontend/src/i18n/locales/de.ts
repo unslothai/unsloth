@@ -515,6 +515,11 @@ export const de = {
       title: "Sprachfunktionen",
       description: "Mikrofon, Diktat, Spracherkennung und Vorlesen",
       dictation: {
+        audioUploadTitle: "Audiodatei transkribieren",
+        audioUploadDescription: "Die gewählte Audiodatei wird vom unten angezeigten lokalen Modell auf diesem Studio-Server transkribiert.",
+        audioUploadChooseFile: "Audiodatei auswählen",
+        audioUploadCancel: "Transkription abbrechen",
+        audioUploadTranscribing: "Audio wird transkribiert…",
         sectionTitle: "Diktat",
         engineLabel: "Diktat-Engine",
         engineBrowser: "Browser",

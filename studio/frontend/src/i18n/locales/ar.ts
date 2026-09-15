@@ -511,6 +511,11 @@ export const ar = {
       title: "الصوت",
       description: "الميكروفون والإملاء وتحويل الكلام إلى نص والقراءة بصوت عالٍ",
       dictation: {
+        audioUploadTitle: "نسخ ملف صوتي",
+        audioUploadDescription: "سيحوّل النموذج المحلي الموضّح أدناه الملف الصوتي الذي تختاره إلى نص على خادم Studio هذا.",
+        audioUploadChooseFile: "اختيار ملف صوتي",
+        audioUploadCancel: "إلغاء النسخ",
+        audioUploadTranscribing: "جارٍ نسخ الصوت…",
         sectionTitle: "الإملاء",
         engineLabel: "محرك الإملاء",
         engineBrowser: "المتصفح",

@@ -514,6 +514,11 @@ export const es = {
       title: "Voz",
       description: "Micrófono, dictado, voz a texto y lectura en voz alta",
       dictation: {
+        audioUploadTitle: "Transcribir archivo de audio",
+        audioUploadDescription: "El modelo local que se muestra a continuación transcribirá el archivo de audio que elijas en este servidor de Studio.",
+        audioUploadChooseFile: "Elegir archivo de audio",
+        audioUploadCancel: "Cancelar transcripción",
+        audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
