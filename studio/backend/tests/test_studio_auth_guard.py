@@ -2060,6 +2060,9 @@ def test_a_shell_local_studio_home_wins_over_the_backend_one(studio_home):
         # A quoted assignment is DATA that `echo` prints, so the later expansion still uses the
         # inherited home and the database read is a real one.
         'echo " UNSLOTH_STUDIO_HOME=/tmp;"; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
+        # An assignment inside `( ... )` binds only the subshell, so the outer command still
+        # expands the inherited home.
+        '(UNSLOTH_STUDIO_HOME=/tmp); sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',
         # A backslash escapes the quote it precedes, so the region is still open and the
         # assignment inside it is still data.
         'echo "x \\" UNSLOTH_STUDIO_HOME=/tmp;"; sqlite3 "$UNSLOTH_STUDIO_HOME/auth/auth.db" .dump',

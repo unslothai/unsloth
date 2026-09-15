@@ -2925,10 +2925,15 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
     return bool(following) and following[0] not in ";&|\n"
 
 
-def _inside_quotes(text: str, index: int) -> bool:
-    """Whether *index* sits inside a quoted region, where an assignment is DATA and binds nothing."""
+def _assignment_is_inert(text: str, index: int) -> bool:
+    """Whether an assignment at *index* binds nothing for the commands that follow it.
+
+    Inside quotes it is DATA that the command merely prints, and inside `( ... )` or
+    `$( ... )` it binds only the SUBSHELL, so the outer commands still expand the
+    inherited value."""
     quote = ""
     escaped = False
+    depth = 0
     for character in text[:index]:
         if escaped:
             escaped = False
@@ -2941,7 +2946,11 @@ def _inside_quotes(text: str, index: int) -> bool:
                 quote = ""
         elif character in "'\"":
             quote = character
-    return bool(quote)
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    return bool(quote) or depth > 0
 
 
 def _rebinds_the_studio_home_first(text: str) -> bool:
@@ -2956,9 +2965,10 @@ def _rebinds_the_studio_home_first(text: str) -> bool:
     lowered = text.lower()
     assignments: "dict[str, int]" = {}
     for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
-        # `echo " H=/tmp;"; cat "$H/auth/auth.db"` only PRINTS the assignment, so the later
+        # `echo " H=/tmp;"; cat "$H/auth/auth.db"` only PRINTS the assignment and
+        # `(H=/tmp); cat "$H/auth/auth.db"` binds only the subshell, so in both the later
         # expansion still uses the inherited home and rewriting it hid a real credential read.
-        if _inside_quotes(text, match.start()):
+        if _assignment_is_inert(text, match.end()):
             continue
         # A PREFIX assignment (`H=/tmp cmd "$H/auth/auth.db"`) does not govern the expansion of its
         # own command's arguments: the shell expands the word list before the assignment takes
