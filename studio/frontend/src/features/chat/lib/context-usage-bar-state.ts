@@ -27,6 +27,8 @@ export type ContextUsageBarInput = {
   isMlx?: boolean;
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
+  /** mlx_context_budget: set where the limit refuses the request instead of bounding the cache. */
+  contextBudget?: number | null;
 };
 
 /**
@@ -43,6 +45,7 @@ export type ContextLimitAdvice =
   | "stops-at-limit"
   | "mlx-near-limit"
   | "mlx-past-limit"
+  | "mlx-refuses-past-limit"
   | "unenforced-limit";
 
 function contextLimitAdvice(
@@ -50,8 +53,12 @@ function contextLimitAdvice(
   total: number,
   isMlx: boolean | undefined,
   enforced: boolean | null | undefined,
+  budget: number | null | undefined,
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
+  // A budget outranks the enforced flag, which answers for the cache: unbounded here, yet the
+  // limit is real because the request is refused at it.
+  if (budget) return "mlx-refuses-past-limit";
   // A window the backend confirmed does not bound the cache is not a limit at all:
   // nothing rotates and nothing stops, so neither of the other two is true of it. An
   // unjudged MLX window says the same thing operationally: the probe could not build a
@@ -83,6 +90,7 @@ export function deriveContextUsageBar({
   completionTokens,
   isMlx,
   contextEnforced,
+  contextBudget,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -127,6 +135,12 @@ export function deriveContextUsageBar({
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
     percent: Math.min((usedTokens / limit) * 100, 100),
     hasUsageDetails,
-    advice: contextLimitAdvice(usedTokens, limit, isMlx, contextEnforced),
+    advice: contextLimitAdvice(
+      usedTokens,
+      limit,
+      isMlx,
+      contextEnforced,
+      contextBudget,
+    ),
   };
 }

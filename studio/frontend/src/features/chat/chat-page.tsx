@@ -2312,6 +2312,9 @@ export function ChatPage({
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextBudget = useChatRuntimeStore(
+    (state) => state.loadedContextBudget,
+  );
   const loadedContextEnforced = useChatRuntimeStore(
     (state) => state.loadedContextEnforced,
   );
@@ -4156,6 +4159,7 @@ export function ChatPage({
                   platformChatOnlyReason,
                 )}
                 contextEnforced={loadedContextEnforced}
+                contextBudget={loadedContextBudget}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
