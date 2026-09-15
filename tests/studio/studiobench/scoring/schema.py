@@ -128,9 +128,7 @@ EXEMPT_SUBTREE_KEYS = frozenset(
         # (`instrument_level`, `stream_tail_chars`, `corpus_dollars`), every one a true statement about
         # how the run was configured and legitimately 0. Same rule as `identity` and `config` above.
         "comparability",
-        # The A/B run order. Bookkeeping about HOW the run was executed, never a measurement of the
-        # app, and legitimately 0 or False (an unbalanced order is still recorded). Same rule as
-        # `comparability` above.
+        # Run order: bookkeeping, legitimately 0 or False. Same rule as `comparability`.
         "ab_plan",
         "footer",
         "record_counts",

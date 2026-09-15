@@ -1667,8 +1667,8 @@ def _probe_torchvision_binary(
     except Exception as error:
         shadow = _shadowing_torchvision_path()
         if shadow is not None and _TORCHVISION_ATTRIBUTE_RE.search(str(error)):
-            # Named, because the metadata says torchvision is installed and it is: the user
-            # reinstalls forever and nothing changes. The file is the whole fix.
+            # Named: the metadata says torchvision is installed and it is, so a reinstall
+            # changes nothing. The file is the whole fix.
             raise ImportError(
                 f"Unsloth: {shadow} is being imported as `torchvision`, ahead of the "
                 f"installed package ({type(error).__name__}: {error}). Rename or move that "
