@@ -538,7 +538,13 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
         # malformed parent -- at which point purge_partial_import deliberately declines, since
         # those leftovers now belong to a live importer. Reentrant per thread, so the nested
         # acquire inside purge_partial_import is free.
-        with _ModuleLockManager("diffusers"):
+        #
+        # Both locks, because these are two imports with two locks and the subpackage has the
+        # same gap: `import diffusers.hooks` drops the hooks lock when it raises, and with the
+        # healthy parent already published a waiting request can rebuild diffusers.hooks from
+        # its stale submodules before the purge reacquires. Parent then child, which is the order
+        # CPython's own import takes, so a concurrent importer cannot invert it.
+        with _ModuleLockManager("diffusers"), _ModuleLockManager("diffusers.hooks"):
             try:
                 import diffusers  # noqa: F401, PLC0415
                 import diffusers.hooks  # noqa: F401, PLC0415

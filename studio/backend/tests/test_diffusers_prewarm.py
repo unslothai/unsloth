@@ -372,9 +372,10 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(warm, monk
     real_purge = warm.purge_partial_import
 
     def _checking_purge(package):
-        lock = _get_module_lock("diffusers")
-        # has_deadlock() answers "would another thread block on me", which is exactly the
-        # property under test, and it does not disturb the lock the way acquiring would.
+        # The lock of the package being purged, not always the parent: the hooks subtree has its
+        # own lock and the same release-before-cleanup gap. Reading .owner does not disturb the
+        # lock the way acquiring it would.
+        lock = _get_module_lock(package)
         held_during_purge.append(getattr(lock, "owner", None) == threading.get_ident())
         return real_purge(package)
 
@@ -420,6 +421,18 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm,
     )
     monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
 
+    from importlib._bootstrap import _get_module_lock
+
+    held = []
+    real_purge = warm.purge_partial_import
+
+    def _checking_purge(package):
+        lock = _get_module_lock(package)
+        held.append((package, getattr(lock, "owner", None) == threading.get_ident()))
+        return real_purge(package)
+
+    monkeypatch.setattr(warm, "purge_partial_import", _checking_purge)
+
     class _Boom:
         def find_spec(
             self,
@@ -434,6 +447,12 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(warm,
     monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
+    # The subpackage has its own lock and the same gap: `import diffusers.hooks` drops it when it
+    # raises, and with the healthy parent already published a waiting request could rebuild the
+    # hooks package from these stale submodules before the purge reacquires it.
+    assert held and all(ok for _, ok in held), (
+        f"a purge ran without holding that package's own import lock (observed: {held})"
+    )
     assert (
         "diffusers.hooks.group_offloading" not in sys.modules
     ), "the executed hook submodules survived, so the load path can rebuild a partial package"
