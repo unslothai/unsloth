@@ -28,6 +28,8 @@ interface HookHarnessOptions {
   failCheckAt?: number;
   noUpdateAt?: number;
   tauri?: boolean;
+  trace?: string[];
+  flushSettings?: () => Promise<void>;
   /** Whether `start_backend_update` resolves; the shell steps only run if it does. */
   backendUpdate?: "completes" | "fails";
   /** One entry per `desktopUpdateBundleStatus` poll; the last one repeats. */
@@ -238,6 +240,8 @@ function hookHarness(
     failCheckAt,
     noUpdateAt,
     tauri = true,
+    trace = [],
+    flushSettings = async () => undefined,
     backendUpdate = "fails",
     bundleStates = [{ version: null, downloaded: false, downloading: false }],
   }: HookHarnessOptions = {},
@@ -273,6 +277,13 @@ function hookHarness(
     useTauriUpdate: () => UpdateController;
   }>(new URL("../src/hooks/use-tauri-update.ts", import.meta.url), {
     react: host.react,
+    "@/features/chat": {
+      flushPendingChatSettings: async () => {
+        trace.push("flush:start");
+        await flushSettings();
+        trace.push("flush:done");
+      },
+    },
     "@/lib/api-base": { isTauri: tauri },
     "@/lib/tauri-diagnostics": {
       copySupportDiagnostics: async () => ({ copied: true }),
@@ -314,6 +325,7 @@ function hookHarness(
     "@/lib/toast": { toast: { error: () => undefined } },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
+        trace.push(`invoke:${command}`);
         if (command === "desktop_update_policy") {
           return {
             mode: "in_app",
@@ -372,6 +384,33 @@ function hookHarness(
 function settle(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("desktop update and retry await the settings flush before starting the backend", async (t) => {
+  const trace: string[] = [];
+  let release!: () => void;
+  const flushing = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const hook = hookHarness(t, { trace, flushSettings: () => flushing });
+  await hook.controller.checkForUpdate();
+  trace.length = 0;
+
+  const updating = hook.controller.installUpdate();
+  await settle();
+  assert.deepEqual(trace, ["flush:start"]);
+  release();
+  await updating;
+  assert.ok(
+    trace.indexOf("flush:done") < trace.indexOf("invoke:start_backend_update"),
+  );
+
+  trace.length = 0;
+  await hook.controller.installUpdate();
+  assert.equal(trace.filter((event) => event === "flush:done").length, 1);
+  assert.ok(
+    trace.indexOf("flush:done") < trace.indexOf("invoke:start_backend_update"),
+  );
+});
 
 test("the desktop hook checks at startup and every hour", async (t) => {
   const hook = hookHarness(t);
