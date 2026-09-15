@@ -30,6 +30,7 @@ CPU-only; the one CUDA assertion is skipped without a GPU.
 
 from __future__ import annotations
 
+import functools
 import pathlib
 import re
 
@@ -61,12 +62,23 @@ def _device_or_none(value):
         return None
 
 
-# torch 2.6 raises "RuntimeError: Cannot access accelerator device when none is
-# available" from the bare `torch.device(0)` form on a host with nothing visible,
-# which is exactly how the CPU lanes run. Where that is the case per_layer_device
-# falls back to the layer itself, so the expectations below have to follow rather
-# than assume cuda:0 is always constructible.
-INDEXED_DEVICES_CONSTRUCTIBLE = _device_or_none(0) is not None
+@functools.lru_cache(maxsize = 1)
+def default_device_is_usable() -> bool:
+    """Can `torch.device(0)`, the historical default, actually hold a tensor here.
+
+    Two different failures hide behind that question and the CPU lanes hit both.
+    torch 2.6 raises "RuntimeError: Cannot access accelerator device when none is
+    available" from the bare `torch.device(0)`; torch 2.11 and later return
+    `cuda:0` from the same call on the same host and raise "RuntimeError: No CUDA
+    GPUs are available" only when something is moved there. `per_layer_device`
+    falls back to the layer's own parameters in both cases, so the expectations
+    below follow a real allocation rather than either torch version's answer.
+    """
+    try:
+        torch.zeros(1, device = torch.device(0))
+        return True
+    except Exception:
+        return False
 
 
 class _Layer(torch.nn.Module):
@@ -116,7 +128,7 @@ def test_older_unsloth_zoo_integer_index_is_unchanged():
 
     layer = _Layer(index = 1, parameter_device = "cpu")
     device, buffer_index = per_layer_device(layer)
-    if INDEXED_DEVICES_CONSTRUCTIBLE:
+    if default_device_is_usable():
         assert device == torch.device(1)
     else:
         assert device == torch.device("cpu")
@@ -142,10 +154,62 @@ def test_a_layer_with_no_attributes_keeps_the_historical_default():
 
     layer = _Layer()
     device, buffer_index = per_layer_device(layer)
-    if INDEXED_DEVICES_CONSTRUCTIBLE:
+    if default_device_is_usable():
         assert device == torch.device(0)
     else:
         assert device == torch.device("cpu")
+    assert buffer_index == 0
+
+
+def test_an_unavailable_accelerator_is_not_a_usable_device():
+    """`torch.device(0)` succeeding is not the same as the device existing.
+
+    torch 2.11 and later build `cuda:0` on a host with no CUDA at all and only
+    fail at the move, which turned the documented "fall back to the layer" branch
+    into "RuntimeError: No CUDA GPUs are available" on every torch newer than the
+    one the fallback was written against.
+    """
+    from unsloth.models import _utils
+
+    assert _utils._device_type_is_usable("cpu")
+    assert _utils._device_type_is_usable("meta"), (
+        "meta has no is_available to ask, and an offloaded layer sits on it"
+    )
+    assert _utils._device_type_is_usable("not-a-backend"), (
+        "an unknown backend must be taken at its word, not refused"
+    )
+    assert _utils._device_type_is_usable("cuda") == torch.cuda.is_available()
+
+
+def test_a_default_pointing_at_a_missing_accelerator_reads_the_layer(monkeypatch):
+    """The CPU-only half of #3538: no attributes, no accelerator, still a device.
+
+    Spoofed rather than measured, so the assertion is the same on the GPU legs.
+    """
+    from unsloth.models import _utils
+
+    monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: device_type == "cpu")
+    assert _utils._as_torch_device(0) is None
+    assert _utils._as_torch_device("cpu") == torch.device("cpu")
+
+    layer = _Layer(parameter_device = "cpu")
+    device, buffer_index = _utils.per_layer_device(layer)
+    assert device == torch.device("cpu"), (
+        "with no accelerator the layer's own parameters are the only real answer"
+    )
+    assert buffer_index == 0, "the historical subscript must survive the fallback"
+
+
+def test_an_available_accelerator_still_wins_the_default(monkeypatch):
+    """The control: the probe must not steal the historical default on a real GPU."""
+    from unsloth.models import _utils
+
+    monkeypatch.setattr(_utils, "_device_type_is_usable", lambda device_type: True)
+    layer = _Layer(parameter_device = "cpu")
+    device, buffer_index = _utils.per_layer_device(layer)
+    expected = _device_or_none(0)
+    if expected is not None:
+        assert device == expected
     assert buffer_index == 0
 
 
@@ -155,7 +219,7 @@ def test_a_garbage_index_falls_back_rather_than_raising():
     layer = _Layer(index = "not a device")
     device, buffer_index = per_layer_device(layer)
     assert isinstance(device, torch.device)
-    if INDEXED_DEVICES_CONSTRUCTIBLE:
+    if default_device_is_usable():
         assert device == torch.device(0)
     else:
         assert device == torch.device("cpu")

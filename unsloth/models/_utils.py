@@ -2542,17 +2542,43 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
 _PER_LAYER_DEVICE_MISSING = object()
 
 
-def _as_torch_device(value):
-    """`torch.device(value)`, or None when that value cannot name a device.
+def _device_type_is_usable(device_type: str) -> bool:
+    """Whether tensors can actually be placed on this device type right now.
 
-    Not a bare call: on torch 2.6 `torch.device(0)` raises
+    Only the backends torch publishes as `torch.<type>.is_available` are probed.
+    An unknown type (`meta` among them) is taken at its word, because there is
+    nothing to ask and refusing it would be worse than accepting it.
+    """
+    if device_type == "cpu":
+        return True
+    is_available = getattr(getattr(torch, device_type, None), "is_available", None)
+    if is_available is None:
+        return True
+    try:
+        return bool(is_available())
+    except Exception:
+        return False
+
+
+def _as_torch_device(value):
+    """`torch.device(value)`, or None when that value cannot name a usable device.
+
+    Not a bare call, for two reasons. On torch 2.6 `torch.device(0)` raises
     "RuntimeError: Cannot access accelerator device when none is available" on a
-    host with no visible accelerator, and a bogus string raises too.
+    host with no visible accelerator, and a bogus string raises too. From torch
+    2.11 the same call on the same host returns `cuda:0` instead, and the caller
+    only finds out when it moves a tensor there and gets
+    "RuntimeError: No CUDA GPUs are available". Probing the backend makes both
+    torch versions answer the same, so a CPU only host falls through to the
+    layer's own parameters rather than to an accelerator it does not have.
     """
     try:
-        return torch.device(value)
+        device = torch.device(value)
     except (RuntimeError, TypeError, ValueError):
         return None
+    if not _device_type_is_usable(device.type):
+        return None
+    return device
 
 
 def _device_of_parameters(module):
