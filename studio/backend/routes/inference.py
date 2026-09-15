@@ -2109,7 +2109,13 @@ def _openai_llama_admission_media_tokens(
     extra += max(0, message_image_parts) * image_tokens
     if _legacy_image_is_distinct(payload):
         extra += image_tokens
-    for attribute in ("audio_base64", "video_base64"):
+    # _inject_video_part splices the legacy clip into the conversation as input_video before the
+    # loop starts, so during a recost the clips below already include it and charging the field
+    # too priced it exactly twice.
+    fields = (
+        ("audio_base64",) if message_video_clips is not None else ("audio_base64", "video_base64")
+    )
+    for attribute in fields:
         value = getattr(payload, attribute, None)
         if isinstance(value, str) and value:
             extra += max(1, len(value) // 4)

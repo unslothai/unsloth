@@ -866,11 +866,35 @@ def test_recosting_still_charges_a_clip_the_conversation_kept():
     assert kept == len(clip) // 4
 
 
-def test_the_legacy_field_is_still_charged_during_recosting():
-    """It is not in the message list, so the conversation cannot show it either way."""
+def test_the_legacy_field_is_not_charged_twice_during_recosting():
+    """_inject_video_part splices the legacy clip into the conversation as input_video before
+    the loop starts, so during a recost the conversation clips already include it. Charging the
+    field as well priced it at exactly 2x and clamped the lease toward the whole KV budget."""
     from models.inference import ChatCompletionRequest
 
+    clip = "A" * 40_000
     payload = ChatCompletionRequest.model_validate(
-        _field_body("data:video/mp4;base64," + "A" * 4000)
+        _field_body("data:video/mp4;base64," + clip, text = "hi")
     )
-    assert inference_route._openai_llama_admission_media_tokens(payload, message_video_clips = []) > 0
+    conversation = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    inference_route._inject_video_part(conversation, clip)
+
+    opening = inference_route._openai_llama_admission_media_tokens(payload)
+    recost = inference_route._openai_llama_admission_media_tokens(
+        payload,
+        message_video_clips = inference_route._conversation_video_clips(conversation),
+    )
+    assert recost == pytest.approx(opening, rel = 0.01)
+
+
+def test_audio_is_still_charged_from_the_field_during_recosting():
+    """Only video is spliced into the conversation; dropping audio with it would undercharge."""
+    from models.inference import ChatCompletionRequest
+
+    body = _field_body("data:video/mp4;base64," + "A" * 400)
+    body["audio_base64"] = "B" * 4000
+    payload = ChatCompletionRequest.model_validate(body)
+    assert (
+        inference_route._openai_llama_admission_media_tokens(payload, message_video_clips = [])
+        == 1000
+    )

@@ -163,6 +163,11 @@ def test_page_recovers_from_empty_reply(client):
     assert "Reply cut off before the model returned an answer." in text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "'<' is not a legal Windows filename character, so a run dir named a<b cannot "
+    "exist there and the escaping this covers is unreachable",
+)
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     # Run dir name carries an HTML-special char; the page must escape it.
