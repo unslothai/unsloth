@@ -48,8 +48,7 @@ export function applyPerModelConfigToRuntime(
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
-    mlxKvBits: config.mlxKvBits ?? null,
-    mlxTurboQuant: config.mlxTurboQuant ?? false,
+    mlxKvQuant: config.mlxKvQuant ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -114,8 +113,7 @@ export function currentRuntimePerModelConfig(
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
-    mlxKvBits: s.mlxKvBits ?? null,
-    mlxTurboQuant: s.mlxTurboQuant ?? false,
+    mlxKvQuant: s.mlxKvQuant ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -155,8 +153,7 @@ export function perModelConfigsEqual(
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
-    (a.mlxKvBits ?? null) === (b.mlxKvBits ?? null) &&
-    (a.mlxTurboQuant ?? false) === (b.mlxTurboQuant ?? false) &&
+    (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&

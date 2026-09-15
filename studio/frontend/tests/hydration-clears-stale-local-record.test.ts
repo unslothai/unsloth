@@ -37,6 +37,19 @@ const {
 const MODEL = "unsloth/Model-GGUF";
 const VARIANT = "q4_k_m";
 
+test("a server row holding the superseded cache width hydrates as the single choice", () => {
+  assert.equal(fromApiOverride({ mlx_kv_bits: 8 }).mlxKvQuant, "8");
+  assert.equal(fromApiOverride({ mlx_kv_quant: "tq-4", mlx_kv_bits: 8 }).mlxKvQuant, "tq-4");
+  const local = { ...DEFAULT_PER_MODEL_CONFIG, mlxKvQuant: "tq-3.5" as const };
+  assert.equal(fromApiOverride({ mlx_kv_quant: "auto", mlx_kv_bits: 4 }, local).mlxKvQuant, null);
+  // Cast because the field's type does not promise null, which JSON off the wire is not bound by.
+  assert.equal(
+    fromApiOverride({ mlx_kv_quant: null } as never, local).mlxKvQuant,
+    null,
+  );
+  assert.equal(fromApiOverride({}, local).mlxKvQuant, "tq-3.5");
+});
+
 test("an explicit server clear leaves a config the panel must still persist", () => {
   // What this browser remembers: one flag, nothing else.
   const stored = { ...DEFAULT_PER_MODEL_CONFIG, llamaExtraArgs: ["--flash-attn"] };

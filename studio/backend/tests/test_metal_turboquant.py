@@ -49,14 +49,12 @@ def _llama(layer_types = None, sliding = None):
 @pytest.mark.parametrize("bits", [2, 3, 3.5, 4])
 def test_every_offered_width_converts_and_decodes(bits):
     status = _turboquant_status(_llama(), bits)
-
     assert (status["eligibility"], status["kv_bits"], status["note"]) == ("full", bits, "")
 
 
 def test_a_model_holding_layers_native_reports_partial_and_says_so():
     sliding = _llama(layer_types = ["sliding_attention"] + ["full_attention"] * 3, sliding = 64)
     status = _turboquant_status(sliding, 4)
-
     assert (status["eligibility"], status["kv_bits"]) == ("partial", 4) and status["note"]
 
 
@@ -87,7 +85,7 @@ def test_a_model_that_cannot_decode_is_refused_rather_than_raising():
 def test_a_copied_turboquant_cache_can_still_be_extended():
     from mlx_vlm.generate.common import maybe_quantize_kv_cache
     from mlx_vlm.models.cache import make_prompt_cache
-    from mlx_vlm.turboquant import TurboQuantKVCache, _concat_state
+    from mlx_vlm.turboquant import TurboQuantKVCache
 
     model = _llama()
     entries = make_prompt_cache(model)
@@ -99,11 +97,13 @@ def test_a_copied_turboquant_cache_can_still_be_extended():
     original = entries[at].state
     copied = _copy_value(entries, mx)
 
-    assert type(copied[at].state[0]) is type(original[0])
-    _concat_state(copied[at].state[0], original[0])
+    assert [type(half) for half in copied[at].state] == [type(half) for half in original]
 
-    # And it is its own cache: extending the original must not advance the copy's cursor.
     served = entries[at].offset
     follow_on = model(mx.array([[5]]), cache = entries)
     mx.eval(getattr(follow_on, "logits", follow_on), [entry.state for entry in entries])
     assert copied[at].offset == served < entries[at].offset
+
+    grown = model(mx.array([[6]]), cache = copied)
+    mx.eval(getattr(grown, "logits", grown), [entry.state for entry in copied])
+    assert copied[at].offset == served + 1

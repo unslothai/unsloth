@@ -15,6 +15,7 @@ import {
 } from "../model-config/model-identity";
 import {
   DEFAULT_PER_MODEL_CONFIG,
+  normalizeMlxKvQuant,
   type PerModelConfig,
   deletePerModelConfigsForOverrideKeys,
   normalizePerModelConfig,
@@ -33,8 +34,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   kv_cache_dtype?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_kv_quant?: string;
   mlx_kv_bits?: number;
-  mlx_turboquant?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -294,6 +295,9 @@ export function fromApiOverride(
   // auto-switch max_seq_length first. So a row stating either field owns both.
   const serverStatesPin =
     override.custom_context_length != null || override.max_seq_length != null;
+  // Naming either field is the statement: null asked for an unquantized cache.
+  const serverStatesKvQuant =
+    "mlx_kv_quant" in override || "mlx_kv_bits" in override;
   const normalized = normalizePerModelConfig({
     ...DEFAULT_PER_MODEL_CONFIG,
     customContextLength: serverStatesPin
@@ -303,10 +307,9 @@ export function fromApiOverride(
       ? (override.max_seq_length ?? null)
       : local.maxSeqLength,
     kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
-    mlxKvBits: override.mlx_turboquant !== undefined
-      ? override.mlx_kv_bits ?? null
-      : override.mlx_kv_bits ?? local.mlxKvBits,
-    mlxTurboQuant: override.mlx_turboquant ?? local.mlxTurboQuant,
+    mlxKvQuant: serverStatesKvQuant
+      ? normalizeMlxKvQuant(override.mlx_kv_quant, override.mlx_kv_bits)
+      : (local.mlxKvQuant ?? null),
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
     specDraftCacheDtype:
@@ -361,9 +364,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
   // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX model at full precision.
-  payload.mlx_turboquant = config.mlxTurboQuant ?? false;
-  if (config.mlxKvBits != null) {
-    payload.mlx_kv_bits = config.mlxKvBits;
+  if (config.mlxKvQuant) {
+    payload.mlx_kv_quant = config.mlxKvQuant;
   }
   if (config.speculativeType) {
     payload.speculative_type = config.speculativeType;

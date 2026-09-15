@@ -1341,18 +1341,71 @@ MLX_KV_QUANT_PINNED_CONTEXT = (
     "Context Length is set for this model, which limits the KV cache, and a limited "
     "cache cannot be quantized. Reset it to quantize instead."
 )
-# A distributed load refuses the mlx-vlm detour, so the setting yields rather than failing the load.
-# Width-agnostic: an unsupported width and Auto both apply nothing, so resident reuse can read this
-# back beside either. The width asked for is in the log.
-MLX_TURBOQUANT_UNSUPPORTED_WIDTH = (
-    "TurboQuant does not offer this cache width, so this model loaded unquantized. Choose "
-    + " or ".join(str(bits) for bits in MLX_TURBOQUANT_BITS_CHOICES)
-    + ", or turn TurboQuant off."
-)
+# Yields, not failures: a load that cannot take the detour serves the model without the setting.
 MLX_TURBOQUANT_DISTRIBUTED_TEXT = (
     "TurboQuant is not available for this model under distributed inference. Run it on a "
     "single device, or turn TurboQuant off."
 )
+MLX_TURBOQUANT_LORA_TEXT = (
+    "TurboQuant is not available for a LoRA adapter on a text model. Merge the adapter into an MLX "
+    "model first, or turn TurboQuant off."
+)
+MLX_TURBOQUANT_TEXT_LOAD = (
+    "TurboQuant is not available for this model: it could not be loaded through the runtime "
+    "TurboQuant requires. The model is served without it."
+)
+
+
+def _turboquant_refusal(*, is_vision, is_distributed, is_lora):
+    if is_vision:
+        return ""
+    if is_distributed:
+        return MLX_TURBOQUANT_DISTRIBUTED_TEXT
+    if is_lora:
+        return MLX_TURBOQUANT_LORA_TEXT
+    return ""
+
+
+MLX_KV_QUANT_AUTO = "auto"
+# TurboQuant's widths repeat mx.quantize's, so the scheme rides in the value: "4" alone is ambiguous.
+MLX_TURBOQUANT_PREFIX = "tq-"
+
+
+def _kv_quant_choice(bits):
+    return str(int(bits)) if float(bits).is_integer() else str(float(bits))
+
+
+MLX_KV_QUANT_CHOICES = (
+    (MLX_KV_QUANT_AUTO,)
+    + tuple(_kv_quant_choice(bits) for bits in MLX_KV_BITS_CHOICES)
+    + tuple(MLX_TURBOQUANT_PREFIX + _kv_quant_choice(bits) for bits in MLX_TURBOQUANT_BITS_CHOICES)
+)
+
+
+def parse_mlx_kv_quant(value):
+    """The (bit width, TurboQuant) pair for a choice. Total: an unknown one reads as auto."""
+
+    if value is None:
+        return None, False
+    text = str(value).strip().lower()
+    if text in ("", MLX_KV_QUANT_AUTO):
+        return None, False
+    if text not in MLX_KV_QUANT_CHOICES:
+        logger.warning(
+            "MLX kv quantization %r unsupported (choose %s); ignoring",
+            value,
+            " or ".join(MLX_KV_QUANT_CHOICES),
+        )
+        return None, False
+    turboquant = text.startswith(MLX_TURBOQUANT_PREFIX)
+    width = float(text.removeprefix(MLX_TURBOQUANT_PREFIX))
+    return (int(width) if width.is_integer() else width), turboquant
+
+
+def encode_mlx_kv_quant(bits, turboquant = False):
+    if bits is None:
+        return MLX_KV_QUANT_AUTO
+    return (MLX_TURBOQUANT_PREFIX if turboquant else "") + _kv_quant_choice(bits)
 
 
 def _kv_entry_nbytes(entry):
@@ -1367,22 +1420,11 @@ def _kv_entry_nbytes(entry):
         return None
 
 
-def _normalize_mlx_kv_bits(value, turboquant = False):
-    """Supported bit width, or None when unset or out of domain. Total, because the resident
-    comparison calls it too and raising there failed a request over an ignorable setting."""
+def _normalize_mlx_kv_bits(value):
+    """Supported mx.quantize width, else None: a stray width is ignored, not a failed load."""
 
     if value is None:
         return None
-    if turboquant:
-        # Compared by value, so a JSON 4.0 matches 4; a bool would match 1 and 0 and is not a width.
-        if isinstance(value, bool) or value not in MLX_TURBOQUANT_BITS_CHOICES:
-            logger.warning(
-                "MLX TurboQuant kv_bits=%r unsupported (choose %s); ignoring",
-                value,
-                " or ".join(str(b) for b in MLX_TURBOQUANT_BITS_CHOICES),
-            )
-            return None
-        return int(value) if float(value).is_integer() else float(value)
     try:
         bits = int(value)
     except (TypeError, ValueError):
@@ -2779,15 +2821,10 @@ class MLXInferenceBackend:
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
         if getattr(self, "_turboquant", False) and kv_bits is not None:
-            # Record the width that can be applied: a reload compares against it. One that cannot
-            # be is named in the reason instead.
-            bits = _normalize_mlx_kv_bits(kv_bits, True)
             refusal = getattr(self, "_turboquant_refusal", "")
-            if not refusal and bits is None:
-                refusal = MLX_TURBOQUANT_UNSUPPORTED_WIDTH
-            elif not refusal and pinned and enforceable:
+            if not refusal and pinned and enforceable:
                 refusal = MLX_KV_QUANT_PINNED_CONTEXT
-            quant = _turboquant_status(self._model, bits, refusal)
+            quant = _turboquant_status(self._model, kv_bits, refusal)
         else:
             quant = _kv_quant_status(
                 _normalize_mlx_kv_bits(kv_bits),
@@ -2813,8 +2850,7 @@ class MLXInferenceBackend:
         dtype = None,
         parallel_mode = None,
         distributed_group = None,
-        kv_bits = None,
-        turboquant = False,
+        kv_quant = None,
         chat_template_override = None,
     ) -> bool:
         import mlx.core as mx
@@ -2823,7 +2859,8 @@ class MLXInferenceBackend:
         self._hf_token = hf_token
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
-        self._turboquant = bool(turboquant)
+        kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
+        self._turboquant = turboquant
         if self._turboquant:
             try:
                 from mlx_vlm.turboquant import TurboQuantKVCache
@@ -2833,9 +2870,10 @@ class MLXInferenceBackend:
                 ) from exc
         distributed_rank, distributed_size = _mlx_distributed_rank_size(distributed_group)
         is_distributed = distributed_group is not None and distributed_size > 1
+        is_lora = getattr(config, "is_lora", False)
         self._turboquant_refusal = (
-            MLX_TURBOQUANT_DISTRIBUTED_TEXT
-            if self._turboquant and is_distributed and not is_vision
+            _turboquant_refusal(is_vision = is_vision, is_distributed = is_distributed, is_lora = is_lora)
+            if self._turboquant
             else ""
         )
         use_vlm = is_vision or (self._turboquant and not self._turboquant_refusal)
@@ -2860,8 +2898,6 @@ class MLXInferenceBackend:
             import os
             os.environ["HF_TOKEN"] = hf_token
         self._configure_memory_limits()
-
-        is_lora = getattr(config, "is_lora", False)
 
         logger.info(
             "Loading %s via %s (is_lora=%s, distributed=%s, rank=%s/%s, mode=%s)",
@@ -2910,10 +2946,27 @@ class MLXInferenceBackend:
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
         self._clear_prompt_cache()
-        model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-            model_name,
-            **load_kwargs,
-        )
+        try:
+            model, tokenizer_or_processor = FastMLXModel.from_pretrained(
+                model_name,
+                **load_kwargs,
+            )
+        except Exception as exc:
+            # Vision has no other runtime, so only there is a detour failure the load's failure.
+            if is_vision or not use_vlm:
+                raise
+            logger.warning(
+                "TurboQuant load of %s through mlx-vlm failed (%s); serving through mlx-lm without it",
+                model_name,
+                exc,
+            )
+            self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
+            use_vlm = False
+            load_kwargs["text_only"] = True
+            model, tokenizer_or_processor = FastMLXModel.from_pretrained(
+                model_name,
+                **load_kwargs,
+            )
 
         self._reads_vision = bool(is_vision)
         if use_vlm:
@@ -3016,9 +3069,12 @@ class MLXInferenceBackend:
             # unbounded, None nothing could be built to judge. Without it the API reports a limit a client cannot tell
             # from an enforced one.
             "context_length_enforced": _ctx_enforced,
-            "mlx_turboquant": self._turboquant,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
+            "mlx_kv_quant": encode_mlx_kv_quant(self._kv_quant["kv_bits"], self._turboquant),
+            "mlx_kv_quant_requested": encode_mlx_kv_quant(
+                self._kv_quant["requested_kv_bits"], self._turboquant
+            ),
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
             "mlx_kv_quant_reason": self._kv_quant["reason"],
             "mlx_kv_quant_note": self._kv_quant["note"],

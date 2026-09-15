@@ -141,8 +141,8 @@ import {
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
-  MLX_KV_BITS,
-  MLX_TURBOQUANT_BITS,
+  MLX_KV_QUANTS,
+  type MlxKvQuant,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -955,7 +955,13 @@ function GpuMemorySettings({
   );
 }
 
-const MLX_KV_BITS_AUTO = "auto";
+const MLX_KV_QUANT_AUTO = "auto";
+
+function mlxKvQuantLabel(quant: string): string {
+  return quant.startsWith("tq-")
+    ? `TurboQuant ${quant.slice(3)}-bit`
+    : `${quant}-bit`;
+}
 
 function AdvancedSettingsToggle({
   checked,
@@ -1006,29 +1012,17 @@ function MlxAdvancedSettings({
     <div className="flex flex-col gap-1">
       {servedByMlx && (
         <>
-      <label className={ROW_CLASS}>
-        <span className={LABEL_CLASS}>TurboQuant</span>
-        <Checkbox
-          checked={config.mlxTurboQuant ?? false}
-          onCheckedChange={(checked) => update({
-            mlxTurboQuant: checked === true,
-            mlxKvBits: null,
-          })}
-        />
-      </label>
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            {config.mlxTurboQuant
-              ? "Auto keeps the cache unquantized. Select a bit width to use TurboQuant. 3.5-bit uses 3-bit keys and 4-bit values. Sliding-window and recurrent layers keep their native cache."
-              : "Lower KV cache precision to save memory at the cost of some quality. Auto keeps full precision; 8-bit is the safest reduction."}
+            Lower KV cache precision to save memory at the cost of some quality. Auto keeps full precision; 8-bit is the safest reduction. TurboQuant holds quality better at the low widths and adds 3.5-bit, which uses 3-bit keys beside 4-bit values; sliding-window and recurrent layers keep their native cache under it.
           </InfoHint>
         </div>
         <Select
-          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
+          value={config.mlxKvQuant ?? MLX_KV_QUANT_AUTO}
           onValueChange={(v) =>
-            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+            update({ mlxKvQuant: v === MLX_KV_QUANT_AUTO ? null : (v as MlxKvQuant) })
           }
         >
           <SelectTrigger
@@ -1040,10 +1034,10 @@ function MlxAdvancedSettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
-            {(config.mlxTurboQuant ? MLX_TURBOQUANT_BITS : MLX_KV_BITS).map((bits) => (
-              <SelectItem key={bits} value={String(bits)}>
-                {bits}-bit
+            <SelectItem value={MLX_KV_QUANT_AUTO}>Auto</SelectItem>
+            {MLX_KV_QUANTS.map((quant) => (
+              <SelectItem key={quant} value={quant}>
+                {mlxKvQuantLabel(quant)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1923,9 +1917,8 @@ export function ModelConfigPage({
     useShallow(selectResidentEstimateSettings),
   );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
-  const loadedMlxTurboQuant = useChatRuntimeStore((s) => s.loadedMlxTurboQuant);
-  const loadedMlxKvBitsRequested = useChatRuntimeStore(
-    (s) => s.loadedMlxKvBitsRequested,
+  const loadedMlxKvQuantRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxKvQuantRequested,
   );
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
@@ -2066,8 +2059,7 @@ export function ModelConfigPage({
       : null;
   const mlxKvQuantOutcome =
     isActiveModel &&
-    (configState.mlxTurboQuant ?? false) === loadedMlxTurboQuant &&
-    (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
+    (configState.mlxKvQuant ?? null) === (loadedMlxKvQuantRequested ?? null)
       ?  // Both, not either: dropping the note promises savings before the offset where quantization actually starts.
         [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
       : null;
@@ -2089,12 +2081,12 @@ export function ModelConfigPage({
   );
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
-  const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
+  const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
-  const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
+  const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const showAdvanced =
-    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
+    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvQuant);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);

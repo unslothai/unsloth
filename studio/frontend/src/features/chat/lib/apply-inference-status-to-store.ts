@@ -9,6 +9,7 @@ import {
   savedContextPin,
 } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
@@ -521,13 +522,11 @@ export function applyActiveModelStatusToStore(
     // and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&
       hydratingExistingModel &&
-      status.mlx_kv_bits !== undefined &&
+      status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true
         ? {
-            mlxKvBits: status.mlx_kv_bits_requested ?? null,
-            mlxTurboQuant: status.mlx_turboquant ?? false,
-            loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
-            loadedMlxTurboQuant: status.mlx_turboquant ?? false,
+            mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+            loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
@@ -535,8 +534,7 @@ export function applyActiveModelStatusToStore(
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
-            loadedMlxKvBitsRequested: null,
-            loadedMlxTurboQuant: false,
+            loadedMlxKvQuantRequested: null,
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
@@ -546,15 +544,13 @@ export function applyActiveModelStatusToStore(
     ...(seedLoadParams &&
       !hydratingExistingModel &&
       status.is_mlx === true &&
-      status.mlx_kv_bits !== undefined &&
-      prevState.mlxKvBits === null &&
-      prevState.loadedMlxKvBitsRequested === null &&
+      status.mlx_kv_quant_requested !== undefined &&
+      prevState.mlxKvQuant === null &&
+      prevState.loadedMlxKvQuantRequested === null &&
       prevState.mlxKvQuantReason === null &&
       prevState.chatTemplateOverrideReason === null && {
-        mlxKvBits: status.mlx_kv_bits_requested ?? null,
-        mlxTurboQuant: status.mlx_turboquant ?? false,
-        loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
-        loadedMlxTurboQuant: status.mlx_turboquant ?? false,
+        mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+        loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,

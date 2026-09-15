@@ -204,12 +204,12 @@ const ROWS: Row[] = [
     mlxRequest: 32768,
     transformersRequest: 32768,
     note:
-      "The task called v4 the 'future' record. It is not: STORAGE_SCHEMA_VERSION is 6 " +
-      "in this tree, not 3, so v4 is a v4-client record and reads normally.",
+      "Not a future record: STORAGE_SCHEMA_VERSION is 7, so v4 is a v4-client record " +
+      "and reads normally.",
   },
   {
-    name: "version 7 (genuinely future)",
-    raw: { version: 7, customContextLength: 32768 },
+    name: "version 8 (genuinely future)",
+    raw: { version: 8, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -330,14 +330,9 @@ test("a patched pin round-trips through storage on both backends", () => {
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // The old client's only forwards guard is `version > 5`, and v1 invites any client
   // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
-    true,
-  );
-  assert.equal(
-    stage({ version: 5, customContextLength: 32768 }).remembered,
     true,
   );
   assert.equal(
@@ -346,8 +341,20 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 7, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(
+    stage({ version: 8, customContextLength: 32768 }).remembered,
     false,
   );
+});
+
+
+test("a stored mlxKvQuant stamps a version older builds refuse", () => {
+  assert.equal(stampedVersion({ mlxKvQuant: "tq-4" }), 7);
+  assert.equal(stampedVersion({ mlxKvQuant: "4" }), 7);
+  assert.equal(stampedVersion({ loadMode: "mmap" }), 5);
+  assert.equal(stampedVersion({ mlxKvQuant: "tq-4", loadMode: "mmap" }), 7);
 });
 
 
@@ -473,15 +480,15 @@ test("BACKWARDS COMPAT: an old record still pins under the new code, on either b
   assert.equal(isDefaultConfig(config), false);
 });
 
-// 3.5 is a width of its own, so a record written with one has to read back as the same number.
-for (const mlxKvBits of [2, 3, 3.5, 4, null]) {
-  test(`TurboQuant ${mlxKvBits} survives the saved model record`, () => {
-    store.clear();
-    savePerModelConfig(MODEL, null, {
-      ...DEFAULT_PER_MODEL_CONFIG, mlxTurboQuant: true, mlxKvBits,
-    });
-    const read = resolveInitialConfig(MODEL, null).config;
-    assert.equal(read.mlxTurboQuant, true);
-    assert.equal(read.mlxKvBits, mlxKvBits);
-  });
-}
+// 3.5 is the only width that is not also an mx.quantize one, so nothing else constrains it.
+test("the fractional TurboQuant choice survives the saved model record", () => {
+  store.clear();
+  savePerModelConfig(MODEL, null, { ...DEFAULT_PER_MODEL_CONFIG, mlxKvQuant: "tq-3.5" });
+  assert.equal(resolveInitialConfig(MODEL, null).config.mlxKvQuant, "tq-3.5");
+});
+
+test("a record holding the superseded width reads back as the single choice", () => {
+  assert.equal(stage({ mlxKvBits: 8 }).config.mlxKvQuant, "8");
+  assert.equal(stage({ mlxKvQuant: " TQ-4 ", mlxKvBits: 8 }).config.mlxKvQuant, "tq-4");
+  assert.equal(stage({ mlxKvQuant: null, mlxKvBits: 8 }).config.mlxKvQuant, null);
+});

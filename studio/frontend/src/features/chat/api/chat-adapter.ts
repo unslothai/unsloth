@@ -2223,10 +2223,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "chatTemplateOverrideReason",
   // Or a background autoload leaves its width and verdict on the restored model.
   // The rest of the group mlxRuntimeStateFrom writes.
-  "mlxKvBits",
-  "mlxTurboQuant",
-  "loadedMlxKvBitsRequested",
-  "loadedMlxTurboQuant",
+  "mlxKvQuant",
+  "loadedMlxKvQuantRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
   "loadedIsMultimodal",
@@ -3269,8 +3267,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       trust_remote_code: trustRemoteCode,
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
-      mlx_kv_bits: config.mlxKvBits ?? null,
-      mlx_turboquant: config.mlxTurboQuant ?? false,
+      mlx_kv_quant: config.mlxKvQuant ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       reasoning_budget:

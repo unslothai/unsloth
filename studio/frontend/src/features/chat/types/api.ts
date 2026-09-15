@@ -65,8 +65,7 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_turboquant?: boolean;
+  mlx_kv_quant?: string | null;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -256,9 +255,8 @@ export interface LoadModelResponse {
   preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_turboquant?: boolean;
-  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant?: string | null;
+  mlx_kv_quant_requested?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
@@ -370,9 +368,8 @@ export interface InferenceStatusResponse {
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_turboquant?: boolean;
-  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant?: string | null;
+  mlx_kv_quant_requested?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;

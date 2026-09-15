@@ -7092,8 +7092,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     fields.update(
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
+        mlx_kv_quant = None,
+        mlx_kv_quant_requested = None,
         mlx_kv_bits = None,
-        mlx_turboquant = False,
         mlx_kv_bits_requested = None,
         mlx_kv_quant_eligibility = None,
         mlx_kv_quant_reason = None,
@@ -14717,17 +14718,14 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     stored None on every request and reload forever.
     """
     entry = backend.models.get(backend.active_model_name, {}) or {}
-    if "mlx_kv_bits_requested" not in entry:
+    if "mlx_kv_quant_requested" not in entry:
         return True
-    from core.inference.mlx_inference import _normalize_mlx_kv_bits
+    from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
 
-    if entry.get("mlx_turboquant", False) != getattr(request, "mlx_turboquant", False):
-        return False
-    return entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(
-        request.mlx_kv_bits, getattr(request, "mlx_turboquant", False)
-    ) and (entry.get("chat_template_override_requested") or None) == (
-        request.chat_template_override or None
-    )
+    requested = encode_mlx_kv_quant(*parse_mlx_kv_quant(getattr(request, "mlx_kv_quant", None)))
+    return entry["mlx_kv_quant_requested"] == requested and (
+        entry.get("chat_template_override_requested") or None
+    ) == (request.chat_template_override or None)
 
 
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
@@ -15391,8 +15389,9 @@ async def _load_model_impl(
                     has_audio_input = _model_info.get("has_audio_input", False),
                     has_video_input = _model_info.get("has_video_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
+                    mlx_kv_quant = _model_info.get("mlx_kv_quant"),
+                    mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
-                    mlx_turboquant = _model_info.get("mlx_turboquant", False),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
                     mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
@@ -16057,8 +16056,7 @@ async def _load_model_impl(
                     else placement.requested_gpu_ids
                 ),
                 subject = current_subject,
-                mlx_kv_bits = request.mlx_kv_bits,
-                mlx_turboquant = request.mlx_turboquant,
+                mlx_kv_quant = request.mlx_kv_quant,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
@@ -16190,8 +16188,9 @@ async def _load_model_impl(
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
             has_video_input = _model_info.get("has_video_input", False),
             is_mlx = bool(_model_info.get("is_mlx", False)),
+            mlx_kv_quant = _model_info.get("mlx_kv_quant"),
+            mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
-            mlx_turboquant = _model_info.get("mlx_turboquant", False),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
@@ -18402,8 +18401,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             has_audio_input = has_audio_input,
             has_video_input = has_video_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
+            mlx_kv_quant = model_info.get("mlx_kv_quant"),
+            mlx_kv_quant_requested = model_info.get("mlx_kv_quant_requested"),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
-            mlx_turboquant = model_info.get("mlx_turboquant", False),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
