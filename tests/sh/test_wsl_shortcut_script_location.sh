@@ -352,10 +352,6 @@ OUT=$(run_block)
 assert_eq "an unmapped local %TEMP% is still accepted" "$WINTEMP" "$(printf '%s' "$OUT" | sed -n 1p)"
 rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
-echo ""
-echo "  $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
-
 # ---------------------------------------------------------------------------
 # The launch path, statically. [automount] enabled=false leaves interop working while exposing no
 # Windows drive as a Linux directory, so no candidate can be allocated and the file-based launch
@@ -380,3 +376,10 @@ case "$STDIN_LINE" in
     *printf*"|"*powershell.exe*) ok "the stdin launch is fed from its own pipe" ;;
     *) bad "the stdin launch does not pipe the body in: $STDIN_LINE" ;;
 esac
+
+# The one place the counters are read, and it has to be the LAST thing the file does. `bad` records
+# a failure and returns success, so any assertion that runs after this check reports its failure and
+# still leaves the script exiting 0.
+echo ""
+echo "  $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] || exit 1
