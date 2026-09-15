@@ -617,15 +617,24 @@ with sync_playwright() as p:
         return loc if _count(loc) else None
 
     def primary_button(popover):
-        # exact: get_by_role matches the accessible name as a substring by default, so
-        # "Load model" also matches "Reload model" -- and it is swept first, so the
-        # reload case would be found under the wrong name. The panel shows exactly one
-        # of these four.
-        for name in ("Load model", "Reload model", "Save settings", "Forget settings"):
-            b = popover.get_by_role("button", name = name, exact = True).first
-            if _count(b):
-                return b
-        return None
+        # Keyed on the element, not on what it currently reads.
+        #
+        # This used to sweep ("Load model", "Reload model", "Save settings",
+        # "Forget settings") by accessible name, on the invariant that the panel shows
+        # exactly one of the four. Since #10216 that is false twice over. The
+        # save-without-load button carries "Save settings"/"Forget settings" while the
+        # primary still reads "Load model"/"Reload model", so two of the names can be on
+        # screen at once. And the primary's OWN label flips from "Save settings" to
+        # "Reload model" the moment a numeric draft commits -- which is exactly what the
+        # click being made commits, by blurring the input. A locator resolved under one
+        # name then clicked was observed straddling that flip: resolved "Save settings",
+        # clicked "Reload model", and the step measured a load it had not asked for.
+        #
+        # The primary is the footer's only default-variant Button (Reset is ghost, the
+        # save-without-load button is outline), and the last one in the panel, so this
+        # names it without reference to its label.
+        b = popover.locator('button[data-variant = "default"]').last
+        return b if _count(b) else None
 
     # ─────────────────────────────────────────────────────
     # 1. Hidden infra models absent from the picker (HARD).
@@ -794,6 +803,39 @@ with sync_playwright() as p:
         if btn is not None and btn.is_enabled():
             btn.click()
             page.wait_for_timeout(1500)
+        # Let that reload actually land before the next step reads the panel.
+        # 3b re-types "the value already shown", and the value shown is the ACTIVE
+        # model's fitted context. While this reload is in flight the box still
+        # echoes the previous model's, so 3b retypes a number that is not the one
+        # on screen and the click below it commits a genuine override -- which 3b
+        # then reports as the phantom pin it exists to catch. 1500ms covers the
+        # request, not a model load, so wait on the state rather than on a clock.
+        # /api/inference/status reports no "loading" flag, so the settle is read off
+        # the value that the reload is there to change: with the override gone the
+        # model re-fits, and context_length lands on native_context_length. Bounded,
+        # and a timeout is reported rather than silently proceeding, because 3b's
+        # premise ("re-type the value already shown") is only meaningful once the
+        # shown value belongs to the model that is actually loaded.
+        _ctx_now = None
+        for _ in range(120):
+            _status = evaluate_fetch(
+                page,
+                f"{BASE}/api/inference/status",
+                headers = {"Authorization": f"Bearer {token}"},
+                timeout_ms = FETCH_TIMEOUT_MS,
+            )
+            _body = _status.get("body") if isinstance(_status.get("body"), dict) else {}
+            _ctx_now = _as_int(_body.get("context_length"))
+            _native = _as_int(_body.get("native_context_length"))
+            if _status.get("status") == 200 and _ctx_now is not None and _ctx_now == _native:
+                break
+            page.wait_for_timeout(500)
+        else:
+            runtime_warn(
+                f"reset reload did not settle onto the native context in 60s "
+                f"(context_length={_ctx_now!r}); 3b below may re-type a stale value"
+            )
+        info(f"reset reload settled at context_length={_ctx_now!r}")
         cfg = read_configs()
         pinned = any(
             _as_int(e.get("customContextLength")) == DISTINCT_CTX for e in entries_for_model(cfg)
