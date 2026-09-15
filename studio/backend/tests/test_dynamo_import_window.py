@@ -177,11 +177,28 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             lines.setdefault(node.func.attr, node.lineno)
     assert "ensure_dynamo_imported" in lines, "the load path never closes the dynamo window"
-    for consumer in ("begin", "apply_speed_optims", "apply_memory_plan"):
+    for consumer in (
+        "hidream_te4_kwargs",   # FP8 text-encoder cast -> diffusion_precision -> diffusers.hooks
+        "apply_step_cache",     # diffusion_cache -> diffusers.hooks
+        "begin",                # compile_cache.begin -> the compile stack
+        "apply_speed_optims",   # reads torch._dynamo.config
+        "apply_memory_plan",    # offload -> diffusers.hooks
+    ):
         assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
         assert (
             lines["ensure_dynamo_imported"] < lines[consumer]
         ), f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
+
+    # And ahead of the plain `import diffusers` too, which pulls dynamo in by itself: every
+    # module in diffusers.hooks evaluates @torch.compiler.disable() at class-body time.
+    src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8").splitlines()
+    first_diffusers = next(
+        n for n, line in enumerate(src, 1)
+        if line.strip() == "import diffusers" and n > body.lineno
+    )
+    assert lines["ensure_dynamo_imported"] < first_diffusers, (
+        "the pre-import runs after `import diffusers`, which triggers the dynamo import itself"
+    )
 
 
 def test_load_failure_is_logged_with_a_traceback():
