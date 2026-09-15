@@ -14,6 +14,8 @@ from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -928,40 +930,84 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable)`` for the running child. ``state`` is ``_NO_LAUNCH``
-    when nothing is running or coming up, so the caller can tell "no process" from "a process with no
-    load-mode"."""
+    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed,
+    pending_settings)`` for the running child.
+
+    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
+    caller can tell "no process" apart from "a process with no load-mode".
+    """
     try:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        pending = bool(getattr(backend, "_memory_launch_pending", False))
-        if not backend.is_active and not pending:
-            return _NO_LAUNCH, False, True
+        # Read ONCE: two reads can straddle the marker clear, leaving a killed child's
+        # placement answering for the launch that replaced it. One attribute carries both
+        # "is a launch pending" and "what is it committed to".
+        pending = getattr(backend, "_memory_pending_launch", None)
+        if not backend.is_active and pending is None:
+            return _NO_LAUNCH, False, True, None, False, False, None
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
+            getattr(backend, "_memory_direct_io", None),
+            bool(getattr(backend, "_memory_dio_applicable", False)),
+            # The pair the POLICY emitted, not the aggregate: a user's own `dio` must
+            # not be withdrawn on their behalf.
+            bool(getattr(backend, "_memory_dio_flags", None)),
+            pending,
         )
     except Exception:
-        return _NO_LAUNCH, False, True
+        return _NO_LAUNCH, False, True, None, False, False, None
+
+
+def _launch_effect_of(settings):
+    """The part of ``(keep_resident, no_ram_reserve)`` a launch can express.
+
+    Mirrors ``should_mlock``: the page-lock is emitted only when residency is on and
+    no-reserve is off, so with no-reserve on the residency toggle reaches no flag.
+    """
+    keep_resident, no_ram_reserve = settings
+    return (keep_resident and not no_ram_reserve, no_ram_reserve)
 
 
 def _model_memory_reload_required() -> bool:
-    """True when the loaded process's memory placement contradicts the settings. Compares the state the child
-    ACTUALLY launched with (env defaults plus last-wins argv, so a user-supplied --mlock / --no-mmap counts)
-    against what the current settings would produce. The idle-unload veto applies immediately, so only
-    placement can be stale. Keyed on is_active, not is_loaded: a save that lands while a load is still
-    passing its health check would otherwise report no reload while the child is already committed to the
-    pre-save flags."""
-    state, policy_active, mlock_applicable = _active_launch_placement()
+    """True when the loaded process's memory placement contradicts the settings.
+
+    Compares the state the child ACTUALLY launched with -- env defaults plus
+    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
+    what the current settings would produce. The idle-unload veto applies
+    immediately (the loop re-reads each poll), so only placement can be stale.
+
+    Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is
+    already committed to the pre-save flags. _memory_launch_pending covers the
+    same window before Popen, where the placement is decided but _process is
+    still None.
+    """
+    state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed, pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return False
+
+    # A launch in flight has no resolved flags and the comparator reads None as "not
+    # governed", so answer from its snapshot. Whenever one is pending, NOT only when
+    # `state` is None: replacing a model leaves the old child's `_memory_state` behind.
+    if pending is not None:
+        from utils.model_memory_settings import get_model_memory_settings
+
+        # By EFFECT, not the literal pair: no-reserve wins over keep-resident for every
+        # loader flag, so flipping keep-resident under it only moves the idle-unload veto,
+        # which the loop re-reads each poll. The raw tuple asked for an inexpressible reload.
+        return _launch_effect_of(get_model_memory_settings()) != _launch_effect_of(pending)
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+    return not memory_state_satisfies_settings(
+        state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed
+    )
 
 
 def _model_memory_mlock_active(want_mlock: bool) -> bool:
@@ -972,7 +1018,9 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
-    state, _policy_active, _applicable = _active_launch_placement()
+    state, _policy_active, _applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])
@@ -3358,6 +3406,7 @@ class PersonalizationCustomization(BaseModel):
 
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    chatWidth: Literal["standard", "wide", "full"] = "standard"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
@@ -3424,6 +3473,7 @@ class PersonalizationResponse(PersonalizationPayload):
     # False when the stored record predates a field, so the client keeps local
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
+    chatWidthSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -3436,8 +3486,10 @@ def get_personalization_settings(
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
+    customization = appearance.get("customization") if isinstance(appearance, dict) else None
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
@@ -3495,6 +3547,12 @@ class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
     file_logging_disabled: bool = False
+    # Where the logs actually live, so a caller does not have to guess. The
+    # desktop "Open logs folder" button otherwise falls back to a hard-coded
+    # ~/.unsloth/studio, which is wrong whenever UNSLOTH_STUDIO_HOME or
+    # STUDIO_HOME is set AND there is no readable log to take a path from.
+    # Additive and optional: an older client ignores it.
+    log_root: Optional[str] = None
 
 
 class DebugLogResponse(BaseModel):
@@ -3530,10 +3588,14 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
+    # The first candidate root is the one the walk prefers, so it is the
+    # directory a user opening "the log folder" expects to land in.
+    roots = debug_log_sources.candidate_roots()
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
+        log_root = str(roots[0]) if roots else None,
     )
 
 
@@ -3601,6 +3663,75 @@ def get_debug_log(
         more_pending = result.more_pending,
         file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
         size_bytes = result.size_bytes,
+    )
+
+
+# One build at a time, process-wide. The route is a sync `def`, so it runs in
+# the 40-thread anyio pool shared with every other sync endpoint; a few
+# concurrent exports starve it, and anyio cannot cancel a running thread, so it
+# does not recover. A second caller is told to wait rather than queued.
+_DEBUG_LOG_EXPORT_LOCK = threading.Semaphore(1)
+
+
+@_owner_settings_router.get("/debug/logs/export")
+def export_debug_logs(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> StreamingResponse:
+    """Every log the picker lists, redacted, as one ZIP.
+
+    Same two dependencies as the routes above: a bundle of logs and the paths
+    they came from is UI-operator material, so an API-key or keyless caller is
+    refused. On `_owner_settings_router` for the same reason they are, since
+    that router carries `_require_installation_owner`: on the bare `router` the
+    BUNDLE would be reachable by an account refused each log individually.
+
+    Built before the response exists rather than inside the generator, so a
+    failure is a 500 instead of a truncated download.
+    """
+    from utils import debug_log_export
+
+    if not _DEBUG_LOG_EXPORT_LOCK.acquire(blocking = False):
+        raise HTTPException(
+            status_code = 429,
+            detail = "A log export is already running. Wait for it to finish and try again.",
+        )
+    try:
+        archive = debug_log_export.build_log_archive()
+    finally:
+        _DEBUG_LOG_EXPORT_LOCK.release()
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+
+    def _chunks():
+        try:
+            while True:
+                chunk = archive.read(debug_log_export.STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            archive.close()
+
+    return StreamingResponse(
+        _chunks(),
+        media_type = "application/zip",
+        headers = {
+            # Neither shipping caller reads this back: the browser names the Blob
+            # itself and the desktop path names the file in Rust. It is here for
+            # a curl or address-bar caller, so do not assume the button uses it.
+            "Content-Disposition": f'attachment; filename="unsloth-logs-{stamp}.zip"',
+            # A stable authenticated GET is otherwise cacheable: the archive could
+            # outlive the download in the on-disk cache, and a second export could
+            # be answered from it rather than from the logs as they are now.
+            # `no-store` not `no-cache`: it must not be WRITTEN, not revalidated.
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
+        },
+        # Belt and braces with the `finally` above: on a client abort Starlette
+        # cancels the task group without raising GeneratorExit, so that `finally`
+        # waits for a cyclic GC pass, holding up to SPOOL_MAX_BYTES meanwhile.
+        background = BackgroundTask(archive.close),
     )
 
 
