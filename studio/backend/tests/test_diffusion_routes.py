@@ -2637,6 +2637,8 @@ def test_a_process_that_cannot_compile_refuses_a_pipeline_precision_up_front(mon
             transformer_quant = "fp8",
         )
     assert "compile" in str(excinfo.value)
+
+
 def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
     """The route validates exactly as /images/load does, on purpose: an unloadable pick has to fail
     HERE rather than after a multi-GB download. So an unrecognised repo never reaches the planner,

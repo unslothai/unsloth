@@ -2851,7 +2851,9 @@ class DiffusionBackend:
 
     @staticmethod
     def _prequant_source_hub_entry(
-        source: Any, hf_token: Optional[str], failures_out: Optional[list] = None
+        source: Any,
+        hf_token: Optional[str],
+        failures_out: Optional[list] = None,
     ) -> Optional[tuple[str, str, int]]:
         """``(repo, filename, declared_size)`` for a hosted checkpoint that exists, else None."""
         if source is None or getattr(source, "kind", None) != "repo":

@@ -10718,6 +10718,8 @@ def test_a_local_fp8_directory_is_scanned_through_the_load_base(
     assert status["transformer_quant"] is None
     assert "fp8" in status["resolved"]["transformer_quant"]["reason"]
     backend.unload()
+
+
 def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypatch):
     """The repo answers and holds NEITHER the primary nor the fallback name. That is not "no
     prequant is used": this pick is configured to use one and the dense shards are already excluded
