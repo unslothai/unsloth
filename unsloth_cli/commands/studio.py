@@ -25,10 +25,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 import typer
 
-from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
+from unsloth_cli import _studio_deps, _studio_prefetch, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -3317,6 +3317,81 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
+def _with_prefetched_core_pins(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
+    """Name the core pins a current prefetch cached, so the installer's core step can retry
+    them --offline when the index is unreachable. Only a marker written for THIS venv and
+    THIS cache counts: a prefetch that warmed another cache proves nothing about this one.
+    """
+    marker = _studio_prefetch.read_marker(STUDIO_HOME)
+    if marker is None:
+        return env
+    python = _studio_venv_python()
+    cache_dir = _studio_prefetch.resolved_cache_dir((env or os.environ).get("UV_CACHE_DIR"), cwd)
+    if python is None or not cache_dir:
+        return env
+    floor = (os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION") or "").strip()
+    if not _studio_prefetch.marker_is_current(
+        marker, floor = floor, python = str(python), cache_dir = cache_dir
+    ):
+        return env
+    # One mode per plan: a with-dependencies plan given to a no-torch update installs torch.
+    planned_mode = marker.get("no_torch")
+    if isinstance(planned_mode, bool) and planned_mode != _studio_prefetch.no_torch_mode(
+        _studio_prefetch.managed_venv(STUDIO_HOME)
+    ):
+        return env
+    # Not behind what is installed: old pins would downgrade a later setup or manual upgrade.
+    names = _studio_prefetch.planned_core_names(marker) or ["unsloth", "unsloth-zoo"]
+    installed = _installed_versions_in(python, names)
+    if not _studio_prefetch.plan_is_not_behind(marker, installed):
+        return env
+    pins = _studio_prefetch.prefetched_core_pins(marker)
+    if not pins:
+        return env
+    return {**(env or os.environ), _studio_prefetch.CORE_PINS_ENV: " ".join(pins)}
+
+
+def _installed_version_in(python: Path, name: str) -> Optional[str]:
+    return _installed_versions_in(python, [name]).get(name)
+
+
+def _installed_versions_in(python: Path, names) -> Dict[str, Optional[str]]:
+    """Installed version of each name in the managed venv, in one probe; None when unknown."""
+    names = [name for name in names if isinstance(name, str) and name]
+    answers: Dict[str, Optional[str]] = {name: None for name in names}
+    if not names:
+        return answers
+    code = (
+        "import importlib.metadata as m, json, sys\n"
+        "out = {}\n"
+        "for name in sys.argv[1:]:\n"
+        "    try:\n"
+        "        out[name] = m.version(name)\n"
+        "    except m.PackageNotFoundError:\n"
+        "        out[name] = None\n"
+        "print(json.dumps(out))\n"
+    )
+    try:
+        result = subprocess.run(
+            [str(python), "-I", "-c", code, *names],
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return answers
+    if result.returncode != 0:
+        return answers
+    try:
+        found = json.loads(result.stdout.strip() or "{}")
+    except ValueError:
+        return answers
+    for name in names:
+        value = found.get(name) if isinstance(found, dict) else None
+        answers[name] = value.strip() if isinstance(value, str) and value.strip() else None
+    return answers
+
+
 def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
@@ -3354,6 +3429,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    env = _with_prefetched_core_pins(env, cwd = setup_cwd)
 
     if platform.system() == "Windows":
         # Resolved, not bare: PATH is not trusted here (#9440) and the Popen below has no OSError handler.
@@ -3813,6 +3889,8 @@ def update(
             launcher_update.validate_launcher()
             if verify:
                 _fail_if_install_damaged(package)
+    # Only on success: a failed update keeps the prefetch for its retry.
+    _studio_prefetch.discard_after_update(STUDIO_HOME)
     # Tauri desktop owns its own bundle entries; refreshing here would duplicate shortcuts.
     if staging or os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
         if verbose:
@@ -3869,6 +3947,46 @@ def _refuse_staged_update() -> None:
     # stdout, not stderr: update.rs promotes a [TAURI:ERROR] line off the child's stdout.
     typer.echo("[TAURI:ERROR] background staging is no longer supported; run the standard update")
     raise typer.Exit(1)
+
+
+@studio_app.command("prefetch-update", hidden = True)
+def prefetch_update() -> None:
+    """Warm the uv cache for the next update. Does not touch the environment.
+
+    A separate command, not an `update` flag: the gate, idle scan and launcher transaction
+    exist because `update` rewrites the venv, and this only downloads.
+    """
+    _ensure_studio_env_exported()
+    floor = (os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION") or "").strip()
+    shell_version = (os.environ.get(_studio_stage.SHELL_VERSION_ENV) or "").strip() or None
+    # The cache and working directory _run_setup_script uses, so both uv runs read the same uv.toml.
+    script = _find_setup_script(None)
+    setup_cwd = None if (platform.system() == "Windows" or script is None) else script.parent
+    env = _with_studio_uv_cache(None, cwd = setup_cwd)
+    try:
+        with _studio_prefetch.prefetch_lock(STUDIO_HOME):
+            payload = _studio_prefetch.run(
+                studio_home = STUDIO_HOME,
+                floor = floor,
+                shell_version = shell_version,
+                env = env,
+                echo = typer.echo,
+                cwd = setup_cwd,
+            )
+    except _studio_prefetch.PrefetchBusy:
+        typer.echo("[TAURI:STEP] prefetch already running")
+        raise typer.Exit(_studio_prefetch.EXIT_BUSY)
+    except _studio_prefetch.PrefetchSkipped as reason:
+        typer.echo(f"[TAURI:STEP] prefetch skipped: {reason}")
+        return
+    except _studio_prefetch.PrefetchError as failure:
+        # stdout: update.rs promotes a [TAURI:ERROR] line from there.
+        typer.echo(f"[TAURI:ERROR] {failure}")
+        raise typer.Exit(1)
+    except Exception as unexpected:
+        typer.echo(f"[TAURI:ERROR] could not prepare the update: {unexpected}")
+        raise typer.Exit(1)
+    typer.echo(f"[TAURI:DIAG] prefetch state={payload.get('state')}")
 
 
 class _WindowsLauncherUpdateTransaction:

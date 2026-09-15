@@ -1,5 +1,6 @@
 use crate::diagnostics::{self, DiagnosticsState};
 use crate::install;
+use crate::prefetch;
 use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
 use log::{error, info, warn};
@@ -785,6 +786,7 @@ pub async fn start_backend_update(
     backend_state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
@@ -798,13 +800,8 @@ pub async fn start_backend_update(
         return Err("Cannot update while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Update is already running.".to_string());
-    }
+    // Held until the update finishes; also stops a running prefetch under the start lock.
+    let _reservation = update::begin_update(update_state.inner(), prefetch_state.inner())?;
 
     let owned_port = owned_backend_port(&backend_state)?;
     let has_owned = has_owned_backend(&backend_state)?;
@@ -825,6 +822,73 @@ pub async fn start_backend_update(
     tokio::task::spawn_blocking(move || update::run_backend_update(app, state, diagnostics_state))
         .await
         .map_err(|e| format!("Update task panicked: {e}"))?
+}
+
+/// Warm the uv cache for the next update; any failure falls back to the classic update.
+#[tauri::command]
+pub async fn start_prefetch_update(
+    app: AppHandle,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
+    shell_version: Option<String>,
+    backend_floor: Option<String>,
+) -> Result<(), String> {
+    info!("start_prefetch_update command called");
+
+    if install_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Cannot prepare an update while installation is in progress.".to_string());
+    }
+    let reservation = update::begin_prefetch(
+        prefetch_state.inner(),
+        update_state.inner(),
+        shell_version.clone(),
+    )?;
+
+    let state = prefetch_state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let _held = reservation;
+        update::run_prefetch_update(app, state, shell_version, backend_floor)
+    })
+    .await
+    .map_err(|e| format!("Prefetch task panicked: {e}"))?
+}
+
+#[tauri::command]
+pub fn cancel_prefetch_update(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> Result<(), String> {
+    if !update::is_prefetch_running(&prefetch_state) {
+        return Ok(());
+    }
+    update::stop_prefetch(&prefetch_state)
+}
+
+#[tauri::command]
+pub fn prefetch_status(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> prefetch::PrefetchStatus {
+    let home = diagnostics::studio_dir();
+    // An expired marker's payload is disk held for nothing; the renderer asks on every check.
+    if prefetch::marker_expired(&home) {
+        update::discard_prefetch_if_idle(prefetch_state.inner(), &home);
+    }
+    let mut status = prefetch::status(&home);
+    let (running, version) = update::prefetch_running_snapshot(&prefetch_state);
+    status.running = running;
+    status.running_shell_version = version;
+    status
+}
+
+#[tauri::command]
+pub fn discard_prefetch(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> Result<(), String> {
+    update::discard_prefetch(&prefetch_state, &diagnostics::studio_dir())
 }
 
 /// Repair a stale managed Unsloth install.
@@ -861,6 +925,7 @@ pub async fn start_managed_repair(
     backend_state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
     force_installer: Option<bool>,
@@ -879,13 +944,9 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Repair is already running.".to_string());
-    }
+    // The repair rewrites the venv too: stop and keep out a prefetch until it returns.
+    let _reservation = update::begin_update(update_state.inner(), prefetch_state.inner())
+        .map_err(|_| "Repair is already running.".to_string())?;
 
     let diagnostics_state = diagnostics.inner().clone();
 

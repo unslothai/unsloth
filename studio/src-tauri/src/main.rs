@@ -19,6 +19,7 @@ mod native_clipboard;
 mod native_file_dialogs;
 mod native_intents;
 mod native_path_policy;
+mod prefetch;
 mod preflight;
 mod process;
 mod process_identity;
@@ -1182,6 +1183,9 @@ fn cleanup_child_processes(app: &tauri::AppHandle) {
             }
             let _ = update::stop_update(&update_state);
         }
+        if let Some(prefetch_state) = app.try_state::<update::PrefetchState>() {
+            let _ = update::stop_prefetch(&prefetch_state);
+        }
         if let Some(backend_state) = app.try_state::<process::BackendState>() {
             let shutdown = app
                 .try_state::<process::ShutdownFlag>()
@@ -2089,6 +2093,7 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(update::new_prefetch_state())
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
@@ -2109,6 +2114,10 @@ fn main() {
             commands::open_logs_dir,
             commands::open_models_dir,
             commands::start_backend_update,
+            commands::start_prefetch_update,
+            commands::cancel_prefetch_update,
+            commands::prefetch_status,
+            commands::discard_prefetch,
             commands::start_managed_repair,
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,

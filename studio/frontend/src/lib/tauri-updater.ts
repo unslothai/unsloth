@@ -87,3 +87,78 @@ export async function installDesktopUpdate(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("install_desktop_update");
 }
+
+/** `prefetch.rs::PrefetchStatus`. */
+export interface PrefetchStatus {
+  state: "none" | "ready" | "noop" | "partial" | "stale";
+  backendVersion: string | null;
+  shellVersion: string | null;
+  cacheDir: string | null;
+  createdAt: number | null;
+  running: boolean;
+  runningShellVersion: string | null;
+}
+
+/** The installed backend has no `prefetch-update` command. */
+export const PREFETCH_UNSUPPORTED = "prefetch-unsupported";
+export const PREFETCH_BUSY = "prefetch-busy";
+
+export type PrefetchOutcome = "ready" | "unsupported" | "busy" | "failed";
+
+const PREFETCH_POLL_MS = 1000;
+
+export async function prefetchStatus(): Promise<PrefetchStatus> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<PrefetchStatus>("prefetch_status");
+}
+
+export async function startPrefetch(
+  shellVersion: string,
+  onLog: (line: string) => void,
+  backendFloor?: string,
+): Promise<PrefetchOutcome> {
+  const [{ invoke }, { listen }] = await Promise.all([
+    import("@tauri-apps/api/core"),
+    import("@tauri-apps/api/event"),
+  ]);
+  const unlisten = await listen<string>("prefetch-progress", (event) => {
+    onLog(event.payload);
+  });
+  try {
+    // The child resolves against the floor the offered shell enforces.
+    await invoke("start_prefetch_update", {
+      shellVersion,
+      backendFloor: backendFloor ?? null,
+    });
+    return "ready";
+  } catch (e) {
+    const reason = String(e);
+    if (reason.includes(PREFETCH_UNSUPPORTED)) return "unsupported";
+    if (reason.includes(PREFETCH_BUSY)) return "busy";
+    console.warn("Background update preparation failed:", e);
+    return "failed";
+  } finally {
+    unlisten();
+  }
+}
+
+/** Join a prefetch this renderer did not start: a webview reload leaves the child running and the shell refuses a second. */
+export async function adoptPrefetch(
+  cancelled: () => boolean,
+): Promise<PrefetchStatus> {
+  for (;;) {
+    const status = await prefetchStatus();
+    if (!status.running || cancelled()) return status;
+    await new Promise((resolve) => setTimeout(resolve, PREFETCH_POLL_MS));
+  }
+}
+
+export async function cancelPrefetch(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("cancel_prefetch_update");
+}
+
+export async function discardPrefetch(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("discard_prefetch");
+}

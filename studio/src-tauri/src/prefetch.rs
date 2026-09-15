@@ -1,0 +1,750 @@
+//! Reports and cleans up what `unsloth studio prefetch-update` left under `.update-prefetch/`.
+
+use log::{info, warn};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+pub const PREFETCH_DIR_NAME: &str = ".update-prefetch";
+/// Written last and atomically: its presence states every wheel it names is cached.
+const MARKER_NAME: &str = "PREFETCHED.json";
+const OWNED_MARKER: &str = ".unsloth-studio-owned";
+const MARKER_SCHEMA: u64 = 1;
+
+/// Older markers are stale: the index has had a week to move. `_studio_prefetch.MARKER_MAX_AGE_MS`.
+const MAX_AGE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+#[derive(Clone, Debug, Deserialize)]
+struct PrefetchMarker {
+    #[serde(default)]
+    schema: u64,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    backend_version: Option<String>,
+    #[serde(default)]
+    shell_version: Option<String>,
+    #[serde(default)]
+    cache_dir: Option<String>,
+    #[serde(default)]
+    created_at: Option<i64>,
+    /// Absent on older markers, which are checked for payload only.
+    #[serde(default)]
+    core_plan: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    requirements: Option<std::collections::BTreeMap<String, RequirementRecord>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RequirementRecord {
+    #[serde(default)]
+    pins: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
+    skipped_reason: Option<String>,
+}
+
+/// `none`, `ready`, `noop` (nothing to prepare), `partial` (some requirement file left to
+/// swap time) or `stale` (a marker this build will not act on).
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefetchStatus {
+    pub state: String,
+    pub backend_version: Option<String>,
+    pub shell_version: Option<String>,
+    pub cache_dir: Option<String>,
+    pub created_at: Option<i64>,
+    pub running: bool,
+    pub running_shell_version: Option<String>,
+}
+
+fn prefetch_dir(home: &Path) -> PathBuf {
+    home.join(PREFETCH_DIR_NAME)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn read_marker(home: &Path) -> Option<PrefetchMarker> {
+    let raw = fs::read_to_string(prefetch_dir(home).join(MARKER_NAME)).ok()?;
+    match serde_json::from_str::<PrefetchMarker>(&raw) {
+        Ok(marker) => Some(marker),
+        Err(error) => {
+            warn!("[prefetch] Could not read the prefetch marker: {error}");
+            None
+        }
+    }
+}
+
+/// Mirrors `_uv_cache_has_packages` in `unsloth_cli/commands/studio.py`: metadata-only
+/// files do not make a cache warm.
+const UV_CACHE_BUCKETS: [&str; 5] = ["archive-", "builds-", "built-wheels-", "wheels-", "sdists-"];
+const UV_CACHE_BOOKKEEPING: [&str; 3] = ["CACHEDIR.TAG", ".git", ".gitignore"];
+const UV_CACHE_METADATA_SUFFIXES: [&str; 4] = [".lock", ".msgpack", ".http", ".rev"];
+
+fn dir_has_payload(dir: &Path, depth: usize) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if depth > 0 && dir_has_payload(&path, depth - 1) {
+                return true;
+            }
+            continue;
+        }
+        if UV_CACHE_BOOKKEEPING.contains(&name.as_str())
+            || UV_CACHE_METADATA_SUFFIXES
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// Whether the cache a prefetch recorded still holds any package bytes.
+pub(crate) fn cache_has_packages(cache_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            entry.path().is_dir()
+                && UV_CACHE_BUCKETS
+                    .iter()
+                    .any(|bucket| name.starts_with(bucket))
+        })
+        .any(|entry| dir_has_payload(&entry.path(), 6))
+}
+
+/// Whether `archive-v*/<id>/` still holds `name-version.dist-info`, which
+/// `uv cache clean <package>` removes.
+pub(crate) fn cache_holds_wheel(cache_dir: &Path, name: &str, version: &str) -> bool {
+    cached_dist_infos(cache_dir).contains(&wanted_dist_info(name, version))
+}
+
+fn wanted_dist_info(name: &str, version: &str) -> String {
+    // Normalised: the dist-info keeps the wheel's own spelling (Faker-20.1.0 for faker).
+    normalized_dist_info(&format!("{}-{}.dist-info", name.trim(), version.trim()))
+}
+
+/// Every unpacked wheel's dist-info name under `archive-v*`, normalised, read once per status.
+fn cached_dist_infos(cache_dir: &Path) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    let Ok(buckets) = fs::read_dir(cache_dir) else {
+        return names;
+    };
+    for bucket in buckets.flatten() {
+        let bucket_name = bucket.file_name().to_string_lossy().into_owned();
+        if !bucket_name.starts_with("archive-") || !bucket.path().is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(bucket.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(children) = fs::read_dir(entry.path()) else {
+                continue;
+            };
+            for child in children.flatten() {
+                let child_name = child.file_name().to_string_lossy().into_owned();
+                if child_name.ends_with(".dist-info") && child.path().is_dir() {
+                    names.insert(normalized_dist_info(&child_name));
+                }
+            }
+        }
+    }
+    names
+}
+
+fn normalized_dist_info(name: &str) -> String {
+    name.trim().to_ascii_lowercase().replace(['-', '.'], "_")
+}
+
+/// The cache the next update will read: an explicit UV_CACHE_DIR, else the install's record.
+/// None when neither is known (the CLI then chooses by content).
+fn effective_update_cache(home: &Path, explicit_cache: Option<&str>) -> Option<PathBuf> {
+    if let Some(explicit) = explicit_cache {
+        let explicit = explicit.trim();
+        if !explicit.is_empty() {
+            return Some(PathBuf::from(explicit));
+        }
+    }
+    let recorded = fs::read_to_string(home.join("cache").join("uv-cache-dir")).ok()?;
+    let recorded = recorded.trim_start_matches('\u{feff}').trim();
+    if recorded.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(recorded))
+}
+
+/// Whether `expected` names the recorded cache. The marker records it resolved against the
+/// setup script's directory, which this process cannot repeat, so a relative spelling
+/// matches when the recorded path ends with it.
+fn same_cache(expected: &Path, recorded: &Path) -> bool {
+    if comparable_cache_path(expected) == comparable_cache_path(recorded) {
+        return true;
+    }
+    // has_root, not is_absolute: on Windows `/tmp/x/uv` is rooted but not absolute.
+    if expected.is_relative() && recorded.has_root() {
+        let relative = fold_lexically(expected);
+        return !relative.as_os_str().is_empty() && recorded.ends_with(&relative);
+    }
+    false
+}
+
+/// os.path.normpath's lexical fold, which the CLI applies to what it records.
+fn fold_lexically(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            other => folded.push(other.as_os_str()),
+        }
+    }
+    folded
+}
+
+/// Separators unified, no trailing separator, case-folded on Windows.
+fn comparable_cache_path(path: &Path) -> String {
+    let text = fold_lexically(path).to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text
+    }
+}
+
+pub fn marker_expired(home: &Path) -> bool {
+    read_marker(home)
+        .and_then(|marker| marker.created_at)
+        .is_some_and(|created| now_ms().saturating_sub(created) > MAX_AGE_MS)
+}
+
+fn cache_holds_plan(
+    cached: &std::collections::HashSet<String>,
+    plan: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    plan.iter()
+        .all(|(name, version)| cached.contains(&wanted_dist_info(name, version)))
+}
+
+/// The core plan and every fetched requirement file's pins; skipped files fetched nothing.
+fn cache_holds_marker(cache_dir: &Path, marker: &PrefetchMarker) -> bool {
+    let cached = cached_dist_infos(cache_dir);
+    if let Some(plan) = marker.core_plan.as_ref() {
+        if !cache_holds_plan(&cached, plan) {
+            return false;
+        }
+    }
+    if let Some(requirements) = marker.requirements.as_ref() {
+        for record in requirements.values() {
+            if record.skipped_reason.is_some() {
+                continue;
+            }
+            if let Some(pins) = record.pins.as_ref() {
+                if !cache_holds_plan(&cached, pins) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+pub fn status(home: &Path) -> PrefetchStatus {
+    let explicit = std::env::var("UV_CACHE_DIR").ok();
+    status_for(home, explicit.as_deref())
+}
+
+fn status_for(home: &Path, explicit_cache: Option<&str>) -> PrefetchStatus {
+    let Some(marker) = read_marker(home) else {
+        return PrefetchStatus {
+            state: "none".to_string(),
+            ..PrefetchStatus::default()
+        };
+    };
+    let known = matches!(marker.state.as_str(), "ready" | "noop" | "partial");
+    let expired = marker
+        .created_at
+        .is_some_and(|created| now_ms().saturating_sub(created) > MAX_AGE_MS);
+    // `noop` prepared nothing and needs no cache.
+    let cache_cold = marker.state != "noop"
+        && marker.cache_dir.as_deref().is_some_and(|dir| {
+            let cache = Path::new(dir);
+            !cache_has_packages(cache) || !cache_holds_marker(cache, &marker)
+        });
+    // A warm cache the update will not read is no preparation.
+    let cache_elsewhere = marker.state != "noop"
+        && marker.cache_dir.as_deref().is_some_and(|dir| {
+            effective_update_cache(home, explicit_cache)
+                .is_some_and(|expected| !same_cache(&expected, Path::new(dir)))
+        });
+    let state =
+        if marker.schema != MARKER_SCHEMA || !known || expired || cache_cold || cache_elsewhere {
+            "stale"
+        } else {
+            marker.state.as_str()
+        };
+    PrefetchStatus {
+        state: state.to_string(),
+        backend_version: marker.backend_version,
+        shell_version: marker.shell_version,
+        cache_dir: marker.cache_dir,
+        created_at: marker.created_at,
+        running: false,
+        running_shell_version: None,
+    }
+}
+
+/// Remove the prefetch directory, only when it carries the owned marker.
+pub fn discard(home: &Path) -> bool {
+    let root = prefetch_dir(home);
+    if !root.exists() {
+        return false;
+    }
+    if !root.join(OWNED_MARKER).is_file() {
+        warn!(
+            "[prefetch] {} was not created by Unsloth; leaving it",
+            root.display()
+        );
+        return false;
+    }
+    match fs::remove_dir_all(&root) {
+        Ok(()) => {
+            info!("[prefetch] Discarded the prepared update");
+            true
+        }
+        Err(error) => {
+            warn!("[prefetch] Could not discard the prepared update: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cached_wheel_is_found_under_the_wheels_own_spelling() {
+        let home = temp_home("wheel-spelling");
+        let cache = home.join("cache");
+        let archive = cache.join("archive-v0").join("abc123");
+        fs::create_dir_all(archive.join("Faker-20.1.0.dist-info")).unwrap();
+        fs::create_dir_all(archive.join("ruamel.yaml-0.18.6.dist-info")).unwrap();
+        assert!(cache_holds_wheel(&cache, "faker", "20.1.0"));
+        assert!(cache_holds_wheel(&cache, "ruamel-yaml", "0.18.6"));
+        assert!(!cache_holds_wheel(&cache, "faker", "20.1.1"));
+        assert!(!cache_holds_wheel(&cache, "fakers", "20.1.0"));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_marker_for_a_cache_the_update_will_not_read_is_stale() {
+        let home = temp_home("cache-elsewhere");
+        let warm = home.join("warm-cache");
+        let archive = warm.join("archive-v0").join("id1");
+        fs::create_dir_all(archive.join("unsloth-2026.9.5.dist-info")).unwrap();
+        fs::write(
+            archive.join("unsloth-2026.9.5.dist-info").join("RECORD"),
+            "x",
+        )
+        .unwrap();
+        fs::create_dir_all(home.join(".update-prefetch")).unwrap();
+        fs::write(
+            home.join(".update-prefetch").join(".unsloth-studio-owned"),
+            "",
+        )
+        .unwrap();
+        let marker = serde_json::json!({
+            "schema": MARKER_SCHEMA,
+            "state": "ready",
+            "cache_dir": warm.to_string_lossy(),
+            "core_plan": {"unsloth": "2026.9.5"},
+            "created_at": now_ms(),
+        });
+        fs::write(
+            home.join(".update-prefetch").join("PREFETCHED.json"),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status_for(&home, None).state, "ready");
+        fs::create_dir_all(home.join("cache")).unwrap();
+        fs::write(
+            home.join("cache").join("uv-cache-dir"),
+            format!("{}\n", home.join("other").display()),
+        )
+        .unwrap();
+        assert_eq!(status_for(&home, None).state, "stale");
+        fs::write(
+            home.join("cache").join("uv-cache-dir"),
+            format!("{}/\n", warm.display()),
+        )
+        .unwrap();
+        assert_eq!(status_for(&home, None).state, "ready");
+        assert_eq!(status_for(&home, Some("/somewhere/else")).state, "stale");
+        assert_eq!(
+            status_for(&home, Some(&warm.to_string_lossy())).state,
+            "ready"
+        );
+        // A relative UV_CACHE_DIR matches on the recorded path's tail.
+        assert_eq!(status_for(&home, Some("warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("./warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("other-cache")).state, "stale");
+        assert_eq!(status_for(&home, Some("../warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("x/../warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("../other-cache")).state, "stale");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    fn temp_home(name: &str) -> PathBuf {
+        let home = std::env::temp_dir()
+            .join(format!(
+                "unsloth-prefetch-{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .join("studio");
+        fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    fn write_prefetch(home: &Path, body: serde_json::Value, owned: bool) {
+        let root = prefetch_dir(home);
+        fs::create_dir_all(&root).unwrap();
+        if owned {
+            fs::write(root.join(OWNED_MARKER), b"").unwrap();
+        }
+        fs::write(
+            root.join(MARKER_NAME),
+            serde_json::to_vec_pretty(&body).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_absent_prefetch_reports_none() {
+        let home = temp_home("absent");
+        assert_eq!(status_for(&home, None).state, "none");
+        assert!(!discard(&home));
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    fn warm_cache(home: &Path) -> PathBuf {
+        let cache = home.join("cache").join("uv");
+        let unpacked = cache.join("archive-v0").join("abc123").join("unsloth");
+        fs::create_dir_all(&unpacked).unwrap();
+        fs::write(unpacked.join("__init__.py"), b"").unwrap();
+        fs::create_dir_all(
+            cache
+                .join("archive-v0")
+                .join("abc123")
+                .join("unsloth-2026.9.2.dist-info"),
+        )
+        .unwrap();
+        fs::write(
+            cache.join("CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55",
+        )
+        .unwrap();
+        cache
+    }
+
+    #[test]
+    fn a_ready_marker_is_reported_with_the_versions_it_recorded() {
+        let home = temp_home("ready");
+        let cache = warm_cache(&home);
+        write_prefetch(
+            &home,
+            serde_json::json!({
+                "schema": 1,
+                "state": "ready",
+                "backend_version": "2026.9.2",
+                "shell_version": "0.1.900-beta",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+            }),
+            true,
+        );
+
+        let status = status_for(&home, None);
+        assert_eq!(status.state, "ready");
+        assert_eq!(status.backend_version.as_deref(), Some("2026.9.2"));
+        assert_eq!(status.shell_version.as_deref(), Some("0.1.900-beta"));
+        assert_eq!(
+            status.cache_dir.as_deref(),
+            Some(cache.to_string_lossy().as_ref())
+        );
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_marker_whose_cache_no_longer_holds_packages_is_stale() {
+        for (name, prepare) in [
+            ("cache-gone", None),
+            ("cache-cleaned", Some("empty")),
+            ("cache-metadata-only", Some("metadata")),
+        ] {
+            let home = temp_home(name);
+            let cache = home.join("cache").join("uv");
+            match prepare {
+                None => {}
+                Some("empty") => fs::create_dir_all(&cache).unwrap(),
+                Some(_) => {
+                    let bucket = cache.join("archive-v0").join("abc123");
+                    fs::create_dir_all(&bucket).unwrap();
+                    fs::write(bucket.join(".lock"), b"").unwrap();
+                    fs::write(cache.join("archive-v0").join("index.msgpack"), b"").unwrap();
+                    fs::create_dir_all(cache.join("wheels-v5")).unwrap();
+                    fs::write(cache.join("CACHEDIR.TAG"), b"").unwrap();
+                }
+            }
+            write_prefetch(
+                &home,
+                serde_json::json!({
+                    "schema": 1,
+                    "state": "ready",
+                    "shell_version": "0.1.900-beta",
+                    "cache_dir": cache.to_string_lossy(),
+                    "created_at": now_ms(),
+                }),
+                true,
+            );
+            assert_eq!(status_for(&home, None).state, "stale", "{name}");
+            fs::remove_dir_all(home.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_plan_whose_wheel_was_cleaned_from_the_cache_is_stale() {
+        let home = temp_home("plan-cleaned");
+        let cache = warm_cache(&home);
+        let marker = |plan: serde_json::Value| {
+            let mut body = serde_json::json!({
+                "schema": 1,
+                "state": "ready",
+                "backend_version": "2026.9.2",
+                "shell_version": "0.1.900-beta",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+            });
+            if !plan.is_null() {
+                body["core_plan"] = plan;
+            }
+            body
+        };
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({"unsloth": "2026.9.2"})),
+            true,
+        );
+        assert_eq!(status_for(&home, None).state, "ready");
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({"unsloth": "2026.9.2", "unsloth-zoo": "2026.9.1"})),
+            true,
+        );
+        assert_eq!(status_for(&home, None).state, "stale");
+        fs::create_dir_all(
+            cache
+                .join("archive-v0")
+                .join("def456")
+                .join("unsloth_zoo-2026.9.1.dist-info"),
+        )
+        .unwrap();
+        assert_eq!(status_for(&home, None).state, "ready");
+        fs::remove_dir_all(cache.join("archive-v0").join("abc123")).unwrap();
+        fs::create_dir_all(cache.join("archive-v0").join("other").join("numpy")).unwrap();
+        fs::write(
+            cache
+                .join("archive-v0")
+                .join("other")
+                .join("numpy")
+                .join("x.so"),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(status_for(&home, None).state, "stale");
+        write_prefetch(&home, marker(serde_json::Value::Null), true);
+        assert_eq!(status_for(&home, None).state, "ready");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_requirement_pin_cleaned_from_the_cache_is_stale() {
+        let home = temp_home("req-cleaned");
+        let cache = warm_cache(&home);
+        let marker = |requirements: serde_json::Value| {
+            serde_json::json!({
+                "schema": 1,
+                "state": "ready",
+                "backend_version": "2026.9.2",
+                "shell_version": "0.1.900-beta",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+                "core_plan": {"unsloth": "2026.9.2"},
+                "requirements": requirements,
+            })
+        };
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({"studio.txt": {"pins": {"diffusers": "0.40.0"}}})),
+            true,
+        );
+        assert_eq!(status_for(&home, None).state, "stale");
+        fs::create_dir_all(
+            cache
+                .join("archive-v0")
+                .join("ghi789")
+                .join("diffusers-0.40.0.dist-info"),
+        )
+        .unwrap();
+        assert_eq!(status_for(&home, None).state, "ready");
+        write_prefetch(
+            &home,
+            marker(serde_json::json!({
+                "studio.txt": {"pins": {"diffusers": "0.40.0"}},
+                "base.txt": {"pins": {"numpy": "9.9.9"}, "skipped_reason": "resolve failed: x"}
+            })),
+            true,
+        );
+        assert_eq!(status_for(&home, None).state, "ready");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_noop_marker_needs_no_cache() {
+        let home = temp_home("noop");
+        write_prefetch(
+            &home,
+            serde_json::json!({
+                "schema": 1,
+                "state": "noop",
+                "cache_dir": home.join("nowhere").to_string_lossy(),
+                "created_at": now_ms(),
+            }),
+            true,
+        );
+        assert_eq!(status_for(&home, None).state, "noop");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_partial_prefetch_is_still_usable_and_says_so() {
+        let home = temp_home("partial");
+        let cache = warm_cache(&home);
+        write_prefetch(
+            &home,
+            serde_json::json!({
+                "schema": 1,
+                "state": "partial",
+                "cache_dir": cache.to_string_lossy(),
+                "created_at": now_ms(),
+            }),
+            true,
+        );
+        assert_eq!(status_for(&home, None).state, "partial");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_future_schema_an_unknown_state_and_an_old_marker_are_all_stale() {
+        for body in [
+            serde_json::json!({"schema": 2, "state": "ready", "created_at": now_ms()}),
+            serde_json::json!({"schema": 1, "state": "half", "created_at": now_ms()}),
+            serde_json::json!({"schema": 1, "state": "ready", "created_at": now_ms() - MAX_AGE_MS - 1}),
+        ] {
+            let home = temp_home("stale");
+            write_prefetch(&home, body, true);
+            assert_eq!(status_for(&home, None).state, "stale");
+            fs::remove_dir_all(home.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_unreadable_marker_reports_none_rather_than_guessing() {
+        let home = temp_home("garbage");
+        let root = prefetch_dir(&home);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(MARKER_NAME), b"{not json").unwrap();
+        assert_eq!(status_for(&home, None).state, "none");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn an_absolute_cache_spelled_with_dots_is_the_recorded_cache() {
+        assert!(same_cache(Path::new("/tmp/x/cache/../uv"), Path::new("/tmp/x/uv")));
+        assert!(same_cache(Path::new("/tmp/x/./uv/"), Path::new("/tmp/x/uv")));
+        assert!(!same_cache(Path::new("/tmp/x/other"), Path::new("/tmp/x/uv")));
+        assert!(same_cache(Path::new("./cache/../uv"), Path::new("/tmp/x/uv")));
+        assert!(!same_cache(Path::new("../"), Path::new("/tmp/x/uv")));
+    }
+
+    #[test]
+    fn a_marker_older_than_the_ceiling_reads_as_expired() {
+        let home = temp_home("expired-marker");
+        assert!(!marker_expired(&home));
+        write_prefetch(
+            &home,
+            serde_json::json!({"schema": MARKER_SCHEMA, "state": "ready", "created_at": now_ms() - MAX_AGE_MS - 1}),
+            true,
+        );
+        assert!(marker_expired(&home));
+        write_prefetch(
+            &home,
+            serde_json::json!({"schema": MARKER_SCHEMA, "state": "ready", "created_at": now_ms()}),
+            true,
+        );
+        assert!(!marker_expired(&home));
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn discard_removes_an_owned_directory_and_is_repeatable() {
+        let home = temp_home("discard");
+        write_prefetch(
+            &home,
+            serde_json::json!({"schema": 1, "state": "ready", "created_at": now_ms()}),
+            true,
+        );
+        fs::create_dir_all(prefetch_dir(&home).join("site")).unwrap();
+
+        assert!(discard(&home));
+        assert!(!prefetch_dir(&home).exists());
+        assert!(!discard(&home));
+        assert_eq!(status_for(&home, None).state, "none");
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_directory_unsloth_did_not_create_is_left_alone() {
+        let home = temp_home("foreign");
+        write_prefetch(
+            &home,
+            serde_json::json!({"schema": 1, "state": "ready", "created_at": now_ms()}),
+            false,
+        );
+
+        assert!(!discard(&home));
+        assert!(prefetch_dir(&home).join(MARKER_NAME).is_file());
+        fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    }
+}
