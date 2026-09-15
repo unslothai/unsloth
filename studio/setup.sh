@@ -2842,6 +2842,7 @@ _LLAMA_CPP_NO_SPACE=false
 _LLAMA_KEEP_PREBUILT_ACTIVE=false
 # The installed GPU prebuilt was kept because the source fallback could only build CPU.
 _LLAMA_KEPT_GPU_PREBUILT=""
+_LLAMA_UPDATE_FAIL_REASON=""
 # A GPU host ended on a CPU-only llama.cpp: named in the footer, not just mid-log (#9255).
 _LLAMA_CPU_ONLY_ON_GPU_HOST=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
@@ -2973,6 +2974,17 @@ PY
 # the tree still loads (a quarantined library, a stripped runtime file, no quantizer). Not
 # --validate-install, which downloads its probe model and the update just failed for want
 # of a download.
+# Why the prebuilt update failed, in a few words, from the helper's log.
+_llama_update_fail_reason() {
+    if grep -qiE "429|rate limit" "$1" 2>/dev/null; then
+        echo "GitHub rate limit"
+    elif grep -qiE "timed out|timeout|connection|resol|network|unreachable|50[234]" "$1" 2>/dev/null; then
+        echo "network error"
+    else
+        echo "download failed"
+    fi
+}
+
 _installed_prebuilt_runs() {
     python "$SCRIPT_DIR/install_llama_prebuilt.py" --check-installed "$1" >/dev/null 2>&1
 }
@@ -3304,6 +3316,7 @@ else
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
+        _LLAMA_UPDATE_FAIL_REASON="$(_llama_update_fail_reason "$_PREBUILT_LOG")"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
@@ -3311,8 +3324,13 @@ else
         # Exit 2 means no concrete backend was in play: a request the installer
         # could not honour -- named here or recorded in the install marker, which
         # this script cannot see -- exits 5 above instead.
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        # A working GPU prebuilt beats any source build: keep it and retry next time.
+        if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+            step "llama.cpp" "update failed ($_LLAMA_UPDATE_FAIL_REASON); keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt, the next update will retry" "$C_WARN"
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -4080,8 +4098,7 @@ fi
 # path to that outcome exits 0, and a mid-log line is what #9255's reporters scrolled past.
 _print_llama_gpu_notes() {
     if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
-        printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "the prebuilt update failed and the source fallback could only build for the CPU, so the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept"
-        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "re-run the installer once the download works to update it"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "update failed (${_LLAMA_UPDATE_FAIL_REASON:-the source fallback could only build for the CPU}); the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept and the next update will retry"
     fi
     if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
         printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback could only build for the CPU (no GPU toolkit, or the GPU build failed above), so GGUF inference will run on the CPU"

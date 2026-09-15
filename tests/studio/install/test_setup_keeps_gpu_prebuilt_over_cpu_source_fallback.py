@@ -212,6 +212,47 @@ def _between(start_marker, end_marker):
     return SETUP_TEXT[start : SETUP_TEXT.index(end_marker, start)]
 
 
+def test_a_failed_update_keeps_the_gpu_prebuilt_before_any_source_build():
+    # The first decision is at the failed update itself: no source build is started.
+    window = _between('[ "$_PREBUILT_STATUS" -eq 2 ]', "_NEED_LLAMA_SOURCE_BUILD=true")
+    assert (
+        '_LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"'
+        in window
+    )
+    assert "the next update will retry" in window
+    # The reason is read before the helper's log is deleted.
+    assert window.index('_llama_update_fail_reason "$_PREBUILT_LOG"') < window.index(
+        'rm -f "$_PREBUILT_LOG"'
+    )
+
+
+@requires_bash
+@pytest.mark.parametrize(
+    ("log", "reason"),
+    [
+        ("HTTP Error 429: Too Many Requests", "GitHub rate limit"),
+        ("API rate limit exceeded for 1.2.3.4", "GitHub rate limit"),
+        ("urlopen error timed out", "network error"),
+        ("Temporary failure in name resolution", "network error"),
+        ("HTTP Error 503: Service Unavailable", "network error"),
+        ("checksum mismatch for app-b1-linux-x64-cuda12.tar.gz", "download failed"),
+        ("", "download failed"),
+    ],
+)
+def test_the_failure_reason_is_a_few_words(tmp_path, log, reason):
+    fn = _between("_llama_update_fail_reason() {", "\n}\n") + "\n}\n"
+    path = tmp_path / "prebuilt.log"
+    path.write_text(log, encoding = "utf-8")
+    result = subprocess.run(
+        [BASH, "-c", fn + '\n_llama_update_fail_reason "$1"', "reason", str(path)],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        timeout = 60,
+    )
+    assert result.stdout.strip() == reason, result.stderr
+
+
 def test_the_decision_runs_before_the_compile():
     # Deciding after a 20 minute compile would be correct and pointless.
     window = _between('_BUILD_DESC="building (CPU)"', 'run_quiet_no_exit "cmake llama.cpp"')
