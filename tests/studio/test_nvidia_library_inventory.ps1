@@ -154,6 +154,7 @@ foreach ($src in (Get-HelperSources $setupPs1 @("Get-NvidiaCu126Verdict", "Get-C
     Invoke-Expression $src
 }
 
+$script:NvidiaSmiRejected = $false
 $script:NvidiaSmiExe = "C:\fake\nvidia-smi.exe"
 $script:FakeSmiRc = 0
 $script:FakeSmiStdout = "| NVIDIA-SMI 580.00   Driver Version: 580.00   CUDA Version: 12.9 |"
@@ -178,6 +179,17 @@ Check "no nvidia-smi at all still names the family" ((Get-PytorchCudaTag) -eq "c
 $script:FakeInventory = $null
 Check "nothing answering means unknown, not cu126" ((Get-PytorchCudaTag) -eq "")
 Check "an unknown capability stays null" ($null -eq (Get-CudaComputeCapability))
+
+# Detection rejected nvidia-smi (absent or unusable) and the library answered: the consumers
+# do not rediscover it, so a wedged or stale banner never overrides the inventory.
+$script:NvidiaSmiRejected = $true
+$script:FakeSmiStdout = "Driver Version: 560.00  CUDA Version: 12.6"; $script:FakeSmiRc = 0
+$script:FakeInventory = @{ Source = "nvml"; CudaMajor = 13; CudaMinor = 1; ComputeCaps = @("8.9"); Count = 1 }
+Check "a rejected nvidia-smi is not asked again for the tag" ((Get-PytorchCudaTag) -eq "cu130")
+Check "a rejected nvidia-smi is not asked again for the capability" ((Get-CudaComputeCapability) -eq "89")
+$script:NvidiaSmiRejected = $false
+$setupText = Get-Content -LiteralPath $setupPs1 -Raw
+Check "setup.ps1 marks nvidia-smi rejected when the library stands in" ($setupText -match '(?m)^\s+\$script:NvidiaSmiRejected = \$true' -and $setupText -match '(?m)^\$script:NvidiaSmiRejected = \$false')
 
 Check "a 429 reads as a rate limit" ((Get-LlamaUpdateFailReason "HTTP Error 429: too many requests") -eq "GitHub rate limit")
 Check "a DNS failure reads as a network error" ((Get-LlamaUpdateFailReason "temporary failure in name resolution") -eq "network error")
