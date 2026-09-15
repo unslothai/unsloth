@@ -1897,6 +1897,7 @@ class TestGfx1102Rocm64Floor:
         for name in (
             "HIP_VISIBLE_DEVICES",
             "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
             "UNSLOTH_ROCM_GFX_ARCH",
             "UNSLOTH_TORCH_INDEX_FAMILY",
             "UNSLOTH_TORCH_INDEX_URL",
