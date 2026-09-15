@@ -209,7 +209,6 @@ def test_the_dynamo_failure_is_rewritten_into_something_actionable():
 def test_the_rewrite_finds_the_failure_through_an_exception_chain():
     """It surfaces from inside diffusers, so it arrives wrapped."""
     from core.inference.diffusion import dynamo_partial_init_message
-
     try:
         try:
             raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
@@ -231,12 +230,12 @@ def test_an_unrelated_load_failure_keeps_its_own_text():
 def test_the_rewrite_is_wired_into_the_load_failure_handler():
     """Asserted on source, since reaching the handler needs a GPU and a model."""
     body = ast.unparse(_load_pipeline_failure_handler())
-    assert "dynamo_partial_init_message" in body, (
-        "the load failure handler no longer rewrites the dynamo error"
-    )
-    assert body.index("hub_access_message") < body.index("dynamo_partial_init_message"), (
-        "a gated-repo message must keep priority; it is the more specific diagnosis"
-    )
+    assert (
+        "dynamo_partial_init_message" in body
+    ), "the load failure handler no longer rewrites the dynamo error"
+    assert body.index("hub_access_message") < body.index(
+        "dynamo_partial_init_message"
+    ), "a gated-repo message must keep priority; it is the more specific diagnosis"
 
 
 def _load_pipeline_failure_handler():
