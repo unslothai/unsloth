@@ -323,20 +323,34 @@ test("a long but healthy download is never abandoned", async () => {
 const STALL_MS = 400;
 
 /**
- * Poll until the notice settles, with the read at `healthyAt` reporting progress
- * and every other read unreadable. `healthyAt: 0` means none of them do.
- * Returns how many reads the loop survived.
+ * Poll until the notice settles, with the first read at least `healthyAfterMs`
+ * into the loop reporting progress and every other read unreadable.
+ * `healthyAfterMs: null` means none of them do. Returns how long the loop
+ * survived, in ms.
+ *
+ * Milliseconds, not reads. The window is defined in time -- the source keeps a
+ * `lastHealthy` stamp and gives up at `Date.now() - lastHealthy >= stallMs` --
+ * so time is what it is fair to assert on. A read count is that quantity
+ * divided by the cost of one poll, which is the only part of this that varies
+ * between platforms: about 1 ms here and about 15 ms on a Windows runner.
  */
-async function readsBeforeSettling(healthyAt: number): Promise<number> {
+async function msBeforeSettling(healthyAfterMs: number | null): Promise<number> {
   const { settled, stop } = record();
-  let read = 0;
+  const began = Date.now();
+  let reported = false;
   await withBackgroundLoadNotice(
     "image",
     "unsloth/flux",
     async () => null,
     async () => {
-      read += 1;
-      if (read === healthyAt) return "downloading";
+      if (
+        healthyAfterMs !== null &&
+        !reported &&
+        Date.now() - began >= healthyAfterMs
+      ) {
+        reported = true;
+        return "downloading";
+      }
       throw new Error("backend restarting");
     },
     // readTimeoutMs is generous on purpose: the read answers immediately, and a
@@ -345,57 +359,43 @@ async function readsBeforeSettling(healthyAt: number): Promise<number> {
   );
   await settled;
   stop();
-  return read;
+  return Date.now() - began;
 }
 
 test("a healthy read resets the stall window", async () => {
-  // The source reads `Date.now()` and arms `setTimeout` itself, so this runs on
-  // the wall clock. That rules out asserting a read count against a millisecond
-  // budget: one poll costs about 1 ms here and about 15 ms on a Windows runner,
-  // whose default timer granularity is coarser than any margin small enough to
-  // keep the test quick. The previous version asserted `reads > 4` against a
-  // 30 ms window and was both flaky on Windows (2 reads consumed it before the
-  // healthy one arrived) and vacuous on Linux, where 30 ms of 1 ms polls clears
-  // 4 reads whether or not the window is ever reset.
+  // Earlier versions compared READ COUNTS between two runs and asked for a
+  // ratio. That made the verdict depend on the cost of a poll, which is the
+  // noisiest thing in reach on a shared windows-latest runner: observed at
+  // 65/55, 64/43 and 62/50 in one run, ratios from 1.18 to 1.49 against a
+  // 1.25 bar, so the same healthy code passed and failed within three rounds.
+  // Best-of-three and majority-of-three were both attempts to average that
+  // away, and neither shrank the spread because the spread is the measurement.
   //
-  // So measure the reset against the same loop without one. The comparison
-  // divides the platform out: whatever a poll costs, a window restarted halfway
-  // through must carry the loop about half as far again.
-  // The two halves of the comparison are separate wall-clock runs, so anything
-  // that slows the runner between them skews the ratio. A windows-latest runner
-  // is shared and noisy enough to do that: this failed on main at 56 reads with
-  // a reset against 47 without, a ratio of 1.19 where a half-way restart should
-  // give about 1.5. One sample decided it, and the sample was unlucky.
-  //
-  // Take the majority of three rounds rather than one sample, and NOT the best
-  // of three. The noise runs in both directions, so with the reset removed --
-  // where the two loops are the same loop and should score about 1.0 -- a round
-  // that happened to schedule the second run faster could clear the bar on its
-  // own, and accepting the most favourable round would make three chances at
-  // that instead of one. A majority is strictly stronger than the single sample
-  // this replaces in both directions: it takes two unlucky rounds to fail a
-  // healthy reset, and two lucky ones to pass a missing one.
-  const rounds: string[] = [];
-  let cleared = 0;
-  for (let round = 1; round <= 3; round += 1) {
-    const withoutReset = await readsBeforeSettling(0);
-    assert.ok(
-      withoutReset > 8,
-      `the baseline is too short to compare against: ${withoutReset} reads. ` +
-        "Raise STALL_MS.",
-    );
-
-    const withReset = await readsBeforeSettling(Math.floor(withoutReset / 2));
-    if (withReset >= withoutReset * 1.25) cleared += 1;
-    rounds.push(`${withReset} with a reset against ${withoutReset} without`);
-  }
+  // Timing it instead removes the poll cost from the arithmetic entirely, and
+  // turns the signal from a ratio into a DIFFERENCE. The reset fires on a
+  // clock rather than at a read index, so it lands halfway through the window
+  // whatever a poll costs, and the loop should then outlast the plain one by
+  // about half a window. Jitter is bounded by one poll interval, which is
+  // ~15 ms at worst against a 200 ms signal, so one sample of each is enough
+  // where six were not.
+  const withoutReset = await msBeforeSettling(null);
+  const withReset = await msBeforeSettling(STALL_MS / 2);
 
   assert.ok(
-    cleared >= 2,
-    "a healthy read did not restart the stall window, in " +
-      `${cleared} of ${rounds.length} rounds: ${rounds.join("; ")}. A run of ` +
-      "unreadable polls is inheriting the elapsed time of the run before it, so " +
-      "a slow download that keeps reporting progress can still be abandoned.",
+    withoutReset >= STALL_MS,
+    `the loop gave up before the stall window elapsed: ${withoutReset}ms ` +
+      `against a ${STALL_MS}ms window. The window is not being honoured at all.`,
+  );
+
+  const bought = withReset - withoutReset;
+  assert.ok(
+    bought >= STALL_MS / 4,
+    `a healthy read did not restart the stall window: it bought ${bought}ms ` +
+      `(${withReset}ms with a reset against ${withoutReset}ms without), where ` +
+      `restarting halfway through a ${STALL_MS}ms window should buy about ` +
+      `${STALL_MS / 2}ms. A run of unreadable polls is inheriting the elapsed ` +
+      "time of the run before it, so a slow download that keeps reporting " +
+      "progress can still be abandoned.",
   );
 });
 
