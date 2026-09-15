@@ -44,6 +44,7 @@ from core.inference.llama_admission import (
 from routes.inference import (
     _aclose_stream_resources,
     _build_chat_request,
+    _build_external_messages,
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
@@ -528,10 +529,10 @@ class TestChatMessageToolRoles:
             ChatMessage(role = "user", content = "Hi", tool_call_id = "call_1")
         assert "tool_call_id" in str(exc_info.value)
 
-    def test_name_on_user_rejected(self):
-        with pytest.raises(ValidationError) as exc_info:
-            ChatMessage(role = "user", content = "Hi", name = "get_weather")
-        assert "name" in str(exc_info.value)
+    @pytest.mark.parametrize("role", ["user", "assistant", "system", "developer"])
+    def test_participant_name_accepted_on_every_role(self, role):
+        msg = ChatMessage(role = role, content = "Hi", name = "alice")
+        assert msg.name == "alice"
 
 
 # =====================================================================
@@ -1527,6 +1528,40 @@ class TestChatCompletionRequestToolFields:
         assert "audio or an image in one message" in resp.text
         assert calls == []
         assert monitor.active_count() == 0
+
+    def test_audio_input_carries_participant_names(self, monkeypatch):
+        import numpy as np
+        import routes.inference as inference_route
+
+        calls = []
+        omni = _omni_backend(calls)
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": False},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_decode_audio_base64",
+            lambda *a, **k: np.zeros(16000, dtype = "float32"),
+        )
+        client = self._v1_client(monkeypatch, _LlamaOff(), omni)
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "what is said?"},
+                ],
+                "audio_base64": base64.b64encode(b"RIFF....WAVEfmt ").decode(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert calls[0]["system_prompt"].endswith("be brief")
+        assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [("user", "alice")]
 
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
         """Studio fills image_base64 from anywhere in the thread, so it is not a
@@ -4069,6 +4104,39 @@ class TestDropEmptyAssistantSentinels:
             {"type": "text", "text": "Here is the answer."},
         ]
         assert out[1]["reasoning_content"] == "first trace\n\nsecond trace\n\nfinal trace"
+
+    def test_a_folded_fragment_keeps_only_a_name_both_halves_agree_on(self):
+        def _synthetic_call(call_id: str) -> dict:
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+            }
+
+        def _fold(first_name, second_name):
+            messages = [
+                {"role": "user", "content": "Find it."},
+                {
+                    "role": "assistant",
+                    **({"name": first_name} if first_name else {}),
+                    "content": "Searching first.",
+                    "tool_calls": [_synthetic_call("call-1")],
+                },
+                {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+                {
+                    "role": "assistant",
+                    **({"name": second_name} if second_name else {}),
+                    "content": "Here is the answer.",
+                },
+            ]
+            out = _strip_provider_synthetic_tool_history(messages)
+            assert [m["role"] for m in out] == ["user", "assistant"]
+            return out[1]
+
+        assert _fold("researcher", "researcher").get("name") == "researcher"
+        assert _fold("researcher", "auditor").get("name") is None
+        assert _fold("researcher", None).get("name") is None
+        assert _fold(None, "auditor").get("name") is None
 
     def test_synthetic_reasoning_fragment_before_user_stays_valid(self):
         messages = [
@@ -10032,6 +10100,28 @@ class TestCoalesceConsecutiveUserTurns:
         _coalesce_consecutive_user_turns(msgs)
         assert msgs[0]["content"] == "hi"
 
+    def test_shared_participant_name_survives_merge(self):
+        msgs = [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "user", "name": "alice", "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "name": "alice", "content": "hi\n\nagain"},
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "alice"}, {"name": "bob"}), ({"name": "alice"}, {}), ({}, {"name": "bob"})],
+    )
+    def test_differing_participant_names_are_dropped_on_merge(self, first, second):
+        msgs = [
+            {"role": "user", **first, "content": "hi"},
+            {"role": "user", **second, "content": "again"},
+        ]
+        assert _coalesce_consecutive_user_turns(msgs) == [
+            {"role": "user", "content": "hi\n\nagain"},
+        ]
+
 
 class TestGgufChatHistoryAlternation:
     def test_empty_assistant_turn_dropped_then_users_coalesced(self):
@@ -10104,6 +10194,97 @@ class TestGgufChatHistoryAlternation:
         roles = [m["role"] for m in rebuilt]
         assert roles == ["system", "user"]
         assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1)), roles
+
+    def test_participant_names_reach_llama_server(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "name": "alice", "content": "again"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [m.get("name") for m in out] == ["supervisor", "alice", "researcher", "alice"]
+
+    def test_system_name_survives_the_route_system_rebuild(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        system_prompt, _, _ = _extract_content_parts(req.messages)
+        rebuilt = _set_or_prepend_system_message(out, f"Today is Monday.\n\n{system_prompt}")
+        assert [(m["role"], m.get("name")) for m in rebuilt] == [
+            ("system", "supervisor"),
+            ("user", "alice"),
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "supervisor"}, {"name": "auditor"}), ({"name": "supervisor"}, {})],
+    )
+    def test_differing_system_names_are_dropped_on_rebuild(self, first, second):
+        messages = [
+            {"role": "system", **first, "content": "be brief"},
+            {"role": "developer", **second, "content": "cite sources"},
+            {"role": "user", "content": "hi"},
+        ]
+        rebuilt = _set_or_prepend_system_message(messages, "be brief\n\ncite sources")
+        assert rebuilt[0] == {"role": "system", "content": "be brief\n\ncite sources"}
+
+    def test_local_backends_receive_participant_names(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "content": "again"},
+                ],
+            }
+        )
+        system_prompt, chat_messages, _ = _extract_content_parts(req.messages)
+        assert system_prompt == "be brief"
+        assert chat_messages == [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "assistant", "name": "researcher", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ]
+
+
+class TestExternalProviderParticipantNames:
+    @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini", "mistral"])
+    def test_only_tool_results_keep_their_name(self, provider_type):
+        messages = [
+            ChatMessage(role = "system", name = "supervisor", content = "be brief"),
+            ChatMessage(role = "user", name = "alice", content = "weather?"),
+            ChatMessage(
+                role = "assistant",
+                name = "researcher",
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_1", name = "get_weather", content = "sunny"),
+            ChatMessage(role = "assistant", name = "researcher", content = "It is sunny."),
+        ]
+        out = _build_external_messages(messages, supports_vision = True, provider_type = provider_type)
+        assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "assistant"]
+        assert [m.get("name") for m in out] == [None, None, None, "get_weather", None]
 
 
 # ── Per-choice seeds on the GGUF drain ──────────────────────────────
