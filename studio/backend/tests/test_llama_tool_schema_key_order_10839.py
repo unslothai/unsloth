@@ -393,6 +393,50 @@ def test_passthrough_healer_types_arguments_against_the_original_schema():
     }
 
 
+@pytest.mark.parametrize("union", ["anyOf", "oneOf"])
+@pytest.mark.parametrize("null_first", [False, True])
+def test_passthrough_healer_types_nullable_object_arguments(union, null_first):
+    import json
+
+    from core.inference.passthrough_healing import heal_openai_message
+    from routes.inference import _build_passthrough_payload
+
+    data = {
+        "type": "object",
+        "properties": {
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+            "is_archived": {"type": "boolean"},
+        },
+    }
+    branches = [{"type": "null"}, data] if null_first else [data, {"type": "null"}]
+    tool = _tool({"type": "object", "properties": {"data": {union: branches}}}, name = "q")
+    body = _build_passthrough_payload(
+        [{"role": "user", "content": "hi"}],
+        [tool],
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 40,
+        stream = False,
+        tool_choice = "auto",
+        max_tokens = 16,
+        stop = None,
+        backend_ctx = 4096,
+    )
+    for value in (
+        {"start_cursor": "001", "page_size": "1", "is_archived": "false"},
+        '{"start_cursor":"001","page_size":"1","is_archived":"false"}',
+        None,
+    ):
+        call = {"name": "q", "arguments": {"data": value}}
+        message = {"role": "assistant", "content": f"<tool_call>{json.dumps(call)}</tool_call>"}
+        assert heal_openai_message(message, {"q"}, body["tools"])
+        expected = (
+            None if value is None else {"start_cursor": "001", "page_size": 1, "is_archived": False}
+        )
+        assert json.loads(message["tool_calls"][0]["function"]["arguments"]) == {"data": expected}
+
+
 def test_nullable_nested_object_is_wrapped():
     options = {
         "type": ["object", "null"],

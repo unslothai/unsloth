@@ -497,6 +497,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
             return None, None, False
         named = []
         for branch in branches:
+            branch = unrelaxed(branch)
             name = branch.get("type") if _readable(branch) else None
             if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
                 return None, None, False
