@@ -4400,7 +4400,7 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     if name == "render_html":
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = name.split("__", 2)[-1]
+        tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
@@ -6497,7 +6497,7 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # A static canvas is fine; only a networked canvas can egress.
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = name.split("__", 2)[-1]
+        tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
         # Split camelCase into `_`-delimited terms so the term-boundary regexes
@@ -10051,8 +10051,7 @@ DEEP_RESEARCH_TOOL = {
 }
 
 
-# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so validate up front and skip
-# with a warning.
+# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so they ship under an alias.
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
@@ -10074,9 +10073,38 @@ def _mcp_tool_model_visible(tool: dict) -> bool:
     return True
 
 
+def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
+    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
+    raw_names = [
+        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+    ]
+    names: dict[str, str] = {}
+    for raw_name in raw_names:
+        if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
+            names.setdefault(prefix + raw_name, raw_name)
+    for raw_name in raw_names:
+        if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
+            continue
+        digest = hashlib.sha256(raw_name.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+        stem = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_name)[: 55 - len(prefix)]
+        alias = f"{prefix}{stem}_{digest}"
+        if _OPENAI_FN_NAME_RE.fullmatch(alias):
+            names.setdefault(alias, raw_name)
+    return names
+
+
+def _mcp_raw_tool_name(name: str) -> str:
+    parts = name.split("__", 2)
+    server = mcp_servers_db.get_server_for_tool(parts[1]) if len(parts) == 3 else None
+    tools = get_cached_tools(server["id"]) if server else None
+    return _mcp_tool_names(server, tools).get(name, parts[-1]) if tools else parts[-1]
+
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
+    names_by_raw = {raw_name: name for name, raw_name in _mcp_tool_names(server, mcp_tools).items()}
     specs: list[dict] = []
     seen_names: set[str] = set()
     for tool in mcp_tools:
@@ -10087,30 +10115,21 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not _mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
-        server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
-        # Bad chars or oversized names would 400 the whole request; skip + warn
-        # so the rest of the tools still ship.
-        if not _OPENAI_FN_NAME_RE.fullmatch(name):
-            logger.warning(
-                "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
-                "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",
-                raw_name,
-                display,
-                name,
-            )
-            continue
+        name = names_by_raw.get(raw_name)
         # Duplicate tool names would also 400 OpenAI; drop dupes.
-        if name in seen_names:
+        if name is None or name in seen_names:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
+        description = tool.get("description") or ""
+        if name.split("__", 2)[2] != raw_name:
+            description = f"({raw_name}) {description}"
         specs.append(
             {
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": f"[{display}] {tool.get('description') or ''}".strip(),
+                    "description": f"[{display}] {description}".strip(),
                     # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both.
                     "parameters": tool.get("inputSchema")
                     or tool.get("input_schema")
@@ -10381,6 +10400,7 @@ def execute_tool(
         server = mcp_servers_db.get_server_for_tool(server_id)
         if not server:
             return f"Error: MCP server for tool '{tool_name}' not found"
+        tool_name = _mcp_raw_tool_name(name)
         server_id = server["id"]
         display = server.get("display_name") or server_id
         if not server.get("is_enabled"):

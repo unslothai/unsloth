@@ -1013,6 +1013,7 @@ def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
     mcp = mcp_display_parts(tool_name)
     if mcp:
         provenance["mcp_server"] = mcp[0]
+        provenance["mcp_tool"] = mcp[1]
     return provenance
 
 
