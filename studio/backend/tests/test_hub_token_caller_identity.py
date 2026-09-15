@@ -517,9 +517,12 @@ def test_an_unreachable_probe_takes_the_short_ttl_and_spans_the_next_request(mon
     assert probes["n"] == 1, "the unreachable answer did not survive to the next request"
 
     # Held under the SHORT ttl, not the denial one, and the constants must stay ordered so
-    # the memo cannot expire before the next request reaches it.
+    # the memo cannot expire before the next request reaches it. Memoized as UNKNOWN rather
+    # than as False: a stored denial the Hub never gave was then handed to every caller in
+    # the window, including one asking about a repo already on this disk. None re-resolves
+    # locally on each call inside it, so a finished download takes effect immediately.
     (expiry, allowed) = next(iter(hf_tokens._repo_access_cache.values()))
-    assert allowed is False
+    assert allowed is None
     assert expiry - time.monotonic() <= hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
     assert (
         hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S
