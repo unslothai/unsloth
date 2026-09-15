@@ -68,9 +68,12 @@ def _ask_shell(func: str, cache: Path) -> bool:
     script = _shell_helpers() + f'\nif {func} "$1"; then exit 0; else exit 1; fi\n'
     # No inherited UV_* : a developer's own cache settings must not decide the answer.
     env = {k: v for k, v in os.environ.items() if not k.startswith("UV_")}
-    return subprocess.run(
-        ["bash", "-c", script, "_", str(cache)], capture_output = True, env = env
-    ).returncode == 0
+    return (
+        subprocess.run(
+            ["bash", "-c", script, "_", str(cache)], capture_output = True, env = env
+        ).returncode
+        == 0
+    )
 
 
 def _studio():
