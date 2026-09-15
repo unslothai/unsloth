@@ -445,7 +445,11 @@ class _VideoGenerationCancelled(Exception):
 
 
 @contextlib.contextmanager
-def _scheduler_step_progress(pipe: Any, on_step: Any, on_step_done: Any = None):
+def _scheduler_step_progress(
+    pipe: Any,
+    on_step: Any,
+    on_step_done: Any = None,
+):
     """Progress + cancellation for pipelines WITHOUT callback_on_step_end.
 
     HunyuanVideo15Pipeline exposes no per-step callback, but every denoise step

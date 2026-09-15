@@ -9287,7 +9287,11 @@ def test_decode_phase_lands_once_the_gpu_reaches_the_boundary(fake_runtime, monk
     assert at_decode.get("eta_seconds") is None
 
 
-def _settle(backend, out, timeout = 5.0):
+def _settle(
+    backend,
+    out,
+    timeout = 5.0,
+):
     """Wait for the poller to publish the decode phase, then snapshot it.
 
     The flip is the poller's job precisely because the decoder-entry position cannot know whether
