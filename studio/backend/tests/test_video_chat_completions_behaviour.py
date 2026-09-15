@@ -158,7 +158,9 @@ def _sent_media(backend):
         # Remote is forwarded whole; llama-server fetches it under its own 10 MB ceiling.
         (_REMOTE, {"url": _REMOTE}),
         ("http://example.com/clip.mp4", {"url": "http://example.com/clip.mp4"}),
-        ("HTTPS://EXAMPLE.COM/clip.mp4", {"url": "HTTPS://EXAMPLE.COM/clip.mp4"}),
+        # handle_media matches the scheme case-sensitively, so it is lowercased before
+        # forwarding. Only the scheme: the path is case-sensitive and must survive verbatim.
+        ("HTTPS://EXAMPLE.COM/Clip.MP4", {"url": "https://EXAMPLE.COM/Clip.MP4"}),
     ],
 )
 def test_a_clip_reaches_llama_server_as_input_video(monkeypatch, url, expected):
@@ -167,6 +169,17 @@ def test_a_clip_reaches_llama_server_as_input_video(monkeypatch, url, expected):
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 200
     assert _sent_media(backend) == [{"type": "input_video", "input_video": expected}]
+
+
+def test_only_the_scheme_is_lowercased_not_the_path(monkeypatch):
+    """A case-folded path would 404 on any host that serves case-sensitive paths."""
+    backend = _VideoGguf()
+    url = "HtTpS://Example.COM/A/Mixed/Case-Path.MP4?Token=AbC"
+    with _client(monkeypatch, backend) as client:
+        client.post("/v1/chat/completions", json = _part_body(url))
+    sent = _sent_media(backend)[0]["input_video"]["url"]
+    assert sent == "https://Example.COM/A/Mixed/Case-Path.MP4?Token=AbC"
+    assert sent.startswith("http"), "handle_media's string_starts_with(url, 'http') is case-sensitive"
 
 
 def test_the_translated_part_is_the_only_video_key_left(monkeypatch):

@@ -299,7 +299,9 @@ def test_an_uppercase_data_uri_header_is_still_stripped():
 
 
 def test_an_uppercase_scheme_is_still_a_remote_url():
-    """URL schemes are case-insensitive; a missed one is forwarded as base64 and fails."""
+    """URL schemes are case-insensitive, but handle_media matches them with a case-sensitive
+    string_starts_with(url, "http"), so the scheme is lowercased on the way out. Classifying
+    it correctly and then forwarding the original spelling still fails downstream."""
     from routes.inference import _translate_video_parts
 
     messages = [
@@ -313,8 +315,8 @@ def test_an_uppercase_scheme_is_still_a_remote_url():
     ]
     _translate_video_parts(messages)
     assert [part["input_video"] for part in messages[0]["content"]] == [
-        {"url": "HTTPS://example.com/clip.mp4"},
-        {"url": "Http://example.com/other.mp4"},
+        {"url": "https://example.com/clip.mp4"},
+        {"url": "http://example.com/other.mp4"},
     ]
 
 

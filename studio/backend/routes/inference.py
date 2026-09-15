@@ -20542,6 +20542,17 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     )
 
 
+def _normalise_remote_scheme(url: str) -> str:
+    """Lowercase the scheme, and only the scheme.
+
+    handle_media classifies remote media with a case-sensitive string_starts_with(url, "http"),
+    so HTTPS://host/clip.mp4 falls through to its raw-base64 branch and the completion fails.
+    RFC 3986 makes the scheme case-insensitive; the path is not, so it is left alone.
+    """
+    scheme, sep, rest = url.partition("://")
+    return f"{scheme.lower()}{sep}{rest}" if sep else url
+
+
 def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
     for clip in _request_video_clips(payload):
         # llama-server fetches it, so the cap cannot see its bytes; llama.cpp's 10 MB governs.
@@ -20574,7 +20585,9 @@ def _translate_video_parts(messages: list[dict]) -> None:
             if scheme_rejection is not None:
                 raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
             media = (
-                {"url": url} if _is_remote_video(url) else {"data": _video_b64_rejection(url)[0]}
+                {"url": _normalise_remote_scheme(url)}
+                if _is_remote_video(url)
+                else {"data": _video_b64_rejection(url)[0]}
             )
             part.clear()
             part.update({"type": "input_video", "input_video": media})
