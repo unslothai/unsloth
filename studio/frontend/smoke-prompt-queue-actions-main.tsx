@@ -6,8 +6,7 @@ import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PromptQueueList } from "@/components/assistant-ui/prompt-queue-list";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import type { PromptQueueUIItem } from "@/features/chat";
-import { reorderPromptQueueItems } from "@/features/chat/utils/prompt-queue-reorder";
+import { type PromptQueueUIItem, reorderPromptQueueItems } from "@/features/chat";
 import "./src/index.css";
 
 const initialItems: PromptQueueUIItem[] = [
@@ -30,6 +29,7 @@ function App() {
   const [items, setItems] = useState(initialItems);
   const [paused, setPaused] = useState(false);
   const [rejectMoves, setRejectMoves] = useState(false);
+  const [steered, setSteered] = useState("");
   return (
     <TooltipProvider>
       <div style={{ padding: 16 }}>
@@ -39,6 +39,7 @@ function App() {
             setItems(initialItems);
             setPaused(false);
             setRejectMoves(false);
+            setSteered("");
           }}
         >
           Reset fixture
@@ -49,6 +50,21 @@ function App() {
         <button type="button" onClick={() => setItems((old) => old.slice(1))}>
           Dispatch first
         </button>
+        <button
+          type="button"
+          onClick={() =>
+            setItems((old) =>
+              old.map((item) => ({
+                ...item,
+                canEdit: false,
+                canRemove: false,
+              })),
+            )
+          }
+        >
+          Lock prompts
+        </button>
+        <output aria-label="Steered prompt">{steered}</output>
       </div>
       <main style={{ maxWidth: 850, margin: "180px auto 0" }}>
         <PromptQueueList
@@ -83,6 +99,15 @@ function App() {
             );
             if (!reordered) return false;
             setItems(reordered);
+            return true;
+          }}
+          onSteer={(id) => {
+            if (rejectMoves) return false;
+            const item = items.find((item) => item.id === id);
+            if (!item) return false;
+            setSteered(item.prompt);
+            setItems((old) => old.filter((item) => item.id !== id));
+            setPaused(false);
             return true;
           }}
           onPause={() => setPaused(true)}

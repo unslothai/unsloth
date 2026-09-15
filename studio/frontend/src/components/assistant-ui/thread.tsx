@@ -1263,6 +1263,49 @@ function ensurePromptQueueSubscription() {
   });
 }
 
+function steerPromptQueueTarget(target: PromptQueueTarget) {
+  const targetIds = getPromptQueueTargetIds(target);
+  const run = findPromptQueueRunByTarget(target);
+  const active = run && run.index >= 0 ? getActivePromptQueueItem(run) : null;
+  const cancelledTarget = active?.dispatched ? active.target : null;
+  pausePromptQueueRun(targetIds);
+  cancelPreStreamRunForThreadIds(targetIds);
+  try {
+    // Pausing already cancels the dispatched target once.
+    if (cancelledTarget !== target) target.cancelActiveRun();
+  } catch {
+    toast.info("Your follow-up is queued next", {
+      description: "The current response could not be interrupted.",
+    });
+  }
+  // Dispatch waits for cancellation to finish.
+  resumePromptQueueRun(targetIds);
+}
+
+function steerPromptQueueItem(itemId: string) {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) return false;
+  const { run, itemIndex, item } = match;
+  if (
+    item.dispatched ||
+    itemIndex < Math.max(run.index, 0) ||
+    getPromptQueueTargetIds(item.target).length === 0
+  ) {
+    return false;
+  }
+  if (item.target.researchStarted()) {
+    toast.info("Research is still running", {
+      description: "Stop research before steering with a queued prompt.",
+    });
+    return false;
+  }
+  // Move the existing item so its captured settings and identity stay intact.
+  run.items.splice(itemIndex, 1);
+  run.items.splice(steeringInsertionIndex(run.items, run.index), 0, item);
+  steerPromptQueueTarget(item.target);
+  return true;
+}
+
 function startPromptQueue(
   items: string[],
   target: PromptQueueTarget,
@@ -1279,20 +1322,6 @@ function startPromptQueue(
   if (steering && targetIds.length === 0) {
     throw new Error("The chat is no longer available for steering.");
   }
-  const steer = () => {
-    // Insert before pausing so pending prompts survive cancellation.
-    pausePromptQueueRun(targetIds);
-    cancelPreStreamRunForThreadIds(targetIds);
-    try {
-      target.cancelActiveRun();
-    } catch {
-      toast.info("Your follow-up is queued next", {
-        description: "The current response could not be interrupted.",
-      });
-    }
-    // Dispatch waits for cancellation to finish.
-    resumePromptQueueRun(targetIds);
-  };
   const existingRun = findPromptQueueRunByTarget(target);
   if (existingRun) {
     if (existingRun.deepResearchConsumed) {
@@ -1305,7 +1334,7 @@ function startPromptQueue(
         0,
         ...newItems,
       );
-      steer();
+      steerPromptQueueTarget(target);
       return;
     }
     existingRun.items.push(...newItems);
@@ -1334,7 +1363,7 @@ function startPromptQueue(
   syncPromptQueueUI();
   ensurePromptQueueSubscription();
   if (steering) {
-    steer();
+    steerPromptQueueTarget(target);
     return;
   }
   if (shouldWaitForCurrentRun) {
@@ -6600,6 +6629,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
       onEdit={editPromptQueueItem}
       onRemove={removePromptQueueItem}
       onMove={movePromptQueueItem}
+      onSteer={steerPromptQueueItem}
       onPause={() => pausePromptQueueRun(queueThreadIds)}
       onResume={() => resumePromptQueueRun(queueThreadIds)}
     />

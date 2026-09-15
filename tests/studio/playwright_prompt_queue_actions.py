@@ -39,19 +39,15 @@ def check_actions(page):
         expect(page.get_by_role("menu")).to_have_count(0)
 
     order(["q0", "q1", "q2"])
+    expect(page.get_by_role("button", name = re.compile(r"^Steer with queued prompt"))).to_have_count(
+        3
+    )
     menu(3)
-    action("Move to front")
-    order(["q2", "q0", "q1"])
-    menu(1)
-    expect(page.get_by_role("menuitem", name = "Move up", exact = True)).to_be_disabled()
-    action("Move to end")
-    order(["q0", "q1", "q2"])
-    menu(2)
-    action("Move down")
-    order(["q0", "q2", "q1"])
-    menu(3)
-    action("Move up")
-    order(["q0", "q1", "q2"])
+    expect(page.get_by_role("menuitem")).to_have_text(
+        ["Edit message", "Copy message", "Stop and pause queue"]
+    )
+    expect(page.get_by_role("menuitem", name = re.compile(r"^Move"))).to_have_count(0)
+    page.keyboard.press("Escape")
 
     menu(2)
     action("Edit message")
@@ -62,9 +58,10 @@ def check_actions(page):
     editor.fill("Changed second prompt\nWith another line")
     editor.press("Control+Enter")
     expect(rows.nth(1)).to_contain_text("Changed second prompt")
-    edit_button = page.get_by_role("button", name = "Edit queued prompt 2", exact = True)
+    edit_button = page.get_by_role("button", name = "More options for queued prompt 2", exact = True)
     expect(edit_button).to_be_focused()
     edit_button.click()
+    action("Edit message")
     editor.fill("Discard this edit")
     editor.press("Escape")
     expect(rows.nth(1)).to_contain_text("Changed second prompt")
@@ -104,12 +101,15 @@ def check_actions(page):
     expect(page.get_by_text("Paused", exact = True)).to_be_visible()
     menu(1)
     action("Resume queue")
-    expect(page.get_by_text("Next", exact = True)).to_be_visible()
+    expect(page.get_by_text("Paused", exact = True)).to_have_count(0)
     page.get_by_role("button", name = "Simulate dispatch race").click()
-    menu(3)
-    action("Move to front")
+    page.get_by_role("button", name = "Reorder queued prompt 3 of 3", exact = True).focus()
+    page.keyboard.press("Home")
     order(["q2", "q0", "q1"])
-    expect(page.get_by_role("status")).to_contain_text("queue changed")
+    expect(page.get_by_role("status").filter(has_text = "queue changed")).to_be_attached()
+    page.get_by_role("button", name = "Steer with queued prompt 3", exact = True).click()
+    order(["q2", "q0", "q1"])
+    expect(page.get_by_role("status").filter(has_text = "could not steer")).to_be_attached()
     page.get_by_role("button", name = "Remove queued prompt 2", exact = True).click()
     order(["q2", "q1"])
     page.get_by_role("button", name = "Remove queued prompt 2", exact = True).click()
@@ -118,14 +118,27 @@ def check_actions(page):
         page.get_by_role("button", name = "Reorder queued prompt 1 of 1", exact = True)
     ).to_be_disabled()
     menu(1)
-    for label in ("Move to front", "Move up", "Move down", "Move to end"):
-        expect(page.get_by_role("menuitem", name = label, exact = True)).to_be_disabled()
+    expect(page.get_by_role("menuitem", name = re.compile(r"^Move"))).to_have_count(0)
     page.keyboard.press("Escape")
     expect(
         page.get_by_role("button", name = "More options for queued prompt 1", exact = True)
     ).to_be_focused()
+    page.get_by_role("button", name = "Reset fixture", exact = True).click()
+    menu(1)
+    action("Stop and pause queue")
+    page.get_by_role("button", name = "Steer with queued prompt 2", exact = True).click()
+    order(["q0", "q2"])
+    expect(page.get_by_label("Steered prompt", exact = True)).to_have_text("Second prompt")
+    expect(page.get_by_text("Paused", exact = True)).to_have_count(0)
+    page.get_by_role("button", name = "Lock prompts", exact = True).click()
+    expect(
+        page.get_by_role("button", name = "Steer with queued prompt 1", exact = True)
+    ).to_be_disabled()
+    expect(
+        page.get_by_role("button", name = "Steer with queued prompt 2", exact = True)
+    ).to_be_disabled()
     print(
-        "PASS: menu, edit, keyboard, mouse drag, file drop, pause/resume, race and single-item states",
+        "PASS: compact menu, steer, edit, keyboard, mouse drag, file drop, pause/resume, races and locked states",
         flush = True,
     )
 

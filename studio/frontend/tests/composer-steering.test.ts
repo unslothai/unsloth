@@ -25,6 +25,9 @@ const source = ts.createSourceFile(
 );
 const names = [
   "startPromptQueue",
+  "steerPromptQueueTarget",
+  "steerPromptQueueItem",
+  "findPromptQueueRunByItemId",
   "pausePromptQueueRun",
   "resumePromptQueueRun",
   "getPromptQueueRunsForThreadIds",
@@ -60,7 +63,7 @@ const js = ts.transpileModule(declarations, {
 }).outputText;
 
 type Target = ReturnType<typeof makeTarget>;
-type Item = { prompt: string; target: Target; dispatched: boolean };
+type Item = { id: string; prompt: string; target: Target; dispatched: boolean };
 type Run = {
   id: string;
   items: Item[];
@@ -75,6 +78,7 @@ function makeTarget(id: string, running = true) {
     getDocumentThreadId: () => id || null,
     running,
     usesLocalModel: true,
+    researchStarted: () => false,
     complete: () => undefined,
     cancels: 0,
     permanentCancels: 0,
@@ -138,7 +142,7 @@ function world() {
   };
   const engine = new Function(
     ...Object.keys(deps),
-    `${js}\nreturn {startPromptQueue, dispatchQueuedPrompt, isPromptQueueRunReadyToDispatch, handlePromptQueueRunState};`,
+    `${js}\nreturn {startPromptQueue, steerPromptQueueItem, dispatchQueuedPrompt, isPromptQueueRunReadyToDispatch, handlePromptQueueRunState};`,
   )(...Object.values(deps)) as {
     startPromptQueue: (
       items: string[],
@@ -146,6 +150,7 @@ function world() {
       wait?: boolean,
       behavior?: "queue" | "steer",
     ) => void;
+    steerPromptQueueItem: (id: string) => boolean;
     dispatchQueuedPrompt: (
       run: Run,
       item: Item,
@@ -261,6 +266,127 @@ test("normal queue follow-ups append without interrupting", () => {
   );
   assert.equal(target.cancels, 0);
   assert.deepEqual(w.scopedCancels, []);
+});
+
+test("row steer retains the selected item and history, cancelling its shared target once", async () => {
+  const w = world();
+  const target = makeTarget("chat");
+  const sibling = makeTarget("other chat");
+  w.startPromptQueue(["completed", "active", "later A", "later B"], target);
+  const run = w.run();
+  run.items[0].dispatched = true;
+  run.items[1].dispatched = true;
+  run.index = 1;
+  const selected = run.items[3];
+  w.startPromptQueue(["untouched"], sibling);
+
+  assert.equal(w.steerPromptQueueItem(selected.id), true);
+  assert.deepEqual(
+    run.items.map((item) => item.prompt),
+    ["completed", "later B", "later A"],
+  );
+  assert.equal(run.items[1], selected);
+  assert.equal(run.index, 1);
+  assert.equal(run.generation, 1);
+  assert.equal(target.cancels, 1);
+  assert.equal(target.permanentCancels, 0);
+  assert.equal(sibling.cancels, 0);
+  assert.deepEqual(w.scopedCancels, [["chat"]]);
+  await w.dispatchQueuedPrompt(run, selected);
+  assert.deepEqual(w.appended, []);
+  target.running = false;
+  w.handlePromptQueueRunState(run, {});
+  await w.dispatchQueuedPrompt(run, selected);
+  assert.deepEqual(w.appended, ["later B"]);
+  assert.equal(w.steerPromptQueueItem(selected.id), false);
+  assert.equal(target.cancels, 1);
+});
+
+test("row steer resumes paused and waiting queues with the chosen prompt first", () => {
+  for (const paused of [true, false]) {
+    for (const selectedIndex of [0, 2]) {
+      const w = world();
+      const target = makeTarget("chat");
+      w.startPromptQueue(["first", "second", "third"], target, true);
+      const run = w.run();
+      run.paused = paused;
+      const before = [...run.items];
+      const selected = before[selectedIndex];
+      assert.equal(w.steerPromptQueueItem(selected.id), true);
+      assert.deepEqual(run.items, [
+        selected,
+        ...before.filter((i) => i !== selected),
+      ]);
+      assert.equal(run.index, 0);
+      assert.equal(run.paused, false);
+      assert.equal(target.cancels, 1);
+    }
+  }
+});
+
+test("row steer handles a sole pending prompt without dropping or duplicating it", () => {
+  const w = world();
+  const target = makeTarget("chat", false);
+  w.startPromptQueue(["only prompt"], target);
+  const run = w.run();
+  const selected = run.items[0];
+  assert.equal(w.steerPromptQueueItem(selected.id), true);
+  assert.deepEqual(run.items, [selected]);
+  assert.equal(run.index, 0);
+  assert.equal(run.paused, false);
+});
+
+test("row steer rejects stale, dispatched, unavailable and active research prompts", () => {
+  const w = world();
+  const target = makeTarget("chat");
+  w.startPromptQueue(["active", "pending"], target);
+  const run = w.run();
+  run.items[0].dispatched = true;
+  const before = [...run.items];
+  assert.equal(w.steerPromptQueueItem("missing"), false);
+  assert.equal(w.steerPromptQueueItem(run.items[0].id), false);
+  target.researchStarted = () => true;
+  assert.equal(w.steerPromptQueueItem(run.items[1].id), false);
+  target.researchStarted = () => false;
+  target.getRunningThreadIds = () => [];
+  target.getDocumentThreadId = () => null;
+  assert.equal(w.steerPromptQueueItem(run.items[1].id), false);
+  assert.deepEqual(run.items, before);
+  assert.equal(target.cancels, 0);
+  assert.deepEqual(w.scopedCancels, []);
+});
+
+test("row steer invalidates an in-flight document probe and waits for model loading", async () => {
+  const w = world();
+  const target = makeTarget("chat", false);
+  w.startPromptQueue(["first", "second", "third"], target);
+  const run = w.run();
+  const selected = run.items[2];
+  let resolve!: (value: boolean) => void;
+  w.setIndexing(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const staleDispatch = w.dispatchQueuedPrompt(run, run.items[0]);
+  w.setModelLoading(true);
+  assert.equal(w.steerPromptQueueItem(selected.id), true);
+  resolve(false);
+  await staleDispatch;
+  assert.deepEqual(w.appended, []);
+  w.setIndexing(async () => false);
+  await w.dispatchQueuedPrompt(run, selected);
+  assert.deepEqual(w.appended, []);
+  assert.equal(selected.dispatched, false);
+  w.setModelLoading(false);
+  await w.dispatchQueuedPrompt(run, selected);
+  assert.equal(w.isPromptQueueRunReadyToDispatch(run), false);
+  assert.deepEqual(w.appended, ["third"]);
+  assert.deepEqual(
+    run.items.map((item) => item.prompt),
+    ["third", "first", "second"],
+  );
 });
 
 test("a new steering queue waits for cancellation and rejects an unidentified target", async () => {

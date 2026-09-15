@@ -3,12 +3,9 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import {
-  ArrowDownIcon,
-  ArrowDownToLineIcon,
-  ArrowUpIcon,
-  ArrowUpToLineIcon,
   CornerDownRightIcon,
   GripVerticalIcon,
+  ListEndIcon,
   MoreHorizontalIcon,
   PauseIcon,
   PlayIcon,
@@ -39,6 +36,7 @@ type PromptQueueListProps = {
   onEdit: (id: string, prompt: string) => boolean;
   onRemove: (id: string) => boolean;
   onMove: (id: string, targetId: string) => boolean;
+  onSteer: (id: string) => boolean;
   onPause: () => void;
   onResume: () => void;
 };
@@ -50,6 +48,7 @@ export function PromptQueueList({
   onEdit,
   onRemove,
   onMove,
+  onSteer,
   onPause,
   onResume,
 }: PromptQueueListProps) {
@@ -117,7 +116,7 @@ export function PromptQueueList({
           "[data-queue-item-id]",
         ) ?? [],
       ).find((element) => element.dataset.queueItemId === id);
-      row?.querySelector<HTMLButtonElement>("[data-queue-edit]")?.focus();
+      row?.querySelector<HTMLButtonElement>("[data-queue-menu]")?.focus();
     });
   }
 
@@ -149,7 +148,7 @@ export function PromptQueueList({
   return (
     <div
       ref={listRef}
-      className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[18px] border border-border/45 bg-background px-2 pt-1.5 pb-3 text-muted-foreground sm:mx-7 sm:px-3 dark:bg-card"
+      className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[20px] border border-border/60 bg-background px-1.5 pt-1 pb-3 text-muted-foreground sm:mx-5 sm:px-2 dark:bg-card"
       aria-label={`Prompt queue, ${entry.current} of ${entry.total}`}
     >
       <p id={instructionsId} className="sr-only">
@@ -228,12 +227,12 @@ export function PromptQueueList({
                   </Button>
                 </div>
               ) : (
-                <div className="flex min-h-11 items-center gap-1">
+                <div className="flex min-h-11 items-center gap-1 sm:min-h-12">
                   <TooltipIconButton
                     tooltip="Drag to reorder"
                     aria-label={`Reorder queued prompt ${position} of ${items.length}`}
                     aria-describedby={instructionsId}
-                    className="size-7 shrink-0 touch-none cursor-grab text-muted-foreground/70 active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8"
+                    className="h-8 w-4 shrink-0 touch-none cursor-grab text-muted-foreground/50 hover:text-muted-foreground active:cursor-grabbing pointer-coarse:h-11 pointer-coarse:w-8"
                     disabled={!canMove}
                     onPointerDown={(event) => {
                       if (event.button !== 0 || !canMove || !event.isPrimary)
@@ -304,27 +303,33 @@ export function PromptQueueList({
                   >
                     <GripVerticalIcon className="size-4" />
                   </TooltipIconButton>
-                  <CornerDownRightIcon
+                  <ListEndIcon
                     className="hidden size-4 shrink-0 text-muted-foreground/60 sm:block"
                     aria-hidden="true"
                   />
                   <span className="min-w-0 flex-1 truncate px-1.5 text-sm text-foreground/80">
                     {item.prompt}
                   </span>
-                  {index === 0 && (
+                  {index === 0 && entry.paused && (
                     <span className="hidden shrink-0 px-1 text-xs text-muted-foreground sm:inline">
-                      {entry.paused ? "Paused" : "Next"}
+                      Paused
                     </span>
                   )}
                   <TooltipIconButton
-                    tooltip="Edit message"
-                    data-queue-edit
-                    aria-label={`Edit queued prompt ${position}`}
-                    disabled={!item.canEdit}
-                    className="size-8 shrink-0 text-muted-foreground hover:text-foreground pointer-coarse:size-11"
-                    onClick={() => startEditing(item)}
+                    tooltip="Interrupt the response and send this prompt next"
+                    aria-label={`Steer with queued prompt ${position}`}
+                    disabled={!item.canEdit || !item.canRemove}
+                    className="h-8 w-auto shrink-0 gap-1.5 px-2 font-normal text-muted-foreground hover:text-foreground pointer-coarse:h-11"
+                    onClick={() => {
+                      setAnnouncement(
+                        onSteer(item.id)
+                          ? "This prompt will steer the response next."
+                          : "This prompt could not steer the response. Check the queue and try again.",
+                      );
+                    }}
                   >
-                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.8} />
+                    <CornerDownRightIcon className="size-4" />
+                    <span>Steer</span>
                   </TooltipIconButton>
                   <TooltipIconButton
                     tooltip="Remove from queue"
@@ -343,6 +348,7 @@ export function PromptQueueList({
                       <TooltipIconButton
                         ref={triggerRef}
                         tooltip="More options"
+                        data-queue-menu
                         aria-label={`More options for queued prompt ${position}`}
                         className="size-8 shrink-0 text-muted-foreground hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:size-11"
                       >
@@ -383,31 +389,6 @@ export function PromptQueueList({
                     >
                       <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.8} /> Copy
                       message
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      disabled={!canMove || !previous}
-                      onSelect={() => move(item.id, movableItems[0]?.id)}
-                    >
-                      <ArrowUpToLineIcon /> Move to front
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={!canMove || !previous}
-                      onSelect={() => move(item.id, previous?.id)}
-                    >
-                      <ArrowUpIcon /> Move up
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={!canMove || !next}
-                      onSelect={() => move(item.id, next?.id)}
-                    >
-                      <ArrowDownIcon /> Move down
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={!canMove || !next}
-                      onSelect={() => move(item.id, movableItems.at(-1)?.id)}
-                    >
-                      <ArrowDownToLineIcon /> Move to end
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
