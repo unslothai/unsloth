@@ -446,6 +446,244 @@ def _clear_finished_warm_locked() -> None:
     _status.pop("seconds", None)
 
 
+DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
+
+# The catalog's own task identifiers, which _build_index compares with ==. Anything else
+# (a friendly "image"/"video") silently builds an empty index and reads as "no models here",
+# so the gate would refuse forever. Pinned against the catalog by test_diffusers_prewarm.py.
+_VIDEO_TASK = "text-to-video"
+_MEDIA_PREWARM_TASKS = ("text-to-image", _VIDEO_TASK)
+
+_diffusers_prewarm_lock = threading.Lock()
+_diffusers_prewarmed = False
+
+
+def _a_local_model_would_load_through_diffusers() -> bool:
+    """Whether any indexed media model would actually load through DIFFUSERS on this host.
+
+    Presence alone is the wrong question. A CPU or MPS host with a runnable native binary, or
+    any host with ``UNSLOTH_DIFFUSION_ENGINE=sd_cpp``, routes a supported GGUF to sd.cpp, which
+    imports no diffusers at all -- so prewarming there would add ~316 MB to exactly the
+    low-memory installs that can least afford it, and it would never be reclaimed by a load.
+
+    ``predict_engine`` is the same predicate selection and the download planner use, and it is
+    documented to activate nothing and install nothing, so asking it here cannot perturb a
+    resident model. A non-GGUF pick short-circuits it: only a GGUF can go native.
+
+    The family comes from ``detected_image_family``, the resolver the listing and locality
+    routes already share, rather than ``detect_family`` on the id: a local GGUF can carry its
+    family only in the FILENAME (``/models/custom/model.gguf`` holding ``z-image``), which
+    ``detect_family`` cannot see, and treating that as unknown would prewarm on exactly the
+    sd.cpp host this gate exists to spare."""
+    from core.inference.diffusion_engine_router import (  # noqa: PLC0415
+        ENGINE_DIFFUSERS,
+        predict_engine,
+    )
+    from core.inference.media_locality import detected_image_family  # noqa: PLC0415
+    from core.inference.media_model_index import (  # noqa: PLC0415
+        available_media_model_ids,
+        resolve_local_media_model,
+    )
+
+    # Scope limit, deliberate: the media index is keyed on current_account_id(), and this runs on
+    # a boot thread with no bound account, so it answers for the owner. On a multi-user install
+    # where only a non-owner has an image model, the gate says no and that user's first load
+    # still pays the import. Not worth fixing here: building an index per configured account
+    # means a filesystem scan per account on the boot thread, which is the cost this gate exists
+    # to avoid, and the failure mode is only the absence of a speedup, exactly as today.
+    for task in _MEDIA_PREWARM_TASKS:
+        for model_id in available_media_model_ids(task):
+            pick = resolve_local_media_model(model_id, task = task)
+            if pick is None:
+                continue
+            kind = pick.model_kind or ("gguf" if pick.gguf_filename else None)
+            if kind != "gguf":
+                return True  # only a GGUF can go native, by either backend
+            if task == _VIDEO_TASK:
+                # The video backend has its own native path and its own family type, so the
+                # image resolver and the image router cannot answer for it: an H3 GGUF returns
+                # from _run_load_h3_native before video.py's own `import diffusers`, while every
+                # other video load reaches it.
+                if _is_native_video_pick(pick):
+                    continue
+                return True
+            family = detected_image_family(pick)
+            if family is None:
+                return True  # unknown family: diffusers is where the load would land
+            if predict_engine(family, model_kind = "gguf") == ENGINE_DIFFUSERS:
+                return True
+    return False
+
+
+def _is_native_video_pick(pick) -> bool:
+    """Whether *pick* is the one video combination that never imports diffusers.
+
+    ``VideoBackend.load_pipeline`` asks ``is_h3_native(fam, kind)`` and returns through
+    ``_run_load_h3_native`` before its own ``import diffusers``; everything else falls through
+    to it. Asking the video backend's own predicate keeps this from drifting away from it."""
+    from core.inference.video_families import detect_video_family  # noqa: PLC0415
+    from core.inference.video_minimax_h3 import is_h3_native  # noqa: PLC0415
+
+    gguf = getattr(pick, "gguf_filename", None)
+    for base in (pick.model_path, pick.model_id):
+        if not base:
+            continue
+        # Repo id first, then repo id + picked filename, which is the order and the pair
+        # video.py's own _detect_load_family uses: a local directory or a generically named repo
+        # often carries the family token only in the checkpoint filename.
+        for needle in (base, f"{base}/{gguf}" if gguf else None):
+            if not needle:
+                continue
+            try:
+                family = detect_video_family(needle)
+            except Exception:  # noqa: BLE001 -- a probe failure must not decide "native"
+                continue
+            if family is not None:
+                return bool(is_h3_native(family, "gguf"))
+    # Not covered on purpose: _detect_load_family also reads general.architecture out of a
+    # renamed GGUF's header. That is file IO on a boot thread to save memory, and guessing wrong
+    # in this direction only costs the prewarm, so an unidentifiable GGUF falls through to the
+    # safe default and prewarms.
+    return False
+
+
+def prewarm_diffusers_if_image_models_exist() -> bool:
+    """Import diffusers off the first image load. True iff this call did the import.
+
+    Measured on this stack, the first diffusion load pays roughly 5.3s of pure import before it
+    touches a weight: ``diffusers`` 1.6s, ``diffusers.hooks`` 2.4s and the pipeline classes 1.3s,
+    for about 316 MB. None of it depends on which model was picked, so it is the same cost every
+    first load in a fresh process, and all of it can be paid earlier by a thread nobody is
+    waiting on.
+
+    Gated on the install actually having a local image or video model, which is the whole point:
+    a chat-only or training-only user never pays the 316 MB. The gate itself is stdlib only (it
+    does not import torch or diffusers) and its index is cached and needed by the Images page
+    anyway, so building it here is work moved earlier rather than work added.
+
+    Called from the POST-warm worker, after ``join_background_warm()``, so it cannot delay any
+    coordinated warm stage or the socket bind. Concurrency was measured rather than assumed: 4 to
+    8 threads importing diffusers submodules together failed 0 of 16 trials, with and without
+    dynamo already imported, because these are ordinary package imports that CPython's per module
+    lock serialises, unlike the dynamo/inductor cycle in #10350.
+
+    Never fatal, and opt out with ``UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM=1``."""
+    global _diffusers_prewarmed
+    if _diffusers_prewarmed:
+        return False
+    if os.environ.get(DIFFUSERS_PREWARM_DISABLE_ENV_VAR) == "1":
+        return False
+    # The torch opt-out covers this too. start_background_warm() declines under DISABLE_ENV_VAR,
+    # but join_background_warm() reports True when no worker ever ran, so the post-warm thread
+    # arrives here regardless; importing diffusers imports torch, which is precisely what that
+    # variable exists to prevent. Checked here rather than at the call site so every caller gets
+    # it, and so the warm-window tests that assert no unsolicited torch import keep holding.
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return False
+    with _diffusers_prewarm_lock:
+        if _diffusers_prewarmed:
+            return False
+        try:
+            if not _a_local_model_would_load_through_diffusers():
+                # Nothing diffusers would serve, so the import is pure cost. Not latched: a
+                # model downloaded later should let the next lifespan reconsider.
+                logger.debug("diffusers prewarm skipped: no local model routes to diffusers")
+                return False
+        except Exception as exc:  # noqa: BLE001 -- a gate that cannot answer means skip, not crash
+            logger.debug("diffusers prewarm gate unavailable: %r", exc)
+            return False
+
+        try:
+            # core.inference.diffusion installs these at module scope, above its own lazy
+            # `import diffusers`, because on Windows ROCm diffusers reaches xformers and torchao
+            # and both land on an absent distributed backend. This prewarm can be the first
+            # importer in the process, so it owes the same three installs; they are idempotent.
+            from core._torchao_stub import (  # noqa: PLC0415
+                install_torchao_windows_rocm_stub,
+                install_xformers_windows_rocm_stub,
+            )
+            from core.inference.diffusion_torchao_patches import (  # noqa: PLC0415
+                install_torchao_int_mm_patch,
+            )
+
+            install_xformers_windows_rocm_stub()
+            install_torchao_windows_rocm_stub()
+            install_torchao_int_mm_patch()
+        except Exception as exc:  # noqa: BLE001 -- importing unprotected is the hazard; skip
+            logger.debug("diffusers prewarm skipped: stubs unavailable: %r", exc)
+            return False
+
+        started = time.perf_counter()
+        # One lock at a time, never both. Each scope holds that package's own lock across its
+        # import AND its cleanup, the way _held_import_lock does for the bare warm stages,
+        # because releasing between the two is the bug: CPython drops the lock the moment the
+        # import raises, so a request already waiting on it wakes up, re-imports against the
+        # submodules that import left behind, and republishes the malformed package -- at which
+        # point purge_partial_import declines, since those leftovers now belong to a live
+        # importer. Reentrant per thread, so the nested acquire inside the purge is free.
+        #
+        # NOT nested, which is the part that is easy to get backwards. `import diffusers.hooks`
+        # makes CPython take the CHILD lock first and import the parent from inside it
+        # (_find_and_load -> _ModuleLockManager(name) -> _find_and_load_unlocked -> import
+        # parent). Holding parent-then-child here would invert that against any concurrent
+        # `from diffusers.hooks import ...` and produce a lock cycle, which surfaces as the
+        # _DeadlockError that _lock_unlock_module swallows -- i.e. exactly the partially
+        # initialised module this whole change exists to prevent. Sequential scopes have no
+        # cycle: by the time the hooks scope runs, the parent is published, so importing the
+        # child acquires nothing else.
+        # The try INSIDE each with, not around it: exiting the scope on the exception would
+        # release the lock and the handler would reacquire it, and that gap is the whole bug.
+        # A request already waiting on the lock wakes up in it, re-imports against the submodules
+        # the failed import left behind, and republishes the malformed package -- at which point
+        # purge_partial_import declines, because those leftovers now belong to a live importer.
+        # Reentrant per thread, so the nested acquire inside the purge is free.
+        with _ModuleLockManager("diffusers"):
+            try:
+                import diffusers  # noqa: F401, PLC0415
+            except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+                logger.debug("diffusers prewarm skipped: %r", exc)
+                purge_partial_import("diffusers")
+                return False
+
+        # A separate scope, never nested inside the one above. `import diffusers.hooks` makes
+        # CPython take the CHILD lock first and import the parent from inside it (_find_and_load
+        # -> _ModuleLockManager(name) -> _find_and_load_unlocked -> import parent). Holding
+        # parent-then-child here would invert that against a concurrent `from diffusers.hooks
+        # import ...` and produce a lock cycle, which surfaces as the _DeadlockError that
+        # _lock_unlock_module swallows: exactly the partially initialised module this change
+        # exists to prevent. Sequentially there is no cycle, because the parent is already
+        # published by the time this runs, so importing the child acquires nothing else.
+        with _ModuleLockManager("diffusers.hooks"):
+            try:
+                import diffusers.hooks  # noqa: F401, PLC0415
+            except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+                logger.debug("diffusers prewarm skipped: %r", exc)
+                # The parent stays: it imported cleanly, and purging it would be a no-op anyway
+                # since it is in sys.modules and belongs to nobody. What has to go is the hook
+                # submodules that did execute, or the load path's own `from diffusers.hooks
+                # import ...` rebuilds an incomplete package from them (#7580, one level down).
+                purge_partial_import("diffusers.hooks")
+                return False
+
+        # Outside both locks: it imports nothing under diffusers. diffusers hard-codes
+        # _tqdm_active = True at import and honours no env var, so a prewarm that skipped this
+        # would let "Loading pipeline components..." draw straight onto the structlog stream,
+        # mid-record. Not fatal to the prewarm: the imports above already succeeded, which is the
+        # work this exists to do, and the load path calls the same idempotent helper anyway.
+        try:
+            from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
+            quiet_third_party_progress_bars()
+        except Exception as exc:  # noqa: BLE001 -- cosmetic only
+            logger.debug("quieting third-party progress bars failed: %r", exc)
+
+        _diffusers_prewarmed = True
+        logger.info(
+            "diffusers prewarmed in %.0fms; the first image load skips that import",
+            (time.perf_counter() - started) * 1000,
+        )
+        return True
+
+
 def warm_status() -> dict:
     """Snapshot of the warm for diagnostics and tests."""
     return {
