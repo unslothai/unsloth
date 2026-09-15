@@ -170,7 +170,9 @@ def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
     import yaml
 
     workflow = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "clean-machine-install-ci.yml").read_text(encoding="utf-8")
+        (REPO / ".github" / "workflows" / "clean-machine-install-ci.yml").read_text(
+            encoding = "utf-8"
+        )
     )
     steps = [
         step
