@@ -2840,6 +2840,10 @@ _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
 _LLAMA_CPP_NO_SPACE=false
 _LLAMA_KEEP_PREBUILT_ACTIVE=false
+# The installed GPU prebuilt was kept because the source fallback could only build CPU.
+_LLAMA_KEPT_GPU_PREBUILT=""
+# A GPU host ended on a CPU-only llama.cpp: named in the footer, not just mid-log (#9255).
+_LLAMA_CPU_ONLY_ON_GPU_HOST=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -2928,6 +2932,40 @@ _link_local_llama_quantize_shim() {
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
+}
+
+# The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
+_installed_prebuilt_backend() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 0
+    python - "$1/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json
+import sys
+
+try:
+    backend = json.load(open(sys.argv[1], encoding="utf-8")).get("backend")
+except Exception:
+    backend = None
+print(backend.strip().lower() if isinstance(backend, str) else "")
+PY
+}
+
+# A CPU-only source build must not replace a working GPU prebuilt while the GPU is still
+# there: the prebuilt update failed for a reason a CPU binary cannot repair (network, a
+# GitHub limit, a bad release) and the swap below is for good (#9255). Prints the backend
+# to keep. False when there is nothing to keep, the GPU the marker names is gone, or the
+# build was asked for by hand.
+_gpu_prebuilt_to_keep_over_cpu_build() {
+    local install_dir=$1 backend
+    [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
+    [ -z "$_LLAMA_PR" ] || return 1
+    _has_local_llama_server "$install_dir" || return 1
+    backend="$(_installed_prebuilt_backend "$install_dir")"
+    case "$backend" in
+        cuda) [ "$_setup_nvidia_physical" = true ] || return 1 ;;
+        rocm|vulkan) [ "$_setup_amd_detected" = true ] || [ "$_setup_nvidia_physical" = true ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    printf '%s' "$backend"
 }
 
 # UNSLOTH_LLAMA_KEEP_PREBUILT=1: keep an installed GPU prebuilt already matching the requested tag/fork.
@@ -3694,7 +3732,14 @@ else
                 _BUILD_DESC="building (CPU)"
             fi
 
-            substep "$_BUILD_DESC..."
+            # Decided before the compile: a CPU build adds nothing to a kept GPU prebuilt.
+            if [ -z "$GPU_BACKEND" ] && [ "$_IS_MACOS_ARM64" != true ] \
+                    && _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source fallback could only build for the CPU" "$C_WARN"
+                BUILD_OK=false
+            else
+                substep "$_BUILD_DESC..."
+            fi
 
             NCPU=$(_llama_build_jobs)
             verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
@@ -3713,7 +3758,7 @@ else
                 fi
             }
 
-            if ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
+            if [ "$BUILD_OK" = true ] && ! run_quiet_no_exit "cmake llama.cpp" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CMAKE_ARGS; then
                 _FB_LABEL="$(_gpu_fallback_label)"
                 if [ -n "$_FB_LABEL" ]; then
                     _TRY_METAL_CPU_FALLBACK=false
@@ -3798,6 +3843,15 @@ else
             fi
         fi
 
+        # A GPU build that fell back to CPU on the way is caught here, after the fact.
+        if [ "$BUILD_OK" = true ] && [ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]; then
+            if _LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"; then
+                step "llama.cpp" "keeping the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt: the source build fell back to the CPU" "$C_WARN"
+                BUILD_OK=false
+            elif [ "$_setup_nvidia_physical" = true ] || [ "$_setup_amd_detected" = true ]; then
+                _LLAMA_CPU_ONLY_ON_GPU_HOST=true
+            fi
+        fi
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
@@ -3835,6 +3889,9 @@ else
         elif [ "$BUILD_OK" = true ]; then
             step "llama.cpp" "binary not found after build" "$C_WARN"
             _LLAMA_CPP_DEGRADED=true
+        elif [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+            # Not a failure: the kept prebuilt is a root-level llama-server, not $LLAMA_SERVER_BIN.
+            print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
         else
             step "llama.cpp" "build failed" "$C_ERR"
             [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
@@ -3978,6 +4035,19 @@ PY
     fi
 fi
 
+# A GPU host that lost, or nearly lost, its GPU llama.cpp is named in the footer: every
+# path to that outcome exits 0, and a mid-log line is what #9255's reporters scrolled past.
+_print_llama_gpu_notes() {
+    if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "the prebuilt update failed and the source fallback could only build for the CPU, so the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "re-run the installer once the download works to update it"
+    fi
+    if [ "$_LLAMA_CPU_ONLY_ON_GPU_HOST" = true ]; then
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "warning" "GPU acceleration is unavailable: the prebuilt install failed and the source fallback had no GPU toolkit (nvcc or hipcc) to build with, so GGUF inference will run on the CPU"
+        printf "  ${C_WARN}%-15s%s${C_RST}\n" "" "install the toolkit, or fix the download failure above, then re-run this installer to restore the GPU"
+    fi
+}
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
@@ -3988,6 +4058,7 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
 elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
@@ -3997,6 +4068,7 @@ elif [ "$IS_COLAB" = true ]; then
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     substep "from colab import start"
     substep "start()"
 else
@@ -4007,6 +4079,7 @@ else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
     fi
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
+    _print_llama_gpu_notes
     if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_DIM}%-15s${C_WARN}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     else

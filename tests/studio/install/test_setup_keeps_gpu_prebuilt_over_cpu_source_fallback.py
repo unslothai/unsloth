@@ -1,0 +1,199 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""setup.sh must not replace a working GPU llama.cpp prebuilt with a CPU source build (#9255).
+
+A prebuilt update that fails (network, a GitHub limit, a bad release) restores the existing
+install and then source-builds. Without nvcc that build is CPU-only, and the swap replaced
+the restored CUDA prebuilt for good while the installer reported "built". Part one drives
+the keep decision, sliced out of setup.sh, against real markers. Part two pins the wiring:
+the decision runs before the compile and again at the swap, and the footer names the outcome.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
+SETUP_TEXT = SETUP_SH.read_text(encoding = "utf-8")
+
+BASH = shutil.which("bash")
+requires_bash = pytest.mark.skipif(BASH is None, reason = "a working bash is required")
+
+_FUNCTIONS = (
+    "_has_local_llama_server() {",
+    "_installed_prebuilt_backend() {",
+    "_gpu_prebuilt_to_keep_over_cpu_build() {",
+)
+
+_HARNESS = """
+set -u
+. "$1"
+if _kept="$(_gpu_prebuilt_to_keep_over_cpu_build "$2")"; then
+    printf 'KEEP %s' "$_kept"
+else
+    printf 'REPLACE'
+fi
+"""
+
+
+def _sliced_functions(tmp_path):
+    """The three helpers, sliced out: setup.sh runs install steps at load."""
+    body = ""
+    for name in _FUNCTIONS:
+        start = SETUP_TEXT.index(name)
+        end = SETUP_TEXT.index("\n}\n", start) + len("\n}\n")
+        body += SETUP_TEXT[start:end] + "\n"
+    path = tmp_path / "keep_fns.sh"
+    path.write_text(body, encoding = "utf-8")
+    return path
+
+
+def _install(
+    tmp_path,
+    marker,
+    *,
+    server = True,
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir(exist_ok = True)
+    if server:
+        exe = install_dir / "llama-server"
+        exe.write_text("#!/bin/sh\n", encoding = "utf-8")
+        exe.chmod(0o755)
+    if marker is not None:
+        text = marker if isinstance(marker, str) else json.dumps(marker)
+        (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(text, encoding = "utf-8")
+    return install_dir
+
+
+def _decide(tmp_path, install_dir, **env):
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir(exist_ok = True)
+    shim = stub_bin / "python"
+    shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding = "utf-8")
+    shim.chmod(0o755)
+    run_env = {
+        **os.environ,
+        "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+        "_LLAMA_FORCE_COMPILE": "0",
+        "_LLAMA_PR": "",
+        "_setup_nvidia_physical": "false",
+        "_setup_amd_detected": "false",
+    }
+    run_env.update(env)
+    result = subprocess.run(
+        [BASH, "-c", _HARNESS, "harness", str(_sliced_functions(tmp_path)), str(install_dir)],
+        env = run_env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        timeout = 120,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+# ── part one: the keep decision ──
+
+
+@requires_bash
+class TestTheKeepDecision:
+    def test_a_cuda_prebuilt_on_an_nvidia_host_is_kept(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "cuda"})
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "KEEP cuda"
+
+    @pytest.mark.parametrize("backend", ["rocm", "vulkan"])
+    def test_an_amd_prebuilt_on_an_amd_host_is_kept(self, tmp_path, backend):
+        install_dir = _install(tmp_path, {"backend": backend})
+        assert _decide(tmp_path, install_dir, _setup_amd_detected = "true") == f"KEEP {backend}"
+
+    def test_the_marker_backend_is_read_case_insensitively(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": " CUDA "})
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "KEEP cuda"
+
+    def test_a_cuda_prebuilt_is_replaced_once_the_gpu_is_gone(self, tmp_path):
+        # The GPU the marker names left the machine: a CPU build is the honest install now.
+        install_dir = _install(tmp_path, {"backend": "cuda"})
+        assert _decide(tmp_path, install_dir) == "REPLACE"
+        assert _decide(tmp_path, install_dir, _setup_amd_detected = "true") == "REPLACE"
+
+    def test_a_cpu_prebuilt_is_not_worth_keeping(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "cpu"})
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+
+    @pytest.mark.parametrize(
+        "marker",
+        [None, "{not json", "[1, 2]", {"asset": "x"}, {"backend": None}, {"backend": 3}],
+        ids = ["absent", "malformed", "not-a-dict", "no-backend", "null", "non-string"],
+    )
+    def test_an_unreadable_marker_does_not_keep(self, tmp_path, marker):
+        install_dir = _install(tmp_path, marker)
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+
+    def test_a_tree_without_a_server_is_not_worth_keeping(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "cuda"}, server = False)
+        assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
+
+    def test_a_build_asked_for_by_hand_still_runs(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "cuda"})
+        nvidia = {"_setup_nvidia_physical": "true"}
+        assert _decide(tmp_path, install_dir, _LLAMA_FORCE_COMPILE = "1", **nvidia) == "REPLACE"
+        assert _decide(tmp_path, install_dir, _LLAMA_PR = "12345", **nvidia) == "REPLACE"
+
+
+# ── part two: the wiring ──
+
+
+def _between(start_marker, end_marker):
+    start = SETUP_TEXT.index(start_marker)
+    return SETUP_TEXT[start : SETUP_TEXT.index(end_marker, start)]
+
+
+def test_the_decision_runs_before_the_compile():
+    # Deciding after a 20 minute compile would be correct and pointless.
+    window = _between('_BUILD_DESC="building (CPU)"', 'run_quiet_no_exit "cmake llama.cpp"')
+    assert (
+        '_LLAMA_KEPT_GPU_PREBUILT="$(_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR")"'
+        in window
+    )
+    assert "BUILD_OK=false" in window
+    # The configure must honour that verdict: it sat in the same BUILD_OK block.
+    assert '[ "$BUILD_OK" = true ] && ! run_quiet_no_exit "cmake llama.cpp"' in SETUP_TEXT
+
+
+def test_the_decision_runs_again_at_the_swap():
+    # A CUDA build that fell back to CPU on the way only shows at the swap.
+    window = _between("caught here, after the fact", "# Swap only after build succeeds")
+    assert '[ -z "$GPU_BACKEND" ] && [ "$_TRY_METAL_CPU_FALLBACK" != true ]' in window
+    assert '_gpu_prebuilt_to_keep_over_cpu_build "$LLAMA_CPP_DIR"' in window
+    assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=true" in window
+
+
+def test_a_kept_prebuilt_is_not_reported_as_a_failed_build():
+    window = _between(
+        'step "llama.cpp" "binary not found after build"', 'step "llama.cpp" "build failed"'
+    )
+    assert 'elif [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]' in window
+
+
+def test_every_footer_names_the_outcome():
+    assert (
+        SETUP_TEXT.count("_print_llama_gpu_notes\n") == 3
+    ), "llama-only, Colab and the default footer"
+    notes = _between("_print_llama_gpu_notes() {", "\n}\n")
+    assert "_LLAMA_KEPT_GPU_PREBUILT" in notes and "_LLAMA_CPU_ONLY_ON_GPU_HOST" in notes
+
+
+def test_the_flags_are_initialised_for_set_u():
+    assert '_LLAMA_KEPT_GPU_PREBUILT=""' in SETUP_TEXT
+    assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=false" in SETUP_TEXT
