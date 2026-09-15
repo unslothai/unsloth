@@ -10,9 +10,11 @@ Not a hook: hooks move ``nn.Module._call_impl`` off its fast path and offload ow
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import inspect
 import os
+import threading
 import traceback
 import weakref
 from functools import update_wrapper
@@ -38,6 +40,35 @@ def _torch():
 def cuda_graph_disabled() -> bool:
     """Whether the env kill switch is set. Read before any torch or pipe inspection."""
     return os.environ.get(CUDA_GRAPH_DISABLE_ENV, "").strip().lower() in _TRUE_TOKENS
+
+
+# A capture recording RIGHT NOW, anywhere in this process. ``torch.cuda.graph`` begins its capture
+# in CUDA's default global mode, which prohibits the "potentially unsafe" calls -- cudaEventQuery
+# among them -- from EVERY thread for as long as it records. The denoise progress poller queries a
+# CUDA event ten times a second and the denoiser captures its graphs during the first steps of a
+# render, so the two really do overlap; this lets the poller stand back for those milliseconds.
+# A depth, not a flag: nothing says two pipelines cannot be capturing at once.
+_CAPTURE_LOCK = threading.Lock()
+_CAPTURE_DEPTH = 0
+
+
+@contextlib.contextmanager
+def _capturing():
+    """Mark a capture as recording for the duration of the block."""
+    global _CAPTURE_DEPTH
+    with _CAPTURE_LOCK:
+        _CAPTURE_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _CAPTURE_LOCK:
+            _CAPTURE_DEPTH -= 1
+
+
+def capture_in_progress() -> bool:
+    """Whether a CUDA-graph capture is recording. Cheap enough to poll."""
+    with _CAPTURE_LOCK:
+        return _CAPTURE_DEPTH > 0
 
 
 # Not ``torch.utils._pytree``: it makes an unregistered object a LEAF, which must stay visible.
@@ -391,7 +422,7 @@ class GraphedForward:
 
         graph = torch.cuda.CUDAGraph()
         # ``pool = None`` is identical to omitting the argument, so both captures take one path.
-        with torch.cuda.graph(graph, pool = _POOL_BOX[0]):
+        with _capturing(), torch.cuda.graph(graph, pool = _POOL_BOX[0]):
             out = self.orig(*static_args, **static_kwargs)
         if _POOL_BOX[0] is None:
             try:
