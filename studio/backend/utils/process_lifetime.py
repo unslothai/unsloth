@@ -607,6 +607,89 @@ def _group_has_members(pgid: object) -> bool:
     return any(not _pid_is_zombie(pid) for pid in members)
 
 
+def _windows_creation_time(identity: "Optional[str]") -> "Optional[int]":
+    """A Windows identity string read back as one 64-bit FILETIME, or None.
+
+    `_pid_identity` writes the creation time as ``high:low`` there, and the
+    descendant walk has to order two of them, not just compare them for equality.
+    """
+    if not isinstance(identity, str):
+        return None
+    parts = identity.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return (int(parts[0]) << 32) | int(parts[1])
+    except ValueError:
+        return None
+
+
+def _windows_child_pid_map() -> "Optional[dict[int, list[int]]]":
+    """Parent pid -> its children, from a Toolhelp snapshot. None when unreadable.
+
+    ctypes rather than psutil, and a snapshot rather than a `wmic` or PowerShell
+    child, for the same reason as the rest of this module: this runs on the unload
+    and shutdown paths, psutil is an optional extra here, and spawning a helper is
+    the thing being cleaned up after.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        TH32CS_SNAPPROCESS = 0x0000_0002
+        MAX_PATH = 260
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * MAX_PATH),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        # INVALID_HANDLE_VALUE is -1, which arrives here as a large unsigned HANDLE, so
+        # falsiness alone does not catch a snapshot that could not be taken.
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return None
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                # An empty walk is a failed read, not a machine with no processes, and
+                # reporting it as a table would read as "this child has none".
+                return None
+            table: "dict[int, list[int]]" = {}
+            while True:
+                child = int(entry.th32ProcessID)
+                parent = int(entry.th32ParentProcessID)
+                if child:
+                    table.setdefault(parent, []).append(child)
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    break
+            return table
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except Exception:
+        return None
+
+
 def _child_pid_map() -> "Optional[dict[int, list[int]]]":
     """Parent pid -> its children, or None when the table cannot be read."""
     if _is_linux():
@@ -654,6 +737,8 @@ def _child_pid_map() -> "Optional[dict[int, list[int]]]":
             return table
         except Exception:
             return None
+    if _is_windows():
+        return _windows_child_pid_map()
     return None
 
 
@@ -664,8 +749,18 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
     moment it exits, and nothing then ties them back to it. The identities let
     the kill below skip a number that has since moved on to something else.
     """
-    if not pid or _is_windows():
+    if not pid:
         return []
+    # Windows records the creating pid on a process and never clears it, not even when
+    # that parent exits and its number is handed to something else, so the raw table
+    # lists strangers created by an earlier holder of this pid as children of it. A real
+    # descendant cannot predate its root, so the root's creation time is the floor for
+    # the whole walk, and without a readable floor this claims nothing at all.
+    floor = None
+    if _is_windows():
+        floor = _windows_creation_time(_pid_identity(pid))
+        if floor is None:
+            return []
     table = _child_pid_map()
     if not table:
         return []
@@ -677,7 +772,12 @@ def collect_descendants(pid: "Optional[int]") -> "list[tuple[int, Optional[str]]
         if child in seen:
             continue
         seen.add(child)
-        found.append((child, _pid_identity(child)))
+        identity = _pid_identity(child)
+        if floor is not None and (_windows_creation_time(identity) or 0) < floor:
+            # Not provably below this root. Its own children are not walked either:
+            # they hang off a link this process does not have.
+            continue
+        found.append((child, identity))
         queue.extend(table.get(child, ()))
     return found
 
@@ -691,7 +791,10 @@ def terminate_descendants(
     this process's group cannot be reached with killpg, so its own children are
     signalled by pid instead.
     """
-    if not collected or _is_windows():
+    if not collected:
+        return
+    if _is_windows():
+        _windows_terminate_collected(collected)
         return
     live: "list[tuple[int, Optional[str]]]" = []
     for pid, identity in collected:
@@ -714,6 +817,26 @@ def terminate_descendants(
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
+            pass
+
+
+def _windows_terminate_collected(collected: "list[tuple[int, Optional[str]]]") -> None:
+    """``taskkill /T /F`` each survivor, deepest first.
+
+    Windows has no process group, so once the leader has been terminated nothing
+    names its workers but this list. Deepest first because /T also reaches whatever
+    a survivor started after the snapshot was taken, and the link it walks is gone
+    the moment that survivor exits. Identity is re-read per pid: the leader's
+    terminate ran in between, so a number here may already belong to someone else.
+    """
+    for pid, identity in reversed(collected):
+        if not _signalable(pid) or not _pid_alive(pid):
+            continue
+        if not _still_the_same(pid, identity):
+            continue
+        try:
+            _windows_terminate_tree(pid)
+        except Exception:  # noqa: BLE001 - best effort, like the rest of this
             pass
 
 
@@ -916,6 +1039,18 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def pid_is_running(pid: "Optional[int]") -> bool:
+    """Whether a pid is a process that is still executing.
+
+    The public spelling of the liveness probe, for an owner that has to decide
+    whether a child it tried to kill is actually gone. An exited child nobody has
+    waited on is not running, so it does not count here.
+    """
+    if not is_signalable_pid(pid):
+        return False
+    return _pid_alive(pid) and not _pid_is_zombie(pid)
+
+
 def _pid_is_zombie(pid: int) -> bool:
     """An exited child nobody waited on. It answers signals like a live process,
     so a survivor check has to tell the two apart."""
@@ -1104,11 +1239,22 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
     return survivors
 
 
-def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
+def terminate_pid(
+    pid: "Optional[int]",
+    timeout: float = 5.0,
+    *,
+    owner_verified: bool = False,
+) -> None:
     """Stop one tracked child now, tree and all, and drop its record.
 
     For an owner that has to give up on a child before its own shutdown, and
     cannot leave it for a sweep that will not run while this process lives.
+
+    ``owner_verified`` is for a caller that still holds a live handle on the child,
+    a Popen it has not yet dropped, and so does not need this function to re-derive
+    ownership from a start time it may no longer be able to read. It only waives the
+    "cannot prove this is ours" refusal below; a pid that provably belongs to a
+    different process now is still left alone.
     """
     # The public entry point, so the floor goes here: `_windows_terminate_tree` is reached without passing through the
     # POSIX helper that would otherwise carry the check.
@@ -1126,7 +1272,7 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
         # group either, so there is no group of ours left to reap here.
         forget_pid(pid)
         return
-    if _pid_alive(pid) and (identity is None or current is None):
+    if not owner_verified and _pid_alive(pid) and (identity is None or current is None):
         # Cannot prove this is still our child. Leave it alone and keep the
         # record: the startup sweep repeats the test with a fresh reading.
         return

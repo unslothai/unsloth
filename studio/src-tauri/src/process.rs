@@ -1233,6 +1233,60 @@ pub(crate) fn clear_adopted_backend_if_current(
     true
 }
 
+/// Drop a spawned backend handle whose child has provably exited, so a launch can spawn.
+///
+/// The counterpart of `clear_adopted_backend_if_current` for the arm this app owns. A
+/// `Spawned` handle with no validated port is normally a healthy cold start still
+/// importing torch, so a probe that does not verify is on its own no reason to clear
+/// anything: this fires only on an exit status the child has actually reported. Without
+/// it, a child that died without its stdout ever reaching EOF, which is the one case the
+/// crash detector in `read_output_stream` cannot see, leaves `has_owned_backend` true for
+/// the life of the app: every launch then answers `Backend is already running.` and every
+/// preflight answers `desktop_owned_backend_starting`.
+///
+/// Unlike the adopted case, this app wrote the owner file, so it is removed here too.
+pub(crate) fn clear_spawned_backend_if_exited(
+    state: &BackendState,
+    generation: u64,
+    reason: &str,
+) -> bool {
+    let mut proc = match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if proc.generation != generation {
+        return false;
+    }
+    let status = match proc
+        .owned
+        .as_mut()
+        .and_then(OwnedBackendHandle::spawned_child_mut)
+    {
+        // One look, not the thirty of `exit_status_after_stdout_closed`. This runs on the
+        // preflight a window mount drives, so it must not block it for three seconds, and
+        // a child merely slow to be reaped is answered by the next preflight instead.
+        Some(child) => match child.try_wait() {
+            Ok(Some(status)) => status.to_string(),
+            Ok(None) => return false,
+            Err(error) => {
+                warn!("Could not read the spawned backend's exit status: {error}");
+                return false;
+            }
+        },
+        // Adopted, or nothing owned at all. Neither belongs to this function.
+        None => return false,
+    };
+
+    warn!("Clearing spawned backend state after {reason}; the child had exited: {status}");
+    if let Some(owned) = proc.owned.take() {
+        owned.remove_owner_metadata();
+    }
+    proc.port = None;
+    proc.diagnostics_session = None;
+    proc.adopted_watchdog_generation = None;
+    true
+}
+
 pub(crate) fn claim_adopted_watchdog_if_current(state: &BackendState, generation: u64) -> bool {
     let mut proc = match state.lock() {
         Ok(guard) => guard,
@@ -3111,6 +3165,136 @@ mod tests {
             }
         });
         (port, tx, handle)
+    }
+
+    // ── #9756: a spawned handle whose child has exited must not block the next launch ──
+    //
+    // The crash detector in `read_output_stream` clears the handle when the child's
+    // stdout reaches EOF, and `stop_backend_inner` clears it on a deliberate stop. A
+    // child that dies without either happening leaves the handle behind, and from then
+    // on `has_owned_backend` refuses every launch with "Backend is already running."
+    // while preflight reports `desktop_owned_backend_starting`.
+
+    #[cfg(unix)]
+    const ALREADY_EXITED: [&str; 3] = ["/bin/sh", "-c", "exit 3"];
+    #[cfg(unix)]
+    const STILL_RUNNING: [&str; 3] = ["/bin/sh", "-c", "exec sleep 30"];
+    #[cfg(windows)]
+    const ALREADY_EXITED: [&str; 3] = ["cmd", "/C", "exit 3"];
+    #[cfg(windows)]
+    const STILL_RUNNING: [&str; 3] = ["cmd", "/C", "ping -n 31 127.0.0.1"];
+
+    // Shaped like the real spawn in `start_backend`: a process group on Unix, a bare
+    // Child on Windows, where the app-wide job object already covers the tree.
+    fn spawn_test_child(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            let mut wrap = CommandWrap::from(cmd);
+            wrap.wrap(ProcessGroup::leader());
+            wrap.spawn().expect("spawn test child")
+        }
+        #[cfg(windows)]
+        {
+            Box::new(cmd.spawn().expect("spawn test child"))
+        }
+    }
+
+    // Reaped before the handle is built, so the test is about the clear and not about
+    // racing the kernel; `exit_status_after_stdout_closed_tests` already covers the race.
+    fn spawn_and_reap() -> Box<dyn ChildWrapper + Send> {
+        let mut child = spawn_test_child(&ALREADY_EXITED);
+        for _ in 0..100 {
+            match child.try_wait() {
+                Ok(Some(_)) => return child,
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(error) => panic!("could not poll the test child: {error}"),
+            }
+        }
+        panic!("the test child never exited");
+    }
+
+    fn state_with_spawned(child: Box<dyn ChildWrapper + Send>, generation: u64) -> BackendState {
+        let state = new_backend_state();
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = generation;
+            proc.port = Some(8888);
+            proc.owned = Some(OwnedBackendHandle::spawned(child, None, 4242, generation));
+        }
+        state
+    }
+
+    #[test]
+    fn a_dead_spawned_backend_is_cleared_and_stops_blocking_a_launch() {
+        let state = state_with_spawned(spawn_and_reap(), 5);
+        assert!(
+            state.lock().unwrap().has_owned_backend(),
+            "precondition: this is what makes start_backend answer Backend is already running."
+        );
+        assert!(clear_spawned_backend_if_exited(&state, 5, "test"));
+        let proc = state.lock().unwrap();
+        assert!(!proc.has_owned_backend(), "the dead handle still blocks a launch");
+        assert!(proc.port.is_none());
+        assert!(proc.diagnostics_session.is_none());
+    }
+
+    #[test]
+    fn a_live_spawned_backend_is_left_alone() {
+        // The regression guard that matters more than the fix: a handle with no
+        // validated port is usually a cold start still importing torch, and clearing it
+        // would abandon a backend that is about to come up.
+        let state = state_with_spawned(spawn_test_child(&STILL_RUNNING), 5);
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+        {
+            let mut proc = state.lock().unwrap();
+            assert!(proc.has_owned_backend(), "cleared a backend that was still running");
+            assert_eq!(proc.port, Some(8888));
+            if let Some(child) = proc
+                .owned
+                .as_mut()
+                .and_then(OwnedBackendHandle::spawned_child_mut)
+            {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    #[test]
+    fn a_dead_spawned_backend_from_an_older_generation_is_left_alone() {
+        // A launch that has already moved on owns the handle now.
+        let state = state_with_spawned(spawn_and_reap(), 5);
+        assert!(!clear_spawned_backend_if_exited(&state, 4, "test"));
+        assert!(state.lock().unwrap().has_owned_backend());
+    }
+
+    #[test]
+    fn an_adopted_backend_is_not_this_functions_business() {
+        // clear_adopted_backend_if_current owns that arm, and it probes liveness a
+        // different way: an adopted handle carries no child to try_wait on.
+        let state = new_backend_state();
+        let owner = crate::desktop_backend_owner::test_owner_state(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "desktop-owner-token",
+            8888,
+        );
+        {
+            let mut proc = state.lock().unwrap();
+            proc.generation = 5;
+            proc.owned = Some(OwnedBackendHandle::adopted(owner, 8888, 4242, 5));
+        }
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
+        assert!(state.lock().unwrap().has_owned_backend());
+    }
+
+    #[test]
+    fn nothing_owned_is_not_an_error() {
+        let state = new_backend_state();
+        state.lock().unwrap().generation = 5;
+        assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
     }
 
     #[test]
