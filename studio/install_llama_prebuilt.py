@@ -53,6 +53,30 @@ if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
 import prebuilt_core as _core  # noqa: E402
+
+try:
+    import nvidia_probe as _nvidia_probe  # noqa: E402
+except Exception:  # an older checkout beside a newer setup script
+    _nvidia_probe = None
+
+
+def nvidia_library_inventory():
+    """The NVML / CUDA driver inventory, or None. A seam, so tests can hide the real host."""
+    return _nvidia_probe.probe() if _nvidia_probe is not None else None
+
+
+def proc_driver_version() -> str:
+    if _nvidia_probe is None or not _nvidia_probe.enabled():
+        return ""
+    return _nvidia_probe.proc_driver_version()
+
+
+def cuda_version_for_driver(driver_version: str) -> tuple[int, int] | None:
+    if _nvidia_probe is None:
+        return None
+    return _nvidia_probe.cuda_version_for_driver(driver_version)
+
+
 from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     INSTALL_KIND_BACKENDS,
     REQUESTABLE_BACKENDS,
@@ -376,6 +400,11 @@ class HostInfo:
     has_physical_nvidia: bool
     has_usable_nvidia: bool
     has_rocm: bool = False
+    # Every compute cap nvidia-smi reported, before CUDA_VISIBLE_DEVICES filtering.
+    # compute_caps holds only the VISIBLE ones and empties under a mask, which is the
+    # selector's unknown-SM path: it skips min_sm/max_sm and could hand a masked sm_61
+    # host an sm_70 floor.
+    physical_compute_caps: list[str] = field(default_factory = list)
     has_intel_gpu: bool = False
     # AMD present, ROCm unusable. Probed only when neither NVIDIA nor ROCm is usable.
     has_amd_gpu_without_rocm: bool = False
@@ -1013,6 +1042,33 @@ def synthetic_checksums_for_release(
     )
 
 
+def _masked_nvidia_selection_host(host: HostInfo) -> HostInfo | None:
+    """The host to select CUDA for when CUDA_VISIBLE_DEVICES hides its NVIDIA GPU, else None.
+
+    physical-without-usable means the GPU is there and the mask is empty or -1. The mask is
+    per process, the install tree is not, so one masked run left a CUDA machine on the CPU
+    bundle for good. Select CUDA against the PHYSICAL caps: the visible ones are empty, the
+    selector's unknown-SM path, which would let a masked sm_61 host accept an sm_70 floor.
+    A CUDA build under the mask runs on CPU exactly as the CPU bundle would.
+    None with usable ROCm (that host keeps ROCm) and for an explicit CPU request, which
+    never arrives here because _apply_host_overrides has cleared has_physical_nvidia.
+    """
+    if host.has_usable_nvidia or not host.has_physical_nvidia or host.has_rocm:
+        return None
+    log(
+        "NVIDIA GPU present but hidden by CUDA_VISIBLE_DEVICES="
+        f"{host.visible_cuda_devices!r}; selecting the CUDA bundle for the hardware "
+        "rather than installing the CPU bundle over it"
+    )
+    if host.physical_compute_caps and not host.compute_caps:
+        log(
+            "selecting against the physical compute caps "
+            f"{','.join(host.physical_compute_caps)} the mask hid"
+        )
+        return dataclasses_replace(host, compute_caps = list(host.physical_compute_caps))
+    return host
+
+
 def direct_upstream_release_plan(
     release: dict[str, Any], host: HostInfo, repo: str, requested_tag: str
 ) -> InstallReleasePlan | None:
@@ -1029,18 +1085,23 @@ def direct_upstream_release_plan(
     assets = release_asset_map(release)
     attempts: list[AssetChoice] = []
     if host.is_windows and host.is_x86_64:
-        if host.has_usable_nvidia:
-            torch_preference = detect_torch_cuda_runtime_preference(host)
+        # A masked NVIDIA host too, as on Linux: it fell through to the CPU attempt.
+        masked_host = _masked_nvidia_selection_host(host)
+        if host.has_usable_nvidia or masked_host is not None:
+            selection_host = masked_host or host
+            torch_preference = detect_torch_cuda_runtime_preference(
+                selection_host, gpu_hidden_by_mask = masked_host is not None
+            )
             attempts.extend(
                 windows_cuda_attempts(
-                    host,
+                    selection_host,
                     release_tag,
                     assets,
                     torch_preference.runtime_line,
                     torch_preference.selection_log,
                 )
             )
-            attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
+            attempts[:] = _drop_blackwell_incapable_windows_cuda(selection_host, attempts)
         elif host.has_rocm:
             hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
             hip_url = assets.get(hip_asset)
@@ -2563,6 +2624,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     nvidia_smi = shutil.which("nvidia-smi")
     driver_cuda_version = None
     compute_caps: list[str] = []
+    physical_compute_caps: list[str] = []
     visible_cuda_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
     visible_device_tokens = parse_cuda_visible_devices(visible_cuda_devices)
     has_physical_nvidia = False
@@ -2615,6 +2677,11 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 if len(parts) != 3:
                     continue
                 index, uuid, cap = parts
+                normalized_cap = normalize_compute_cap(cap)
+                # Recorded before the mask filter: an emptied CUDA_VISIBLE_DEVICES drops
+                # every row, and a selection made for the hardware still needs its SMs.
+                if normalized_cap is not None and normalized_cap not in physical_compute_caps:
+                    physical_compute_caps.append(normalized_cap)
                 visible_gpu_row = select_visible_gpu_rows(
                     [(index, uuid, cap)],
                     visible_device_tokens,
@@ -2622,7 +2689,6 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 if not visible_gpu_row:
                     continue
                 visible_gpu_rows.extend(visible_gpu_row)
-                normalized_cap = normalize_compute_cap(cap)
                 if normalized_cap is None:
                     continue
                 if normalized_cap not in compute_caps:
@@ -2650,10 +2716,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     # nvidia-smi is absent from PATH, wedged, or failing is still recognised as
     # NVIDIA. Mirrors the fallback added to install.sh / install_python_stack.py
     # in PR 6174 so the prebuilt installer does not misroute such hosts to ROCm
-    # or CPU. driver_cuda_version / compute_caps stay unset here; downstream
-    # CUDA asset selection treats unknown SMs as "prefer portable" and an
-    # unknown driver runtime line as "no published CUDA match" (returns None,
-    # no crash), so planning falls back to a source build with GGML_CUDA=ON.
+    # or CPU. driver_cuda_version / compute_caps are filled below where they can be.
     if is_linux and not has_physical_nvidia:
         try:
             proc_gpu_dir = "/proc/driver/nvidia/gpus"
@@ -2662,6 +2725,51 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 has_usable_nvidia = visible_device_tokens != []
         except OSError:
             pass
+
+    # What nvidia-smi could not say (absent, stale, hung, non-zero exit), the driver's own
+    # libraries can. NVML is the physical inventory, like nvidia-smi, so the mask applies.
+    if (is_linux or is_windows) and (
+        not has_physical_nvidia or driver_cuda_version is None or not physical_compute_caps
+    ):
+        inventory = nvidia_library_inventory()
+        if inventory is not None and inventory.devices:
+            log(
+                f"NVIDIA inventory read through {inventory.source}: "
+                f"{len(inventory.devices)} GPU(s), CUDA driver {inventory.cuda_driver_version}"
+            )
+            rows = [(d["index"], d["uuid"], d["compute_cap"]) for d in inventory.devices]
+            if inventory.source == "nvml":
+                visible_rows = select_visible_gpu_rows(rows, visible_device_tokens)
+            else:
+                visible_rows = rows
+            if not has_physical_nvidia:
+                has_physical_nvidia = True
+                # As the nvidia-smi rows are read: a mask NVML rows cannot name (a MIG
+                # UUID) leaves the GPU usable.
+                has_usable_nvidia = bool(visible_rows) or (
+                    visible_device_tokens is not None
+                    and visible_device_tokens != []
+                    and not supports_explicit_visible_device_matching(visible_device_tokens)
+                )
+            for _index, _uuid, cap in rows:
+                normalized_cap = normalize_compute_cap(cap)
+                if normalized_cap is not None and normalized_cap not in physical_compute_caps:
+                    physical_compute_caps.append(normalized_cap)
+            if not compute_caps:
+                for _index, _uuid, cap in visible_rows:
+                    normalized_cap = normalize_compute_cap(cap)
+                    if normalized_cap is not None and normalized_cap not in compute_caps:
+                        compute_caps.append(normalized_cap)
+        if inventory is not None and driver_cuda_version is None:
+            driver_cuda_version = inventory.cuda_driver_version
+    if is_linux and has_physical_nvidia and driver_cuda_version is None:
+        # The kernel module names its release even when every library call fails, and the
+        # release bounds the CUDA major (R580 carries 13, R525 carries 12).
+        driver_cuda_version = cuda_version_for_driver(proc_driver_version())
+        if driver_cuda_version is not None:
+            log(
+                f"CUDA driver version {driver_cuda_version} inferred from /proc/driver/nvidia/version"
+            )
 
     # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed.
     # NVIDIA takes precedence for automatic selection: when an NVIDIA GPU is
@@ -2843,6 +2951,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         nvidia_smi = nvidia_smi,
         driver_cuda_version = driver_cuda_version,
         compute_caps = compute_caps,
+        physical_compute_caps = physical_compute_caps,
         visible_cuda_devices = visible_cuda_devices,
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
@@ -3747,16 +3856,26 @@ def resolve_release_asset_choice(
     release: PublishedReleaseBundle,
     checksums: ApprovedReleaseChecksums,
 ) -> list[AssetChoice]:
-    if host.is_windows and host.is_x86_64 and host.has_usable_nvidia:
-        torch_preference = detect_torch_cuda_runtime_preference(host)
+    # A masked NVIDIA host too, as on Linux: it fell through to windows-cpu below, and
+    # with no CUDA match it source-builds with CUDA (PrebuiltFallback), never CPU.
+    masked_host = (
+        _masked_nvidia_selection_host(host) if host.is_windows and host.is_x86_64 else None
+    )
+    if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
+        selection_host = masked_host or host
+        torch_preference = detect_torch_cuda_runtime_preference(
+            selection_host, gpu_hidden_by_mask = masked_host is not None
+        )
         published_attempts = published_windows_cuda_attempts(
-            host,
+            selection_host,
             release,
             torch_preference.runtime_line,
             torch_preference.selection_log,
         )
         if published_attempts:
-            pin_attempts = _drop_blackwell_incapable_windows_cuda(host, published_attempts)
+            pin_attempts = _drop_blackwell_incapable_windows_cuda(
+                selection_host, published_attempts
+            )
             try:
                 return apply_approved_hashes(pin_attempts, checksums)
             except PrebuiltFallback as exc:
@@ -3766,8 +3885,8 @@ def resolve_release_asset_choice(
                 )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
         upstream_attempts = _drop_blackwell_incapable_windows_cuda(
-            host,
-            resolve_windows_cuda_choices(host, llama_tag, upstream_assets),
+            selection_host,
+            resolve_windows_cuda_choices(selection_host, llama_tag, upstream_assets),
         )
         return apply_approved_hashes(upstream_attempts, checksums)
 
@@ -6475,6 +6594,23 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
+        # Below ROCm and Vulkan on purpose: a masked NVIDIA host with usable ROCm keeps ROCm.
+        selection_host = _masked_nvidia_selection_host(host)
+        if selection_host is not None:
+            torch_preference = detect_torch_cuda_runtime_preference(
+                selection_host, gpu_hidden_by_mask = True
+            )
+            masked_selection = linux_cuda_choice_from_release(
+                selection_host,
+                bundle,
+                preferred_runtime_line = torch_preference.runtime_line,
+                selection_preamble = torch_preference.selection_log,
+            )
+            if masked_selection is not None:
+                attempts.extend(masked_selection.attempts)
+            # No CUDA match: fall through to an empty list so the caller source-builds with
+            # CUDA, exactly as a visible NVIDIA host with no match does. Never the CPU bundle.
+            return attempts
         # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
         # selection produced nothing we want an empty attempt list so the caller
         # source-builds with CUDA, not a CPU-only binary silently installed on a
@@ -8075,6 +8211,40 @@ def _binary_image_runs(
     if result.returncode >= _NTSTATUS_FAILURE_FLOOR:
         log(f"kept install rejected: {path.name} exited 0x{result.returncode:08X} (loader failure)")
         return False
+    return True
+
+
+def _kept_install_covers_host(marker: "dict[str, Any] | None", host: HostInfo) -> bool:
+    """Whether the bundle's recorded GPU coverage still includes this host's GPU.
+
+    A same-vendor card swap or a driver downgrade passes the vendor checks, and `--version`
+    runs no kernels, so the recorded supported_sms / mapped_targets / runtime_line are the
+    only record of what the bundle was built for. A marker without them (CPU, Vulkan,
+    older) cannot tell and passes, as does a host whose driver or SMs are unknown.
+    """
+    marker = marker or {}
+    backend = marker_backend(marker)
+    if backend == "cuda":
+        line = marker.get("runtime_line")
+        if isinstance(line, str) and line.startswith("cuda") and host.driver_cuda_version:
+            lines = (
+                compatible_windows_runtime_lines(host)
+                if host.is_windows
+                else compatible_linux_runtime_lines(host)
+            )
+            if line not in lines:
+                return False
+        supported = set(normalize_compute_caps(marker.get("supported_sms") or []))
+        # Under a mask the visible caps are empty; the physical ones are what the card is.
+        host_sms = normalize_compute_caps(host.compute_caps or host.physical_compute_caps or [])
+        return not supported or not host_sms or all(sm in supported for sm in host_sms)
+    if backend == "rocm":
+        mapped = {
+            str(t).strip().lower() for t in marker.get("mapped_targets") or [] if str(t).strip()
+        }
+        gfx = (host.rocm_gfx_target or "").strip().lower()
+        family = str(marker.get("gfx_target") or "").strip().lower()
+        return not mapped or not gfx or gfx in mapped or gfx == family
     return True
 
 
@@ -10124,6 +10294,14 @@ def parse_args() -> argparse.Namespace:
             "runs the check."
         ),
     )
+    resolve_group.add_argument(
+        "--check-installed",
+        metavar = "DIR",
+        help = (
+            "Exit 0 when the install at DIR is complete and its binaries load (the same "
+            "network-free check the updater uses before keeping an install), else 2."
+        ),
+    )
     parser.add_argument(
         "--install-kind",
         default = None,
@@ -10289,6 +10467,20 @@ def resolve_backends_payload(
 
 def main() -> int:
     args = parse_args()
+    if args.check_installed is not None:
+        # setup.sh asks before keeping a GPU prebuilt over a CPU source build: no download,
+        # since the update that failed usually failed for want of one.
+        install_dir = Path(args.check_installed)
+        try:
+            host = detect_host()
+            runs = _existing_install_runs(install_dir, host) and _kept_install_covers_host(
+                load_prebuilt_metadata(install_dir), host
+            )
+        except Exception as exc:
+            print(f"install check failed: {exc}", file = sys.stderr)
+            runs = False
+        return EXIT_SUCCESS if runs else EXIT_FALLBACK
+
     if args.validate_install is not None:
         try:
             validate_existing_install(

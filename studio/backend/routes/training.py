@@ -2855,7 +2855,9 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
         or _is_local_path(repo)
     ):
         return
-    url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"
+    from utils.hf_endpoint import get_hf_endpoint
+
+    url = f"{get_hf_endpoint()}/{repo}/resolve/main/model_index.json"
     headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
     req = urllib.request.Request(url, method = "HEAD", headers = headers)
     try:

@@ -1013,6 +1013,13 @@ export const zhCN = {
         minimal: "极简",
       },
       custom: {
+        chatWidth: {
+          label: "聊天宽度",
+          description: "设置消息和输入框的宽度。全宽会使用侧边栏之间的可用空间。",
+          standard: "标准",
+          wide: "宽",
+          full: "全宽",
+        },
         reset: "重置",
         resetAll: "重置自定义",
         preferencesTitle: "偏好设置",
@@ -1060,6 +1067,10 @@ export const zhCN = {
           errorLimit: "最多可导入 3 个字体。",
           errorStorageFull: "本地存储空间不足。请先删除一个已导入的字体。",
           errorFailed: "无法加载此字体文件。",
+        },
+        interfaceScale: {
+          label: "界面缩放",
+          description: "调整所有界面元素的大小。",
         },
         uiFontSize: {
           label: "界面字号",
