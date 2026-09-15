@@ -135,6 +135,20 @@ def _store_reducers() -> str:
     )
 
 
+def _status_poll_adoption_tail() -> str:
+    """The status poll's setCheckpoint-plus-recount tail, verbatim.
+
+    An API or CLI load hydrates through this path, not loadModel, so the recount after
+    adoption is this block. The start is the setCheckpoint this poll uses; the end is
+    the eviction branch that follows the checkpointId close.
+    """
+    return slice_between(
+        read(RUNTIME),
+        "        setCheckpoint(checkpointId, statusRes.gguf_variant);",
+        "      }\n    } else if (\n      !chatActiveModel &&",
+    )
+
+
 def _resident_fast_path() -> str:
     """The adoption tail of loadModel's already-resident branch, verbatim.
 
@@ -548,6 +562,29 @@ __FAST_PATH__
 """
 
 
+HARNESS_STATUS_POLL = """
+
+// The status poll's adoption tail, verbatim. An API load hydrates through this path
+// rather than loadModel, so the recount after setCheckpoint is this block.
+export async function adoptServerStatus(statusRes: any): Promise<void> {
+  const selectedCheckpoint: string = state.params?.checkpoint ?? "";
+  const checkpointId: string | null =
+    statusRes.model_identifier ?? statusRes.active_model ?? null;
+  const previousGgufVariant: string | null = state.activeGgufVariant ?? null;
+  const { setCheckpoint } = useChatRuntimeStore.getState();
+  const applyActiveModelStatusToStore = (status: any, _options: any): void => {
+    set({
+      loadedContextLength: status.is_gguf ? (status.context_length ?? null) : null,
+    });
+  };
+  const syncModelCapabilities = (_id: string, _status: any): void => {};
+  if (checkpointId) {
+__STATUS_POLL_TAIL__
+  }
+}
+"""
+
+
 def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
     blocks = []
     for deps, body in effects:
@@ -585,8 +622,17 @@ def _harness_source() -> str:
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
+    status_poll = HARNESS_STATUS_POLL.replace("__STATUS_POLL_TAIL__", _status_poll_adoption_tail())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
-    return prelude + _message_order_body() + _refresh_module_body() + render + resident + history
+    return (
+        prelude
+        + _message_order_body()
+        + _refresh_module_body()
+        + render
+        + resident
+        + status_poll
+        + history
+    )
 
 
 def _run(script: str) -> dict:
@@ -1725,6 +1771,56 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "adopting the resident GGUF must reprice the open thread: setCheckpoint has "
         "already blanked the external provider's usage"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == 62
+
+
+def test_status_poll_adoption_reprices_when_a_local_checkpoint_is_already_selected():
+    """#10337: a GGUF loaded via API hydrates through the status poll, not loadModel.
+
+    Studio already has that local checkpoint selected (a previous session, or the same
+    id the API just loaded). The poll still calls setCheckpoint, but the recount used
+    to require an empty prior pick (`!selectedCheckpoint`), so a blank bar with a
+    known window stayed blank until the next completion.
+    """
+    out = _run(
+        textwrap.dedent(
+            """
+            // @ts-nocheck
+            import { adoptServerStatus, seed, snapshot, world } from "./harness.ts";
+            world.storedMessages["thread-a"] = [
+              { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
+              { id: "m2", role: "assistant", createdAt: 2, content: [{ type: "text", text: "yo" }], metadata: {} },
+            ];
+            seed({
+              params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
+              loadedContextLength: 8192,
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {},
+            });
+
+            await adoptServerStatus({
+              active_model: "unsloth/gguf-model",
+              gguf_variant: null,
+              is_gguf: true,
+              context_length: 8192,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const after = snapshot();
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "adopting a resident GGUF through the status poll must reprice the open "
+        "thread even when Studio already had that checkpoint selected"
     )
     assert (out["cached"] or {}).get("totalTokens") == 62
 
