@@ -2768,6 +2768,8 @@ def _glob_hits_sensitive(command: str) -> bool:
 # A drive path is absolute only with a separator: `C:\x` is rooted, while `C:x` is relative to the drive's current
 # directory, so the separator is required rather than optional.
 _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# The separator-less spelling, `D:notes.txt`, which is drive D's own current directory.
+_WIN_DRIVE_RELATIVE_JOIN_RE = re.compile(r"^[A-Za-z]:(?![\\/:])[^:\s]+$")
 
 
 def _posix_join(parts) -> str:
@@ -2783,7 +2785,13 @@ def _posix_join(parts) -> str:
     for part in parts:
         if not out:
             out = part
-        elif _WIN_DRIVE_RE.match(part):
+        elif _WIN_DRIVE_RE.match(part) or _WIN_DRIVE_RELATIVE_JOIN_RE.match(part):
+            # Any drive-qualified operand discards the left, `C:\\Windows` joined with `D:notes.txt`
+            # being drive D's file and not a file under C. `ntpath.join` agrees; keeping the left
+            # placed a drive-D reference inside an allowed drive-C directory.
+            out = part
+        elif part[:2] == "\\\\":
+            # A UNC share is its own root: joining it onto a drive kept `C:` in front of `\\\\server`.
             out = part
         elif part[:1] in ("/", "\\"):
             # A leading backslash is ROOTED on Windows, on the current drive: `C:\\Windows` joined

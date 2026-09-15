@@ -119,7 +119,10 @@ _SYSTEM_READ_SILENT_ROOTS = (
 # contents are user data rather than machine state, and `/dev` and `/run` being read-silent must not
 # reach them. Normalized at module level because the roots they sit under are literals too.
 _WRITABLE_RUNTIME_SUBTREES = tuple(
-    os.path.normcase(part) for part in ("/dev/shm", "/dev/mqueue", "/run/user", "/run/lock")
+    os.path.normcase(part)
+    # `/dev/fd/<n>` is the same kernel link `/proc/self/fd/<n>` is, and it reaches whatever the
+    # descriptor was opened on, so it is no more a property of /dev than the /proc spellings are.
+    for part in ("/dev/shm", "/dev/mqueue", "/dev/fd", "/run/user", "/run/lock")
 )
 
 
@@ -258,13 +261,55 @@ def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
 
 
 def _hf_cache_dirs() -> "tuple[str, ...]":
+    """The HF cache locations, including one the owner configured in the UI.
+
+    Skipped entirely when the database does not exist yet, for the same reason the scan folders are:
+    the configured value is read through `get_app_setting`, which opens `studio.db`, and a
+    classification must not be what creates it. The environment and default locations still resolve,
+    so a first run keeps the caches it actually has.
+    """
     from utils.hf_cache_settings import known_hf_cache_homes, known_hf_hub_caches
+
+    if not _studio_db_exists():
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        try:
+            paths = get_hf_cache_paths()
+        except Exception:  # noqa: BLE001 - best effort, as every root here is
+            return ()
+        return tuple(
+            str(p) for p in (paths.cache_home, paths.hub_cache, paths.xet_cache) if p
+        )
     return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
 
 
+def _studio_db_exists() -> bool:
+    """Whether `studio.db` is already there.
+
+    Opening it CREATES it and initialises 27 tables, so any root that reads a stored setting has to
+    ask this first: on a first run the very first tool call would otherwise create the database as a
+    side effect of deciding whether to ask about a path.
+    """
+    from storage.studio_db import studio_db_path
+
+    try:
+        return studio_db_path().exists()
+    except Exception:  # noqa: BLE001 - an unresolvable path is no stored setting either
+        return False
+
+
 def _scan_folder_roots() -> "tuple[str, ...]":
-    """Model folders the owner added in the UI. Read from the same table the model browser uses."""
+    """Model folders the owner added in the UI. Read from the same table the model browser uses.
+
+    Only when the database already EXISTS. Opening it creates the file and initialises the schema,
+    and a classification is not a reason for that to happen: on a first run the very first tool call
+    would have created `studio.db` as a side effect of deciding whether to ask about a path. No
+    database means no folders were ever registered, which is the same answer an empty table gives.
+    """
     from storage.studio_db import list_scan_folders
+
+    if not _studio_db_exists():
+        return ()
     return tuple(str(row.get("path") or "") for row in list_scan_folders())
 
 
@@ -273,6 +318,12 @@ def _scan_folder_roots() -> "tuple[str, ...]":
 # nanoseconds; re-resolving the roots is milliseconds, which is why the TTL exists at all.
 _SILENT_ROOT_ENV_KEYS = (
     "UNSLOTH_STUDIO_HOME",
+    # The alias the resolver accepts alongside it, and the other variables that MOVE a root. Keyed
+    # on one of a pair only, changing the other left the previous install's roots live until the TTL.
+    "STUDIO_HOME",
+    "UNSLOTH_STUDIO_PROJECTS_HOME",
+    "UNSLOTH_STUDIO_DOCUMENTS_HOME",
+    "OLLAMA_MODELS",
     "UNSLOTH_STUDIO_SANDBOX_HOME",
     "HF_HOME",
     "HF_HUB_CACHE",
@@ -323,7 +374,15 @@ def _looks_absolute(text: str) -> bool:
     # sandbox-relative name, so it counts alongside the UNC `\\server\share` form.
     if text[0] == "\\":
         return True
-    return bool(_WIN_DRIVE_RE.match(text))
+    # `C:notes.txt` is DRIVE-relative: it resolves against drive C's own current directory, which is
+    # not the session workdir, so it reaches the real filesystem as much as `C:\notes.txt` does.
+    return bool(_WIN_DRIVE_RE.match(text) or _WIN_DRIVE_RELATIVE_RE.match(text))
+
+
+# `C:notes.txt`, with no separator: the drive's own current directory, not this one.
+# Anchored at both ends and single-colon, so a shell expansion like `${p:0:3}` (which folds to
+# `p:0:3`) is not read as a path on drive P.
+_WIN_DRIVE_RELATIVE_RE = re.compile(r"^[A-Za-z]:(?![\\/:])[^:\s]+$")
 
 
 # The kernel symlinks under /proc that reach outside /proc: `root` is the process's root directory,
@@ -1548,7 +1607,12 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
 
 
 # A drive-qualified path or a UNC share, the two spellings a POSIX lexer destroys.
-_WINDOWS_SPELLING_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\/]")
+# A drive-qualified path, a UNC share, or a ROOT-relative one: `cat \\Users\\alice\\notes.txt` opens
+# `\\Users\\alice\\notes.txt` on the current drive, and a POSIX lex turns it into `Usersalicenotes.txt`
+# with nothing absolute left to see.
+_WINDOWS_SPELLING_RE = re.compile(
+    r"(?:^|[\s'\"=])[A-Za-z]:(?![:\s])|\\\\[^\\/]|(?:^|\s)\\[^\\/\s]"
+)
 
 
 def _lex_keeping_backslashes(text: str) -> "list[str] | None":

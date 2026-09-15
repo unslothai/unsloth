@@ -3374,6 +3374,12 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # Windows spellings a POSIX lexer destroys or a drive-letter pattern misses: root-relative on
+    # the current drive, and drive-relative against THAT drive's own directory.
+    r"cat \\Users\\alice\\notes.txt",
+    "cat C:notes.txt",
+    # `/dev/fd/<n>` is the kernel link `/proc/self/fd/<n>` is, so it is not a property of /dev.
+    "cat /dev/fd/3",
     # `make --help`: `-f FILE` reads that makefile and `-C DIR` changes to it first.
     f"make -f {_OUTSIDE_DIR}/Makefile",
     f"make -C {_OUTSIDE_DIR}",
@@ -3663,6 +3669,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "p=hello; cat notes/${p:0:3}",
+    "echo a:b:c",
+    "git commit -m 'fix: thing'",
     "make -j4",
     "make -f Makefile.dev install",
     "busybox cat notes.txt",
@@ -4057,3 +4066,25 @@ def test_studio_own_state_is_never_silent():
     # The output subdirectories under it stay silent, or ordinary tool work would prompt.
     for path in (os.path.join(home, "sandbox", "out.txt"), os.path.join(home, "cache", "m.bin")):
         assert path_gate._path_needs_approval(path, writing = True) is False, path
+
+
+def test_classification_does_not_create_the_studio_database(tmp_path, monkeypatch):
+    # A classification asks the roots where the model folders and the HF cache are, and both are
+    # stored in `studio.db`. Opening it CREATES it and initialises the schema, so on a first run the
+    # very first tool call was creating the database as a side effect of deciding whether to prompt.
+    # Both root sources skip the lookup when the file is not there, which is the same answer an
+    # empty table gives.
+    import core.inference.tool_path_approval as gate
+
+    home = tmp_path / "studio-home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(gate, "_silent_roots_cache", None)
+    try:
+        before = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file())
+        assert is_high_risk_tool_call("terminal", {"command": "cat /media/review/document.txt"})
+        assert not is_high_risk_tool_call("terminal", {"command": "cat notes.txt"})
+        after = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file())
+        assert before == after, after
+    finally:
+        gate._silent_roots_cache = None
