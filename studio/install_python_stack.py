@@ -4993,9 +4993,10 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
 
 
 def _missing_torch_needs_dependency_pass() -> bool:
-    """Check metadata for missing torch that the core dependency pass can reinstall.
+    """Missing torch that the dependency pass can actually reinstall, read from metadata.
 
-    Require an active core dependency to avoid repeated, ineffective repair passes.
+    Gated on a live core requirement so a platform the pass could never help (Apple
+    Silicon, where unsloth-zoo's torch marker is false) does not repair on every update.
     """
     if NO_TORCH or _installed_distribution_version("torch") is not None:
         return False
