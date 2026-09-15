@@ -950,10 +950,10 @@ def _installed_torch_is_windows_rocm() -> bool:
 _ANYIO_BAD_FLOOR = (4, 14)
 
 
-def _installed_anyio_version() -> tuple[int, int] | None:
+def _installed_version(package: str) -> tuple[int, int] | None:
     try:
         from importlib.metadata import version as _pkg_version
-        raw = _pkg_version("anyio")
+        raw = _pkg_version(package)
     except Exception:
         return None
     parts = raw.split(".")
@@ -966,7 +966,7 @@ def _installed_anyio_version() -> tuple[int, int] | None:
 
 
 def _repair_bad_anyio() -> None:
-    installed = _installed_anyio_version()
+    installed = _installed_version("anyio")
     if installed is None or installed < _ANYIO_BAD_FLOOR:
         return
     _note(f"anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14...")
@@ -977,6 +977,34 @@ def _repair_bad_anyio() -> None:
         "anyio<4.14.0",
         constrain = False,
     )
+
+
+# The constraints cap cannot reach a fresh install: install.ps1 resolves accelerate with no -c,
+# then hands off with SKIP_STUDIO_BASE=1, and no later step re-resolves it (#10819).
+_ACCELERATE_BAD_FLOOR = (1, 15)
+
+
+def _repair_bad_accelerate() -> None:
+    if not IS_WINDOWS:
+        return
+    installed = _installed_version("accelerate")
+    if installed is None or installed < _ACCELERATE_BAD_FLOOR:
+        return
+    _note(f"accelerate {installed[0]}.{installed[1]} found -- reinstalling accelerate<1.15...")
+    # --no-deps: accelerate requires torch>=2.0.0, and a with-deps reinstall replaces the ROCm
+    # wheel. _try, not pip_install: that exits, and this fires on nearly every Windows install.
+    if not pip_install_try(
+        "Repairing accelerate version",
+        "--no-cache-dir",
+        "--no-deps",
+        "accelerate<1.15.0",
+        constrain = False,
+    ):
+        _note(
+            "could not install accelerate<1.15 -- training on a Windows AMD GPU will fail "
+            "at trainer start until it is downgraded (huggingface/accelerate#4249)",
+            _red,
+        )
 
 
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
@@ -2487,48 +2515,14 @@ def _has_usable_nvidia_gpu() -> bool:
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
 
-    def _lists_a_gpu(exe: str) -> bool:
-        try:
-            result = subprocess.run(
-                [exe, "-L"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
-            )
-        except Exception:
-            return False
-        return result.returncode == 0 and "GPU " in result.stdout
-
     # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
     # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
     # on the GPU check failing, not on the PATH lookup missing.
-    candidates = []
     _path_exe = shutil.which("nvidia-smi")
-    if _path_exe:
-        candidates.append(_path_exe)
-    if IS_WINDOWS:
-        candidates.extend(
-            (
-                os.path.join(
-                    os.environ.get("ProgramFiles", r"C:\Program Files"),
-                    "NVIDIA Corporation",
-                    "NVSMI",
-                    "nvidia-smi.exe",
-                ),
-                os.path.join(
-                    os.environ.get("SystemRoot", r"C:\Windows"),
-                    "System32",
-                    "nvidia-smi.exe",
-                ),
-            )
-        )
-    for _candidate in candidates:
+    for _candidate in _nvidia_smi_candidates():
         if _candidate != _path_exe and not os.path.isfile(_candidate):
             continue
-        if _lists_a_gpu(_candidate):
+        if _nvidia_smi_lists_a_gpu(_candidate):
             return True
     # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU whatever nvidia-smi does.
     if sys.platform != "win32":
@@ -3317,13 +3311,83 @@ def _install_bnb_windows_rocm() -> bool:
     return True
 
 
-def _nvidia_smi_path() -> "str | None":
-    """nvidia-smi from PATH, falling back to the canonical Linux install path a
-    stripped-down PATH (systemd units, cron) can miss."""
+def _nvidia_smi_candidates() -> "list[str]":
+    """Every place nvidia-smi is worth looking for, PATH first.
+
+    One list, because two callers that disagree about where nvidia-smi lives disagree
+    about the host: _has_usable_nvidia_gpu would find the driver through the Windows
+    fixed locations while _detect_cuda_torch_index_url, reading PATH only, fell back to
+    its cu126 default and recorded a family the driver never reported.
+    """
+    candidates = []
     exe = shutil.which("nvidia-smi")
-    if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
-        exe = "/usr/bin/nvidia-smi"
-    return exe
+    if exe:
+        candidates.append(exe)
+    if IS_WINDOWS:
+        # The locations install.ps1 / setup.ps1 use; nvidia-smi.exe is routinely off PATH.
+        candidates.extend(
+            (
+                os.path.join(
+                    os.environ.get("ProgramFiles", r"C:\Program Files"),
+                    "NVIDIA Corporation",
+                    "NVSMI",
+                    "nvidia-smi.exe",
+                ),
+                os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32",
+                    "nvidia-smi.exe",
+                ),
+            )
+        )
+    else:
+        # The canonical Linux path a stripped-down PATH (systemd units, cron) can miss.
+        candidates.append("/usr/bin/nvidia-smi")
+    return candidates
+
+
+def _nvidia_smi_lists_a_gpu(exe: str) -> bool:
+    """Whether this nvidia-smi actually enumerates a GPU.
+
+    The predicate both probes have to agree on. A stale copy can exit 0 and print a
+    perfectly parseable "CUDA Version:" banner while `-L` lists nothing, which is the
+    state setup.ps1's Test-NvidiaSmiHasGpu rejects.
+    """
+    try:
+        result = subprocess.run(
+            [exe, "-L"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "GPU " in result.stdout
+
+
+def _nvidia_smi_usable_candidates() -> "list[str]":
+    """Candidates worth actually running: the PATH result plus every file that exists.
+
+    `shutil.which` already proved its result runnable, so it is kept without an
+    os.path.isfile check -- that would reject a bare "nvidia-smi" relative to a CWD it
+    does not live in, which is both what a stubbed test double looks like and what a
+    GPU-free runner would turn into a silent cu126 default.
+    """
+    path_exe = shutil.which("nvidia-smi")
+    return [
+        candidate
+        for candidate in _nvidia_smi_candidates()
+        if candidate == path_exe or os.path.isfile(candidate)
+    ]
+
+
+def _nvidia_smi_path() -> "str | None":
+    """The first nvidia-smi worth running, or None."""
+    candidates = _nvidia_smi_usable_candidates()
+    return candidates[0] if candidates else None
 
 
 def _nvidia_compute_sms(exe: str) -> "list[int] | None":
@@ -3436,9 +3500,19 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    exe = _nvidia_smi_path()
     tag = "cu126"  # default when the driver CUDA version cannot be read
-    if exe:
+    # Every candidate until one ANSWERS, the way _has_usable_nvidia_gpu does. Taking the
+    # first that merely exists loses to a stale nvidia-smi on PATH: the presence probe
+    # walks past it to the working Program Files copy and confirms the GPU, while this one
+    # stopped at the stale binary, read no version, and defaulted to cu126. On Blackwell
+    # that wheel has no kernels, so a repair would install one the GPU cannot use.
+    for exe in _nvidia_smi_usable_candidates():
+        # The same predicate the presence probe uses. A stale copy that exits 0 with a
+        # parseable banner but lists no GPU must not decide the family: _has_usable_nvidia_gpu
+        # walks past it to the working copy, and setup.ps1 keeps the executable that passes
+        # Test-NvidiaSmiHasGpu, so accepting it here picks a family off the wrong driver.
+        if not _nvidia_smi_lists_a_gpu(exe):
+            continue
         try:
             result = subprocess.run(
                 [exe],
@@ -3449,26 +3523,38 @@ def _detect_cuda_torch_index_url() -> str:
                 errors = "replace",
                 timeout = 10,
             )
-            if result.returncode == 0:
-                m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
-                if m:
-                    major, minor = int(m.group(1)), int(m.group(2))
-                    if major >= 13:
-                        tag = "cu130"
-                    elif major == 12 and minor >= 8:
-                        tag = "cu128"
-                    elif major == 12 and minor >= 6:
-                        tag = "cu126"
-                    elif major >= 12:
-                        tag = "cu124"
-                    elif major >= 11:
-                        tag = "cu118"
-                    else:
-                        tag = "cpu"  # ancient driver: no usable CUDA wheels
         except Exception:
-            pass
-        tag = _cap_cuda_family_for_pre_turing(tag, exe)
+            continue
+        if result.returncode != 0:
+            continue
+        m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout)
+        if m is None:
+            continue
+        major, minor = int(m.group(1)), int(m.group(2))
+        if major >= 13:
+            tag = "cu130"
+        elif major == 12 and minor >= 8:
+            tag = "cu128"
+        elif major == 12 and minor >= 6:
+            tag = "cu126"
+        elif major >= 12:
+            tag = "cu124"
+        elif major >= 11:
+            tag = "cu118"
+        else:
+            tag = "cpu"  # ancient driver: no usable CUDA wheels
+        return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(tag, exe)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
+
+
+def _driver_cuda_torch_flavor_tag() -> str:
+    """The CUDA wheel family this driver can actually run, or "" if it can run none.
+
+    _detect_cuda_torch_index_url mirrors setup.ps1::Get-PytorchCudaTag, ancient-driver "cpu"
+    and pre-Turing cap included, so reading its leaf asks the same question the handover did.
+    """
+    leaf = _detect_cuda_torch_index_url().rstrip("/").rsplit("/", 1)[-1].strip().lower()
+    return leaf if _is_cuda_family_leaf(leaf) else ""
 
 
 def _explicit_torch_index_url() -> "str | None":
@@ -3958,7 +4044,7 @@ def _ensure_xpu_triton() -> None:
     """
     if NO_TORCH or IS_MACOS:
         return
-    if IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+    if IS_WINDOWS and _handover_torch_flavor_tag():
         return
     pin = _explicit_xpu_torch_index_url()
     if pin is None:
@@ -4268,6 +4354,15 @@ def _torch_build_is_gpu() -> bool:
     return (not label) or _is_gpu_torch_label(label)
 
 
+def _handover_torch_flavor_tag() -> str:
+    """The flavor setup.sh / setup.ps1 published for this run, lowercased, or "".
+
+    Named rather than read inline: the invariant has to tell a handover apart from the other
+    sources of the same string.
+    """
+    return os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+
+
 def _expected_torch_flavor_tag() -> str:
     """The torch flavor this venv is SUPPOSED to hold, or "" when nothing can say.
 
@@ -4289,8 +4384,36 @@ def _expected_torch_flavor_tag() -> str:
          Only an NVIDIA host, or an explicit pin, can expect a GPU build -- otherwise
          return "" rather than invent an expectation from an absent GPU.
     """
-    env = os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+    env = _handover_torch_flavor_tag()
     if env:
+        # One exception. The setup scripts publish "cpu" both when the user asked for it and
+        # when their GPU probe came back empty, and honouring the second reading is what let an
+        # update report a venv rebuilt as 2.11.0+cpu as a success. Unpinned, "cpu" is a probe
+        # ANSWER and does not outrank a CUDA manifest while the GPU is still there; both facts
+        # must hold, or a host that really lost its GPU gets a wheel it cannot load. Resolved
+        # here rather than in _ensure_expected_torch_flavor so the caller records the enforced
+        # tag too, instead of repairing the venv and then writing "cpu" to the manifest.
+        if env == "cpu" and not _explicit_cpu_torch_index_pin():
+            recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
+            if _is_cuda_family_leaf(recorded) and _has_usable_nvidia_gpu():
+                # The driver's OWN family, not the recorded one. setup.ps1 also answers "cpu"
+                # legitimately, from Get-PytorchCudaTag, when the driver tops out below CUDA 11
+                # or Get-CudaFamilyCappedForPreTuring lowers the family; reinstating the record
+                # there would install a wheel this driver cannot load. Same probe as setup.ps1,
+                # mirrored in _detect_cuda_torch_index_url, so the two cannot disagree.
+                # An explicit CUDA pin outranks the probe: the repair helpers install from
+                # the pinned URL, so expecting anything else would flag the venv they just
+                # built correctly. _explicit_cpu_torch_index_pin already took the CPU pin.
+                pinned = _torch_index_leaf(_explicit_torch_index_url() or "")
+                driver = pinned if _is_cuda_family_leaf(pinned) else _driver_cuda_torch_flavor_tag()
+                if not driver:
+                    return env
+                _safe_print(
+                    f"   [WARN] the installer handed over a CPU torch expectation, but this venv "
+                    f"was recorded as {recorded} and an NVIDIA GPU is still present; "
+                    f"enforcing {driver}."
+                )
+                return driver
         return env
     pin = _explicit_torch_index_url()
     if pin is not None:
@@ -4338,7 +4461,7 @@ def _expected_torch_flavor_is_explicit() -> bool:
     False when only the live hardware probe can answer, which is the one case a
     visibility mask has any business overruling.
     """
-    if os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+    if _handover_torch_flavor_tag():
         return True
     if _explicit_torch_index_url() is not None:
         return True
@@ -7333,8 +7456,12 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 
 
 def _uv_is_offline() -> bool:
-    """True when uv has been told not to touch the network."""
-    return os.environ.get("UV_OFFLINE", "").strip().lower() not in ("", "0", "false")
+    """True when uv has been told not to touch the network.
+
+    uv's own boolish set, as both setup scripts read it. `not in (0, false)` also read `off`
+    and `no` as offline, declining repairs with a message saying the opposite.
+    """
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in ("1", "t", "true", "y", "yes", "on")
 
 
 def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
@@ -8952,9 +9079,11 @@ def install_python_stack() -> int:
     # reinstall path too, not just the two calls below
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Three lettered steps beside the numbered ones: anyio repair (8b), diffusers pin (11b),
-    # torchcodec (13b).
+    # Four lettered steps beside the numbered ones: anyio repair (8b), accelerate repair
+    # (8c, Windows only), diffusers pin (11b), torchcodec (13b).
     base_total = 13 if IS_WINDOWS else 14
+    if IS_WINDOWS:
+        base_total += 1  # 8c, gated exactly as the step is
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -8987,7 +9116,7 @@ def install_python_stack() -> int:
     # update stops at the same point.
     _parked = install_manifest.previous_manifest_path()
     install_manifest.consume_previous_manifest()
-    if _parked.exists():
+    if install_manifest.manifest_is_present(_parked):
         _safe_print(
             f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
             f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
@@ -8997,7 +9126,7 @@ def install_python_stack() -> int:
         return 1
     if install_manifest.remove_manifest():
         install_manifest.consume_previous_manifest()
-        if _parked.exists():
+        if install_manifest.manifest_is_present(_parked):
             _safe_print(
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
@@ -9357,6 +9486,11 @@ def install_python_stack() -> int:
     # 8b. anyio repair (#6483)
     _progress("anyio check")
     _repair_bad_anyio()
+
+    # 8c. Outside skip_base on purpose: install.ps1 sets it and is the path that lands 1.15.
+    if IS_WINDOWS:
+        _progress("accelerate check")
+        _repair_bad_accelerate()
 
     # 9. Data-designer dependencies
     _dd_deps_ran = not _skip_step(

@@ -492,6 +492,40 @@ def test_a_src_lost_between_the_updaters_two_renames_is_put_back(tmp_path):
     assert "put " in res.stderr
 
 
+def test_a_killed_updates_record_is_recovered_before_studio_starts(tmp_path):
+    """SIGKILL after the swap and the package replacement: no trap ran, so the record
+    unsloth-studio-update keeps beside src is still there at the next container start.
+    The linker hands it to the updater's --recover, with the home it just linked,
+    before supervisord starts Studio on the unverified tree."""
+    app = _app(tmp_path)
+    (app / ".src-prev.k9x2Qa").mkdir()
+    (app / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
+    home = tmp_path / "home"
+    stub = tmp_path / "stub" / "unsloth-studio-update"
+    stub.parent.mkdir()
+    stub.write_text(
+        '#!/usr/bin/env bash\necho "UPDATER $* home=$UNSLOTH_STUDIO_HOME" >> "$STUB_LOG"\nexit "${STUB_RC:-0}"\n'
+    )
+    stub.chmod(0o755)
+    log = tmp_path / "calls.log"
+    env = {"UNSLOTH_STUDIO_UPDATER": str(stub), "STUB_LOG": str(log)}
+    res = _link(app, home, env = env)
+    assert res.returncode == 0, res.stderr
+    assert log.read_text() == f"UPDATER --recover home={home}\n", log.read_text()
+    assert "the previous install is back" in res.stderr, res.stderr
+    assert (home / "unsloth_studio").is_symlink(), "recovery must run after the home is linked"
+    # a failed recovery is loud but does not stop the container from starting
+    log.unlink()
+    res = _link(app, home, env = {**env, "STUB_RC": "1"})
+    assert res.returncode == 0, res.stderr
+    assert "WARNING" in res.stderr and "--recover" in res.stderr, res.stderr
+    # no record: the updater is not run at all
+    (app / ".src-update.rollback").unlink()
+    log.unlink()
+    res = _link(app, home, env = env)
+    assert res.returncode == 0 and not log.exists()
+
+
 def test_two_previous_trees_are_left_for_a_human(tmp_path):
     app = _app(tmp_path)
     (app / "src").rename(app / ".src-prev.aaaaaa")
