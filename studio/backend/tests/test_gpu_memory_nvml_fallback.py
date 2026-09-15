@@ -148,6 +148,11 @@ class TestTheMemoryProbeFallsBackToNvml:
         # A slice the probe does not list hides every GPU rather than exposing the parent.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd")
         assert LlamaCppBackend._get_gpu_memory() == []
+        # A second slice named by the mask is that slice, not the parent's first.
+        second = dict(_row(0, 4000, 10240, uuid = "MIG-dddd4444-0"), mig = "1")
+        probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row, second]))
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 10240)]
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
 
     def test_a_uuid_mask_is_handed_to_the_child_as_uuids(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)

@@ -11681,6 +11681,8 @@ class LlamaCppBackend:
         parents = [r for r in rows if not r.get("mig")]
 
         def as_cuda_sees(r: dict) -> dict:
+            if r.get("mig"):
+                return r  # a slice the mask named stays that slice
             slices = [s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))]
             return slices[0] if slices else r
 
