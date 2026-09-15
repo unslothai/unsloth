@@ -255,8 +255,8 @@ class TestNetworkBlockFiltering:
 
     def test_same_line_http_not_exempted_with_approved_ssh(self):
         code = (
-            'import paramiko, requests\n'
-            'c = paramiko.SSHClient()\n'
+            "import paramiko, requests\n"
+            "c = paramiko.SSHClient()\n"
             'requests.get("https://unapproved.example"); c.connect("approved.example")'
         )
         approve_hosts("sess-1", ["approved.example"])

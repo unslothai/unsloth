@@ -2708,6 +2708,7 @@ class ToolConfirmRequest(BaseModel):
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
 
+
 class SshApproveRequest(BaseModel):
     session_id: Optional[str] = None
     hosts: list[str] = Field(default_factory = list)

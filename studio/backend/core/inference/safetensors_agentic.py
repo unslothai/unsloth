@@ -1433,7 +1433,6 @@ def run_safetensors_tool_loop(
                 if _decision == "allow":
                     from core.inference.ssh_policy import collect_ssh_hosts_for_approval
                     from state.ssh_approvals import approve_hosts
-
                     approve_hosts(
                         session_id,
                         collect_ssh_hosts_for_approval(decision.tool_name, decision.arguments),
