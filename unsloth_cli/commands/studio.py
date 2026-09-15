@@ -3177,7 +3177,9 @@ _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
 
 def _uv_is_bucket_name(name: str) -> bool:
     """A name uv itself creates: <kind>-v<N>, whole suffix numeric, kind from the LAST `-v`.
-    Mirrors _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in install.ps1."""
+    Same shape rule as _uv_is_bucket_name in install.sh and Test-StudioUvBucketName in
+    install.ps1, over the narrower kind list: this one only answers whether a bucket holds
+    package BYTES, where the installers also probe the kinds uv merely writes."""
     kind, marker, version = name.rpartition("-v")
     # isascii too: str.isdigit() is true for Arabic-Indic and superscript digits, which the sh
     # `*[!0-9]*` case and the PowerShell \A[0-9]+\z both reject. uv writes ASCII.

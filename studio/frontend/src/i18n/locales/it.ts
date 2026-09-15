@@ -1067,6 +1067,10 @@ export const it = {
             "Spazio di archiviazione locale insufficiente per questo font. Rimuovi prima un font importato.",
           errorFailed: "Impossibile caricare questo file di font.",
         },
+        interfaceScale: {
+          label: "Scala dell'interfaccia",
+          description: "Ridimensiona tutti gli elementi dell'interfaccia.",
+        },
         uiFontSize: {
           label: "Dimensione del font dell'interfaccia",
           description:
@@ -1422,6 +1426,7 @@ export const it = {
           "Fissa le voci nel menu laterale «+» della chat. Le altre verranno spostate in «Altro».",
         chatWithFiles: "Chat con file (RAG)",
         mcp: "MCP",
+        skills: "Competenze degli agenti",
         savedPrompts: "Prompt salvati",
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",
@@ -2548,5 +2553,23 @@ export const it = {
     kvRate: "KV riservato, ~{rate}/token",
     oomLikely: "Con le impostazioni attuali è probabile un errore di memoria",
     tooLarge: "Più grande della VRAM, verrà scaricato sulla CPU. Una quantizzazione più piccola è più veloce",
+  },
+  skills: {
+    title: "Competenze degli agenti",
+    description: "Le competenze vengono rilevate nelle cartelle standard degli agenti. Attivale qui, poi digita @ nella chat per menzionarne una.",
+    precedence: "~/.agents/skills ha la precedenza rispetto a ~/.claude/skills.",
+    refresh: "Aggiorna",
+    empty: "Nessuna competenza trovata. Aggiungi una cartella SKILL.md in ~/.agents/skills o ~/.claude/skills, poi aggiorna.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Inclusa",
+    shadowed: "Oscurata",
+    invalid: "Non valida",
+    compatibility: "Compatibilità: {value}",
+    shadowedBy: "Un'altra competenza ({source}) con questo nome ha la precedenza.",
+    enable: "Attiva {name}",
+    disable: "Disattiva {name}",
+    updateError: "Impossibile aggiornare la competenza",
+    mentions: "Competenze degli agenti",
   },
 } as const;

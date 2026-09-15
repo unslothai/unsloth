@@ -129,28 +129,47 @@ def _load_active_generations():
     return module
 
 
-def _load_registry_module():
+_REGISTRY_SOURCE = None
+
+
+def _registry_source():
+    """The `_WANTED` top-level definitions, verbatim, joined in file order.
+
+    `ast.get_source_segment` re-splits the whole 1.72 MB source on every call, so
+    asking it for all 1011 top-level nodes took ~13s -- and each of the seven tests
+    below paid it again. Two changes, neither of which alters a byte of the result:
+    the membership test now runs before the segment is cut, so only the nodes that
+    are kept are ever cut, and the joined text is built once per process. The `exec`
+    stays per call, so every test still gets its own fresh `_CANCEL_REGISTRY`.
+    """
+    global _REGISTRY_SOURCE
+    if _REGISTRY_SOURCE is not None:
+        return _REGISTRY_SOURCE
     chunks = []
     for n in _TREE.body:
+        if isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+            wanted = n.name in _WANTED
+        elif isinstance(n, ast.Assign):
+            wanted = any(t.id in _WANTED for t in n.targets if isinstance(t, ast.Name))
+        elif isinstance(n, ast.AnnAssign):
+            wanted = isinstance(n.target, ast.Name) and n.target.id in _WANTED
+        else:
+            wanted = False
+        if not wanted:
+            continue
         seg = ast.get_source_segment(_SRC, n)
         if seg is None:
             continue
-        if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in _WANTED:
-            chunks.append(seg)
-        elif isinstance(n, ast.Assign):
-            names = [t.id for t in n.targets if isinstance(t, ast.Name)]
-            if any(name in _WANTED for name in names):
-                chunks.append(seg)
-        elif (
-            isinstance(n, ast.AnnAssign)
-            and isinstance(n.target, ast.Name)
-            and n.target.id in _WANTED
-        ):
-            chunks.append(seg)
+        chunks.append(seg)
+    _REGISTRY_SOURCE = "\n\n".join(chunks)
+    return _REGISTRY_SOURCE
+
+
+def _load_registry_module():
     mod = {"active_generations": _load_active_generations()}
     exec(
         "import threading, time\nfrom typing import Optional\n_account_cancel_key = lambda key: key\n"
-        + "\n\n".join(chunks),
+        + _registry_source(),
         mod,
     )
     return mod
