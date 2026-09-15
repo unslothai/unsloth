@@ -19,6 +19,7 @@ matters:
 from __future__ import annotations
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -135,3 +136,51 @@ def test_a_preflight_caller_cannot_block_the_resident_owner(backend):
     _resident(backend)
     _pending_invocation(backend, BOB)
     assert backend.unload(expected_account = ALICE)["loaded"] is False
+
+
+def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, monkeypatch):
+    """_wait_for_pending_unloads() and the registration lock are two steps. An eject landing in
+    between bumps the epoch too, so a naive re-read of _load_token adopts the eject's OWN token,
+    passes the cancellation check, and can then win _lock ahead of the eject, publish a pipeline and
+    have the teardown destroy it -- all after the request was accepted. The fence has to be read
+    under the lock that registers."""
+    from core.inference.diffusion import _account_owned_load
+
+    calls = {"waits": 0}
+    real_wait = backend._wait_for_pending_unloads
+    started = threading.Event()
+
+    def racing_wait(*args, **kwargs):
+        # Counted on ENTRY: the second call is the one that blocks, and the thread that releases the
+        # fence has to know it has started before it can let go of it.
+        calls["waits"] += 1
+        if calls["waits"] >= 2:
+            started.set()
+        real_wait(*args, **kwargs)
+        if calls["waits"] == 1:
+            # Exactly the gap: the eject lands after the wait returned and before the caller can
+            # take _load_cancel_lock.
+            with backend._load_cancel_lock:
+                backend._unload_waiters += 1
+                backend._load_token += 1
+
+    monkeypatch.setattr(backend, "_wait_for_pending_unloads", racing_wait)
+
+    @_account_owned_load
+    def admitted(self, *, _load_token = None):
+        return _load_token
+
+    def release():
+        started.wait(timeout = 10)
+        with backend._load_cancel_lock:
+            backend._unload_waiters -= 1
+        backend._teardown_drained.set()
+
+    releaser = threading.Thread(target = release, daemon = True)
+    releaser.start()
+    token = admitted(backend)
+    releaser.join(timeout = 10)
+
+    assert calls["waits"] == 2, "the load registered without waiting the racing eject out"
+    assert token == backend._load_token
+    assert backend._load_accounts == {}

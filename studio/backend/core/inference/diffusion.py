@@ -896,16 +896,25 @@ def _account_owned_load(method):
     @functools.wraps(method)
     def wrapped(self, *args, **kwargs):
         request = object()
-        if kwargs.get("_load_token") is None:
-            # A fresh request: wait out the ejects already in flight rather than failing, then take
-            # the epoch they leave behind. A worker inherits its epoch instead and skips this.
-            self._wait_for_pending_unloads()
-        with self._load_cancel_lock:
-            token = kwargs.get("_load_token")
-            if token is None:
-                token = self._load_token
-            self._raise_if_load_cancelled(token)
-            self._load_accounts[request] = (token, current_account_id())
+        inherited = kwargs.get("_load_token")
+        while True:
+            if inherited is None:
+                # A fresh request: wait out the ejects already in flight rather than failing, then take
+                # the epoch they leave behind. A worker inherits its epoch instead and skips this.
+                self._wait_for_pending_unloads()
+            with self._load_cancel_lock:
+                token = self._load_token if inherited is None else inherited
+                # The wait above and this lock are two steps, and an eject can arrive between them. It
+                # bumps the epoch as well, so a fresh request would adopt the NEW token, pass the check
+                # below, win _lock ahead of the eject (acquisition is not FIFO), publish a pipeline and
+                # have the teardown it walked into destroy it -- after the request was accepted. So the
+                # fence is read under the same lock that registers, and a load that finds one goes back
+                # and waits it out.
+                if inherited is None and self._unload_waiters:
+                    continue
+                self._raise_if_load_cancelled(token)
+                self._load_accounts[request] = (token, current_account_id())
+                break
         try:
             return method(self, *args, **{**kwargs, "_load_token": token})
         finally:
