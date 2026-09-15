@@ -5678,9 +5678,7 @@ def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, 
 
 
 @pytest.mark.parametrize("session_command", [None, ["npm", "--silent"]])
-def test_write_pi_user_resources_clears_npm_command_whole(
-    tmp_path, monkeypatch, session_command,
-):
+def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch, session_command):
     # npmCommand is an argument vector: subtracting it entry by entry would leave a
     # command missing whatever the copied and session values happen to share.
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
@@ -5692,7 +5690,8 @@ def test_write_pi_user_resources_clears_npm_command_whole(
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
     start.write_pi_user_resources(agent_dir, session_home)
     assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == [
-        "npm", "--registry=x",
+        "npm",
+        "--registry=x",
     ]
     if session_command is not None:
         settings = json.loads((agent_dir / "settings.json").read_text())
@@ -5815,9 +5814,7 @@ def test_pi_local_entry_leaves_degenerate_entries_alone(tmp_path, entry):
 
 
 @pytest.mark.parametrize("dangling", [False, True])
-def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(
-    tmp_path, monkeypatch, dangling,
-):
+def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(tmp_path, monkeypatch, dangling):
     # unlink maps to DeleteFileW, which refuses a directory symlink with WinError 5,
     # and a dangling link is still one: is_dir() would follow the missing target.
     source = tmp_path / "source"
@@ -5834,9 +5831,11 @@ def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(
     # POSIX lstat has no st_file_attributes; stand in for the Windows link attributes.
     real_lstat = os.lstat
     monkeypatch.setattr(
-        start.os, "lstat",
+        start.os,
+        "lstat",
         lambda p: SimpleNamespace(
-            st_file_attributes = 0x10, st_reparse_tag = 0,
+            st_file_attributes = 0x10,
+            st_reparse_tag = 0,
             st_mode = real_lstat(p).st_mode,
         ),
     )
