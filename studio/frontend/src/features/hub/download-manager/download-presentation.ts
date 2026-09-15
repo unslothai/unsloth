@@ -92,8 +92,10 @@ export function presentedProgress(
   }
   const expectedBytes = presentation.expectedBytes;
   const cachedPlanPrefix =
-    presentation.cachedPlanPrefixBytes ??
-    Math.max(0, job.expectedBytes - expectedBytes);
+    job.expectedBytes <= expectedBytes
+      ? 0
+      : (presentation.cachedPlanPrefixBytes ??
+        Math.max(0, job.expectedBytes - expectedBytes));
   const downloadedBytes = Math.min(
     expectedBytes,
     Math.max(0, job.downloadedBytes - cachedPlanPrefix),

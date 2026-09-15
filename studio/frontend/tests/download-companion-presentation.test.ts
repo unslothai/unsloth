@@ -54,6 +54,30 @@ test("companion presentation subtracts the cached main model from progress", () 
   );
 });
 
+test("companion presentation keeps backend baseline-adjusted progress", () => {
+  const presentation = presentationForJobStart(
+    {
+      label: "MTP companion",
+      filename: "mtp-shared-Q8_0.gguf",
+      expectedBytes: 20,
+    },
+    undefined,
+    120,
+    false,
+  );
+
+  assert.deepEqual(
+    presentedProgress({
+      // snapshot_progress has already removed the cached 100-byte main model.
+      expectedBytes: 20,
+      downloadedBytes: 5,
+      fraction: 0.25,
+      presentation,
+    }),
+    { expectedBytes: 20, downloadedBytes: 5, fraction: 0.25 },
+  );
+});
+
 test("ordinary downloads retain their plan-wide counters", () => {
   assert.deepEqual(
     presentedProgress({

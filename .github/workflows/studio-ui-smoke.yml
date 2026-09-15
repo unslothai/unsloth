@@ -449,7 +449,7 @@ jobs:
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
 
       - name: Drive MTP companion download visibility
-        if: matrix.shard == 'picker'
+        if: matrix.shard == 'extra'
         env:
           PW_SIDE: AFTER
           PW_ART_DIR: logs/playwright_mtp
