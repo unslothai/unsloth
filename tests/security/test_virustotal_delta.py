@@ -357,3 +357,55 @@ def test_the_workflow_reads_the_secret_this_repository_actually_has() -> None:
     assert (
         checkout.get("with", {}).get("fetch-depth") == 0
     ), "the baseline is reverified against 1ad44677d, which a shallow clone does not contain"
+
+
+def test_two_rulesets_sharing_a_rule_name_stay_distinct() -> None:
+    """A hit gained from another ruleset must not compare equal to the baseline's.
+
+    Crowdsourced rulesets are independent, so the same rule identifier can appear in two of them.
+    Keying a hit on the rule name alone collapsed them, and a candidate that picked up a hit from a
+    second ruleset still parsed to the baseline's list, so the comparison reported YARA unchanged
+    and the run exited 0 on a genuine regression.
+    """
+    parsed = vtd.parse_yara(
+        [
+            {"ruleset_name": "set_a", "rule_name": "SUSP_Script"},
+            {"ruleset_name": "set_b", "rule_name": "SUSP_Script"},
+        ]
+    )
+    assert len(parsed) == 2, f"the two rulesets collapsed to one hit: {parsed}"
+
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["crowdsourced_yara_results"] = [
+        {"ruleset_name": "set_a", "rule_name": "SUSP_Script"},
+        {"ruleset_name": "set_b", "rule_name": "SUSP_Script"},
+    ]
+    baseline_payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    baseline_payload["data"]["attributes"]["crowdsourced_yara_results"] = [
+        {"ruleset_name": "set_a", "rule_name": "SUSP_Script"},
+    ]
+    delta = vtd.compare(_snap(baseline_payload, "baseline", "a" * 64), _snap(payload))
+    assert delta.exit_code() == 2, "a hit gained from a second ruleset was reported as unchanged"
+    assert any("YARA" in row for row in delta.worse), delta.worse
+
+
+def test_third_party_text_cannot_break_the_job_summary() -> None:
+    """Engine names and rule names are third-party data rendered as Markdown.
+
+    The summary is appended to `$GITHUB_STEP_SUMMARY`, where a newline ends the row or bullet, `|`
+    opens a new cell and `<` begins HTML that GitHub renders. `virustotal_scan._md_text` exists for
+    exactly this and the report was not using it.
+    """
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["last_analysis_results"] = {
+        "Evil|Engine": {"category": "malicious", "result": "x | y\n| broken | row |<img src=x>"},
+    }
+    delta = vtd.compare(_baseline(), _snap(payload))
+    report = vtd.render(_baseline(), _snap(payload), delta)
+    assert "<img" not in report, "raw HTML from a detection label reached the summary"
+    for line in report.splitlines():
+        if line.startswith("- ") or (line.startswith("|") and "---" not in line):
+            assert "\n" not in line
+    assert "Evil\\|Engine" in report or "Evil|Engine" not in report, (
+        "the engine name's pipe was not escaped, so it opens a new table cell"
+    )

@@ -43,6 +43,7 @@ import argparse
 import hashlib
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -52,6 +53,7 @@ from virustotal_scan import (  # noqa: E402
     API_KEY_ENV,
     API_ROOT,
     VirusTotalClient,
+    _md_text,
     parse_detections,
     parse_stats,
 )
@@ -129,9 +131,15 @@ def parse_yara(raw: object) -> list[str]:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        name = entry.get("rule_name") or entry.get("ruleset_name")
-        if isinstance(name, str) and name:
-            names.append(name)
+        # Ruleset AND rule. Two crowdsourced rulesets can carry the same rule identifier, and
+        # keying on the rule alone let a candidate gain a hit from a different ruleset while the
+        # parsed list stayed equal to the baseline's, so the comparison reported YARA unchanged and
+        # the run exited 0.
+        rule = entry.get("rule_name")
+        ruleset = entry.get("ruleset_name")
+        parts = [p for p in (ruleset, rule) if isinstance(p, str) and p]
+        if parts:
+            names.append("/".join(parts))
     return sorted(set(names))
 
 
@@ -167,12 +175,30 @@ def snapshot_from_payload(label: str, sha256: str, payload: object) -> Snapshot:
     return snap
 
 
-def fetch(client: VirusTotalClient, sha256: str, label: str) -> Snapshot:
-    status, payload = client.request(
-        "GET",
-        f"{API_ROOT}/files/{sha256}",
-        allow_status = (404,),
-    )
+# Below the 20 minutes the workflow gives the whole job. Without a deadline one lookup can spend
+# four 300-second socket attempts plus 20, 40 and 80 second backoffs, so the baseline alone can eat
+# the budget and the runner kills the step before it fetches the candidate or writes its summary --
+# which is a lost run rather than a reported one. `request` checks this BEFORE each attempt, because
+# a single attempt can block for the full socket timeout.
+LOOKUP_BUDGET_SECONDS = 420.0
+
+
+def fetch(
+    client: VirusTotalClient, sha256: str, label: str, deadline: float | None = None
+) -> Snapshot:
+    try:
+        status, payload = client.request(
+            "GET",
+            f"{API_ROOT}/files/{sha256}",
+            allow_status = (404,),
+            deadline = deadline,
+        )
+    except RuntimeError as exc:
+        # The retry budget or the deadline is spent. VOID, not clean and not a crash: we did not
+        # find out, and the summary has to say so while there is still time to write it.
+        snap = Snapshot(label = label, sha256 = sha256)
+        snap.note = f"the lookup did not complete within its budget: {exc}"
+        return snap
     if status == 404:
         snap = Snapshot(label = label, sha256 = sha256)
         snap.note = "not present on VirusTotal"
@@ -309,7 +335,8 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
         f"| on VirusTotal | {'yes' if baseline.found else 'NO'} | {'yes' if candidate.found else 'NO'} |",
         f"| engines flagging | {baseline.malicious + baseline.suspicious} / {baseline.total_engines} "
         f"| {candidate.malicious + candidate.suspicious} / {candidate.total_engines} |",
-        f"| which | {', '.join(baseline.engines) or 'none'} | {', '.join(candidate.engines) or 'none'} |",
+        f"| which | {_md_text(', '.join(baseline.engines)) or 'none'} "
+        f"| {_md_text(', '.join(candidate.engines)) or 'none'} |",
         f"| Sigma | {baseline.sigma_total} ({', '.join(f'{k}={v}' for k, v in sorted(baseline.sigma.items())) or 'none'}) "
         f"| {candidate.sigma_total} ({', '.join(f'{k}={v}' for k, v in sorted(candidate.sigma.items())) or 'none'}) |",
         f"| YARA | {len(baseline.yara)} | {len(candidate.yara)} |",
@@ -324,7 +351,11 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
         if rows:
             lines.append(f"**{heading}**")
             lines.append("")
-            lines.extend(f"- {row}" for row in rows)
+            # Escaped here rather than at every append site. Engine names, detection labels and
+            # YARA rule names all reach these bullets, all are third-party text, and this is
+            # appended to $GITHUB_STEP_SUMMARY where a newline ends the bullet, `|` opens a cell and
+            # `<` starts HTML that GitHub renders.
+            lines.extend(f"- {_md_text(row)}" for row in rows)
             lines.append("")
     if not delta.void and not delta.worse and not delta.better:
         lines.append("Nothing moved. Reported as unchanged rather than dressed up.")
@@ -509,8 +540,11 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     client = VirusTotalClient(api_key, request_interval = args.request_interval)
-    baseline = fetch(client, args.baseline_sha256, "baseline")
-    candidate = fetch(client, candidate_sha, "candidate")
+    # One budget shared across both lookups, so a slow baseline cannot leave the candidate with the
+    # whole remaining job timeout and still overrun it.
+    deadline = time.monotonic() + LOOKUP_BUDGET_SECONDS
+    baseline = fetch(client, args.baseline_sha256, "baseline", deadline = deadline)
+    candidate = fetch(client, candidate_sha, "candidate", deadline = deadline)
     delta = compare(baseline, candidate)
 
     report = render(baseline, candidate, delta)
