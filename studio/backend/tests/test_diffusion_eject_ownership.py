@@ -240,3 +240,73 @@ def test_stop_cancels_a_queued_generation_while_an_eject_waits_for_the_lock(back
 def test_stop_still_reports_nothing_to_cancel_on_an_idle_backend(backend):
     backend._queued_generate_cancels.add(threading.Event())
     assert backend.cancel_generate() is False
+
+
+def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
+    """An eject drops _loading the moment it is accepted, but the worker keeps reading those files
+    until its constructor unwinds. The delete-cached guard reads loading_repo_ids(): reporting
+    nothing through that window let it pull blobs out from under the still-running build."""
+    backend._loading = _LoadingState(
+        repo_id = "org/model-GGUF",
+        base_repo = "org/base",
+        account_id = ALICE,
+        fetch_repo = "mirror/base",
+    )
+    assert set(backend.loading_repo_ids()) == {"org/model-GGUF", "org/base", "mirror/base"}
+
+    seen = {}
+
+    def slow_teardown():
+        # Where the real worker is still reading: the eject has _lock, _loading is already gone.
+        seen["during"] = set(backend.loading_repo_ids())
+        backend._state = None
+
+    backend._unload_locked = slow_teardown
+    backend.unload(expected_account = ALICE)
+
+    assert backend._loading is None
+    assert seen["during"] == {"org/model-GGUF", "org/base", "mirror/base"}
+    # Drained once the teardown has taken _lock, which is what proves the constructor let go.
+    assert backend.loading_repo_ids() == ()
+    assert backend._draining_repos == set()
+
+
+def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):
+    """The retry waited on _teardown_drained, which is still SET between an eject being accepted
+    and its teardown reservation. It returned instantly, so the request spun a core against the
+    very _lock the eject was waiting for."""
+    with backend._load_cancel_lock:
+        backend._unload_waiters += 1
+        backend._unload_fence_clear.clear()
+    assert backend._teardown_drained.is_set(), "the window this test is about"
+
+    polls = {"teardown": 0, "fence": 0}
+    real_fence = backend._unload_fence_clear.wait
+    real_teardown = backend._teardown_drained.wait
+
+    def counted_teardown(timeout = None):
+        polls["teardown"] += 1
+        return real_teardown(timeout = timeout)
+
+    def counted_fence(timeout = None):
+        polls["fence"] += 1
+        return real_fence(timeout = timeout)
+
+    backend._teardown_drained.wait = counted_teardown
+    backend._unload_fence_clear.wait = counted_fence
+
+    def release():
+        time.sleep(0.4)
+        with backend._load_cancel_lock:
+            backend._unload_waiters -= 1
+            backend._unload_fence_clear.set()
+
+    releaser = threading.Thread(target = release, daemon = True)
+    releaser.start()
+    with backend._generation_slot(threading.Event()):
+        pass
+    releaser.join(timeout = 10)
+
+    # ~4 sleeps across the 0.4s fence. A spin does tens of thousands, on the wrong event.
+    assert polls["fence"] >= 2, polls
+    assert polls["teardown"] == 0, "the retry slept on the fence that was already clear"

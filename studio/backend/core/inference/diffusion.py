@@ -1245,6 +1245,9 @@ class DiffusionBackend:
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
+        # Repos a CANCELLED load is still reading: held from the moment the eject drops _loading
+        # until the teardown has taken _lock, which is what proves the constructor let it go.
+        self._draining_repos: set[str] = set()
         # Set when no eject holds the load fence. Its own event, not _teardown_drained: the fence goes
         # up as soon as the eject is accepted, and the teardown is only RESERVED once construction
         # releases _lock, which can be minutes later. Waiting on the teardown event through that gap
@@ -1380,7 +1383,16 @@ class DiffusionBackend:
                 while True:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    if self._teardown_drained.wait(timeout = 0.1):
+                    # Whichever fence actually turned this request away. _teardown_drained stays SET
+                    # between an eject being accepted and its teardown reservation, so waiting on it
+                    # through that window returned instantly and spun a core against the very _lock
+                    # the eject is trying to take.
+                    with self._load_cancel_lock:
+                        fenced_by_unload = bool(self._unload_waiters)
+                    gate = (
+                        self._unload_fence_clear if fenced_by_unload else self._teardown_drained
+                    )
+                    if gate.wait(timeout = 0.1):
                         break
             from hub.services.models.account_access import media_generation_slot
             try:
@@ -2346,9 +2358,13 @@ class DiffusionBackend:
         # other modality's acquire.
         with self._load_cancel_lock:
             loading = self._loading
-            if loading is None or loading.error is not None:
-                return ()
-            ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
+            ids: tuple[Optional[str], ...] = ()
+            if loading is not None and loading.error is None:
+                ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
+            # An eject drops _loading the moment it is accepted, but the worker keeps READING those
+            # files until its constructor unwinds, which can be minutes. Reporting nothing through
+            # that window let the delete-cached guard pull blobs out from under it.
+            ids += tuple(sorted(self._draining_repos))
             return tuple(dict.fromkeys(r for r in ids if r))
 
     @staticmethod
@@ -6453,6 +6469,16 @@ class DiffusionBackend:
                 self._unload_waiters += 1
                 self._unload_fence_clear.clear()
                 fenced = True
+                if self._loading is not None and self._loading.error is None:
+                    self._draining_repos.update(
+                        r
+                        for r in (
+                            self._loading.repo_id,
+                            self._loading.base_repo,
+                            self._loading.fetch_repo,
+                        )
+                        if r
+                    )
                 self._cancel_event.set()
                 self._load_token += 1
                 self._loading = None
@@ -6479,6 +6505,9 @@ class DiffusionBackend:
                     self._unload_waiters -= 1
                     if not self._unload_waiters:
                         self._unload_fence_clear.set()
+                        # Only once no eject is in flight: a second one may still be draining the
+                        # same worker, and dropping the ids early reopens the delete window.
+                        self._draining_repos.clear()
         return self.status()
 
     def _unload_locked(self) -> None:
