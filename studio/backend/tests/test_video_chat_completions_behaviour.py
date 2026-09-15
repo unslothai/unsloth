@@ -876,3 +876,19 @@ def test_the_lookup_does_not_run_on_the_event_loop(monkeypatch):
     with _client(monkeypatch, _VideoGguf()) as client:
         client.post("/v1/chat/completions", json = _part_body("http://clips.example/clip.mp4"))
     assert seen == {"on_loop": False}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://clips.example:bad/clip.mp4",
+        "https://clips.example:99999/clip.mp4",
+    ],
+)
+def test_an_invalid_port_on_a_resolvable_host_is_a_client_error(monkeypatch, url):
+    """urlsplit parses the hostname but raises on .port, so reading it outside the guarded
+    block surfaced a malformed URL as a 500."""
+    with _client(monkeypatch, _VideoGguf()) as client:
+        response = client.post("/v1/chat/completions", json = _part_body(url))
+    assert response.status_code == 400
+    assert "could not be parsed" in _detail(response)

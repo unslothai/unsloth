@@ -20716,11 +20716,14 @@ async def _reject_remote_video_by_resolved_address(payload) -> None:
             continue
         try:
             parts = urlsplit(clip)
-            parts.hostname
+            host_and_port = (parts.hostname, parts.port)
         except ValueError:
-            # Malformed authority; the literal check already turned this into a 400.
-            continue
-        host = (parts.hostname or "").rstrip(".")
+            # A bad authority or an out-of-range port; both are client errors, not 500s. The
+            # literal check refuses the ones it can see, so anything still here is refused now.
+            raise HTTPException(
+                status_code = 400, detail = "The remote video URL could not be parsed."
+            ) from None
+        host = (host_and_port[0] or "").rstrip(".")
         # A literal was already classified, and resolving it would only repeat that answer.
         if not host or _remote_video_destination_rejection(clip) is not None:
             continue
@@ -20729,7 +20732,7 @@ async def _reject_remote_video_by_resolved_address(payload) -> None:
             continue
         except ValueError:
             pass
-        port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+        port = host_and_port[1] or (443 if parts.scheme.lower() == "https" else 80)
         try:
             infos = await asyncio.wait_for(
                 asyncio.to_thread(socket.getaddrinfo, host, port, type = socket.SOCK_STREAM),
