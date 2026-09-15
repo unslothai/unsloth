@@ -159,6 +159,28 @@ def test_windows_dll_names_on_a_posix_path_do_not_count(tmp_path):
     assert _probe(dlls.replace("'posix'", "'nt'") + same_error) == "native"
 
 
+def test_versioned_libraries_on_the_loader_path_count_as_present(tmp_path):
+    # A non-system prefix on LD_LIBRARY_PATH often ships only libavcodec.so.61 and friends:
+    # the loader resolves torchcodec's SONAMEs from it, but find_library reads the ld cache
+    # and linker names and answers None, which would send the user to install FFmpeg twice.
+    for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
+        (tmp_path / f"lib{lib}.so.61").touch()
+    libs = textwrap.dedent(
+        f"""
+        import ctypes.util, os
+        ctypes.util.find_library = lambda n: None
+        os.environ['PATH'] = ''
+        os.environ['LD_LIBRARY_PATH'] = {str(tmp_path)!r}
+        os.name = 'posix'
+        """
+    )
+    same_error = _raising(
+        "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
+    )
+    assert _probe(libs + same_error) == "native"
+    assert _probe(libs.replace("'posix'", "'nt'") + same_error) == "ffmpeg"
+
+
 @pytest.mark.parametrize("probe", [_shipped_sh_probe, _shipped_ps1_probe], ids = ["sh", "ps1"])
 def test_both_installers_require_every_ffmpeg_library(probe):
     # Otherwise the copies drift: one installer keeps calling a partial FFmpeg present.

@@ -6685,6 +6685,10 @@ def _ffmpeg_on_loader_path():
     # entries. Distros package these separately, so a host missing only libswscale
     # cannot load the codec; calling that present sends the user at a torch ABI bug.
     dirs = [d for d in os.environ.get('PATH', '').split(os.pathsep) if d]
+    # A prefix on LD_LIBRARY_PATH may ship only versioned files (libavcodec.so.61), which
+    # the loader resolves but find_library never sees: it reads the ld cache and linker names.
+    libdirs = [d for v in ('LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH')
+               for d in os.environ.get(v, '').split(os.pathsep) if d]
     for name in ('avutil', 'avcodec', 'avformat', 'avdevice', 'avfilter',
                  'swscale', 'swresample'):
         if ctypes.util.find_library(name):
@@ -6692,6 +6696,9 @@ def _ffmpeg_on_loader_path():
         # find_library does not glob, so walk PATH for Windows names like avutil-59.dll.
         # Windows only: WSL puts the Windows PATH on the Linux one, and those DLLs cannot load here.
         if os.name == 'nt' and any(glob.glob(os.path.join(d, name + '-*.dll')) for d in dirs):
+            continue
+        if os.name != 'nt' and any(glob.glob(os.path.join(d, 'lib' + name + '.so*'))
+                                   or glob.glob(os.path.join(d, 'lib' + name + '.*dylib')) for d in libdirs):
             continue
         return False
     return True
