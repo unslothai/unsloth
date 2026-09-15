@@ -934,6 +934,9 @@ function Get-NvidiaLibraryProbeType {
     $name = "UnslothNvidiaProbeV2"
     $existing = $name -as [type]
     if ($existing) { return $existing }
+    # Dynamic Code Security can kill the process on an emitted load rather than throw: the
+    # same gate every other emitted type checks first, and no inventory when it says no.
+    if (-not (Test-StudioCanDefineNativeTypes)) { return $null }
     $windows = ($env:OS -eq "Windows_NT")
     $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
     $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }

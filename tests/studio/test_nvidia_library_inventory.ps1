@@ -68,6 +68,7 @@ for ($k = 0; $k -lt $blockNames.Count; $k++) {
 }
 # The installer must not spawn a C# compiler (windows-no-compiler-ci): the methods are emitted.
 Check "the inventory compiles nothing" ((($setupParts -join "`n") -notmatch 'Add-Type') -and ($setupParts[1] -match 'New-StudioEmittedNativeType'))
+Check "the emission is gated on the native-type capability" ($setupParts[1] -match 'if \(-not \(Test-StudioCanDefineNativeTypes\)\) \{ return \$null \}')
 Invoke-Expression $setupPath
 $pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
 $sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
@@ -92,7 +93,9 @@ Check "a failed driver-version read is not an inventory" (
 # The real libraries, in a child so the fake type below can own this session.
 $helperFile = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-inventory-" + [System.IO.Path]::GetRandomFileName() + ".ps1")
 $emitters = @(Get-HelperSources $setupPs1 @("New-StudioDynamicAssembly", "New-StudioEmittedNativeType"))
-Set-Content -LiteralPath $helperFile -Value ((($emitters + $setupParts) -join "`n") + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
+# The capability gate is a Windows policy probe; the child stands in for it and answers yes.
+$gateStub = 'function Test-StudioCanDefineNativeTypes { return $true }'
+Set-Content -LiteralPath $helperFile -Value ((@($gateStub) + $emitters + $setupParts) -join "`n") + "`n`$inv = Get-NvidiaLibraryInventory`nif (`$inv) { `$inv | ConvertTo-Json -Compress } else { 'null' }")
 $pwshExe = (Get-Process -Id $PID).Path
 $realJson = & $pwshExe -NoProfile -File $helperFile 2>&1 | Select-Object -Last 1
 $offJson = & $pwshExe -NoProfile -Command "`$env:UNSLOTH_NVIDIA_LIBRARY_PROBE = '0'; & '$helperFile'" 2>&1 | Select-Object -Last 1
