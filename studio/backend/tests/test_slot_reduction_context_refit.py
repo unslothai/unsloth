@@ -77,6 +77,23 @@ DENSE = {
     "_context_length": NATIVE_CTX,
 }
 
+# Gemma 3 12B-shaped: five sliding-window layers in six.
+SLIDING_WINDOW = {
+    "_architecture": "gemma3",
+    "_vocab_size": 262144,
+    "_n_layers": 48,
+    "_n_kv_heads": 8,
+    "_n_heads": 16,
+    "_embedding_length": 3840,
+    "_feed_forward_length": 15360,
+    "_kv_key_length": 256,
+    "_kv_value_length": 256,
+    "_key_length_mla": None,
+    "_context_length": 131072,
+    "_sliding_window": 1024,
+    "_sliding_window_pattern": [i % 6 != 5 for i in range(48)],
+}
+
 
 def _plan(
     tmp_path,
@@ -197,6 +214,23 @@ class TestTheRealEstimatorStillReduces:
             slot_scaled_compute = False,
         )
         assert (direct["slots"], direct["ctx"]) == (slots, ctx)
+
+    def test_a_sliding_window_split_reprices_its_masks_per_candidate(self, tmp_path):
+        """A layer split's sliding-window masks scale with slots, so each candidate
+        prices its own count rather than the one asked for."""
+        plans = [
+            _plan(
+                tmp_path,
+                weights_mib = 21_200,
+                n_parallel = asked,
+                spec = "off",
+                metadata = SLIDING_WINDOW,
+                gpus = 2,
+                slot_scaled_compute = False,
+            )
+            for asked in (16, 1)
+        ]
+        assert [(p["slots"], p["fit"], p["ctx"]) for p in plans] == [(1, "off", 8_448)] * 2
 
     def test_a_dense_load_keeps_its_slots(self, tmp_path):
         plans = [

@@ -15472,6 +15472,7 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
+        split_extra_for_slots: Optional[Callable[[int], int]] = None,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
         mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
         ctx_checkpoints: int = 0,
@@ -15504,7 +15505,8 @@ class LlamaCppBackend:
         layers charges per slot. It takes the candidate micro-batch as well as the slot
         count, since a reduced candidate lowers the batch floor and so the ubatch too;
         pricing the reserve at the requested pair over-charged every candidate, so one that
-        fits could be rejected and the load kept --fit."""
+        fits could be rejected and the load kept --fit. ``split_extra_for_slots(slots)``
+        re-prices the split step, whose sliding-window masks also scale with slots."""
         for slots in range(n_parallel if include_requested else n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
@@ -15534,7 +15536,9 @@ class LlamaCppBackend:
                 total_by_idx = total_by_idx,
                 per_device_overhead_bytes = per_device_overhead_bytes,
                 min_gpus = min_gpus,
-                split_extra_bytes = split_extra_bytes,
+                split_extra_bytes = (
+                    split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
+                ),
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -22823,7 +22827,11 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                         )
 
-                    def _cc_bytes(ctx: int, n_gpus: int = 1) -> int:
+                    def _cc_bytes(
+                        ctx: int,
+                        n_gpus: int = 1,
+                        slots: int = 0,
+                    ) -> int:
                         # Context-linear compute-buffer growth (flash-attn KQ mask +
                         # attention scratch); the flat _compute_buffer_pipeline folded
                         # into model_size_fit only covers ctx -> 0. Charged per
@@ -22837,20 +22845,21 @@ class LlamaCppBackend:
                         # under-reserves ~(n-1)x it (e.g. Qwen3.5-397B on 3 GPUs). The
                         # per-device rate also steps up once split, unless llama.cpp
                         # declines the pipeline parallelism that causes the step.
+                        # A nonzero ``slots`` prices that candidate count and its micro-batch.
                         return max(1, n_gpus) * self._compute_buffer_ctx_bytes(
                             ctx,
-                            _effective_ubatch,
+                            _ubatch_for_slots(slots) if slots else _effective_ubatch,
                             _scratch_cache_type_kv,
                             layer_split = n_gpus > 1 and not _pipeline_parallel_off,
                             flash_attn = _launch_flash_attn,
-                            n_parallel = n_parallel,
+                            n_parallel = slots or n_parallel,
                         )
 
-                    def _cc_split_extra(ctx: int) -> int:
+                    def _cc_split_extra(ctx: int, slots: int = 0) -> int:
                         # Per-device step from the single-device rate to the split one,
                         # for the paths that must select GPUs before they know the
                         # count. 0 when llama.cpp declines pipeline parallelism.
-                        return max(0, _cc_bytes(ctx, 2) // 2 - _cc_bytes(ctx))
+                        return max(0, _cc_bytes(ctx, 2, slots) // 2 - _cc_bytes(ctx, 1, slots))
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
@@ -24138,7 +24147,7 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
-                            split_extra_bytes = _cc_split_extra(_reduce_ctx),
+                            split_extra_for_slots = lambda s: _cc_split_extra(_reduce_ctx, s),
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _effective_ctx_checkpoints,
