@@ -620,7 +620,6 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         prewarm_diffusers_if_image_models_exist()
     except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
         import structlog as _structlog
-
         _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
 
 

@@ -46,7 +46,12 @@ def warm(monkeypatch):
     return torch_warmup
 
 
-def _stub_gate(monkeypatch, ids_by_task, *, raises = False):
+def _stub_gate(
+    monkeypatch,
+    ids_by_task,
+    *,
+    raises = False,
+):
     """Stand in for core.inference.media_model_index.available_media_model_ids."""
     mod = types.ModuleType("core.inference.media_model_index")
 
@@ -63,7 +68,7 @@ def _stub_diffusers(monkeypatch, *, raises = False):
     """A diffusers that records whether it was imported, without importing the real one."""
     seen = {"imported": False, "quieted": False}
     if raises:
-        monkeypatch.setitem(sys.modules, "diffusers", None)   # import -> ImportError
+        monkeypatch.setitem(sys.modules, "diffusers", None)  # import -> ImportError
         return seen
     d = types.ModuleType("diffusers")
     hooks = types.ModuleType("diffusers.hooks")
@@ -80,8 +85,10 @@ def _stub_diffusers(monkeypatch, *, raises = False):
     cfg = sys.modules.get("loggers.config")
     if cfg is not None:
         monkeypatch.setattr(
-            cfg, "quiet_third_party_progress_bars",
-            lambda: seen.__setitem__("quieted", True), raising = False,
+            cfg,
+            "quiet_third_party_progress_bars",
+            lambda: seen.__setitem__("quieted", True),
+            raising = False,
         )
     return seen
 
@@ -164,7 +171,8 @@ def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
 def _post_warm_source() -> str:
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_post_warm_background_work"
     )
     return ast.unparse(fn)
@@ -175,9 +183,9 @@ def test_it_runs_from_the_post_warm_worker_and_last():
     within that worker, because it is the only item there that is latency work rather than
     correctness: MLX repair and linked-folder sync keep their place in the queue."""
     src = _post_warm_source()
-    assert "prewarm_diffusers_if_image_models_exist" in src, (
-        "the prewarm is no longer wired into the post-warm worker"
-    )
+    assert (
+        "prewarm_diffusers_if_image_models_exist" in src
+    ), "the prewarm is no longer wired into the post-warm worker"
     assert "join_background_warm" in src
     assert src.index("join_background_warm") < src.index("prewarm_diffusers_if_image_models_exist")
     assert src.index("_start_linked_folder_auto_sync") < src.index(
