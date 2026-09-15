@@ -237,7 +237,13 @@ def normalize_hf_endpoint_env() -> None:
     Rewriting the variable before huggingface_hub is imported gives the whole
     process, and the subprocesses that inherit this environment, one endpoint.
     """
-    if not (os.environ.get("HF_ENDPOINT") or "").strip():
+    raw = os.environ.get("HF_ENDPOINT")
+    if raw is None:
+        return
+    if not raw.strip():
+        # Blank is not an endpoint, but the library would read it verbatim;
+        # clear it so Studio and huggingface_hub agree on the default.
+        os.environ.pop("HF_ENDPOINT", None)
         return
     endpoint = get_hf_endpoint()
     if endpoint == _DEFAULT_HF_ENDPOINT:
