@@ -3,57 +3,58 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { readSrc } from "./helpers/kit.ts";
 
 const source = readSrc("features/audio/audio-page.tsx");
 
-test("a transcription run clears the previous result before it awaits", () => {
-  // Download .txt used to save A's words under B's name.
-  assert.match(
-    source,
-    /setBusy\("transcribing"\);[\s\S]*?clearTranscript\(\);\s*setTranscribedName\(name\);\s*try \{/,
+function section(start: string, end: string): string {
+  return source.slice(
+    source.indexOf(start),
+    source.indexOf(end, source.indexOf(start)),
+  );
+}
+
+test("changing model residency preserves the transcript and its recorded origin", () => {
+  const refresh = section("const refreshSttStatus", "const sttSelected");
+  const release = section(
+    "const releaseTranscribeSelection",
+    "const ensureClipSrc",
+  );
+  assert.doesNotMatch(refresh, /clearTranscript\(/);
+  assert.doesNotMatch(release, /clearTranscript\(/);
+  assert.match(source, /setTranscriptModel\(result.model\)/);
+  assert.match(source, /setTranscriptModel\(record.model\)/);
+});
+
+test("the previous result is replaced only after its replacement model is ready", () => {
+  const run = section("const runTranscription", "const handleRecordToggle");
+  assert.match(run, /confirmTranscriptReplacement\(\)/);
+  assert.ok(
+    run.indexOf("await prepareTranscriptionModel()") <
+      run.indexOf("clearTranscript()"),
+  );
+  assert.ok(
+    run.indexOf("clearTranscript()") <
+      run.indexOf("await transcribeWithProgress"),
   );
 });
 
-test("a failed transcription is reported in the pane, not only in a toast", () => {
-  assert.match(
-    source,
-    /if \(activeRef\.current\) setTranscriptError\(message\);\s*toast\.error\(message\);/,
+test("leaving the page stops microphone capture while transcription can finish into history", () => {
+  const lifecycle = section(
+    "// Release the microphone",
+    "const handleTranscribeFile",
   );
   assert.match(
-    source,
-    /\) : transcriptError \? \([\s\S]*?Could not transcribe \{transcribedName \?\? "that audio"\}/,
+    lifecycle,
+    /if \(!active\) \{\s*stopAndDiscardRecording\(\);\s*\}/,
   );
-});
-
-test("clearing a transcript drops its name and error together", () => {
   assert.match(
-    source,
-    /const clearTranscript = useCallback\(\(\) => \{\s*setTranscript\(""\);\s*setTranscribedName\(null\);\s*setTranscriptError\(null\);\s*\}, \[\]\);/,
+    lifecycle,
+    /useEffect\(\(\) => \(\) => transcriptionAbort.current\?\.abort\(\), \[\]\)/,
   );
-});
-
-test("a transcript never outlives the selection that produced it", () => {
-  assert.match(source, /const forget = \(\) => \{[\s\S]*?clearTranscript\(\);/);
-  assert.match(
-    source,
-    /if \(selectedSttRepoRef\.current !== id\) clearTranscript\(\);/,
-  );
-});
-
-test("a resync that adopts another surface's model clears the transcript too", () => {
-  // Chat dictation shares the sidecar, so a resync can adopt an unpicked model.
-  assert.match(
-    source,
-    /const reconciled = reconcileSttSelection\(\{[\s\S]*?\}\);[\s\S]*?if \(reconciled !== null && reconciled !== selectedSttRepoRef\.current\)\s*clearTranscript\(\);\s*selectedSttRepoRef\.current = reconciled;/,
-  );
-});
-
-test("an idle sidecar unload leaves the transcript the user came back for", () => {
-  // The 5-minute idle unload fires while hidden; clearing there loses the text.
+  const run = section("const runTranscription", "const handleRecordToggle");
   assert.doesNotMatch(
-    source,
-    /if \(reconciled !== selectedSttRepoRef\.current\) clearTranscript\(\);/,
+    run.slice(run.indexOf("await transcribeWithProgress")),
+    /!activeRef.current/,
   );
 });

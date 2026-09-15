@@ -988,13 +988,12 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Renderer-only activity, mirrored here for the same reason: Hub downloads, which the
-/// backend runs but only the frontend tracks, and the Tauri shell self-update, which
-/// `update::is_update_running` stops covering once `downloadAndInstall` takes over.
+/// renderer-owned downloads, shell updates and unsaved transcripts must also protect native quit.
 #[derive(Default)]
 pub struct RendererActivity {
     pub downloads: bool,
     pub shell_update: bool,
+    pub unsaved_transcript: bool,
 }
 
 pub type RendererActivityState = std::sync::Arc<std::sync::Mutex<RendererActivity>>;
@@ -1009,6 +1008,7 @@ fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bo
         match kind {
             "downloads" => activity.downloads = active,
             "shell_update" => activity.shell_update = active,
+            "unsaved_transcript" => activity.unsaved_transcript = active,
             // An unknown kind is a renderer/Rust mismatch, never a reason to flip a flag.
             _ => {}
         }
@@ -1029,8 +1029,26 @@ fn current_renderer_activity(app: &tauri::AppHandle) -> RendererActivity {
         .map(|activity| RendererActivity {
             downloads: activity.downloads,
             shell_update: activity.shell_update,
+            unsaved_transcript: activity.unsaved_transcript,
         })
         .unwrap_or_default()
+}
+
+fn confirm_quit_with_unsaved_transcript(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !current_renderer_activity(app).unsaved_transcript {
+        return true;
+    }
+    app.dialog()
+        .message("A transcript could not be saved. Download a copy before quitting to keep it.")
+        .kind(MessageDialogKind::Warning)
+        .title("Unsaved transcript")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep open".to_string(),
+        ))
+        .blocking_show()
 }
 
 /// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
@@ -1514,6 +1532,7 @@ where
                             && confirm_quit_during_update(&app)
                             && confirm_quit_during_shell_update(&app)
                             && confirm_quit_during_training(&app)
+                            && confirm_quit_with_unsaved_transcript(&app)
                             && confirm_quit_during_downloads(&app)
                     },
                     || {

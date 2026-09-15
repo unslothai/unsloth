@@ -4171,6 +4171,9 @@ class DiffusionStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    gguf_filename: Optional[str] = Field(
+        None, description = "Loaded single-file checkpoint filename, or null for a pipeline"
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
     )
