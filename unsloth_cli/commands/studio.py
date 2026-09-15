@@ -3201,6 +3201,24 @@ def _uv_is_bucket_name(name: str) -> bool:
     return bool(marker) and version.isascii() and version.isdigit() and kind in _UV_CACHE_BUCKETS
 
 
+def _uv_bucket_entry_name(cache_dir: Path, entry: Path) -> Optional[str]:
+    """The name uv opens this entry as, or None if uv does not own it.
+
+    On APFS or NTFS `Archive-V0` IS the directory uv writes at `archive-v0`, so a case-sensitive
+    match called a full cache cold while studio/setup.sh, which folds, called it warm, and the
+    two then chose different caches. samefile rather than a write probe: only existing entries
+    matter here, so the filesystem can be asked without creating anything."""
+    if _uv_is_bucket_name(entry.name):
+        return entry.name
+    lowered = entry.name.lower()
+    if lowered == entry.name or not _uv_is_bucket_name(lowered):
+        return None
+    try:
+        return lowered if (cache_dir / lowered).samefile(entry) else None
+    except OSError:
+        return None
+
+
 def _uv_cache_has_packages(cache_dir: Path) -> bool:
     """wheels-* is metadata only on uv 0.10, so counting any file reads a merely-resolved cache
     as warm. Same rule as install.sh:_configure_uv_cache, the WHOLE `-v` suffix included: a
@@ -3210,7 +3228,7 @@ def _uv_cache_has_packages(cache_dir: Path) -> bool:
         buckets = [
             entry
             for entry in cache_dir.iterdir()
-            if _uv_is_bucket_name(entry.name) and entry.is_dir()
+            if entry.is_dir() and _uv_bucket_entry_name(cache_dir, entry) is not None
         ]
     except (OSError, ValueError):
         return False

@@ -1191,3 +1191,46 @@ def test_a_store_pip_install_does_write_still_condemns_it(tmp_path, store):
         assert studio._uv_cache_is_writable(cache) is False
     finally:
         (cache / store).chmod(0o755)
+
+
+def _simulate_case_folding(monkeypatch):
+    """Make lookups fold, as APFS and NTFS do, without a folding filesystem to hand.
+
+    A symlink will NOT do: on a folding filesystem there is ONE directory entry, and adding a
+    lowercase link creates a second one that the case-SENSITIVE code path matches directly. A
+    test built that way passes with the fold removed, which is how the first version of this
+    got through its own mutation check.
+    """
+    real = Path.samefile
+
+    def folding_samefile(self, other):
+        if str(self).lower() == str(other).lower():
+            return True
+        return real(self, other)
+
+    monkeypatch.setattr(Path, "samefile", folding_samefile)
+
+
+def test_a_folded_bucket_name_counts_as_warmth(tmp_path, monkeypatch):
+    """On APFS or NTFS `Archive-V0` IS the directory uv writes at `archive-v0`. A case-sensitive
+    match called such a cache cold while studio/setup.sh, which folds, called it warm, so the
+    two chose different caches on exactly the platform Studio ships a Mac build for."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    (cache / "Archive-V0" / "pkg").mkdir(parents = True)
+    (cache / "Archive-V0" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
+
+    # Case-sensitive: uv opens archive-v0, which is not there, so those bytes are unreachable.
+    assert studio._uv_cache_has_packages(cache) is False
+    _simulate_case_folding(monkeypatch)
+    assert studio._uv_cache_has_packages(cache) is True
+
+
+def test_a_folded_lookalike_is_still_not_a_bucket(tmp_path, monkeypatch):
+    """Folding must not smuggle in a name that is not uv's either way."""
+    studio = _studio()
+    cache = tmp_path / "shared-uv"
+    (cache / "Archive-V0.backup" / "pkg").mkdir(parents = True)
+    (cache / "Archive-V0.backup" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
+    _simulate_case_folding(monkeypatch)
+    assert studio._uv_cache_has_packages(cache) is False
