@@ -8131,6 +8131,10 @@ class LlamaCppBackend:
             # while sibling build layouts are checked. include_denied returns an
             # unavailable path instead: diffusion asset lookup only needs its dir.
             non_executable = None
+            from utils.llama_cpp_path_settings import prefer_gpu_capable
+
+            # A first hit proven CPU-only yields to a GPU-capable sibling build (#5941).
+            paths = prefer_gpu_capable(paths, lambda p: _file_status(p) == "file")
             for p in paths:
                 st = _file_status(p)
                 if st == "file":
@@ -11651,6 +11655,61 @@ class LlamaCppBackend:
             return f"the reason could not be determined ({type(e).__name__})"
 
     @staticmethod
+    def _nvidia_probe_script() -> Optional[Path]:
+        """studio/nvidia_probe.py, the installers' NVML / CUDA driver reader (UNSLOTH_NVIDIA_PROBE wins)."""
+        from utils.prebuilt.update_flow import find_installer_script
+
+        return find_installer_script(env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py")
+
+    @staticmethod
+    def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
+        """Free and total memory per NVIDIA GPU from NVML, for a host nvidia-smi cannot answer for.
+
+        nvidia-smi absent, stale or hung read as "no GPU" here, and the embedding server
+        then pins itself to the CPU with -ngl 0 (the same misread #10985 closed for the
+        installers). NVML ships with the driver and is what nvidia-smi is a client of; it is
+        read by studio/nvidia_probe.py in a child with a deadline. Physical indices, masked
+        like the nvidia-smi rows. Rows without a memory reading are not evidence and fall
+        through to the torch probe.
+        """
+        if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
+            return []
+        script = LlamaCppBackend._nvidia_probe_script()
+        if script is None:
+            return []
+        try:
+            result = subprocess.run(
+                [sys.executable, "-I", str(script), "--json"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            payload = json.loads(result.stdout or "null")
+        except Exception as e:
+            logger.debug(f"NVML probe failed: {e}")
+            return []
+        if not isinstance(payload, dict) or payload.get("source") != "nvml":
+            return []
+        allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+        gpus: list[tuple[int, int, int]] = []
+        for row in payload.get("devices") or []:
+            try:
+                idx = int(row["index"])
+                free_mib = int(row.get("memory_free_mib") or 0)
+                total_mib = int(row.get("memory_total_mib") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if free_mib <= 0 or (allowed is not None and idx not in allowed):
+                continue
+            gpus.append((idx, free_mib, total_mib))
+        gpus.sort(key = lambda g: g[0])
+        return gpus
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
@@ -11732,6 +11791,12 @@ class LlamaCppBackend:
                     return gpus
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
+
+        # ── NVIDIA via NVML, when nvidia-smi is absent, stale or hung ────
+        nvml_gpus = LlamaCppBackend._get_gpu_memory_nvml()
+        if nvml_gpus:
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            return nvml_gpus
 
         # ── AMD ROCm via amd-smi ─────────────────────────────────────
         rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
@@ -13877,10 +13942,11 @@ class LlamaCppBackend:
             # /usr/local/cuda.
             import glob as _glob
 
+            # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
+            _site = os.path.join(_glob.escape(sys.prefix), "lib", "python*", "site-packages")
             for _nv_pattern in [
-                os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", _sub, "lib")
-                for _sub in ("cu*", "cudnn", "nvjitlink")
-            ]:
+                os.path.join(_site, "nvidia", _sub, "lib") for _sub in ("cu*", "cudnn", "nvjitlink")
+            ] + [os.path.join(_site, "torch", "lib")]:
                 for _nv_dir in _glob.glob(_nv_pattern):
                     if os.path.isdir(_nv_dir):
                         lib_dirs.append(_nv_dir)

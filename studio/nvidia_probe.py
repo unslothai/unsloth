@@ -70,6 +70,11 @@ def _split_cuda_version(packed: int) -> tuple[int, int] | None:
     return packed // 1000, (packed % 1000) // 10
 
 
+class _NvmlMemory(ctypes.Structure):
+    # nvmlMemory_t (v1): bytes, in this order.
+    _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+
+
 def _probe_nvml() -> dict | None:
     nvml = _load("nvml")
     if nvml is None:
@@ -114,12 +119,17 @@ def _probe_nvml() -> dict | None:
                 == 0
             ):
                 cap = f"{major.value}.{minor.value}"
+            memory = _NvmlMemory()
+            if nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(memory)) != 0:
+                memory.total = memory.free = 0
             devices.append(
                 {
                     "index": str(index),
                     "uuid": uuid.value.decode("ascii", "replace"),
                     "name": name.value.decode("utf-8", "replace"),
                     "compute_cap": cap,
+                    "memory_total_mib": str(memory.total // (1024 * 1024)),
+                    "memory_free_mib": str(memory.free // (1024 * 1024)),
                 }
             )
         return {
@@ -163,6 +173,9 @@ def _probe_cuda_driver() -> dict | None:
                 "uuid": "",
                 "name": name.value.decode("utf-8", "replace"),
                 "compute_cap": f"{major.value}.{minor.value}" if ok else "",
+                # Memory needs a context, which this probe never creates.
+                "memory_total_mib": "0",
+                "memory_free_mib": "0",
             }
         )
     return {
@@ -190,8 +203,9 @@ def _from_payload(payload: object) -> NvidiaLibraryInventory | None:
         return None
     version = payload.get("cuda_driver_version")
     cuda = tuple(int(part) for part in version[:2]) if isinstance(version, list) else None
+    keys = ("index", "uuid", "name", "compute_cap", "memory_total_mib", "memory_free_mib")
     devices = [
-        {key: str(row.get(key, "")) for key in ("index", "uuid", "name", "compute_cap")}
+        {key: str(row.get(key, "")) for key in keys}
         for row in payload.get("devices") or []
         if isinstance(row, dict)
     ]

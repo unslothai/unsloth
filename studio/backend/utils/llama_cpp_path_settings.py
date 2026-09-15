@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
 CUSTOM_LLAMA_CPP_PATH_SETTING_KEY = "custom_llama_cpp_path"
 MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH = 32767
@@ -59,12 +60,13 @@ def llama_server_candidates(
     """Supported llama.cpp build layouts, in the runtime's search order."""
     root = Path(directory)
     binary_name = llama_server_binary_name(platform)
-    candidates = [
-        root / binary_name,
-        root / "build" / "bin" / binary_name,
-    ]
-    if (platform or sys.platform) == "win32":
-        candidates.append(root / "build" / "bin" / "Release" / binary_name)
+    windows = (platform or sys.platform) == "win32"
+    candidates = [root / binary_name]
+    # build/ first, then the per-backend build dirs a source checkout keeps side by side (#5941).
+    for build in ("build", "build-cuda", "build-hip", "build-rocm", "build-vulkan"):
+        candidates.append(root / build / "bin" / binary_name)
+        if windows:
+            candidates.append(root / build / "bin" / "Release" / binary_name)
     return tuple(candidates)
 
 
@@ -77,18 +79,49 @@ def _usable_binary(path: Path, *, platform: Optional[str] = None) -> bool:
     return (platform or sys.platform) == "win32" or os.access(path, os.X_OK)
 
 
+_GPU_BACKEND_LIB_RE = re.compile(
+    r"^(?:lib)?ggml-(?:cann|cuda|hip|metal|musa|opencl|sycl|virtgpu|vulkan)"
+    r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
+)
+_CPU_BACKEND_LIB_RE = re.compile(r"^(?:lib)?ggml-(?:cpu|base)(?:[-.]|$)")
+
+
+def binary_gpu_verdict(binary: Path | str) -> str:
+    """``gpu``, ``cpu`` (a split-library build with no GPU backend beside it) or ``unknown``."""
+    try:
+        names = [p.name for p in Path(binary).resolve().parent.iterdir() if p.is_file()]
+    except OSError:
+        return "unknown"
+    if any(_GPU_BACKEND_LIB_RE.match(name) for name in names):
+        return "gpu"
+    if any(_CPU_BACKEND_LIB_RE.match(name) for name in names):
+        return "cpu"
+    return "unknown"
+
+
+def prefer_gpu_capable(candidates: Iterable[Path], usable: Callable[[Path], bool]) -> list[Path]:
+    """The candidates in search order, except that a first hit proven CPU-only yields to a
+    later usable one that ships a GPU backend: a tree with a CPU build/ beside a CUDA
+    build-cuda/ otherwise ran on the CPU forever (#5941). Unknown layouts keep their place."""
+    ordered = list(candidates)
+    first = next((c for c in ordered if usable(c)), None)
+    if first is None or binary_gpu_verdict(first) != "cpu":
+        return ordered
+    gpu = next(
+        (c for c in ordered if c != first and usable(c) and binary_gpu_verdict(c) == "gpu"), None
+    )
+    if gpu is None:
+        return ordered
+    return [gpu] + [c for c in ordered if c != gpu]
+
+
 def resolve_llama_server_binary(
     directory: Path | str, *, platform: Optional[str] = None
 ) -> Optional[Path]:
-    """Return the first executable llama-server in a supported layout."""
-    return next(
-        (
-            candidate
-            for candidate in llama_server_candidates(directory, platform = platform)
-            if _usable_binary(candidate, platform = platform)
-        ),
-        None,
-    )
+    """Return the first executable llama-server in a supported layout, GPU-capable preferred."""
+    usable = lambda candidate: _usable_binary(candidate, platform = platform)  # noqa: E731
+    ordered = prefer_gpu_capable(llama_server_candidates(directory, platform = platform), usable)
+    return next((candidate for candidate in ordered if usable(candidate)), None)
 
 
 def get_stored_custom_llama_cpp_path() -> Optional[Path]:
