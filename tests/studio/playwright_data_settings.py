@@ -271,6 +271,7 @@ def run(page):
     checks.append("search-preserves-in-flight-export")
 
     checks.extend(run_libraries(page))
+    checks.extend(run_library_locales(page))
 
     errors = page.evaluate("window.__settingsSmoke.errors()")
     resize_notice = "ResizeObserver loop completed with undelivered notifications."
@@ -391,7 +392,7 @@ def run_libraries(page):
 
     search = seed("manage")
     page.get_by_role("checkbox", name = "Select all visible chats", exact = True).click()
-    expect(page.get_by_text("20 chats selected", exact = True)).to_be_visible()
+    expect(page.get_by_text("Selected chats: 20", exact = True)).to_be_visible()
     search.fill("needle")
     expect(
         page.get_by_role("checkbox", name = 'Select "Café needle"', exact = True)
@@ -431,7 +432,6 @@ def run_libraries(page):
 
     for kind in ["images", "videos", "audio"]:
         search = seed(kind)
-        noun = {"images": "image", "videos": "video", "audio": "clip"}[kind]
         search.fill("CAFE needle")
         row = page.locator("[data-archived-id]")
         expect(row).to_have_count(1)
@@ -447,7 +447,7 @@ def run_libraries(page):
         checks.append(f"{kind}-search-full-archive-and-compact-row")
         search.fill("missing query")
         expect(
-            page.get_by_text(f"No archived {kind} match your search.", exact = True)
+            page.get_by_text("No archived items match your search.", exact = True)
         ).to_be_visible()
         search.fill("")
         sort("Alphabetical")
@@ -458,7 +458,7 @@ def run_libraries(page):
         search.fill("needle")
         page.get_by_role("button", name = "Delete results", exact = True).click()
         dialog = page.get_by_role("alertdialog")
-        expect(dialog.get_by_role("heading")).to_have_text(f"Delete 1 {noun}")
+        expect(dialog.get_by_role("heading")).to_have_text("Delete archived items (1)")
         dialog.get_by_role("button", name = "Cancel", exact = True).click()
         assert not mutation_requests()
         page.get_by_role("button", name = "Delete results", exact = True).click()
@@ -474,18 +474,18 @@ def run_libraries(page):
         expect(
             page.get_by_text("Search is incomplete. Retry loading the remaining items.", exact = True)
         ).to_be_visible()
-        assert page.get_by_text(f"No archived {kind} match your search.", exact = True).count() == 0
+        assert page.get_by_text("No archived items match your search.", exact = True).count() == 0
         page.evaluate("window.__dataFixture.failPage = false")
         page.get_by_role("button", name = "Retry", exact = True).click()
         expect(
-            page.get_by_role("button", name = f"Unarchive {noun}: Café needle", exact = True)
+            page.get_by_role("button", name = "Unarchive: Café needle", exact = True)
         ).to_be_visible()
         checks.append(f"{kind}-failed-page-retry-retains-search")
         page.evaluate("window.__dataFixture.holdMutation = true")
-        page.get_by_role("button", name = f"Unarchive {noun}: Café needle", exact = True).click()
+        page.get_by_role("button", name = "Unarchive: Café needle", exact = True).click()
         page.wait_for_function("typeof window.__dataFixture.releaseMutation === 'function'")
         expect(
-            page.get_by_role("button", name = f"Unarchive {noun}: Café needle", exact = True)
+            page.get_by_role("button", name = "Unarchive: Café needle", exact = True)
         ).to_be_disabled()
         page.evaluate("window.__dataFixture.releaseMutation()")
         expect(page.locator("[data-archived-id]").filter(has_text = "Café needle")).to_have_count(0)
@@ -494,12 +494,12 @@ def run_libraries(page):
 
         search = seed(kind, failMutation = True)
         search.fill("needle")
-        page.get_by_role("button", name = f"Delete {noun}: Café needle", exact = True).click()
+        page.get_by_role("button", name = "Delete: Café needle", exact = True).click()
         dialog = page.get_by_role("alertdialog")
         dialog.get_by_role("button", name = "Delete", exact = True).click()
         expect(dialog).to_have_count(0)
         expect(
-            page.get_by_role("button", name = f"Delete {noun}: Café needle", exact = True)
+            page.get_by_role("button", name = "Delete: Café needle", exact = True)
         ).to_be_enabled()
         assert page.evaluate("kind => window.__dataFixture.media[kind].length", kind) == 447
         checks.append(f"{kind}-failed-delete-retains-row")
@@ -516,8 +516,7 @@ def run_libraries(page):
         search = seed(kind, holdPage = True)
         page.get_by_role("button", name = "Show more", exact = True).click()
         page.wait_for_function("typeof window.__dataFixture.releasePage === 'function'")
-        noun = {"images": "image", "videos": "video", "audio": "clip"}[kind]
-        page.get_by_role("button", name = f"Unarchive {noun}: Sample 00", exact = True).click()
+        page.get_by_role("button", name = "Unarchive: Sample 00", exact = True).click()
         expect(page.locator("[data-archived-id]").filter(has_text = "Sample 00")).to_have_count(0)
         page.evaluate("window.__dataFixture.holdPage = false; window.__dataFixture.releasePage()")
         search.fill("Sample 20")
@@ -561,7 +560,7 @@ def run_libraries(page):
         assert row.bounding_box()["width"] > 10
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         expect(
-            page.get_by_role("button", name = "Unarchive chat: Café needle", exact = True)
+            page.get_by_role("button", name = "Unarchive: Café needle", exact = True)
         ).to_be_visible()
         search.focus()
         # macOS WebKit uses Option-Tab to include buttons in keyboard navigation.
@@ -577,6 +576,125 @@ def run_libraries(page):
         page.keyboard.press("Escape")
         checks.append(f"archive-layout-keyboard-{width}-{theme}")
     page.set_viewport_size({"width": 1280, "height": 1000})
+    return checks
+
+
+def run_library_locales(page):
+    checks = []
+    page.set_viewport_size({"width": 1280, "height": 1000})
+    page.evaluate("document.documentElement.classList.remove('dark')")
+    locales = ["en", "es", "fr", "de", "it", "pt-BR", "ru", "zh-CN", "ja", "ko", "hi", "ar"]
+    for locale in locales:
+        text = page.evaluate(
+            """async locale => {
+            const api = await import('/src/i18n/index.ts');
+            await api.setLocale(locale);
+            return {
+                ...api.messages[locale].settings.data.library,
+                manage: api.translate('settings.data.manageChats'),
+                manageAction: api.translate('settings.data.manageAction'),
+                cancel: api.translate('common.cancel'),
+                delete: api.translate('common.delete'),
+                deleteAll: api.translate('settings.data.deleteAllAction'),
+                data: api.translate('settings.data.title'),
+                back: api.translate('settings.data.backToData'),
+                archived: api.translate('settings.data.archivedChats'),
+            };
+            }""",
+            locale,
+        )
+        if locale == "es":
+            assert text["noProject"] == "Sin proyecto"
+        for shelf in ["manage", "chats", "images", "videos", "audio"]:
+            page.evaluate("window.__settingsSmoke.close()")
+            expect(page.get_by_role("dialog")).to_have_count(0)
+            page.evaluate(
+                """shelf => {
+                const f = window.__dataFixture;
+                Object.assign(f, {failMutation: false, holdMutation: false, failPage: false,
+                    stallPage: false, holdPage: false, listFail: false, requests: []});
+                f.rows = [null, 'gone', 'research'].map((projectId, index) => ({
+                    id: `locale-${index}`, title: `Sample ${index}`, modelType: 'base', modelId: 'test',
+                    projectId, createdAt: 1700000000000, updatedAt: 1700000000000,
+                    archived: shelf === 'chats',
+                }));
+                f.media = Object.fromEntries(['images', 'videos', 'audio'].map(kind => [kind, [{
+                    id: 'locale-media', prompt: 'Sample media', url: '/unused',
+                    created_at: kind === 'images' ? 1700000000 : '2023-11-14T22:13:20Z',
+                }]]));
+                if (shelf === 'manage') window.__settingsSmoke.open('data');
+                else window.__settingsSmoke.openArchived(shelf);
+                }""",
+                shelf,
+            )
+            if shelf == "manage":
+                page.locator(f'[data-settings-label="{text["manage"]}"]').get_by_role(
+                    "button", name = text["manageAction"], exact = True
+                ).click()
+            placeholder = text[{
+                "manage": "searchChats", "chats": "searchArchivedChats", "images": "searchImages",
+                "videos": "searchVideos", "audio": "searchAudio",
+            }[shelf]]
+            search = page.get_by_role("searchbox", name = placeholder, exact = True)
+            expect(search).to_be_visible()
+            toolbar = page.get_by_role("button", name = text["filterSort"], exact = True)
+            toolbar.click()
+            expect(page.get_by_role("menuitemradio", name = text["alphabetical"], exact = True)).to_be_visible()
+            if shelf in ["manage", "chats"]:
+                expect(page.get_by_role("menuitemradio", name = text["singleChats"], exact = True)).to_be_visible()
+            page.keyboard.press("Escape")
+            if shelf in ["manage", "chats"]:
+                expect(page.get_by_role("button", name = "Sample 0", exact = True)).to_be_visible()
+                search.fill(text["noProject"])
+                expect(page.get_by_role("button", name = "Sample 0", exact = True)).to_be_visible()
+                expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_have_count(0)
+                search.fill(text["unavailableProject"])
+                expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_be_visible()
+                search.fill("")
+                page.get_by_role("button", name = text["filterProject"], exact = True).click()
+                page.get_by_role("combobox", name = text["searchProjects"], exact = True).fill(text["noProject"])
+                page.get_by_role("option", name = text["noProject"], exact = True).click()
+                expect(page.get_by_role("heading", name = text["noProject"], exact = True)).to_be_visible()
+                expect(page.get_by_role("button", name = "Sample 1", exact = True)).to_have_count(0)
+                if shelf == "manage":
+                    page.get_by_role("checkbox", name = text["selectAll"], exact = True).click()
+                    expect(page.get_by_role("button", name = text["archive"], exact = True)).to_be_visible()
+                    page.get_by_role("button", name = text["delete"], exact = True).click()
+                    expect(page.get_by_role("alertdialog")).to_contain_text(text["deleteChatsWarning"].replace("{count}", "1"))
+                else:
+                    page.get_by_role("button", name = text["deleteResults"], exact = True).click()
+                    expect(page.get_by_role("alertdialog")).to_contain_text(text["deleteArchivedWarning"].replace("{count}", "1"))
+            else:
+                row = page.locator("[data-archived-id]")
+                expect(row).to_contain_text("Sample media")
+                expected_date = page.evaluate(
+                    "locale => new Date(1700000000000).toLocaleString(locale, {year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'})",
+                    locale,
+                )
+                expect(row).to_contain_text(expected_date)
+                expect(page.get_by_role("button", name = text["unarchiveItem"].replace("{title}", "Sample media"), exact = True)).to_be_visible()
+                page.get_by_role("button", name = text["deleteAll"], exact = True).click()
+                expect(page.get_by_role("alertdialog").get_by_role("heading")).to_have_text(text["deleteItemsTitle"].replace("{count}", "1"))
+                expect(page.get_by_role("alertdialog")).to_contain_text(text["deleteFilesWarning"])
+            page.get_by_role("alertdialog").get_by_role("button", name = text["cancel"], exact = True).click()
+            assert not page.evaluate("window.__dataFixture.requests.some(r => r.method === 'DELETE' || r.method === 'PATCH')")
+            search.fill("NoMatchingTitle")
+            empty_key = "noChats" if shelf == "manage" else "noArchivedMatches" if shelf == "chats" else "noMediaMatches"
+            expect(page.get_by_text(text[empty_key], exact = True)).to_be_visible()
+            if locale == "es" and shelf == "chats":
+                page.locator("aside input").fill(text["archived"])
+                page.locator("aside").get_by_role("button", name = text["archived"], exact = True).click()
+                expect(page.locator(".settings-search-hit")).to_have_attribute("data-settings-label", text["archived"])
+                expect(page.get_by_role("button", name = text["back"], exact = True)).to_have_count(0)
+                checks.append("localized-settings-search-exits-archive")
+            checks.append(f"library-locale-{locale}-{shelf}")
+    # Change locale with the archive and its query still mounted.
+    page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('es');}")
+    search = page.get_by_role("searchbox", name = "Buscar audio archivado", exact = True)
+    expect(search).to_have_value("NoMatchingTitle")
+    expect(page.get_by_role("button", name = "Filtrar y ordenar", exact = True)).to_be_visible()
+    checks.append("library-locale-live-switch-retains-query")
+    page.evaluate("async () => {await (await import('/src/i18n/index.ts')).setLocale('en');}")
     return checks
 
 

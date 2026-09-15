@@ -38,6 +38,7 @@ import {
   usePinnedChatsStore,
 } from "@/features/chat";
 import { isDownloadCancelled } from "@/lib/native-files";
+import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -52,6 +53,7 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
+import { useLibraryProjectLabels } from "./use-library-project-labels";
 import {
   DEFAULT_LIBRARY_FILTERS,
   filterLibraryItems,
@@ -66,11 +68,16 @@ import {
 
 const MANAGE_PAGE_SIZE = 20;
 
-function chatCount(n: number): string {
-  return n === 1 ? "1 chat" : `${n} chats`;
-}
-
 export function ManageChatsView() {
+  const t = useT();
+  const labels = useLibraryProjectLabels();
+  const chatCount = (count: number) =>
+    t(
+      count === 1
+        ? "settings.data.library.oneChat"
+        : "settings.data.library.chatCount",
+      { count },
+    );
   const { items } = useChatSidebarItems({ requireMessages: false });
   const { projects } = useChatProjects();
   const navigate = useNavigate();
@@ -102,12 +109,13 @@ export function ManageChatsView() {
     [projects],
   );
   const filtered = useMemo(
-    () => filterLibraryItems(items, filters, projectNames),
-    [items, filters, projectNames],
+    () => filterLibraryItems(items, filters, projectNames, labels),
+    [items, filters, projectNames, labels],
   );
   const visible = groupLibraryItems(
     filtered.slice(0, visibleCount),
     projectNames,
+    labels,
   ).flatMap((group) => group.items);
   const selectedItems = visible.filter((item) => selectedIds.has(item.id));
 
@@ -198,8 +206,13 @@ export function ManageChatsView() {
   const handleArchive = () =>
     run(
       () => archiveChatItems(selectedItems, openChatId, resetView),
-      `Archived ${chatCount(selectedCount)}`,
-      "Failed to archive chats",
+      t(
+        selectedCount === 1
+          ? "settings.data.archivedOneChat"
+          : "settings.data.archivedChatCount",
+        { count: selectedCount },
+      ),
+      t("settings.data.failedToArchiveChats"),
     );
 
   const handleDelete = () =>
@@ -210,8 +223,8 @@ export function ManageChatsView() {
         deleteChatItems(selectedItems, openChatId, resetView, {
           deleteFiles: alwaysDeleteChatFiles,
         }),
-      `Deleted ${chatCount(selectedCount)}`,
-      "Failed to delete chats",
+      t("settings.data.library.deletedChats", { count: selectedCount }),
+      t("settings.data.library.deleteFailed"),
     );
 
   const handleMove = (projectId: string | null) =>
@@ -222,16 +235,26 @@ export function ManageChatsView() {
         );
       },
       projectId
-        ? `Moved ${chatCount(selectedCount)} to ${projectNames.get(projectId) ?? "project"}`
-        : `Moved ${chatCount(selectedCount)} to Recents`,
-      "Failed to move chats",
+        ? t("settings.data.library.movedChatsToProject", {
+            count: selectedCount,
+            project: projectNames.get(projectId) ?? labels.unavailableProject,
+          })
+        : t("settings.data.library.movedChatsToRecents", {
+            count: selectedCount,
+          }),
+      t("settings.data.library.moveFailed"),
     );
 
   function handleTogglePin() {
     const ids = selectedItems.map((item) => item.id);
     setPinned(ids, !allSelectedPinned);
     toast.success(
-      `${allSelectedPinned ? "Unpinned" : "Pinned"} ${chatCount(ids.length)}`,
+      t(
+        allSelectedPinned
+          ? "settings.data.library.unpinnedChats"
+          : "settings.data.library.pinnedChats",
+        { count: ids.length },
+      ),
     );
     setSelectedIds(new Set());
   }
@@ -248,7 +271,8 @@ export function ManageChatsView() {
         await exportBulkConversationsSeparate(threadIds, format, basename);
       }
     } catch (error) {
-      if (!isDownloadCancelled(error)) toast.error("Export failed.");
+      if (!isDownloadCancelled(error))
+        toast.error(t("settings.data.exportFailed"));
     }
   }
 
@@ -259,7 +283,7 @@ export function ManageChatsView() {
       <LibraryToolbar
         filters={filters}
         onChange={changeFilters}
-        placeholder="Search chats or projects"
+        placeholder={t("settings.data.library.searchChats")}
         projects={projectNames}
         disabled={busy}
       />
@@ -275,12 +299,14 @@ export function ManageChatsView() {
             }
             disabled={busy || visible.length === 0}
             onCheckedChange={toggleAllVisible}
-            aria-label="Select all visible chats"
-            title="Select all visible"
+            aria-label={t("settings.data.library.selectAll")}
+            title={t("settings.data.library.selectAll")}
           />
           <span className="text-xs text-muted-foreground">
             {selectedCount > 0
-              ? `${chatCount(selectedCount)} selected`
+              ? t("settings.data.library.selectedChats", {
+                  count: selectedCount,
+                })
               : chatCount(filtered.length)}
           </span>
         </div>
@@ -294,7 +320,7 @@ export function ManageChatsView() {
                     strokeWidth={1.75}
                     className="size-3.5 mr-1.5"
                   />
-                  Move
+                  {t("settings.data.library.move")}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
@@ -302,7 +328,7 @@ export function ManageChatsView() {
                   disabled={selectedItems.every((item) => !item.projectId)}
                   onSelect={() => void handleMove(null)}
                 >
-                  Recents
+                  {t("shell.navigation.recents")}
                 </DropdownMenuItem>
                 {projects.map((project) => (
                   <DropdownMenuItem
@@ -330,7 +356,9 @@ export function ManageChatsView() {
                 strokeWidth={1.75}
                 className="size-3.5 mr-1.5"
               />
-              {allSelectedPinned ? "Unpin" : "Pin"}
+              {allSelectedPinned
+                ? t("settings.data.library.unpin")
+                : t("settings.data.library.pin")}
             </Button>
             <Button
               variant="outline"
@@ -343,7 +371,7 @@ export function ManageChatsView() {
                 strokeWidth={1.75}
                 className="size-3.5 mr-1.5"
               />
-              Archive
+              {t("settings.data.library.archive")}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
@@ -353,7 +381,7 @@ export function ManageChatsView() {
                     strokeWidth={1.75}
                     className="size-3.5 mr-1.5"
                   />
-                  Export
+                  {t("common.export")}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
@@ -362,7 +390,7 @@ export function ManageChatsView() {
                     key={`m-${fmt}`}
                     onSelect={() => void handleExport(fmt, true)}
                   >
-                    {label} (combined)
+                    {label} {t("settings.chat.exportCombinedSuffix")}
                   </DropdownMenuItem>
                 ))}
                 <DropdownMenuSeparator />
@@ -371,7 +399,7 @@ export function ManageChatsView() {
                     key={`s-${fmt}`}
                     onSelect={() => void handleExport(fmt, false)}
                   >
-                    {label} (per chat)
+                    {label} {t("settings.chat.exportPerChatSuffix")}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -388,7 +416,7 @@ export function ManageChatsView() {
                 strokeWidth={1.75}
                 className="size-3.5 mr-1.5"
               />
-              Delete
+              {t("common.delete")}
             </Button>
           </>
         )}
@@ -399,7 +427,7 @@ export function ManageChatsView() {
           role="status"
           className="py-8 text-center text-sm text-muted-foreground"
         >
-          No chats match your search.
+          {t("settings.data.library.noChats")}
         </p>
       ) : (
         <ChatLibraryGroups items={visible} projects={projectNames}>
@@ -421,7 +449,9 @@ export function ManageChatsView() {
                         event.shiftKey,
                       )
                     }
-                    aria-label={`Select "${item.title}"`}
+                    aria-label={t("settings.data.library.selectItem", {
+                      title: item.title,
+                    })}
                   />
                   <HugeiconsIcon
                     icon={Message01Icon}
@@ -440,7 +470,9 @@ export function ManageChatsView() {
             size="sm"
             onClick={() => setVisibleCount((count) => count + MANAGE_PAGE_SIZE)}
           >
-            Show more ({filtered.length - visibleCount})
+            {t("settings.voice.recents.showMore", {
+              count: filtered.length - visibleCount,
+            })}
           </Button>
         </div>
       )}
@@ -454,18 +486,18 @@ export function ManageChatsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Delete {chatCount(selectedCount)}
+              {t("settings.data.library.deleteChatsTitle", {
+                count: selectedCount,
+              })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Delete the{" "}
-              {selectedCount === 1
-                ? "selected chat"
-                : `${selectedCount} selected chats`}
-              ? This cannot be undone.
+              {t("settings.data.library.deleteChatsWarning", {
+                count: selectedCount,
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
@@ -473,7 +505,7 @@ export function ManageChatsView() {
                 void handleDelete();
               }}
             >
-              Delete
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

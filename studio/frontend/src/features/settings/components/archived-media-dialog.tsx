@@ -48,6 +48,7 @@ import {
 import { videoThumbnailQueue } from "@/features/video/thumbnail-request-queue";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 
 /** Archived items shown per page; "Show more" pulls the next page. Matches ArchivedChatsView. */
@@ -64,12 +65,6 @@ const THUMB_RETRY_LIMIT = 2;
 const THUMB_RETRY_DELAY_MS = 750;
 
 export type ArchivedMediaKind = "images" | "videos" | "audio";
-
-const NOUN: Record<ArchivedMediaKind, string> = {
-  images: "image",
-  videos: "video",
-  audio: "clip",
-};
 
 /** The shape both galleries share, once flattened for this list. */
 interface ArchivedRow {
@@ -98,9 +93,9 @@ interface ArchivedPage {
  * by, so each row carries a thumbnail alongside its prompt.
  */
 export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
+  const t = useT();
   const isImages = kind === "images";
   const isAudio = kind === "audio";
-  const noun = NOUN[kind];
   const [rows, setRows] = useState<ArchivedRow[]>([]);
   // `showMore` reads the row count and the drop count from refs, not state: both can change while
   // its request is in flight, and a stale closure is exactly what makes it skip a row. The ref is
@@ -227,7 +222,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if (!cancelled) {
           setPageError(true);
           setHasMore(true);
-          toast.error(`Failed to load archived ${kind}`, {
+          toast.error(translate("settings.data.library.loadFailed"), {
             description: err instanceof Error ? err.message : undefined,
           });
         }
@@ -438,7 +433,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       return true;
     } catch (err) {
       pendingMutations.current -= 1;
-      toast.error(`Failed to restore ${noun}`, {
+      toast.error(t("settings.data.library.restoreFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
       return false;
@@ -459,7 +454,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       return true;
     } catch (err) {
       pendingMutations.current -= 1;
-      toast.error(`Failed to delete ${noun}`, {
+      toast.error(t("settings.data.library.deleteFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
       return false;
@@ -485,24 +480,24 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         const seen = new Set(rowsRef.current.map((r) => r.id));
         const added = page.rows.filter((r) => !seen.has(r.id));
         if (page.hasMore && added.length === 0)
-          throw new Error("The archive page did not advance. Try again.");
+          throw new Error(t("settings.data.library.pageStalled"));
         putRows([...rowsRef.current, ...added]);
         audioCursor.current = page.nextAudioCursor;
         setHasMore(page.hasMore);
         return;
       }
-      throw new Error("The archive changed while loading. Try again.");
+      throw new Error(t("settings.data.library.pageChanged"));
     } catch (err) {
       if (!alive.current) return;
       setPageError(true);
-      toast.error(`Failed to load more archived ${kind}`, {
+      toast.error(t("settings.data.library.loadMoreFailed"), {
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
       loadingMore.current = false;
       if (alive.current) setPaging(false);
     }
-  }, [kind, loadPage, putRows, scanAll]);
+  }, [t, loadPage, putRows, scanAll]);
 
   useEffect(() => {
     if (!scanAll || loading || paging || pageError || busy || !hasMore) return;
@@ -560,20 +555,30 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       <LibraryToolbar
         filters={filters}
         onChange={changeFilters}
-        placeholder={`Search archived ${kind}`}
+        placeholder={t(
+          isImages
+            ? "settings.data.library.searchImages"
+            : isAudio
+              ? "settings.data.library.searchAudio"
+              : "settings.data.library.searchVideos",
+        )}
         disabled={busy || bulkIntent !== null}
       />
       <div className="flex flex-wrap items-center gap-2">
         <span role="status" className="flex-1 text-xs text-muted-foreground">
           {pageError
-            ? "Search is incomplete. Retry loading the remaining items."
+            ? t("settings.data.library.incompleteSearch")
             : scanAll && hasMore
-              ? `Searching remaining items (${rows.length} loaded)...`
-              : `${filtered.length}${hasMore ? "+" : ""} ${kind === "audio" ? "clips" : kind}`}
+              ? t("settings.data.library.searchingRemaining", {
+                  count: rows.length,
+                })
+              : t("settings.data.library.itemCount", {
+                  count: `${filtered.length}${hasMore ? "+" : ""}`,
+                })}
         </span>
         {bulkIntent ? (
           <Button variant="ghost" size="sm" onClick={() => setBulkIntent(null)}>
-            Cancel
+            {t("common.cancel")}
           </Button>
         ) : (
           <>
@@ -583,7 +588,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               disabled={busy || (rows.length === 0 && !hasMore)}
               onClick={() => setBulkIntent("restore")}
             >
-              {filters.query.trim() ? "Unarchive results" : "Unarchive all"}
+              {filters.query.trim()
+                ? t("settings.data.library.unarchiveResults")
+                : t("settings.data.library.unarchiveAll")}
             </Button>
             <Button
               variant="ghost"
@@ -593,7 +600,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               onClick={() => setBulkIntent("delete")}
             >
               <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-4" />
-              {filters.query.trim() ? "Delete results" : "Delete all"}
+              {filters.query.trim()
+                ? t("settings.data.library.deleteResults")
+                : t("settings.data.deleteAllAction")}
             </Button>
           </>
         )}
@@ -635,8 +644,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     variant="ghost"
                     size="icon"
                     disabled={busy || bulkIntent !== null}
-                    aria-label={`Delete ${noun}: ${row.title}`}
-                    title={`Delete ${noun}`}
+                    aria-label={t("settings.data.library.deleteItem", {
+                      title: row.title,
+                    })}
+                    title={t("common.delete")}
                     className="text-muted-foreground hover:text-destructive"
                     onClick={() =>
                       setConfirming({ rows: [row], action: "delete" })
@@ -648,11 +659,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                     variant="ghost"
                     size="sm"
                     disabled={busy || bulkIntent !== null}
-                    aria-label={`Unarchive ${noun}: ${row.title}`}
+                    aria-label={t("settings.data.library.unarchiveItem", {
+                      title: row.title,
+                    })}
                     className="rounded-xl bg-muted/60 hover:bg-muted"
                     onClick={() => void run([row], "restore")}
                   >
-                    Unarchive
+                    {t("settings.data.library.unarchive")}
                   </Button>
                 </>
               }
@@ -662,10 +675,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         {displayed.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
             {hasMore
-              ? "No matches in the items loaded so far."
+              ? t("settings.data.library.noLoadedMatches")
               : filters.query.trim()
-                ? `No archived ${kind} match your search.`
-                : `No archived ${kind}.`}
+                ? t("settings.data.library.noMediaMatches")
+                : t("settings.data.library.noMedia")}
           </p>
         )}
       </div>
@@ -685,7 +698,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                 );
             }}
           >
-            {paging ? "Loading..." : pageError ? "Retry" : "Show more"}
+            {paging
+              ? t("common.loading")
+              : pageError
+                ? t("picker.retry")
+                : t("shell.navigation.showMore")}
           </Button>
         </div>
       ) : null}
@@ -702,25 +719,26 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         >
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirming?.action === "delete" ? "Delete" : "Unarchive"}{" "}
-              {confirming?.rows.length}{" "}
-              {confirming?.rows.length === 1
-                ? noun
-                : kind === "audio"
-                  ? "clips"
-                  : kind}
+              {t(
+                confirming?.action === "delete"
+                  ? "settings.data.library.deleteItemsTitle"
+                  : "settings.data.library.unarchiveItemsTitle",
+                { count: confirming?.rows.length ?? 0 },
+              )}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirming?.rows.length === 1
                 ? `"${confirming.rows[0].title}". `
                 : ""}
               {confirming?.action === "delete"
-                ? "These files will be permanently deleted. This cannot be undone."
-                : "These items will return to the gallery."}
+                ? t("settings.data.library.deleteFilesWarning")
+                : t("settings.data.library.restoreWarning")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={busy}>
+              {t("common.cancel")}
+            </AlertDialogCancel>
             <AlertDialogAction
               disabled={busy || !confirming?.rows.length}
               variant={
@@ -732,10 +750,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               }}
             >
               {busy
-                ? "Working..."
+                ? t("settings.data.library.working")
                 : confirming?.action === "delete"
-                  ? "Delete"
-                  : "Unarchive"}
+                  ? t("common.delete")
+                  : t("settings.data.library.unarchive")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

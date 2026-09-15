@@ -11,6 +11,10 @@ import {
   type LibraryItem,
 } from "../src/features/settings/components/data-library.ts";
 
+const labels = {
+  noProject: "No project",
+  unavailableProject: "Unavailable project",
+};
 const projects = new Map([
   ["p1", "Research notes"],
   ["p2", "Research notes"],
@@ -40,6 +44,7 @@ const filter = (overrides: Partial<typeof DEFAULT_LIBRARY_FILTERS>) =>
     items,
     { ...DEFAULT_LIBRARY_FILTERS, ...overrides },
     projects,
+    labels,
   );
 
 test("search matches normalized title and project terms in any order", () => {
@@ -106,6 +111,7 @@ test("groups keep project ids, sorted row order and missing projects", () => {
   const groups = groupLibraryItems(
     [...items, { id: "d", title: "Missing", createdAt: 1, projectId: "gone" }],
     projects,
+    labels,
   );
   assert.deepEqual(
     groups.map((group) => group.id),
@@ -135,4 +141,71 @@ test("filtering a large library reaches records after the rendered page", () => 
     ["9999"],
   );
   assert.equal(many[0].id, "0");
+});
+
+test("localized project labels drive matching and grouping", () => {
+  const spanish = {
+    noProject: "Sin proyecto",
+    unavailableProject: "Proyecto no disponible",
+  };
+  const rows = [
+    ...items,
+    { id: "missing", title: "Lost", projectId: "gone", createdAt: 1 },
+  ];
+  for (const [query, expected] of [
+    ["SIN PROYECTO", "c"],
+    ["disponible proyecto", "missing"],
+  ]) {
+    assert.deepEqual(
+      ids(
+        filterLibraryItems(
+          rows,
+          { ...DEFAULT_LIBRARY_FILTERS, query },
+          projects,
+          spanish,
+        ),
+      ),
+      [expected],
+    );
+  }
+  const groups = groupLibraryItems(rows, projects, spanish);
+  assert.equal(groups[2].name, spanish.noProject);
+  assert.equal(groups[3].name, spanish.unavailableProject);
+  assert.deepEqual(
+    ids(
+      filterLibraryItems(
+        rows,
+        { ...DEFAULT_LIBRARY_FILTERS, query: "No project" },
+        projects,
+        spanish,
+      ),
+    ),
+    [],
+  );
+});
+
+test("media without project labels cannot match an invented project name", () => {
+  assert.deepEqual(
+    filterLibraryItems(items, {
+      ...DEFAULT_LIBRARY_FILTERS,
+      query: "No project",
+    }),
+    [],
+  );
+});
+
+test("dates use the requested app locale", () => {
+  const ms = 1700000000000;
+  for (const locale of ["es", "ja", "ar"]) {
+    assert.equal(
+      formatLibraryDate(ms, locale),
+      new Date(ms).toLocaleString(locale, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    );
+  }
 });

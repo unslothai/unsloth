@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useState, type ReactNode } from "react";
+import { useLocale, useT, type TranslationKey } from "@/i18n";
+import { useLibraryProjectLabels } from "./use-library-project-labels";
 import { Folder01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
@@ -36,17 +38,17 @@ import {
   groupLibraryItems,
 } from "./data-library";
 
-const SORT_LABELS: Record<LibrarySort, string> = {
-  default: "Default",
-  updated: "Updated",
-  created: "Created",
-  oldest: "Oldest first",
-  alphabetical: "Alphabetical",
+const SORT_LABELS: Record<LibrarySort, TranslationKey> = {
+  default: "settings.data.library.defaultSort",
+  updated: "settings.data.library.updated",
+  created: "settings.data.library.created",
+  oldest: "settings.data.library.oldest",
+  alphabetical: "settings.data.library.alphabetical",
 };
-const TYPE_LABELS: Record<string, string> = {
-  all: "All chats",
-  single: "Single chats",
-  compare: "Compare chats",
+const TYPE_LABELS: Record<string, TranslationKey> = {
+  all: "settings.data.library.allChats",
+  single: "settings.data.library.singleChats",
+  compare: "settings.data.library.compareChats",
 };
 
 export function LibraryToolbar({
@@ -62,13 +64,15 @@ export function LibraryToolbar({
   projects?: ReadonlyMap<string, string>;
   disabled?: boolean;
 }) {
+  const t = useT();
   const [projectOpen, setProjectOpen] = useState(false);
   const projectLabel =
     filters.project === "all"
-      ? "All projects"
+      ? t("settings.data.library.allProjects")
       : filters.project === "none"
-        ? "No project"
-        : (projects?.get(filters.project.slice(8)) ?? "Unavailable project");
+        ? t("settings.data.library.noProject")
+        : (projects?.get(filters.project.slice(8)) ??
+          t("settings.data.library.unavailableProject"));
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="relative min-w-48 flex-1">
@@ -94,13 +98,13 @@ export function LibraryToolbar({
             variant="outline"
             disabled={disabled}
             className="h-10 gap-2 rounded-xl"
-            aria-label="Filter and sort"
+            aria-label={t("settings.data.library.filterSort")}
           >
             {projects
-              ? TYPE_LABELS[filters.type]
+              ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"
-                ? "Sort"
-                : SORT_LABELS[filters.sort]}
+                ? t("settings.data.library.sort")
+                : t(SORT_LABELS[filters.sort])}
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               className="size-4 text-muted-foreground"
@@ -110,21 +114,25 @@ export function LibraryToolbar({
         <DropdownMenuContent align="end" className="w-52">
           {projects && (
             <>
-              <DropdownMenuLabel>Type</DropdownMenuLabel>
+              <DropdownMenuLabel>
+                {t("settings.data.library.type")}
+              </DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 value={filters.type}
                 onValueChange={(type) => onChange({ ...filters, type })}
               >
                 {Object.entries(TYPE_LABELS).map(([value, label]) => (
                   <DropdownMenuRadioItem key={value} value={value}>
-                    {label}
+                    {t(label)}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
               <DropdownMenuSeparator />
             </>
           )}
-          <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+          <DropdownMenuLabel>
+            {t("settings.data.library.sortBy")}
+          </DropdownMenuLabel>
           <DropdownMenuRadioGroup
             value={filters.sort}
             onValueChange={(sort) =>
@@ -137,7 +145,7 @@ export function LibraryToolbar({
               )
               .map(([value, label]) => (
                 <DropdownMenuRadioItem key={value} value={value}>
-                  {label}
+                  {t(label)}
                 </DropdownMenuRadioItem>
               ))}
           </DropdownMenuRadioGroup>
@@ -150,7 +158,7 @@ export function LibraryToolbar({
               variant="outline"
               disabled={disabled}
               className="h-10 max-w-full gap-2 rounded-xl"
-              aria-label="Filter by project"
+              aria-label={t("settings.data.library.filterProject")}
             >
               <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0" />
               <span className="max-w-40 truncate">{projectLabel}</span>
@@ -163,14 +171,16 @@ export function LibraryToolbar({
           <PopoverContent align="end" className="w-64 p-1">
             <Command>
               <CommandInput
-                placeholder="Search projects"
-                aria-label="Search projects"
+                placeholder={t("settings.data.library.searchProjects")}
+                aria-label={t("settings.data.library.searchProjects")}
               />
               <CommandList>
-                <CommandEmpty>No projects found.</CommandEmpty>
+                <CommandEmpty>
+                  {t("settings.data.library.noProjects")}
+                </CommandEmpty>
                 {[
-                  ["all", "All projects"],
-                  ["none", "No project"],
+                  ["all", t("settings.data.library.allProjects")],
+                  ["none", t("settings.data.library.noProject")],
                   ...[...projects]
                     .sort((a, b) => a[1].localeCompare(b[1]))
                     .map(([id, name]) => [`project:${id}`, name]),
@@ -209,6 +219,8 @@ export function LibraryRow({
   actions?: ReactNode;
   onOpen?: () => void;
 }) {
+  const t = useT();
+  const locale = useLocale();
   return (
     <div className="flex min-w-0 items-center gap-3 py-3.5 text-sm">
       {leading}
@@ -220,15 +232,15 @@ export function LibraryRow({
             title={title}
             className="block max-w-full truncate text-start font-medium hover:underline"
           >
-            {title || "Untitled"}
+            {title || t("settings.data.library.untitled")}
           </button>
         ) : (
           <p title={title} className="truncate font-medium">
-            {title || "Untitled"}
+            {title || t("settings.data.library.untitled")}
           </p>
         )}
         <p className="mt-1 text-xs text-muted-foreground">
-          {formatLibraryDate(date)}
+          {formatLibraryDate(date, locale)}
         </p>
       </div>
       {actions && (
@@ -247,9 +259,11 @@ export function ChatLibraryGroups<T extends LibraryItem>({
   projects: ReadonlyMap<string, string>;
   children: (item: T) => ReactNode;
 }) {
+  const t = useT();
+  const labels = useLibraryProjectLabels();
   return (
     <div className="space-y-5">
-      {groupLibraryItems(items, projects).map((group) => (
+      {groupLibraryItems(items, projects, labels).map((group) => (
         <section key={group.id} className="space-y-2">
           <div className="flex items-center gap-2 px-1 text-sm">
             <HugeiconsIcon
@@ -263,7 +277,12 @@ export function ChatLibraryGroups<T extends LibraryItem>({
               {group.name}
             </h3>
             <span className="text-xs text-muted-foreground">
-              {group.items.length} {group.items.length === 1 ? "chat" : "chats"}
+              {t(
+                group.items.length === 1
+                  ? "settings.data.library.oneChat"
+                  : "settings.data.library.chatCount",
+                { count: group.items.length },
+              )}
             </span>
           </div>
           <div className="divide-y divide-border/50 rounded-2xl border border-border/60 px-3 sm:px-4">
