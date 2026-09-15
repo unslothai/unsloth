@@ -2223,6 +2223,11 @@ def test_a_recursive_python_copy_of_the_studio_root_is_refused(studio_home):
     for ordinary in (
         'import shutil\nshutil.copytree("./src", "./dst")',
         'import shutil\nshutil.make_archive("b", "zip", "./src")',
+        # A SHALLOW listing returns the root's own entry names and opens nothing inside `auth`,
+        # exactly as the terminal side's plain root listing does.
+        'import os\nprint(os.listdir(os.environ["UNSLOTH_STUDIO_HOME"]))',
+        "import os\nfrom pathlib import Path\n"
+        'print(list(Path(os.environ["UNSLOTH_STUDIO_HOME"]).iterdir()))',
         f'import shutil\nshutil.copytree({str(studio_home / "projects" / "p")!r}, "./dst")',
     ):
         assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (

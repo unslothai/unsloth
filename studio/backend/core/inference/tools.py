@@ -3786,7 +3786,11 @@ def _calls_in_uncalled_scopes(tree) -> "set[int]":
 _PY_TREE_COPY_CALLS = frozenset({"copytree", "make_archive", "copy_tree", "unpack_archive"})
 # A recursive WALK of the root reaches `auth/` the same way a copy of it does, and reading
 # what it yields prints the secrets without any of them being named.
-_PY_TREE_WALK_CALLS = frozenset("walk rglob glob iglob iterdir listdir scandir".split())
+# Only the RECURSIVE ones: a shallow listing returns the root's own entry names and reads
+# nothing inside `auth`, which is what the terminal side allows for a plain root listing.
+_PY_TREE_WALK_CALLS = frozenset("walk rglob glob iglob".split())
+# `glob` is shallow unless its pattern descends.
+_PY_SHALLOW_UNLESS_RECURSIVE = frozenset({"glob", "iglob"})
 _PY_TREE_ROOT_CALLS = _PY_TREE_COPY_CALLS | _PY_TREE_WALK_CALLS
 # One C-speed scan for any of them, so ordinary code pays a single search rather than a
 # substring test per name.
@@ -3818,6 +3822,11 @@ def _python_copies_the_studio_root(tree) -> bool:
         # base_dir)` names it third. A walker names it first too, or as the RECEIVER it is called
         # on: `Path(os.environ["UNSLOTH_STUDIO_HOME"]).rglob("*")`.
         sources = list(node.args[2:4]) if name == "make_archive" else list(node.args[:1])
+        if name in _PY_SHALLOW_UNLESS_RECURSIVE and not any(
+            isinstance(a, ast.Constant) and isinstance(a.value, str) and "**" in a.value
+            for a in node.args
+        ):
+            continue
         if name in _PY_TREE_WALK_CALLS:
             receiver = getattr(node.func, "value", None)
             sources.append(receiver)
