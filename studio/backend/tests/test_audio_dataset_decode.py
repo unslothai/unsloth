@@ -113,6 +113,51 @@ def test_an_m4a_row_decodes_through_pyav_when_torchcodec_is_broken(broken_torchc
     assert decoded["path"] == "tone.m4a"
 
 
+def _two_stream_m4a_bytes(rate = 22050, freqs = (440, 880)):
+    """One MP4 holding two AAC tracks, a tone per stream; the second is the one a stream_index must reach."""
+    av = pytest.importorskip("av")
+    t = np.arange(rate) / rate
+    buf = io.BytesIO()
+    try:
+        with av.open(buf, "w", format = "mp4") as container:
+            streams = []
+            for hz in freqs:
+                stream = container.add_stream("aac", rate = rate)
+                stream.layout = "mono"
+                streams.append(stream)
+            for stream, hz in zip(streams, freqs):
+                tone = (0.5 * np.sin(2 * np.pi * hz * t)).astype("float32")
+                frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+                frame.sample_rate = rate
+                for packet in stream.encode(frame):
+                    container.mux(packet)
+                for packet in stream.encode(None):
+                    container.mux(packet)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"this PyAV cannot encode AAC: {exc}")
+    return buf.getvalue()
+
+
+def _dominant_hz(array, rate):
+    spectrum = np.abs(np.fft.rfft(np.asarray(array, dtype = "float64")))
+    return float(np.fft.rfftfreq(len(array), 1.0 / rate)[int(np.argmax(spectrum))])
+
+
+def test_the_stream_index_selects_the_track(broken_torchcodec):
+    # datasets.Audio(stream_index=1) must reach the second track, as torchcodec would.
+    from datasets import Audio, Dataset
+
+    raw = _two_stream_m4a_bytes()
+    assert audio_decode.ensure_audio_decoding() is True
+    rows = {"audio": [{"path": "two.m4a", "bytes": raw}]}
+    first = Dataset.from_dict(rows).cast_column("audio", Audio())[0]["audio"]
+    second = Dataset.from_dict(rows).cast_column("audio", Audio(stream_index = 1))[0]["audio"]
+    assert abs(_dominant_hz(first["array"], first["sampling_rate"]) - 440) < 20
+    assert abs(_dominant_hz(second["array"], second["sampling_rate"]) - 880) < 20
+    with pytest.raises(Exception, match = "stream"):
+        audio_decode._read_mono(io.BytesIO(raw), stream_index = 5)
+
+
 def test_an_m4a_path_decodes_through_pyav(broken_torchcodec, tmp_path):
     # The path form goes to av.open as a filename, the bytes form as a buffer.
     from datasets import Audio, Dataset

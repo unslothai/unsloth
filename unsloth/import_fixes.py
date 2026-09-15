@@ -2741,7 +2741,7 @@ def disable_torchcodec_if_broken():
         patch_datasets_audio_decoding_without_torchcodec()
 
 
-def _audio_decode_with_av(source):
+def _audio_decode_with_av(source, stream_index = None):
     """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Kept identical to studio/backend/utils/datasets/audio_decode.py; a test holds the two together."""
     import av
     import numpy as np
@@ -2752,7 +2752,14 @@ def _audio_decode_with_av(source):
     with av.open(source, mode = "r", metadata_errors = "ignore") as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
-        for frame in container.decode(audio = 0):
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the first audio stream.
+        try:
+            stream = container.streams.audio[0] if stream_index is None else container.streams[stream_index]
+        except IndexError:
+            raise ValueError(f"stream {stream_index} is not in the container, which has {len(container.streams)} streams") from None
+        if stream.type != "audio":
+            raise ValueError(f"stream {stream_index} is not an audio stream")
+        for frame in container.decode(stream):
             if resampler is None:
                 rate = int(frame.sample_rate or 0)
                 if rate <= 0:
@@ -2768,11 +2775,14 @@ def _audio_decode_with_av(source):
     return np.concatenate(chunks).astype(np.float32, copy = False), rate
 
 
-def _audio_read_mono(source):
+def _audio_read_mono(source, stream_index = None):
     """soundfile first (wav, flac, mp3, ogg), PyAV for the rest. `source` is a path, a bytes buffer or an open file."""
     import numpy as np
     import soundfile as sf
 
+    if stream_index not in (None, 0):
+        # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
+        return _audio_decode_with_av(source, stream_index)
     try:
         array, rate = sf.read(source, dtype = "float32", always_2d = False)
     except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
@@ -2783,7 +2793,7 @@ def _audio_read_mono(source):
         if hasattr(source, "seek"):
             source.seek(0)
         try:
-            return _audio_decode_with_av(source)
+            return _audio_decode_with_av(source, stream_index)
         except Exception as av_error:  # noqa: BLE001
             raise RuntimeError(
                 f"audio could not be decoded by soundfile ({sf_error}) or PyAV ({av_error})"
@@ -2872,7 +2882,7 @@ def patch_datasets_audio_decoding_without_torchcodec():
             source = path
         else:
             source = xopen(path, "rb", download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)))
-        array, sampling_rate = _audio_read_mono(source)
+        array, sampling_rate = _audio_read_mono(source, getattr(self, "stream_index", None))
         target = self.sampling_rate
         if target and sampling_rate != target:
             array = _audio_resample(array, sampling_rate, target)

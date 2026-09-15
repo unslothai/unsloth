@@ -44,7 +44,7 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
     return token_per_repo_id.get(fields["repo_id"])
 
 
-def _decode_with_av(source: Any) -> "tuple[Any, int]":
+def _decode_with_av(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
     """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Same shape as routes/inference.py's upload decoder, minus its upload ceilings: a dataset row is not an upload."""
     import av
     import numpy as np
@@ -55,7 +55,14 @@ def _decode_with_av(source: Any) -> "tuple[Any, int]":
     with av.open(source, mode = "r", metadata_errors = "ignore") as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
-        for frame in container.decode(audio = 0):
+        # datasets.Audio(stream_index=...) is the container's absolute stream index, as torchcodec reads it; None is the first audio stream.
+        try:
+            stream = container.streams.audio[0] if stream_index is None else container.streams[stream_index]
+        except IndexError:
+            raise ValueError(f"stream {stream_index} is not in the container, which has {len(container.streams)} streams") from None
+        if stream.type != "audio":
+            raise ValueError(f"stream {stream_index} is not an audio stream")
+        for frame in container.decode(stream):
             if resampler is None:
                 rate = int(frame.sample_rate or 0)
                 if rate <= 0:
@@ -71,11 +78,14 @@ def _decode_with_av(source: Any) -> "tuple[Any, int]":
     return np.concatenate(chunks).astype(np.float32, copy = False), rate
 
 
-def _read_mono(source: Any) -> "tuple[Any, int]":
+def _read_mono(source: Any, stream_index: Optional[int] = None) -> "tuple[Any, int]":
     """soundfile first (wav, flac, mp3, ogg), PyAV for the rest. `source` is a path, a bytes buffer or an open file."""
     import numpy as np
     import soundfile as sf
 
+    if stream_index not in (None, 0):
+        # libsndfile only knows single-stream files, so an explicit other stream is PyAV's alone.
+        return _decode_with_av(source, stream_index)
     try:
         array, rate = sf.read(source, dtype = "float32", always_2d = False)
     except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
@@ -86,7 +96,7 @@ def _read_mono(source: Any) -> "tuple[Any, int]":
         if hasattr(source, "seek"):
             source.seek(0)
         try:
-            return _decode_with_av(source)
+            return _decode_with_av(source, stream_index)
         except Exception as av_error:  # noqa: BLE001
             raise RuntimeError(
                 f"audio could not be decoded by soundfile ({sf_error}) or PyAV ({av_error})"
@@ -129,7 +139,7 @@ def _decode_with_soundfile(
             download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
         )
 
-    array, sampling_rate = _read_mono(source)
+    array, sampling_rate = _read_mono(source, getattr(self, "stream_index", None))
     target = self.sampling_rate
     if target and sampling_rate != target:
         import librosa

@@ -24,6 +24,7 @@ import pytest
 np = pytest.importorskip("numpy")
 sf = pytest.importorskip("soundfile")
 datasets = pytest.importorskip("datasets")
+pytest.importorskip("torch")  # importing unsloth needs torch; Studio's no-torch venvs skip this file
 
 from unsloth import import_fixes  # noqa: E402
 
@@ -126,6 +127,51 @@ def test_the_disabler_installs_the_decoder():
     fn = next(n for n in ast.walk(src) if isinstance(n, ast.FunctionDef) and n.name == "disable_torchcodec_if_broken")
     calls = [n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     assert "patch_datasets_audio_decoding_without_torchcodec" in calls
+
+
+def _two_stream_m4a_bytes(rate = 22050, freqs = (440, 880)):
+    """One MP4 holding two AAC tracks, a tone per stream; the second is the one a stream_index must reach."""
+    av = pytest.importorskip("av")
+    t = np.arange(rate) / rate
+    buf = io.BytesIO()
+    try:
+        with av.open(buf, "w", format = "mp4") as container:
+            streams = []
+            for hz in freqs:
+                stream = container.add_stream("aac", rate = rate)
+                stream.layout = "mono"
+                streams.append(stream)
+            for stream, hz in zip(streams, freqs):
+                tone = (0.5 * np.sin(2 * np.pi * hz * t)).astype("float32")
+                frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+                frame.sample_rate = rate
+                for packet in stream.encode(frame):
+                    container.mux(packet)
+                for packet in stream.encode(None):
+                    container.mux(packet)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"this PyAV cannot encode AAC: {exc}")
+    return buf.getvalue()
+
+
+def _dominant_hz(array, rate):
+    spectrum = np.abs(np.fft.rfft(np.asarray(array, dtype = "float64")))
+    return float(np.fft.rfftfreq(len(array), 1.0 / rate)[int(np.argmax(spectrum))])
+
+
+def test_the_stream_index_selects_the_track(broken_torchcodec):
+    # datasets.Audio(stream_index=1) must reach the second track, as torchcodec would.
+    from datasets import Audio, Dataset
+
+    raw = _two_stream_m4a_bytes()
+    assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
+    rows = {"audio": [{"path": "two.m4a", "bytes": raw}]}
+    first = Dataset.from_dict(rows).cast_column("audio", Audio())[0]["audio"]
+    second = Dataset.from_dict(rows).cast_column("audio", Audio(stream_index = 1))[0]["audio"]
+    assert abs(_dominant_hz(first["array"], first["sampling_rate"]) - 440) < 20
+    assert abs(_dominant_hz(second["array"], second["sampling_rate"]) - 880) < 20
+    with pytest.raises(Exception, match = "stream"):
+        import_fixes._audio_read_mono(io.BytesIO(raw), stream_index = 5)
 
 
 def _normalized(path: Path, name: str, rename: dict) -> str:
