@@ -3374,6 +3374,10 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `ln` hands the sandbox a name that WRITES to its target, so a relative write through the link
+    # lands outside afterwards.
+    f"ln -s {_OUTSIDE_FILE} local.md",
+    f"ln {_OUTSIDE_FILE} local.md",
     # tmpfs the user's own processes own: their contents are user data, not machine state.
     "cat /dev/shm/private",
     "cat /run/user/1000/app/session.json",
@@ -3502,6 +3506,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # Past the candidate cap, and reached by a constant index.
+    f"paths = ['/usr/a', '/usr/b', '/usr/c', '/usr/d', '/usr/e', '/usr/f', '/usr/g', '/usr/h', {_OUTSIDE_FILE!r}]\nopen(paths[8]).read()",
     # Existence, size, ownership and timestamps of a path outside the sandbox.
     f"import os\nprint(os.stat({_OUTSIDE_FILE!r}))",
     f"import os\nprint(os.lstat({_OUTSIDE_FILE!r}))",
@@ -3635,6 +3641,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "ln -s ./a ./b",
     "cat /dev/urandom",
     "cat /run/systemd/resolve/resolv.conf",
     "cp /usr/share/doc/x.txt ./local.txt",
@@ -3703,6 +3710,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "paths = ['/usr/share/a', '/usr/share/b']\nopen(paths[1]).read()",
     "import os\nprint(os.stat('notes.txt'))",
     "import pathlib\nprint(pathlib.Path('notes.txt').stat())",
     "import shutil\nshutil.copy('/usr/share/doc/x.txt', 'copy.txt')",

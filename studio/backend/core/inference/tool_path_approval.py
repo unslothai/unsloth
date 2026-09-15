@@ -567,9 +567,11 @@ _PATH_WRITE_COMMANDS = frozenset(
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
 
 
-# `mv --help`: "Rename SOURCE to DEST", so the SOURCE is gone afterwards. `cp`, `ln` and `rsync`
-# leave theirs alone, which is why this is not the whole set above.
-_PATH_SOURCE_MUTATING_COMMANDS = frozenset({"mv"})
+# Commands whose SOURCE operand is checked as a write. `mv --help`: "Rename SOURCE to DEST", so the
+# source is gone afterwards. `ln` does not remove its target, but it hands the sandbox a name that
+# WRITES to it: after `ln -s /scan/model.gguf local`, an ordinary relative write through `local`
+# lands outside. `cp` and `rsync` read theirs and leave them alone.
+_PATH_SOURCE_MUTATING_COMMANDS = frozenset({"mv", "ln"})
 
 
 # Interpreters and clients whose operands are files they LOAD. `python /media/private/job.py` reads
@@ -2189,11 +2191,44 @@ def _literal_container_paths(node) -> "list[str]":
 
 
 def _subscript_literal_paths(node, containers) -> "list[str]":
-    """The paths a subscript can resolve to, when everything about it is a literal."""
+    """The paths a subscript can resolve to, when everything about it is a literal.
+
+    A constant index resolves to the ONE element it names, which is both exact and free of the cap
+    below. Otherwise every path the container holds is a candidate, ranked so the ones that need
+    approval survive the cap: a container of nine paths whose last is the outside one would
+    otherwise have lost it to eight read-silent ones ahead of it.
+    """
     target = node.value
-    if isinstance(target, ast.Name):
-        return list(containers.get(target.id, ()))
-    return _literal_container_paths(target)
+    paths = (
+        list(containers.get(target.id, ()))
+        if isinstance(target, ast.Name)
+        else _literal_container_paths(target)
+    )
+    index = node.slice
+    if isinstance(index, ast.Constant) and isinstance(index.value, int) and paths:
+        # The literal index is into the container as WRITTEN, and only the absolute strings of it
+        # are collected here, so this resolves exactly when the container is all paths.
+        exact = _exact_indexed_path(target, containers, index.value)
+        if exact is not None:
+            return [exact]
+    return _capped_alternates(paths)
+
+
+def _exact_indexed_path(target, containers, index: int) -> "str | None":
+    """The element a constant index names, when every element of the container is an absolute path."""
+    if isinstance(target, (ast.List, ast.Tuple)):
+        elements = target.elts
+    else:
+        return None
+    if not all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str) for element in elements
+    ):
+        return None
+    try:
+        value = elements[index].value
+    except IndexError:
+        return None
+    return value if _looks_absolute(value) else None
 
 
 def _python_path_operands(tree) -> "list[tuple[str, bool]]":
@@ -2263,7 +2298,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # path with nothing dynamic in them, and the fold has no value for a subscript. Every
             # literal the container holds counts rather than the indexed one: the index is not
             # always constant, and a container of paths is read through whichever element is picked.
-            for path in _subscript_literal_paths(node, containers)[:_MAX_REBOUND_ALTERNATES]:
+            for path in _subscript_literal_paths(node, containers):
                 operands.append((path, writing))
         # A name rebound elsewhere in the snippet reaches every path it ever held, and the scan
         # cannot order the statements, so each candidate counts.
