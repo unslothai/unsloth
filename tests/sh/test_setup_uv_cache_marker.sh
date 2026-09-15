@@ -319,7 +319,7 @@ if eval "$3"; then echo yes; else echo no; fi' _ "$PROBE_HELPERS" "$2" "$3"
     OFFSCOPE="$CASE/unrelated store/uv"
     warm "$OFFSCOPE"
     record "$HOME_DIR" "$OFFSCOPE\\n"
-    for store in binaries-v0 osv-v0 environments-v2 python-v0; do
+    for store in binaries-v0 osv-v0 environments-v2 python-v0 flat-index-v2; do
         mkdir -p "$OFFSCOPE/$store"
         if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$OFFSCOPE/$store" 2>/dev/null; then
             assert_eq "$shell: a read-only $store does not condemn the cache" \

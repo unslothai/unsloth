@@ -1156,7 +1156,9 @@ def test_a_lock_that_is_not_a_regular_file_makes_the_cache_unusable(tmp_path):
 @pytest.mark.skipif(
     os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
 )
-@pytest.mark.parametrize("store", ["binaries-v0", "osv-v0", "environments-v2", "python-v0"])
+@pytest.mark.parametrize(
+    "store", ["binaries-v0", "osv-v0", "environments-v2", "python-v0", "flat-index-v2"]
+)
 def test_a_store_pip_install_never_writes_does_not_condemn_the_cache(tmp_path, store):
     """setup.sh runs only `uv pip install`. Measured on uv 0.10.7 at 0555: binaries-v0, osv-v0,
     environments-v2, flat-index-v2, git-v0 and python-v0 all install fine, so probing the ones

@@ -3172,15 +3172,15 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 
 
 _UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
-# The subset `uv pip install` writes, which is the only uv command studio/setup.sh runs.
-# Measured on uv 0.10.7 at 0555: binaries-v0, environments-v2, flat-index-v2, git-v0, osv-v0 and
-# python-v0 all install fine, so probing them only threw warm caches away. git and builds are in
-# because a `git+` requirement does write them.
+# The subset `uv pip install` CREATES, which is the only uv command studio/setup.sh runs. The
+# rule is what uv is measured to write: a `git+` requirement creates git-v0 and builds-v0, so
+# those are in, while flat-index-v2 is not created even by `--find-links --no-index`, and
+# binaries, environments, osv and python belong to uv self-update, uv venv and uv python.
+# Probing a store uv never touches only throws warm caches away. Re-measure on a pin bump.
 _UV_PIP_STORES = (
     "archive",
     "builds",
     "built-wheels",
-    "flat-index",
     "git",
     "interpreter",
     "sdists",

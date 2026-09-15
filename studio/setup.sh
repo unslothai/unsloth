@@ -1061,12 +1061,15 @@ _uv_cache_usable() {
     _uv_cache_folds_case "$1" && _uvu_fold=1 || _uvu_fold=0
     for _uvu_bucket in "$1"/*; do
         _uvu_name=$(_uv_store_key "${_uvu_bucket##*/}" "$_uvu_fold") || continue
-        # Only the stores `uv pip install` writes, which is the one uv command this file runs
-        # (line 2053). Measured on uv 0.10.7 at 0555: binaries-v0, environments-v2, flat-index-v2,
-        # git-v0, osv-v0 and python-v0 all install fine, so rejecting for them threw away a warm
-        # cache. git-v0 and builds-v0 ARE written for a `git+` requirement, so they stay in.
+        # Only the stores `uv pip install` CREATES, which is the one uv command this file runs
+        # (line 2053). The rule is what uv is measured to write, not what a 0555 directory
+        # happens to survive: a `git+` requirement creates git-v0 and builds-v0, so those stay,
+        # while flat-index-v2 is not created even by `--find-links --no-index`, and binaries,
+        # environments, osv and python belong to uv self-update, uv venv and uv python.
+        # Probing a store uv never touches only throws away the warm cache this path exists
+        # to find. Re-measure on a pin bump.
         case "${_uvu_name%-v*}" in
-            archive|builds|built-wheels|flat-index|git|interpreter|sdists|simple|wheels) ;;
+            archive|builds|built-wheels|git|interpreter|sdists|simple|wheels) ;;
             *) continue ;;
         esac
         if [ ! -d "$_uvu_bucket" ]; then

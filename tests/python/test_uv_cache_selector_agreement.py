@@ -174,6 +174,7 @@ def test_both_implementations_agree_on_usability(tmp_path, shape):
         ("binaries-v0", True),
         ("environments-v2", True),
         ("python-v0", True),
+        ("flat-index-v2", True),
     ],
 )
 def test_both_implementations_agree_on_which_stores_are_probed(tmp_path, store, usable):
