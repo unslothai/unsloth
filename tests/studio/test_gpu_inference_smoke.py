@@ -19,7 +19,7 @@ import sys
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
@@ -62,7 +62,7 @@ def _prefetch(model_id, timeout):
     )
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "requires a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires a CUDA GPU")
 def test_gpu_generation_smoke():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer
