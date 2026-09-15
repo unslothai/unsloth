@@ -131,13 +131,13 @@ def test_every_persistent_path_write_routes_through_the_guard(path_label: str):
     """
     path, indent = _PS_FILES[path_label]
     body = _function(path, indent, "Add-ToUserPath")
-    assert "Resolve-UserPathPosition" in body, (
-        f"{path_label}: Add-ToUserPath must resolve its position through the guard"
-    )
+    assert (
+        "Resolve-UserPathPosition" in body
+    ), f"{path_label}: Add-ToUserPath must resolve its position through the guard"
     # Ahead of the registry read, or the decision lands after the value it decides is used.
-    assert body.index("Resolve-UserPathPosition") < body.index("Registry"), (
-        f"{path_label}: the guard has to run before the registry write is prepared"
-    )
+    assert body.index("Resolve-UserPathPosition") < body.index(
+        "Registry"
+    ), f"{path_label}: the guard has to run before the registry write is prepared"
 
 
 @pytest.mark.parametrize("path_label", sorted(_PS_FILES))
@@ -191,9 +191,9 @@ def test_the_python_org_installer_arguments_use_the_switch_function():
     assert args is not None, "install.ps1 no longer builds $installArgs for python.org"
     block = args.group(0)
     assert "Get-PythonInstallerPathSwitch" in block
-    assert "PrependPath" not in block, (
-        "the PATH switch has to come from Get-PythonInstallerPathSwitch, not be spelled here"
-    )
+    assert (
+        "PrependPath" not in block
+    ), "the PATH switch has to come from Get-PythonInstallerPathSwitch, not be spelled here"
 
 
 def test_winget_is_not_the_first_route_inside_an_active_conda_environment():
