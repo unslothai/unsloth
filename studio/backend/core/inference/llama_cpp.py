@@ -4058,6 +4058,13 @@ _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 # presence-only (-cmoe takes no value, and an -ot pattern is not worth guessing
 # at, which matches how the env side reads LLAMA_ARG_OVERRIDE_TENSOR).
 _CPU_MOE_COUNT_FLAGS = frozenset({"-ncmoe", "--n-cpu-moe"})
+# The dense-model twin: common/arg.cpp turns a positive -ncffn into CPU overrides for the
+# first N layers' ffn_up/down/gate, exactly as -ncmoe does for expert weights.
+_CPU_FFN_COUNT_FLAGS = frozenset({"-ncffn", "--n-cpu-ffn"})
+# User controls over llama.cpp's own fitter. Studio emits neither on Metal, so a launch carrying
+# one is placed by a fitter the Metal memory probe did not run.
+_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target", "-fitc", "--fit-ctx"})
+_FIT_CONTROL_ENV_VARS = ("LLAMA_ARG_FIT_TARGET", "LLAMA_ARG_FIT_CTX")
 _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | frozenset(
     {"-ot", "--override-tensor"}
 )
@@ -4497,7 +4504,7 @@ def _args_place_tensors_on_cpu(extra_args: Optional[Iterable[str]] = None) -> bo
     """True when extras keep weights on the CPU, whatever the layer count says.
 
     The arg-side twin of ``_env_places_tensors_on_cpu``, including its rule that
-    a CPU-MoE count only counts when positive: ``--n-cpu-moe 0`` places nothing.
+    a CPU-MoE or CPU-FFN count only counts when positive: ``--n-cpu-moe 0`` places nothing.
     """
     values = [str(raw) for raw in extra_args or ()]
     for i, raw in enumerate(values):
@@ -4506,7 +4513,7 @@ def _args_place_tensors_on_cpu(extra_args: Optional[Iterable[str]] = None) -> bo
         # non-empty, and guessing at the pattern is not worth it.
         if flag in _CPU_PLACEMENT_PRESENCE_FLAGS:
             return True
-        if flag in _CPU_MOE_COUNT_FLAGS:
+        if flag in _CPU_MOE_COUNT_FLAGS | _CPU_FFN_COUNT_FLAGS:
             _, eq, inline = raw.partition("=")
             if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
                 return True
@@ -4525,6 +4532,7 @@ def _env_places_tensors_on_cpu(env: Optional[Mapping[str, str]] = None) -> bool:
         source_env.get("LLAMA_ARG_OVERRIDE_TENSOR")
         or source_env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
         or _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_MOE"))
+        or _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_FFN"))
     )
 
 
@@ -5373,6 +5381,51 @@ def _normalized_load_mode(value: Optional[str]) -> Optional[str]:
         return None
     mode = str(value).strip().lower()
     return None if mode in {"", "auto"} else mode
+
+
+_BREAKDOWN_DEVICE_ROW_RE = re.compile(
+    r"\|\s*-\s*(?P<name>[^|(]+?)\s*\([^|]*\|\s*\d+\s*=\s*\d+\s*\+\s*\(\s*\d+\s*=\s*(?P<model>\d+)\s*\+"
+)
+_BREAKDOWN_HOST_ROW_RE = re.compile(
+    r"\|\s*-\s*(?P<name>[^|]+?)\s*\|\s*\d+\s*=\s*(?P<model>\d+)\s*\+"
+)
+
+
+def _parse_metal_memory_breakdown(output: str) -> Optional[tuple[int, int, int]]:
+    """Parse the first llama.cpp table as ``(metal_model_mib, host_model_mib, rows)``.
+
+    Require one Metal device row and sum the model column from every host row.
+    """
+    rows: list[str] = []
+    for line in output.splitlines():
+        if "common_memory_breakdown_print" not in line:
+            if rows:
+                break
+            continue
+        if "memory breakdown" in line:
+            if rows:
+                break
+            continue
+        rows.append(line)
+    metal: list[int] = []
+    host = 0
+    host_rows = 0
+    for row in rows:
+        device = _BREAKDOWN_DEVICE_ROW_RE.search(row)
+        if device:
+            if not device.group("name").strip().startswith("MTL"):
+                return None
+            metal.append(int(device.group("model")))
+            continue
+        hosted = _BREAKDOWN_HOST_ROW_RE.search(row)
+        if hosted:
+            host += int(hosted.group("model"))
+            host_rows += 1
+            continue
+        return None
+    if len(metal) != 1 or host_rows == 0:
+        return None
+    return metal[0], host, len(rows)
 
 
 # The KV cache dtypes llama.cpp can map, shared by the emission guard and the
@@ -11297,6 +11350,141 @@ class LlamaCppBackend:
         if available > 0:
             rec_bytes = min(rec_bytes, available)
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
+
+    def _metal_measured_model_mib(
+        self, binary: Optional[str], model_path: Optional[str]
+    ) -> Optional[tuple[int, int, int]]:
+        """Measure full-offload model buffers with the sibling ``llama-fit-params``.
+
+        Discounted launches pin the same placement. Results are cached by probe and model
+        identity; a missing, failed, or unreadable probe returns None.
+        """
+        if not binary or not model_path:
+            return None
+        try:
+            probe = _llama_lib_dir(binary) / "llama-fit-params"
+            probe_stat = probe.stat()
+            model_stat = os.stat(model_path)
+        except OSError:
+            return None
+        key = (
+            str(probe),
+            probe_stat.st_size,
+            probe_stat.st_mtime_ns,
+            model_path,
+            model_stat.st_size,
+            model_stat.st_mtime_ns,
+        )
+        cached = getattr(self, "_metal_model_mib_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        measured: Optional[tuple[int, int, int]] = None
+        try:
+            env = self._llama_server_env_for_binary(str(binary))
+            for name in tuple(env):
+                if name.startswith("LLAMA_ARG_"):
+                    env.pop(name, None)
+            result = subprocess.run(
+                [str(probe), "-m", model_path, "-ngl", "999", "-c", "512", "-lv", "4"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                # A cold Metal shader compile lands here instead of at the launch.
+                timeout = 120,
+                check = False,
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode == 0:
+                measured = _parse_metal_memory_breakdown(
+                    (result.stdout or "") + "\n" + (result.stderr or "")
+                )
+        except Exception as e:
+            logger.debug(f"llama-fit-params memory probe failed: {e}")
+        self._metal_model_mib_cache = (key, measured)
+        return measured
+
+    def _metal_demand_paged_embedding_bytes(
+        self,
+        model_path: Optional[str],
+        extra_args: Optional[Iterable[str]],
+        *,
+        binary: Optional[str],
+        requested_load_mode: Optional[str],
+        supports_load_mode: bool,
+        settings: tuple[bool, bool],
+        layers_fixed: bool,
+        mtp_may_engage: bool,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> int:
+        """Return mmap embedding bytes proven absent from the Metal working set.
+
+        Input embeddings live on the CPU but can still fall inside a Metal file mapping.
+        Fail closed unless the probe matches the launch placement and the loader leaves the
+        embeddings pageable. CPU fallback weights remain charged.
+        """
+        source_env = os.environ if env is None else env
+        if (
+            layers_fixed
+            or _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS)
+            or _env_fixes_gpu_layers(source_env)
+            or _device_selection_is_cpu(extra_args, source_env)
+            or _args_place_tensors_on_cpu(extra_args)
+            or _env_places_tensors_on_cpu(source_env)
+            or _extra_args_set_any_flag(extra_args, _FIT_CONTROL_FLAGS)
+            or any(source_env.get(name) for name in _FIT_CONTROL_ENV_VARS)
+            # Extras are appended after the pin, while inherited values are overridden by it.
+            or fit_is_enabled_in(extra_args)
+        ):
+            return 0
+        env_view = dict(source_env)
+        scrub_memory_env(env_view, settings)
+        managed, extras = apply_model_memory_policy(
+            extra_args,
+            supports_load_mode = supports_load_mode,
+            weights_in_host_memory = True,
+            gpu_offload_confirmed = False,
+            env = env_view,
+            settings = settings,
+        )
+        selected, extras = apply_load_mode_policy(
+            extras,
+            supports_load_mode = supports_load_mode,
+            weights_in_host_memory = True,
+            requested_load_mode = requested_load_mode,
+            settings = settings,
+        )
+        mlock, reserves_ram, direct_io = resolve_effective_load_state(
+            [*managed, *selected, *extras], env_view
+        )
+        if mlock or reserves_ram or direct_io:
+            return 0
+        layout = self._tensor_spill_layout(model_path, all_shards = True)
+        if layout is None or not layout.complete:
+            return 0
+        embeddings = int(layout.token_embd_bytes)
+        if embeddings <= 0 or (mtp_may_engage and layout.has_excluded_blocks):
+            return 0
+        measured = self._metal_measured_model_mib(binary, model_path)
+        if measured is None:
+            logger.info(
+                "Metal fit: could not measure how llama.cpp maps this model (llama-fit-params "
+                "missing or unreadable), so its %.2f GB of input embeddings stay charged.",
+                embeddings / (1024**3),
+            )
+            return 0
+        metal_mib, host_mib, rows = measured
+        mib = 1024 * 1024
+        charged = (metal_mib + rows) * mib + max(0, host_mib * mib - embeddings)
+        unmapped = min(embeddings, max(0, int(layout.tensor_bytes) - charged))
+        if not unmapped:
+            logger.info(
+                "Metal fit: llama.cpp maps this model's %.2f GB of input embeddings into Metal, "
+                "so they stay charged. A llama.cpp update may remove that.",
+                embeddings / (1024**3),
+            )
+        return unmapped
 
     @staticmethod
     def _rocm_arch_gate_keep(
@@ -21934,6 +22122,14 @@ class LlamaCppBackend:
                 # the handler's own log line on purpose: test_tp_vision_regression
                 # string-searches this function's source for it to check ordering.)
                 _metal_ctx_refusal: Optional[str] = None
+                # A discounted Metal ceiling must launch the measured full-offload placement.
+                _metal_full_offload_pinned = False
+                # The fit and launch must use the same Model Memory snapshot.
+                from utils.model_memory_settings import capture_model_memory_settings
+
+                _mem_settings = capture_model_memory_settings(
+                    lambda pair: setattr(self, "_memory_pending_launch", pair)
+                )
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825). GPU-loaded is
@@ -23551,7 +23747,25 @@ class LlamaCppBackend:
                         # this arm is reached only with no GPU enumerated, so no device has
                         # a budget of its own and _shared_pool_mmproj charged those bytes.
                         # Adding them again would price the encoder twice.
-                        _apple_model_size_fit = model_size_fit
+                        # Exclude pageable input embeddings that the probe found outside Metal.
+                        _apple_host_embd = self._metal_demand_paged_embedding_bytes(
+                            model_path,
+                            extra_args,
+                            binary = binary,
+                            requested_load_mode = load_mode,
+                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            settings = _mem_settings,
+                            layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
+                            mtp_may_engage = _mtp_will_engage,
+                        )
+                        _apple_model_size_fit = model_size_fit - _apple_host_embd
+                        if _apple_host_embd:
+                            logger.info(
+                                "Metal fit: %.2f GB of input embeddings stay in the CPU "
+                                "file mapping; charging %.2f GB of weights to unified memory.",
+                                _apple_host_embd / (1024**3),
+                                _apple_model_size_fit / (1024**3),
+                            )
 
                         def _apple_ctx_fit(target: int, min_ctx: int) -> int:
                             return self._fit_context_to_vram(
@@ -23614,7 +23828,7 @@ class LlamaCppBackend:
                                 # and whenever the GGUF carries no context length and the
                                 # request itself is that small.
                                 _weights_over_budget = (
-                                    model_size_fit / (1024 * 1024)
+                                    _apple_model_size_fit / (1024 * 1024)
                                 ) > _apple_fit_budget_mib
                                 if _weights_over_budget:
                                     # The fit priced nothing: no context rescues a load
@@ -23713,6 +23927,10 @@ class LlamaCppBackend:
                                 cache_type_kv,
                                 nothing_fits = _apple_nothing_fits,
                             )
+                        # Unmeasured floors still rely on llama.cpp's fitter.
+                        _metal_full_offload_pinned = bool(
+                            _apple_host_embd and _apple_measured_ceiling is not None
+                        )
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
@@ -24227,6 +24445,7 @@ class LlamaCppBackend:
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
+                    _metal_full_offload_pinned = False
                     # Not a verdict: this arm never priced anything. Explicit, so
                     # the flag cannot survive from a previous load.
                     _placement_verdict_partial = False
@@ -24634,6 +24853,9 @@ class LlamaCppBackend:
                         # Single effective GPU: the split is never emitted, so
                         # don't report it as active via /status and /load.
                         self._tensor_split = None
+                elif use_fit and _metal_full_offload_pinned:
+                    # Keep the launch on the full-offload mapping the discount measured.
+                    cmd.extend(["-ngl", "-1", "--fit", "off"])
                 elif use_fit:
                     # Unsloth could not prove a fit, so llama.cpp's fitter takes the
                     # placement. Its dense path fills "back to front with dense
@@ -25371,8 +25593,6 @@ class LlamaCppBackend:
                 # GPU with full offload it would hold a second copy of the model
                 # in system RAM and do nothing for VRAM, so it is not emitted
                 # and the idle-unload veto carries residency by itself.
-                from utils.model_memory_settings import capture_model_memory_settings
-
                 # fully_gpu_offloaded is only set by the auto branch. Manual mode
                 # and a user -ngl reach the same placement by their own routes,
                 # so derive those too or they would still be pinned. The CPU
@@ -25399,13 +25619,6 @@ class LlamaCppBackend:
                 if gpu_ids is not None:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_mem_env)
-                # ONE read for every decision below, published as one act: the window a
-                # save must not fall through opens at the CAPTURE, not the spawn. It
-                # carries the pair because `_memory_state` is None until the flags
-                # resolve, which the comparator reads as "not governed".
-                _mem_settings = capture_model_memory_settings(
-                    lambda pair: setattr(self, "_memory_pending_launch", pair)
-                )
                 _mem_keep_resident, _mem_no_reserve = _mem_settings
                 _mem_should_mlock = _mem_keep_resident and not _mem_no_reserve
                 # Armed HERE, not at the load call: that also spans the Hub download, and
