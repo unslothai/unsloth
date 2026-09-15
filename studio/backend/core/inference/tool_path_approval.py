@@ -551,6 +551,11 @@ _PATH_WRITE_COMMANDS = frozenset(
 _PATH_DEST_LAST_COMMANDS = frozenset({"cp", "mv", "install", "ln", "rsync"})
 
 
+# `mv --help`: "Rename SOURCE to DEST", so the SOURCE is gone afterwards. `cp`, `ln` and `rsync`
+# leave theirs alone, which is why this is not the whole set above.
+_PATH_SOURCE_MUTATING_COMMANDS = frozenset({"mv"})
+
+
 # Interpreters and clients whose operands are files they LOAD. `python /media/private/job.py` reads
 # that file and runs it, which is strictly more than `cat` of the same path, yet the command was in
 # no table so every operand was dropped. Treated as reads, since that is what decides the prompt;
@@ -630,6 +635,10 @@ _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
 # Long spellings of an archive command's create mode. The short forms are read letter by letter out
 # of the cluster; these carry the same meaning and are matched whole.
 _ARCHIVE_CREATE_LONG_FLAGS = frozenset({"--create", "--append", "--update"})
+
+
+# The short spellings of the same three: create, append, update. All write the archive.
+_ARCHIVE_WRITE_SHORT_MODES = ("c", "r", "u")
 
 
 # Flags that supply the pattern or program themselves. `_PATH_ARG_SKIP` spends a positional on it by
@@ -1276,9 +1285,12 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     # on a later flag, and reading only the first argument would classify out.tar as a read. Limited
     # to args[0] (the legacy option word) plus single-dash tokens, because an ORDINARY FILENAME can
     # contain a "c" -- `tar -xf a.tar src` must not look like a create.
+    # `tar --help`: `-r` appends to the archive and `-u` updates it, so both MUTATE the file `-f`
+    # names, exactly as `-c` does. Only `c` was read here, and an append to a read-silent root asked
+    # for nothing.
     creating = command in _PATH_ARCHIVE_COMMANDS and (
         any(
-            "c" in arg.lstrip("-")
+            any(mode in arg.lstrip("-") for mode in _ARCHIVE_WRITE_SHORT_MODES)
             for index, arg in enumerate(args)
             if not arg.startswith("--") and (index == 0 or arg.startswith("-"))
         )
@@ -1348,7 +1360,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         if dest_last:
             # `install -d DIRECTORY...` creates every operand (`install --help`), so there is no
             # source to distinguish and the "more than one positional" rule does not apply.
-            writing = directory_mode or (position == len(positionals) - 1 and len(positionals) > 1)
+            writing = (
+                directory_mode
+                or command in _PATH_SOURCE_MUTATING_COMMANDS
+                or (position == len(positionals) - 1 and len(positionals) > 1)
+            )
         else:
             # `creating and position == 0` is the LEGACY form, `tar cf out.tar src`, where the
             # archive occupies the first positional. With `-f` the archive arrived as a flag value

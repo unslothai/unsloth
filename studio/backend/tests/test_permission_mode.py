@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `mv --help`: "Rename SOURCE to DEST", so the source is gone afterwards; `cp` leaves it.
+    f"mv {_OUTSIDE_FILE} ./local.md",
+    # `tar --help`: `-r` appends to the archive and `-u` updates it, both writes of the `-f` file.
+    f"tar -rf {_OUTSIDE_DIR}/archive.tar local",
+    f"tar -uf {_OUTSIDE_DIR}/archive.tar local",
     # The same word twice, once as data and once as syntax: a membership test found the quoted
     # spelling and left the live redirection of the second command unsplit.
     f"echo 'x>{_OUTSIDE_FILE}'; echo x>{_OUTSIDE_FILE}",
@@ -3610,6 +3615,9 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "cp /usr/share/doc/x.txt ./local.txt",
+    "mv build/a.txt build/b.txt",
+    "tar -xf /usr/share/doc/archive.tar",
     "cat /proc/self/status",
     'echo "`ls`"',
     "iconv -f utf8 -t ascii local.txt",
