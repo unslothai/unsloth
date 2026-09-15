@@ -2042,3 +2042,42 @@ def test_a_chdir_to_the_studio_home_variable_moves_there(monkeypatch, tmp_path):
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_child_cwd_and_a_directory_descriptor_both_carry_the_studio_root(monkeypatch, tmp_path):
+    # Two ways to reach the auth directory without ever naming it in one path. The child's `cwd`
+    # can be the studio home variable, which the fold has no value for, and `dir_fd` joins a
+    # descriptor opened on `../..` to a later relative path, which the kernel combines and a scan
+    # reading the two calls separately does not.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import subprocess, os\n'
+            'subprocess.run(["cat", "auth/auth.db"], cwd = os.environ["UNSLOTH_STUDIO_HOME"])',
+            'import subprocess, os\n'
+            'subprocess.run(["cat", "auth/.desktop_secret"], cwd = os.getenv("STUDIO_HOME"))',
+            'import os\nroot = os.open("../..", os.O_RDONLY)\n'
+            'fd = os.open("auth/auth.db", os.O_RDONLY, dir_fd = root)',
+            'import os\nroot = os.open("../..", os.O_RDONLY)\n'
+            'fd = os.open("auth/.desktop_secret", os.O_RDONLY, dir_fd = root)',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        for ordinary in (
+            'import subprocess, os\nsubprocess.run(["ls"], cwd = os.environ["UNSLOTH_STUDIO_HOME"])',
+            'import os\nd = os.open("data", os.O_RDONLY)\n'
+            'fd = os.open("notes.txt", os.O_RDONLY, dir_fd = d)',
+            # The project's OWN auth file, opened relative to the sandbox it sits in.
+            'import os\nd = os.open(".", os.O_RDONLY)\n'
+            'fd = os.open("auth/config.json", os.O_RDONLY, dir_fd = d)',
+        ):
+            assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

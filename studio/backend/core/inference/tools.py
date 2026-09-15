@@ -3369,6 +3369,11 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # its own `auth/config.json` was refused although the process never left the sandbox.
     inert_moves = _calls_in_uncalled_scopes(tree)
     name_bases = _literal_name_bases(tree)
+    # `root = os.open("../..", os.O_RDONLY)` names a DIRECTORY, and `os.open("auth/auth.db", ...,
+    # dir_fd = root)` opens relative to it. The two calls look unrelated token by token: `../..`
+    # resolves to the studio root and goes nowhere, and `auth/auth.db` is checked against the
+    # sandbox, while the kernel joins them.
+    dir_fds = _literal_directory_descriptors(tree, workdir)
     process_aliases, process_functions = _process_module_aliases(tree)
     cwds: "list[str | None]" = [workdir]
     # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
@@ -3428,6 +3433,12 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                     restore.append((bound, cwds))
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
+        if (
+            isinstance(node, ast.Call)
+            and dir_fds
+            and _call_opens_under_a_descriptor(node, dir_fds)
+        ):
+            return True
         if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
             node, cwds, name_bases, process_aliases, process_functions
         ):
@@ -3676,6 +3687,59 @@ def _launches_a_child_process(
     )
 
 
+def _literal_directory_descriptors(tree, workdir: "str | None") -> dict:
+    """Name -> the directory an `os.open` of a literal path bound to it names.
+
+    Only the shape that can reach the auth directory is resolved: a literal path, opened as a
+    descriptor, held in a plain name. Anything else leaves the name absent and the `dir_fd` below
+    unresolved, which is what it already was.
+    """
+    descriptors: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        if not isinstance(value, ast.Call) or not value.args:
+            continue
+        called = getattr(value.func, "attr", None) or getattr(value.func, "id", None)
+        if called != "open":
+            continue
+        folded = _folded_path(value.args[0])
+        if not folded or "\x00" in folded or "\x02" in folded:
+            continue
+        here = (
+            folded
+            if os.path.isabs(folded) or not workdir
+            else os.path.normpath(os.path.join(workdir, folded))
+        )
+        for target in targets:
+            if isinstance(target, ast.Name):
+                descriptors[target.id] = here
+    return descriptors
+
+
+def _call_opens_under_a_descriptor(node: "ast.Call", dir_fds: dict) -> bool:
+    """True when a call opens a credential path relative to a tracked directory descriptor."""
+    given = next((kw.value for kw in node.keywords if kw.arg == "dir_fd"), None)
+    if not isinstance(given, ast.Name):
+        return False
+    base = dir_fds.get(given.id)
+    if not base:
+        return False
+    for argument in node.args:
+        folded = _folded_path(argument)
+        if not folded or "\x00" in folded or "\x02" in folded or os.path.isabs(folded):
+            continue
+        if _references_studio_credential(
+            os.path.normpath(os.path.join(base, folded.replace("\\", "/")))
+        ):
+            return True
+    return False
+
+
 def _call_runs_from_a_credential_directory(
     node: "ast.Call",
     cwds: "list",
@@ -3700,6 +3764,11 @@ def _call_runs_from_a_credential_directory(
     if given is None:
         return False
     folded = _folded_path(given)
+    if (not folded or "\x00" in folded) and _names_the_studio_home_env(given):
+        # `cwd = os.environ["UNSLOTH_STUDIO_HOME"]` hands the child the studio root itself, and the
+        # fold has no value for the subscript. Same resolution the chdir walk uses.
+        root = _studio_home_for_guard()
+        folded = root or folded
     if not folded or "\x00" in folded:
         return False
     targets = (
