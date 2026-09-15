@@ -2084,6 +2084,11 @@ _PY_PATH_KWARGS_BY_CALL = {
 }
 
 
+# Positional arguments that are SOURCE paths on a call whose first argument is already classified.
+# `shutil.make_archive("backup", "zip", "/home/alice/private")` passes the directory it packs third.
+_PY_PATH_EXTRA_READ_POSITIONS = {"make_archive": (2, 3)}
+
+
 # Every call name the path tables model, so an alias of any of them resolves back. Built from the
 # tables themselves rather than repeated by hand, so a name added to one is aliasable at once.
 _PY_ALIASABLE_PATH_CALLS = (
@@ -2637,8 +2642,11 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     bindings = _python_path_bindings(tree, ctors, joins)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
-    archive_objects = _python_archive_object_names(tree, module_aliases)
     function_aliases = _python_function_aliases(tree, module_aliases)
+    # `from zipfile import ZipFile as Z` binds the constructor under a name no table holds, so the
+    # function aliases count here exactly as the module ones do.
+    archive_aliases = {**module_aliases, **function_aliases}
+    archive_objects = _python_archive_object_names(tree, archive_aliases)
     containers = _python_literal_containers(tree)
     fileinput_readers = _python_fileinput_readers(tree)
     operands: "list[tuple[str, bool]]" = []
@@ -2698,6 +2706,14 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         # `open(p := "/media/x")` passes the assigned VALUE to the call, so fold through the walrus.
         if isinstance(node, ast.NamedExpr):
             node = node.value
+        # `pd.read_csv(*["/media/x.csv"])` hands the reader a literal path through a splat, which
+        # the fold has no value for. Only a literal sequence is unpacked, so nothing dynamic is
+        # guessed at.
+        if isinstance(node, ast.Starred):
+            for element in _sequence_elements(node.value, containers):
+                if element is not node.value:
+                    add(element, writing)
+            return
         try:
             folded = _folded_path(node, bindings, ctors, joins)
         except Exception:  # noqa: BLE001
@@ -2885,6 +2901,9 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 add(func.value, False)
         else:
             continue
+        for position in _PY_PATH_EXTRA_READ_POSITIONS.get(name, ()):
+            if position < len(node.args):
+                add(node.args[position], False)
         for keyword in _call_keywords(node):
             if keyword.arg in _PY_PATH_KWARGS_BY_CALL.get(name, ()):
                 # A parameter name only this callable uses, so it is read per call rather than from the

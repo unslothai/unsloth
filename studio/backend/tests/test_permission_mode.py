@@ -3545,6 +3545,13 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # `shutil.unpack_archive` creates the members under its destination.
     f"import shutil\nshutil.unpack_archive('local.zip', {_OUTSIDE_DIR!r})",
     f"import shutil\nshutil.unpack_archive('local.zip', extract_dir = {_OUTSIDE_DIR!r})",
+    # `make_archive` takes `root_dir` third and `base_dir` fourth, positionally too.
+    f"import shutil\nshutil.make_archive('backup', 'zip', {_OUTSIDE_DIR!r})",
+    f"import shutil\nshutil.make_archive('backup', 'zip', 'src', {_OUTSIDE_DIR!r})",
+    # A constructor imported under an alias binds the same archive object.
+    f"from zipfile import ZipFile as Z\nz = Z('local.zip', 'w')\nz.write({_OUTSIDE_FILE!r})",
+    # A literal splat hands the reader the same path the plain call does.
+    f"import pandas as pd\npd.read_csv(*[{_OUTSIDE_FILE!r}])",
     # `shutil.make_archive` writes `base_name` and reads the directory it packs.
     f"import shutil\nshutil.make_archive({_OUTSIDE_DIR!r} + '/backup', 'zip', 'src')",
     f"import shutil\nshutil.make_archive('backup', 'zip', root_dir = {_OUTSIDE_DIR!r})",
@@ -3806,6 +3813,10 @@ _INDIRECT_BENIGN_PYTHON = (
     "import gzip\nf = gzip.GzipFile('out.gz', 'w')\nf.write(b'/home/alice/x')",
     "import shutil\nshutil.unpack_archive('local.zip', 'build')",
     "import shutil\nshutil.make_archive('backup', 'zip', 'src')",
+    "from zipfile import ZipFile as Z\nz = Z('local.zip', 'w')\nz.write('notes.txt')",
+    "import pandas as pd\npd.read_csv(*['local.csv'])",
+    # A splat of something dynamic stays the documented residual rather than a guess.
+    "import pandas as pd\npd.read_csv(*args)",
     "import subprocess\nsubprocess.run(['/usr/bin/python3', 'train.py'])",
     "import sqlite3\nsqlite3.connect(database = 'local.db')",
     "from PIL import Image\nprint(Image.open(fp = 'local.png').size)",
