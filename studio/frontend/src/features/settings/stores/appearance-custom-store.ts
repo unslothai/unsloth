@@ -788,12 +788,11 @@ export function applyCustomizationToDocument(
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
-  // Resolve against each pane so sidebars and compare mode stay responsive.
-  // Full keeps a 3rem breathing gap either side rather than running to the edge.
+  // keep the full-width inset from making narrow panes smaller than wide.
   setVar(
     "--custom-chat-max-width",
     c.chatWidth === "full"
-      ? "calc(100% - 6rem)"
+      ? "max(72rem, calc(100% - 6rem))"
       : c.chatWidth === "wide"
         ? "72rem"
         : null,
