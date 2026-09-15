@@ -681,7 +681,9 @@ _PATH_SCRIPT_COMMANDS = frozenset(
 
 # `git` carries its paths on flags rather than in operand position, so it only needs the flag spec
 # below; listing it here would read a subcommand name as a path.
-_PATH_FLAG_ONLY_COMMANDS = frozenset({"git", "make"})
+# jq is here rather than among the readers because its POSITIONAL is a filter, not a path: only the
+# values of its flags name files.
+_PATH_FLAG_ONLY_COMMANDS = frozenset({"git", "make", "jq"})
 
 
 # Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
@@ -1013,6 +1015,10 @@ _PATH_FLAG_SPECS = {
     "jq": {
         "-f": "read",
         "--from-file": "read",
+        # `jq --help`: `-L directory` searches modules there, so the filter can `include` a file
+        # from outside the sandbox without naming it.
+        "-L": "read",
+        "--library-path": "read",
         "--arg": "skip",
         "--argjson": "skip",
         "--indent": "skip",
@@ -1645,6 +1651,11 @@ _PY_QUALIFIED_READ_CALLS = {
 # is which.
 # `io.FileIO(p)` opens the path directly, as `io.open` does.
 _PY_MODULE_OPEN_CTORS = {"FileIO"}
+
+
+# Constructors that OPEN their first argument, so the path is the constructor's rather than the
+# reader method's: `pd.ExcelFile(p).parse(0)` never names the workbook again after this call.
+_PY_PATH_OPENING_CTORS = frozenset({"ExcelFile", "HDFStore"})
 
 
 _PY_INSTANCE_READ_CTORS = {
@@ -2569,6 +2580,8 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 given = next((kw.value for kw in _call_keywords(node) if kw.arg == "files"), None)
             for element in _sequence_elements(given, containers):
                 add(element, False)
+        elif name in _PY_PATH_OPENING_CTORS:
+            add(first, False)
         elif name in _PY_PATH_READ_CALLS:
             add(first, False)
             if is_method:

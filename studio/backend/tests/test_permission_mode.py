@@ -3374,6 +3374,10 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `jq --help`: `-L directory` searches modules there, so the filter includes a file from
+    # outside the sandbox without ever naming it.
+    f"jq -n -L {_OUTSIDE_DIR} 'include \"report\"; rows'",
+    f"jq --library-path {_OUTSIDE_DIR} '.a' data.json",
     # Windows spellings a POSIX lexer destroys or a drive-letter pattern misses: root-relative on
     # the current drive, and drive-relative against THAT drive's own directory.
     r"cat \\Users\\alice\\notes.txt",
@@ -3521,6 +3525,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # The constructor opens the workbook; the later `parse` never names it again.
+    f"import pandas as pd\nbook = pd.ExcelFile({_OUTSIDE_FILE!r})\nprint(book.parse(0))",
     # The predicate family answers existence and type, the same disclosure `test -e` makes.
     f"import os\nprint(os.path.exists({_OUTSIDE_FILE!r}))",
     f"import os\nprint(os.path.isfile({_OUTSIDE_FILE!r}))",
@@ -3669,6 +3675,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "jq -L ./modules '.a' data.json",
+    "jq -r '.items[] | .name' out.json",
     "p=hello; cat notes/${p:0:3}",
     "echo a:b:c",
     "git commit -m 'fix: thing'",
@@ -3747,6 +3755,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import pandas as pd\nbook = pd.ExcelFile('book.xlsx')\nprint(book.parse(0))",
     "import os\nprint(os.path.exists('notes.txt'))",
     "import pathlib\nprint(pathlib.Path('build').is_dir())",
     "import os\nos.popen('ls').read()",
