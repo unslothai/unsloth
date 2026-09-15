@@ -3011,6 +3011,14 @@ def _quoted_words(text: str) -> "list[str]":
         return text.split()
 
 
+def _folded_word(word: str) -> str:
+    """A word reduced to the directory it names: `"<root>"/.` and `<root>//` are both `<root>`."""
+    folded = word.lower().replace("\\", "/")
+    while folded.endswith(("/.", "/")):
+        folded = folded[:-2] if folded.endswith("/.") else folded[:-1]
+    return folded
+
+
 def _names_the_studio_root_itself(text: str) -> bool:
     """True when one WORD of the command is the root itself, so the walk starts there.
 
@@ -3022,7 +3030,7 @@ def _names_the_studio_root_itself(text: str) -> bool:
     spellings = [spelling.rstrip("/\\") for spelling in _studio_root_spellings()]
     if not spellings:
         return False
-    return any(word.lower().rstrip("/\\") in spellings for word in _quoted_words(text))
+    return any(_folded_word(word) in spellings for word in _quoted_words(text))
 
 
 # Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
