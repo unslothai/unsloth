@@ -1363,6 +1363,17 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
             older - current, rows * LlamaCppBackend._COMPUTE_BUFFER_SAFETY / (1024**3), places = 6
         )
 
+    def test_tensor_mode_replicates_the_whole_buffer_on_every_device(self):
+        """Tensor mode reserves the mask, activations and output rows on each device."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        for older_build in (False, True):
+            with patch.object(
+                LlamaCppBackend, "reserves_micro_batch_outputs", lambda *a, _o = older_build, **k: _o
+            ):
+                single = self._reserve(n_parallel = 2)
+                tensor = self._reserve(n_parallel = 2, n_devices = 2, tensor_parallel = True)
+            self.assertAlmostEqual(tensor, 2 * single, places = 6)
+
     def test_diffusion_reserves_nothing(self):
         """The default micro-batch is a llama-server notion: a diffusion estimate has no ubatch to
         assume, and charging one would refuse loads that fit."""

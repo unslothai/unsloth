@@ -10954,14 +10954,9 @@ def _remote_gguf_compute_reserve_gb(
             else 1
         )
         mask_bytes = budget_ctx * effective_ubatch * 2 * devices * split_mult
-        # Unknown dimensions require an activation ceiling, replicated in tensor mode.
-        # Reserve output rows for the maximum assumed draft depth.
-        activation_bytes = (
-            _ASSUMED_MAX_ACTIVATION_WIDTH
-            * effective_ubatch
-            * 4
-            * (devices if tensor_parallel else 1)
-        )
+        # Unknown dimensions require an activation ceiling. Reserve output rows for the
+        # maximum assumed draft depth. Tensor mode replicates both on every device.
+        activation_bytes = _ASSUMED_MAX_ACTIVATION_WIDTH * effective_ubatch * 4
         output_rows = min(
             effective_ubatch,
             max(1, n_parallel) * (1 + LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX),
@@ -10972,8 +10967,10 @@ def _remote_gguf_compute_reserve_gb(
         except Exception as _rows_exc:
             logger.debug("llama-server build probe failed: %s", _rows_exc)
         flat_bytes = (
-            activation_bytes + _ASSUMED_MAX_VOCAB * output_rows * 4
-        ) * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+            (activation_bytes + _ASSUMED_MAX_VOCAB * output_rows * 4)
+            * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+            * (devices if tensor_parallel else 1)
+        )
         return (mask_bytes + flat_bytes) / (1024**3)
     return 0.0
 
