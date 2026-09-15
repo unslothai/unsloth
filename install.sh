@@ -2178,10 +2178,103 @@ STUB_EOF
         done
         _css_wsl_ico_win_ps=$(printf '%s' "$_css_wsl_ico_win" | sed "s/'/''/g")
 
-        # Create shortcuts via a temp PowerShell script to avoid escaping issues
-        _css_ps1_tmp=$(mktemp /tmp/unsloth-shortcut-XXXXXX.ps1 2>/dev/null) || true
-        if [ -n "$_css_ps1_tmp" ]; then
-            cat > "$_css_ps1_tmp" << WSLPS1_EOF
+        # Create shortcuts via a temp PowerShell script to avoid escaping issues.
+        #
+        # On the WINDOWS side of the interop, not in WSL's /tmp. wslpath maps a WSL path to a
+        # \\wsl.localhost\<distro>\... UNC path, and PowerShell treats a script on a UNC path as
+        # remote: RemoteSigned refuses an unsigned one, which is the only reason this launch used to
+        # relax the execution policy. A script under the Windows %TEMP% is on a local volume, so it
+        # is MyComputer-zone and RemoteSigned loads it unsigned, and the relaxed policy stops being
+        # necessary. Behaviour is otherwise identical: same generated script, same launch.
+        _css_win_temp=""
+        if command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
+            # cmd.exe rather than powershell.exe: one fewer interpreter start, and it cannot be the
+            # thing a policy blocks. The trailing CR is cmd's, not ours.
+            #
+            # /d, because without it cmd runs the AutoRun command out of
+            # HKCU\Software\Microsoft\Command Processor before anything else, on the same stdout.
+            # Clink sets one, so Cmder does, and so do plenty of corporate images; its banner would
+            # be glued to the front of the path, wslpath would reject that and the whole shortcut
+            # would be skipped. Those users got a shortcut before this block existed, so leaving
+            # AutoRun enabled would be a regression that only shows up on their machines.
+            #
+            # Last line rather than the whole stream for whatever still prints (an AutoRun invoked
+            # some other way, a login banner), and trailing blanks go because Win32 strips them
+            # from a path while [ -d ] does not. The || is not dead code: this file runs under
+            # set -e, where a failed substitution would end the install.
+            #
+            # Quoted inside cmd, and the quotes stripped back off here. cmd expands %TEMP% BEFORE
+            # it parses metacharacters, so an unquoted `echo %TEMP%` on a profile holding a valid
+            # path character like & ("C:\Users\A&B\AppData\Local\Temp") turns into two commands:
+            # the echo prints a truncated path and the rest is run as a command. & is legal in a
+            # Windows account name, so this is reachable. Inside double quotes it is literal.
+            # Three candidates, most preferred first, each on its own line. %TEMP% can be
+            # redirected onto a share, and a script there is a REMOTE script: RemoteSigned refuses
+            # an unsigned one, so the shortcut would silently stop being created for exactly the
+            # roaming-profile users who had one before. Rather than relax the policy back to Bypass,
+            # fall through to a directory that is local by construction. install.ps1:3419-3432
+            # solves the same problem for the launcher, which cannot move, by relaxing the policy;
+            # this script CAN move, so it does that instead.
+            #
+            # The & separators are ours and deliberate: each value is quoted, so an & inside a value
+            # stays literal and only these three separators split the line.
+            _css_win_temp_list=$(cmd.exe /d /c 'echo "%TEMP%"&echo "%LOCALAPPDATA%\Temp"&echo "%SystemRoot%\Temp"' 2>/dev/null \
+                | tr -d '\r') || _css_win_temp_list=""
+            # Mapped network drives too, not only UNC spellings. Z:\Temp is the same share and the
+            # same remote zone as \\server\share\Temp -- install.ps1:3419-3431 treats
+            # DriveType.Network as remote for exactly this reason -- and a candidate on one would
+            # otherwise be accepted and then refused by RemoteSigned at launch. `net use` lists the
+            # mapped letters; if it cannot be read the set is empty and only the UNC check applies,
+            # which is the previous behaviour rather than a new failure.
+            _css_net_drives=$(cmd.exe /d /c 'net use' 2>/dev/null | tr -d '\r' \
+                | awk '/\\\\/ { for (i = 1; i <= NF; i++) if ($i ~ /^[A-Za-z]:$/) print substr($i, 1, 1) }' \
+                | tr 'a-z' 'A-Z') || _css_net_drives=""
+
+            _css_old_ifs=$IFS
+            IFS='
+'
+            for _css_cand in $_css_win_temp_list; do
+                IFS=$_css_old_ifs
+                # Quotes off FIRST, blanks second. Win32 strips trailing spaces from a path while
+                # [ -d ] does not, so they have to go; but with the closing quote still the last
+                # character there is no trailing blank to find, and trimming first silently did
+                # nothing for a %TEMP% like "C:\Temp   ".
+                _css_cand=${_css_cand#\"}
+                _css_cand=${_css_cand%\"}
+                _css_cand=$(printf '%s' "$_css_cand" | sed 's/[[:space:]]*$//')
+                case "$_css_cand" in
+                    # Unexpanded (the variable is unset), or a UNC path. A dotted FQDN, a DFS root
+                    # and an IP literal all arrive in this same \\server\share form, and all three
+                    # are the remote zone.
+                    ""|'%'*'%'*|'\\'*) continue ;;
+                esac
+                # Drive letter against the mapped-network set, before anything else looks at it.
+                _css_cand_letter=$(printf '%s' "$_css_cand" | cut -c1 | tr 'a-z' 'A-Z')
+                _css_is_net=0
+                for _css_nd in $_css_net_drives; do
+                    [ "$_css_nd" = "$_css_cand_letter" ] && _css_is_net=1 && break
+                done
+                [ "$_css_is_net" = 1 ] && continue
+                _css_cand_unix=$(wslpath -u "$_css_cand" 2>/dev/null) || continue
+                [ -d "$_css_cand_unix" ] || continue
+                _css_win_temp=$_css_cand_unix
+                break
+            done
+            IFS=$_css_old_ifs
+            if [ -n "$_css_win_temp" ] && [ ! -d "$_css_win_temp" ]; then
+                _css_win_temp=""
+            fi
+        fi
+        # No fallback to WSL's /tmp. That would put the script back on a UNC path and need Bypass
+        # again, and this whole branch is best-effort already: the population where %TEMP% cannot be
+        # read through interop is very nearly the population where interop is broken, which lands on
+        # the same "couldn't create the Windows shortcut" notice below.
+        _css_ps1_tmp=""
+        if [ -n "$_css_win_temp" ]; then
+            _css_ps1_tmp=$(mktemp "$_css_win_temp/unsloth-shortcut-XXXXXX.ps1" 2>/dev/null) || _css_ps1_tmp=""
+        fi
+        if [ -n "$_css_sc_target" ]; then
+            _css_ps1_body=$(cat << WSLPS1_EOF
 \$WshShell = New-Object -ComObject WScript.Shell
 \$targetExe = (Get-Command '$_css_sc_target' -ErrorAction SilentlyContinue).Source
 if (-not \$targetExe) { exit 1 }
@@ -2245,14 +2338,56 @@ if (\$hasIcon) {
 # immediately instead of a stale/blank (generic) icon. The reliable fix (no
 # explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
 # <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
+#
+# Emitted, not compiled. Add-Type -MemberDefinition writes C# to %TEMP% and runs
+# csc.exe on Windows PowerShell 5.1, and security software blocks the DLL that comes
+# out. install.ps1 carries the same reflection-emit form for the same reason; this
+# copy was missed when that one changed. Reflection emit builds the identical stub in
+# memory: no compiler process, no source on disk, no DLL.
+# Which product blocked what: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 try {
-    Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int e, uint f, string a, System.IntPtr b);' -ErrorAction SilentlyContinue
-    foreach (\$p in \$created) { try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
-    [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
+    \$refreshType = 'UnslothShellIconRefresh' -as [type]
+    if (-not \$refreshType) {
+        \$asmName = New-Object System.Reflection.AssemblyName 'UnslothShellIconRefreshAsm'
+        # Both spellings, matching New-StudioDynamicAssembly in install.ps1. The static
+        # AssemblyBuilder::DefineDynamicAssembly is documented for .NET Framework 4.5 through
+        # 4.8.1, so the 5.1 host this script is launched under should take the first branch; it
+        # is tried rather than assumed because the outer catch here is empty, so guessing wrong
+        # costs the icon refresh with nothing printed. AppDomain.CurrentDomain is the .NET
+        # Framework spelling and is absent on .NET Core, so it is the fallback and not the lead.
+        \$access = [System.Reflection.Emit.AssemblyBuilderAccess]::Run
+        try {
+            \$asm = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(\$asmName, \$access)
+        } catch [System.Management.Automation.MethodException] {
+            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+        } catch [System.Management.Automation.RuntimeException] {
+            # Some hosts surface a missing static as RuntimeException rather than
+            # MethodException. Both mean "no such method here", and a real emit failure throws
+            # from the AppDomain call too, so a genuine refusal still reaches the outer catch.
+            \$asm = [AppDomain]::CurrentDomain.DefineDynamicAssembly(\$asmName, \$access)
+        }
+        \$module = \$asm.DefineDynamicModule('UnslothShellIconRefreshMod')
+        \$typeBuilder = \$module.DefineType('UnslothShellIconRefresh',
+            'Public, Class, AutoClass, AnsiClass, BeforeFieldInit')
+        \$method = \$typeBuilder.DefinePInvokeMethod(
+            'SHChangeNotify', 'shell32.dll', 'SHChangeNotify',
+            'Public, Static, PinvokeImpl',
+            [System.Reflection.CallingConventions]::Standard,
+            [System.Void],
+            @([int], [uint32], [string], [IntPtr]),
+            [System.Runtime.InteropServices.CallingConvention]::Winapi,
+            [System.Runtime.InteropServices.CharSet]::Unicode)
+        \$method.SetImplementationFlags(
+            \$method.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
+        \$refreshType = \$typeBuilder.CreateType()
+    }
+    foreach (\$p in \$created) { try { \$refreshType::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
+    \$refreshType::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
 } catch {}
 # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
 # (preserve start2.bin) only on first install or a real icon change, so a no-op
-# WSL reinstall does not run a dropper-like clear-cache + kill cluster each time.
+# WSL reinstall does not purge caches and kill a shell process for nothing.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
     try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
     try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
@@ -2266,13 +2401,32 @@ if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
     } catch {}
 }
 WSLPS1_EOF
+)
 
-            # Convert WSL path to Windows path for powershell.exe
-            _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
-            if [ -n "$_css_ps1_win" ]; then
-                powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+            if [ -n "$_css_ps1_tmp" ]; then
+                printf '%s\n' "$_css_ps1_body" > "$_css_ps1_tmp"
+                # Convert WSL path to Windows path for powershell.exe
+                _css_ps1_win=$(wslpath -w "$_css_ps1_tmp" 2>/dev/null)
+                if [ -n "$_css_ps1_win" ]; then
+                    # RemoteSigned, not Bypass: the script above was written to the Windows %TEMP%
+                    # on a local volume, so it is not a remote script and RemoteSigned loads it
+                    # unsigned. Pairing a relaxed policy with a PowerShell launch is a scored shape,
+                    # and this one was buying nothing once the path stopped being a UNC path.
+                    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$_css_ps1_win" >/dev/null 2>&1 && _css_created=1
+                fi
+                rm -f "$_css_ps1_tmp"
+            else
+                # No Windows directory is reachable as a Linux path. That is a real configuration --
+                # [automount] enabled=false leaves interop working while exposing no drive -- and
+                # before the move off /tmp those users still got a shortcut, so losing it here would
+                # be a regression rather than a gap. Hand the script to powershell on STDIN instead:
+                # there is no file, so there is no zone and no execution policy to satisfy (policy
+                # applies to -File, not to -Command), and nothing has to be mounted.
+                #
+                # Our own pipe, not the installer's: `curl | sh` leaves this script's stdin pointing
+                # at the download, and powershell reading that would drink the rest of it (#7548).
+                printf '%s\n' "$_css_ps1_body" | powershell.exe -NoProfile -Command - >/dev/null 2>&1 && _css_created=1
             fi
-            rm -f "$_css_ps1_tmp"
         fi
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
@@ -3063,7 +3217,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     _uv_refreshed=true
     # download() exits the shell outright when neither curl nor wget is present, which an `if` cannot catch, so probe first: a minimal image with uv copied in but no downloader must keep the install it had before the floor moved.
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
-        # Pinned release first: a digest-checked data file scores far lower than download-run-delete, which is the literal shape of a dropper.
+        # Pinned release first: fetch a digest-checked data file rather than download-run-delete a remote script. See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
         if _uv_install_pinned; then
             :
         else

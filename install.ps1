@@ -1,8 +1,9 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
 # Usage, options and the web one-liner: see "Unsloth Studio (web UI)" in the README
-# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here, because
-# AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
+# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here: nothing reads
+# this header from inside the script, and the whole file is scanned before any of it runs.
+# Why several things below are written the long way: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
@@ -835,13 +836,12 @@ function Install-UnslothStudio {
     #
     # Add-Type on Windows PowerShell 5.1 (the interpreter the desktop app spawns) has
     # no in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to
-    # %TEMP% and run csc.exe. Bitdefender blocks the resulting DLL, because a
-    # windowless PowerShell spawned by a GUI binary, running a compiler and writing
-    # executable content to %TEMP%, is a dropper's shape whatever the code says. It
-    # also failed with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit
-    # builds the same interop stubs in memory: no compiler process, no source, no DLL,
-    # empty assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7
-    # take the same path.
+    # %TEMP% and run csc.exe, which security software blocks and which failed outright
+    # with CS2001 when %TEMP% was unusable (issue #9140). Reflection emit builds the
+    # same interop stubs in memory: no compiler process, no source, no DLL, empty
+    # assembly Location. Available on .NET Framework 4 and .NET 5+, so 5.1 and 7 take
+    # the same path. Which product blocked what:
+    # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
     #
     # Throws rather than reporting: each caller wants a different answer to "the native
     # side is unavailable", and the two cosmetic ones must not print the resolver's
@@ -3321,13 +3321,12 @@ exit 0
             # not suppress a ShouldProcess prompt, and a noninteractive host turns it into
             # an error that skips shortcut setup entirely.
             Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
-            # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
-            # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
-            # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
-            # shortcuts instead point straight at powershell.exe running
-            # launch-studio.ps1 with a hidden window (selected below).
+            # No .vbs launcher is written: the .lnk shortcuts point straight at
+            # powershell.exe running launch-studio.ps1 with a hidden window (selected
+            # below), with no script engine in between.
+            # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 
-            # Drop any launch-studio.vbs left by a pre-hardening install (AV-flagged shape).
+            # Drop any launch-studio.vbs left by an install that predates that change.
             $legacyLauncherVbs = Join-Path $appDir "launch-studio.vbs"
             if (Test-Path -LiteralPath $legacyLauncherVbs) {
                 Remove-Item -LiteralPath $legacyLauncherVbs -Force -ErrorAction SilentlyContinue
@@ -3400,20 +3399,20 @@ exit 0
                 return
             }
 
-            # Gates the heavy refresh: clearing caches on a no-op reinstall looks like a dropper.
+            # Gates the heavy refresh below: on a reinstall that changed nothing, purging
+            # caches and killing a shell process is wasted work.
+            # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
             $firstInstall = -not (
                 ($desktopLink -and (Test-Path -LiteralPath $desktopLink)) -or
                 ($startMenuLink -and (Test-Path -LiteralPath $startMenuLink))
             )
 
-            # Launch transport for the shortcuts: powershell.exe runs
-            # launch-studio.ps1 with a hidden window. We deliberately avoid a
-            # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
-            # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            # Launch transport for the shortcuts: powershell.exe runs launch-studio.ps1
+            # with a hidden window, deliberately without a .vbs/WScript.Shell wrapper.
             #
-            # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
-            # Microsoft's detections key on, and install.rs makes the same call for the app's own
+            # RemoteSigned, not Bypass, and install.rs makes the same call for the app's own
             # launch. This launcher is written locally, so RemoteSigned loads it either way.
+            # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
@@ -4622,8 +4621,9 @@ exit 0
 
     # Fallback for hosts without winget. Same archive, destination and user-PATH
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
-    # SHA-256 instead of script text run in-process, which is what AMSI and cloud
-    # ML scanners score hardest. Bumping the version means bumping all 3 hashes:
+    # SHA-256 instead of running remote script text in-process.
+    # tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
+    # Bumping the version means bumping all 3 hashes:
     #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
     $UvPinnedVersion = "0.12.1"
     $UvPinnedAssets = @{
