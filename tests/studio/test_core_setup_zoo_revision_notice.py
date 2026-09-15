@@ -235,6 +235,46 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
         "the warning tells the reader to re-run without allowing that the ref may have "
         f"been pinned on purpose, which re-running will not change:\n{warning}"
     )
+    # A first attempt can mismatch too: resolve-zoo-ref pins main in the gating job, and
+    # this step asks again only after the whole install, so main advancing in between is
+    # enough. Calling that a --failed re-run would be a wrong diagnosis, not a vague one.
+    assert "advanced" in lowered, (
+        f"the warning does not allow for main moving after the resolve job:\n{warning}"
+    )
     assert "re-run all jobs" in lowered, (
         f"the warning no longer names the remedy for the stale-re-run case:\n{warning}"
+    )
+
+
+def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
+    """A guard absent for the change it guards is not a guard.
+
+    This file reads .github/actions/core-cpu-setup/action.yml, and it runs under
+    tests/studio, which is Backend CI's `Repo tests (CPU, studio)`. Backend CI is
+    path-filtered. Without .github/actions in that filter, a PR touching only the action
+    ran Core -- which lists the action in its own filter but does not execute tests/studio
+    -- and skipped Backend CI, so nothing here ever ran against the change.
+
+    tests/studio/test_local_actions_are_in_path_filters.py enforces the neighbouring rule,
+    that a workflow lists the actions it `uses:`. This is the other direction: a workflow
+    must also list the actions its TESTS read.
+    """
+    workflow = yaml.safe_load(
+        (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(
+            encoding = "utf-8"
+        )
+    )
+    triggers = workflow.get(True) or workflow.get("on") or {}
+    paths = (triggers.get("pull_request") or {}).get("paths") or []
+    assert paths, "Backend CI lost its paths filter; this guard no longer applies"
+
+    action = _ACTION.relative_to(_REPO).parent.as_posix()
+    covered = [
+        p for p in paths
+        if action.startswith(p.rstrip("*").rstrip("/")) and p.rstrip().endswith("**")
+    ]
+    assert covered, (
+        f"Backend CI runs this test but does not trigger on {action}, so a PR that "
+        "changes only the action will not run the guard that covers it. Add "
+        f"'.github/actions/**' to its paths:\n  " + "\n  ".join(paths)
     )

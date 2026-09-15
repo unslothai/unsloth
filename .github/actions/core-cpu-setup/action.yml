@@ -253,5 +253,5 @@ runs:
           # workflow_dispatch pin and a stale re-run look identical from here. Re-running
           # is only the remedy for the second: rerun preserves the original inputs, so a
           # pinned dispatch would resolve the same non-main ref again and warn again.
-          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this run pinned unsloth_zoo_ref deliberately, that is expected and re-running keeps the pin. Otherwise this is a --failed re-run that kept the revision resolved on the first attempt: re-run ALL jobs, or start a new run, to pick up main."
+          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this run pinned unsloth_zoo_ref deliberately, that is expected and re-running keeps the pin. Otherwise either main advanced between the resolve job and this step, or this is a --failed re-run that kept the revision resolved on the first attempt; for the latter, re-run ALL jobs to pick up main."
         fi
