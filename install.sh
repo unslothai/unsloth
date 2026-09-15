@@ -3982,6 +3982,13 @@ get_torch_index_url() {
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
                 # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare assignment never reaches the re-run (the #8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
+                # Only arches TheRock actually builds, so Polaris is never pointed at
+                # wheels that do not exist. Untested: nothing routes here on its own.
+                if _amd_therock_extra=$(_therock_device_extra_for_gfx "$_amd_unsup_gfx" 2>/dev/null); then
+                    echo "[INFO] Untested: AMD's TheRock publishes nightly $_amd_unsup_gfx wheels. To try them, export both and re-run:" >&2
+                    echo "[INFO]   export UNSLOTH_TORCH_INDEX_URL='$THEROCK_MIRROR'" >&2
+                    echo "[INFO]   export UNSLOTH_TORCH_EXTRA=$_amd_therock_extra" >&2
+                fi
                 echo "$_base/cpu"; return
             fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
@@ -4175,6 +4182,46 @@ _previous_torch_pin() {
     echo "torch==$_ptp_base"
 }
 
+# TheRock's multi-arch index: one URL for every target, selected by a package extra
+# (torch[device-gfx1010]), unlike repo.amd.com's per-family indexes. Nothing routes here
+# automatically; it exists so the message can name a real URL. Override for a mirror.
+THEROCK_MIRROR="${UNSLOTH_THEROCK_MIRROR:-https://rocm.nightlies.amd.com/whl-multi-arch/}"
+
+# The device extra TheRock publishes for a gfx, or non-zero when it builds none. Only arches
+# Unsloth's indexes do not cover, so it never competes with get_torch_index_url; gfx803 is
+# absent because TheRock has no Polaris target.
+_therock_device_extra_for_gfx() {
+    case "$1" in
+        gfx1010|gfx1011|gfx1012) echo "device-$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Insert a package extra: torch>=2.4,<2.11.0 -> torch[X]>=2.4,<2.11.0. Splits at the first
+# version-operator character, so ==, >=, ~= and bare names all work. An empty extra is a
+# no-op, which is every default path.
+_torch_spec_with_extra() {
+    _tswe_spec="$1"
+    [ -n "${_TORCH_EXTRA:-}" ] || { printf '%s' "$_tswe_spec"; return; }
+    _tswe_name="${_tswe_spec%%[<>=~!]*}"
+    _tswe_rest="${_tswe_spec#"$_tswe_name"}"
+    case "$_tswe_name" in
+        # torch[a][b] is not PEP 508, torch[a,b] is. No caller passes an extra
+        # today; this only keeps the helper total for the next one.
+        *"]")
+            printf '%s,%s]%s' "${_tswe_name%?}" "$_TORCH_EXTRA" "$_tswe_rest"
+            ;;
+        *)
+            printf '%s[%s]%s' "$_tswe_name" "$_TORCH_EXTRA" "$_tswe_rest"
+            ;;
+    esac
+}
+
+# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN set,
+# TORCH_CONSTRAINT is the exact previous release; fall back to the supported range if a
+# pruned mirror lacks it. Shared by every --default-index path so preservation is uniform;
+# extra args pass through to uv. torchaudio stays bare, as TheRock's documented invocation
+# leaves it, reaching the right build through torch's own rocm[libraries] dependency.
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
         # Pair companions with the kept torch minor (torchaudio no longer exact-pins torch).
@@ -4189,16 +4236,16 @@ _install_torch_default_index() {
                 _itdi_ta="torchaudio==2.${_itdi_minor}.*"
                 ;;
         esac
-        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
+        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$_itdi_tv")" "$_itdi_ta" \
             --default-index "$TORCH_INDEX_URL" "$@"; then
             substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
             TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
             _PREV_TORCH_PIN=""
-            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")" "$TORCHAUDIO_CONSTRAINT" \
                 --default-index "$TORCH_INDEX_URL" "$@"
         fi
     else
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$(_torch_spec_with_extra "$TORCH_CONSTRAINT")" "$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")" "$TORCHAUDIO_CONSTRAINT" \
             --default-index "$TORCH_INDEX_URL" "$@"
     fi
 }
@@ -4532,6 +4579,19 @@ fi
 # Created here, not inside get_torch_index_url: that runs in a command substitution, so only a file outlives it. mktemp -d, never a $$-derived name: a predictable path under a world-writable /tmp can be pre-created as a symlink, feeding the probe a chosen version.
 _ROCM_TAG_MEMO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/unsloth-rocm.XXXXXX" 2>/dev/null) \
     && _ROCM_TAG_MEMO="$_ROCM_TAG_MEMO_DIR/tag" || _ROCM_TAG_MEMO=""
+# UNSLOTH_TORCH_EXTRA selects a build on indexes that discriminate by package extra
+# (TheRock's whl-multi-arch). Gated on a pinned index: no index this script picks by itself
+# publishes extras, so an unpinned extra could only break a working resolve.
+_TORCH_EXTRA=""
+_te_trim="${UNSLOTH_TORCH_EXTRA:-}"
+_te_trim="${_te_trim#"${_te_trim%%[![:space:]]*}"}"; _te_trim="${_te_trim%"${_te_trim##*[![:space:]]}"}"
+if [ -n "$_te_trim" ]; then
+    if [ "$_torch_index_pinned" = true ]; then
+        _TORCH_EXTRA="$_te_trim"
+    else
+        echo "[WARN] UNSLOTH_TORCH_EXTRA=$_te_trim ignored: it needs UNSLOTH_TORCH_INDEX_URL or _FAMILY set too." >&2
+    fi
+fi
 
 TORCH_INDEX_URL=$(get_torch_index_url)
 
@@ -5361,6 +5421,14 @@ if [ "$_MIGRATED" = true ]; then
         fi
         _gfx906_bnb_prune
     fi
+    # The ROCm repair above cannot reach an extras pin: whl-multi-arch is not a pip ROCm family
+    # leaf, so _torch_index_is_rocm_family is false and the migrated install silently resolves
+    # torch from PyPI. The pin is the only signal a specific build was wanted, so repair on it.
+    # Inert by default: every default path leaves _TORCH_EXTRA empty.
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
+        substep "reinstalling torch from the pinned index (UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA)..."
+        _install_torch_default_index --force-reinstall
+    fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
     if [ "$SKIP_TORCH" = true ]; then
@@ -5656,8 +5724,28 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
             substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
-            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$(_torch_spec_with_extra "$TORCH_CONSTRAINT")\" \"$(_torch_spec_with_extra "$TORCHVISION_CONSTRAINT")\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
+    fi
+fi
+
+# An extras pin lands on a leaf the flavor enforcement above does not recognise, so it skips
+# the pin, yet whether the build works IS the reason to pin an extra. Ask torch rather than
+# read the version label: these indexes need not carry a +rocm local tag, which
+# _torch_flavor_tag would read as "cpu". Bounded: a half-working HIP runtime can hang it.
+if [ "$SKIP_TORCH" = false ] && [ -n "${_TORCH_EXTRA:-}" ]; then
+    # A sentinel line, not all of stdout: a sitecustomize or import hook prints before torch
+    # does, and that text made the equality below fail on a working GPU (as for _PREV_TORCH_VER).
+    _extra_probe=$(_run_bounded "$_VENV_PY" -c \
+        "import torch; print('UNSLOTH_CUDA_OK=%s' % torch.cuda.is_available())" 2>/dev/null \
+        | sed -n 's/^UNSLOTH_CUDA_OK=//p' | tail -n 1 || true)
+    if [ "$_extra_probe" = "True" ]; then
+        substep "torch reports the GPU is usable (UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA)."
+    else
+        [ -n "$_extra_probe" ] || _extra_probe="unavailable (torch did not import)"
+        substep "[WARN] Installed with UNSLOTH_TORCH_EXTRA=$_TORCH_EXTRA, but torch.cuda.is_available() is $_extra_probe." "$C_WARN"
+        substep "[WARN] Training and GPU inference will run on CPU. These wheels are not tested by Unsloth." "$C_WARN"
+        substep "[WARN] Please report the result either way: https://github.com/unslothai/unsloth/issues" "$C_WARN"
     fi
 fi
 
