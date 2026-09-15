@@ -6663,19 +6663,14 @@ if ($StageRoot -and $NeedLlamaSourceBuild) {
 # ==========================================================================
 #  Report whether torchcodec can actually load
 # ==========================================================================
-# pyproject declares torchcodec on win32/AMD64, but its wheel is Python-side only:
-# at import it dlopens FFmpeg's avcodec/avutil, and Windows ships neither. So it
-# installs, reports a version, satisfies the torch/torchcodec matrix that
-# notebook_validator enforces, and then fails at import. `datasets` 4.x decodes
-# audio only through it, and reports that failure as "please install 'torchcodec'"
-# -- naming a package that is already installed. Say so here instead, while the
-# user is still looking at the installer.
+# The wheel is Python-side only: it installs and satisfies notebook_validator's
+# torch/torchcodec matrix, then fails at import because Windows ships no FFmpeg
+# avcodec/avutil. `datasets` 4.x reports that as "please install 'torchcodec'",
+# naming a package already installed, so say it here instead.
 if (-not $SkipPythonDeps) {
-    # Importing torchcodec imports torch, so this goes through the bounded probe:
-    # a wedged GPU runtime must not hang setup. No double quotes anywhere in the
-    # body, comments included: the helper wraps it in them to build -c <body>, and
-    # one more closes that argument early, leaving python a truncated program that
-    # still parses, exits 0 and prints nothing.
+    # Importing torchcodec imports torch: bound it so a wedged GPU runtime cannot
+    # hang setup. No double quotes anywhere in the body, comments included: the helper
+    # wraps it in them for -c <body>, so one more silently truncates the program.
     $_torchcodecProbe = @'
 import signal
 _alarm = getattr(signal, 'alarm', None)
@@ -6685,18 +6680,15 @@ if _alarm is not None:
 
 def _ffmpeg_on_loader_path():
     import ctypes.util, glob, os
-    # EVERY library torchcodec links, not a subset. Read from the shipped
-    # libtorchcodec_core*.so NEEDED entries: avutil, avcodec, avformat, avdevice,
-    # avfilter, swscale, swresample. Distros package these separately, so a host
-    # missing only libswscale has an FFmpeg that cannot load the codec; answering
-    # 'present' there sends the user to debug a torch ABI mismatch instead.
+    # EVERY library torchcodec links, per the shipped libtorchcodec_core*.so NEEDED
+    # entries. Distros package these separately, so a host missing only libswscale
+    # cannot load the codec; calling that present sends the user at a torch ABI bug.
     dirs = [d for d in os.environ.get('PATH', '').split(os.pathsep) if d]
     for name in ('avutil', 'avcodec', 'avformat', 'avdevice', 'avfilter',
                  'swscale', 'swresample'):
         if ctypes.util.find_library(name):
             continue
-        # find_library does not glob, and Windows ships these as avutil-59.dll and
-        # friends, so PATH is walked for the versioned names it would otherwise miss.
+        # find_library does not glob, so walk PATH for Windows names like avutil-59.dll.
         if any(glob.glob(os.path.join(d, name + '-*.dll')) for d in dirs):
             continue
         return False
@@ -6706,17 +6698,14 @@ def _ffmpeg_on_loader_path():
 try:
     import torchcodec  # noqa: F401
 except ModuleNotFoundError as e:
-    # Exactly torchcodec is absent. An absent package always names itself here, so
-    # anything else, a transitive module or one of its own submodules from a
-    # damaged wheel, is an install that is present and broken.
+    # An absent package always names itself here, so any other name (a transitive
+    # module, or a submodule of a damaged wheel) means present but broken.
     print('TORCHCODEC=' + ('absent' if getattr(e, 'name', '') == 'torchcodec' else 'broken'))
 except Exception:
     import traceback
-    # torchcodec folds every native load failure into one message naming
-    # libtorchcodec, which lists a missing FFmpeg, a torch mismatch and another
-    # runtime dependency together, so the text alone cannot pick between them.
-    # Ask the system instead: no FFmpeg on the loader path is the one cause that
-    # can be established here, and it is the only one worth naming a fix for.
+    # One libtorchcodec message covers a missing FFmpeg, a torch mismatch and other
+    # runtime deps, so the text cannot pick between them. Ask the system: FFmpeg
+    # missing from the loader path is the one cause establishable here.
     if 'libtorchcodec' not in traceback.format_exc():
         print('TORCHCODEC=broken')
     else:
@@ -6724,15 +6713,12 @@ except Exception:
 else:
     print('TORCHCODEC=ok')
 '@
-    # The venv interpreter by path, not bare `python`. install.ps1 runs this script with
-    # SKIP_STUDIO_BASE=1, which skips the base install that the other bare-`python` probes
-    # sit in, and nothing puts the venv on PATH: `python` here is the system one, which has
-    # no torchcodec and answers a silent "absent" for every install on that path.
+    # The venv interpreter by path: under install.ps1's SKIP_STUDIO_BASE=1 nothing puts
+    # the venv on PATH, so bare `python` is the system one and answers a silent "absent".
     $_torchcodecPy = Join-Path $VenvDir "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $_torchcodecPy)) { $_torchcodecPy = "python" }
     $_torchcodecProbeResult = Invoke-BoundedPythonProbe -PythonExe $_torchcodecPy -Code $_torchcodecProbe -TimeoutSec 60
-    # Line-anchored like the other probes: a torch import banner ahead of the answer
-    # would otherwise leave the state matching nothing at all.
+    # Line-anchored: a torch import banner ahead of the answer would match no state.
     $torchcodecState = if ($_torchcodecProbeResult.Output -match '(?m)^TORCHCODEC=(\S+)\s*$') { $Matches[1] } else { "" }
 
     if ($torchcodecState -eq "ffmpeg") {
@@ -6744,8 +6730,8 @@ else:
     } elseif ($torchcodecState -eq "ok") {
         step "torchcodec" "FFmpeg libraries loaded"
     }
-    # 'absent', a timeout and a probe that could not run are silent: none of them says
-    # anything about FFmpeg, and audio decoding still has the soundfile path.
+    # 'absent', a timeout and a probe that could not run stay silent: none of them
+    # says anything about FFmpeg, and soundfile still decodes audio.
 }
 
 # ==========================================================================

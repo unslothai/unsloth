@@ -3,11 +3,9 @@
 
 """Setup reports a torchcodec that installed but cannot load.
 
-Its wheel is Python-side only: at import it dlopens FFmpeg's avcodec/avutil.
-Where those are absent it still installs, reports a version, and satisfies the
-torch/torchcodec matrix notebook_validator enforces, then fails at import.
-`datasets` 4.x decodes audio only through it and reports that as "please install
-'torchcodec'", naming a package that is already installed.
+The wheel is Python-side only: absent FFmpeg avcodec/avutil it still installs and
+satisfies notebook_validator's torch/torchcodec matrix, then fails at import, which
+`datasets` 4.x reports as "please install 'torchcodec'" for an installed package.
 """
 
 import shutil
@@ -24,8 +22,7 @@ _SETUP_PS1 = _STUDIO / "setup.ps1"
 
 
 def _shipped_sh_probe() -> str:
-    """The probe body as setup.sh ships it. Read, not copied: a copy would keep
-    passing while the installer that actually runs on a user's machine drifted."""
+    """The probe body as setup.sh ships it. Read, not copied: a copy would drift."""
     text = _SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_TORCHCODEC_PROBE='") + len("_TORCHCODEC_PROBE='")
     return text[start : text.index("'", start)]
@@ -57,8 +54,7 @@ def _raising(exc: str) -> str:
 
 
 def _ffmpeg(present: bool) -> str:
-    """Pin the FFmpeg answer. A runner that happens to have it installed would
-    otherwise flip the two loader states this distinction rests on."""
+    """Pin the FFmpeg answer: a runner with FFmpeg flips the two loader states."""
     return textwrap.dedent(
         f"""
         import ctypes.util, os
@@ -70,9 +66,8 @@ def _ffmpeg(present: bool) -> str:
 
 def _probe(preamble: str) -> str:
     """The state the installers would read: the sentinel line, not all of stdout."""
-    # sys.executable, not a bare "python": the installers name the venv interpreter by
-    # path, and a host with only python3 on PATH (Debian without python-is-python3, the
-    # AMD CI runners) has no `python` to find, which failed seven tests here for nothing.
+    # sys.executable, not a bare "python": a host with only python3 on PATH (Debian
+    # without python-is-python3, the AMD CI runners) has no `python` to find.
     out = subprocess.run(
         [sys.executable, "-c", preamble + _PROBE],
         capture_output = True,
@@ -92,14 +87,14 @@ def _step_line(text: str, opening: str) -> str:
 
 
 def test_a_missing_torchcodec_reports_absent():
-    # Nothing to say: absent says nothing about FFmpeg, and the soundfile path stands.
-    # `name` is set the way the import system sets it, since that is what the probe reads.
+    # Absent implies nothing about FFmpeg, so stay silent. `name` is set the way the
+    # import system sets it, since that is what the probe reads.
     assert _probe(_raising("ModuleNotFoundError('no torchcodec', name = 'torchcodec')")) == "absent"
 
 
 def test_an_unloadable_torchcodec_is_distinguished_from_an_absent_one():
-    # ModuleNotFoundError is a subclass of ImportError, so catching ImportError
-    # first would collapse the two states this whole report rests on.
+    # ModuleNotFoundError subclasses ImportError: catching ImportError first would
+    # collapse the two states this report rests on.
     loadable = _probe(
         "import sys, types; sys.modules['torchcodec'] = types.ModuleType('torchcodec')\n"
     )
@@ -116,9 +111,7 @@ def test_an_unloadable_torchcodec_is_distinguished_from_an_absent_one():
 
 def test_ffmpeg_advice_needs_ffmpeg_to_actually_be_missing():
     # The loader message names a missing FFmpeg, a torch mismatch and another native
-    # dependency in one breath, so the text cannot pick between them. With FFmpeg
-    # already on the loader path it is one of the others, and sending someone to
-    # install FFmpeg would point them at the wrong thing.
+    # dep at once. With FFmpeg already on the loader path, advising it is the wrong fix.
     same_error = _raising(
         "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
     )
@@ -127,11 +120,9 @@ def test_ffmpeg_advice_needs_ffmpeg_to_actually_be_missing():
 
 
 def test_a_partial_ffmpeg_is_not_reported_as_ffmpeg_being_present():
-    # torchcodec links seven FFmpeg libraries (avutil, avcodec, avformat, avdevice,
-    # avfilter, swscale, swresample) and distros package them separately, so a host with
-    # only libavutil has an FFmpeg that cannot load it. Reading that as "FFmpeg is already
-    # on the loader path" sends the user to debug a torch ABI mismatch when the fix is to
-    # install the rest of FFmpeg.
+    # Distros package the seven linked FFmpeg libraries separately, so a host with only
+    # libavutil cannot load torchcodec. Reading that as present sends the user at a torch
+    # ABI mismatch when the fix is the rest of FFmpeg.
     partial = textwrap.dedent(
         """
         import ctypes.util, os
@@ -149,28 +140,26 @@ def test_a_partial_ffmpeg_is_not_reported_as_ffmpeg_being_present():
 
 @pytest.mark.parametrize("probe", [_shipped_sh_probe, _shipped_ps1_probe], ids = ["sh", "ps1"])
 def test_both_installers_require_every_ffmpeg_library(probe):
-    # The two copies drift silently otherwise: one installer would keep calling a
-    # partial FFmpeg present while the other stopped.
+    # Otherwise the copies drift: one installer keeps calling a partial FFmpeg present.
     body = probe()
-    # All seven, read from the shipped libtorchcodec_core*.so NEEDED entries. A subset
-    # reports a partial FFmpeg as present and sends the user at the wrong fix.
+    # All seven, per the shipped libtorchcodec_core*.so NEEDED entries. A subset reports
+    # a partial FFmpeg as present and sends the user at the wrong fix.
     for lib in ("avutil", "avcodec", "avformat", "avdevice", "avfilter", "swscale", "swresample"):
         assert f"'{lib}'" in body or f'"{lib}"' in body, (lib, body)
 
 
 def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
-    # torchcodec is installed and importing it raises the same class an absent one
-    # would. Reporting that as absent leaves a damaged install with no warning.
+    # Installed, but importing it raises the class an absent one would. Reporting that
+    # as absent leaves a damaged install with no warning.
     assert _probe(_raising("ModuleNotFoundError('no numpy', name = 'numpy')")) == "broken"
-    # A damaged wheel missing one of torchcodec's own submodules is the same story:
-    # the package is there. Only the top-level name is absent, which is the only
-    # name an actually-absent package can raise from `import torchcodec`.
+    # Same for a damaged wheel missing a submodule: the top-level name is the only one
+    # an actually-absent package can raise from `import torchcodec`.
     assert _probe(_raising("ModuleNotFoundError('gone', name = 'torchcodec.decoders')")) == "broken"
 
 
 def test_the_state_is_read_as_a_line_not_as_all_of_stdout():
-    # Importing torch can print to stdout, and a state read as the whole buffer then
-    # matches none of the arms, so setup silently drops the report.
+    # Torch can print to stdout; a whole-buffer read then matches no arm and setup
+    # silently drops the report.
     noisy = "import sys; print('banner from a startup hook'); "
     assert (
         _probe(noisy + _raising("ModuleNotFoundError('no torchcodec', name = 'torchcodec')"))
@@ -179,8 +168,8 @@ def test_the_state_is_read_as_a_line_not_as_all_of_stdout():
 
 
 def test_an_unrelated_import_failure_is_not_blamed_on_ffmpeg():
-    # A damaged wheel or a torch/torchcodec ABI mismatch also raises here, and
-    # telling someone to install FFmpeg would send them at the wrong thing.
+    # A damaged wheel or a torch ABI mismatch raises here too, and FFmpeg advice would
+    # send them at the wrong thing.
     assert _probe(_raising("ImportError('DLL load failed while importing _core')")) == "broken"
 
 
@@ -206,16 +195,15 @@ def test_both_installers_keep_ffmpeg_advice_out_of_the_other_failure(script):
 def test_both_installers_report_the_loader_failure_that_is_not_ffmpeg(script):
     line = _step_line(script.read_text(encoding = "utf-8"), "installed but cannot load its native")
     assert "install an FFmpeg" not in line, "FFmpeg is already there; this sends them at it anyway"
-    # EVERY remaining cause, since nothing available here picks between them. Naming a
-    # subset reads as a diagnosis and sends people to rule out the wrong thing.
+    # EVERY remaining cause: nothing here picks between them, and a subset reads as a
+    # diagnosis, sending people to rule out the wrong thing.
     assert "does not support" in line
     assert "torch" in line
     # A missing NPP runtime lands in this same aggregate loader error: see
-    # _cuda_major_for_npp in studio/install_python_stack.py, whose own docstring records a
-    # +cu128 host that skipped NPP and then could not import the codec.
+    # _cuda_major_for_npp in studio/install_python_stack.py.
     assert "NPP" in line
-    # The supported majors, kept in step with unsloth/import_fixes.py, which says 4 through
-    # 8. Saying 4 to 7 here sent an FFmpeg 8 user toward a downgrade that fixes nothing.
+    # Kept in step with unsloth/import_fixes.py (4 through 8): "4 to 7" sent an FFmpeg 8
+    # user toward a downgrade that fixes nothing.
     assert "4 to 8" in line, "the supported FFmpeg range must match import_fixes.py"
     assert "4 to 7" not in line
 
@@ -223,11 +211,8 @@ def test_both_installers_report_the_loader_failure_that_is_not_ffmpeg(script):
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
 def test_the_probe_is_skipped_when_python_deps_were_skipped(script):
     # Nothing is installed to probe, and the venv may not even exist.
-    #
-    # The ENCLOSING condition, not "the name appears somewhere above". Both installers
-    # assign their skip variable hundreds of lines earlier, so a search backwards from
-    # the probe finds the assignment and passes even with the guard deleted -- the one
-    # regression this test exists to catch.
+    # The ENCLOSING condition, not "the name appears somewhere above": the assignment sits
+    # hundreds of lines earlier, so a backwards search passes even with the guard deleted.
     text = script.read_text(encoding = "utf-8")
     opener, names = {
         ".sh": ("_TORCHCODEC_PROBE=", ("_SKIP_PYTHON_DEPS",)),
@@ -242,10 +227,9 @@ def test_the_probe_is_skipped_when_python_deps_were_skipped(script):
 
 
 def test_the_shell_probe_is_skipped_in_llama_only_mode():
-    # _SKIP_PYTHON_DEPS is assigned inside the base install, which llama-only skips
-    # entirely, so under `set -u` a bare read here aborts the whole run. Both halves
-    # matter: the gate keeps the slow probe off the update path, and the default
-    # expansion keeps a later edit from reintroducing the unbound read.
+    # _SKIP_PYTHON_DEPS is assigned in the base install, which llama-only skips, so under
+    # `set -u` a bare read aborts the run. The gate keeps the slow probe off the update
+    # path; the default expansion keeps the unbound read from coming back.
     text = _SETUP_SH.read_text(encoding = "utf-8")
     probe = text.index("_TORCHCODEC_PROBE=")
     guard = text.rfind("if [ ", 0, probe)
@@ -262,15 +246,14 @@ def test_the_shell_probe_is_bounded():
     assert 'timeout 60 "$_TORCHCODEC_PY" -c' in after
     # ...and still runs where coreutils `timeout` is absent, as the GPU probes do.
     assert "command -v timeout" in after
-    # That fallback path is the one stock macOS takes, so the deadline has to live in
-    # the body too, exactly as the XPU probe in this same script carries it.
+    # Stock macOS takes that fallback, so the deadline has to live in the body too.
     assert "_alarm(60)" in _shipped_sh_probe()
 
 
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
 def test_both_installers_read_the_state_as_a_line(script):
-    # Anything on stdout ahead of the answer, a torch banner most likely, leaves a
-    # whole-buffer read matching no arm at all, and the report vanishes.
+    # A torch banner ahead of the answer leaves a whole-buffer read matching no arm,
+    # and the report vanishes.
     text = script.read_text(encoding = "utf-8")
     probe = text.index("TORCHCODEC=")
     after = text[probe : text.index('step "torchcodec"', probe)]
@@ -278,9 +261,9 @@ def test_both_installers_read_the_state_as_a_line(script):
 
 
 def test_the_two_installers_ship_the_same_probe():
-    # Separate copies drift silently, and then the two platforms report differently
-    # for the same install. Quote style is the one allowed difference: setup.sh wraps
-    # the body in single quotes so its Python strings must use double ones.
+    # Separate copies drift and the two platforms then report differently for the same
+    # install. Quote style is the one allowed difference: setup.sh wraps the body in
+    # single quotes, so its Python strings must use double ones.
     def _same(body: str) -> str:
         return body.replace('"', "'").strip()
 
@@ -296,16 +279,14 @@ def test_the_powershell_probe_is_bounded():
 
 
 def test_the_powershell_probe_carries_no_double_quote():
-    # Invoke-BoundedPythonProbe wraps the body in double quotes to build -c <body>,
-    # so one more anywhere in it (a comment included) closes that argument early.
-    # Windows then splits the rest into stray argv entries and python runs the
-    # truncated head, which still parses -- it exits 0 with no output and the whole
-    # report goes quiet.
+    # Invoke-BoundedPythonProbe wraps the body in double quotes for -c <body>, so one
+    # more anywhere (comments included) closes it early and python runs a truncated head
+    # that still parses: exit 0, no output, and the report goes quiet.
     assert '"' not in _shipped_ps1_probe()
 
 
-# Runs the shipped helper against the shipped body, so neither can drift from what the
-# test exercises. $args are setup.ps1, the interpreter, and a PYTHONPATH to import from.
+# Runs the shipped helper against the shipped body, so neither can drift from the test.
+# $args: setup.ps1, the interpreter, a PYTHONPATH to import from.
 _PWSH_HARNESS = """
 $ps1 = (Get-Content -Raw $args[0]) -replace "`r`n", "`n"
 $opener = "`$_torchcodecProbe = @'`n"
@@ -325,9 +306,8 @@ Write-Output (Invoke-BoundedPythonProbe -PythonExe $args[1] -Code $code -Timeout
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh unavailable")
 def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
-    # Against the unloadable case on purpose. A body cut short at a double quote keeps
-    # the ModuleNotFoundError branch, so a python that simply lacks torchcodec answers
-    # `absent` either way and proves nothing; only this branch goes silent.
+    # The unloadable case on purpose: a truncated body keeps the ModuleNotFoundError
+    # branch, so an absent torchcodec answers the same either way and proves nothing.
     (tmp_path / "torchcodec.py").write_text(
         "raise RuntimeError('Could not load libtorchcodec')", encoding = "utf-8"
     )
@@ -347,10 +327,9 @@ def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
         text = True,
     )
     assert out.returncode == 0, out.stderr
-    # Either loader answer proves the point: both come from the `except Exception` arm,
-    # which is what a body cut short at a double quote would have lost. Which of the two
-    # is reported depends on whether the MACHINE has FFmpeg on its loader path, so pinning
-    # this to "ffmpeg" fails on every developer box that has FFmpeg installed.
+    # Either answer proves the point: both come from the `except Exception` arm a
+    # truncated body would lose. Which one depends on the machine's own FFmpeg, so
+    # pinning to "ffmpeg" fails on any box that has it.
     assert any(
         f"TORCHCODEC={state}" in out.stdout for state in ("ffmpeg", "native")
     ), f"the probe reached python but its body was cut short: {out.stdout!r}"
@@ -358,9 +337,8 @@ def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
 
 def test_the_powershell_probe_runs_the_studio_interpreter():
     # install.ps1 runs setup.ps1 with SKIP_STUDIO_BASE=1 and never puts the venv on PATH,
-    # so bare `python` there is the system one: no torchcodec, a silent "absent", and the
-    # report never fires on the path every Windows install actually takes. The other
-    # bare-`python` probes live inside the base install, which that mode skips.
+    # so bare `python` is the system one: a silent "absent" on the path every Windows
+    # install actually takes.
     text = _SETUP_PS1.read_text(encoding = "utf-8")
     probe = text.index("$_torchcodecProbe = ")
     after = text[probe : text.index('step "torchcodec"', probe)]
@@ -369,12 +347,9 @@ def test_the_powershell_probe_runs_the_studio_interpreter():
 
 
 def test_the_shell_probe_runs_the_studio_interpreter():
-    # setup.sh activates the venv long before this block, but the uv installer branch
-    # prepends $HOME/.local/bin to PATH afterwards, so a pyenv/pipx/asdf `python` shim
-    # there shadows the venv and bare `python` answers a silent "absent" for an install
-    # that does have torchcodec. setup.ps1 already names the venv interpreter for the
-    # same reason; the sh side must too, falling back to bare `python` only where no
-    # venv exists (Colab installs into the system interpreter).
+    # The uv installer branch prepends $HOME/.local/bin after the venv activation, so a
+    # pyenv/pipx/asdf shim shadows it and bare `python` answers a silent "absent". Fall
+    # back to bare `python` only where no venv exists (Colab).
     text = _SETUP_SH.read_text(encoding = "utf-8")
     probe = text.index("_TORCHCODEC_PROBE=")
     after = text[probe : text.index('step "torchcodec"', probe)]
@@ -385,8 +360,8 @@ def test_the_shell_probe_runs_the_studio_interpreter():
 
 
 def test_the_shell_probe_carries_no_apostrophe():
-    # It is passed as a single-quoted sh string, so one apostrophe anywhere in it
-    # (including in a comment) closes the quote and breaks the script.
+    # Passed as a single-quoted sh string: one apostrophe anywhere, comments included,
+    # closes the quote and breaks the script.
     text = _SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_TORCHCODEC_PROBE='") + len("_TORCHCODEC_PROBE='")
     span = text[start : text.index("_TORCHCODEC_PY=", start)]
@@ -395,11 +370,9 @@ def test_the_shell_probe_carries_no_apostrophe():
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "bash unavailable")
 def test_the_shell_script_is_syntactically_valid():
-    # Through stdin rather than a path argument: a Windows bash translates the path
-    # in argv and cannot find the file, which fails the test for the wrong reason.
-    # Bytes, not text. A text pipe on Windows would re-encode the box characters
-    # setup.sh draws its section rules with, and translate every \n back to \r\n,
-    # which bash then rejects as a syntax error the real file does not have.
+    # Through stdin, since a Windows bash translates a path argument and cannot find the
+    # file. Bytes, not text: a text pipe on Windows re-encodes setup.sh box characters and
+    # turns every \n back into \r\n, which bash rejects as a syntax error.
     out = subprocess.run(
         ["bash", "-n"],
         input = _SETUP_SH.read_bytes(),
