@@ -44,8 +44,19 @@ TESTED_CEILING = Version("5.17.0")
 # Releases that were tested and rejected. Every one of these has to stay excluded; a
 # rewrite of the specifier that drops one silently re-admits a broken release.
 REJECTED = (
-    "4.52.0", "4.52.1", "4.52.2", "4.52.3", "4.53.0", "4.54.0",
-    "4.55.0", "4.55.1", "4.57.0", "4.57.4", "4.57.5", "5.0.0", "5.1.0",
+    "4.52.0",
+    "4.52.1",
+    "4.52.2",
+    "4.52.3",
+    "4.53.0",
+    "4.54.0",
+    "4.55.0",
+    "4.55.1",
+    "4.57.0",
+    "4.57.4",
+    "4.57.5",
+    "5.0.0",
+    "5.1.0",
 )
 
 # Releases inside the newly opened part of the window. Named rather than generated so the
@@ -206,9 +217,7 @@ def test_the_torch_mirror_admits_what_unsloth_zoo_admits() -> None:
 def test_the_checker_rejects_the_window_that_shipped_the_defect() -> None:
     """Negative control. Every assertion above is a "nothing found" shape, which is also
     what a checker that has quietly stopped checking reports."""
-    shipped = SpecifierSet(
-        "".join(f"!={v}," for v in REJECTED) + ">=4.51.3,<=5.5.0"
-    )
+    shipped = SpecifierSet("".join(f"!={v}," for v in REJECTED) + ">=4.51.3,<=5.5.0")
     assert "5.5.0" in shipped
     assert "5.17.0" not in shipped, "the old window must not admit the release that fixes it"
     for rejected in REJECTED:
