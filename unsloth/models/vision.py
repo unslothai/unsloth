@@ -31,6 +31,8 @@ from ._utils import (
     _prepare_model_for_qat,
     resolve_model_class,
     resolve_attention_implementation,
+    builds_remote_code_class,
+    load_remote_code_class,
     _get_text_only_config,
     _is_family_text_decoder,
     _config_get,
