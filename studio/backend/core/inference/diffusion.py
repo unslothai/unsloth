@@ -1245,6 +1245,12 @@ class DiffusionBackend:
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
+        # Set when no eject holds the load fence. Its own event, not _teardown_drained: the fence goes
+        # up as soon as the eject is accepted, and the teardown is only RESERVED once construction
+        # releases _lock, which can be minutes later. Waiting on the teardown event through that gap
+        # returned immediately every time and burned a core per waiter.
+        self._unload_fence_clear = threading.Event()
+        self._unload_fence_clear.set()
         # Written by the callback, read lock-free by generate_progress().
         self._gen: Optional[_GenState] = None
         # img2img/inpaint pipes built via from_pipe (shared modules, no extra VRAM); cleared on unload
@@ -1296,9 +1302,8 @@ class DiffusionBackend:
                     return
             if time.monotonic() >= deadline:
                 raise RuntimeError("Timed out waiting for a diffusion unload to finish.")
-            # The event is a sleep with an early wake, not the condition: it tracks teardown
-            # reservations, which are taken and released inside the window this counter spans.
-            self._teardown_drained.wait(timeout = 0.1)
+            # A sleep with an early wake, not the condition itself: the counter above decides.
+            self._unload_fence_clear.wait(timeout = 0.1)
 
     def _reserve_teardown_locked(self) -> None:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
@@ -6438,6 +6443,7 @@ class DiffusionBackend:
                         raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 # Fence loads and generations before waiting for construction.
                 self._unload_waiters += 1
+                self._unload_fence_clear.clear()
                 fenced = True
                 self._cancel_event.set()
                 self._load_token += 1
@@ -6463,6 +6469,8 @@ class DiffusionBackend:
             if fenced:
                 with self._load_cancel_lock:
                     self._unload_waiters -= 1
+                    if not self._unload_waiters:
+                        self._unload_fence_clear.set()
         return self.status()
 
     def _unload_locked(self) -> None:

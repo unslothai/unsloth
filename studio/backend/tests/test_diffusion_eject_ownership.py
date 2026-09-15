@@ -174,7 +174,7 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
         started.wait(timeout = 10)
         with backend._load_cancel_lock:
             backend._unload_waiters -= 1
-        backend._teardown_drained.set()
+            backend._unload_fence_clear.set()
 
     releaser = threading.Thread(target = release, daemon = True)
     releaser.start()
@@ -184,3 +184,37 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
     assert calls["waits"] == 2, "the load registered without waiting the racing eject out"
     assert token == backend._load_token
     assert backend._load_accounts == {}
+
+
+def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
+    """The fence goes up when the eject is ACCEPTED; the teardown is only reserved once construction
+    releases _lock, which can be minutes later. Waiting on the teardown event across that gap found
+    it still set, returned instantly and burned a core per waiter. The wait has its own event."""
+    with backend._load_cancel_lock:
+        backend._unload_waiters += 1
+        backend._unload_fence_clear.clear()
+    # Exactly the gap: no teardown is reserved yet, so this stays set the whole time.
+    assert backend._teardown_drained.is_set()
+
+    polls = {"n": 0}
+    real_wait = backend._unload_fence_clear.wait
+
+    def counted(timeout = None):
+        polls["n"] += 1
+        return real_wait(timeout = timeout)
+
+    backend._unload_fence_clear.wait = counted
+
+    def release():
+        time.sleep(0.5)
+        with backend._load_cancel_lock:
+            backend._unload_waiters -= 1
+            backend._unload_fence_clear.set()
+
+    releaser = threading.Thread(target = release, daemon = True)
+    releaser.start()
+    backend._wait_for_pending_unloads()
+    releaser.join(timeout = 10)
+
+    # ~5 polls at the 0.1s timeout. A spin does tens of thousands in the same half second.
+    assert polls["n"] <= 20, polls
