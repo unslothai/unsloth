@@ -1,0 +1,259 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The VirusTotal delta has to be able to report a regression, and has to refuse to guess.
+
+Six hardening passes shipped with no before-and-after number. This tool produces one, so the way it
+fails matters more than the way it succeeds: a comparison that silently never reports a regression is
+indistinguishable from one that keeps passing, and a network call that breaks is loud while a
+comparison that quietly stops comparing is not.
+
+The other property tested here is that "could not measure" never reads as "clean". A missing API key,
+an unknown hash and a file VirusTotal knows but has never analysed are all VOID. That last one is the
+subtle case: zero engine verdicts is not sixty engines clearing the file.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+
+REPO = Path(__file__).resolve().parents[2]
+SCRIPT = REPO / "scripts" / "virustotal_delta.py"
+
+sys.path.insert(0, str(REPO / "scripts"))
+import virustotal_delta as vtd  # noqa: E402
+
+
+def _snap(payload: dict, label: str = "candidate", sha: str = "b" * 64):
+    return vtd.snapshot_from_payload(label, sha, payload)
+
+
+def _baseline():
+    return _snap(vtd._BASELINE_FIXTURE, "baseline", "a" * 64)
+
+
+# ---------------------------------------------------------------------------
+# The baseline is a real file, not a number someone typed
+# ---------------------------------------------------------------------------
+
+def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
+    """Recomputed from this repository's history rather than trusted.
+
+    A baseline hash copied from an issue is a number nobody can check. This one is
+    `install.ps1` at `1ad44677d`, and if the constant and the history ever disagree, the whole
+    comparison is against the wrong file while still looking perfectly healthy.
+    """
+    result = subprocess.run(
+        ["git", "show", "1ad44677d:install.ps1"],
+        cwd = REPO, capture_output = True, timeout = 120,
+    )
+    if result.returncode != 0:
+        pytest.skip("that commit is not present in this clone (shallow checkout)")
+    blob = result.stdout
+    assert hashlib.sha256(blob).hexdigest() == vtd.BASELINE_SHA256, (
+        "BASELINE_SHA256 is not the hash of install.ps1 at 1ad44677d. Every delta this tool has "
+        "ever reported was against the wrong file."
+    )
+    assert len(blob) == 427113, (
+        f"install.ps1 at 1ad44677d is {len(blob)} bytes, not the 427,113 the reported sample is "
+        f"recorded as, so this is not the revision the user in #10805 ran"
+    )
+
+
+def test_the_recorded_baseline_note_matches_the_fixture() -> None:
+    """The prose and the fixture are two statements of the same fact, and they drift apart in
+    exactly the situation where someone is reading one and trusting the other."""
+    baseline = _baseline()
+    assert baseline.sigma_total == 17
+    assert baseline.sigma == {"high": 1, "medium": 11, "low": 5}
+    assert baseline.engines == ["Skyhigh (BehavesLike.PS.Suspicious.gr)"]
+    assert len(baseline.yara) == 2
+    for fragment in ("1 high, 11 medium, 5 low", "Skyhigh", "2 YARA"):
+        assert fragment in vtd.BASELINE_NOTE, (
+            f"the recorded note no longer says {fragment!r}, but the fixture still does"
+        )
+
+
+# ---------------------------------------------------------------------------
+# It must report a regression
+# ---------------------------------------------------------------------------
+
+def test_a_new_high_severity_sigma_rule_is_worse() -> None:
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 2, "medium": 11, "low": 5}
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.worse and delta.exit_code() == 2
+
+
+def test_a_different_engine_flagging_is_worse_even_at_the_same_count() -> None:
+    """The failure mode a count-only comparison has by construction.
+
+    One engine before, one engine after, so the count says nothing changed. But Skyhigh being
+    replaced by Microsoft is the most consequential change this file could undergo: Defender is on
+    every Windows machine and Skyhigh is enterprise-deployed.
+    """
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["last_analysis_results"] = {
+        "Microsoft": {"category": "malicious", "result": "Trojan:Script/Wacatac.B!ml"},
+        "Skyhigh": {"category": "undetected", "result": None},
+    }
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.worse, "an engine swap at the same count was reported as no difference"
+    assert any("Microsoft" in row for row in delta.worse)
+
+
+def test_a_new_yara_hit_is_worse() -> None:
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["crowdsourced_yara_results"] = [
+        {"rule_name": "SUSP_PS1_Shape_A"}, {"rule_name": "SUSP_PS1_Shape_B"},
+        {"rule_name": "SOMETHING_NEW"},
+    ]
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.worse and delta.exit_code() == 2
+
+
+def test_severity_is_compared_per_bucket_and_not_in_total() -> None:
+    """Trading one high for three lows is an improvement that a total calls a regression, and the
+    reverse is a regression a total calls an improvement."""
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    # 17 rules before, 17 after, but one medium became a high.
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 2, "medium": 10, "low": 5}
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.exit_code() == 2
+    assert any("high" in row for row in delta.worse)
+
+
+# ---------------------------------------------------------------------------
+# It must recognise an improvement without overstating it
+# ---------------------------------------------------------------------------
+
+def test_a_clear_improvement_passes_and_is_named() -> None:
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"medium": 4, "low": 5}
+    payload["data"]["attributes"]["crowdsourced_yara_results"] = []
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.exit_code() == 0
+    assert delta.better and not delta.worse
+
+
+def test_an_unmoved_engine_verdict_is_reported_as_unchanged() -> None:
+    """A cloud behavioural verdict is not recomputed because we deleted some code. Sigma moving
+    while the engine does not is the expected shape of a win here, and reporting it as a clean bill
+    of health would be the overclaim this tool exists to avoid."""
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"medium": 4}
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert any("unchanged" in row for row in delta.same)
+    assert any("Skyhigh" in row for row in delta.same)
+
+
+# ---------------------------------------------------------------------------
+# VOID is not clean
+# ---------------------------------------------------------------------------
+
+def test_an_unknown_candidate_hash_is_void() -> None:
+    missing = vtd.Snapshot(label = "candidate", sha256 = "f" * 64, note = "not present on VirusTotal")
+    delta = vtd.compare(_baseline(), missing)
+    assert delta.exit_code() == 3
+    assert not delta.same and not delta.worse and not delta.better, (
+        "an unknown hash produced comparison rows it cannot support"
+    )
+
+
+def test_a_known_but_never_analysed_file_is_void() -> None:
+    """The subtle one. Zero engine verdicts is not sixty engines clearing the file."""
+    payload = {"data": {"attributes": {"size": 1, "last_analysis_stats": {},
+                                       "last_analysis_results": {}}}}
+    delta = vtd.compare(_baseline(), _snap(payload))
+    assert delta.exit_code() == 3
+
+
+def test_a_missing_api_key_exits_three_and_never_says_clean() -> None:
+    env = {k: v for k, v in os.environ.items() if k != vtd.API_KEY_ENV}
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--candidate-sha256", "a" * 64],
+        capture_output = True, text = True, timeout = 120, env = env,
+    )
+    assert result.returncode == 3, (
+        "a missing key must not exit zero. It is the most likely reason this ever produces no "
+        f"comparison, and it must not be spelled the same as 'nothing got worse'.\n{result.stdout}"
+    )
+    assert "COULD NOT MEASURE" in result.stdout
+    assert "clean" not in result.stdout.lower().replace("not a clean result", "")
+
+
+def test_the_three_outcomes_have_distinct_exit_codes() -> None:
+    void, worse, fine = vtd.Delta(), vtd.Delta(), vtd.Delta()
+    void.void.append("x")
+    worse.worse.append("y")
+    assert (void.exit_code(), worse.exit_code(), fine.exit_code()) == (3, 2, 0)
+
+
+# ---------------------------------------------------------------------------
+# The tool's own controls, and the parsers
+# ---------------------------------------------------------------------------
+
+def test_the_self_test_passes() -> None:
+    result = subprocess.run([sys.executable, str(SCRIPT), "--self-test"],
+                            capture_output = True, text = True, timeout = 120)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_self_test_can_fail() -> None:
+    """A control that cannot fail is decoration."""
+    original = vtd.compare
+    try:
+        vtd.compare = lambda base, cand: vtd.Delta()   # never reports anything
+        failures = vtd.self_test()
+        assert failures, "a comparison that reports nothing at all still passed the controls"
+    finally:
+        vtd.compare = original
+
+
+@pytest.mark.parametrize("raw", [None, [], "high", {"high": "two"}, {"high": True}])
+def test_the_sigma_parser_survives_a_schema_change(raw) -> None:
+    """VirusTotal has renamed and added buckets over time. A crash here would break the measurement
+    on precisely the day the schema moved, which is when it is most worth having."""
+    assert vtd.parse_sigma(raw) == {}
+
+
+@pytest.mark.parametrize("raw", [None, {}, "x", [1, 2], [{"no_name": 1}]])
+def test_the_yara_parser_survives_a_schema_change(raw) -> None:
+    assert vtd.parse_yara(raw) == []
+
+
+def test_the_tool_has_no_upload_path_at_all() -> None:
+    """Not an oversight. A freshly uploaded file is a prevalence-zero first-seen sample, which is
+    what the strict cloud settings punish -- so uploading a candidate can create the detection it
+    was meant to measure, under a hash no user will ever have."""
+    import ast
+
+    tree = ast.parse(SCRIPT.read_text(encoding = "utf-8"))
+    # Parsed, not grepped. The module docstring explains at length why there is no upload path, so a
+    # substring search over the file text matches its own explanation -- which is how the first
+    # version of this test failed. What matters is what the code does.
+    calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            calls.append(node.value)
+    methods = {c.upper() for c in calls if c.upper() in {"POST", "PUT", "PATCH", "DELETE"}}
+    assert not methods, (
+        f"the delta tool now issues {sorted(methods)}. It must only ever GET: a freshly uploaded "
+        f"file is a prevalence-zero first-seen sample, so uploading a candidate can create the "
+        f"detection it was meant to measure, under a hash no user will ever have."
+    )
+    imported = {
+        alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+    assert "scan_file" not in imported and "upload_file" not in imported, (
+        "the delta tool imported an upload helper from virustotal_scan"
+    )
