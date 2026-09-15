@@ -183,6 +183,8 @@ def _host_from_ssh_option(key: str, value: Optional[str]) -> tuple[set[str], boo
     """Extract destinations or reject configuration that hides them."""
     key = key.strip().lower()
     value = (value or "").strip()
+    if key == "canonicalizehostname":
+        return set(), value.lower() != "no"
     if key in {"proxycommand", "include", "localcommand", "knownhostscommand"}:
         return set(), True
     if key not in _SSH_REDIRECT_OPTIONS:
@@ -223,7 +225,7 @@ def _parse_ssh_cli_options(tokens: list[str], command: str) -> tuple[list[str], 
             break
         if not token.startswith("-") or token == "-":
             positional.append(token)
-            if command in {"ssh", "slogin", "sftp"}:
+            if command == "sftp" or command in {"ssh", "slogin"} and len(positional) > 1:
                 break
             continue
         flags = token[1:]
@@ -355,9 +357,8 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
     return bindings
 
 
-def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, str]:
-    """Map variables and attributes assigned from SSH client factories."""
-    clients: dict[str, str] = {}
+def _assignment_pairs(tree: ast.AST):
+    """Yield individual assignment targets, including chained and unpacked forms."""
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign):
             targets = [node.target]
@@ -373,17 +374,23 @@ def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, s
             ):
                 if len(target.elts) == len(value.elts):
                     pending.extend(zip(target.elts, value.elts))
-                continue
-            name = _fq_name(target)
-            if not name:
-                continue
-            if isinstance(value, ast.Call):
-                root, sep, rest = _fq_name(value.func).partition(".")
-                fq = bindings.get(root, root) + (sep + rest if sep else "")
-                if fq.endswith((".SSHClient", ".Transport", ".Connection")):
-                    clients[name] = fq
-            elif _fq_name(value) in clients:
-                clients[name] = clients[_fq_name(value)]
+            else:
+                yield target, value
+
+
+def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, str]:
+    """Map variables and attributes assigned from SSH client factories."""
+    clients: dict[str, str] = {}
+    for target, value in _assignment_pairs(tree):
+        name = _fq_name(target)
+        if not name:
+            continue
+        if isinstance(value, ast.Call):
+            factory = _bound_name(value.func, bindings)
+            if factory.endswith((".SSHClient", ".Transport", ".Connection")):
+                clients[name] = factory
+        elif _fq_name(value) in clients:
+            clients[name] = clients[_fq_name(value)]
     return clients
 
 
@@ -398,12 +405,63 @@ def _fq_name(node: Optional[ast.AST]) -> str:
     return ".".join(parts)
 
 
+def _bound_name(node: Optional[ast.AST], bindings: dict[str, str]) -> str:
+    """Resolve imported or assigned symbols to the public SSH API names."""
+    name = _fq_name(node)
+    root, sep, rest = name.partition(".")
+    name = bindings.get(name, bindings.get(root, root) + (sep + rest if sep else ""))
+    return {
+        "paramiko.transport.Transport": "paramiko.Transport",
+        "paramiko.client.SSHClient": "paramiko.SSHClient",
+    }.get(name, name)
+
+
+def _ssh_factory_helpers(tree: ast.AST, bindings: dict[str, str]) -> None:
+    """Resolve helpers returning known SSH client objects."""
+    functions = [
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    returns: dict[str, list[ast.AST]] = {}
+    for function in functions:
+        pending = list(function.body)
+        values = []
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ast.Return) and node.value is not None:
+                values.append(node.value)
+            elif not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+            ):
+                pending.extend(ast.iter_child_nodes(node))
+        returns[function.name] = values
+    while returns:
+        clients = _ssh_client_bindings(tree, bindings)
+        resolved = []
+        for name, values in returns.items():
+            for value in values:
+                factory = (
+                    _bound_name(value.func, bindings)
+                    if isinstance(value, ast.Call)
+                    else clients.get(_fq_name(value), "")
+                )
+                if factory.split(".", 1)[0] in _SSH_PY_ROOT_MODULES and factory.endswith(
+                    (".SSHClient", ".Transport", ".Connection")
+                ):
+                    bindings[name] = factory
+                    resolved.append(name)
+                    break
+        if not resolved:
+            break
+        for name in resolved:
+            del returns[name]
+
+
 def _resolve_ssh_call(
     func: ast.AST, bindings: dict[str, str], clients: dict[str, str]
 ) -> Optional[str]:
     """Return a canonical SSH call name when ``func`` is an SSH connect/factory."""
     if isinstance(func, ast.Name):
-        bound = bindings.get(func.id, func.id)
+        bound = _bound_name(func, bindings)
         if bound in _SSH_PY_CONNECT_FQ:
             return bound
         if bound.endswith(".connect") and bound.split(".", 1)[0] in _SSH_PY_ROOT_MODULES:
@@ -417,9 +475,7 @@ def _resolve_ssh_call(
     if not isinstance(func, ast.Attribute):
         return None
 
-    fq = _fq_name(func)
-    root, sep, rest = fq.partition(".")
-    fq = bindings.get(root, root) + (sep + rest if sep else "")
+    fq = _bound_name(func, bindings)
     if fq in _SSH_PY_CONNECT_FQ or fq.endswith(".Connection"):
         root = fq.split(".", 1)[0]
         if root in bindings or root in _SSH_PY_ROOT_MODULES:
@@ -445,8 +501,7 @@ def _resolve_ssh_call(
         return None
 
     if isinstance(func.value, ast.Call):
-        root, sep, rest = _fq_name(func.value.func).partition(".")
-        factory = bindings.get(root, root) + (sep + rest if sep else "")
+        factory = _bound_name(func.value.func, bindings)
         root = factory.split(".", 1)[0]
         if factory == "paramiko.Transport":
             return None
@@ -503,6 +558,11 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
                 if alias.name == "*":
                     continue
                 aliases[alias.asname or alias.name] = f"{module}.{alias.name}"
+    for target, value in _assignment_pairs(tree):
+        name = _fq_name(target)
+        symbol = _bound_name(value, aliases)
+        if name and (symbol in {"os", "subprocess"} or symbol in _SHELL_EXEC_FUNCS):
+            aliases[name] = symbol
     return aliases
 
 
@@ -563,8 +623,7 @@ def _ssh_python_configuration_is_explicit(
         )
     if not isinstance(config, ast.Call) or config.args or len(config.keywords) != 1:
         return False
-    root, sep, rest = _fq_name(config.func).partition(".")
-    factory = bindings.get(root, root) + (sep + rest if sep else "")
+    factory = _bound_name(config.func, bindings)
     lazy = config.keywords[0]
     return (
         factory in {"fabric.Config", "fabric.config.Config"}
@@ -590,6 +649,7 @@ def _scan_ssh_python_usage(
     except SyntaxError:
         return set(), True, bool(re.search(r"\b(?:paramiko|asyncssh|fabric)\b", code)), []
     bindings = _ssh_import_bindings(tree)
+    _ssh_factory_helpers(tree, bindings)
     clients = _ssh_client_bindings(tree, bindings)
     shell_aliases = _shell_exec_aliases(tree)
     hosts: set[str] = set()
@@ -633,13 +693,7 @@ def _scan_ssh_python_usage(
                 self.generic_visit(node)
                 return
 
-            shell_func: Optional[str] = None
-            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-                module = shell_aliases.get(node.func.value.id)
-                if module in {"os", "subprocess"}:
-                    shell_func = f"{module}.{node.func.attr}"
-            elif isinstance(node.func, ast.Name):
-                shell_func = shell_aliases.get(node.func.id)
+            shell_func = _bound_name(node.func, shell_aliases)
 
             if (
                 shell_func

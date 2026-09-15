@@ -1636,7 +1636,7 @@ def _find_blocked_commands(
             stem, ext = os.path.splitext(base)
             if ext.lower() in {".exe", ".com", ".bat", ".cmd"}:
                 base = stem
-            if base.lower() in _BLOCKED_COMMANDS:
+            if base.lower() in _BLOCKED_COMMANDS | _SSH_GATED_COMMANDS:
                 laundered.setdefault(name, base.lower())
         laundered_refs = "|".join(sorted({re.escape(n) for n in laundered}, key = len, reverse = True))
         laundered_in_body_pattern = (
@@ -5321,7 +5321,9 @@ def _is_wrapper_flag_operand(command: str, start: int) -> bool:
 def _blocked_body_words(body: str) -> "set[str]":
     """Every blocked name the substitution body ``body`` (already lowercased) mentions."""
     found: "set[str]" = set()
-    for groups in _blocked_body_word_pattern_for(frozenset(_BLOCKED_COMMANDS)).findall(body):
+    for groups in _blocked_body_word_pattern_for(_BLOCKED_COMMANDS | _SSH_GATED_COMMANDS).findall(
+        body
+    ):
         if isinstance(groups, str):
             groups = (groups,)
         found.update(g for g in groups if g)

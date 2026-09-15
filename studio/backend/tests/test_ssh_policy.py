@@ -562,3 +562,86 @@ def test_inline_transport_connect_uses_constructor_host():
     approve_hosts("review", ["approved.example"])
     code = "from paramiko import Transport as T; T(('approved.example', 22)).connect(username='deploy')"
     assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd=ssh; "$cmd" -F none evil.example',
+        'cmd=/usr/bin/ssh; env "$cmd" -F none evil.example',
+        "$(printf ssh) -F none evil.example",
+    ],
+)
+def test_indirect_ssh_command_names_fail_closed(command):
+    assert _find_blocked_commands(command)
+
+
+def test_ssh_name_in_literal_output_is_not_execution():
+    assert not _find_blocked_commands('cmd=ssh; echo "$cmd"')
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import subprocess; launch = subprocess.run; launch(['ssh', '-F', 'none', 'approved.example'])",
+        "import os; launch = os.execv; launch('/usr/bin/ssh', ['ignored', '-F', 'none', 'approved.example'])",
+        "import subprocess as sp; runner = sp; launch = runner.run; launch(['ssh', '-F', 'none', 'approved.example'])",
+        "import paramiko\ndef make():\n return paramiko.SSHClient()\nmake().connect(hostname='approved.example')",
+        "import paramiko\ndef make():\n return paramiko.SSHClient()\nc = make(); c.connect(hostname='approved.example')",
+        "import paramiko\ndef make():\n c = paramiko.SSHClient()\n return c\nmake().connect(hostname='approved.example')",
+        "import paramiko\ndef outer():\n return inner()\ndef inner():\n return paramiko.SSHClient()\nouter().connect(hostname='approved.example')",
+        "from paramiko.transport import Transport; Transport(('approved.example', 22))",
+        "import paramiko; paramiko.transport.Transport(('approved.example', 22)).connect(username='deploy')",
+        "from paramiko.client import SSHClient; SSHClient().connect(hostname='approved.example')",
+    ],
+)
+def test_indirect_python_clients_and_launchers_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_non_ssh_helper_does_not_create_ssh_usage():
+    code = "def make():\n return object()\nclient = make()"
+    assert extract_ssh_hosts_from_python(code) == (set(), False, False)
+
+
+@pytest.mark.parametrize("mode", ["yes", "always"])
+def test_hostname_canonicalization_cannot_redirect_an_approved_alias(mode):
+    approve_hosts("review", ["approved.example"])
+    command = f"ssh -F none -o CanonicalizeHostname={mode} -o CanonicalDomains=evil.example approved.example"
+    assert check_ssh_command_access(command, "review") is not None
+
+
+def test_disabled_hostname_canonicalization_preserves_literal_host():
+    approve_hosts("review", ["approved.example"])
+    assert (
+        check_ssh_command_access(
+            "ssh -F none -o CanonicalizeHostname=no approved.example", "review"
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("option", ["-o HostName=evil.example", "-J evil.example"])
+def test_ssh_options_after_destination_require_redirect_approval(option):
+    command = f"ssh -F none approved.example {option}"
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access(command, "review") is not None
+    approve_hosts("review", ["evil.example"])
+    assert check_ssh_command_access(command, "review") is None
+
+
+def test_ssh_configuration_flag_after_destination_is_recognized():
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access("ssh approved.example -F none", "review") is None
+
+
+def test_remote_command_options_are_not_local_ssh_configuration():
+    approve_hosts("review", ["approved.example"])
+    assert (
+        check_ssh_command_access(
+            "ssh -F none approved.example echo -o HostName=evil.example", "review"
+        )
+        is None
+    )
