@@ -3752,6 +3752,38 @@ async def get_kv_cache_estimate(
         False,
         description = "Load a vision GGUF without its mmproj, freeing the projector's VRAM",
     ),
+    flash_attn: Optional[bool] = Query(
+        None,
+        description = (
+            "Flash attention state to price. Omit to resolve it the way the launch does "
+            "(the build's capability, LLAMA_ARG_FLASH_ATTN, a last-wins -fa in the extra "
+            "arguments, and a quantized V cache which forces it on). It is not a detail: "
+            "with flash attention off llama.cpp floors the V axis at f16 and pads "
+            "variable-width V tensors, which is a 1.44x KV cache at q8_0 and 2.28x at q4_0"
+        ),
+    ),
+    kv_unified: Optional[bool] = Query(
+        None,
+        description = (
+            "--kv-unified state to price; omit to resolve it as the launch does. Changes "
+            "the sliding-window allowance on an SWA model, which is per slot when unified"
+        ),
+    ),
+    swa_full: Optional[bool] = Query(
+        None,
+        description = (
+            "--swa-full state to price; omit to resolve it as the launch does. Collapses "
+            "an SWA model's two cache sizes into one full-context cache"
+        ),
+    ),
+    no_mmproj_offload: Optional[bool] = Query(
+        None,
+        description = (
+            "--no-mmproj-offload state to price; omit to resolve it as the launch does. "
+            "A projector on the host is not VRAM, so pricing the wrong side moves the "
+            "total by the whole mmproj"
+        ),
+    ),
     request: Request = None,  # type: ignore[assignment]
     current_subject: str = Depends(get_current_subject),
 ):
@@ -3888,6 +3920,80 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"cache type resolution failed for '{repo_id}': {e}")
 
+            # The attention plan, resolved exactly once for this answer. Every figure
+            # below depends on it and this route used to take the estimator's own defaults
+            # for all of it: flash attention on, no --swa-full, a unified cache. The
+            # loader resolved the same knobs differently, so the panel and the loader's
+            # log reported two KV caches for one model and cache type (#10489, 2.37 GiB
+            # against 9.4 GB), and the context warning was drawn against a third number.
+            #
+            # An explicitly asked-for value is expressed as the extra argument a load
+            # would carry and then resolved by the same helpers the launch uses, rather
+            # than taken verbatim. That keeps one rule for both callers and one vocabulary
+            # for the planner below, and it is what stops the route answering for a load
+            # that cannot happen: a quantized V cache turns flash attention on inside
+            # llama.cpp whatever the request said, and a build without the flag cannot
+            # turn it on at all.
+            #
+            # bool or nothing: this coroutine is also called directly, in process and from
+            # the tests, where an omitted argument arrives as the ``Query`` default object
+            # rather than the None FastAPI would have resolved. Left unnormalised that
+            # sentinel reads as True, which silently collapsed an SWA model's two cache
+            # sizes and dropped the checkpoint share.
+            _asked_flash_attn = flash_attn if isinstance(flash_attn, bool) else None
+            _asked_kv_unified = kv_unified if isinstance(kv_unified, bool) else None
+            _asked_swa_full = swa_full if isinstance(swa_full, bool) else None
+            _asked_no_mmproj = no_mmproj_offload if isinstance(no_mmproj_offload, bool) else None
+            _plan_extra_args: list[str] = []
+            if _asked_flash_attn is not None:
+                _plan_extra_args += ["--flash-attn", "on" if _asked_flash_attn else "off"]
+            if _asked_kv_unified is not None:
+                _plan_extra_args += ["--kv-unified" if _asked_kv_unified else "--no-kv-unified"]
+            if _asked_swa_full:
+                # Enable-only, like the flag: llama.cpp has no --no-swa-full, so an
+                # explicit false leaves the environment to answer, as a launch would.
+                _plan_extra_args += ["--swa-full"]
+            if _asked_no_mmproj is not None:
+                _plan_extra_args += [
+                    "--no-mmproj-offload" if _asked_no_mmproj else "--mmproj-offload"
+                ]
+            _planner_extras = _plan_extra_args or None
+
+            _plan_kwargs: dict = {}
+            try:
+                from core.inference.llama_cpp import (
+                    _kv_unified_from_args,
+                    _planned_flash_attn_state,
+                    _planned_main_cache_types as _plan_cache_types,
+                    _swa_full_from_args_or_env,
+                )
+
+                _plan_caps = {}
+                try:
+                    _plan_caps = LlamaCppBackend.probe_server_capabilities() or {}
+                except Exception as e:
+                    logger.debug(f"capability probe failed for '{repo_id}': {e}")
+                _plan_kwargs = {
+                    "flash_attn": _planned_flash_attn_state(
+                        _planner_extras,
+                        planned_cache_types = _plan_cache_types(cache_type_kv, _planner_extras),
+                        # The probe answers for the binary that will serve this load. An
+                        # unreadable probe keeps the managed default, which is what the
+                        # launch emits whenever the flag is there to emit.
+                        supports_flash_attn = bool(_plan_caps.get("supports_flash_attn", True)),
+                    ),
+                    # The loader's own default: Unsloth asks for a unified cache only to
+                    # serve more than one slot, and only on a build that has the flag.
+                    "kv_unified": _kv_unified_from_args(
+                        _planner_extras,
+                        default = (n_parallel or 1) > 1
+                        and bool(_plan_caps.get("supports_kv_unified", False)),
+                    ),
+                    "swa_full": _swa_full_from_args_or_env(_planner_extras),
+                }
+            except Exception as e:
+                logger.debug(f"attention plan resolution failed for '{repo_id}': {e}")
+
             # ctx_checkpoints is not a rounding error: each saved checkpoint is an SWA snapshot per slot, so a
             # 4-slot SWA model at 32k measures 5.82 GiB with none and 11.82 GiB at the llama.cpp default of 32.
             kv = be._estimate_kv_cache_bytes(
@@ -3896,6 +4002,7 @@ async def get_kv_cache_estimate(
                 n_parallel = n_parallel,
                 ctx_checkpoints = ctx_checkpoints or 0,
                 n_ubatch = n_ubatch,
+                **_plan_kwargs,
             )
 
             # The checkpoint share of that cache, by difference rather than by re-deriving the SWA layer walk: the
@@ -3910,6 +4017,7 @@ async def get_kv_cache_estimate(
                     n_parallel = n_parallel,
                     ctx_checkpoints = 0,
                     n_ubatch = n_ubatch,
+                    **_plan_kwargs,
                 )
                 kv_checkpoint = max(0, int(kv) - int(_kv_without))
 
@@ -4076,6 +4184,10 @@ async def get_kv_cache_estimate(
                             # 16. Blank is not zero: _build_speculative_flags emits its own default when the field is unset (2 with a
                             # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
+                            # The draft cache is priced by the same estimator, so it takes
+                            # the same resolved plan; leaving it on the defaults reported a
+                            # reserve for a launch the target half had already contradicted.
+                            **_plan_kwargs,
                         )
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
@@ -4124,6 +4236,12 @@ async def get_kv_cache_estimate(
                             None, _cached_inference_devices(), tensor_parallel = True
                         ),
                     )
+                # The planner resolves the attention plan from the extra arguments a load
+                # would carry, which is why the asked-for plan above was built in that
+                # vocabulary: handing it over here is what stops gpu_bytes and kv_bytes in
+                # ONE response describing two different loads. With nothing asked for this
+                # is None and the planner's own resolution stands, which is already the
+                # launch's.
                 _cfg = _cached_estimate_config(repo_id, quant, None, False)
                 if _cfg is not None and _cfg is not _ESTIMATE_NOT_ON_DISK:
                     _cfg = _localized_estimate_config(_cfg, path)
@@ -4142,6 +4260,7 @@ async def get_kv_cache_estimate(
                         n_ubatch = n_ubatch,
                         tensor_parallel = tensor_parallel,
                         n_devices = _planner_devices,
+                        llama_extra_args = _planner_extras,
                     )
                     if _b is not None:
                         # `or None` would fold a real zero into "no answer". Zero is meaningful: inherited placement such as
@@ -4170,6 +4289,7 @@ async def get_kv_cache_estimate(
                             n_ubatch = n_ubatch,
                             tensor_parallel = tensor_parallel,
                             n_devices = _planner_devices,
+                            llama_extra_args = _planner_extras,
                         )
                         if _floor is not None:
                             planner_floor = min(int(_floor.gpu_bytes), planner_gpu)

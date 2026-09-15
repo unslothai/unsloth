@@ -2151,10 +2151,14 @@ def test_the_no_flash_rung_recomputes_the_memory_record():
     import inspect
 
     src = inspect.getsource(B.load_model)
-    helper = src[src.index("_drop_fit_load_mode_for_no_flash") :]
+    # Anchored on the DEFINITION, as the sibling pin at the top of this file already
+    # is. The bare name also appears in the comments that explain why a plan may be
+    # sized for the launch rather than for this respawn, and one of those sits earlier
+    # in load_model, so slicing from the first mention sliced a comment.
+    helper = src[src.index("def _drop_fit_load_mode_for_no_flash(") :]
     # Bounded at the next definition, so this proves the recompute is in the
     # helper and not merely somewhere later in load_model.
-    helper = helper[: helper.index("_spawn_and_wait")]
+    helper = helper[: helper.index("def _spawn_and_wait")]
     assert "self._record_memory_state" in helper
     compact = "".join(helper.split())
     assert "self._record_memory_state(stripped" in compact
