@@ -721,6 +721,25 @@ class DiffusionTrainingService:
             self._state["updated_at"] = time.time()
             return True
 
+    def stop_for_shutdown(self, timeout: float) -> bool:
+        from utils.account_context import run_as
+
+        with self._lock:
+            proc = self._proc
+            pump = self._pump
+            account = self._result_account
+        if proc is None or not proc.is_alive():
+            return True
+        # The signal path runs as the owner, which job_control refuses for a managed account's run.
+        run_as(account, self.stop, save = True)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            # The pump writes the run record after the child exits, so wait for it too.
+            if not proc.is_alive() and (pump is None or not pump.is_alive()):
+                return True
+            time.sleep(0.25)
+        return False
+
     @job_read(
         lambda self: {
             **_idle_state(),

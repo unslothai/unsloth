@@ -447,6 +447,20 @@ def test_diffusion_status_and_stop_are_private():
     assert service._proc.is_alive()
 
 
+def test_shutdown_stops_and_saves_a_managed_accounts_diffusion_run():
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    service = DiffusionTrainingService()
+    service._result_account = service.job_account = ALICE
+    service._proc = FakeProcess()
+    service._proc.start()
+    service._stop_queue = queue.Queue()
+    threading.Timer(0.2, lambda: setattr(service._proc, "running", False)).start()
+    assert current_account() == OWNER
+    assert service.stop_for_shutdown(timeout = 5) is True
+    assert service._stop_queue.get_nowait() is True
+
+
 def test_diffusion_history_resolves_per_account():
     from core.training.diffusion_training_service import _runs_dir
     assert run_as(ALICE, _runs_dir) == run_as(ALICE, tensorboard_root) / "diffusion"

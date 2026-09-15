@@ -26,6 +26,7 @@ class _Server:
 
 def test_the_run_is_saved_before_the_server_stops_and_before_the_kill(monkeypatch):
     import run
+    import core.training.diffusion_training_service as diffusion
     import core.training.training as training
 
     order = []
@@ -33,6 +34,15 @@ def test_the_run_is_saved_before_the_server_stops_and_before_the_kill(monkeypatc
         stop_for_shutdown = lambda: order.append("stop_for_shutdown") or True,
         force_terminate = lambda: order.append("force_terminate"),
     )
+    fake_diffusion = SimpleNamespace(
+        stop_for_shutdown = lambda timeout: order.append(("diffusion", timeout)) or True,
+    )
     monkeypatch.setattr(training, "_training_backend", fake)
+    monkeypatch.setattr(diffusion, "_service", fake_diffusion)
     run._graceful_shutdown(_Server(order))
-    assert order == ["stop_for_shutdown", "should_exit", "force_terminate"]
+    assert order == [
+        "stop_for_shutdown",
+        ("diffusion", training._SHUTDOWN_STOP_TIMEOUT_S),
+        "should_exit",
+        "force_terminate",
+    ]

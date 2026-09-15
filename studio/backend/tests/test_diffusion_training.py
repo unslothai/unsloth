@@ -234,6 +234,37 @@ def test_service_stop_marks_stopped():
     assert svc.stop() is False
 
 
+def test_service_stop_for_shutdown_saves_and_waits():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    st = svc.status()
+    assert st["status"] == "stopped"
+    assert st["active"] is False
+
+
+def test_service_stop_for_shutdown_is_immediate_when_idle():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    t0 = time.monotonic()
+    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert time.monotonic() - t0 < 1
+
+
+def _ignores_stop_target(*, event_queue, stop_queue, config):
+    event_queue.put({"type": "model_load_completed"})
+    time.sleep(3)
+
+
+def test_service_stop_for_shutdown_wait_is_bounded():
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _ignores_stop_target)
+    svc.start(dict(_CFG))
+    _wait_status(svc, "running")
+    t0 = time.monotonic()
+    assert svc.stop_for_shutdown(timeout = 0.5) is False
+    assert 0.4 < time.monotonic() - t0 < 2
+
+
 def test_service_crash_without_terminal_event_is_error():
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _crashing_target)
     svc.start(dict(_CFG))
