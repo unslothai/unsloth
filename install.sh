@@ -4819,10 +4819,13 @@ case "$_torch_index_leaf" in
             # first-set-wins, mirroring _pick_visible_index (and _HIP_LAYER_MASKS) in
             # studio/install_python_stack.py. rocminfo output is ALREADY ROCr-filtered, so
             # indexing by ROCR again shadows CUDA, its HIP alias: ROCR=2,1 + CUDA=1 is survivor 2.
-            if [ "$_gfx_probe" = rocminfo ]; then
-                _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
-            else
-                _vis_masks="HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
+            _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
+            if [ "$_gfx_probe" != rocminfo ] && [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+                # amd-smi is not ROCr-filtered: ROCr decides which devices exist, then HIP indexes the survivors (_rocr_visible_subset). Ordinals in mask order; none in range keeps the whole list, as _pick_visible_index does.
+                _rocr_kept=$(printf '%s\n' "$_gfx_all" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                    NF { v[n++] = $0 }
+                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
+                [ -n "$_rocr_kept" ] && _gfx_all="$_rocr_kept"
             fi
             _vis_var=""
             _vis=""

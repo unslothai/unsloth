@@ -2218,6 +2218,15 @@ class TestGfx1102Rocm64Floor:
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
 
+    def test_install_sh_layers_rocr_under_hip_for_amd_smi(self):
+        """ROCr decides which devices exist; HIP indexes the survivors, not the whole list."""
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            + self._amd_smi_stub("gfx1100", "gfx1200", "gfx1100")
+            + "export ROCR_VISIBLE_DEVICES=1,0; export HIP_VISIBLE_DEVICES=1"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.1"
+
     def test_install_sh_declines_an_ordinal_when_amd_smi_gives_no_hip_map(self):
         """Without `list -e` there is no HIP order, so an ordinal names no known device.
 
