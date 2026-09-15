@@ -258,6 +258,7 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
