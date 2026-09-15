@@ -160,8 +160,13 @@ class TestTheKeepDecision:
         nvidia = {"_setup_nvidia_physical": "true"}
         assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b8508", **nvidia) == "KEEP cuda"
         assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b8509", **nvidia) == "REPLACE"
-        # The installer's own matching: a qualified tag ref names the same release.
-        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "refs/tags/b8508", **nvidia) == "KEEP cuda"
+        # The installer's own matching: a short commit pin names the recorded full commit.
+        install_dir = _install(
+            tmp_path,
+            {"backend": "cuda", "tag": "0123456789abcdef0123456789abcdef01234567", "release_tag": "b8508-mix"},
+        )
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "0123456789ab", **nvidia) == "KEEP cuda"
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "fedcba987654", **nvidia) == "REPLACE"
         assert (
             _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b8508-mix", **nvidia)
             == "KEEP cuda"

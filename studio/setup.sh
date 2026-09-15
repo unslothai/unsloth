@@ -3229,8 +3229,8 @@ _has_local_llama_server() {
 
 # The backend the installed prebuilt's marker records (cuda/rocm/vulkan/cpu), or nothing.
 # `backend` arrived with #8520; older markers name it in llama_backend or only in the asset.
-# Whether the install marker's $2 names the pinned ref $3, by the installer's own alias and
-# commit-prefix matching (refs/tags/b8508 is b8508, a short commit matches the full one).
+# Whether the install marker's $2 names the pinned ref $3: exact, or the installer's own alias
+# and commit-prefix matching (a short commit pin matches the recorded full one).
 _installed_prebuilt_ref_matches() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] || return 1
     python - "$SCRIPT_DIR/install_llama_prebuilt.py" "$1/UNSLOTH_PREBUILT_INFO.json" "$2" "$3" <<'PY' 2>/dev/null
@@ -3247,7 +3247,8 @@ try:
 except Exception:
     marker = {}
 value = marker.get(sys.argv[3]) if isinstance(marker, dict) else None
-sys.exit(0 if isinstance(value, str) and installer.refs_match(value.strip(), sys.argv[4]) else 1)
+value = value.strip() if isinstance(value, str) else ""
+sys.exit(0 if value and (value == sys.argv[4] or installer.refs_match(value, sys.argv[4])) else 1)
 PY
 }
 
