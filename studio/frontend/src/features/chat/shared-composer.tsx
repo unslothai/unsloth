@@ -177,11 +177,13 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
+  clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
 } from "./provider-capabilities";
+import { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 import {
   type CompositionEvent,
   type ClipboardEvent,
@@ -197,6 +199,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 export type CompareMessagePart =
@@ -704,6 +707,7 @@ export function SharedComposer({
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const externalSelection = parseExternalModelId(checkpoint);
   const isExternalModel = externalSelection !== null;
   const selectedExternalProvider =
@@ -738,7 +742,8 @@ export function SharedComposer({
     externalSelection != null
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
-          effectiveExternalModelId,
+          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
+          externalSelection?.modelId,
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
@@ -767,8 +772,14 @@ export function SharedComposer({
   // one on flips the other off, so the visible state matches what the backend sends.
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
@@ -2596,7 +2607,7 @@ export function SharedComposer({
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
                       reasoningDisabled,
-                      reasoningEffort,
+                      reasoningEffort: displayedEffort,
                     })}
                   >
                     <BulbIcon className="size-[15.5px]" />
@@ -2604,7 +2615,7 @@ export function SharedComposer({
                       <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
-                              reasoningEffort,
+                              displayedEffort,
                               externalSelection?.modelId,
                             )}`
                           : "Thinking"}
@@ -2663,7 +2674,7 @@ export function SharedComposer({
                               "unsloth-tick size-4",
                               !(
                                 effectiveReasoningVisualEnabled &&
-                                reasoningEffort === level
+                                displayedEffort === level
                               ) && "opacity-0",
                             )}
                           />

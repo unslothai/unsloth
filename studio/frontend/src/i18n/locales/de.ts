@@ -1053,6 +1053,13 @@ export const de = {
         minimal: "Minimal",
       },
       custom: {
+        chatWidth: {
+          label: "Chatbreite",
+          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          standard: "Standard",
+          wide: "Breit",
+          full: "Volle Breite",
+        },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
         preferencesTitle: "Weitere Optionen",
@@ -1102,6 +1109,10 @@ export const de = {
           errorStorageFull:
             "Nicht genug lokaler Speicher für diese Schrift. Entfernen Sie zuerst eine importierte Schrift.",
           errorFailed: "Diese Schriftdatei konnte nicht geladen werden.",
+        },
+        interfaceScale: {
+          label: "Oberflächenskalierung",
+          description: "Passen Sie die Größe aller Oberflächenelemente an.",
         },
         uiFontSize: {
           label: "Schriftgröße der Oberfläche",

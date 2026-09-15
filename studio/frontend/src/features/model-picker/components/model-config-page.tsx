@@ -1389,9 +1389,10 @@ function GgufAdvancedSettings({
               <span className={LABEL_CLASS}>Micro-batch Size</span>
               <InfoHint>
                 Physical prompt micro-batch size (--ubatch-size). Leave blank for
-                the llama.cpp default (512). Larger values speed up prompt
-                processing but use more VRAM for the compute buffer; capped at the
-                batch size.
+                the llama.cpp default (512), raised to 1120 on Gemma 4 vision
+                models, whose images do not fit in 512. Other vision models keep
+                the 512 default. Larger values speed up prompt processing but use
+                more VRAM for the compute buffer; capped at the batch size.
               </InfoHint>
             </div>
             <input
@@ -2880,7 +2881,8 @@ export function ModelConfigPage({
     }
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips Ollama, and a native-path lease is the same.
+    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
+    // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
     if (
       !saveFailed &&

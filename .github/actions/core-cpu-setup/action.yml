@@ -218,3 +218,20 @@ runs:
         done
         pip install -e "$RUNNER_TEMP/unsloth-zoo" --no-deps
         pip show unsloth_zoo
+
+        # resolve-zoo-ref pins the sha in a separate gating job, and `gh run rerun --failed`
+        # reuses successful jobs, so a re-run of a red Core zoo cell silently re-tests the
+        # revision it was given the first time. A full re-run re-resolves and picks up main.
+        # Nothing here may fail the cell: the suite has already passed by this point.
+        # `|| true` INSIDE the substitution, because under `set -euxo pipefail` the
+        # pipeline's status becomes the assignment's and -e ends the step; `timeout` for the
+        # other half, a lookup that hangs rather than exits, which `|| true` cannot reach.
+        # Covered by tests/studio/test_core_setup_zoo_revision_notice.py.
+        head="$( { timeout 15 git ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main 2>/dev/null || true; } | cut -f1 )"
+        pinned="$(git -C "$RUNNER_TEMP/unsloth-zoo" rev-parse HEAD)"
+        echo "unsloth_zoo revision under test: $pinned"
+        if [ -n "$head" ] && [ "$head" != "$pinned" ]; then
+          # A deliberate workflow_dispatch pin, a moving main and a stale re-run are
+          # indistinguishable here, and re-running is the remedy for only the last.
+          echo "::warning title=unsloth_zoo is not at main::Testing $pinned; unslothai/unsloth-zoo main is now $head. If this run pinned unsloth_zoo_ref deliberately, that is expected and re-running keeps the pin. Otherwise either main advanced between the resolve job and this step, or this is a --failed re-run that kept the revision resolved on the first attempt; for the latter, re-run ALL jobs to pick up main."
+        fi
