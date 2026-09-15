@@ -1687,7 +1687,12 @@ class TestSpeculativeModeTerms:
         probe._read_gguf_metadata(mla)
         return probe._estimate_kv_cache_bytes(n_ctx, "f16")
 
-    def test_a_dspark_drafter_is_not_charged_the_targets_context(self, mla, tmp_path, priced_files):
+    def test_a_dspark_drafter_is_not_charged_the_targets_context(
+        self, mla, tmp_path, priced_files, monkeypatch
+    ):
+        # The two drafters' compute buffers differ with their own headers; this pins
+        # the cache terms.
+        monkeypatch.setattr(ri.LlamaCppBackend, "_mtp_draft_compute_bytes", lambda *a, **k: 0)
         ctx = 131072
         mtp = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "mtp"), mla, n_ctx = ctx)
         dspark = ri._gguf_memory_breakdown(self._config(mla, tmp_path, "dspark"), mla, n_ctx = ctx)
@@ -1850,9 +1855,12 @@ class TestLaunchShapedPricing:
         )
         assert full.kv_bytes > windowed.kv_bytes
         # Same header on both sides, so the drafter's cache moves exactly as the
-        # target's does rather than staying at the windowed figure.
-        assert full.drafter_runtime_bytes == full.kv_bytes
-        assert windowed.drafter_runtime_bytes == windowed.kv_bytes
+        # target's does rather than staying at the windowed figure. By difference: the
+        # draft context's compute buffers ride on top and do not follow --swa-full.
+        assert full.drafter_runtime_bytes - windowed.drafter_runtime_bytes == (
+            full.kv_bytes - windowed.kv_bytes
+        )
+        assert windowed.drafter_runtime_bytes > windowed.kv_bytes
 
     def test_a_cpu_device_selection_takes_the_weights_off_the_gpu(self, spec_config, swa):
         """``--device none`` runs on the CPU whatever the layer count says.
@@ -1893,8 +1901,9 @@ class TestLaunchShapedPricing:
         assert many.gpu_bytes == none.gpu_bytes
 
     def test_one_card_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
-        # Tensor mode needs two usable GPUs. Below that load_model drops it, so pricing
-        # tensor charged per-device compute buffers for a launch that runs neither.
+        # Tensor mode needs two usable GPUs. Below that load_model drops it, so the
+        # panel prices the layer load. A tensor device holds the single-device compute
+        # buffer, so on one card the two price the same.
         #
         # The cache type is no longer part of this: #8939 removed the gate that rewrote
         # both axes to f16 on a tensor split, so a quantized KV now survives one and the
@@ -1910,8 +1919,8 @@ class TestLaunchShapedPricing:
         assert downgraded.cache_type_kv == "q4_0"
         assert as_tensor.cache_type_kv == "q4_0"
         assert downgraded.kv_bytes == as_tensor.kv_bytes
-        assert downgraded.compute_bytes < as_tensor.compute_bytes
-        assert downgraded.total_bytes < as_tensor.total_bytes
+        assert downgraded.compute_bytes == as_tensor.compute_bytes
+        assert downgraded.total_bytes == as_tensor.total_bytes
 
     def test_manual_auto_layers_is_priced_as_the_layer_load_it_launches(self, spec_config, swa):
         # Manual with Auto layers hands the budget to llama.cpp --fit, which load_model

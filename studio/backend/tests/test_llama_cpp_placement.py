@@ -110,6 +110,32 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     return backend, gguf
 
 
+# A synthetic compute buffer for the slot-reduction planner fixtures, per micro-batch
+# token: a fixed base, plus a fixed cost for every slot past the first.
+SLOT_COMPUTE_BASE_BYTES_PER_TOKEN = 92 * 1024
+SLOT_COMPUTE_EXTRA_SLOT_BYTES_PER_TOKEN = 1116 * 1024
+
+
+def _install_slot_scaled_compute(backend):
+    """Use a synthetic per-slot cost to exercise slot reduction on dense fixtures."""
+
+    def compute(
+        *,
+        n_ubatch = None,
+        n_parallel = 1,
+        **_kwargs,
+    ):
+        ub = max(1, int(backend._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
+        extra_slots = max(0, int(n_parallel) - 1)
+        return ub * (
+            SLOT_COMPUTE_BASE_BYTES_PER_TOKEN
+            + extra_slots * SLOT_COMPUTE_EXTRA_SLOT_BYTES_PER_TOKEN
+        )
+
+    backend._estimate_compute_buffer_bytes = compute
+    return backend
+
+
 def _backend_non_vulkan(
     *args,
     vulkan = False,
@@ -650,11 +676,7 @@ def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
 
 
 def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
-    """A Hybrid Mamba target on one 24 GB card with the MTP-overhead math live.
-
-    The drafter's own KV is stubbed away so the only moving term is the target's
-    recurrent rollback state, which is what the reserve has to keep charging.
-    """
+    """Hybrid Mamba on a 24 GB card, with only target rollback state affecting MTP cost."""
     gb = 1024**3
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
     sidecar = tmp_path / "dflash-model-Q8_0.gguf"
@@ -664,6 +686,7 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
     backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
     backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
     backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     backend._select_gpus = lambda *args, **kwargs: ([0], False)
     backend._select_gpus_split_aware = lambda *args, **kwargs: ([0], False)
 
@@ -3588,3 +3611,86 @@ def test_a_drafter_carrying_its_own_embeddings_still_reaches_the_command(tmp_pat
     assert cmd[cmd.index("--model-draft") + 1] == str(drafter)
     assert backend.mtp_draft_path == str(drafter)
     assert backend.mtp_draft_suppressed_path is None
+
+
+def _recording_compute_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    build = 10909,
+):
+    """A dense backend on one 24 GB card whose compute terms are the real estimator,
+    recording what the loader asks of them."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+
+    def read(_path):
+        backend._architecture = "qwen3"
+        backend._vocab_size = 151936
+        backend._embedding_length = 4096
+        backend._feed_forward_length = 12288
+        backend._n_layers = 36
+        backend._n_heads = 32
+        backend._n_kv_heads = 8
+        backend._kv_key_length = 128
+        backend._kv_value_length = 128
+        backend._context_length = 40960
+
+    backend._read_gguf_metadata = read
+    backend._get_gguf_size_bytes = lambda _path: 4 * 1024**3
+    del backend._can_estimate_kv  # the real one, now that the dims are set
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_kv_unified": True,
+        "supports_flash_attn": True,
+        "flash_attn_takes_value": True,
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: build)
+    )
+    calls = {"ctx": [], "flat": [], "kv": []}
+    real_ctx = backend._compute_buffer_ctx_bytes
+    real_flat = backend._estimate_compute_buffer_bytes
+    real_kv = backend._estimate_kv_cache_bytes
+
+    def ctx(*args, **kwargs):
+        calls["ctx"].append(kwargs.get("flash_attn", True))
+        return real_ctx(*args, **kwargs)
+
+    def flat(**kwargs):
+        calls["flat"].append(backend._reserves_micro_batch_outputs)
+        return real_flat(**kwargs)
+
+    def kv(*args, **kwargs):
+        calls["kv"].append(kwargs.get("flash_attn", True))
+        return real_kv(*args, **kwargs)
+
+    backend._compute_buffer_ctx_bytes = ctx
+    backend._estimate_compute_buffer_bytes = flat
+    backend._estimate_kv_cache_bytes = kv
+    return backend, gguf, calls
+
+
+@pytest.mark.parametrize(
+    "extra_args,expected",
+    [([], True), (["--flash-attn", "off"], False), (["-fa", "off", "--flash-attn", "on"], True)],
+)
+def test_the_loader_prices_the_attention_mode_it_launches(
+    tmp_path, monkeypatch, extra_args, expected
+):
+    """Compute follows the launch's attention mode; KV covers the no-flash retry."""
+    backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch)
+
+    assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4, extra_args = extra_args)["cmd"]
+
+    assert calls["ctx"], "the fit never priced the context term"
+    assert set(calls["ctx"]) == {expected}
+    assert False in calls["kv"]
+
+
+@pytest.mark.parametrize("build,expected", [(9415, True), (10909, False), (None, False)])
+def test_the_loader_prices_the_output_rows_of_its_build(tmp_path, monkeypatch, build, expected):
+    backend, gguf, calls = _recording_compute_backend(tmp_path, monkeypatch, build = build)
+
+    assert _launch(backend, gguf, n_ctx = 0, n_parallel = 4)["cmd"]
+
+    assert calls["flat"], "the fit never priced the flat compute buffer"
+    assert set(calls["flat"]) == {expected}

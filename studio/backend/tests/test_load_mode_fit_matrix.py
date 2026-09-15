@@ -1481,14 +1481,8 @@ def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
 
 
 def test_a_tensor_split_charges_the_replicated_compute_buffer():
-    """Checked at the source: reaching this call needs a real multi-GPU probe.
-
-    _plan_tensor_parallel admits devices against, and reserves per device,
-    _estimate_compute_buffer_bytes(per_device_tensor = True). The fit has to charge
-    the same thing: the layer-mode lump is ONE device's buffer at the smaller rate,
-    and understating it on a pooled multi-GPU credit is the direction that claims a
-    fit that is not there.
-    """
+    """Check that the fit charges the same per-device buffer as _plan_tensor_parallel.
+    This source check avoids requiring a multi-GPU probe."""
     from core.inference.llama_cpp import LlamaCppBackend as B
     import inspect
 
@@ -1509,26 +1503,18 @@ def test_a_tensor_split_charges_the_replicated_compute_buffer():
     ) in compact
 
 
-def test_the_tensor_rate_really_exceeds_the_layer_one():
-    """The under-charge the fix closes is not a rounding difference: at one slot
-    the layer figure drops the vocab-width output buffer entirely."""
-
-    class _Dims:
-        # is_embedding_gguf is a read-only property on the real backend.
-        _vocab_size = 151936
-        _embedding_length = 5120
-        is_embedding_gguf = False
-        _DEFAULT_N_UBATCH = LlamaCppBackend._DEFAULT_N_UBATCH
-        _COMPUTE_BUFFER_SAFETY = LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-
-    layer = LlamaCppBackend._estimate_compute_buffer_bytes(
-        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = False
-    )
-    tensor = LlamaCppBackend._estimate_compute_buffer_bytes(
-        _Dims(), n_ubatch = 512, n_parallel = 1, per_device_tensor = True
-    )
-    assert tensor > layer
-    # 4-GPU tensor split: what the fit used to charge vs what it now does.
+def test_a_tensor_split_pays_the_buffer_on_every_device():
+    """Each device of a tensor split reserves the whole single-GPU compute buffer
+    (Qwen3 8B across two GPUs: 128 MiB on each at ubatch 512, 512 MiB at 2048), so
+    the fit's per-device multiplication is the whole difference from a layer lump."""
+    b = LlamaCppBackend()
+    b._vocab_size = 151936
+    b._embedding_length = 4096
+    b._feed_forward_length = 12288
+    layer = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1)
+    tensor = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1, per_device_tensor = True)
+    assert tensor == layer
+    # 4-GPU tensor split: three more copies than the layer lump.
     assert 4 * tensor - layer > GIB
 
 

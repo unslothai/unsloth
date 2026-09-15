@@ -4077,6 +4077,10 @@ async def get_kv_cache_estimate(
                             # GPU, 3 without) and the rollback state is multiplied by it. An explicit 0 is still honoured.
                             spec_draft_n_max = _effective_draft_n_max,
                         )
+                        # Plus the draft decode graph's floor, which the helper leaves to
+                        # the loader's soft overhead.
+                        if spec is not None:
+                            spec += be._MTP_DRAFT_COMPUTE_BYTES
                 except Exception as e:
                     logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
 
