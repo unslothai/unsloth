@@ -765,9 +765,9 @@ def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
 
 def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     # -ngld 0 moves the drafter's weights and KV to host memory, but the rollback
-    # snapshots live in the TARGET context, so they stay on the GPU. Releasing the
-    # whole reserve here undercounts them and the fit can pick a placement that
-    # spills.
+    # snapshots and verification output rows live in the TARGET context, so they stay
+    # on the GPU. Releasing the whole reserve here undercounts them and the fit can
+    # pick a placement that spills.
     backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
 
     charged = _recorded_mtp_reserve_std(
@@ -779,9 +779,9 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     )
 
     # After the launch: the GGUF dims land when the load reads the metadata.
-    expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
-    assert expected > 0
-    assert set(charged) == {expected}
+    rollback = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
+    assert rollback > 0
+    assert set(charged) == {rollback + backend._spec_verify_rows_bytes(4, 2)}
 
 
 def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
@@ -806,6 +806,7 @@ def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
     for slots in (1, 2, 4):
         assert fn(8192, _np = slots, _n_ubatch = 512) == (
             backend._mamba_recurrent_state_bytes(n_parallel = slots) * 2
+            + backend._spec_verify_rows_bytes(slots, 2)
         )
     # Per-slot state, not per-token: context does not move it.
     assert fn(2048, _np = 4, _n_ubatch = 512) == fn(131072, _np = 4, _n_ubatch = 512)
@@ -1148,10 +1149,10 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
 
 def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
     """-ngld 0 puts the drafter in host memory, and a separate sidecar displaces
-    the embedded head that mtp_overhead_fn was sized from, so nothing speculative
-    is GPU-resident. The flat fraction already stands down here; the byte-accurate
-    callback did not, so the fit went on charging GPU bytes for a drafter that
-    allocates none, cutting the context or taking --fit for them.
+    the embedded head that mtp_overhead_fn was sized from, so only the target's
+    verification rows stay GPU-resident. The flat fraction already stands down here;
+    the byte-accurate callback did not, so the fit went on charging GPU bytes for a
+    drafter that allocates none, cutting the context or taking --fit for them.
     """
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
     backend._nextn_predict_layers = 1
@@ -1179,7 +1180,8 @@ def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
     )
 
     assert charged, "the fit never ran, so this proves nothing"
-    assert set(charged) == {0}
+    # One slot at the three-token DSpark depth.
+    assert set(charged) == {backend._spec_verify_rows_bytes(1, 3)}
 
 
 def test_an_mla_model_keeps_the_reason_that_actually_dropped_its_drafter(tmp_path):

@@ -15126,13 +15126,7 @@ class LlamaCppBackend:
         """Draft mask and activations beyond the separately charged floor, plus
         target verification rows. Use the drafter's dimensions when available,
         otherwise the target's dimensions for an embedded head."""
-        verify_rows = (
-            max(1, n_parallel)
-            * max(0, spec_draft_n_max)
-            * self._SPEC_VERIFY_ROW_COPIES
-            * (getattr(self, "_vocab_size", None) or _ASSUMED_MAX_VOCAB)
-            * 4
-        )
+        verify_rows = self._spec_verify_rows_bytes(n_parallel, spec_draft_n_max)
         if n_ctx <= 0:
             return verify_rows
         ub = max(1, int(self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch))
@@ -15144,6 +15138,16 @@ class LlamaCppBackend:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
         return verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
+
+    def _spec_verify_rows_bytes(self, n_parallel: int, spec_draft_n_max: int) -> int:
+        """Target output rows for verified draft tokens, wherever the drafter runs."""
+        return (
+            max(1, n_parallel)
+            * max(0, spec_draft_n_max)
+            * self._SPEC_VERIFY_ROW_COPIES
+            * (getattr(self, "_vocab_size", None) or _ASSUMED_MAX_VOCAB)
+            * 4
+        )
 
     def _mtp_reserve_note(
         self,
@@ -23023,11 +23027,12 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        # One term survives: a recurrent target's rollback snapshots sit
-                        # in the TARGET context, so pinning the drafter to CPU does not
-                        # move them. Charge those alone. Flat in ctx (the
-                        # state is per-slot), hence the same _np/_n_ubatch keywords the
-                        # replaced callback takes, so _mtp_bytes can still re-price slots.
+                        # Two terms survive: a recurrent target's rollback snapshots and
+                        # the verification output rows sit in the TARGET context, so
+                        # pinning the drafter to CPU does not move them. Charge those
+                        # alone. Flat in ctx (both are per-slot), hence the same
+                        # _np/_n_ubatch keywords the replaced callback takes, so
+                        # _mtp_bytes can still re-price slots.
                         def _cpu_draft_target_state(
                             _ctx: int,
                             _np: int = n_parallel,
@@ -23035,9 +23040,10 @@ class LlamaCppBackend:
                             _n: int = _mtp_eff_n_max,
                             _rollback: bool = _target_rollback,
                         ) -> int:
-                            if not _rollback or _n <= 0:
+                            if _n <= 0:
                                 return 0
-                            return self._rollback_state_bytes(_np) * _n
+                            rollback = self._rollback_state_bytes(_np) * _n if _rollback else 0
+                            return rollback + self._spec_verify_rows_bytes(_np, _n)
 
                         mtp_overhead_fn = (
                             _cpu_draft_target_state
