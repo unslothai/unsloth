@@ -953,19 +953,22 @@ def _serve_trickling_headers():
     srv.listen(4)
     srv.settimeout(0.25)
     port = srv.getsockname()[1]
-    state = {"accepted": 0, "lines": 0}
+    # One header line that is never terminated, a byte at a time. Whole header LINES would hit
+    # http.client's own _MAXHEADERS cap of 100 and end the call on their own at about two
+    # seconds, which would make this fixture pass against a build that has no deadline at all.
+    # The test asserts on this constant directly rather than inferring it from a byte count.
+    chunk = b"x"
+    state = {"accepted": 0, "lines": 0, "chunk": chunk, "started": threading.Event()}
     stop = threading.Event()
 
     def drip(conn):
         try:
             conn.recv(4096)
-            # One header line that is never terminated, a byte at a time.
-            # Whole header LINES would hit http.client's own _MAXHEADERS cap of 100 and end the call on their own at
-            # about two seconds, which would make this fixture pass against a build that has no deadline at all.
             conn.sendall(b"HTTP/1.1 200 OK\r\nX-Pad: ")
             while not stop.is_set():
-                conn.sendall(b"x")
+                conn.sendall(chunk)
                 state["lines"] += 1
+                state["started"].set()
                 time.sleep(0.02)
         except Exception:
             pass
@@ -1027,15 +1030,29 @@ def test_trickling_response_headers_cannot_outlive_the_probe_budget(tmp_path, mo
     monkeypatch.setattr(mod, "BASE", base)
     try:
         returned, value, elapsed = _probe_bounded(mod, "/api/liveness", timeout = 0.5, wait = 6.0)
+        # The fixture dribbles on its own thread, so "did it trickle" is not answerable the
+        # instant the probe returns: on a loaded runner that thread can still be waiting for
+        # its first slice, and the old `lines >= 3` read it anyway. Seen failing as "fixture
+        # stopped trickling headers after 0 bytes" on a probe that had timed out correctly,
+        # which is this assertion misreporting a busy runner as a broken fixture. Wait for the
+        # evidence instead of assuming 0.5s of probe bought the fixture 0.5s of CPU.
+        trickled = state["started"].wait(5.0)
     finally:
         shutdown()
     # Fixture preconditions first, so a server that stopped trickling fails loudly instead of letting the probe return
     # fast and passing for free.
     assert state["accepted"] >= 1, "fixture never accepted a connection"
-    assert state["lines"] >= 3, f"fixture stopped trickling headers after {state['lines']} bytes"
-    assert state["lines"] < 100, (
+    assert trickled, (
+        f"fixture accepted a connection but never began trickling headers "
+        f"({state['lines']} bytes sent)"
+    )
+    # Asserted against what the fixture actually writes, not against how many times it got to
+    # write it. The count was a proxy for this and a timing-dependent one: a slow runner made
+    # it small and a fast one made it large, while the property is simply that the repeated
+    # chunk terminates no header line.
+    assert b"\n" not in state["chunk"] and b"\r" not in state["chunk"], (
         "fixture is sending whole header lines again; http.client's _MAXHEADERS would "
-        "end the call by itself and this would pass without any deadline"
+        f"end the call by itself and this would pass without any deadline: {state['chunk']!r}"
     )
     assert returned, "probe never returned: urlopen is outside the deadline again"
     assert value[2] == "timeout", value
