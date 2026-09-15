@@ -184,7 +184,10 @@ LOOKUP_BUDGET_SECONDS = 420.0
 
 
 def fetch(
-    client: VirusTotalClient, sha256: str, label: str, deadline: float | None = None
+    client: VirusTotalClient,
+    sha256: str,
+    label: str,
+    deadline: float | None = None,
 ) -> Snapshot:
     try:
         status, payload = client.request(

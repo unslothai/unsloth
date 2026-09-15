@@ -406,6 +406,6 @@ def test_third_party_text_cannot_break_the_job_summary() -> None:
     for line in report.splitlines():
         if line.startswith("- ") or (line.startswith("|") and "---" not in line):
             assert "\n" not in line
-    assert "Evil\\|Engine" in report or "Evil|Engine" not in report, (
-        "the engine name's pipe was not escaped, so it opens a new table cell"
-    )
+    assert (
+        "Evil\\|Engine" in report or "Evil|Engine" not in report
+    ), "the engine name's pipe was not escaped, so it opens a new table cell"
