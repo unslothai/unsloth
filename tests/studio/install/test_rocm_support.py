@@ -2227,6 +2227,24 @@ class TestGfx1102Rocm64Floor:
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
 
+    def test_install_sh_declines_a_rocr_uuid_mask_over_unlike_amd_smi_adapters(self):
+        """A UUID names a device but no position, so no survivor is known to be it."""
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            + self._amd_smi_stub("gfx1200", "gfx1100")
+            + "export ROCR_VISIBLE_DEVICES=GPU-deadbeefdeadbeef"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.1"
+
+    def test_install_sh_keeps_routing_on_a_rocr_uuid_mask_over_like_adapters(self):
+        """One arch everywhere: whichever device the UUID names, the wheel is the same."""
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            + self._amd_smi_stub("gfx1200", "gfx1200")
+            + "export ROCR_VISIBLE_DEVICES=GPU-deadbeefdeadbeef"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.4"
+
     def test_install_sh_declines_an_ordinal_when_amd_smi_gives_no_hip_map(self):
         """Without `list -e` there is no HIP order, so an ordinal names no known device.
 

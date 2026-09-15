@@ -4815,6 +4815,7 @@ case "$_torch_index_leaf" in
             [ -n "$_spoof_physical" ] && _gfx_all="$_spoof_physical"
         fi
         _runtime_gfx=""
+        _rocr_unresolved=""
         if [ -n "$_gfx_all" ]; then
             # first-set-wins, mirroring _pick_visible_index (and _HIP_LAYER_MASKS) in
             # studio/install_python_stack.py. rocminfo output is ALREADY ROCr-filtered, so
@@ -4826,6 +4827,8 @@ case "$_torch_index_leaf" in
                     NF { v[n++] = $0 }
                     END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] ~ /^[0-9]+$/ && t[i] + 0 < n) print v[t[i] + 0] } }')
                 [ -n "$_rocr_kept" ] && _gfx_all="$_rocr_kept"
+                # A UUID token names a device but no position here, so with unlike adapters no survivor is known to be the one selected: decline, as _rocr_visible_subset does.
+                _rocr_unresolved=$(printf '%s' "$ROCR_VISIBLE_DEVICES" | tr -d '0-9, \t')
             fi
             _vis_var=""
             _vis=""
@@ -4860,6 +4863,14 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] returned no HIP_ID map, so no ordinal here names a known device." >&2
                 echo "  [WARN] Skipping arch-specific torch routing. Set UNSLOTH_ROCM_GFX_ARCH to" >&2
                 echo "  [WARN] name the target explicitly." >&2
+                echo "" >&2
+                _runtime_gfx=""
+            elif [ -n "${_rocr_unresolved:-}" ] && \
+               [ "$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')" -gt 1 ]; then
+                echo "" >&2
+                echo "  [WARN] ROCR_VISIBLE_DEVICES selects a GPU by UUID, which amd-smi output cannot map to a" >&2
+                echo "  [WARN] position, and the adapters differ. Skipping arch-specific torch routing." >&2
+                echo "  [WARN] Set UNSLOTH_ROCM_GFX_ARCH to name the target explicitly." >&2
                 echo "" >&2
                 _runtime_gfx=""
             fi
