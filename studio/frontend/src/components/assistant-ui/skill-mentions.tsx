@@ -15,6 +15,7 @@ import type {
 import {
   ComposerPrimitive,
   unstable_useMentionAdapter,
+  unstable_useTriggerPopoverScopeContext,
 } from "@assistant-ui/react";
 import { BookOpen01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -26,6 +27,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -108,12 +110,29 @@ function MentionEnterSignal({
   return null;
 }
 
+// Mounted under the popover; reports whether it is open, which is when it takes Escape.
+function MentionOpenSignal({
+  onChange,
+}: {
+  onChange?: (open: boolean) => void;
+}): null {
+  const { open } = unstable_useTriggerPopoverScopeContext();
+  useLayoutEffect(() => {
+    if (!onChange) return;
+    onChange(open);
+    return () => onChange(false);
+  }, [open, onChange]);
+  return null;
+}
+
 export function SkillMentionPopover({
   enabled: mentionsEnabled,
   onConsumesEnterChange,
+  onOpenChange,
 }: {
   enabled: boolean;
   onConsumesEnterChange?: (consumesEnter: boolean) => void;
+  onOpenChange?: (open: boolean) => void;
 }): ReactElement | null {
   const t = useT();
   const { skills } = useSkillsCatalog();
@@ -156,6 +175,7 @@ export function SkillMentionPopover({
       <ComposerPrimitive.Unstable_TriggerPopover.Directive
         {...mention.directive}
       />
+      <MentionOpenSignal onChange={onOpenChange} />
       <ComposerPrimitive.Unstable_TriggerPopoverItems>
         {(results) => (
           <>
