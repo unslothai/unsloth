@@ -243,14 +243,10 @@ def test_stop_still_reports_nothing_to_cancel_on_an_idle_backend(backend):
 
 
 def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
-    """An eject drops _loading the moment it is accepted, but the load's own thread keeps reading
-    those files. The delete-cached guard reads loading_repo_ids(): reporting nothing through that
-    window let it pull blobs out from under a live download.
-
-    The window does not end when the teardown takes _lock. _prefetch_files deliberately runs
-    WITHOUT it, so its downloader outlives the eject; only the load thread unwinding ends it."""
-    worker = object()
-    backend._load_accounts[worker] = (backend._load_token, ALICE)
+    """An eject drops _loading the moment it is accepted so the load can be cancelled promptly, but
+    that load's thread keeps reading those files until it unwinds. Through _prefetch_files it holds
+    no lock at all and only checks the cancel event either side of the blocking Hub call, so the
+    delete-cached guard has to keep refusing them until the thread is actually done."""
     backend._loading = _LoadingState(
         repo_id = "org/model-GGUF",
         base_repo = "org/base",
@@ -258,28 +254,49 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
         fetch_repo = "mirror/base",
     )
     everything = {"org/model-GGUF", "org/base", "mirror/base"}
-    assert set(backend.loading_repo_ids()) == everything
+    cancelled_token = backend._load_token
 
     backend.unload(expected_account = ALICE)
 
-    # The eject is over and _loading is gone, but the worker has not unwound.
     assert backend._loading is None
-    assert set(backend.loading_repo_ids()) == everything, "deletable while still being read"
-
-    # What _account_owned_load's finally does when the load thread finally returns.
-    with backend._load_cancel_lock:
-        backend._load_accounts.pop(worker)
-        backend._draining_repos.pop(backend._load_token - 1, None)
+    assert set(backend.draining_repo_ids()) == everything, "deletable while still being read"
+    # NOT through loading_repo_ids: the GPU arbiter's release_if, the keep-warm loop and the media
+    # auto-switch all read that as "a load is in flight", and a drain there left the arbiter owned
+    # by DIFFUSION with nothing loaded.
     assert backend.loading_repo_ids() == ()
 
+    # What _run_load's finally does when the load thread returns.
+    with backend._load_cancel_lock:
+        backend._draining_repos.pop(cancelled_token, None)
+    assert backend.draining_repo_ids() == ()
 
-def test_an_eject_with_no_live_worker_holds_nothing(backend):
-    """Nothing is reading, so holding ids would only block deletes for the life of the process."""
+
+def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
+    """_run_load's finally is the only owner: nothing else knows when a prefetch actually returned,
+    and during one there is no _load_accounts record to key on either."""
     backend._loading = _LoadingState(
         repo_id = "org/model-GGUF", base_repo = "org/base", account_id = ALICE
     )
+    token = backend._load_token
+    with backend._load_cancel_lock:
+        backend._draining_repos[token] = {"org/model-GGUF", "org/base"}
+
+    monkeypatch.setattr(
+        backend, "load_pipeline", lambda **kw: (_ for _ in ()).throw(RuntimeError("cancelled"))
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.detect_family_for_pick", lambda *a, **k: None
+    )
+    backend._run_load(repo_id = "org/model-GGUF", _load_token = token)
+
+    assert backend.draining_repo_ids() == (), "the thread returned and nothing released its repos"
+
+
+def test_an_eject_with_no_load_in_flight_holds_nothing(backend):
+    """Nothing is reading, so holding ids would only refuse deletes for no reason."""
+    _resident(backend)
     backend.unload(expected_account = ALICE)
-    assert backend._draining_repos == {} and backend.loading_repo_ids() == ()
+    assert backend._draining_repos == {} and backend.draining_repo_ids() == ()
 
 
 def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):

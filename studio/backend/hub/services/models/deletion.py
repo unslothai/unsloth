@@ -649,6 +649,11 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
+    # An ejected load is cancelled but not yet unwound: through _prefetch_files it holds no lock and only
+    # checks the cancel event either side of the blocking Hub call, so deleting here yanks blobs from under it.
+    for lid in getattr(engine, "draining_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is still releasing this repo; wait for it to finish"
     return None
 
 

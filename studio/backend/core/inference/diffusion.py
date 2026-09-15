@@ -951,10 +951,6 @@ def _account_owned_load(method):
         finally:
             with self._load_cancel_lock:
                 self._load_accounts.pop(request, None)
-                # The last worker on this epoch has unwound, so whatever a cancelled load of it was
-                # still reading is finally safe for the delete-cached guard to remove.
-                if not any(t == token for t, _account in self._load_accounts.values()):
-                    self._draining_repos.pop(token, None)
 
     return wrapped
 
@@ -2357,6 +2353,11 @@ class DiffusionBackend:
             with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
+        finally:
+            # This thread has stopped reading, so a cancelled load's files are safe to delete. The
+            # only owner of that entry: nothing else knows when a prefetch actually returned.
+            with self._load_cancel_lock:
+                self._draining_repos.pop(token, None)
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -2398,15 +2399,25 @@ class DiffusionBackend:
         # other modality's acquire.
         with self._load_cancel_lock:
             loading = self._loading
-            ids: tuple[Optional[str], ...] = ()
-            if loading is not None and loading.error is None:
-                ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
-            # An eject drops _loading the moment it is accepted, but the worker keeps READING those
-            # files until its constructor unwinds, which can be minutes. Reporting nothing through
-            # that window let the delete-cached guard pull blobs out from under it.
-            for repos in self._draining_repos.values():
-                ids += tuple(sorted(repos))
+            if loading is None or loading.error is not None:
+                return ()
+            ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
             return tuple(dict.fromkeys(r for r in ids if r))
+
+    def draining_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids a CANCELLED load is still reading, for the delete-cached guard only.
+
+        An eject drops ``_loading`` the moment it is accepted so the load can be cancelled promptly,
+        but that load's thread keeps reading those files until it unwinds -- through ``_prefetch_files``
+        it does not even hold ``_lock``. Deleting them in that window pulls blobs out from under a
+        live Hub call, or lets the cancelled download recreate what was just deleted.
+
+        Deliberately NOT part of ``loading_repo_ids()``: that answers "is a load in flight", and the
+        GPU arbiter's ``release_if``, the keep-warm loop and the media auto-switch all read it as
+        that. Folding a drain into it left the arbiter owned by DIFFUSION with nothing loaded.
+        """
+        with self._load_cancel_lock:
+            return tuple(dict.fromkeys(r for repos in self._draining_repos.values() for r in repos))
 
     @staticmethod
     def _te_prequant_plan_files(
@@ -6554,19 +6565,14 @@ class DiffusionBackend:
                 # none, there is nothing reading and a leaked entry would block deletes forever.
                 cancelled_token = self._load_token
                 loading = self._loading
-                draining = (
-                    {
-                        r
-                        for r in (loading.repo_id, loading.base_repo, loading.fetch_repo)
-                        if r
-                    }
-                    if loading is not None and loading.error is None
-                    else set()
-                )
-                if draining and any(
-                    token == cancelled_token for token, _account in self._load_accounts.values()
-                ):
-                    self._draining_repos.setdefault(cancelled_token, set()).update(draining)
+                if loading is not None and loading.error is None:
+                    # Its thread is _run_load, which may be blocked in _prefetch_files with nothing
+                    # registered in _load_accounts yet: begin_load's record is gone and
+                    # load_pipeline's is not taken until prefetch returns. _run_load's own finally
+                    # drops this, so it covers the whole thread either way.
+                    self._draining_repos.setdefault(cancelled_token, set()).update(
+                        r for r in (loading.repo_id, loading.base_repo, loading.fetch_repo) if r
+                    )
                 self._cancel_event.set()
                 self._load_token += 1
                 self._loading = None
