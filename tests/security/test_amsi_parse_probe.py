@@ -481,13 +481,13 @@ def test_a_real_block_is_reported_even_when_another_row_is_unmeasured(tmp_path: 
     """
     rows = (
         "@("
-        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
         + ", "
-        + _row("head", "install.ps1", control=True, result=_BLOCKED)
+        + _row("head", "install.ps1", control = True, result = _BLOCKED)
         + ")"
     )
     code, text = _run_verdict(
-        tmp_path, rows, no_result_ps="@('head/setup.ps1 [the probe wrote no result]')"
+        tmp_path, rows, no_result_ps = "@('head/setup.ps1 [the probe wrote no result]')"
     )
     assert code == 1, f"a refused head script did not fail the job\n{text}"
     assert "AMSI refused head/install.ps1" in text, text
@@ -504,9 +504,9 @@ def test_a_parse_error_is_classified_even_when_the_control_is_silent(tmp_path: P
     """
     rows = (
         "@("
-        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
         + ", "
-        + _row("head", "install.ps1", control=False, result=_SYNTAX)
+        + _row("head", "install.ps1", control = False, result = _SYNTAX)
         + ")"
     )
     code, text = _run_verdict(tmp_path, rows)
@@ -518,9 +518,9 @@ def test_a_block_claimed_without_a_live_control_is_not_trusted(tmp_path: Path) -
     """The other side of the same reordering: only BLOCKED needs the control, and it still needs it."""
     rows = (
         "@("
-        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
         + ", "
-        + _row("head", "install.ps1", control=False, result=_BLOCKED)
+        + _row("head", "install.ps1", control = False, result = _BLOCKED)
         + ")"
     )
     code, text = _run_verdict(tmp_path, rows)
