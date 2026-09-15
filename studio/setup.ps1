@@ -6731,16 +6731,16 @@ else:
     $torchcodecState = if ($_torchcodecProbeResult.Output -match '(?m)^TORCHCODEC=(\S+)\s*$') { $Matches[1] } else { "" }
 
     if ($torchcodecState -eq "ffmpeg") {
-        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "Yellow"
+        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); install an FFmpeg full-shared build only if you need torchcodec itself" "Yellow"
     } elseif ($torchcodecState -eq "native") {
-        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "Yellow"
+        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "Yellow"
     } elseif ($torchcodecState -eq "broken") {
-        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "Yellow"
+        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); reinstall torchcodec against this torch build" "Yellow"
     } elseif ($torchcodecState -eq "ok") {
         step "torchcodec" "FFmpeg libraries loaded"
     }
     # 'absent', a timeout and a probe that could not run stay silent: none of them
-    # says anything about FFmpeg, and soundfile still decodes audio.
+    # says anything about FFmpeg, and soundfile plus PyAV still decode audio.
 }
 
 # ==========================================================================

@@ -4461,16 +4461,16 @@ else:
     fi
 
     if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
-        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "$C_WARN"
+        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); install an FFmpeg full-shared build only if you need torchcodec itself" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "native" ]; then
-        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "$C_WARN"
+        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "broken" ]; then
-        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "$C_WARN"
+        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile and PyAV's bundled FFmpeg instead (wav/flac/mp3/ogg, m4a/aac/webm); reinstall torchcodec against this torch build" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "ok" ]; then
         step "torchcodec" "FFmpeg libraries loaded"
     fi
     # "absent", a timeout and a probe that could not run stay silent: none of them
-    # says anything about FFmpeg, and soundfile still decodes audio.
+    # says anything about FFmpeg, and soundfile plus PyAV still decode audio.
 fi
 
 # Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.

@@ -2738,6 +2738,171 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
+        patch_datasets_audio_decoding_without_torchcodec()
+
+
+def _audio_decode_with_av(source):
+    """Mono float32 at the native rate through PyAV's bundled FFmpeg: every container torchcodec would have read (m4a, aac, webm, wma, amr) without a system FFmpeg. Kept identical to studio/backend/utils/datasets/audio_decode.py; a test holds the two together."""
+    import av
+    import numpy as np
+
+    chunks = []
+    rate = 0
+    resampler = None
+    with av.open(source, mode = "r", metadata_errors = "ignore") as container:
+        if not container.streams.audio:
+            raise ValueError("audio container has no audio stream")
+        for frame in container.decode(audio = 0):
+            if resampler is None:
+                rate = int(frame.sample_rate or 0)
+                if rate <= 0:
+                    raise ValueError("decoded audio has an invalid sample rate")
+                resampler = av.AudioResampler(format = "flt", layout = "mono", rate = rate)
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray().reshape(-1))
+        if resampler is not None:
+            for out in resampler.resample(None):
+                chunks.append(out.to_ndarray().reshape(-1))
+    if not chunks:
+        raise ValueError("audio container decoded to no samples")
+    return np.concatenate(chunks).astype(np.float32, copy = False), rate
+
+
+def _audio_read_mono(source):
+    """soundfile first (wav, flac, mp3, ogg), PyAV for the rest. `source` is a path, a bytes buffer or an open file."""
+    import numpy as np
+    import soundfile as sf
+
+    try:
+        array, rate = sf.read(source, dtype = "float32", always_2d = False)
+    except Exception as sf_error:  # noqa: BLE001  libsndfile raises its own hierarchy
+        try:
+            import av  # noqa: F401
+        except ImportError:
+            raise sf_error
+        if hasattr(source, "seek"):
+            source.seek(0)
+        try:
+            return _audio_decode_with_av(source)
+        except Exception as av_error:  # noqa: BLE001
+            raise RuntimeError(
+                f"audio could not be decoded by soundfile ({sf_error}) or PyAV ({av_error})"
+            ) from av_error
+    if array.ndim > 1:
+        # soundfile returns (frames, channels); torchcodec returns (channels, frames).
+        array = np.mean(array, axis = -1)
+    return array, rate
+
+
+def _audio_resample(array, rate, target):
+    """librosa when installed, else swresample through PyAV; both are already on the audio extras."""
+    try:
+        import librosa
+        return librosa.resample(array, orig_sr = rate, target_sr = target)
+    except ImportError:
+        pass
+    import av
+    import numpy as np
+
+    frame = av.AudioFrame.from_ndarray(np.ascontiguousarray(array, dtype = np.float32)[np.newaxis, :], format = "flt", layout = "mono")
+    frame.sample_rate = rate
+    resampler = av.AudioResampler(format = "flt", layout = "mono", rate = target)
+    chunks = [out.to_ndarray().reshape(-1) for out in resampler.resample(frame)]
+    chunks += [out.to_ndarray().reshape(-1) for out in resampler.resample(None)]
+    return np.concatenate(chunks)
+
+
+def patch_datasets_audio_decoding_without_torchcodec():
+    """Keep `datasets` Audio columns decodable when torchcodec is unusable (#8642).
+
+    `datasets` >= 4 decodes audio only through torchcodec, which needs an FFmpeg full-shared
+    install to dlopen its native libraries; with `TORCHCODEC_AVAILABLE` cleared above every
+    audio row raises "please install torchcodec" for a package that is installed. This seats
+    a decoder on `datasets.features.audio.Audio` that reads through soundfile, then PyAV's
+    bundled FFmpeg, and resamples to the cast rate, returning the pre-4.0 dict contract
+    `{"path", "array", "sampling_rate"}`. Studio installs the same decoder from its own copy
+    (utils/datasets/audio_decode.py) because its API process never imports unsloth.
+    No-op on `datasets` < 4, on a working torchcodec, and without soundfile. Idempotent.
+    """
+    try:
+        from datasets import config
+        from datasets.features.audio import Audio
+    except ImportError:
+        return False
+    if not hasattr(config, "TORCHCODEC_AVAILABLE") or config.TORCHCODEC_AVAILABLE:
+        return False
+    if getattr(Audio, "_unsloth_audio_fallback", False):
+        return True
+    try:
+        import soundfile  # noqa: F401
+    except Exception:  # noqa: BLE001  libsndfile absent raises OSError, not ImportError
+        return False
+    original_encode = Audio.encode_example
+
+    def _token_for_url(path, token_per_repo_id):
+        if not token_per_repo_id:
+            return None
+        try:
+            from datasets.utils.py_utils import string_to_dict
+
+            source_url = path.split("::")[-1]
+            pattern = config.HUB_DATASETS_URL if source_url.startswith(config.HF_ENDPOINT) else config.HUB_DATASETS_HFFS_URL
+            fields = string_to_dict(source_url, pattern)
+        except Exception:  # noqa: BLE001
+            fields = None
+        if fields is None:
+            values = list(token_per_repo_id.values())
+            return values[0] if len(values) == 1 else None
+        return token_per_repo_id.get(fields["repo_id"])
+
+    def decode_example(self, value, token_per_repo_id = None):
+        import io
+
+        from datasets.download.download_config import DownloadConfig
+        from datasets.utils.file_utils import is_local_path, xopen
+
+        if not self.decode:
+            raise RuntimeError("Decoding is disabled for this feature. Please use Audio(decode=True) instead.")
+        path, raw = value["path"], value["bytes"]
+        if path is None and raw is None:
+            raise ValueError(f"An audio sample should have one of 'path' or 'bytes' but both are None in {value}.")
+        if raw is not None:
+            source = io.BytesIO(raw)
+        elif is_local_path(path):
+            source = path
+        else:
+            source = xopen(path, "rb", download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)))
+        array, sampling_rate = _audio_read_mono(source)
+        target = self.sampling_rate
+        if target and sampling_rate != target:
+            array = _audio_resample(array, sampling_rate, target)
+            sampling_rate = target
+        return {"path": path, "array": array, "sampling_rate": sampling_rate}
+
+    def encode_example(self, value):
+        import io
+        from pathlib import Path
+
+        import soundfile as sf
+
+        if isinstance(value, str):
+            return {"bytes": None, "path": value}
+        if isinstance(value, Path):
+            return {"bytes": None, "path": str(value.absolute())}
+        if isinstance(value, (bytes, bytearray)):
+            return {"bytes": bytes(value), "path": None}
+        if isinstance(value, dict) and value.get("array") is not None:
+            buf = io.BytesIO()
+            sf.write(buf, value["array"], value["sampling_rate"], format = "WAV")
+            return {"bytes": buf.getvalue(), "path": value.get("path")}
+        if isinstance(value, dict) and ("bytes" in value or "path" in value):
+            return {"bytes": value.get("bytes"), "path": value.get("path")}
+        return original_encode(self, value)
+
+    Audio.decode_example = decode_example
+    Audio.encode_example = encode_example
+    Audio._unsloth_audio_fallback = True
+    return True
 
 
 def disable_torchaudio_if_cuda_mismatched():

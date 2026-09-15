@@ -223,8 +223,10 @@ def test_both_installers_report_the_ffmpeg_case(script):
     # Names the real dependency, and what still works, like the whisper.cpp steps do.
     assert "FFmpeg" in line
     assert "soundfile" in line
-    # The formats libsndfile actually covers, so nobody reads this as "audio is dead".
+    # Both fallbacks and the formats they cover, so nobody reads this as "audio is dead".
+    assert "PyAV" in line
     assert "wav/flac/mp3/ogg" in line
+    assert "m4a/aac/webm" in line
 
 
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])

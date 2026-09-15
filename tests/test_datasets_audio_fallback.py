@@ -1,0 +1,153 @@
+# Unsloth - 2x faster, 60% less VRAM LLM training and finetuning
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+"""`datasets` Audio columns keep decoding after a broken torchcodec is disabled (#8642):
+soundfile for what libsndfile reads, PyAV's bundled FFmpeg for the rest, no system FFmpeg.
+GPU-free; the decoder is installed straight from import_fixes."""
+from __future__ import annotations
+
+import ast
+import io
+from pathlib import Path
+
+import pytest
+
+np = pytest.importorskip("numpy")
+sf = pytest.importorskip("soundfile")
+datasets = pytest.importorskip("datasets")
+
+from unsloth import import_fixes  # noqa: E402
+
+_REPO = Path(__file__).resolve().parents[1]
+_STUDIO_SHIM = _REPO / "studio" / "backend" / "utils" / "datasets" / "audio_decode.py"
+
+
+def _wav_bytes(samples = 1600, rate = 16000):
+    buf = io.BytesIO()
+    sf.write(buf, np.linspace(-0.5, 0.5, samples, dtype = "float32"), rate, format = "WAV")
+    return buf.getvalue()
+
+
+def _m4a_bytes(seconds = 1.0, rate = 22050):
+    av = pytest.importorskip("av")
+    t = np.arange(int(seconds * rate)) / rate
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype("float32")
+    buf = io.BytesIO()
+    try:
+        with av.open(buf, "w", format = "mp4") as container:
+            stream = container.add_stream("aac", rate = rate)
+            stream.layout = "mono"
+            frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+            frame.sample_rate = rate
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"this PyAV cannot encode AAC: {exc}")
+    return buf.getvalue()
+
+
+@pytest.fixture
+def broken_torchcodec(monkeypatch):
+    """What disable_torchcodec_if_broken leaves behind, with the class restored afterwards."""
+    from datasets import config
+    from datasets.features.audio import Audio
+
+    if not hasattr(config, "TORCHCODEC_AVAILABLE"):
+        pytest.skip("datasets < 4 decodes through soundfile itself")
+    monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", False)
+    monkeypatch.setattr(Audio, "decode_example", Audio.decode_example)
+    monkeypatch.setattr(Audio, "encode_example", Audio.encode_example)
+    monkeypatch.setattr(Audio, "_unsloth_audio_fallback", False, raising = False)
+
+
+def test_a_wav_row_decodes_and_resamples(broken_torchcodec):
+    from datasets import Audio, Dataset
+
+    assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
+    ds = Dataset.from_dict({"audio": [{"path": "a.wav", "bytes": _wav_bytes()}]})
+    ds = ds.cast_column("audio", Audio(sampling_rate = 24000))
+    decoded = ds[0]["audio"]
+    assert decoded["sampling_rate"] == 24000
+    assert len(decoded["array"]) == pytest.approx(2400, abs = 4)
+    assert decoded["path"] == "a.wav"
+
+
+def test_an_m4a_row_decodes_through_pyav(broken_torchcodec):
+    from datasets import Audio, Dataset
+
+    raw = _m4a_bytes()
+    with pytest.raises(Exception):
+        sf.read(io.BytesIO(raw))  # libsndfile cannot, so this row needs the PyAV leg
+    import_fixes.patch_datasets_audio_decoding_without_torchcodec()
+    ds = Dataset.from_dict({"audio": [{"path": "tone.m4a", "bytes": raw}]})
+    ds = ds.cast_column("audio", Audio(sampling_rate = 16000))
+    decoded = ds[0]["audio"]
+    array = np.asarray(decoded["array"])
+    assert decoded["sampling_rate"] == 16000 and array.ndim == 1
+    assert 15000 <= len(array) <= 17500
+    assert 0.4 <= float(np.abs(array).max()) <= 0.6
+
+
+def test_resampling_works_without_librosa(broken_torchcodec, monkeypatch):
+    import sys
+
+    pytest.importorskip("av")
+    monkeypatch.setitem(sys.modules, "librosa", None)  # `import librosa` now raises ImportError
+    out = import_fixes._audio_resample(np.zeros(1600, dtype = np.float32), 16000, 24000)
+    assert len(out) == pytest.approx(2400, abs = 8)
+
+
+def test_a_working_torchcodec_is_left_alone(monkeypatch):
+    from datasets import config
+    from datasets.features.audio import Audio
+
+    if not hasattr(config, "TORCHCODEC_AVAILABLE"):
+        pytest.skip("datasets < 4")
+    monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", True)
+    before = Audio.decode_example
+    assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is False
+    assert Audio.decode_example is before
+
+
+def test_the_disabler_installs_the_decoder():
+    # Read the source: importing a real torchcodec would decide this by the host, not the code.
+    src = ast.parse((_REPO / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8"))
+    fn = next(n for n in ast.walk(src) if isinstance(n, ast.FunctionDef) and n.name == "disable_torchcodec_if_broken")
+    calls = [n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "patch_datasets_audio_decoding_without_torchcodec" in calls
+
+
+def _normalized(path: Path, name: str, rename: dict) -> str:
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+    fn.name = "f"
+    fn.returns = None  # Studio annotates, the library does not; the bodies are what must match
+    for arg in fn.args.args:
+        arg.annotation = None
+    fn.body = [b for b in fn.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Name) and n.id in rename:
+            n.id = rename[n.id]
+    return ast.dump(fn)
+
+
+@pytest.mark.parametrize(
+    ("library", "studio"), [("_audio_decode_with_av", "_decode_with_av"), ("_audio_read_mono", "_read_mono")]
+)
+def test_the_library_and_studio_decoders_do_not_drift(library, studio):
+    # Studio's API process never imports unsloth, so it carries its own copy of the decoder.
+    if not _STUDIO_SHIM.exists():
+        pytest.skip("no studio checkout")
+    rename = {"_audio_decode_with_av": "_decode_with_av"}
+    assert _normalized(_REPO / "unsloth" / "import_fixes.py", library, rename) == _normalized(_STUDIO_SHIM, studio, {})
