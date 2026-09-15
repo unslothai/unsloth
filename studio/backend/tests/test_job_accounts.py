@@ -167,6 +167,19 @@ def test_finished_training_results_remain_private_and_successor_clears_them(trai
     assert backend._progress.status_message != "Alice done"
 
 
+def test_shutdown_stops_and_saves_a_managed_accounts_run(training):
+    backend, proc, _ = training
+    assert start_training(backend)
+    threading.Timer(0.2, lambda: setattr(proc, "running", False)).start()
+    assert current_account() == OWNER
+    assert backend.stop_for_shutdown(timeout = 5) is True
+    sent = []
+    while not backend._stop_queue.empty():
+        sent.append(backend._stop_queue.get_nowait())
+    assert {"type": "stop", "save": True} in sent
+    assert not proc.terminated
+
+
 @pytest.fixture
 def export(monkeypatch):
     from core.export.orchestrator import ExportOrchestrator

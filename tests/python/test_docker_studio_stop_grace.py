@@ -77,7 +77,9 @@ def test_a_number_of_seconds_passes(value: str):
     assert res.returncode == 0, res.stderr
 
 
-def _run_sh(tmp_path: Path, budget: "str | None") -> "tuple[subprocess.CompletedProcess, list[str]]":
+def _run_sh(
+    tmp_path: Path, budget: "str | None"
+) -> "tuple[subprocess.CompletedProcess, list[str]]":
     bindir = tmp_path / "bin"
     bindir.mkdir()
     argv = tmp_path / "argv"
@@ -90,7 +92,9 @@ def _run_sh(tmp_path: Path, budget: "str | None") -> "tuple[subprocess.Completed
         (bindir / name).write_text("#!/usr/bin/env bash\n" + body)
         (bindir / name).chmod(0o755)
     (tmp_path / "root" / "dev").mkdir(parents = True)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "HF_TOKEN", "WANDB_"))}
+    env = {
+        k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "HF_TOKEN", "WANDB_"))
+    }
     env.update(
         PATH = f"{bindir}:/usr/bin:/bin",
         HOME = str(tmp_path / "home"),

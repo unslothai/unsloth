@@ -23,7 +23,7 @@ from core.training.account_jobs import (
     validate_job_paths,
     worker_alive,
 )
-from utils.account_context import account_thread, current_account
+from utils.account_context import account_thread, current_account, run_as
 import json as _json
 import math
 import multiprocessing as mp
@@ -2343,9 +2343,11 @@ class TrainingBackend:
         with self._lock:
             proc = self._proc
             job_id = self.current_job_id
+            account = self._result_account
         if proc is None or not proc.is_alive() or not job_id or self.is_run_finished():
             return True
-        if not self.stop_training(save = True, expected_job_id = job_id):
+        # The signal path runs as the owner, which job_control refuses for a managed account's run.
+        if not run_as(account, self.stop_training, save = True, expected_job_id = job_id):
             return False
         logger.info("Shutdown: stopping training run %s and saving a checkpoint", job_id)
         deadline = time.monotonic() + max(0.0, timeout)
