@@ -119,3 +119,19 @@ def test_a_refused_eject_leaves_no_fence_behind(backend, monkeypatch):
 
 def test_the_owner_can_eject_an_idle_backend(backend):
     assert backend.unload(expected_account = OWNER)["loaded"] is False
+
+
+def test_a_preflight_caller_cannot_block_the_owner_of_the_load_in_flight(backend):
+    """Bob is inside begin_load validation (recorded, not admitted) while Alice's background load
+    runs. The admitted load owns the epoch, so Alice can still cancel her own construction."""
+    _background_load(backend, ALICE)
+    _pending_invocation(backend, BOB)
+    backend.unload(expected_account = ALICE)
+    assert backend._cancel_event.is_set() and backend._loading is None
+
+
+def test_a_preflight_caller_cannot_block_the_resident_owner(backend):
+    """Same, with a published resident instead of a load in flight."""
+    _resident(backend)
+    _pending_invocation(backend, BOB)
+    assert backend.unload(expected_account = ALICE)["loaded"] is False
