@@ -374,6 +374,42 @@ _diffusers_prewarm_lock = threading.Lock()
 _diffusers_prewarmed = False
 
 
+def _a_local_model_would_load_through_diffusers() -> bool:
+    """Whether any indexed media model would actually load through DIFFUSERS on this host.
+
+    Presence alone is the wrong question. A CPU or MPS host with a runnable native binary, or
+    any host with ``UNSLOTH_DIFFUSION_ENGINE=sd_cpp``, routes a supported GGUF to sd.cpp, which
+    imports no diffusers at all -- so prewarming there would add ~316 MB to exactly the
+    low-memory installs that can least afford it, and it would never be reclaimed by a load.
+
+    ``predict_engine`` is the same predicate selection and the download planner use, and it is
+    documented to activate nothing and install nothing, so asking it here cannot perturb a
+    resident model. A non-GGUF pick short-circuits it: only a GGUF can go native."""
+    from core.inference.diffusion_engine_router import (  # noqa: PLC0415
+        ENGINE_DIFFUSERS,
+        predict_engine,
+    )
+    from core.inference.diffusion_families import detect_family  # noqa: PLC0415
+    from core.inference.media_model_index import (  # noqa: PLC0415
+        available_media_model_ids,
+        resolve_local_media_model,
+    )
+
+    for task in _MEDIA_PREWARM_TASKS:
+        for model_id in available_media_model_ids(task):
+            pick = resolve_local_media_model(model_id, task = task)
+            if pick is None:
+                continue
+            if (pick.model_kind or ("gguf" if pick.gguf_filename else None)) != "gguf":
+                return True  # only a GGUF can go native
+            family = detect_family(pick.model_id)
+            if family is None:
+                return True  # unknown family: diffusers is where the load would land
+            if predict_engine(family, model_kind = "gguf") == ENGINE_DIFFUSERS:
+                return True
+    return False
+
+
 def prewarm_diffusers_if_image_models_exist() -> bool:
     """Import diffusers off the first image load. True iff this call did the import.
 
@@ -404,11 +440,10 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
         if _diffusers_prewarmed:
             return False
         try:
-            from core.inference.media_model_index import available_media_model_ids  # noqa: PLC0415
-            if not any(available_media_model_ids(task) for task in _MEDIA_PREWARM_TASKS):
-                # Nothing to load, so the import would be pure cost. Not latched: a model
-                # downloaded later should let the next lifespan reconsider.
-                logger.debug("diffusers prewarm skipped: no local image or video model")
+            if not _a_local_model_would_load_through_diffusers():
+                # Nothing diffusers would serve, so the import is pure cost. Not latched: a
+                # model downloaded later should let the next lifespan reconsider.
+                logger.debug("diffusers prewarm skipped: no local model routes to diffusers")
                 return False
         except Exception as exc:  # noqa: BLE001 -- a gate that cannot answer means skip, not crash
             logger.debug("diffusers prewarm gate unavailable: %r", exc)

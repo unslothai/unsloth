@@ -51,17 +51,36 @@ def _stub_gate(
     ids_by_task,
     *,
     raises = False,
+    engine = "diffusers",
 ):
-    """Stand in for core.inference.media_model_index.available_media_model_ids."""
-    mod = types.ModuleType("core.inference.media_model_index")
+    """Stand in for the media index and the engine router.
+
+    ``engine`` is what a load of these models would select. It is not decoration: a CPU or MPS
+    host routes a supported GGUF to sd.cpp, which imports no diffusers, so "a model exists" and
+    "diffusers would be used" are different questions and only the second one may prewarm.
+    """
+    idx = types.ModuleType("core.inference.media_model_index")
 
     def _available(task):
         if raises:
             raise RuntimeError("index unavailable")
         return list(ids_by_task.get(task, []))
 
-    mod.available_media_model_ids = _available
-    monkeypatch.setitem(sys.modules, "core.inference.media_model_index", mod)
+    idx.available_media_model_ids = _available
+    idx.resolve_local_media_model = lambda model_id, task: types.SimpleNamespace(
+        model_id = model_id, model_path = "/nonexistent", gguf_filename = "m.gguf",
+        model_kind = "gguf", ambiguous = False,
+    )
+    monkeypatch.setitem(sys.modules, "core.inference.media_model_index", idx)
+
+    router = types.ModuleType("core.inference.diffusion_engine_router")
+    router.ENGINE_DIFFUSERS = "diffusers"
+    router.predict_engine = lambda fam, model_kind = None: engine
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_engine_router", router)
+
+    fams = types.ModuleType("core.inference.diffusion_families")
+    fams.detect_family = lambda repo_id, override = None: object()
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_families", fams)
 
 
 def _stub_diffusers(monkeypatch, *, raises = False):
@@ -166,6 +185,46 @@ def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch, raises = True)
     assert warm.prewarm_diffusers_if_image_models_exist() is False
+
+
+def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
+    """The case presence alone gets wrong. A CPU or MPS host with a runnable native binary, or
+    UNSLOTH_DIFFUSION_ENGINE=sd_cpp, serves a supported GGUF through sd.cpp and imports no
+    diffusers, so prewarming would add ~316 MB to a low-memory install that never reclaims it
+    with a load."""
+    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]}, engine = "sd_cpp")
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+    assert "diffusers" not in sys.modules, "prewarmed on a host whose image path is native"
+
+
+def test_a_non_gguf_model_still_prewarms_on_a_native_host(warm, monkeypatch):
+    """Only a GGUF can go native, so a dense checkpoint lands on diffusers even where sd.cpp is
+    the preferred engine. Gating the whole host off would lose the speedup for it."""
+    _stub_gate(monkeypatch, {"text-to-image": ["some/dense-sdxl"]}, engine = "sd_cpp")
+    idx = sys.modules["core.inference.media_model_index"]
+    monkeypatch.setattr(
+        idx, "resolve_local_media_model",
+        lambda model_id, task: types.SimpleNamespace(
+            model_id = model_id, model_path = "/nonexistent", gguf_filename = None,
+            model_kind = None, ambiguous = False,
+        ),
+    )
+    _stub_diffusers(monkeypatch)
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is True
+
+
+def test_the_gate_uses_the_routers_own_prediction():
+    """Not a reimplementation of the routing policy: predict_engine is what selection and the
+    download planner use, and it is documented to activate nothing and install nothing."""
+    import inspect
+    from utils import torch_warmup
+
+    body = inspect.getsource(torch_warmup._a_local_model_would_load_through_diffusers)
+    assert "predict_engine" in body, "the gate no longer asks the router"
+    assert "policy_eligible" not in body, "the routing policy must not be copied here"
 
 
 def test_the_gate_asks_for_the_catalogs_real_task_identifiers():
