@@ -315,7 +315,9 @@ def test_a_second_clip_is_refused_rather_than_dropped_on_a_non_gguf_backend():
     assert "Only one video" in exc.value.detail
 
     # The legacy field beside a part is the same two-clip request in a different spelling.
-    both = ChatCompletionRequest.model_validate(_part_body(_DATA_URI, **{"video_base64": _DATA_URI}))
+    both = ChatCompletionRequest.model_validate(
+        _part_body(_DATA_URI, **{"video_base64": _DATA_URI})
+    )
     with pytest.raises(HTTPException) as exc:
         inference_route._local_video_clip(both, info)
     assert exc.value.status_code == 400
