@@ -2128,7 +2128,9 @@ const ThreadComposerDock: FC<{
     <div
       ref={dockRef}
       className={cn(
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
+        // Inset both sides, not just the right: the offset keeps the bottom
+        // fade off the scrollbar, and a one-sided one also moves the centre.
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[10px] md:right-[10px]",
         overlay ? "z-40" : "z-20",
       )}
     >

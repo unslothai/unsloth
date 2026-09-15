@@ -32,4 +32,9 @@ test("nothing around the composer re-adds a one-sided inset", async () => {
 
   // The dock's own padding stays even.
   assert.match(thread, /unsloth-composer-dock-inner relative px-5/);
+
+  // The dock offset keeps the bottom fade off the scrollbar, so it stays,
+  // but one-sided it also shifts the composer half its width off centre.
+  assert.match(thread, /aui-thread-composer-dock[^"]*md:left-\[10px\] md:right-\[10px\]/);
+  assert.doesNotMatch(thread, /aui-thread-composer-dock[^"]*right-0 md:right-\[10px\]"/);
 });
