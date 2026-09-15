@@ -52,6 +52,12 @@ def main():
                 lambda d: d.find_element(By.XPATH, f'//button[normalize-space(.)="{name}"]')
             )
 
+        def command_enter(element):
+            element.click()
+            ActionChains(driver).key_down(Keys.COMMAND).send_keys(Keys.ENTER).key_up(
+                Keys.COMMAND
+            ).perform()
+
         driver.get(base + "/smoke-prompt-queue-actions.html")
         order(["q0", "q1", "q2"])
         label("Reorder queued prompt 3 of 3").send_keys(Keys.HOME)
@@ -65,7 +71,7 @@ def main():
         editor = label("Edit queued prompt 1")
         editor.clear()
         editor.send_keys("Edited in Safari")
-        editor.send_keys(Keys.COMMAND, Keys.ENTER)
+        command_enter(editor)
         wait.until(
             lambda d: "Edited in Safari"
             in d.find_element(By.CSS_SELECTOR, '[data-queue-item-id="q2"]').text
@@ -107,16 +113,23 @@ def main():
         driver.refresh()
         label("Plain text composer").click()
         editor = label("Message")
+        driver.execute_script(
+            "window.composerInputTrace = []; for (const type of ['keydown', 'keyup', 'input']) document.addEventListener(type, e => window.composerInputTrace.push({type, key:e.key, meta:e.metaKey, ctrl:e.ctrlKey, value:e.target.value, label:e.target.getAttribute('aria-label')}), true)"
+        )
+        editor.click()
         editor.send_keys("**Safari preview**")
+        wait.until(lambda d: editor.get_attribute("value") == "**Safari preview**")
         wait.until(lambda d: "Safari preview" in label("Formatted preview").text)
         label("Show context window usage").click()
         text_button("Steer").click()
+        editor.click()
         editor.send_keys(Keys.ENTER)
         wait.until(
             lambda d: json.loads(label("Submitted messages").get_attribute("textContent"))
             == [{"text": "**Safari preview**", "behavior": "steer"}]
         )
-        editor.send_keys("Queue once", Keys.COMMAND, Keys.ENTER)
+        editor.send_keys("Queue once")
+        command_enter(editor)
         wait.until(
             lambda d: json.loads(label("Submitted messages").get_attribute("textContent"))[-1][
                 "behavior"
@@ -134,6 +147,7 @@ def main():
     except Exception as error:
         report["error"] = str(error)
         if driver:
+            report["input_trace"] = driver.execute_script("return window.composerInputTrace || []")
             driver.save_screenshot(str(output / "native-safari-failure.png"))
         raise
     finally:

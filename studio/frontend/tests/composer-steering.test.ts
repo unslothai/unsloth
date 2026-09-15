@@ -643,6 +643,36 @@ test("a mixed queue finishes its external response before blocking the local fol
   assert.deepEqual(w.appended, ["external response", "local follow-up"]);
 });
 
+test("resuming a blocked local follow-up preserves the pending external document check", async () => {
+  const w = world();
+  const external = makeTarget("chat", false);
+  external.usesLocalModel = false;
+  w.startPromptQueue(["external response"], external);
+  w.startPromptQueue(["local follow-up"], makeTarget("chat", false));
+  const run = w.run();
+  let resolve!: (indexing: boolean) => void;
+  w.setIndexing(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const pending = w.dispatchQueuedPrompt(run, run.items[0]);
+  w.handlePromptQueueRunFailed(undefined, true);
+  w.resumePromptQueueRun(["chat"]);
+  w.resumePromptQueueRun(["chat"]);
+  resolve(false);
+  await pending;
+  assert.deepEqual(w.appended, ["external response"]);
+  external.running = true;
+  w.handlePromptQueueRunState(run, {});
+  external.running = false;
+  w.handlePromptQueueRunState(run, {});
+  w.setIndexing(async () => false);
+  await w.dispatchQueuedPrompt(run, run.items[1]);
+  assert.deepEqual(w.appended, ["external response", "local follow-up"]);
+});
+
 test("load failure invalidates a local document probe without duplicate dispatch on resume", async () => {
   const w = world();
   const target = makeTarget("chat", false);

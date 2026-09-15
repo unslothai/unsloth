@@ -29,6 +29,7 @@ type Drag = {
   handle: HTMLButtonElement;
   originY: number;
   scrollTop: number;
+  scale: number;
   x: number;
   y: number;
   from: number;
@@ -39,6 +40,10 @@ type Drag = {
   frame: number;
   lastTime: number;
 };
+
+function getQueueScale(list: HTMLElement | null) {
+  return list ? list.getBoundingClientRect().width / list.offsetWidth || 1 : 1;
+}
 
 export function usePromptQueueReorder(
   items: PromptQueueUIItem[],
@@ -64,11 +69,12 @@ export function usePromptQueueReorder(
 
   const capturePositions = useCallback(() => {
     const list = listRef.current;
+    const scale = getQueueScale(list);
     return new Map(
       Array.from(list?.querySelectorAll<HTMLElement>(ROW_SELECTOR) ?? []).map(
         (row) => [
           row.dataset.queueItemId!,
-          row.getBoundingClientRect().top + (list?.scrollTop ?? 0),
+          row.getBoundingClientRect().top / scale + (list?.scrollTop ?? 0),
         ],
       ),
     );
@@ -124,11 +130,12 @@ export function usePromptQueueReorder(
     stopAnimations();
     if (reducedMotion) return;
     const list = listRef.current;
+    const scale = getQueueScale(list);
     for (const row of list?.querySelectorAll<HTMLElement>(ROW_SELECTOR) ?? []) {
       const before = previous.get(row.dataset.queueItemId!);
       if (before === undefined) continue;
       const offset =
-        before - row.getBoundingClientRect().top - (list?.scrollTop ?? 0);
+        before - row.getBoundingClientRect().top / scale - (list?.scrollTop ?? 0);
       if (Math.abs(offset) < 0.5) continue;
       animations.current.push(
         row.animate(
@@ -180,10 +187,12 @@ export function usePromptQueueReorder(
           : drag.y > bounds.bottom - edge
             ? Math.min(1, (drag.y - bounds.bottom + edge) / edge)
             : 0;
-      list.scrollTop += speed * elapsed * 0.45;
+      list.scrollTop += (speed * elapsed * 0.45) / drag.scale;
     }
     const source = drag.rows[drag.from];
-    const delta = drag.y - drag.originY + list.scrollTop - drag.scrollTop;
+    // Pointer coordinates include interface scaling; transforms do not.
+    const delta =
+      (drag.y - drag.originY) / drag.scale + list.scrollTop - drag.scrollTop;
     const first = drag.rows[0];
     const last = drag.rows[drag.rows.length - 1];
     const offset = Math.max(
@@ -221,6 +230,7 @@ export function usePromptQueueReorder(
     if (!list) return;
     stopAnimations();
     const bounds = list.getBoundingClientRect();
+    const scale = getQueueScale(list);
     const rows = Array.from(
       list.querySelectorAll<HTMLElement>(ROW_SELECTOR),
     ).map((element) => {
@@ -231,8 +241,8 @@ export function usePromptQueueReorder(
       return {
         id: item.id,
         element,
-        top: rect.top - bounds.top + list.scrollTop,
-        height: rect.height,
+        top: (rect.top - bounds.top) / scale + list.scrollTop,
+        height: rect.height / scale,
         movable: item.canEdit && item.canRemove,
       };
     });
@@ -252,6 +262,7 @@ export function usePromptQueueReorder(
       handle: event.currentTarget,
       originY: event.clientY,
       scrollTop: list.scrollTop,
+      scale,
       x: event.clientX,
       y: event.clientY,
       from,

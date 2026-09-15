@@ -1449,8 +1449,6 @@ function resumePromptQueueRun(threadIds?: string[]) {
   for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
     if (run.items.some((item) => item.blockedByModelFailure)) {
       for (const item of run.items) item.blockedByModelFailure = false;
-      run.generation += 1;
-      clearPromptQueueRetryTimer(run);
       syncPromptQueueUI();
     }
     if (!run.paused) {
@@ -1642,6 +1640,8 @@ function handlePromptQueueRunFailed(threadId?: string | null, localOnly = false)
         }
       }
       if (getActivePromptQueueItem(run)?.blockedByModelFailure) {
+        // Invalidate the failed local attempt without disturbing external work.
+        run.generation += 1;
         clearPromptQueueRetryTimer(run);
         promptQueueDispatchingRunIds.delete(run.id);
         promptQueueActiveRunIds.delete(run.id);

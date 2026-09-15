@@ -290,6 +290,8 @@ export function PromptQueueList({
                     side="bottom"
                     sideOffset={6}
                     className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
+                    // Opening the menu must not select an item on pointer release.
+                    onPointerUpCapture={(event) => event.preventDefault()}
                     onCloseAutoFocus={(event) => {
                       if (!editFromMenuRef.current) return;
                       event.preventDefault();

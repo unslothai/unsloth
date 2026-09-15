@@ -77,12 +77,38 @@ def check_edge_cases(page):
     expect(rows.first).to_contain_text("First prompt")
 
     for direction in ("ltr", "rtl"):
-        for width, zoom in ((320, 1), (768, 1.25), (1440, 2)):
+        for width, zoom in ((320, 1), (768, 0.8), (768, 1.25), (1440, 2)):
+            print(f"LAYOUT: direction={direction}, width={width}, zoom={zoom}", flush = True)
             page.set_viewport_size({"width": width, "height": 1000})
             page.evaluate(
                 "([dir, zoom]) => { document.documentElement.dir = dir; document.body.style.zoom = zoom; }",
                 [direction, zoom],
             )
+            reset()
+            first = rows.first
+            handle = first.get_by_role("button", name = re.compile("^Reorder"))
+            box = handle.bounding_box()
+            before = first.bounding_box()["y"]
+            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            page.mouse.move(x, y)
+            page.mouse.down()
+            page.mouse.move(x, y + 14, steps = 4)
+            expect(first).to_have_attribute("data-queue-dragging", "true")
+            page.evaluate(
+                "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
+            )
+            displacement = first.bounding_box()["y"] - before
+            assert abs(displacement - 14) < 1, (direction, zoom, displacement)
+            target = rows.last.bounding_box()
+            page.mouse.move(x, target["y"] + target["height"] / 2, steps = 6)
+            expect(attempts).to_have_text("0")
+            page.mouse.up()
+            expect(attempts).to_have_text("1")
+            expect(rows.last).to_have_attribute("data-queue-item-id", "q0")
+            rows.evaluate_all(
+                "rows => Promise.all(rows.flatMap(row => row.getAnimations()).map(a => a.finished.catch(() => {})))"
+            )
+            assert abs(rows.last.bounding_box()["y"] - target["y"]) < 1
             reset()
             last = rows.last.get_by_role("button", name = re.compile("^Reorder"))
             last.focus()

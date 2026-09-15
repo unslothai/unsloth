@@ -305,8 +305,13 @@ def check_touch(browser, url):
         expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
             "data-queue-item-id", "q2"
         )
+        page.get_by_role("button", name = "More options for queued prompt 1", exact = True).tap()
+        expect(page.get_by_role("menu")).to_be_visible()
+        page.get_by_role("menuitem", name = "Edit message", exact = True).tap()
+        expect(page.get_by_role("textbox", name = "Edit queued prompt 1", exact = True)).to_be_visible()
+        page.get_by_role("button", name = "Cancel", exact = True).tap()
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        print("PASS: touch drag at 320px", flush = True)
+        print("PASS: touch drag and menu editing at 320px", flush = True)
     finally:
         context.close()
 
