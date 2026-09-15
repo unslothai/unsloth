@@ -21027,9 +21027,7 @@ class LlamaCppBackend:
             model_path, projector, sidecar_paths = custom_sidecars
         )
         if identity is None:
-            raise CustomConfigError(
-                "The selected model resources cannot be verified"
-            )
+            raise CustomConfigError("The selected model resources cannot be verified")
         if cancelled():
             return False
         current = getattr(self, "_compiled_custom_config", None)
@@ -21077,9 +21075,12 @@ class LlamaCppBackend:
                     if self._spawn_is_stale():
                         return False
                 self._reject_implicit_custom_config(env)
-                if self._gguf_load_source_identity(
-                    model_path, projector, sidecar_paths = custom_sidecars
-                ) != identity:
+                if (
+                    self._gguf_load_source_identity(
+                        model_path, projector, sidecar_paths = custom_sidecars
+                    )
+                    != identity
+                ):
                     raise CustomConfigError(
                         "Selected model resources changed during validation; retry the load"
                     )

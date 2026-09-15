@@ -15445,8 +15445,7 @@ async def _load_model_impl(
                 else bool(getattr(config, "gguf_mmproj_file", None))
             ) and custom_tuning.get("mmproj_offload") is not False
             chat_load_needs_gpu = not (
-                custom_compiled.explicit_cpu_only
-                and not custom_projector_needs_gpu
+                custom_compiled.explicit_cpu_only and not custom_projector_needs_gpu
             )
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own
