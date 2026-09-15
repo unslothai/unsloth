@@ -5958,9 +5958,21 @@ class VideoBackend:
                 def _tick(enqueued: int) -> None:
                     """One denoise step has now been fully SUBMITTED, latent update included. What
                     gets reported is what the GPU has completed; only a host with no usable CUDA
-                    events falls back to this count."""
-                    ticker.record(enqueued)
-                    _report(ticker.completed())
+                    events falls back to this count.
+
+                    Inside the capture hold-off for the same reason the poller is: recording and
+                    querying an event are both prohibited while ANOTHER thread is capturing a graph,
+                    because torch captures in cudaStreamCaptureModeGlobal, under which a concurrent
+                    capture in any thread bars every thread from potentially unsafe calls. This
+                    pipeline's own capture is caught by ``is_current_stream_capturing``; a second
+                    pipeline's is not, and Studio runs image and video renders side by side. A tick
+                    skipped here costs that step its marker and nothing else: the step number travels
+                    with the event, so the later ones do not shift, and the poller keeps reporting."""
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if not clear:
+                            return
+                        ticker.record(enqueued)
+                        _report(ticker.completed())
 
                 def _finish_denoise() -> None:
                     """The denoise is provably over, so complete the bar rather than leaving it
@@ -5978,8 +5990,15 @@ class VideoBackend:
                     runs ahead the denoise kernels may still be queued, and flipping here would
                     jump the bar to steps/steps while the GPU was still denoising. So mark the
                     boundary in the stream and let the poller flip when the GPU reaches it. With no
-                    event to wait on there is no queue to have run ahead of, so flip at once."""
-                    if not ticker.mark_boundary():
+                    event to wait on there is no queue to have run ahead of, so flip at once.
+
+                    Marking records an event, so it takes the capture hold-off too. A capture running
+                    in another pipeline right at this instant leaves nothing to wait on, and the
+                    honest thing then is to flip at the host position rather than strand the bar in
+                    the denoise phase for the rest of the render."""
+                    with _hold_off_cuda_graph_capture() as clear:
+                        marked = ticker.mark_boundary() if clear else False
+                    if not marked:
                         _enter_decode_phase()
 
                 def _pump() -> None:

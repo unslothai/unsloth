@@ -9444,3 +9444,58 @@ def test_callback_family_keeps_its_own_callback(fake_runtime, monkeypatch):
     assert pipe.vae.decodes == 1
     assert at_decode.get("phase") == "decode"
     assert at_decode.get("step") == 6
+
+
+# ── the step tick and the boundary marker are CUDA calls too ────────────────────────────────
+
+
+def test_a_capture_in_another_pipeline_stops_the_tick_from_touching_events(
+    fake_runtime, monkeypatch
+):
+    # torch captures in cudaStreamCaptureModeGlobal, under which a capture recording in ANY
+    # thread bars every thread from potentially unsafe calls -- recording and querying an event
+    # among them. is_current_stream_capturing only sees this pipeline's own capture, so a second
+    # pipeline capturing while this one ticks is exactly the case the poller is guarded for, and
+    # the tick and the boundary marker have to take the same hold-off.
+    import core.inference.video as video_mod
+
+    events = _patch_events(monkeypatch, done = True)
+
+    @contextlib.contextmanager
+    def _capture_running():
+        yield False
+
+    monkeypatch.setattr(video_mod, "_hold_off_cuda_graph_capture", _capture_running)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    # Read inside the decode, since _gen is cleared once generate() returns.
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: at_decode.update(backend._gen)
+
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    # Not one event was recorded: neither the five step markers nor the end-of-denoise boundary.
+    assert events == []
+    # And the bar is still honest at the end. With no marker to wait on there is nothing to wait
+    # FOR, so the decode flip falls back to the host position, which is what this family did
+    # before any of this and is correct when the queue cannot be measured.
+    assert at_decode.get("phase") == "decode"
+    assert at_decode.get("step") == 5
+
+
+def test_the_tick_marks_every_step_again_once_the_capture_is_over(fake_runtime, monkeypatch):
+    # The control for the test above: the guard must not cost a marker when nothing is capturing,
+    # or it would quietly turn the whole feature off.
+    events = _patch_events(monkeypatch, done = True)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    assert len(events) == 6  # five steps plus the boundary
