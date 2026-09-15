@@ -83,10 +83,23 @@ case "$SCRIPT" in
     "$WINTEMP"/unsloth-shortcut-*.ps1) ok "script lives under the Windows temp" ;;
     *) bad "script is not under the Windows temp: $SCRIPT" ;;
 esac
-case "$SCRIPT" in
-    /tmp/*) bad "script is in WSL /tmp, which wslpath turns into a UNC path" ;;
-    *)      ok "script is not in WSL /tmp" ;;
-esac
+# Structural, not a path-prefix check. The first version of this asserted the script path did not
+# start with /tmp, which is a proxy for "not in WSL's own temp" -- and a broken one: the harness
+# creates its fake Windows temp with mktemp -d, so on any machine with TMPDIR=/tmp (which is every
+# normal CI runner) the stub's own directory matched the pattern and the test failed while install.sh
+# was behaving correctly. It passed locally only because this workspace sets TMPDIR elsewhere.
+#
+# What actually has to hold is that the only place the block can allocate the script is the resolved
+# Windows temp, with no second mktemp anywhere to fall back to. That is true or false regardless of
+# where anyone's temp directory happens to live.
+ALLOC=$(printf '%s' "$BLOCK" | grep -c 'mktemp' || true)
+if [ "$ALLOC" -eq 1 ]; then
+    ok "exactly one mktemp in the block, so there is no second path to fall back to"
+else
+    bad "the block contains $ALLOC mktemp calls; a second one is a fallback that can land in WSL's /tmp, which wslpath turns into a \\\\wsl.localhost UNC path that RemoteSigned refuses"
+fi
+assert_contains "the script is allocated inside the resolved Windows temp" \
+    "$(printf '%s' "$BLOCK" | grep 'mktemp')" '$_css_win_temp/'
 rm -f "$WINTEMP"/unsloth-shortcut-*.ps1
 
 # 2. cmd.exe absent (interop disabled): nothing is allocated, so the caller takes its existing
