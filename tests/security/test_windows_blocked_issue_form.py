@@ -19,11 +19,16 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+
+# The shared runner, not a direct subprocess call: a direct one shares a single
+# $XDG_CACHE_HOME/powershell startup cache with every other xdist worker, and an interpreter that
+# dies at startup then renders as this test failing rather than as the crash it was.
+# tests/studio/test_pwsh_calls_use_the_shared_runner.py enforces this.
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -118,7 +123,7 @@ def test_the_collection_script_parses() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "snippet.ps1"
         path.write_text(snippet, encoding = "utf-8")
-        result = subprocess.run(
+        result = run_pwsh(
             [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
             capture_output = True,
             text = True,
