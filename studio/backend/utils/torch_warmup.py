@@ -206,6 +206,7 @@ def _warm_datasets() -> None:
 def _warm_inference_backend() -> None:
     # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection, which lazily is some request, and sync helpers call the getter inline from async handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
+
     get_inference_backend()
     # Before _prime_nvlink_topology, which is the first thread this module starts: once that
     # exists, "the first torch._dynamo import is single-threaded" stops being true. Folded into
@@ -292,6 +293,7 @@ def ensure_dynamo_imported() -> bool:
             import torch  # noqa: PLC0415
             import torch._dynamo  # noqa: PLC0415
             import torch._dynamo.utils  # noqa: F401, PLC0415
+
             # By ATTRIBUTE, not just by import: a submodule already in sys.modules is returned
             # by `import` without being bound on its parent, which is the broken state itself.
             # torch's own compile stack reads it this way (_functorch/aot_autograd.py).

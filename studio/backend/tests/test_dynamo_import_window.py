@@ -124,9 +124,9 @@ def test_the_warm_closes_the_window_before_it_starts_a_thread():
 
     body = inspect.getsource(torch_warmup._warm_inference_backend)
     assert "ensure_dynamo_imported()" in body, "the warm no longer closes the dynamo window"
-    assert body.index("ensure_dynamo_imported()") < body.index("_prime_nvlink_topology()"), (
-        "dynamo must be imported before the warm starts any thread"
-    )
+    assert body.index("ensure_dynamo_imported()") < body.index(
+        "_prime_nvlink_topology()"
+    ), "dynamo must be imported before the warm starts any thread"
 
 
 def test_the_stage_list_and_its_purge_contract_are_untouched():
@@ -134,16 +134,19 @@ def test_the_stage_list_and_its_purge_contract_are_untouched():
     purge-on-failure mapping whose only plausible entry for a dynamo stage would be torch,
     and purging torch is never right. This pins that decision."""
     from utils import torch_warmup
-
     assert [name for name, _ in torch_warmup._STAGES] == [
-        "hardware", "inference_backend", "transformers", "datasets",
+        "hardware",
+        "inference_backend",
+        "transformers",
+        "datasets",
     ]
 
 
 def _load_pipeline_body():
     tree = ast.parse((_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8"))
     return next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "load_pipeline"
     )
 
@@ -174,9 +177,9 @@ def test_load_failure_is_logged_with_a_traceback():
         args = [a for a in node.args if isinstance(a, ast.Constant)]
         if not any(str(a.value).startswith("diffusion.load_failed") for a in args):
             continue
-        assert any(kw.arg == "exc_info" for kw in node.keywords), (
-            "diffusion.load_failed must log exc_info, or no reporter can supply a traceback"
-        )
+        assert any(
+            kw.arg == "exc_info" for kw in node.keywords
+        ), "diffusion.load_failed must log exc_info, or no reporter can supply a traceback"
         return
     pytest.fail("no diffusion.load_failed log call found")
 
@@ -188,7 +191,8 @@ def test_trainer_reads_dynamo_config_defensively():
     # contains the wrong form, so a text match would fail on its own comment.
     tree = ast.parse((_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8"))
     bare = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.Attribute)
         and node.attr == "config"
         and isinstance(node.value, ast.Attribute)
