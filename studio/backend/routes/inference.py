@@ -18307,8 +18307,8 @@ async def generate_audio(
             "messages",
             "Audio input is not supported here; this route speaks the message text.",
         )
-    # A clip is a known part now, so the guard above no longer covers it, and this route has
-    # nothing to voice it with: it would be dropped and the text spoken as if it were absent.
+    # video_url is a known tag now, so the guard above no longer covers it and the clip would be
+    # dropped with the text spoken as if nothing were attached.
     if _request_has_video(payload):
         _raise_unsupported_openai_parameter(
             "messages",
@@ -19665,11 +19665,10 @@ _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
 # Flooring instead refused a file of exactly the size the composer allows.
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
-# llama-server's own remote download ceiling (handle_media in tools/server/server-common.cpp).
-# It also governs the size of a remote clip outright: the bytes are never in our hands, so the
-# 64 MB cap above cannot be applied to one and this is the only limit that actually holds.
+# llama-server's remote download ceiling (handle_media, tools/server/server-common.cpp). A remote
+# clip's bytes never reach us, so the 64 MB cap cannot apply and this is the only limit that holds.
 _REMOTE_VIDEO_ADMISSION_B64_CHARS = 4 * math.ceil((10 * 1024 * 1024) / 3)
-# Longest scheme we will name back to the caller. Bounds the scan over a megabytes-long clip.
+# Longest scheme named back to the caller; bounds the scan over a megabytes-long clip.
 _MAX_VIDEO_SCHEME_CHARS = 16
 _MAX_AUDIO_SECONDS = 30 * 60
 # The duration cap alone is rate-relative, so a high-rate container retains far
@@ -20334,16 +20333,15 @@ _VIDEO_INPUT_REFUSAL = (
 def _local_video_clip(payload, model_info) -> str:
     """The clip, as bare base64, that a non-GGUF backend is handed, else a refusal by name.
 
-    Reads both spellings: this path predates the ``video_url`` part, and an MLX model that
-    serves the legacy field must serve the part identically or the two disagree by backend.
+    Reads both spellings, so MLX serves a ``video_url`` part exactly as it serves the field.
     """
     if not model_info.get("has_video_input"):
         raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
     clips = _request_video_clips(payload)
     if not clips:
         raise HTTPException(status_code = 400, detail = "Could not read the provided video file.")
-    # Only llama-server fetches a clip for itself; this backend is handed bytes, so a
-    # remote URL would arrive as its own text rather than as the video.
+    # Only llama-server fetches a clip itself; this backend is handed bytes, so a remote URL
+    # would arrive as its own text rather than as the video.
     if _is_remote_video(clips[0]):
         raise HTTPException(
             status_code = 400,
@@ -20521,18 +20519,14 @@ def _is_remote_video(url: str) -> bool:
 def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     """Refuse a clip whose URL names a scheme neither we nor llama-server should honour.
 
-    llama-server reads ``input_video`` as ``data`` or, failing that, ``url``, and hands the
-    one string it finds to ``handle_media`` regardless of which key carried it. That helper
-    honours a ``file://`` prefix whenever llama-server runs with ``--media-path``, so the key
-    we pick does not constrain how the string is read: a ``file://`` clip forwarded as opaque
-    payload is still a local file read. Anything that is not a data URI or http(s) is refused
-    by name here instead, which also turns a bare path or a typo into a clear 400 rather than
-    base64 that fails to decode somewhere inside llama-server.
+    ``handle_media`` reads ``input_video`` as ``data`` else ``url`` and treats the one string it
+    finds the same way, honouring ``file://`` under ``--media-path``. Forwarding such a clip as
+    opaque payload is therefore still a local file read, so refuse it by name instead.
     """
     if not clip or clip[:5].lower() == "data:" or _is_remote_video(clip):
         return None
-    # ':' is not in the base64 alphabet, so a colon near the front is what separates a URL
-    # from a bare base64 clip, which llama-server accepts as payload and we still allow.
+    # ':' is not in the base64 alphabet, so an early colon is what marks a URL rather than the
+    # bare base64 llama-server also accepts.
     head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
     if ":" not in head:
         return None
@@ -20545,8 +20539,8 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
 
 def _request_video_rejection(payload) -> Optional[tuple[int, str]]:
     for clip in _request_video_clips(payload):
-        # A remote clip is fetched by llama-server, so its bytes are not in hand and the 64 MB
-        # cap below cannot see them; llama.cpp's own 10 MB download ceiling governs there.
+        # llama-server fetches a remote clip, so the 64 MB cap cannot see its bytes; llama.cpp's
+        # own 10 MB ceiling governs there.
         if _is_remote_video(clip):
             continue
         rejection = _video_scheme_rejection(clip)
@@ -20571,9 +20565,8 @@ def _translate_video_parts(messages: list[dict]) -> None:
             video_url = part.get("video_url")
             url = video_url.get("url") if isinstance(video_url, dict) else video_url
             url = url if isinstance(url, str) else ""
-            # Settled by _request_video_rejection before dispatch, so anything still here is a
-            # data URI, an http(s) URL, or bare base64. Restated rather than assumed: forwarding
-            # a file:// clip as opaque payload would still be read as a path by handle_media.
+            # _request_video_rejection already settled this; restated so no caller reaching here
+            # by another route can hand llama-server a file:// path.
             scheme_rejection = _video_scheme_rejection(url)
             if scheme_rejection is not None:
                 raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
@@ -22557,8 +22550,8 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # The proxy has nowhere to put the clip; say so rather than answering without it.
-        # Both spellings, so a video_url part is refused here the way the legacy field is.
+        # The proxy has nowhere to put the clip; say so rather than answering without it. Both
+        # spellings, so a video_url part is refused here the way the legacy field is.
         if _request_has_video(payload):
             raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages carries no input_audio case, so the recording would be

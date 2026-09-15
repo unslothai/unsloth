@@ -1,23 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a client actually gets back when it attaches a clip, by status code and wire shape.
+"""What a client gets back when it attaches a clip, by status code and wire shape.
 
-The existing video tests read ``routes/inference.py`` as text and assert that a line is present.
-That pins the source but not the behaviour, and it is how the non-GGUF regression this file was
-written for went unnoticed: the source assertion still passed while the request 400'd.
+The other video tests assert that a line is present in ``routes/inference.py``. That pins the
+source but not the behaviour, which is how the non-GGUF regression went unnoticed: the source
+assertion passed while the request 400'd. These drive the real router through ``TestClient``,
+taking the ``messages`` kwarg of ``generate_chat_completion`` as the JSON llama-server receives.
 
-Every test here drives the real router through ``TestClient`` with a stubbed backend, so it fails
-on what a caller would see. The dispatch boundary is the ``messages`` kwarg handed to
-``generate_chat_completion`` -- that list is the JSON llama-server receives.
+Invariant, asserted per route: a ``video_url`` part and the legacy ``video_base64`` field behave
+identically everywhere. Picking a spelling must not pick a different set of refusals.
 
-The governing invariant, asserted per route rather than once: the ``video_url`` content part and
-the legacy top-level ``video_base64`` field must behave identically everywhere. A client picks a
-spelling; it should not thereby pick a different set of refusals.
-
-Wire shapes are pinned against llama.cpp ``tools/server/server-common.cpp``, where ``handle_media``
-reads ``input_video`` as ``json_value(input_video, "data", json_value(input_video, "url", ""))``
-and caps a remote download at 10 MB.
+Wire shapes follow llama.cpp ``tools/server/server-common.cpp``, where ``handle_media`` reads
+``input_video`` as ``data`` else ``url`` and caps a remote download at 10 MB.
 """
 
 from __future__ import annotations
@@ -117,10 +112,10 @@ def _field_body(
 
 
 def _detail(response) -> str:
-    """The human message, whether the route raised a bare detail or an OpenAI error body.
+    """The human message, from a bare detail or an OpenAI error body.
 
-    Falls back to the raw text: a request that gets past the refusals answers with an SSE
-    stream or an empty body, and a test asserting a refusal is *absent* has to read those too.
+    Falls back to raw text, since a request that gets past the refusals answers with SSE or an
+    empty body and a test asserting a refusal is *absent* must read those too.
     """
     try:
         body = response.json()
@@ -264,8 +259,7 @@ def test_a_gguf_without_a_video_projector_refuses_either_spelling(monkeypatch, b
 def test_a_non_gguf_backend_is_offered_the_clip_rather_than_refused_outright(monkeypatch, body):
     """The regression guard. A blanket 'not using_gguf' refusal ahead of _local_video_clip
     refuses video on transformers and MLX for BOTH spellings, including the legacy field the
-    Studio frontend sends -- so it breaks working MLX video on macOS. Reaching the gate is the
-    whole assertion; what the gate then decides is _local_video_clip's business.
+    frontend sends, breaking working MLX video on macOS.
     """
     reached: list[dict] = []
 
@@ -344,10 +338,9 @@ def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
     ],
 )
 def test_an_unsupported_scheme_is_refused_by_name(monkeypatch, url):
-    """llama.cpp reads input_video as data-or-url and hands the one string it finds to
-    handle_media regardless, and handle_media honours file:// whenever llama-server runs with
-    --media-path. Forwarding the clip as opaque payload therefore does not neutralise the
-    scheme, so it is refused here rather than left to mean whatever llama-server decides.
+    """handle_media reads input_video as data-or-url and treats the one string it finds the
+    same way, honouring file:// under --media-path. Forwarding the clip as opaque payload does
+    not neutralise the scheme, so refuse it here.
     """
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(url))
@@ -378,9 +371,8 @@ def test_bare_base64_is_not_mistaken_for_a_scheme(monkeypatch):
 
 
 def test_an_oversized_clip_is_refused_in_either_spelling():
-    """Asserted on the shared rule rather than over HTTP: the body would be 85 MB of JSON, and
-    the ordering guarantee (refuse before the model switch) is pinned separately in
-    test_video_attachment_part.py, where the switch stub asserts it never ran."""
+    """On the shared rule rather than over HTTP, since the body would be 85 MB of JSON. The
+    ordering guarantee is pinned in test_video_attachment_part.py."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _MAX_VIDEO_B64_CHARS
 
@@ -410,9 +402,8 @@ def test_a_data_uri_with_no_payload_is_refused(monkeypatch):
 
 
 def test_a_remote_url_is_not_measured_against_the_64_mb_cap(monkeypatch):
-    """The bytes are never in our hands, so the cap cannot see them; llama.cpp's own 10 MB
-    download ceiling is the limit that actually holds. Measuring the URL string instead would
-    make the cap look enforced while admitting any size of clip."""
+    """The bytes never reach us, so llama.cpp's 10 MB ceiling is the limit that holds.
+    Measuring the URL string would make the cap look enforced while admitting any size."""
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
         response = client.post("/v1/chat/completions", json = _part_body(_REMOTE))
@@ -454,10 +445,8 @@ def test_token_counting_refuses_either_spelling(monkeypatch, body):
 
 @pytest.mark.parametrize("body", [_part_body(_DATA_URI), _field_body()])
 def test_the_speech_route_refuses_a_clip_rather_than_speaking_past_it(monkeypatch, body):
-    """/audio/generate keeps only text, so before this refusal a clip was dropped in silence and
-    the text was spoken as though nothing had been attached. Registering video_url as a known
-    tag is what removed the unknown-part guard that used to cover it.
-    """
+    """/audio/generate keeps only text, so without this the clip was dropped in silence.
+    Registering video_url as a known tag removed the unknown-part guard that covered it."""
     body = {k: v for k, v in body.items() if k != "stream"}
     with _client(monkeypatch, _VideoGguf(), prefix = "") as client:
         response = client.post("/audio/generate", json = body)
