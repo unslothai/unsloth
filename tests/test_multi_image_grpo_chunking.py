@@ -34,7 +34,7 @@ def test_grid_model_slices_rows_by_patch_and_grid_by_image():
     from unsloth_zoo.rl_replacements import grpo_vision_chunks
 
     num_images = [2, 1, 3, 1]
-    grid = torch.tensor([[1, 2, 2]] * sum(num_images))   # 4 patch rows per image
+    grid = torch.tensor([[1, 2, 2]] * sum(num_images))  # 4 patch rows per image
     rows = int(grid.prod(dim = -1).sum())
     vision = {
         "pixel_values": torch.arange(rows).reshape(rows, 1).float(),

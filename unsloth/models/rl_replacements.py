@@ -1229,7 +1229,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             function = function.replace(_anchor, _anchor + _output_extras)
             break
     else:
-        if "output[\"num_images\"]" in function:
+        if 'output["num_images"]' in function:
             _warn_once(
                 "grpo_output_num_images",
                 "Unsloth: the GRPO num_images output block changed shape, so "
@@ -1336,7 +1336,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         # TRL >= 1.0.0 reads the column directly.
         (
             'images = [[example.get("image")] if example.get("image") is not None else None for example in inputs]',
-            "images = [_unsloth_grpo_image_cell(example.get(\"image\")) for example in inputs]",
+            'images = [_unsloth_grpo_image_cell(example.get("image")) for example in inputs]',
         ),
         # TRL 0.22.x - 0.23.x builds the processor kwargs itself.
         (
@@ -1358,7 +1358,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         "                    prepare_multimodal_messages(prompt, num_images=1)"
     )
     _placeholder_new = (
-        "            for prompt, _unsloth_cell in zip(prompts, kwargs[\"images\"]):\n"
+        '            for prompt, _unsloth_cell in zip(prompts, kwargs["images"]):\n'
         "                if isinstance(prompt, list):  # i.e., when using conversational data\n"
         "                    prepare_multimodal_messages(\n"
         "                        prompt, num_images=len(_unsloth_cell) if _unsloth_cell else 1\n"
@@ -1623,9 +1623,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             if _grpo_vision_chunks is None:
                 vision_chunks = [{} for _ in input_ids_chunks]
             else:
-                vision_chunks = _grpo_vision_chunks(
-                    vision_inputs, total_samples, batch_size
-                )
+                vision_chunks = _grpo_vision_chunks(vision_inputs, total_samples, batch_size)
 
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
@@ -2420,7 +2418,9 @@ def grpo_trainer_compute_loss(function_name, function):
         # Same key tuple the logprob pass reads, so nothing the processor produced is
         # dropped on the way to the gradient pass. See unslothai/unsloth#6960.
         try:
-            from unsloth_zoo.rl_replacements import grpo_get_vision_inputs as _grpo_get_vision_inputs
+            from unsloth_zoo.rl_replacements import (
+                grpo_get_vision_inputs as _grpo_get_vision_inputs,
+            )
             _vision_inputs = _grpo_get_vision_inputs(inputs)
         except Exception:
             # Same names as unsloth_zoo's GRPO_VISION_KEYS, in case the installed zoo
@@ -2429,9 +2429,16 @@ def grpo_trainer_compute_loss(function_name, function):
             _vision_inputs = {
                 key: inputs.get(key, None)
                 for key in (
-                    "pixel_values", "image_grid_thw", "pixel_attention_mask",
-                    "image_sizes", "spatial_shapes", "num_tiles", "image_position_ids",
-                    "num_images", "token_type_ids", "mm_token_type_ids",
+                    "pixel_values",
+                    "image_grid_thw",
+                    "pixel_attention_mask",
+                    "image_sizes",
+                    "spatial_shapes",
+                    "num_tiles",
+                    "image_position_ids",
+                    "num_images",
+                    "token_type_ids",
+                    "mm_token_type_ids",
                 )
             }
         pixel_values = _vision_inputs.get("pixel_values", None)
