@@ -272,7 +272,13 @@ jobs:
           # keeps the install ~250 MB / ~1 min on a clean runner.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
+          # Follows the published cap in pyproject.toml rather than an independent
+          # number. The old `<5.5` had drifted BELOW it: it excluded 5.5.0, the very
+          # release the package pinned as its ceiling, so this job tested 5.4.x while
+          # every user got 5.5.0. The cap is now <=5.17.0, so this job installs the
+          # newest transformers a `pip install unsloth` can produce, which is what the
+          # backend has to import cleanly against.
+          pip install 'transformers>=4.51,<=5.17.0'
           # peft: core/inference/inference.py imports it at module scope, and it is listed
           # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
           # installs. Without it every importorskip of that module SKIPS instead of running,
@@ -565,7 +571,13 @@ jobs:
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
-          pip install 'transformers>=4.51,<5.5'
+          # Follows the published cap in pyproject.toml rather than an independent
+          # number. The old `<5.5` had drifted BELOW it: it excluded 5.5.0, the very
+          # release the package pinned as its ceiling, so this job tested 5.4.x while
+          # every user got 5.5.0. The cap is now <=5.17.0, so this job installs the
+          # newest transformers a `pip install unsloth` can produce, which is what the
+          # backend has to import cleanly against.
+          pip install 'transformers>=4.51,<=5.17.0'
           # bitsandbytes: hard import in unsloth/models/_utils.py. Recent
           # versions ship a CPU build that imports cleanly on Linux.
           pip install 'bitsandbytes>=0.45'
