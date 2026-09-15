@@ -26,6 +26,7 @@ None of these import the real diffusers, which is the point of stubbing it.
 from __future__ import annotations
 
 import ast
+import builtins
 import sys
 import threading
 import types
@@ -141,6 +142,37 @@ def test_a_video_only_install_also_prewarms(warm, monkeypatch):
     assert warm.prewarm_diffusers_if_image_models_exist() is True
 
 
+def test_a_video_only_install_of_an_h3_gguf_pays_nothing(warm, monkeypatch):
+    """MiniMax H3 as a GGUF is the one video combination that never imports diffusers.
+
+    ``VideoBackend.load_pipeline`` asks ``is_h3_native(fam, kind)`` and returns through
+    ``_run_load_h3_native`` before its own ``import diffusers``. The image resolver cannot see
+    this: ``detected_image_family`` has no answer for a ``VideoFamily``, so the "unknown family"
+    branch would call it diffusers and charge an H3-only install 316 MB it never uses. Uses the
+    real family detector and the real predicate, so a rename on either side fails here.
+    """
+    _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["unsloth/MiniMax-H3-GGUF"]})
+    seen = _stub_diffusers(monkeypatch)
+    seen["imported"] = False
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+    # And not latched, so an image model downloaded later still gets a prewarm next boot.
+    assert warm._diffusers_prewarmed is False
+
+
+def test_a_video_family_we_cannot_identify_still_prewarms(warm, monkeypatch):
+    """The H3 skip is an exception carved out of the default, not a new default.
+
+    Every other video load reaches video.py's ``import diffusers``, so anything the detector
+    cannot place must keep prewarming. Getting this backwards would silently drop the feature
+    for every video user whose repo id is not in the family table.
+    """
+    _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["someone/private-repack"]})
+    _stub_diffusers(monkeypatch)
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is True
+
+
 def test_the_kill_switch_is_honoured(warm, monkeypatch):
     monkeypatch.setenv(warm.DIFFUSERS_PREWARM_DISABLE_ENV_VAR, "1")
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
@@ -188,6 +220,77 @@ def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
     _stub_diffusers(monkeypatch, raises = True)
     assert warm.prewarm_diffusers_if_image_models_exist() is False
+
+
+def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatch):
+    """core/inference/diffusion.py installs these three at module scope, above its own lazy
+    `import diffusers`, because on Windows ROCm diffusers imports xformers on sight and its
+    quantizers torchao, and both land on an absent distributed backend. This prewarm can be the
+    first importer in the process, so it owes the same three installs, in front of the import."""
+    from core import _torchao_stub
+    from core.inference import diffusion_torchao_patches
+
+    order = []
+    for mod, name in (
+        (_torchao_stub, "install_xformers_windows_rocm_stub"),
+        (_torchao_stub, "install_torchao_windows_rocm_stub"),
+        (diffusion_torchao_patches, "install_torchao_int_mm_patch"),
+    ):
+        monkeypatch.setattr(mod, name, (lambda n: lambda: order.append(n))(name))
+
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+
+    real_import = builtins.__import__
+
+    def _record_import(name, *args, **kwargs):
+        if name.startswith("diffusers"):
+            order.append("import")
+            return types.ModuleType(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _record_import)
+
+    warm.prewarm_diffusers_if_image_models_exist()
+    monkeypatch.undo()
+
+    assert order[:3] == [
+        "install_xformers_windows_rocm_stub",
+        "install_torchao_windows_rocm_stub",
+        "install_torchao_int_mm_patch",
+    ], f"stubs did not run first, in the loader's order: {order}"
+    assert "import" in order and order.index("import") > 2
+
+
+def test_a_failed_prewarm_leaves_no_half_imported_diffusers(warm, monkeypatch):
+    """The failure this prewarm adds that the loader did not have.
+
+    When ``diffusers/__init__.py`` raises, CPython evicts only the parent and keeps every
+    submodule it already executed. The prewarm swallows that failure, so the next importer is a
+    user's image load, and it would re-run ``__init__`` with each ``from .x import y`` served
+    from that cache and attributes never rebound: diffusers imports "successfully" while missing
+    pieces. Hand the load path a clean slate instead.
+    """
+    _stub_gate(monkeypatch, {"text-to-image": ["m"]})
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    leftover = types.ModuleType("diffusers.pipelines")
+    monkeypatch.setitem(sys.modules, "diffusers.pipelines", leftover)
+
+    class _Boom:
+        def find_module(self, *a, **k):
+            return None
+
+        def find_spec(self, name, path = None, target = None):
+            if name == "diffusers":
+                raise ImportError("simulated half-built diffusers")
+            return None
+
+    monkeypatch.setattr(sys, "meta_path", [_Boom(), *sys.meta_path])
+
+    assert warm.prewarm_diffusers_if_image_models_exist() is False
+    assert "diffusers.pipelines" not in sys.modules, (
+        "a failed prewarm left submodules behind for the load path to trip over"
+    )
 
 
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):

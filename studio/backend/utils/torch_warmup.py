@@ -368,7 +368,8 @@ DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
 # The catalog's own task identifiers, which _build_index compares with ==. Anything else
 # (a friendly "image"/"video") silently builds an empty index and reads as "no models here",
 # so the gate would refuse forever. Pinned against the catalog by test_diffusers_prewarm.py.
-_MEDIA_PREWARM_TASKS = ("text-to-image", "text-to-video")
+_VIDEO_TASK = "text-to-video"
+_MEDIA_PREWARM_TASKS = ("text-to-image", _VIDEO_TASK)
 
 _diffusers_prewarm_lock = threading.Lock()
 _diffusers_prewarmed = False
@@ -406,13 +407,43 @@ def _a_local_model_would_load_through_diffusers() -> bool:
             pick = resolve_local_media_model(model_id, task = task)
             if pick is None:
                 continue
-            if (pick.model_kind or ("gguf" if pick.gguf_filename else None)) != "gguf":
-                return True  # only a GGUF can go native
+            kind = pick.model_kind or ("gguf" if pick.gguf_filename else None)
+            if kind != "gguf":
+                return True  # only a GGUF can go native, by either backend
+            if task == _VIDEO_TASK:
+                # The video backend has its own native path and its own family type, so the
+                # image resolver and the image router cannot answer for it: an H3 GGUF returns
+                # from _run_load_h3_native before video.py's own `import diffusers`, while every
+                # other video load reaches it.
+                if _is_native_video_pick(pick):
+                    continue
+                return True
             family = detected_image_family(pick)
             if family is None:
                 return True  # unknown family: diffusers is where the load would land
             if predict_engine(family, model_kind = "gguf") == ENGINE_DIFFUSERS:
                 return True
+    return False
+
+
+def _is_native_video_pick(pick) -> bool:
+    """Whether *pick* is the one video combination that never imports diffusers.
+
+    ``VideoBackend.load_pipeline`` asks ``is_h3_native(fam, kind)`` and returns through
+    ``_run_load_h3_native`` before its own ``import diffusers``; everything else falls through
+    to it. Asking the video backend's own predicate keeps this from drifting away from it."""
+    from core.inference.video_families import detect_video_family  # noqa: PLC0415
+    from core.inference.video_minimax_h3 import is_h3_native  # noqa: PLC0415
+
+    for needle in (pick.model_path, pick.model_id):
+        if not needle:
+            continue
+        try:
+            family = detect_video_family(needle)
+        except Exception:  # noqa: BLE001 -- a probe failure must not decide "native"
+            continue
+        if family is not None:
+            return bool(is_h3_native(family, "gguf"))
     return False
 
 
@@ -455,6 +486,26 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             logger.debug("diffusers prewarm gate unavailable: %r", exc)
             return False
 
+        try:
+            # core.inference.diffusion installs these at module scope, above its own lazy
+            # `import diffusers`, because on Windows ROCm diffusers reaches xformers and torchao
+            # and both land on an absent distributed backend. This prewarm can be the first
+            # importer in the process, so it owes the same three installs; they are idempotent.
+            from core._torchao_stub import (  # noqa: PLC0415
+                install_torchao_windows_rocm_stub,
+                install_xformers_windows_rocm_stub,
+            )
+            from core.inference.diffusion_torchao_patches import (  # noqa: PLC0415
+                install_torchao_int_mm_patch,
+            )
+
+            install_xformers_windows_rocm_stub()
+            install_torchao_windows_rocm_stub()
+            install_torchao_int_mm_patch()
+        except Exception as exc:  # noqa: BLE001 -- importing unprotected is the hazard; skip
+            logger.debug("diffusers prewarm skipped: stubs unavailable: %r", exc)
+            return False
+
         started = time.perf_counter()
         try:
             import diffusers  # noqa: F401, PLC0415
@@ -469,6 +520,11 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             quiet_third_party_progress_bars()
         except Exception as exc:  # noqa: BLE001 -- the load path imports it again and will report
             logger.debug("diffusers prewarm skipped: %r", exc)
+            # A failed package import leaves its executed submodules in sys.modules, and the
+            # load path's own `import diffusers` would then re-run __init__ against that cache
+            # and come back missing attributes. The prewarm swallows the failure, so the retry
+            # would be a user's request: hand it a clean slate instead.
+            purge_partial_import("diffusers")
             return False
         _diffusers_prewarmed = True
         logger.info(
