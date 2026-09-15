@@ -15296,7 +15296,12 @@ class LlamaCppBackend:
                 total = sum(size_map.get(f, 0) for f in shard_files)
                 first = sorted(shard_files)[0]
                 extra = [path for path in sorted(shard_files) if path != first]
-                needed = 0 if _cached_complete_candidate(hf_repo, first, extra) else total
+                cached = _cached_complete_candidate(hf_repo, first, extra)
+                needed = (
+                    0
+                    if cached and _cached_candidate_matches_revision_size(hf_repo, cached, hf_token)
+                    else total
+                )
                 if 0 < total < requested_bytes and needed <= free_bytes:
                     fitting.append((first, total, extra, needed))
             if not fitting:

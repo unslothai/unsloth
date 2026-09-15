@@ -621,6 +621,14 @@ class TestLoadReusesCachedCopy:
 
         assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
 
+    def test_low_disk_fallback_ignores_a_truncated_cached_variant(self, hf_cache):
+        backend = LlamaCppBackend()
+        _build_cache(hf_cache, REPO, {"gemma-test-Q6_K.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+
     def test_low_disk_without_any_fitting_variant_refuses(self, hf_cache):
         backend = LlamaCppBackend()
         with _low_disk_hub(GIB // 2), pytest.raises(RuntimeError, match = "any variant"):
