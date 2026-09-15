@@ -3003,6 +3003,9 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     local install_dir=$1 backend
     [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
     [ -z "$_LLAMA_PR" ] || return 1
+    # An explicit version pin asked for that version, which the old install is not.
+    [ -z "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ] || return 1
+    case "${UNSLOTH_LLAMA_TAG:-}" in ""|latest|master) ;; *) return 1 ;; esac
     _has_local_llama_server "$install_dir" || return 1
     backend="$(_installed_prebuilt_backend "$install_dir")"
     case "$backend" in

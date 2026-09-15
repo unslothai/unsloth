@@ -142,6 +142,13 @@ class TestTheKeepDecision:
         assert _decide(tmp_path, install_dir) == "REPLACE"
         assert _decide(tmp_path, install_dir, _setup_amd_detected = "true") == "REPLACE"
 
+    def test_an_explicit_version_pin_is_not_satisfied_by_the_old_install(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "cuda"})
+        nvidia = {"_setup_nvidia_physical": "true"}
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b7000", **nvidia) == "REPLACE"
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b7000-mix", **nvidia) == "REPLACE"
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "latest", **nvidia) == "KEEP cuda"
+
     def test_a_cpu_prebuilt_is_not_worth_keeping(self, tmp_path):
         install_dir = _install(tmp_path, {"backend": "cpu"})
         assert _decide(tmp_path, install_dir, _setup_nvidia_physical = "true") == "REPLACE"
