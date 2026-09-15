@@ -2970,10 +2970,8 @@ print(answer)
 PY
 }
 
-# The updater's own completeness check, offline: a marker and an executable are not proof
-# the tree still loads (a quarantined library, a stripped runtime file, no quantizer). Not
-# --validate-install, which downloads its probe model and the update just failed for want
-# of a download.
+# The updater's own completeness check, offline: a marker and an executable do not prove the
+# tree loads. Not --validate-install, which downloads a probe model the failed update cannot.
 # Why the prebuilt update failed, in a few words, from the helper's log.
 _llama_update_fail_reason() {
     if grep -qiE "429|rate limit" "$1" 2>/dev/null; then
@@ -2995,10 +2993,8 @@ _setup_has_intel_gpu() {
 }
 
 # A CPU-only source build must not replace a working GPU prebuilt while the GPU is still
-# there: the prebuilt update failed for a reason a CPU binary cannot repair (network, a
-# GitHub limit, a bad release) and the swap below is for good (#9255). Prints the backend
-# to keep. False when there is nothing to keep, the GPU the marker names is gone, or the
-# build was asked for by hand. Vulkan runs on any of the three vendors.
+# there (#9255). Prints the backend to keep; false when there is nothing to keep, the GPU
+# the marker names is gone, or the build was asked for by hand. Vulkan fits any vendor.
 _gpu_prebuilt_to_keep_over_cpu_build() {
     local install_dir=$1 backend
     [ "$_LLAMA_FORCE_COMPILE" != "1" ] || return 1
@@ -4097,8 +4093,7 @@ PY
     fi
 fi
 
-# A GPU host that lost, or nearly lost, its GPU llama.cpp is named in the footer: every
-# path to that outcome exits 0, and a mid-log line is what #9255's reporters scrolled past.
+# Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.
 _print_llama_gpu_notes() {
     if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then
         printf "  ${C_WARN}%-15s%s${C_RST}\n" "llama.cpp" "update failed (${_LLAMA_UPDATE_FAIL_REASON:-the source fallback could only build for the CPU}); the installed $_LLAMA_KEPT_GPU_PREBUILT prebuilt was kept and the next update will retry"
