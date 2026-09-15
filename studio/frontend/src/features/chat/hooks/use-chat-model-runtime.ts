@@ -1742,8 +1742,7 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            // A queue can be created while the preliminary unload is pending, so stop a second time at the
-            // final boundary.
+            // Invalidate factories started before the final loading boundary.
             requestLocalPromptQueueStop();
             if (lifecycleLease !== null) {
               chatModelLifecycleGate.markLoading(lifecycleLease);

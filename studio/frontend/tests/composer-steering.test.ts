@@ -466,8 +466,83 @@ function hydratedFactory(
     wait: boolean,
     onStarted?: () => void,
     onAborted?: () => void,
+    capturedAt?: {
+      localModelBoundaryGeneration: number;
+      queuedSettingsEpoch: number;
+      temporary: boolean;
+    },
+    behavior?: "queue" | "steer",
   ) => boolean;
 }
+
+for (const firstBehavior of ["queue", "steer"] as const) {
+  for (const latestBehavior of ["queue", "steer"] as const) {
+    for (const latestWait of [true, false]) {
+      test(`pending follow-up intent: ${firstBehavior} to ${latestBehavior}, wait=${latestWait}`, async () => {
+        const w = world();
+        const target = makeTarget("chat");
+        const resolves: ((target: Target) => void)[] = [];
+        const accept = hydratedFactory(
+          w,
+          target,
+          () => new Promise((resolve) => resolves.push(resolve)),
+        );
+        let cleared = 0;
+        const onStarted = () => {
+          cleared++;
+        };
+        accept(
+          ["same draft"],
+          true,
+          onStarted,
+          undefined,
+          undefined,
+          firstBehavior,
+        );
+        accept(
+          ["same draft"],
+          latestWait,
+          onStarted,
+          undefined,
+          undefined,
+          latestBehavior,
+        );
+        for (const resolve of resolves) resolve(target);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.deepEqual(
+          w.run().items.map((item) => item.prompt),
+          ["same draft"],
+        );
+        assert.equal(resolves.length, 1, "hydrate the same pending draft only once");
+        assert.equal(cleared, 1);
+        assert.equal(target.cancels, Number(latestBehavior === "steer"));
+        if (latestBehavior === "queue") {
+          assert.equal(w.run().index, latestWait ? -1 : 0);
+        }
+      });
+    }
+  }
+}
+
+test("pending follow-up intent preserves distinct drafts and later repeat submissions", async () => {
+  const w = world();
+  const target = makeTarget("chat");
+  const accept = hydratedFactory(w, target);
+  let cleared = 0;
+  const onStarted = () => {
+    cleared++;
+  };
+  accept(["first draft"], true, onStarted);
+  accept(["second draft"], true, onStarted);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(accept(["first draft"], true, onStarted), true);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    w.run().items.map((item) => item.prompt),
+    ["first draft", "second draft", "first draft"],
+  );
+  assert.equal(cleared, 3);
+});
 
 test("three follow-ups are accepted and reorderable during loading, then dispatch in order after the first response", async () => {
   const w = world();

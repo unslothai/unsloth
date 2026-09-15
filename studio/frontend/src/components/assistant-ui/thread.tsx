@@ -3611,6 +3611,8 @@ const Composer: FC<{
         threadId: string | null;
         localModelBoundaryGeneration: number;
         queuedSettingsEpoch: number;
+        waitForCurrentRun: boolean;
+        behavior: ComposerFollowUpBehavior;
       }
     >(),
   );
@@ -4017,16 +4019,14 @@ const Composer: FC<{
       },
       behavior: ComposerFollowUpBehavior = "queue",
     ) => {
-      const reservationKey = JSON.stringify([
-        referenceThreadId,
-        items,
-        waitForCurrentRun,
-        behavior,
-      ]);
+      const reservationKey = JSON.stringify([referenceThreadId, items]);
       // A reservation that is still going to start owns this prompt. One that
       // is already invalid is replaced, so the retry is the one that queues.
       const existing = promptQueueStartPendingRef.current.get(reservationKey);
       if (existing && !pendingQueueStartIsStale(existing)) {
+        // A new shortcut updates the pending draft instead of sending it twice.
+        existing.waitForCurrentRun = waitForCurrentRun;
+        existing.behavior = behavior;
         return false;
       }
       const reservation = {
@@ -4040,6 +4040,8 @@ const Composer: FC<{
         queuedSettingsEpoch:
           capturedAt?.queuedSettingsEpoch ??
           useChatRuntimeStore.getState().queuedSettingsEpoch,
+        waitForCurrentRun,
+        behavior,
       };
       promptQueueStartPendingRef.current.set(reservationKey, reservation);
       void createPromptQueueTarget()
@@ -4067,7 +4069,12 @@ const Composer: FC<{
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {
-            startPromptQueue(items, target, waitForCurrentRun, behavior);
+            startPromptQueue(
+              items,
+              target,
+              reservation.waitForCurrentRun,
+              reservation.behavior,
+            );
             onStarted?.();
           } else if (
             promptQueueStartPendingRef.current.get(reservationKey) ===
