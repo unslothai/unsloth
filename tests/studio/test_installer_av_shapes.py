@@ -24,8 +24,13 @@ from unsloth_pwsh_runner import pwsh_env
 REPO = Path(__file__).resolve().parents[2]
 
 PS_SCRIPTS = ("install.ps1", "studio/setup.ps1", "scripts/uninstall.ps1")
-SH_SCRIPTS = ("install.sh", "studio/setup.sh")
-ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS
+SH_SCRIPTS = ("install.sh", "studio/setup.sh", "scripts/uninstall.sh")
+# A shipped .bat is scanned like any other file, and studio/setup.bat launches PowerShell, so the
+# same rules apply. Neither it nor scripts/uninstall.sh was in any list here, which is how
+# setup.bat's `-ExecutionPolicy Bypass` survived the passes in #7822 and #8586: every guard below
+# was reading a set of files that did not include it.
+BAT_SCRIPTS = ("studio/setup.bat",)
+ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS + BAT_SCRIPTS
 
 
 def _text(name: str) -> str:
@@ -107,18 +112,102 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         assert banned not in text, f"{name} contains {banned}"
 
 
+_HIDDEN = re.compile(r"-WindowStyle\s+Hidden", re.IGNORECASE)
+_BYPASS = re.compile(
+    r"-ExecutionPolicy\s+Bypass|Set-ExecutionPolicy[^\r\n]*?\bBypass\b", re.IGNORECASE
+)
+_ASSIGNMENT = re.compile(r"\$(?:script:|env:)?(\w+)\s*(?:=|\+=)\s*(.*)")
+
+# Every relaxed execution policy left in a shipped script, why it is still there, and what removes
+# it. A ratchet: these counts may go down, never up, and the test fails BOTH ways -- too many is a
+# new site, too few is a stale entry that has stopped guarding anything.
+KNOWN_BYPASS_SITES = {
+    # studio/setup.bat:5. Removed by unblocking setup.ps1 through -Command first, then loading it
+    # under RemoteSigned: policy applies to script files, not to -Command, so the first call always
+    # runs and the second then loads a local unmarked script.
+    "studio/setup.bat": 1,
+    # scripts/uninstall.ps1:32, inside the printed _Usage here-string. Never executed, but AMSI
+    # scans the file whole and a classifier cannot tell a string from a statement.
+    "scripts/uninstall.ps1": 1,
+    # install.ps1:3433, the roaming-profile fallback for a launcher on a share. The only one that is
+    # genuinely load-bearing: %LOCALAPPDATA% can be folder-redirected to a UNC path, and RemoteSigned
+    # refuses an unsigned script there, so removing this needs the launcher written to a
+    # guaranteed-local directory first. Until then a shortcut that silently does nothing is worse
+    # than the token.
+    "install.ps1": 1,
+}
+
+# Known (script, variable) pairs where one assignment carries a hidden window and another a relaxed
+# policy. Empty is the goal. install.ps1's $shortcutArgs is recorded rather than failed on, so this
+# guard can land without also forcing the launcher relocation above.
+KNOWN_SPLIT_PAIR_VARIABLES = {("install.ps1", "shortcutArgs")}
+
+
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
-    # Microsoft's detections key on this pair;
-    # install.rs already refuses it for the app's own launch.
-    # Python setup/refresh argv is exercised at the subprocess boundary by
-    # unsloth_cli/tests/test_studio_runtime_gate_powershell.py::
-    # test_windows_launch_uses_process_flags_without_windowstyle.
-    for number, line in enumerate(_text(name).splitlines(), start = 1):
-        if re.search(r"-WindowStyle\s+Hidden", line, re.IGNORECASE):
-            assert not re.search(
-                r"-ExecutionPolicy\s+Bypass", line, re.IGNORECASE
-            ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
+    """Three layers, because the same-line check alone never saw the pair we actually shipped.
+
+    Microsoft's detections key on the pair, and install.rs already refuses it for the app's own
+    launch. Python setup/refresh argv is exercised at the subprocess boundary by
+    unsloth_cli/tests/test_studio_runtime_gate_powershell.py::
+    test_windows_launch_uses_process_flags_without_windowstyle.
+
+    The original check compared the two flags only within one physical line. install.ps1 assigns
+    `$shortcutArgs` a hidden window at :3419 and then overwrites it with a relaxed policy at :3433,
+    fourteen lines apart in one function, and that passed for as long as it existed. A scanner reads
+    the file, not the line.
+    """
+    text = _text(name)
+    lines = text.splitlines()
+
+    # 1. Same line. The cheapest check and the one with the clearest message.
+    for number, line in enumerate(lines, start = 1):
+        if _HIDDEN.search(line):
+            assert not _BYPASS.search(line), (
+                f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
+            )
+
+    # 2. A ratchet on how many relaxed policies the file contains at all, wherever they sit and
+    #    whatever they are near. This is what catches a new one arriving somewhere the other two
+    #    layers do not model.
+    found = [
+        (number, line.strip())
+        for number, line in enumerate(lines, start = 1)
+        if _BYPASS.search(line)
+    ]
+    allowed = KNOWN_BYPASS_SITES.get(name, 0)
+    assert len(found) <= allowed, (
+        f"{name} relaxes the execution policy in {len(found)} place(s) but {allowed} are recorded: "
+        f"{found}. RemoteSigned loads any locally written, unmarked script, which covers almost "
+        f"every case; if this one genuinely cannot, add it to KNOWN_BYPASS_SITES with the reason "
+        f"and what would remove it."
+    )
+    assert len(found) >= allowed, (
+        f"{name} now has {len(found)} relaxed policies but KNOWN_BYPASS_SITES records {allowed}. "
+        f"Lower the count in the same commit that removed one, so the ratchet keeps its grip "
+        f"instead of leaving slack for the next regression to fit into."
+    )
+
+    # 3. Same variable, any distance: the union of everything assigned to one name must not contain
+    #    both flags. This is the layer that catches the install.ps1 3419/3433 shape.
+    contributions: dict[str, set] = {}
+    for line in lines:
+        match = _ASSIGNMENT.match(line.strip())
+        if not match:
+            continue
+        seen = contributions.setdefault(match.group(1), set())
+        if _HIDDEN.search(match.group(2)):
+            seen.add("hidden")
+        if _BYPASS.search(match.group(2)):
+            seen.add("bypass")
+    for variable, seen in sorted(contributions.items()):
+        if seen != {"hidden", "bypass"}:
+            continue
+        assert (name, variable) in KNOWN_SPLIT_PAIR_VARIABLES, (
+            f"{name}: ${variable} is assigned a hidden window in one place and a relaxed policy in "
+            f"another. Only one of them reaches the command line, so whichever is dead weight "
+            f"should go rather than be recorded here."
+        )
 
 
 # Every native import left in the installers, however it is declared. Both scripts define theirs through reflection
