@@ -706,9 +706,9 @@ def test_the_laid_out_copies_are_exempt_from_on_access_scanning() -> None:
     """
     body = WORKFLOW.read_text(encoding = "utf-8")
     start = body.index("Add-MpPreference -ExclusionPath")
-    assert start < body.index("$controlOut = (& $mp -Scan"), (
-        "the exclusion is added after the control has already been scanned"
-    )
-    assert "$env:ROOT" in body[start : start + 120], (
-        "the exclusion does not cover the directory the base and head copies were laid out in"
-    )
+    assert start < body.index(
+        "$controlOut = (& $mp -Scan"
+    ), "the exclusion is added after the control has already been scanned"
+    assert (
+        "$env:ROOT" in body[start : start + 120]
+    ), "the exclusion does not cover the directory the base and head copies were laid out in"
