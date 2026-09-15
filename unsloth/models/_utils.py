@@ -4013,9 +4013,7 @@ def get_moe_target_parameters(
     if target_set & _MOE_BROAD_MLP_TARGETS:
         if moe_module_targets is None:
             moe_module_targets = get_moe_target_modules(model, target_modules)
-        if not moe_module_targets and not _moe_experts_reachable_by_module_name(
-            model, target_set
-        ):
+        if not moe_module_targets and not _moe_experts_reachable_by_module_name(model, target_set):
             logger.warning(
                 f"Unsloth: MoE model with {num_experts = } resolved no expert parameters for "
                 f"{target_modules = }. The expert weights will NOT be trained."

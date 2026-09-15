@@ -350,28 +350,21 @@ def _unreachable_moe_model(num_experts = 2):
 )
 def test_unfused_experts_resolve_every_requested_leaf(container, prefix):
     from unsloth.models._utils import get_moe_target_parameters
-
     got = get_moe_target_parameters(
         _unfused_moe_model(container = container),
         target_modules = ALL_MLP_LEAVES,
     )
-    assert got == [
-        f"{prefix}.gate_proj",
-        f"{prefix}.up_proj",
-        f"{prefix}.down_proj",
-    ], got
+    assert got == [f"{prefix}.gate_proj", f"{prefix}.up_proj", f"{prefix}.down_proj"], got
 
 
 def test_unfused_experts_honour_a_down_only_request():
     from unsloth.models._utils import get_moe_target_parameters
-
     got = get_moe_target_parameters(_unfused_moe_model(), target_modules = ["down_proj"])
     assert got == ["experts.down_proj"], got
 
 
 def test_unfused_experts_honour_a_gate_only_request():
     from unsloth.models._utils import get_moe_target_parameters
-
     got = get_moe_target_parameters(_unfused_moe_model(), target_modules = ["gate_proj"])
     assert got == ["experts.gate_proj"], got
 
@@ -397,7 +390,6 @@ def test_unfused_experts_skip_a_leaf_the_model_does_not_have():
 
 def test_unfused_experts_are_not_touched_by_an_attention_only_request():
     from unsloth.models._utils import get_moe_target_parameters
-
     got = get_moe_target_parameters(
         _unfused_moe_model(),
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
@@ -408,7 +400,6 @@ def test_unfused_experts_are_not_touched_by_an_attention_only_request():
 def test_fused_layout_is_unchanged_by_the_unfused_fallback():
     """The fused branch must still win, and must not pick up unfused leaves as well."""
     from unsloth.models._utils import get_moe_target_parameters
-
     assert get_moe_target_parameters(_FakeMoeModel(), ALL_MLP_LEAVES) == [
         "mlp.experts.gate_up_proj",
         "mlp.experts.down_proj",
