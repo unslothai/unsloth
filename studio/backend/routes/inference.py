@@ -20340,6 +20340,13 @@ def _local_video_clip(payload, model_info) -> str:
     clips = _request_video_clips(payload)
     if not clips:
         raise HTTPException(status_code = 400, detail = "Could not read the provided video file.")
+    # Generation takes one video kwarg, so a second clip would be dropped in silence and the
+    # same request would mean different things on this backend and on GGUF, which forwards all.
+    if len(clips) > 1:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only one video is supported per request on this model.",
+        )
     # This backend is handed bytes, so a remote URL would arrive as its own text.
     if _is_remote_video(clips[0]):
         raise HTTPException(

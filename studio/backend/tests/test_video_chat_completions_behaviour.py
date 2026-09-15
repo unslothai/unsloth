@@ -301,6 +301,30 @@ def test_a_non_gguf_backend_without_video_refuses_by_name():
     assert "MLX" in inference_route._VIDEO_INPUT_REFUSAL
 
 
+def test_a_second_clip_is_refused_rather_than_dropped_on_a_non_gguf_backend():
+    """Generation takes one video kwarg. Taking clips[0] silently changed the prompt by
+    backend: GGUF forwards every clip, so the same request meant two different things."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    info = {"is_vision": True, "has_video_input": True}
+    two = ChatCompletionRequest.model_validate(_part_body(_DATA_URI, _DATA_URI))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clip(two, info)
+    assert exc.value.status_code == 400
+    assert "Only one video" in exc.value.detail
+
+    # The legacy field beside a part is the same two-clip request in a different spelling.
+    both = ChatCompletionRequest.model_validate(_part_body(_DATA_URI, **{"video_base64": _DATA_URI}))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clip(both, info)
+    assert exc.value.status_code == 400
+
+    # One clip still serves, so the guard did not swallow the ordinary case.
+    one = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
+    assert inference_route._local_video_clip(one, info) == _CLIP_B64
+
+
 def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
     """Only llama-server fetches a clip for itself. A transformers or MLX model is handed bytes,
     so forwarding the URL would feed it the text of the URL instead of the video."""
