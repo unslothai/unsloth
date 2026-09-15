@@ -779,6 +779,7 @@ class ExportBackend:
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
         output_path: Optional[str] = None
+        save_dir_was_empty = False
         # Two backends: compressed-tensors (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8.
         # The alias comes from compressed_method (the "all formats" dropdown) or the format_type label.
         _LABEL_TO_ALIAS = {
@@ -879,6 +880,10 @@ class ExportBackend:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
+                # Leftovers in a reused folder would be uploaded too, so only a fresh one is pushed as is.
+                save_dir_was_empty = not (
+                    Path(save_directory).is_dir() and any(Path(save_directory).iterdir())
+                )
                 ensure_dir(Path(save_directory))
 
                 # No push, but the merge resolves the base repo and save.py turns None into
@@ -947,29 +952,65 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
+                elif output_path and Path(output_path).is_dir():
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
-                    # redo the expensive quantization.
-                    hf_api = HfApi(token = hf_token)
-                    repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    repo_id = getattr(repo_url, "repo_id", repo_id)
-                    if private:
-                        _ensure_hub_repo_private(hf_api, repo_id)
-                    content = MODEL_CARD.format(
-                        username = repo_id.split("/")[0],
-                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
-                        model_type = getattr(self.current_model.config, "model_type", "llm"),
-                        method = compressed_alias or format_type,
-                        extra = "unsloth",
-                    )
-                    ModelCard(content).push_to_hub(
-                        repo_id, token = hf_token, commit_message = "Unsloth Model Card"
-                    )
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
-                    )
+                    # redo the expensive merge and quantization.
+                    with contextlib.ExitStack() as stack:
+                        upload_dir = output_path
+                        if not (is_compressed or is_torchao or save_dir_was_empty):
+                            # A reused folder can hold leftovers, so upload a clean second save instead.
+                            upload_dir = stack.enter_context(
+                                tempfile.TemporaryDirectory(
+                                    prefix = ".hub-upload-", dir = Path(output_path).parent
+                                )
+                            )
+                            self.current_model.save_pretrained_merged(
+                                upload_dir,
+                                self.current_tokenizer,
+                                save_method = save_method,
+                                **merged_token_kw,
+                            )
+                            self._write_export_metadata(upload_dir)
+                        # A Kaggle merge can be redirected to /tmp without saying where; never push a
+                        # folder with no weights.
+                        if not any(Path(upload_dir).glob("*.safetensors")) and not any(
+                            Path(upload_dir).glob("*.bin")
+                        ):
+                            return (
+                                False,
+                                f"The merged model was not written to {upload_dir}, so nothing was "
+                                "pushed. Check the export log for the directory the save actually used.",
+                                None,
+                            )
+                        hf_api = HfApi(token = hf_token)
+                        repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                        repo_id = getattr(repo_url, "repo_id", repo_id)
+                        if private:
+                            _ensure_hub_repo_private(hf_api, repo_id)
+                        hf_api.upload_folder(
+                            folder_path = upload_dir,
+                            repo_id = repo_id,
+                            repo_type = "model",
+                        )
+                    # Last and best-effort like the GGUF card; an existing card is kept, as
+                    # push_to_hub_merged does.
+                    try:
+                        if not hf_api.file_exists(repo_id, "README.md", repo_type = "model"):
+                            base_model = getattr(
+                                self.current_model.config, "_name_or_path", "unknown"
+                            )
+                            content = MODEL_CARD.format(
+                                username = repo_id.split("/")[0],
+                                base_model = repo_id if os.path.isdir(base_model) else base_model,
+                                model_type = getattr(self.current_model.config, "model_type", "llm"),
+                                method = compressed_alias or format_type,
+                                extra = "unsloth",
+                            )
+                            ModelCard(content).push_to_hub(
+                                repo_id, token = hf_token, commit_message = "Unsloth Model Card"
+                            )
+                    except Exception as exception:
+                        logger.warning(f"Could not publish the model card: {exception}")
                 else:
                     hub_save_method = save_method if save_method is not None else "merged_16bit"
                     self.current_model.push_to_hub_merged(
