@@ -232,3 +232,29 @@ def test_attention_only_list_prefers_original_when_in_scope():
     )
     assert selected is attn_only_list
     assert get_moe_target_parameters(_FakeMoeModel(), selected) is None
+
+
+def test_unfused_expert_parameters_resolve_both_leaves():
+    """NemotronH keeps the expert projections unfused as separate 3D Parameters, so
+    up_proj must resolve alongside down_proj instead of being silently dropped
+    (unsloth#4476)."""
+    import torch
+    from unsloth.models._utils import get_moe_target_parameters
+
+    class _Cfg:
+        model_type = "nemotron_h"
+        n_routed_experts = 4
+
+    class _Fake(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = _Cfg()
+            self.up = torch.nn.Parameter(torch.zeros(4, 8, 8))
+            self.down = torch.nn.Parameter(torch.zeros(4, 8, 8))
+
+        def named_parameters(self, *args, **kwargs):
+            yield "model.layers.1.mixer.experts.up_proj", self.up
+            yield "model.layers.1.mixer.experts.down_proj", self.down
+
+    got = get_moe_target_parameters(_Fake(), target_modules = ["up_proj", "down_proj"])
+    assert got == ["experts.up_proj", "experts.down_proj"], got

@@ -3944,6 +3944,23 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
     if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
         if _moe_parameter_exists(model, gate_up_name):
             moe_params.append(gate_up_name)
+        else:
+            # Some MoE architectures (NemotronH) keep the expert projections unfused as
+            # separate 3D Parameters. Without this fallback every gate/up expert weight is
+            # silently dropped while down_proj still resolves.
+            wanted_leaves = []
+            if "gate_proj" in target_set or "gate_up_proj" in target_set:
+                wanted_leaves.append("gate_proj")
+            if "up_proj" in target_set or "gate_up_proj" in target_set:
+                wanted_leaves.append("up_proj")
+            for leaf in wanted_leaves:
+                unfused_name = _resolve_moe_parameter_name(
+                    model,
+                    default_name = f"mlp.experts.{leaf}",
+                    alternate_name = f"experts.{leaf}",
+                )
+                if _moe_parameter_exists(model, unfused_name):
+                    moe_params.append(unfused_name)
 
     if "down_proj" in target_set:
         if _moe_parameter_exists(model, down_name):
@@ -3955,6 +3972,11 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         )
         return moe_params
 
+    if target_set & _MOE_BROAD_MLP_TARGETS and not get_moe_target_modules(model, target_modules):
+        logger.warning(
+            f"Unsloth: MoE model with {num_experts = } resolved no expert parameters for "
+            f"{target_modules = }. The expert weights will NOT be trained."
+        )
     return None
 
 
