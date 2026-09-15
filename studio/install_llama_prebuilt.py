@@ -8148,6 +8148,40 @@ def _binary_image_runs(
     return True
 
 
+def _kept_install_covers_host(marker: "dict[str, Any] | None", host: HostInfo) -> bool:
+    """Whether the bundle's recorded GPU coverage still includes this host's GPU.
+
+    A same-vendor card swap or a driver downgrade passes the vendor checks, and `--version`
+    runs no kernels, so the recorded supported_sms / mapped_targets / runtime_line are the
+    only record of what the bundle was built for. A marker without them (CPU, Vulkan,
+    older) cannot tell and passes, as does a host whose driver or SMs are unknown.
+    """
+    marker = marker or {}
+    backend = marker_backend(marker)
+    if backend == "cuda":
+        line = marker.get("runtime_line")
+        if isinstance(line, str) and line.startswith("cuda") and host.driver_cuda_version:
+            lines = (
+                compatible_windows_runtime_lines(host)
+                if host.is_windows
+                else compatible_linux_runtime_lines(host)
+            )
+            if line not in lines:
+                return False
+        supported = set(normalize_compute_caps(marker.get("supported_sms") or []))
+        # Under a mask the visible caps are empty; the physical ones are what the card is.
+        host_sms = normalize_compute_caps(host.compute_caps or host.physical_compute_caps or [])
+        return not supported or not host_sms or all(sm in supported for sm in host_sms)
+    if backend == "rocm":
+        mapped = {
+            str(t).strip().lower() for t in marker.get("mapped_targets") or [] if str(t).strip()
+        }
+        gfx = (host.rocm_gfx_target or "").strip().lower()
+        family = str(marker.get("gfx_target") or "").strip().lower()
+        return not mapped or not gfx or gfx in mapped or gfx == family
+    return True
+
+
 def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     """Check whether the setup scripts could reuse and run this install."""
     if not _install_tree_is_usable(install_dir, host):
@@ -10194,6 +10228,14 @@ def parse_args() -> argparse.Namespace:
             "runs the check."
         ),
     )
+    resolve_group.add_argument(
+        "--check-installed",
+        metavar = "DIR",
+        help = (
+            "Exit 0 when the install at DIR is complete and its binaries load (the same "
+            "network-free check the updater uses before keeping an install), else 2."
+        ),
+    )
     parser.add_argument(
         "--install-kind",
         default = None,
@@ -10359,6 +10401,20 @@ def resolve_backends_payload(
 
 def main() -> int:
     args = parse_args()
+    if args.check_installed is not None:
+        # setup.sh asks before keeping a GPU prebuilt over a CPU source build: no download,
+        # since the update that failed usually failed for want of one.
+        install_dir = Path(args.check_installed)
+        try:
+            host = detect_host()
+            runs = _existing_install_runs(install_dir, host) and _kept_install_covers_host(
+                load_prebuilt_metadata(install_dir), host
+            )
+        except Exception as exc:
+            print(f"install check failed: {exc}", file = sys.stderr)
+            runs = False
+        return EXIT_SUCCESS if runs else EXIT_FALLBACK
+
     if args.validate_install is not None:
         try:
             validate_existing_install(
