@@ -1650,7 +1650,8 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         text = body.group(1)
         sequence = re.search(
             r"const pick = (?:(?:downloadSnapshot|downloadOnly) \? pickSeq\.current : )?"
-            r"\+\+pickSeq\.current;", text
+            r"\+\+pickSeq\.current;",
+            text,
         )
         assert sequence, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
