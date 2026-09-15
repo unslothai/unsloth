@@ -1053,6 +1053,13 @@ export const de = {
         minimal: "Minimal",
       },
       custom: {
+        chatWidth: {
+          label: "Chatbreite",
+          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          standard: "Standard",
+          wide: "Breit",
+          full: "Volle Breite",
+        },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
         preferencesTitle: "Weitere Optionen",
