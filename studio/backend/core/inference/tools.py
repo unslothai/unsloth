@@ -10059,6 +10059,7 @@ _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _MCP_COMPACT_SPEC_CHARS = 1500
 _MCP_SUMMARY_CHARS = 240
 _MCP_COMPACT_HINT = "Full parameters via mcp_tool_schema."
+_MCP_MIN_SCHEMA_PAGE_CHARS = 64
 
 MCP_TOOL_SCHEMA_TOOL = {
     "type": "function",
@@ -10075,6 +10076,11 @@ MCP_TOOL_SCHEMA_TOOL = {
                 "name": {
                     "type": "string",
                     "description": "The MCP tool name exactly as listed, including its mcp__ prefix.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Character offset for the next page. Defaults to 0.",
                 },
             },
             "required": ["name"],
@@ -10110,17 +10116,19 @@ def _mcp_compact_parameters(schema: dict) -> dict:
         prop: dict = {}
         if isinstance(value, dict):
             branches = value.get("anyOf") or value.get("oneOf") or []
-            branch_types = {b.get("type") for b in branches if isinstance(b, dict)}
+            branch_types = [b.get("type") for b in branches if isinstance(b, dict)]
             if isinstance(value.get("type"), (str, list)):
                 prop["type"] = value["type"]
-            elif len(branch_types) == 1 and isinstance(next(iter(branch_types)), str):
-                prop["type"] = next(iter(branch_types))
+            elif branch_types and all(isinstance(kind, str) for kind in branch_types):
+                kinds = list(dict.fromkeys(branch_types))
+                prop["type"] = kinds[0] if len(kinds) == 1 else kinds
             if isinstance(value.get("enum"), list) and len(json.dumps(value["enum"])) <= 200:
                 prop["enum"] = value["enum"]
-            if prop.get("type") == "array":
-                prop["items"] = {}
-        properties[key] = prop
-    compact = {"type": "object", "properties": properties}
+        # llama.cpp compiles an empty schema to an object-only grammar; a description alone accepts any value.
+        properties[key] = prop or {"description": "See mcp_tool_schema."}
+    compact: dict = (
+        {"type": "object", "properties": properties} if properties else {"type": "object"}
+    )
     if isinstance(schema.get("required"), list):
         compact["required"] = schema["required"]
     return compact
@@ -10162,26 +10170,58 @@ def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     return None
 
 
-def _mcp_tool_schema(name) -> str:
+def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX) or name.count("__") < 2:
-        return "Error: mcp_tool_schema needs an MCP tool name as listed, such as mcp__<server>__<tool>."
+        return None, None, ""
     _, server_key, tool_name = name.split("__", 2)
     server = mcp_servers_db.get_server_for_tool(server_key)
+    return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
+
+
+def mcp_tool_input_schema(name) -> dict | None:
+    tool = _mcp_resolve_tool(name)[1]
+    return _mcp_input_schema(tool) if tool is not None else None
+
+
+def _mcp_schema_page(prefix: str, text: str, offset: int) -> str:
+    page_chars = _tool_result_char_budget()
+    while True:
+        end = min(offset + page_chars, len(text))
+        page = prefix + text[offset:end]
+        if end < len(text):
+            page += (
+                f"\n\n[Characters {offset}-{end} of {len(text)}. "
+                f"Call mcp_tool_schema with offset={end} for the rest.]"
+            )
+        if _fit_result_to_room(page, "mcp_tool_schema") == page:
+            return page
+        if page_chars < _MCP_MIN_SCHEMA_PAGE_CHARS:
+            return (prefix or "Error: ") + (
+                "Not enough context room to read this MCP tool schema. "
+                "Reduce the conversation context and retry."
+            )
+        page_chars //= 2
+
+
+def _mcp_tool_schema(name, offset = None) -> str:
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    if not tool_name:
+        return "Error: mcp_tool_schema needs an MCP tool name as listed, such as mcp__<server>__<tool>."
     if not server:
         return f"Error: MCP server for tool '{tool_name}' not found"
     display = server.get("display_name") or server["id"]
-    tool = _mcp_cached_tool(server, tool_name)
     if tool is None:
         return f"Error: MCP server '{display}' does not list a tool named '{tool_name}'"
-    return _mcp_tool_schema_text(display, tool)
+    text = _mcp_tool_schema_text(display, tool)
+    offset = 0 if offset is None else offset
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset < len(text):
+        return f"Error: offset must be an integer from 0 to {len(text) - 1}."
+    return _mcp_schema_page("", text, offset)
 
 
-def _with_mcp_schema_tool(specs: list[dict], compacted: bool) -> list[dict]:
+def _with_mcp_schema_tool(specs: list[dict]) -> list[dict]:
+    compacted = any(spec["function"]["description"].endswith(_MCP_COMPACT_HINT) for spec in specs)
     return specs + [MCP_TOOL_SCHEMA_TOOL] if compacted else specs
-
-
-def _mcp_any_compacted(mcp_tools: list[dict]) -> bool:
-    return any(_mcp_spec_compacted(tool) for tool in mcp_tools if isinstance(tool, dict))
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
@@ -10259,7 +10299,6 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
     specs: list[dict] = []
     complete = True
-    compacted = False
     for server in servers:
         payload = get_cached_tools(server["id"])
         if payload is None:
@@ -10267,8 +10306,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
                 complete = False
             continue
         specs.extend(_mcp_specs_for_server(server, payload))
-        compacted = compacted or _mcp_any_compacted(payload)
-    return _with_mcp_schema_tool(specs, compacted), complete
+    return _with_mcp_schema_tool(specs), complete
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
@@ -10323,14 +10361,12 @@ async def get_enabled_mcp_tools() -> list[dict]:
             cache_tools(server["id"], payload)
 
     specs: list[dict] = []
-    compacted = False
     for server in servers:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
         specs.extend(_mcp_specs_for_server(server, payload))
-        compacted = compacted or _mcp_any_compacted(payload)
-    return _with_mcp_schema_tool(specs, compacted)
+    return _with_mcp_schema_tool(specs)
 
 
 _TIMEOUT_UNSET = object()
@@ -10497,7 +10533,7 @@ def execute_tool(
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments), name)
     if name == "mcp_tool_schema":
-        return _fit_result_to_room(_mcp_tool_schema(arguments.get("name")), name)
+        return _mcp_tool_schema(arguments.get("name"), arguments.get("offset"))
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
@@ -10518,10 +10554,10 @@ def execute_tool(
                 key for key in _mcp_input_schema(tool).get("required") or [] if key not in arguments
             ]
             if missing:
-                return _fit_result_to_room(
-                    f"Error: MCP tool '{tool_name}' requires {', '.join(missing)}.\n\n"
-                    + _mcp_tool_schema_text(display, tool),
-                    name,
+                return _mcp_schema_page(
+                    f"Error: MCP tool '{tool_name}' requires {', '.join(missing)}.\n\n",
+                    _mcp_tool_schema_text(display, tool),
+                    0,
                 )
         # Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
         # id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +

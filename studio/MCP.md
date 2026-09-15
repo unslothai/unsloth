@@ -44,9 +44,10 @@ listed in a compact form: its first sentence plus its top-level parameters with
 their types, required flags and short enums. Smaller tools are listed in full.
 
 When any tool is listed compactly the model also gets `mcp_tool_schema`, which
-returns a tool's full description and JSON Schema on demand. A compact tool called
-without one of its required arguments answers with that schema instead of reaching
-the server.
+returns a tool's full description and JSON Schema on demand, in pages when it is
+longer than the room left for a tool result. A compact tool called without one of
+its required arguments answers with that schema instead of reaching the server.
+Arguments to a compact tool are still typed against its full schema.
 
 ## Studio's own MCP server
 

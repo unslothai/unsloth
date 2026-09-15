@@ -2059,7 +2059,7 @@ def test_mcp_specs_compact_large_schemas():
         "properties": {
             "data": {"type": "object"},
             "mode": {"type": "string", "enum": ["sql", "rows"]},
-            "tags": {"type": "array", "items": {}},
+            "tags": {"type": "array"},
         },
         "required": ["data"],
     }
@@ -2132,3 +2132,80 @@ def test_execute_tool_mcp_tool_schema(tmp_path, monkeypatch):
     )
     assert not tools_mod.is_potentially_unsafe_tool_call("mcp_tool_schema", {"name": "x"})
     assert not tools_mod.is_high_risk_tool_call("mcp_tool_schema", {"name": "x"})
+
+
+def test_mcp_compact_parameters_never_emit_an_empty_schema():
+    from core.inference.tools import _mcp_compact_parameters
+
+    compact = _mcp_compact_parameters(
+        {
+            "type": "object",
+            "properties": {
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "assignees": {
+                    "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]
+                },
+                "state": {"$ref": "#/$defs/State"},
+            },
+        }
+    )
+    assert compact["properties"] == {
+        "labels": {"type": "array"},
+        "assignees": {"type": ["array", "null"]},
+        "state": {"description": "See mcp_tool_schema."},
+    }
+    assert _mcp_compact_parameters({"$ref": "#/$defs/Args"}) == {"type": "object"}
+
+
+def test_compacted_mcp_call_arguments_are_typed_by_the_full_schema(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import coerce_tool_arguments
+
+    tool = _big_mcp_tool()
+    tool["inputSchema"]["properties"]["filter"] = {
+        "type": "object",
+        "properties": {"archived": {"type": "boolean"}, "limit": {"type": "integer"}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [tool])
+    coerced = coerce_tool_arguments(
+        {"filter": '{"archived": "false", "limit": "25"}'},
+        heal = False,
+        tool_name = "mcp__srv1__query",
+        tool_schemas = tools_mod.cached_mcp_tools()[0],
+    )
+    assert coerced.arguments == {"filter": {"archived": False, "limit": 25}}
+
+
+def test_mcp_tool_schema_pages_a_schema_larger_than_the_result_room(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    tool = _big_mcp_tool()
+    tool["inputSchema"]["properties"]["notes"] = {"type": "string", "description": "z " * 12000}
+    _cache_server_tools(tmp_path, monkeypatch, [tool])
+    full = tools_mod._mcp_tool_schema_text("A", tool)
+    monkeypatch.setattr(tools_mod, "_loaded_context_tokens", lambda: 16384)
+    token = tools_mod._REQUEST_RESULT_BUDGET.set(2000)
+    try:
+        pages, offset = [], 0
+        for _ in range(50):
+            out = tools_mod.execute_tool(
+                "mcp_tool_schema", {"name": "mcp__srv1__query", "offset": offset}
+            )
+            body, marker, rest = out.partition("\n\n[Characters ")
+            pages.append(body)
+            if not marker:
+                break
+            offset = int(rest.split("offset=")[1].split(" ")[0])
+    finally:
+        tools_mod._REQUEST_RESULT_BUDGET.reset(token)
+    assert len(pages) > 1
+    assert "".join(pages) == full
+
+
+def test_hidden_large_mcp_tool_does_not_offer_the_schema_tool(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    hidden = _big_mcp_tool()
+    hidden["_meta"] = {"ui": {"visibility": ["app"]}}
+    _cache_server_tools(tmp_path, monkeypatch, [{"name": "ping"}, hidden])
+    assert [s["function"]["name"] for s in tools_mod.cached_mcp_tools()[0]] == ["mcp__srv1__ping"]
