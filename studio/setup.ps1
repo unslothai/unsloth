@@ -1606,10 +1606,10 @@ $Rule = [string]::new([char]0x2500, 52)
 
 # Native declarations are emitted, never compiled. Add-Type on Windows PowerShell 5.1 has no
 # in-process compiler: -TypeDefinition and -MemberDefinition alike write C# to %TEMP% and run
-# csc.exe, and behavioural antivirus blocks the result, because a windowless PowerShell launching
-# a compiler and writing executable content to %TEMP% is a dropper's shape whatever the code says.
-# Reflection emit builds the same stub in memory: no compiler process, no source, no DLL, empty
-# assembly Location. install.ps1 carries the same helper for the same reason.
+# csc.exe, and security software blocks the result. Reflection emit builds the same stub in
+# memory: no compiler process, no source, no DLL, empty assembly Location. install.ps1 carries
+# the same helper for the same reason, and which product blocked what is recorded in
+# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 # See install.ps1: App Control's Dynamic Code Security always blocks loading unsigned
 # System.Reflection.Emit assemblies by usually stopping or crashing the parent rather than
 # raising, so this has to be a gate and not a catch.
@@ -4605,8 +4605,9 @@ function Assert-VenvActivated {
 
 # Mirrors install.ps1's Install-UvFromRelease: same archive, destination priority and user-PATH
 # prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
-# running remote script text in-process, which is what AMSI scores hardest. Bumping the version
-# means bumping all 3 hashes:
+# running remote script text in-process.
+# tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
+# Bumping the version means bumping all 3 hashes:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
 $UvPinnedVersion = "0.12.1"
 $UvPinnedAssets = @{
