@@ -617,97 +617,21 @@ def _credential_under_silent_root(candidate: str) -> bool:
 
 # Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths, so a
 # command this scan does not model contributes nothing rather than a guess.
+# `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
+# whole family reads the file it is given exactly as `cat` does.
+# `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
+# `help test`: "unary expressions ... are often used to examine the status of a file", and
+# the answer is existence, type, ownership and timestamps of whatever they are given.
+# Changing directory to an absolute path re-points every RELATIVE operand that follows it, which is how the
+# rest of this scan decides a command stays in the sandbox. `cd /usr/lib && ls` still stays silent.
 _PATH_READ_COMMANDS = frozenset(
-    {
-        "cat",
-        # `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
-        # whole family reads the file it is given exactly as `cat` does.
-        "zcat",
-        "bzcat",
-        "xzcat",
-        "lzcat",
-        "lz4cat",
-        "zstdcat",
-        # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
-        "iconv",
-        # `help test`: "unary expressions ... are often used to examine the status of a file", and
-        # the answer is existence, type, ownership and timestamps of whatever they are given.
-        "test",
-        "[",
-        "[[",
-        "tac",
-        "head",
-        "tail",
-        "less",
-        "more",
-        "wc",
-        "stat",
-        "file",
-        "od",
-        "xxd",
-        "hexdump",
-        "strings",
-        "base64",
-        "b64encode",
-        "md5",
-        "md5sum",
-        "sha1sum",
-        "sha224sum",
-        "sha256sum",
-        "sha384sum",
-        "sha512sum",
-        "shasum",
-        "cksum",
-        "sum",
-        "cut",
-        "sort",
-        "uniq",
-        "nl",
-        "rev",
-        "column",
-        "paste",
-        "join",
-        "comm",
-        "expand",
-        "unexpand",
-        "fold",
-        "fmt",
-        "jq",
-        "yq",
-        "diff",
-        "cmp",
-        "grep",
-        "egrep",
-        "fgrep",
-        "rg",
-        "ag",
-        "ack",
-        "ls",
-        "dir",
-        "du",
-        "tree",
-        "find",
-        "fd",
-        "readlink",
-        "realpath",
-        "awk",
-        "gawk",
-        "mawk",
-        "sed",
-        "openssl",
-        "xmllint",
-        "csvlook",
-        "type",
-        "get-content",
-        "gc",
-        "tar",
-        "7z",
-        "unrar",
-        # Changing directory to an absolute path re-points every RELATIVE operand that follows it, which is how the
-        # rest of this scan decides a command stays in the sandbox. `cd /usr/lib && ls` still stays silent.
-        "cd",
-        "pushd",
-    }
+    """
+    cat zcat bzcat xzcat lzcat lz4cat zstdcat iconv test [ [[ tac head tail less more wc stat
+    file od xxd hexdump strings base64 b64encode md5 md5sum sha1sum sha224sum sha256sum
+    sha384sum sha512sum shasum cksum sum cut sort uniq nl rev column paste join comm expand
+    unexpand fold fmt jq yq diff cmp grep egrep fgrep rg ag ack ls dir du tree find fd readlink
+    realpath awk gawk mawk sed openssl xmllint csvlook type get-content gc tar 7z unrar cd pushd
+    """.split()
 )
 
 
@@ -734,38 +658,12 @@ _PATH_SOURCE_MUTATING_COMMANDS = frozenset({"mv", "ln"})
 # whether the loaded program then writes is not knowable here.
 # `awk` and `jq` are deliberately absent: their first positional is a PROGRAM, and a script that
 # starts with a slash (`awk '/^\/usr/ {print}'`) would read as an absolute path.
+# `unzip` READS its archive; the extraction destination is a flag (`-d`) handled above.
 _PATH_SCRIPT_COMMANDS = frozenset(
-    {
-        "python",
-        "python2",
-        "python3",
-        "py",
-        "perl",
-        "bash",
-        "sh",
-        "zsh",
-        "ksh",
-        "dash",
-        "fish",
-        "csh",
-        "tcsh",
-        "source",
-        "ruby",
-        "node",
-        "deno",
-        "bun",
-        "php",
-        "lua",
-        "luajit",
-        "julia",
-        "rscript",
-        "duckdb",
-        "curl",
-        "wget",
-        "date",
-        # `unzip` READS its archive; the extraction destination is a flag (`-d`) handled above.
-        "unzip",
-    }
+    """
+    python python2 python3 py perl bash sh zsh ksh dash fish csh tcsh source ruby node deno bun
+    php lua luajit julia rscript duckdb curl wget date unzip
+    """.split()
 )
 
 
@@ -836,31 +734,17 @@ _PATTERN_SUPPLYING_FLAGS = {
 
 # Module-level `open()` functions, whose path is the FIRST ARGUMENT even though the call is spelled
 # as an attribute. Contrast `Path(p).open()`, where the receiver is the path.
+# tarfile.open(name, mode) takes the path first like the rest; without it the module read as
+# a path-bearing receiver and the archive operand was never scanned.
+# `import builtins; builtins.open(p, "w")` is the builtin under a qualified name. Without it
+# the module itself read as the path and the real one was never added.
+# `from PIL import Image; Image.open(p)` is a module-level open taking the path first, so
+# without it the bare `Image` folded as the path and the file was never seen.
 _PY_MODULE_OPEN_RECEIVERS = frozenset(
-    {
-        "io",
-        "os",
-        "posix",
-        "gzip",
-        "bz2",
-        "lzma",
-        "codecs",
-        "tokenize",
-        "dbm",
-        "shelve",
-        "wave",
-        # tarfile.open(name, mode) takes the path first like the rest; without it the module read as
-        # a path-bearing receiver and the archive operand was never scanned.
-        "tarfile",
-        # `import builtins; builtins.open(p, "w")` is the builtin under a qualified name. Without it
-        # the module itself read as the path and the real one was never added.
-        "builtins",
-        "__builtin__",
-        # `from PIL import Image; Image.open(p)` is a module-level open taking the path first, so
-        # without it the bare `Image` folded as the path and the file was never seen.
-        "PIL",
-        "Image",
-    }
+    """
+    io os posix gzip bz2 lzma codecs tokenize dbm shelve wave tarfile builtins __builtin__ PIL
+    Image
+    """.split()
 )
 
 
@@ -892,28 +776,9 @@ _PY_MODULE_PATH_RECEIVERS = _PY_MODULE_OPEN_RECEIVERS | frozenset(
 # operand is a string being compared. `[ "$d" != "/" ]` names no path at all.
 _TEST_COMMANDS = frozenset({"test", "[", "[["})
 _TEST_FILE_UNARY_FLAGS = frozenset(
-    {
-        "-a",
-        "-b",
-        "-c",
-        "-d",
-        "-e",
-        "-f",
-        "-g",
-        "-h",
-        "-k",
-        "-p",
-        "-r",
-        "-s",
-        "-u",
-        "-w",
-        "-x",
-        "-G",
-        "-L",
-        "-N",
-        "-O",
-        "-S",
-    }
+    """
+    -a -b -c -d -e -f -g -h -k -p -r -s -u -w -x -G -L -N -O -S
+    """.split()
 )
 _TEST_FILE_BINARY_OPS = frozenset({"-nt", "-ot", "-ef"})
 
@@ -1536,25 +1401,9 @@ def _split_attached_redirections(tokens, text = None) -> "list[str]":
 # Words that END one command and begin another. `if true; then cat /abs; fi` groups the read under
 # `then` otherwise, which is in no command table, so the whole segment was discarded unscanned.
 _SHELL_CONTROL_WORDS = frozenset(
-    {
-        "if",
-        "then",
-        "elif",
-        "else",
-        "fi",
-        "for",
-        "while",
-        "until",
-        "select",
-        "do",
-        "done",
-        "case",
-        "esac",
-        "in",
-        "{",
-        "}",
-        "!",
-    }
+    """
+    if then elif else fi for while until select do done case esac in { } !
+    """.split()
 )
 
 
@@ -1923,77 +1772,23 @@ _PY_INSTANCE_READ_CTORS = {
 }
 
 
+# `io.open_code(path)` opens that file in binary mode (it is what the interpreter itself
+# uses to read source), so it reads a path exactly as `open` does.
+# The stat family alongside the `os.path.get*` helpers that wrap it: they answer existence,
+# size, ownership and timestamps for a path outside the sandbox.
+# The predicate family answers existence and type for a path, which is the same disclosure
+# `test -e` and `os.stat` make.
+# os.chdir re-points every relative path that follows, the same way `cd` does in the shell.
 _PY_PATH_READ_CALLS = frozenset(
-    {
-        # `io.open_code(path)` opens that file in binary mode (it is what the interpreter itself
-        # uses to read source), so it reads a path exactly as `open` does.
-        "open_code",
-        "read_text",
-        "read_bytes",
-        "getline",
-        "getlines",
-        "loadtxt",
-        "genfromtxt",
-        "fromfile",
-        "read_csv",
-        "read_table",
-        "read_fwf",
-        "read_parquet",
-        "read_json",
-        "read_excel",
-        "read_pickle",
-        "read_feather",
-        "read_hdf",
-        "read_stata",
-        "read_sas",
-        "read_orc",
-        "read_xml",
-        "read_html",
-        "read_sql_table",
-        "imread",
-        "connect",
-        # The stat family alongside the `os.path.get*` helpers that wrap it: they answer existence,
-        # size, ownership and timestamps for a path outside the sandbox.
-        "stat",
-        "lstat",
-        # The predicate family answers existence and type for a path, which is the same disclosure
-        # `test -e` and `os.stat` make.
-        "exists",
-        "lexists",
-        "isfile",
-        "isdir",
-        "islink",
-        "ismount",
-        "is_file",
-        "is_dir",
-        "is_symlink",
-        "getsize",
-        "getmtime",
-        "getctime",
-        "getatime",
-        "listdir",
-        "scandir",
-        "walk",
-        "iterdir",
-        "glob",
-        "iglob",
-        "rglob",
-        "samefile",
-        "realpath",
-        "readlink",
-        "load_workbook",
-        "from_file",
-        "imageio",
-        "parse",
-        "iterparse",
-        # os.chdir re-points every relative path that follows, the same way `cd` does in the shell.
-        "chdir",
-        "open_memmap",
-        "memmap",
-        "get_data",
-        "read_image",
-        "loadmat",
-    }
+    """
+    open_code read_text read_bytes getline getlines loadtxt genfromtxt fromfile read_csv
+    read_table read_fwf read_parquet read_json read_excel read_pickle read_feather read_hdf
+    read_stata read_sas read_orc read_xml read_html read_sql_table imread connect stat lstat
+    exists lexists isfile isdir islink ismount is_file is_dir is_symlink getsize getmtime
+    getctime getatime listdir scandir walk iterdir glob iglob rglob samefile realpath readlink
+    load_workbook from_file imageio parse iterparse chdir open_memmap memmap get_data read_image
+    loadmat
+    """.split()
 )
 
 
