@@ -56,6 +56,14 @@ def test_the_baseline_hash_is_the_file_the_reporter_ran() -> None:
     `install.ps1` at `1ad44677d`, and if the constant and the history ever disagree, the whole
     comparison is against the wrong file while still looking perfectly healthy.
     """
+    # Shape first, and unconditionally. The git half below skips on a shallow clone, which is every
+    # CI lane that collects tests/security -- so without this, the single assertion tying the
+    # baseline to real history would be green locally and silently absent everywhere that matters.
+    assert len(vtd.BASELINE_SHA256) == 64, "the baseline is not a SHA-256"
+    assert all(c in "0123456789abcdef" for c in vtd.BASELINE_SHA256), (
+        "the baseline is not lowercase hex, so it can never match a VirusTotal lookup"
+    )
+
     result = subprocess.run(
         ["git", "show", "1ad44677d:install.ps1"],
         cwd = REPO,
@@ -276,3 +284,32 @@ def test_the_tool_has_no_upload_path_at_all() -> None:
     assert (
         "scan_file" not in imported and "upload_file" not in imported
     ), "the delta tool imported an upload helper from virustotal_scan"
+
+
+def test_the_workflow_reads_the_secret_this_repository_actually_has() -> None:
+    """`VT_API_KEY` is the env var the Python reads; the repository secret is
+    `VIRUS_TOTAL_API_TOKEN`.
+
+    Naming the secret `VT_API_KEY` in the workflow expands to empty, and the lane then exits 3 and
+    reports VOID on every run. That fails loudly rather than reporting a false clean, which is the
+    right shape -- but a lane that can never measure anything is worth catching here rather than
+    after someone dispatches it and waits.
+    """
+    import yaml as _yaml
+
+    workflow = REPO / ".github" / "workflows" / "virustotal-installer-delta.yml"
+    body = workflow.read_text(encoding = "utf-8")
+    assert "secrets.VIRUS_TOTAL_API_TOKEN" in body, (
+        "the delta lane no longer reads secrets.VIRUS_TOTAL_API_TOKEN, which is the only VirusTotal "
+        "secret this repository defines"
+    )
+    assert "secrets.VT_API_KEY" not in body, (
+        "the workflow reads secrets.VT_API_KEY, which does not exist. VT_API_KEY is the ENV VAR "
+        "name; the secret is VIRUS_TOTAL_API_TOKEN."
+    )
+    # And the history check the lane performs needs full depth, or it reverifies nothing.
+    data = _yaml.safe_load(body)
+    checkout = next(s for s in data["jobs"]["delta"]["steps"] if "checkout" in str(s.get("uses", "")))
+    assert checkout.get("with", {}).get("fetch-depth") == 0, (
+        "the baseline is reverified against 1ad44677d, which a shallow clone does not contain"
+    )

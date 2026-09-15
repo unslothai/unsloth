@@ -96,7 +96,12 @@ jobs:
       - name: Compare
         id: compare
         env:
-          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+          # VT_API_KEY is the ENV VAR the Python reads (scripts/virustotal_scan.py:37); the
+          # repository secret is named VIRUS_TOTAL_API_TOKEN, and release-desktop.yml:2193 maps it
+          # the same way. Naming the secret VT_API_KEY here expanded to empty, and the lane then
+          # exited 3 / VOID on every run -- loudly, which is the right failure, but it measured
+          # nothing.
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
           TARGET: ${{ inputs.path }}
           BASELINE: ${{ inputs.baseline_sha256 }}
         run: |
