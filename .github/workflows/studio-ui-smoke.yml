@@ -668,9 +668,8 @@ jobs:
           python tests/studio/playwright_image_download_cancel_retry.py
 
       # The Text encoder precision control: what the select sends to the plan and to the load, that
-      # Default omits the field entirely, and that the select follows the build the backend reports
-      # back (including a downgrade). Registered here because a driver no workflow names runs
-      # nowhere and leaves every job green whatever it asserts.
+      # Default omits the field entirely, that a refresh race cannot leave a stale reading, and that
+      # the select follows the build the backend reports back, downgrade or decline included.
       - name: Image text encoder precision regression (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -680,6 +679,8 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_text_encoder
           PW_ART_DIR="$PW_ART_DIR/applied" python tests/studio/playwright_image_text_encoder.py
+          PW_ART_DIR="$PW_ART_DIR/completion-first" PW_COMPLETION_FIRST=1 \
+            python tests/studio/playwright_image_text_encoder.py
           PW_ART_DIR="$PW_ART_DIR/declined" PW_DECLINE=1 \
             python tests/studio/playwright_image_text_encoder.py
 
