@@ -45,21 +45,26 @@ import {
   Download01Icon,
   Folder01Icon,
   PinIcon,
+  Message01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-const MANAGE_PAGE_SIZE = 20;
+import {
+  DEFAULT_LIBRARY_FILTERS,
+  filterLibraryItems,
+  groupLibraryItems,
+  type LibraryFilters,
+} from "./data-library";
+import {
+  ChatLibraryGroups,
+  LibraryRow,
+  LibraryToolbar,
+} from "./data-library-controls";
 
-function formatCreatedAt(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
+const MANAGE_PAGE_SIZE = 20;
 
 function chatCount(n: number): string {
   return n === 1 ? "1 chat" : `${n} chats`;
@@ -91,17 +96,36 @@ export function ManageChatsView() {
   const [busy, setBusy] = useState(false);
   const lastToggledId = useRef<string | null>(null);
 
-  const visible = items.slice(0, visibleCount);
-  const selectedItems = items.filter((item) => selectedIds.has(item.id));
+  const [filters, setFilters] = useState(DEFAULT_LIBRARY_FILTERS);
+  const projectNames = useMemo(
+    () => new Map(projects.map((p) => [p.id, p.name])),
+    [projects],
+  );
+  const filtered = useMemo(
+    () => filterLibraryItems(items, filters, projectNames),
+    [items, filters, projectNames],
+  );
+  const visible = groupLibraryItems(
+    filtered.slice(0, visibleCount),
+    projectNames,
+  ).flatMap((group) => group.items);
+  const selectedItems = visible.filter((item) => selectedIds.has(item.id));
+
+  function changeFilters(next: LibraryFilters) {
+    setFilters(next);
+    setSelectedIds(new Set());
+    lastToggledId.current = null;
+    setVisibleCount(MANAGE_PAGE_SIZE);
+  }
   const selectedCount = selectedItems.length;
   const allVisibleSelected =
     visible.length > 0 && visible.every((item) => selectedIds.has(item.id));
   const allSelectedPinned =
     selectedCount > 0 &&
     selectedItems.every((item) => pinnedIds.includes(item.id));
-  const projectNames = new Map(projects.map((p) => [p.id, p.name]));
 
   function toggleRow(index: number, shiftKey: boolean) {
+    if (busy) return;
     const rowId = visible[index].id;
     const target = !selectedIds.has(rowId);
     const anchorId = lastToggledId.current;
@@ -127,6 +151,7 @@ export function ManageChatsView() {
   }
 
   function toggleAllVisible() {
+    if (busy) return;
     setSelectedIds(
       allVisibleSelected ? new Set() : new Set(visible.map((item) => item.id)),
     );
@@ -227,18 +252,17 @@ export function ManageChatsView() {
     }
   }
 
-  if (items.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        No chats.
-      </p>
-    );
-  }
-
   const actionsDisabled = busy || selectedCount === 0;
 
   return (
     <div className="flex flex-col gap-4">
+      <LibraryToolbar
+        filters={filters}
+        onChange={changeFilters}
+        placeholder="Search chats or projects"
+        projects={projectNames}
+        disabled={busy}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-1 items-center gap-3 px-1">
           <Checkbox
@@ -249,6 +273,7 @@ export function ManageChatsView() {
                   ? "indeterminate"
                   : false
             }
+            disabled={busy || visible.length === 0}
             onCheckedChange={toggleAllVisible}
             aria-label="Select all visible chats"
             title="Select all visible"
@@ -256,160 +281,169 @@ export function ManageChatsView() {
           <span className="text-xs text-muted-foreground">
             {selectedCount > 0
               ? `${chatCount(selectedCount)} selected`
-              : chatCount(items.length)}
+              : chatCount(filtered.length)}
           </span>
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
-            <Button variant="outline" size="sm" disabled={actionsDisabled}>
-              <HugeiconsIcon
-                icon={Folder01Icon}
-                strokeWidth={1.75}
-                className="size-3.5 mr-1.5"
-              />
-              Move
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem
-              disabled={selectedItems.every((item) => !item.projectId)}
-              onSelect={() => void handleMove(null)}
-            >
-              Recents
-            </DropdownMenuItem>
-            {projects.map((project) => (
-              <DropdownMenuItem
-                key={project.id}
-                onSelect={() => void handleMove(project.id)}
-              >
-                <HugeiconsIcon
-                  icon={Folder01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                <span className="truncate">{project.name}</span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={actionsDisabled}
-          onClick={handleTogglePin}
-        >
-          <HugeiconsIcon
-            icon={PinIcon}
-            strokeWidth={1.75}
-            className="size-3.5 mr-1.5"
-          />
-          {allSelectedPinned ? "Unpin" : "Pin"}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={actionsDisabled}
-          onClick={() => void handleArchive()}
-        >
-          <HugeiconsIcon
-            icon={Archive02Icon}
-            strokeWidth={1.75}
-            className="size-3.5 mr-1.5"
-          />
-          Archive
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
-            <Button variant="outline" size="sm" disabled={actionsDisabled}>
-              <HugeiconsIcon
-                icon={Download01Icon}
-                strokeWidth={1.75}
-                className="size-3.5 mr-1.5"
-              />
-              Export
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-              <DropdownMenuItem
-                key={`m-${fmt}`}
-                onSelect={() => void handleExport(fmt, true)}
-              >
-                {label} (combined)
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-              <DropdownMenuItem
-                key={`s-${fmt}`}
-                onSelect={() => void handleExport(fmt, false)}
-              >
-                {label} (per chat)
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={actionsDisabled}
-          onClick={() => setConfirmingDelete(true)}
-          className="text-destructive hover:text-destructive hover:border-destructive/60"
-        >
-          <HugeiconsIcon
-            icon={Delete02Icon}
-            strokeWidth={1.75}
-            className="size-3.5 mr-1.5"
-          />
-          Delete
-        </Button>
-      </div>
-
-      <div>
-        <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-          <span className="w-4 shrink-0" />
-          <span className="flex-1">Name</span>
-          <span className="w-28 shrink-0">Project</span>
-          <span className="w-32 shrink-0">Date created</span>
-        </div>
-        {visible.map((item, index) => (
-          <div
-            key={item.id}
-            className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0 hover:bg-muted/40"
-          >
-            <Checkbox
-              checked={selectedIds.has(item.id)}
-              onClick={(e) => toggleRow(index, e.shiftKey)}
-              aria-label={`Select "${item.title}"`}
-            />
-            <button
-              type="button"
-              onClick={() => openChat(item)}
-              className="min-w-0 flex-1 truncate text-left hover:underline"
-              title={item.title}
-            >
-              {item.title}
-            </button>
-            <span className="w-28 shrink-0 truncate text-muted-foreground">
-              {item.projectId ? (projectNames.get(item.projectId) ?? "") : ""}
-            </span>
-            <span className="w-32 shrink-0 text-muted-foreground tabular-nums">
-              {formatCreatedAt(item.createdAt)}
-            </span>
-          </div>
-        ))}
-        {items.length > visibleCount ? (
-          <div className="flex justify-center pt-3">
+        {selectedCount > 0 && (
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button variant="outline" size="sm" disabled={actionsDisabled}>
+                  <HugeiconsIcon
+                    icon={Folder01Icon}
+                    strokeWidth={1.75}
+                    className="size-3.5 mr-1.5"
+                  />
+                  Move
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem
+                  disabled={selectedItems.every((item) => !item.projectId)}
+                  onSelect={() => void handleMove(null)}
+                >
+                  Recents
+                </DropdownMenuItem>
+                {projects.map((project) => (
+                  <DropdownMenuItem
+                    key={project.id}
+                    onSelect={() => void handleMove(project.id)}
+                  >
+                    <HugeiconsIcon
+                      icon={Folder01Icon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                    <span className="truncate">{project.name}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setVisibleCount(visibleCount + MANAGE_PAGE_SIZE)}
+              disabled={actionsDisabled}
+              onClick={handleTogglePin}
             >
-              Show more ({items.length - visibleCount})
+              <HugeiconsIcon
+                icon={PinIcon}
+                strokeWidth={1.75}
+                className="size-3.5 mr-1.5"
+              />
+              {allSelectedPinned ? "Unpin" : "Pin"}
             </Button>
-          </div>
-        ) : null}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={actionsDisabled}
+              onClick={() => void handleArchive()}
+            >
+              <HugeiconsIcon
+                icon={Archive02Icon}
+                strokeWidth={1.75}
+                className="size-3.5 mr-1.5"
+              />
+              Archive
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button variant="outline" size="sm" disabled={actionsDisabled}>
+                  <HugeiconsIcon
+                    icon={Download01Icon}
+                    strokeWidth={1.75}
+                    className="size-3.5 mr-1.5"
+                  />
+                  Export
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                  <DropdownMenuItem
+                    key={`m-${fmt}`}
+                    onSelect={() => void handleExport(fmt, true)}
+                  >
+                    {label} (combined)
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                  <DropdownMenuItem
+                    key={`s-${fmt}`}
+                    onSelect={() => void handleExport(fmt, false)}
+                  >
+                    {label} (per chat)
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={actionsDisabled}
+              onClick={() => setConfirmingDelete(true)}
+              className="text-destructive hover:text-destructive hover:border-destructive/60"
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-3.5 mr-1.5"
+              />
+              Delete
+            </Button>
+          </>
+        )}
       </div>
+
+      {filtered.length === 0 ? (
+        <p
+          role="status"
+          className="py-8 text-center text-sm text-muted-foreground"
+        >
+          No chats match your search.
+        </p>
+      ) : (
+        <ChatLibraryGroups items={visible} projects={projectNames}>
+          {(item) => (
+            <LibraryRow
+              title={item.title}
+              date={
+                filters.sort === "updated" ? item.updatedAt : item.createdAt
+              }
+              onOpen={() => openChat(item)}
+              leading={
+                <>
+                  <Checkbox
+                    checked={selectedIds.has(item.id)}
+                    disabled={busy}
+                    onClick={(event) =>
+                      toggleRow(
+                        visible.findIndex((row) => row.id === item.id),
+                        event.shiftKey,
+                      )
+                    }
+                    aria-label={`Select "${item.title}"`}
+                  />
+                  <HugeiconsIcon
+                    icon={Message01Icon}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                </>
+              }
+            />
+          )}
+        </ChatLibraryGroups>
+      )}
+      {filtered.length > visibleCount && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setVisibleCount((count) => count + MANAGE_PAGE_SIZE)}
+          >
+            Show more ({filtered.length - visibleCount})
+          </Button>
+        </div>
+      )}
 
       <AlertDialog
         open={confirmingDelete}

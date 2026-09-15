@@ -11,6 +11,7 @@ PW_PORT and PW_OUT select the local port and JSON report.
 import itertools
 import json
 import os
+import sys
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
@@ -19,18 +20,26 @@ from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 FIXTURE = """(() => {
     localStorage.setItem('unsloth_chat_legacy_imported_to_studio_db', 'true');
-    const fixture = { rows: [], requests: [], hold: false, fail: false, listFail: false };
+    const fixture = { rows: [], requests: [], hold: false, fail: false, listFail: false, media: {}, projects: [{ id: "research", name: "Research notes", createdAt: 1, updatedAt: 1 }, { id: "other", name: "Other project", createdAt: 2, updatedAt: 2 }, { id: "archived-project", name: "Old experiments", createdAt: 3, updatedAt: 3, archived: true }] };
     window.__dataFixture = fixture;
     window.fetch = async (input, init = {}) => {
         const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
         const method = init.method || input?.method || 'GET';
         const record = { path: url.pathname, query: url.search, method, done: false };
+        record.body = init.body ? JSON.parse(init.body) : null;
         fixture.requests.push(record);
         let body = {}, status = 200;
-        if (url.pathname === '/api/chat/threads') {
+        if (url.pathname === '/api/chat/threads' && method === 'DELETE') {
+            if (fixture.holdMutation) await new Promise(resolve => { fixture.releaseMutation = resolve; });
+            if (fixture.failMutation) { status = 503; body = { detail: 'Mutation unavailable' }; }
+            else { fixture.rows = fixture.rows.filter(row => !record.body.ids.includes(row.id)); body = { sandboxes_kept: [] }; }
+        } else if (url.pathname.startsWith('/api/chat/threads/') && method === 'PATCH') {
+            const row = fixture.rows.find(row => row.id === decodeURIComponent(url.pathname.split('/').pop()));
+            Object.assign(row, record.body); body = row;
+        } else if (url.pathname === '/api/chat/threads') {
             if (fixture.listFail) { status = 503; body = { detail: 'Chat list unavailable' }; }
             else body = { threads: fixture.rows };
-        } else if (url.pathname === '/api/chat/projects') body = { projects: [] };
+        } else if (url.pathname === '/api/chat/projects') body = { projects: fixture.projects.filter(project => url.searchParams.get('include_archived') !== 'false' || !project.archived) };
         else if (url.pathname === '/api/chat/export') {
             if (fixture.holdExport) await new Promise(resolve => { fixture.releaseExport = resolve; });
             body = { threads: fixture.rows, messages: [], projects: [] };
@@ -45,7 +54,34 @@ FIXTURE = """(() => {
         } else if (url.pathname.includes('knowledge-bases')) {
             body = { knowledgeBases: [], ragAvailable: false };
         } else if (url.pathname.includes('linked-folders')) body = { folders: [] };
-        else if (url.pathname.includes('gallery')) body = { images: [], videos: [], clips: [], total: 0 };
+        else if (url.pathname.includes('gallery')) {
+            const kind = url.pathname.includes('/images/') ? 'images' : url.pathname.includes('/video/') ? 'videos' : 'audio';
+            const entries = fixture.media[kind] ?? [];
+            const suffix = url.pathname.split('/gallery')[1];
+            if (suffix && (method === 'PATCH' || method === 'DELETE')) {
+                if (fixture.holdMutation) await new Promise(resolve => { fixture.releaseMutation = resolve; });
+                if (fixture.failMutation) { status = 503; body = { detail: 'Mutation unavailable' }; }
+                else {
+                    const id = decodeURIComponent(suffix.slice(1));
+                    body = entries.find(row => row.id === id) ?? {};
+                    fixture.media[kind] = entries.filter(row => row.id !== id);
+                }
+            } else if (!suffix) {
+                const before = url.searchParams.get('before_id');
+                const offset = before ? entries.findIndex(row => row.id === before) + 1 : Number(url.searchParams.get('offset') ?? 0);
+                const limit = Number(url.searchParams.get('limit') ?? 20);
+                const pageRows = entries.slice(offset, offset + limit);
+                if (offset > 0 && fixture.holdPage) await new Promise(resolve => { fixture.releasePage = resolve; });
+                if (fixture.failPage && offset > 0) { status = 503; body = { detail: 'Page unavailable' }; }
+                else {
+                    const last = pageRows.at(-1);
+                    body = { [kind]: fixture.stallPage && offset > 0 ? [] : pageRows, has_more: fixture.stallPage && offset > 0 || offset + limit < entries.length,
+                        next_before_mtime: last ? offset + pageRows.length : null, next_before_id: last?.id ?? null };
+                }
+            } else {
+                return new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZwoAAAAASUVORK5CYII='), c => c.charCodeAt(0)), { headers: { 'Content-Type': 'image/png' } });
+            }
+        }
         else if (url.pathname.includes('messages')) body = { messages: [] };
         record.done = true;
         return new Response(JSON.stringify(body), {
@@ -234,11 +270,314 @@ def run(page):
     )
     checks.append("search-preserves-in-flight-export")
 
+    checks.extend(run_libraries(page))
+
     errors = page.evaluate("window.__settingsSmoke.errors()")
     resize_notice = "ResizeObserver loop completed with undelivered notifications."
     failures = [error for error in errors if error != resize_notice]
     assert not failures, failures
     return {"checks": checks, "browser_notices": errors}
+
+
+def run_libraries(page):
+    checks = []
+
+    def seed(shelf, **options):
+        page.evaluate("window.__settingsSmoke.close()")
+        expect(page.get_by_role("dialog")).to_have_count(0)
+        page.evaluate(
+            """({shelf, options}) => {
+            const f = window.__dataFixture;
+            Object.assign(f, { requests: [], holdMutation: false, failMutation: false,
+                holdPage: false, failPage: false, stallPage: false, listFail: false }, options);
+            f.rows = Array.from({ length: 32 }, (_, i) => ({
+                id: crypto.randomUUID(), title: i === 26 ? 'Café needle' : i === 0 ? 'Zulu sample' : `Chat ${String(i).padStart(2, '0')}`,
+                modelType: 'base', modelId: 'test',
+                projectId: i === 31 && shelf === 'chats' ? 'archived-project' : i % 2 === 0 || i === 1 ? 'research' : 'other',
+                archived: shelf === 'chats', createdAt: 1700000000000 + i * 86400000,
+                updatedAt: 1700000000000 + (32 - i) * 86400000,
+            }));
+            delete f.releaseMutation; delete f.releasePage;
+            const pairId = crypto.randomUUID();
+            for (const i of [1, 2]) Object.assign(f.rows[i], { pairId, title: 'Compare models' });
+            for (const kind of ['images', 'videos', 'audio']) {
+                const route = kind === 'videos' ? 'video' : kind;
+                f.media[kind] = Array.from({ length: options.mediaCount ?? 447 }, (_, i) => ({
+                    id: `${kind}-${i}`, prompt: i === 26 ? 'Café needle' : `Sample ${String(i).padStart(2, '0')}`,
+                    created_at: kind === 'images' ? 1700000000 - i * 86400 : new Date(1700000000000 - i * 86400000).toISOString(),
+                    url: `/api/inference/${route}/gallery/${kind}-${i}/content`, archived: true,
+                }));
+            }
+            if (options.reorderDates) {
+                for (const kind of ['images', 'videos', 'audio']) f.media[kind][300].created_at = kind === 'images' ? 1900000000 : new Date(1900000000000).toISOString();
+            }
+            if (shelf === 'manage') window.__settingsSmoke.open('data');
+            else window.__settingsSmoke.openArchived(shelf);
+        }""",
+            {"shelf": shelf, "options": options},
+        )
+        if shelf == "manage":
+            page.locator('[data-settings-label="Manage chats"]').get_by_role(
+                "button", name = "Manage", exact = True
+            ).click()
+            label = "Search chats or projects"
+        else:
+            label = (
+                "Search archived chats or projects"
+                if shelf == "chats"
+                else f"Search archived {shelf}"
+            )
+        search = page.get_by_role("searchbox", name = label, exact = True)
+        search.wait_for()
+        page.evaluate("window.dispatchEvent(new Event('unsloth-chat-projects-updated'))")
+        return search
+
+    def sort(label):
+        page.get_by_role("button", name = "Filter and sort", exact = True).click()
+        page.get_by_role("menuitemradio", name = label, exact = True).click()
+
+    def mutation_requests():
+        return page.evaluate(
+            "window.__dataFixture.requests.filter(r => ['PATCH', 'DELETE'].includes(r.method))"
+        )
+
+    for shelf in ["manage", "chats"]:
+        search = seed(shelf)
+        search.fill("  RESEARCH   cafe ")
+        expect(page.get_by_role("button", name = "Café needle", exact = True)).to_be_visible()
+        expect(page.get_by_role("button", name = "Zulu sample", exact = True)).to_have_count(0)
+        checks.append(f"{shelf}-search-title-and-project-across-pages-unicode")
+        search.fill("missing query")
+        expect(
+            page.get_by_text(
+                "No chats match your search."
+                if shelf == "manage"
+                else "No archived chats match your search.",
+                exact = True,
+            )
+        ).to_be_visible()
+        search.fill("")
+        page.get_by_role("button", name = "Filter by project", exact = True).click()
+        page.get_by_role("combobox", name = "Search projects", exact = True).fill("Research")
+        page.get_by_role("option", name = "Research notes", exact = True).click()
+        expect(page.get_by_role("heading", name = "Other project", exact = True)).to_have_count(0)
+        checks.append(f"{shelf}-searchable-project-filter")
+        sort("Compare chats")
+        expect(page.get_by_role("button", name = "Compare models", exact = True)).to_have_count(1)
+        expect(page.get_by_role("button", name = "Café needle", exact = True)).to_have_count(0)
+        sort("Single chats")
+        expect(page.get_by_role("button", name = "Compare models", exact = True)).to_have_count(0)
+        checks.append(f"{shelf}-type-filter-paired-chats")
+        sort("Alphabetical")
+        expect(page.locator("section").last.locator("button[title]").first).to_have_text(
+            "Café needle"
+        )
+        sort("Created")
+        expect(page.get_by_role("button", name = "Chat 30", exact = True)).to_be_visible()
+        sort("Updated")
+        expect(page.get_by_role("button", name = "Zulu sample", exact = True)).to_be_visible()
+        checks.append(f"{shelf}-sort-created-updated-alphabetical")
+        assert page.get_by_text("Date created", exact = True).count() == 0
+        title = page.get_by_role("button", name = "Zulu sample", exact = True)
+        subtitle = title.locator("..").locator("p")
+        assert subtitle.inner_text()
+        assert subtitle.bounding_box()["y"] > title.bounding_box()["y"]
+        checks.append(f"{shelf}-date-beneath-title")
+
+    search = seed("chats")
+    search.fill("Old experiments")
+    expect(page.get_by_role("button", name = "Chat 31", exact = True)).to_be_visible()
+    checks.append("archive-search-includes-archived-project-names")
+
+    search = seed("manage")
+    page.get_by_role("checkbox", name = "Select all visible chats", exact = True).click()
+    expect(page.get_by_text("20 chats selected", exact = True)).to_be_visible()
+    search.fill("needle")
+    expect(
+        page.get_by_role("checkbox", name = 'Select "Café needle"', exact = True)
+    ).not_to_be_checked()
+    expect(page.get_by_role("button", name = "Archive", exact = True)).to_have_count(0)
+    assert not mutation_requests()
+    checks.append("manage-filter-clears-hidden-selection")
+    page.get_by_role("checkbox", name = 'Select "Café needle"', exact = True).click()
+    page.get_by_role("button", name = "Archive", exact = True).click()
+    page.wait_for_function(
+        "window.__dataFixture.rows.find(r => r.title === 'Café needle').archived === true"
+    )
+    assert len(mutation_requests()) == 1
+    checks.append("manage-filtered-archive-scope")
+
+    search = seed("chats", holdMutation = True)
+    search.fill("Compare models")
+    page.get_by_role("button", name = "Delete results", exact = True).click()
+    dialog = page.get_by_role("alertdialog")
+    expect(dialog.get_by_role("heading")).to_have_text("Delete chat")
+    toggle = dialog.get_by_role("switch")
+    if toggle.get_attribute("aria-checked") != "true":
+        toggle.click()
+    dialog.get_by_role("button", name = "Delete", exact = True).click()
+    page.wait_for_function("typeof window.__dataFixture.releaseMutation === 'function'")
+    expect(toggle).to_be_disabled()
+    expect(dialog.get_by_role("button", name = "Cancel", exact = True)).to_be_disabled()
+    page.keyboard.press("Escape")
+    expect(dialog).to_be_visible()
+    page.evaluate("window.__dataFixture.releaseMutation()")
+    expect(dialog).to_have_count(0)
+    requests = mutation_requests()
+    assert len(requests) == 1 and len(requests[0]["body"]["ids"]) == 2
+    assert requests[0]["body"]["delete_files"] is True
+    assert page.evaluate("window.__dataFixture.rows.length") == 30
+    checks.append("archive-filtered-delete-pair-sandbox-choice-pending-lock")
+
+    for kind in ["images", "videos", "audio"]:
+        search = seed(kind)
+        noun = {"images": "image", "videos": "video", "audio": "clip"}[kind]
+        search.fill("CAFE needle")
+        row = page.locator("[data-archived-id]")
+        expect(row).to_have_count(1)
+        expect(row).to_contain_text("Café needle")
+        expect(page.get_by_text("Searching remaining items", exact = False)).to_have_count(0)
+        assert (
+            page.evaluate(
+                "window.__dataFixture.requests.filter(r => r.path.endsWith('/gallery') && r.query.includes('archived=true')).length"
+            )
+            >= 3
+        )
+        assert page.get_by_text("Date created", exact = True).count() == 0
+        checks.append(f"{kind}-search-full-archive-and-compact-row")
+        search.fill("missing query")
+        expect(
+            page.get_by_text(f"No archived {kind} match your search.", exact = True)
+        ).to_be_visible()
+        search.fill("")
+        sort("Alphabetical")
+        expect(row.first).to_contain_text("Café needle")
+        sort("Oldest first")
+        expect(row.first).to_contain_text("Sample 446")
+        checks.append(f"{kind}-empty-query-reset-and-sorts")
+        search.fill("needle")
+        page.get_by_role("button", name = "Delete results", exact = True).click()
+        dialog = page.get_by_role("alertdialog")
+        expect(dialog.get_by_role("heading")).to_have_text(f"Delete 1 {noun}")
+        dialog.get_by_role("button", name = "Cancel", exact = True).click()
+        assert not mutation_requests()
+        page.get_by_role("button", name = "Delete results", exact = True).click()
+        dialog.get_by_role("button", name = "Delete", exact = True).click()
+        expect(dialog).to_have_count(0)
+        expect(row).to_have_count(0)
+        assert len(mutation_requests()) == 1
+        assert page.evaluate("kind => window.__dataFixture.media[kind].length", kind) == 446
+        checks.append(f"{kind}-filtered-delete-confirm-cancel-scope")
+
+        search = seed(kind, failPage = True)
+        search.fill("needle")
+        expect(
+            page.get_by_text("Search is incomplete. Retry loading the remaining items.", exact = True)
+        ).to_be_visible()
+        assert page.get_by_text(f"No archived {kind} match your search.", exact = True).count() == 0
+        page.evaluate("window.__dataFixture.failPage = false")
+        page.get_by_role("button", name = "Retry", exact = True).click()
+        expect(
+            page.get_by_role("button", name = f"Unarchive {noun}: Café needle", exact = True)
+        ).to_be_visible()
+        checks.append(f"{kind}-failed-page-retry-retains-search")
+        page.evaluate("window.__dataFixture.holdMutation = true")
+        page.get_by_role("button", name = f"Unarchive {noun}: Café needle", exact = True).click()
+        page.wait_for_function("typeof window.__dataFixture.releaseMutation === 'function'")
+        expect(
+            page.get_by_role("button", name = f"Unarchive {noun}: Café needle", exact = True)
+        ).to_be_disabled()
+        page.evaluate("window.__dataFixture.releaseMutation()")
+        expect(page.locator("[data-archived-id]").filter(has_text = "Café needle")).to_have_count(0)
+        assert len(mutation_requests()) == 1
+        checks.append(f"{kind}-restore-pending-lock")
+
+        search = seed(kind, failMutation = True)
+        search.fill("needle")
+        page.get_by_role("button", name = f"Delete {noun}: Café needle", exact = True).click()
+        dialog = page.get_by_role("alertdialog")
+        dialog.get_by_role("button", name = "Delete", exact = True).click()
+        expect(dialog).to_have_count(0)
+        expect(
+            page.get_by_role("button", name = f"Delete {noun}: Café needle", exact = True)
+        ).to_be_enabled()
+        assert page.evaluate("kind => window.__dataFixture.media[kind].length", kind) == 447
+        checks.append(f"{kind}-failed-delete-retains-row")
+
+        search = seed(kind, stallPage = True)
+        search.fill("needle")
+        expect(page.get_by_role("button", name = "Retry", exact = True)).to_be_visible()
+        count = page.evaluate("window.__dataFixture.requests.length")
+        page.wait_for_timeout(800)
+        assert page.evaluate("window.__dataFixture.requests.length") == count
+        checks.append(f"{kind}-stalled-page-stops-retrying")
+
+    for kind in ["images", "videos", "audio"]:
+        search = seed(kind, holdPage = True)
+        page.get_by_role("button", name = "Show more", exact = True).click()
+        page.wait_for_function("typeof window.__dataFixture.releasePage === 'function'")
+        noun = {"images": "image", "videos": "video", "audio": "clip"}[kind]
+        page.get_by_role("button", name = f"Unarchive {noun}: Sample 00", exact = True).click()
+        expect(page.locator("[data-archived-id]").filter(has_text = "Sample 00")).to_have_count(0)
+        page.evaluate("window.__dataFixture.holdPage = false; window.__dataFixture.releasePage()")
+        search.fill("Sample 20")
+        expect(page.locator(f'[data-archived-id="{kind}-20"]')).to_contain_text("Sample 20")
+        expect(page.get_by_text("Searching remaining items", exact = False)).to_have_count(0)
+        checks.append(f"{kind}-restore-during-pagination-keeps-boundary-item")
+
+        seed(kind, mediaCount = 23)
+        page.get_by_role("button", name = "Delete all", exact = True).click()
+        dialog = page.get_by_role("alertdialog")
+        expect(dialog.get_by_role("heading")).to_have_text(
+            f"Delete 23 {'clips' if kind == 'audio' else kind}"
+        )
+        assert not mutation_requests()
+        dialog.get_by_role("button", name = "Cancel", exact = True).click()
+        assert page.evaluate("kind => window.__dataFixture.media[kind].length", kind) == 23
+        checks.append(f"{kind}-bulk-confirmation-loads-all-pages-before-delete")
+
+    for kind in ["images", "videos", "audio"]:
+        seed(kind, reorderDates = True)
+        expect(page.locator("[data-archived-id]")).to_have_count(20)
+        sort("Created")
+        expect(page.locator("[data-archived-id]").first).to_contain_text("Sample 300")
+        expect(page.get_by_text("Searching remaining items", exact = False)).to_have_count(0)
+        expect(page.locator("[data-archived-id]")).to_have_count(20)
+        thumbnails = page.evaluate(
+            "window.__dataFixture.requests.filter(r => r.path.includes('/content')).length"
+        )
+        assert thumbnails < 60, thumbnails
+        checks.append(f"{kind}-global-date-sort-with-bounded-rows-and-thumbnails")
+
+    for width, theme in itertools.product([360, 768, 1280], ["light", "dark"]):
+        page.set_viewport_size({"width": width, "height": 1000})
+        page.evaluate(
+            "theme => document.documentElement.classList.toggle('dark', theme === 'dark')", theme
+        )
+        search = seed("chats")
+        search.fill("needle")
+        row = page.get_by_role("button", name = "Café needle", exact = True)
+        expect(row).to_be_visible()
+        assert row.bounding_box()["width"] > 10
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        expect(
+            page.get_by_role("button", name = "Unarchive chat: Café needle", exact = True)
+        ).to_be_visible()
+        search.focus()
+        # macOS WebKit uses Option-Tab to include buttons in keyboard navigation.
+        key = (
+            "Alt+Tab"
+            if sys.platform == "darwin" and os.environ.get("PW_ENGINE") == "webkit"
+            else "Tab"
+        )
+        page.keyboard.press(key)
+        expect(page.get_by_role("button", name = "Filter and sort", exact = True)).to_be_focused()
+        page.keyboard.press("Enter")
+        expect(page.get_by_role("menuitemradio", name = "Updated", exact = True)).to_be_visible()
+        page.keyboard.press("Escape")
+        checks.append(f"archive-layout-keyboard-{width}-{theme}")
+    page.set_viewport_size({"width": 1280, "height": 1000})
+    return checks
 
 
 def main():
@@ -251,6 +590,8 @@ def main():
         wait_for_smoke_page(url, "smoke-settings-main.tsx", proc = server, timeout_s = 60)
         with sync_playwright() as p:
             options = {"headless": True}
+            if os.environ.get("PW_EXECUTABLE"):
+                options["executable_path"] = os.environ["PW_EXECUTABLE"]
             if os.environ.get("PW_CHANNEL"):
                 options["channel"] = os.environ["PW_CHANNEL"]
             browser = getattr(p, engine).launch(**options)
