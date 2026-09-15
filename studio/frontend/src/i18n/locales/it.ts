@@ -2,6 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  composerSettings: {
+    title: "Composizione dei messaggi",
+    plainText: "Composizione in testo semplice",
+    plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
+    showContext: "Mostra l’utilizzo della finestra di contesto",
+    sendShortcut: "Scorciatoia di invio",
+    sendDescription: "Scegli se Invio invia un messaggio o inserisce una nuova riga.",
+    followUp: "Messaggi successivi",
+    followUpDescription: "Scegli cosa accade quando invii durante una risposta. Premi {shortcut} per fare il contrario per un messaggio.",
+    queue: "In coda",
+    steer: "Riorienta",
+    steerDescription: "Riorienta interrompe la risposta corrente e invia subito dopo il tuo messaggio successivo.",
+    settings: "Impostazioni di composizione",
+    preview: "Anteprima formattata",
+  },
   common: {
     cancel: "Annulla",
     close: "Chiudi",

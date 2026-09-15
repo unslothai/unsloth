@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const de = {
+  composerSettings: {
+    title: "Nachrichteneingabe",
+    plainText: "Eingabe als Klartext",
+    plainTextDescription: "Code, Markdown und Links als wörtlichen Text anzeigen. Ausschalten, um eine formatierte Vorschau zu sehen.",
+    showContext: "Auslastung des Kontextfensters anzeigen",
+    sendShortcut: "Tastenkürzel zum Senden",
+    sendDescription: "Wähle, ob Enter eine Nachricht sendet oder eine neue Zeile einfügt.",
+    followUp: "Folgenachrichten",
+    followUpDescription: "Wähle, was beim Senden während einer Antwort passiert. Drücke {shortcut}, um für eine Nachricht das Gegenteil zu tun.",
+    queue: "Einreihen",
+    steer: "Umlenken",
+    steerDescription: "Umlenken stoppt die aktuelle Antwort und sendet deine Folgenachricht als Nächstes.",
+    settings: "Eingabeeinstellungen",
+    preview: "Formatierte Vorschau",
+  },
   picker: {
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
