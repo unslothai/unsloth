@@ -156,17 +156,15 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     # 1. Same line. The cheapest check and the one with the clearest message.
     for number, line in enumerate(lines, start = 1):
         if _HIDDEN.search(line):
-            assert not _BYPASS.search(line), (
-                f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
-            )
+            assert not _BYPASS.search(
+                line
+            ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
     # 2. A ratchet on how many relaxed policies the file contains at all, wherever they sit and
     #    whatever they are near. This is what catches a new one arriving somewhere the other two
     #    layers do not model.
     found = [
-        (number, line.strip())
-        for number, line in enumerate(lines, start = 1)
-        if _BYPASS.search(line)
+        (number, line.strip()) for number, line in enumerate(lines, start = 1) if _BYPASS.search(line)
     ]
     allowed = KNOWN_BYPASS_SITES.get(name, 0)
     assert len(found) <= allowed, (
@@ -266,14 +264,18 @@ def test_setup_bat_clears_the_mark_before_loading_under_remotesigned() -> None:
     against setup.ps1, and adding -NoProfile here would silently retire that coverage.
     """
     text = _text("studio/setup.bat")
-    lines = [line for line in text.splitlines() if line.strip() and not line.strip().lower().startswith(("rem ", "@echo", "rem\t"))]
+    lines = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.strip().lower().startswith(("rem ", "@echo", "rem\t"))
+    ]
     launches = [line for line in lines if "-File" in line and "setup.ps1" in line]
     assert len(launches) == 1, f"expected exactly one setup.ps1 launch, found {launches}"
     launch = launches[0]
 
-    assert "-ExecutionPolicy RemoteSigned" in launch, (
-        f"studio/setup.bat must load setup.ps1 under RemoteSigned, not a relaxed policy: {launch}"
-    )
+    assert (
+        "-ExecutionPolicy RemoteSigned" in launch
+    ), f"studio/setup.bat must load setup.ps1 under RemoteSigned, not a relaxed policy: {launch}"
     assert "-NoProfile" not in launch, (
         "studio/setup.bat must keep loading profiles for setup.ps1. "
         "tests/studio/test_amd_venv_repair_loop.ps1 drives a profile that sets Set-StrictMode "
