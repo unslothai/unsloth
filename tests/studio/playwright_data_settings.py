@@ -525,9 +525,7 @@ def run_libraries(page):
         seed(kind, mediaCount = 23)
         page.get_by_role("button", name = "Delete all", exact = True).click()
         dialog = page.get_by_role("alertdialog")
-        expect(dialog.get_by_role("heading")).to_have_text(
-            f"Delete 23 {'clips' if kind == 'audio' else kind}"
-        )
+        expect(dialog.get_by_role("heading")).to_have_text("Delete archived items (23)")
         assert not mutation_requests()
         dialog.get_by_role("button", name = "Cancel", exact = True).click()
         assert page.evaluate("kind => window.__dataFixture.media[kind].length", kind) == 23
