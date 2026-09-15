@@ -20,6 +20,7 @@ shell flags with a `git` that fails, which is the only way to answer a question 
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -34,8 +35,17 @@ import yaml
 _REPO = Path(__file__).resolve().parents[2]
 _ACTION = _REPO / ".github" / "actions" / "core-cpu-setup" / "action.yml"
 
+# The block is executed, not read, so the host has to be able to run it. bash is the shell
+# the step declares; GNU timeout is what bounds the lookup. Stock macOS ships bash and no
+# timeout -- it is gtimeout, from coreutils -- which tests/sh/test_llama_build_jobs.sh
+# already records. Without it the lookup fails, `|| true` absorbs it, head comes back empty
+# and the two tests that expect a warning fail on a developer's Mac. The action itself only
+# ever runs on ubuntu-24.04, so skipping here gives up no coverage that exists.
+_MISSING = [tool for tool in ("bash", "timeout") if shutil.which(tool) is None]
+
 pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason = "needs bash to execute the extracted block"
+    bool(_MISSING),
+    reason = f"needs {' and '.join(_MISSING)} to execute the extracted block",
 )
 
 
@@ -112,7 +122,14 @@ def _run_notice(
         + "\necho NOTICE_BLOCK_SURVIVED\n",
         encoding = "utf-8",
     )
-    env = {"PATH": f"{stub_dir}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path)}
+    # The stub directory first so its git wins, then the caller's real PATH rather than a
+    # hardcoded pair of directories. Hardcoding meant the skip above and the run below could
+    # disagree: a Mac with coreutils installed has timeout on PATH, `shutil.which` finds it,
+    # and a fixed /usr/bin:/bin would still not.
+    env = {
+        "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+        "RUNNER_TEMP": str(tmp_path),
+    }
     return subprocess.run(
         ["bash", str(script), str(tmp_path)],
         capture_output = True,
