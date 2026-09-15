@@ -2244,7 +2244,26 @@ _PY_ARCHIVE_SOURCE_CALLS = frozenset({"write", "add"})
 _PY_ARCHIVE_MEMBER_CTORS = frozenset({"ZipFile", "TarFile"})
 
 
-def _is_archive_ctor_call(node, module_aliases = None) -> bool:
+def _python_archive_ctor_names(tree) -> "set[str]":
+    """Local names imported FROM an archive module that construct one.
+
+    `from tarfile import open as topen` binds a constructor under a name whose resolved spelling is
+    `open`, which is the builtin everywhere else, so the module it came from is what identifies it.
+    """
+    names: "set[str]" = set()
+    for node in _tree_nodes(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("tarfile", "zipfile"):
+            for entry in node.names:
+                if entry.name in ("open", "ZipFile", "TarFile"):
+                    names.add(entry.asname or entry.name)
+    return names
+
+
+def _is_archive_ctor_call(
+    node,
+    module_aliases = None,
+    local_ctors = frozenset(),
+) -> bool:
     """True for `zipfile.ZipFile(...)`, `ZipFile(...)`, `tarfile.open(...)` and their aliases."""
     if not isinstance(node, ast.Call):
         return False
@@ -2258,16 +2277,25 @@ def _is_archive_ctor_call(node, module_aliases = None) -> bool:
             func.attr == "open" and base in ("tarfile", "zipfile")
         )
     if isinstance(func, ast.Name):
-        return (module_aliases or {}).get(func.id, func.id) in _PY_ARCHIVE_MEMBER_CTORS
+        return (
+            func.id in local_ctors
+            or (module_aliases or {}).get(func.id, func.id) in _PY_ARCHIVE_MEMBER_CTORS
+        )
     return False
 
 
-def _python_archive_object_names(tree, module_aliases = None) -> "set[str]":
+def _python_archive_object_names(
+    tree,
+    module_aliases = None,
+    local_ctors = frozenset(),
+) -> "set[str]":
     """Local names holding a member-based archive, bound by assignment or by `with ... as`."""
     names: "set[str]" = set()
 
     def bind(target, value) -> None:
-        if isinstance(target, ast.Name) and _is_archive_ctor_call(value, module_aliases):
+        if isinstance(target, ast.Name) and _is_archive_ctor_call(
+            value, module_aliases, local_ctors
+        ):
             names.add(target.id)
 
     for node in _tree_nodes(tree):
@@ -2646,7 +2674,8 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     # `from zipfile import ZipFile as Z` binds the constructor under a name no table holds, so the
     # function aliases count here exactly as the module ones do.
     archive_aliases = {**module_aliases, **function_aliases}
-    archive_objects = _python_archive_object_names(tree, archive_aliases)
+    archive_ctors = _python_archive_ctor_names(tree)
+    archive_objects = _python_archive_object_names(tree, archive_aliases, archive_ctors)
     containers = _python_literal_containers(tree)
     fileinput_readers = _python_fileinput_readers(tree)
     operands: "list[tuple[str, bool]]" = []

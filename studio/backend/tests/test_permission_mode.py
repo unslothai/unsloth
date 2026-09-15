@@ -3548,6 +3548,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # `make_archive` takes `root_dir` third and `base_dir` fourth, positionally too.
     f"import shutil\nshutil.make_archive('backup', 'zip', {_OUTSIDE_DIR!r})",
     f"import shutil\nshutil.make_archive('backup', 'zip', 'src', {_OUTSIDE_DIR!r})",
+    # `from tarfile import open as topen` resolves to the name `open`, so the MODULE identifies it.
+    f"from tarfile import open as topen\nt = topen('o.tar', 'w')\nt.add({_OUTSIDE_FILE!r})",
     # A constructor imported under an alias binds the same archive object.
     f"from zipfile import ZipFile as Z\nz = Z('local.zip', 'w')\nz.write({_OUTSIDE_FILE!r})",
     # A literal splat hands the reader the same path the plain call does.
@@ -3814,6 +3816,9 @@ _INDIRECT_BENIGN_PYTHON = (
     "import shutil\nshutil.unpack_archive('local.zip', 'build')",
     "import shutil\nshutil.make_archive('backup', 'zip', 'src')",
     "from zipfile import ZipFile as Z\nz = Z('local.zip', 'w')\nz.write('notes.txt')",
+    "from tarfile import open as topen\nt = topen('o.tar', 'w')\nt.add('notes.txt')",
+    # An ordinary handle's write is DATA, whatever it looks like.
+    "f = open('a.txt', 'w')\nf.write('/home/alice/x')",
     "import pandas as pd\npd.read_csv(*['local.csv'])",
     # A splat of something dynamic stays the documented residual rather than a guess.
     "import pandas as pd\npd.read_csv(*args)",
