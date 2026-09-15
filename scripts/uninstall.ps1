@@ -4,8 +4,9 @@
 # Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
 # Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
-# Usage: run -Help. The web one-liner is in that help text and is not repeated here, since
-# AMSI scans this file in full before any of it runs and nothing reads the header.
+# Usage: run -Help. The web one-liner is in that help text and is not repeated here: nothing
+# reads this header from inside the script, and the whole file is scanned before any of it runs.
+# Why several things here are written the long way: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
