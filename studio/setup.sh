@@ -3260,10 +3260,12 @@ try:
     marker = json.load(open(sys.argv[2], encoding="utf-8"))
 except Exception:
     marker = {}
-value = marker.get(sys.argv[3]) if isinstance(marker, dict) else None
-value = value.strip() if isinstance(value, str) else ""
-same = value == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(value, sys.argv[4]))
-sys.exit(0 if value and same else 1)
+values = [marker.get(f) for f in sys.argv[3].split(",")] if isinstance(marker, dict) else []
+values = [v.strip() for v in values if isinstance(v, str) and v.strip()]
+same = any(
+    v == sys.argv[4] or (sys.argv[5] == "refs" and installer.refs_match(v, sys.argv[4])) for v in values
+)
+sys.exit(0 if same else 1)
 PY
 }
 
@@ -3336,7 +3338,9 @@ _gpu_prebuilt_to_keep_over_cpu_build() {
     fi
     case "${UNSLOTH_LLAMA_TAG:-}" in
         ""|latest|master) ;;
-        *) _installed_prebuilt_ref_matches "$install_dir" tag "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
+        # A commit pin is recorded beside the build tag, in the source ref fields.
+        *) _installed_prebuilt_ref_matches "$install_dir" \
+               tag,requested_source_ref,resolved_source_ref,source_commit "$UNSLOTH_LLAMA_TAG" refs || return 1 ;;
     esac
     _has_local_llama_server "$install_dir" || return 1
     backend="$(_installed_prebuilt_backend "$install_dir")"

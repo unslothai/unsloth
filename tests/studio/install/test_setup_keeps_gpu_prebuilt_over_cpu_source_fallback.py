@@ -178,6 +178,25 @@ class TestTheKeepDecision:
         assert (
             _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "fedcba987654", **nvidia) == "REPLACE"
         )
+        # The marker writer records a commit pin in source_commit beside the upstream build tag.
+        install_dir = _install(
+            tmp_path,
+            {
+                "backend": "cuda",
+                "tag": "b8508",
+                "release_tag": "b8508-mix",
+                "requested_source_ref": "0123456789abcdef0123456789abcdef01234567",
+                "resolved_source_ref": "0123456789abcdef0123456789abcdef01234567",
+                "source_commit": "0123456789abcdef0123456789abcdef01234567",
+            },
+        )
+        assert (
+            _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "0123456789ab", **nvidia)
+            == "KEEP cuda"
+        )
+        assert (
+            _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "fedcba987654", **nvidia) == "REPLACE"
+        )
         assert (
             _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b8508-mix", **nvidia)
             == "KEEP cuda"
