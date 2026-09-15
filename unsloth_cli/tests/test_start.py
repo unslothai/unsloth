@@ -5753,13 +5753,32 @@ def test_pi_local_entry_leaves_degenerate_entries_alone(tmp_path, entry):
     assert start._pi_local_entry(entry, tmp_path, tmp_path, frozenset()) == entry
 
 
-def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(tmp_path, monkeypatch):
-    # unlink maps to DeleteFileW, which refuses a directory symlink with WinError 5.
+@pytest.mark.parametrize("dangling", [False, True])
+def test_remove_overlay_entry_rmdirs_a_windows_directory_symlink(
+    tmp_path, monkeypatch, dangling,
+):
+    # unlink maps to DeleteFileW, which refuses a directory symlink with WinError 5,
+    # and a dangling link is still one: is_dir() would follow the missing target.
     source = tmp_path / "source"
     source.mkdir()
     (source / "keep.txt").write_text("keep\n")
     target = tmp_path / "link"
     target.symlink_to(source, target_is_directory = True)
+    if dangling:
+        shutil.rmtree(source)
+        source.mkdir()  # restore the sentinel dir so the assertion below still reads
+        (source / "keep.txt").write_text("keep\n")
+        target.unlink()
+        target.symlink_to(tmp_path / "gone", target_is_directory = True)
+    # POSIX lstat has no st_file_attributes; stand in for the Windows link attributes.
+    real_lstat = os.lstat
+    monkeypatch.setattr(
+        start.os, "lstat",
+        lambda p: SimpleNamespace(
+            st_file_attributes = 0x10, st_reparse_tag = 0,
+            st_mode = real_lstat(p).st_mode,
+        ),
+    )
     # rmdir on a link is POSIX-invalid, so record the routing instead of running it.
     monkeypatch.setattr(start.os, "name", "nt")
     calls = []

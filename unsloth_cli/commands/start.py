@@ -2979,10 +2979,19 @@ def _is_junction(path: Path) -> bool:
         return False
 
 
+def _is_directory_link(path: Path) -> bool:
+    # A Windows directory symlink carries FILE_ATTRIBUTE_DIRECTORY on the link itself.
+    # lstat reads the link, so a dangling one still answers, unlike is_dir().
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x10)
+    except OSError:
+        return False
+
+
 def _remove_overlay_entry(path: Path) -> None:
     if _is_junction(path):
         path.rmdir()
-    elif os.name == "nt" and path.is_symlink() and path.is_dir():
+    elif os.name == "nt" and path.is_symlink() and _is_directory_link(path):
         # A Windows directory symlink is a directory entry, so DeleteFileW (what
         # unlink maps to) refuses it with WinError 5. rmdir drops the link only.
         path.rmdir()
