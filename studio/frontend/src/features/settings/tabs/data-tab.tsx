@@ -137,7 +137,10 @@ export function DataTab() {
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
   // Gates the archived subpage Export button.
-  const { archivedItems } = useChatSidebarItems({ requireMessages: false });
+  const { archivedItems } = useChatSidebarItems({
+    requireMessages: false,
+    enabled: subpage === "archived",
+  });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
@@ -229,8 +232,23 @@ export function DataTab() {
   });
 
   useEffect(() => {
-    void countAllChats().then(setCount);
-  }, []);
+    if (subpage !== "main") return;
+    let cancelled = false;
+    void countAllChats().then(
+      (next) => {
+        if (!cancelled) setCount(next);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        toast.error(t("common.error"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [subpage, t]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -983,7 +1001,7 @@ export function DataTab() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={count === 0 || clearing}
+                  disabled={count === null || count === 0 || clearing}
                   className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
                 >
                   <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
@@ -1057,8 +1075,13 @@ export function DataTab() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="max-w-md">
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!clearing) setConfirmOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-md" showCloseButton={!clearing}>
           <DialogHeader>
             <DialogTitle>
               {count === 1
@@ -1069,16 +1092,21 @@ export function DataTab() {
               {t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
-          <DeleteChatFilesSwitch
-            id="clear-chats-delete-files"
-            label={t("settings.data.deleteSandboxFiles")}
-            checked={deleteFilesOnClear}
-            onCheckedChange={setDeleteFilesOnClear}
-            // Every chat at once, so the per-chat wording does not fit.
-            description={t("settings.data.deleteSandboxFilesDescription")}
-          />
+          <fieldset disabled={clearing} className="min-w-0 disabled:opacity-50">
+            <DeleteChatFilesSwitch
+              id="clear-chats-delete-files"
+              label={t("settings.data.deleteSandboxFiles")}
+              checked={deleteFilesOnClear}
+              onCheckedChange={setDeleteFilesOnClear}
+              description={t("settings.data.deleteSandboxFilesDescription")}
+            />
+          </fieldset>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button
+              variant="outline"
+              disabled={clearing}
+              onClick={() => setConfirmOpen(false)}
+            >
               {t("common.cancel")}
             </Button>
             <Button
