@@ -340,6 +340,39 @@ def test_a_second_clip_is_refused_rather_than_dropped_on_a_non_gguf_backend():
     assert inference_route._local_video_clip(one, info) == _CLIP_B64
 
 
+def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
+    """_request_video_rejection runs only when a pre-switch validation happens, so with
+    auto-switch off a file:// clip reached the backend and was decoded as base64."""
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(_part_body("file:///etc/passwd"))
+    with pytest.raises(HTTPException) as exc:
+        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+    assert exc.value.status_code == 400
+    assert "Unsupported video URL scheme" in exc.value.detail
+
+
+def test_admission_compacts_a_clip_after_translation_too():
+    """The server-side tool loop recosts the conversation after _translate_video_parts has
+    renamed the part, so matching video_url alone priced the payload as dense prompt text."""
+    import copy
+
+    big = "data:video/mp4;base64," + "A" * 40_000
+    msgs = [{"role": "user", "content": [
+        {"type": "video_url", "video_url": {"url": big}},
+        {"type": "text", "text": "hi"}]}]
+
+    translated = copy.deepcopy(msgs)
+    inference_route._translate_video_parts(translated)
+    before, _ = inference_route._openai_llama_admission_messages_for_estimate(copy.deepcopy(msgs))
+    after, _ = inference_route._openai_llama_admission_messages_for_estimate(translated)
+
+    assert "A" * 40_000 not in str(after)
+    # Both spellings compact to about the same size; the clip is a marker, not prompt text.
+    assert abs(len(str(after)) - len(str(before))) < 200
+
+
 def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
     """Only llama-server fetches a clip for itself. A transformers or MLX model is handed bytes,
     so forwarding the URL would feed it the text of the URL instead of the video."""

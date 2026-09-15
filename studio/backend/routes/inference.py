@@ -1950,6 +1950,10 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
 
 
 _ADMISSION_IMAGE_PART_TYPES = ("image_url", "image")
+# Both spellings: the server-side tool loop recosts the conversation AFTER
+# _translate_video_parts has renamed the part, so matching video_url alone priced the
+# whole base64 payload as prompt text and inflated the lease toward the KV budget.
+_ADMISSION_VIDEO_PART_TYPES = ("video_url", "input_video")
 
 
 def _openai_llama_admission_compact_image_part(part: dict) -> dict:
@@ -2016,8 +2020,8 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     continue
 
                 # Priced by its own byte allowance, not as an image and not as prompt text.
-                if part_type == "video_url":
-                    estimate_content.append({"type": "video_url", "video_url": {"url": "[video]"}})
+                if part_type in _ADMISSION_VIDEO_PART_TYPES:
+                    estimate_content.append({"type": part_type, part_type: {"url": "[video]"}})
                     continue
 
                 if part_type not in _ADMISSION_IMAGE_PART_TYPES:
@@ -20354,6 +20358,11 @@ def _local_video_clip(payload, model_info) -> str:
             detail = "A remote video URL is only supported on a local GGUF model. "
             "Send the clip as a data URI instead.",
         )
+    # _request_video_rejection runs only when a pre-switch validation happens, so an unsupported
+    # scheme reached here and was decoded as base64 instead of earning the 400 GGUF returns.
+    scheme_rejection = _video_scheme_rejection(clips[0])
+    if scheme_rejection is not None:
+        raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
     video_b64, rejection = _video_b64_rejection(clips[0])
     if rejection is not None:
         raise HTTPException(status_code = rejection[0], detail = rejection[1])
