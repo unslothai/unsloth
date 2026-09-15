@@ -12,7 +12,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePlatformStore } from "@/config/env";
-import { revealCachedModel } from "@/features/chat";
+import { revealCachedModel, revealLocalPath, getLocalDeletePreview, deleteLocalPath } from "@/features/chat";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DeleteConfirmDialog,
   DeleteImpactSummary,
@@ -77,11 +88,18 @@ interface ModelRowMenuCachePath {
   variant?: string;
 }
 
+/** Direct on-disk path for "Reveal in Finder" (custom folders, LM Studio, local models). */
+interface ModelRowMenuLocalPath {
+  path: string;
+  displayName?: string;
+}
+
 export function ModelRowMenu({
   ariaLabel,
   buttonClassName,
   iconClassName,
   cachePath,
+  localPath,
   pin,
   update,
   del,
@@ -91,6 +109,8 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
+  /** Enables "Reveal in Finder" for local files/dirs. Takes precedence over cachePath when both are set. */
+  localPath?: ModelRowMenuLocalPath;
   pin?: ModelRowMenuPin;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
@@ -105,7 +125,37 @@ export function ModelRowMenu({
     del?.impact?.repoId ?? "",
     del?.impact?.variant,
   );
+  const [localPreview, setLocalPreview] = useState<{
+    model_files: number;
+    model_bytes: number;
+    other_files: number;
+    other_bytes: number;
+    is_dir: boolean;
+  } | null>(null);
+  const [localMode, setLocalMode] = useState<"model_only" | "all">("model_only");
   const [updateOpen, setUpdateOpen] = useState(false);
+
+  useEffect(() => {
+    if (!deleteOpen || !localPath?.path) {
+      setLocalPreview(null);
+      return;
+    }
+    let cancelled = false;
+    getLocalDeletePreview(localPath.path, localPath.displayName)
+      .then((data: { model_files: number; model_bytes: number; other_files: number; other_bytes: number; is_dir: boolean }) => {
+        if (!cancelled) setLocalPreview(data);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalPreview(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deleteOpen, localPath?.path, localPath?.displayName]);
+
+  useEffect(() => {
+    if (deleteOpen) setLocalMode("model_only");
+  }, [deleteOpen]);
 
   // Refresh the caller when this repo+variant's managed update completes.
   const onUpdatedRef = useRef(update?.onUpdated);
@@ -130,21 +180,24 @@ export function ModelRowMenu({
   const onDeleted = del?.onDeleted;
   const deleteSuccessMessage = del?.successMessage;
   const handleDeleteConfirm = useCallback(async () => {
-    if (!onDeleteConfirm) return;
     setDeleting(true);
     try {
-      await onDeleteConfirm();
-      if (deleteSuccessMessage) toast.success(deleteSuccessMessage);
+      if (localPath?.path) {
+        await deleteLocalPath(localPath.path, localMode, localPath.displayName);
+        if (deleteSuccessMessage) toast.success(deleteSuccessMessage);
+      } else {
+        if (!onDeleteConfirm) return;
+        await onDeleteConfirm();
+        if (deleteSuccessMessage) toast.success(deleteSuccessMessage);
+      }
       onDeleted?.();
       setDeleteOpen(false);
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to delete model",
-      );
+      toast.error(err instanceof Error ? err.message : "Failed to delete model");
     } finally {
       setDeleting(false);
     }
-  }, [onDeleteConfirm, onDeleted, deleteSuccessMessage]);
+  }, [localMode, localPath?.path, localPath?.displayName, onDeleteConfirm, onDeleted, deleteSuccessMessage]);
 
   const onUpdateConfirm = update?.onConfirm;
   const handleUpdateConfirm = useCallback(() => {
@@ -162,16 +215,26 @@ export function ModelRowMenu({
 
   const cachePathRepoId = cachePath?.repoId;
   const cachePathVariant = cachePath?.variant;
+  const localRevealPath = localPath?.path?.trim() || null;
   const handleReveal = useCallback(() => {
+    if (localRevealPath) {
+      revealLocalPath(localRevealPath).catch((err) => {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to open file manager",
+        );
+      });
+      return;
+    }
     if (!cachePathRepoId) return;
     revealCachedModel(cachePathRepoId, cachePathVariant).catch((err) => {
       toast.error(
         err instanceof Error ? err.message : "Failed to open file manager",
       );
     });
-  }, [cachePathRepoId, cachePathVariant]);
+  }, [localRevealPath, cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  const canReveal = Boolean(localRevealPath || cachePathRepoId);
+  if (!pin && !update && !del && !canReveal) return null;
 
   return (
     <>
@@ -215,7 +278,7 @@ export function ModelRowMenu({
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {cachePath && (
+          {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
                 e.stopPropagation();
@@ -244,7 +307,7 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(cachePath || pin || update) && <DropdownMenuSeparator />}
+              {(canReveal || pin || update) && <DropdownMenuSeparator />}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}
@@ -265,7 +328,95 @@ export function ModelRowMenu({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {del && (
+      {del && localPath ? (
+        (() => {
+          const fmt = (b: number) => {
+            if (!Number.isFinite(b) || b <= 0) return "0 B";
+            const u = ["B", "KB", "MB", "GB", "TB"];
+            let i = 0;
+            let v = b;
+            while (v >= 1024 && i < u.length - 1) {
+              v /= 1024;
+              i += 1;
+            }
+            return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
+          };
+          const showChoice = Boolean(
+            localPreview?.is_dir && (localPreview.other_files > 0 || localPreview.model_files > 1),
+          );
+          return (
+            <AlertDialog
+              open={deleteOpen}
+              onOpenChange={(nextOpen) => {
+                if (!nextOpen && deleting) return;
+                setDeleteOpen(nextOpen);
+              }}
+            >
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{del.title}</AlertDialogTitle>
+                  <AlertDialogDescription asChild>
+                    <div className="space-y-3">
+                      <div>{del.description}</div>
+                      {showChoice && localPreview ? (
+                        <div className="rounded-md border border-border/60 bg-muted/20 p-3 text-sm">
+                          <p className="text-muted-foreground">
+                            This folder contains {localPreview.model_files} model file
+                            {localPreview.model_files === 1 ? "" : "s"} ({fmt(localPreview.model_bytes)}) and{" "}
+                            {localPreview.other_files} other file{localPreview.other_files === 1 ? "" : "s"} (
+                            {fmt(localPreview.other_bytes)}).
+                          </p>
+                          <div className="mt-3 space-y-2">
+                            <label className="flex items-start gap-2">
+                              <input
+                                type="radio"
+                                name="local-delete-mode"
+                                checked={localMode === "model_only"}
+                                onChange={() => setLocalMode("model_only")}
+                                className="mt-1"
+                              />
+                              <span>
+                                <span className="font-medium">Delete model files only</span>
+                                <span className="block text-xs text-muted-foreground">Other files are kept.</span>
+                              </span>
+                            </label>
+                            <label className="flex items-start gap-2">
+                              <input
+                                type="radio"
+                                name="local-delete-mode"
+                                checked={localMode === "all"}
+                                onChange={() => setLocalMode("all")}
+                                className="mt-1"
+                              />
+                              <span>
+                                <span className="font-medium">Delete everything in this folder</span>
+                                <span className="block text-xs text-destructive">This cannot be undone.</span>
+                              </span>
+                            </label>
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            The folder also contains documents, images, or other content that is not part of this model.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={() => void handleDeleteConfirm()}
+                    disabled={deleting}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    {deleting ? <Spinner className="size-4" /> : "Delete"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          );
+        })()
+      ) : del ? (
         <DeleteConfirmDialog
           open={deleteOpen}
           onOpenChange={(nextOpen) => {
@@ -283,7 +434,7 @@ export function ModelRowMenu({
           blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
           onConfirm={() => void handleDeleteConfirm()}
         />
-      )}
+      ) : null}
 
       {update && (
         <UpdateConfirmDialog

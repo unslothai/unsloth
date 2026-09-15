@@ -16,9 +16,11 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, CubeIcon, FolderOpenIcon, Share05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
+import { revealLocalPath, deleteLocalPath } from "@/features/chat";
+import { toast } from "@/lib/toast";
 import {
   downloadManager,
   jobKeyOf,
@@ -218,6 +220,7 @@ export function LocalOnDeviceCard({
   onChange,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [localDeleteOpen, setLocalDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
@@ -265,6 +268,22 @@ export function LocalOnDeviceCard({
       onChange?.();
     },
   });
+  const { deleting: localDeleting, runDelete: runLocalDelete } = useCardDelete({
+    action: async () => {
+      await deleteLocalPath(path, "model_only", displayName);
+    },
+    resourceName: "model",
+    successMessage: () => `Deleted ${displayName}`,
+    onSuccess: () => {
+      setLocalDeleteOpen(false);
+      onChange?.();
+    },
+  });
+  const handleRevealLocal = useCallback(() => {
+    revealLocalPath(path).catch((err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to open file manager");
+    });
+  }, [path]);
   const localGgufPath = path.trim();
   const needsVariantSelection =
     isGguf && requiresVariant && !localGgufPath.toLowerCase().endsWith(".gguf");
@@ -297,6 +316,21 @@ export function LocalOnDeviceCard({
   const canDelete =
     source === "hf_cache" &&
     !!repoId &&
+    !isActive &&
+    !isLoading &&
+    !runPending;
+  const canRevealLocal =
+    (source === "custom" ||
+      source === "lmstudio" ||
+      source === "models_dir" ||
+      source === "ollama" ||
+      source === "hermes") &&
+    !!path.trim();
+  const canDeleteLocal =
+    (source === "custom" ||
+      source === "lmstudio" ||
+      source === "models_dir") &&
+    !!path.trim() &&
     !isActive &&
     !isLoading &&
     !runPending;
@@ -573,6 +607,36 @@ export function LocalOnDeviceCard({
                   onClick={() => setDeleteOpen(true)}
                 />
               )}
+              {canRevealLocal && (
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      aria-label={`Open ${path} in file manager`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRevealLocal();
+                      }}
+                      className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100"
+                    >
+                      <HugeiconsIcon
+                        icon={FolderOpenIcon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="tooltip-compact">
+                    Open in file manager
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {canDeleteLocal && (
+                <CardDeleteButton
+                  label={`Delete ${displayName}`}
+                  onClick={() => setLocalDeleteOpen(true)}
+                />
+              )}
               <PathInfoButton path={path} />
             </div>
           </div>
@@ -646,6 +710,23 @@ export function LocalOnDeviceCard({
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
             <DeleteImpactSummary impact={deleteImpact} />
+          </>
+        }
+      />
+      <DeleteConfirmDialog
+        open={localDeleteOpen}
+        onOpenChange={(o) => {
+          if (!o && !localDeleting) setLocalDeleteOpen(false);
+        }}
+        title="Delete local model?"
+        deleting={localDeleting}
+        blocked={false}
+        onConfirm={() => void runLocalDelete()}
+        description={
+          <>
+            This will remove{" "}
+            <span className="font-medium text-foreground">{displayName}</span>{" "}
+            from disk. This cannot be undone.
           </>
         }
       />

@@ -18,6 +18,7 @@ import {
   type ScanFolderInfo,
   addScanFolder,
   deleteFineTunedModel,
+  deleteLocalPath,
   listGgufVariants,
   listRecommendedFolders,
   listScanFolders,
@@ -2500,6 +2501,27 @@ function sortLocalModels(
   });
 }
 
+/** Pin key for a local model. Path-keyed (not id-keyed): the Hub inventory
+ *  normalizes ids to inventory_id while the picker uses raw ids, but both
+ *  sides report the same on-disk path, so one pin covers both. */
+function localPinKey(m: LocalModelInfo): string {
+  return pinKey(m.path);
+}
+
+/** Pinned local rows float above the rest of their section. Stable, so the
+ *  unpinned order is untouched. */
+function pinnedLocalsFirst(
+  rows: LocalModelInfo[],
+  pinnedSet: ReadonlySet<string>,
+): LocalModelInfo[] {
+  if (rows.every((m) => !pinnedSet.has(localPinKey(m)))) return rows;
+  return [...rows].sort(
+    (a, b) =>
+      Number(pinnedSet.has(localPinKey(b))) -
+      Number(pinnedSet.has(localPinKey(a))),
+  );
+}
+
 /** GGUF detection for a local model by backend format hint, name, or file path. */
 function localModelIsGguf(m: LocalModelInfo): boolean {
   return (
@@ -4221,6 +4243,71 @@ export function HubModelPicker({
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
+  const isLocalModelDeletable = useCallback((model: LocalModelInfo) => {
+    const lower = model.path.toLowerCase();
+    if (
+      lower.endsWith(".gguf") ||
+      lower.endsWith(".safetensors") ||
+      lower.endsWith(".bin") ||
+      lower.endsWith(".pt") ||
+      lower.endsWith(".pth") ||
+      lower.endsWith(".onnx") ||
+      lower.endsWith(".ckpt") ||
+      lower.endsWith(".ggml")
+    )
+      return true;
+    // Directory models: require actual weights, not just a lone config.
+    // A folder with only config.json appears in inventory but must not offer
+    // delete — backend now requires a weight file at the top level.
+    // For directories, check the reported format and size; a config-only
+    // checkpoint is tiny (few KB) and should not be deletable.
+    const size = (model as unknown as { size_bytes?: number }).size_bytes ?? 0;
+    if (model.model_format === "gguf" || model.model_format === "safetensors" || model.model_format === "adapter")
+      return true;
+    if (model.model_format === "checkpoint" && size > 10_000_000) return true;
+    return false;
+  }, []);
+
+  const renderLocalModelMenu = useCallback(
+    (model: LocalModelInfo, displayName: string, loaded: boolean) => {
+      const deletable = isLocalModelDeletable(model);
+      return (
+        <ModelRowMenu
+          ariaLabel={`More options for ${displayName}`}
+          iconClassName="size-3"
+          pin={{
+            pinned: pinnedSet.has(localPinKey(model)),
+            pinLabel: "Pin to top",
+            unpinLabel: "Unpin",
+            onToggle: () => togglePinned(localPinKey(model)),
+          }}
+          localPath={{ path: model.path, displayName }}
+          del={
+            deletable
+              ? {
+                  title: "Delete local model?",
+                  description: (
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">{displayName}</span> from disk.
+                      This cannot be undone.
+                    </>
+                  ),
+                  successMessage: `Deleted ${displayName}`,
+                  disabled: loaded,
+                  onConfirm: async () => {
+                    await deleteLocalPath(model.path, "model_only", displayName);
+                  },
+                  onDeleted: refreshCachedLists,
+                }
+              : undefined
+          }
+        />
+      );
+    },
+    [isLocalModelDeletable, pinnedSet, refreshCachedLists, togglePinned],
+  );
+
   // Candidate pins whose repo still exists in the cache; per-quant validation below is needed
   // because deleting one variant can leave a sibling cached.
   const pinnedQuantCandidates = useMemo(() => {
@@ -4316,21 +4403,48 @@ export function HubModelPicker({
 
   const pinnedRows = useMemo(() => {
     const rank = makePinRank(pinnedIds);
-    const rows = [
+    // Pinned local models (custom folders, LM Studio, models dir), matched by
+    // on-disk path: the one identity the picker and Hub rows share.
+    const seenLocal = new Set<string>();
+    const pinnedLocals: LocalModelInfo[] = [];
+    for (const m of [
+      ...sortedCustomFolderModels,
+      ...sortedLmStudio,
+      ...sortedLocalDir,
+    ]) {
+      const key = localPinKey(m);
+      if (seenLocal.has(key)) continue;
+      seenLocal.add(key);
+      if (pinnedSet.has(key)) pinnedLocals.push(m);
+    }
+    const rows: Array<{
+      key: string;
+      entry: { repoId: string; quant: string } | null;
+      model: (typeof visibleCachedModelRows)[number] | null;
+      local: LocalModelInfo | null;
+    }> = [
       ...pinnedQuants.map((entry) => ({
         key: pinKey(entry.repoId, entry.quant),
         entry,
         model: null,
+        local: null,
       })),
       ...pinnedCachedModelRows.map((model) => ({
         key: pinKey(model.repo_id),
         entry: null,
         model,
+        local: null,
+      })),
+      ...pinnedLocals.map((m) => ({
+        key: localPinKey(m),
+        entry: null,
+        model: null,
+        local: m,
       })),
     ];
     rows.sort((a, b) => rank(a.key) - rank(b.key));
     return rows;
-  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
+  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows, pinnedSet, sortedCustomFolderModels, sortedLmStudio, sortedLocalDir]);
 
   // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
   const unslothCachedGguf = useMemo(
@@ -4551,7 +4665,12 @@ export function HubModelPicker({
         ...pinnedRows.map((row) =>
           row.entry
             ? makeModelOptionKey("pinned-quant", row.key)
-            : makeModelOptionKey("downloaded-model", row.model.repo_id),
+            : row.local
+              ? makeModelOptionKey("pinned-local", row.key)
+              : makeModelOptionKey(
+                  "downloaded-model",
+                  row.model?.repo_id ?? row.key,
+                ),
         ),
       );
     }
@@ -4629,7 +4748,7 @@ export function HubModelPicker({
     // Custom folders sit right below the downloaded models on On Device.
     if (section === "downloaded" && !customFoldersCollapsed) {
       keys.push(
-        ...sortedCustomFolderModels.map((model) =>
+        ...pinnedLocalsFirst(sortedCustomFolderModels, pinnedSet).map((model) =>
           makeModelOptionKey("custom-folder", model.id),
         ),
       );
@@ -4637,7 +4756,7 @@ export function HubModelPicker({
 
     if (section === "downloaded" && !lmStudioCollapsed) {
       keys.push(
-        ...sortedLmStudio.map((model) =>
+        ...pinnedLocalsFirst(sortedLmStudio, pinnedSet).map((model) =>
           makeModelOptionKey("lm-studio", model.id),
         ),
       );
@@ -4645,7 +4764,7 @@ export function HubModelPicker({
 
     if (section === "downloaded" && !localDirCollapsed) {
       keys.push(
-        ...sortedLocalDir.map((model) =>
+        ...pinnedLocalsFirst(sortedLocalDir, pinnedSet).map((model) =>
           makeModelOptionKey("local-dir", model.id),
         ),
       );
@@ -5060,6 +5179,122 @@ export function HubModelPicker({
     );
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
+  // A pinned custom / LM Studio / local-dir model. Mirrors its section row
+  // (same load path, same menu) so the shelf is a shortcut, not a second
+  // behavior. Keyed by on-disk path via the pinned key, not by row id.
+  const renderPinnedLocalRow = (m: LocalModelInfo) => {
+    const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
+    const isGguf = localModelIsGguf(m);
+    const isDirectGguf = isGgufFile || m.source === "ollama";
+    const displayName = m.model_id ?? m.display_name;
+    const optionKey = makeModelOptionKey("pinned-local", localPinKey(m));
+    const isSelected = value === m.id;
+    const loaded = isRuntimeLoadedModel(
+      loadedModelId,
+      activeGgufVariant,
+      m.id,
+      isDirectGguf ? "ignore" : isGguf ? "required" : "none",
+    );
+    return (
+      <div
+        key={m.id}
+        className={downloadedRowShellClassName(isSelected, true)}
+      >
+        <div className="group flex items-center">
+          <div className="min-w-0 flex-1">
+            <ModelRow
+              label={displayName}
+              meta={isGguf ? "GGUF" : "Local"}
+              tooltipText={localPathTooltip(displayName, m.path)}
+              selected={isSelected}
+              loaded={loaded}
+              optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+              onClick={() => {
+                if (isDirectGguf) {
+                  onSelect(m.id, localDirectGgufMeta(m.task));
+                } else if (isGguf) {
+                  toggleGgufExpanded(m.id);
+                } else {
+                  onSelect(m.id, localModelMeta(false, m.task, m.audio_type));
+                }
+              }}
+              onArrowDownIntoChildren={
+                isGguf && !isDirectGguf && isGgufExpanded(m.id)
+                  ? () => focusFirstChildOption(optionKey)
+                  : undefined
+              }
+              alignMeta="device"
+              vramStatus={null}
+              className={downloadedRowButtonClassName}
+            />
+          </div>
+          <span className={ROW_ACTIONS_CLASS}>
+            {(isDirectGguf || !isGguf) && onConfigure && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${displayName}`}
+                onConfigure={() =>
+                  onConfigure(
+                    m.id,
+                    isDirectGguf
+                      ? localDirectGgufMeta(m.task)
+                      : localModelMeta(false, m.task, m.audio_type),
+                  )
+                }
+              />
+            )}
+            <ModelRowMenu
+              ariaLabel={`More options for ${displayName}`}
+              iconClassName="size-3"
+              pin={{
+                pinned: true,
+                pinLabel: "Pin to top",
+                unpinLabel: "Unpin",
+                onToggle: () => togglePinned(localPinKey(m)),
+              }}
+              localPath={{ path: m.path }}
+              del={{
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will remove{" "}
+                    <span className="font-medium text-foreground">
+                      {displayName}
+                    </span>{" "}
+                    from disk. This cannot be undone.
+                  </>
+                ),
+                successMessage: `Deleted ${displayName}`,
+                disabled: loaded,
+                onConfirm: async () => {
+                  await deleteLocalPath(m.path);
+                },
+                onDeleted: refreshCachedLists,
+              }}
+            />
+          </span>
+        </div>
+        {isGguf && !isDirectGguf && isGgufExpanded(m.id) && (
+          <GgufVariantExpander
+            diffusionLoad={diffusionLoad}
+            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+            gpuCount={expanderGpuCount}
+            repoId={m.id}
+            onDevice={true}
+            onSelect={onSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
+            onConfigure={onConfigure}
+            parentOptionKey={optionKey}
+            onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
+            onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
+            gpuGb={expanderGpuGb}
+            systemRamGb={expanderRamGb || undefined}
+            budgetKnown={expanderBudgetGpu.budgetKnown}
+          />
+        )}
+      </div>
+    );
+  };
+
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
     const optionKey = makeModelOptionKey(
       "pinned-quant",
@@ -5781,7 +6016,11 @@ export function HubModelPicker({
                       pinnedRows.map((row) =>
                         row.entry
                           ? renderPinnedQuantRow(row.entry)
-                          : renderDownloadedModelRow(row.model),
+                          : row.local
+                            ? renderPinnedLocalRow(row.local)
+                            : row.model
+                              ? renderDownloadedModelRow(row.model)
+                              : null,
                       )}
                   </>
                 ) : null}
@@ -6189,7 +6428,7 @@ export function HubModelPicker({
 
                     {/* Models from custom folders */}
                     {!customFoldersCollapsed &&
-                      sortedCustomFolderModels.map((m) => {
+                      pinnedLocalsFirst(sortedCustomFolderModels, pinnedSet).map((m) => {
                         const isGgufFile = m.path
                           .toLowerCase()
                           .endsWith(".gguf");
@@ -6204,6 +6443,18 @@ export function HubModelPicker({
                           "custom-folder",
                           m.id,
                         );
+                        const customDisplayName =
+                          m.model_id ?? m.display_name;
+                        const customLoaded = isRuntimeLoadedModel(
+                          loadedModelId,
+                          activeGgufVariant,
+                          m.id,
+                          isDirectGguf
+                            ? "ignore"
+                            : isGguf
+                              ? "required"
+                              : "none",
+                        );
                         return (
                           <div key={m.id}>
                             <div className="group flex items-center">
@@ -6216,17 +6467,7 @@ export function HubModelPicker({
                                     m.path,
                                   )}
                                   selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    // Direct loads set no active variant, so requiring one never reads as loaded.
-                                    isDirectGguf
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
+                                  loaded={customLoaded}
                                   optionProps={hubModelList.getOptionProps(
                                     optionKey,
                                     value === m.id,
@@ -6288,6 +6529,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalModelMenu(m, customDisplayName, customLoaded)}
                               </span>
                             </div>
                             {isGguf &&
@@ -6312,6 +6554,23 @@ export function HubModelPicker({
                                   gpuGb={expanderGpuGb}
                                   systemRamGb={expanderRamGb || undefined}
                                   budgetKnown={expanderBudgetGpu.budgetKnown}
+                                  variantActions={{
+                                    onDelete: async (quant) => {
+                                      try {
+                                        const res = await listGgufVariants(m.id, undefined, {
+                                          localPath: m.path,
+                                        } as any);
+                                        const variants = (res as { variants?: Array<{ quant: string; filename: string }> })?.variants ?? [];
+                                        const match = variants.find((v) => v.quant === quant);
+                                        const fileName = match?.filename ?? `${quant}.gguf`;
+                                        const fullPath = `${m.path.replace(/\/$/, "").replace(/\\$/, "")}/${fileName}`;
+                                        await deleteLocalPath(fullPath, "model_only", m.model_id ?? m.display_name);
+                                      } catch {
+                                        await deleteLocalPath(m.path, "model_only", m.model_id ?? m.display_name);
+                                      }
+                                      refreshCachedLists();
+                                    },
+                                  }}
                                 />
                               )}
                           </div>
@@ -6337,7 +6596,7 @@ export function HubModelPicker({
                       LM Studio
                     </ListLabel>
                     {!lmStudioCollapsed &&
-                      sortedLmStudio.map((m) => {
+                      pinnedLocalsFirst(sortedLmStudio, pinnedSet).map((m) => {
                         const isGgufFile = m.path
                           .toLowerCase()
                           .endsWith(".gguf");
@@ -6345,6 +6604,17 @@ export function HubModelPicker({
                         // filter and load path to agree.
                         const isGguf = localModelIsGguf(m);
                         const optionKey = makeModelOptionKey("lm-studio", m.id);
+                        const lmDisplayName = m.model_id ?? m.display_name;
+                        const lmLoaded = isRuntimeLoadedModel(
+                          loadedModelId,
+                          activeGgufVariant,
+                          m.id,
+                          isGgufFile
+                            ? "ignore"
+                            : isGguf
+                              ? "required"
+                              : "none",
+                        );
                         return (
                           <div key={m.id}>
                             <div className="group flex items-center">
@@ -6357,16 +6627,7 @@ export function HubModelPicker({
                                     m.path,
                                   )}
                                   selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    isGgufFile
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
+                                  loaded={lmLoaded}
                                   optionProps={hubModelList.getOptionProps(
                                     optionKey,
                                     value === m.id,
@@ -6428,6 +6689,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalModelMenu(m, lmDisplayName, lmLoaded)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -6450,6 +6712,23 @@ export function HubModelPicker({
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
+                                variantActions={{
+                                  onDelete: async (quant) => {
+                                    try {
+                                      const res = await listGgufVariants(m.id, undefined, {
+                                        localPath: m.path,
+                                      } as any);
+                                      const variants = (res as { variants?: Array<{ quant: string; filename: string }> })?.variants ?? [];
+                                      const match = variants.find((v) => v.quant === quant);
+                                      const fileName = match?.filename ?? `${quant}.gguf`;
+                                      const fullPath = `${m.path.replace(/\/$/, "").replace(/\\$/, "")}/${fileName}`;
+                                      await deleteLocalPath(fullPath, "model_only", m.model_id ?? m.display_name);
+                                    } catch {
+                                      await deleteLocalPath(m.path, "model_only", m.model_id ?? m.display_name);
+                                    }
+                                    refreshCachedLists();
+                                  },
+                                }}
                               />
                             )}
                           </div>
@@ -6468,7 +6747,7 @@ export function HubModelPicker({
                       Local models
                     </ListLabel>
                     {!localDirCollapsed &&
-                      sortedLocalDir.map((m) => {
+                      pinnedLocalsFirst(sortedLocalDir, pinnedSet).map((m) => {
                         // A loose ./models/*.gguf loads directly; a GGUF repo dir expands. The variant scanner returns
                         // nothing for a config-less loose file, so expanding it would dead-end.
                         const isGgufFile = m.path
@@ -6476,6 +6755,17 @@ export function HubModelPicker({
                           .endsWith(".gguf");
                         const isGguf = localModelIsGguf(m);
                         const optionKey = makeModelOptionKey("local-dir", m.id);
+                        const localDisplayName = m.model_id ?? m.display_name;
+                        const localLoaded = isRuntimeLoadedModel(
+                          loadedModelId,
+                          activeGgufVariant,
+                          m.id,
+                          isGgufFile
+                            ? "ignore"
+                            : isGguf
+                              ? "required"
+                              : "none",
+                        );
                         return (
                           <div key={m.id}>
                             <div className="group flex items-center">
@@ -6488,16 +6778,7 @@ export function HubModelPicker({
                                     m.path,
                                   )}
                                   selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    isGgufFile
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
+                                  loaded={localLoaded}
                                   optionProps={hubModelList.getOptionProps(
                                     optionKey,
                                     value === m.id,
@@ -6555,6 +6836,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalModelMenu(m, localDisplayName, localLoaded)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -6577,6 +6859,23 @@ export function HubModelPicker({
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
+                                variantActions={{
+                                  onDelete: async (quant) => {
+                                    try {
+                                      const res = await listGgufVariants(m.id, undefined, {
+                                        localPath: m.path,
+                                      } as any);
+                                      const variants = (res as { variants?: Array<{ quant: string; filename: string }> })?.variants ?? [];
+                                      const match = variants.find((v) => v.quant === quant);
+                                      const fileName = match?.filename ?? `${quant}.gguf`;
+                                      const fullPath = `${m.path.replace(/\/$/, "").replace(/\\$/, "")}/${fileName}`;
+                                      await deleteLocalPath(fullPath, "model_only", m.model_id ?? m.display_name);
+                                    } catch {
+                                      await deleteLocalPath(m.path, "model_only", m.model_id ?? m.display_name);
+                                    }
+                                    refreshCachedLists();
+                                  },
+                                }}
                               />
                             )}
                           </div>
