@@ -6676,6 +6676,8 @@ class LlamaCppBackend:
         # Reset by _begin_load_warnings so one load's notice is never reported against
         # the next.
         self._last_load_warning: Optional[str] = None
+        self._variant_fallback_warning: Optional[str] = None
+        self._gguf_variant_fallback: Optional[tuple[str, str]] = None
         # Set per launch by _record_carveout_advice; None on nearly every load.
         self._last_carveout_advice: Optional[dict] = None
         self._model_identifier: Optional[str] = None
@@ -13107,7 +13109,8 @@ class LlamaCppBackend:
     @property
     def last_load_warning(self) -> Optional[str]:
         """Advisory notice from the most recent load, or None. Read by the route."""
-        return self._last_load_warning
+        notices = (self._variant_fallback_warning, self._last_load_warning)
+        return " ".join(notice for notice in notices if notice) or None
 
     def _begin_load_warnings(self) -> None:
         """Drop the previous load's advisory notice, at the point a load commits to
@@ -15453,13 +15456,17 @@ class LlamaCppBackend:
     # ── Variant fallback ────────────────────────────────────────────
 
     @staticmethod
-    def _find_smallest_fitting_variant(
+    def _find_fitting_variant(
         hf_repo: str,
         free_bytes: int,
+        requested_bytes: int,
         hf_token: Optional[str] = None,
+        requested_file: Optional[str] = None,
     ) -> Optional[tuple[str, int, list[str]]]:
-        """Find the smallest GGUF variant (including all shards) that fits.
+        """Find a GGUF variant (including all shards) smaller than the requested one.
 
+        The largest variant that still leaves ``_DISK_RESERVE_BYTES`` free, else the
+        smallest that fits; a variant already complete in the cache needs no new bytes.
         Groups split shards by variant prefix and sums their sizes (e.g.
         UD-Q4_K_XL with 9 shards of 50 GB each = 450 GB total).
 
@@ -15467,9 +15474,10 @@ class LlamaCppBackend:
         """
         try:
             from huggingface_hub import get_paths_info, list_repo_files
+            from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
 
             files = list_repo_files(hf_repo, token = hf_token)
-            from hub.utils.gguf import drop_shadowed_appledouble_names
+            from hub.utils.gguf import drop_shadowed_appledouble_names, gguf_checkpoint_family
 
             gguf_files = [
                 f
@@ -15478,6 +15486,11 @@ class LlamaCppBackend:
                 and not _is_companion_gguf_path(f)
                 and not _is_big_endian_gguf_path(f)
             ]
+            # A repo can publish several checkpoints; a smaller quant of another one is
+            # different weights, not a fallback.
+            if requested_file is not None:
+                checkpoint = gguf_checkpoint_family(requested_file)
+                gguf_files = [f for f in gguf_files if gguf_checkpoint_family(f) == checkpoint]
             if not gguf_files:
                 return None
 
@@ -15493,23 +15506,29 @@ class LlamaCppBackend:
                 variants.setdefault(key, []).append(f)
 
             # Sum shard sizes per variant, track the first shard (for download)
-            variant_sizes: list[tuple[str, int, list[str]]] = []
+            fitting: list[tuple[str, int, list[str], int]] = []
             for key, shard_files in variants.items():
                 total = sum(size_map.get(f, 0) for f in shard_files)
                 first = sorted(shard_files)[0]
-                variant_sizes.append((first, total, shard_files))
+                extra = [path for path in sorted(shard_files) if path != first]
+                cached = _cached_complete_candidate(hf_repo, first, extra)
+                needed = (
+                    0
+                    if cached and _cached_candidate_matches_revision_size(hf_repo, cached, hf_token)
+                    else total
+                )
+                if 0 < total < requested_bytes and needed <= free_bytes:
+                    fitting.append((first, total, extra, needed))
+            if not fitting:
+                return None
 
-            # Smallest that fits
-            variant_sizes.sort(key = lambda x: x[1])
-            for first_file, total_size, shard_files in variant_sizes:
-                if total_size > 0 and total_size <= free_bytes:
-                    return (
-                        first_file,
-                        total_size,
-                        [path for path in sorted(shard_files) if path != first_file],
-                    )
-
-            return None
+            roomy = [v for v in fitting if v[3] + _DISK_RESERVE_BYTES <= free_bytes]
+            first_file, total_size, extra_shards, _ = (
+                max(roomy, key = lambda v: v[1])
+                if roomy
+                else min(fitting, key = lambda v: (v[3], v[1]))
+            )
+            return first_file, total_size, extra_shards
         except Exception:
             return None
 
@@ -16842,17 +16861,26 @@ class LlamaCppBackend:
                             f"Not enough disk space to download {gguf_filename}. "
                             f"Only {free_gb:.1f} GB free in {download_cache_dir}"
                         )
-                    smaller = self._find_smallest_fitting_variant(
+                    smaller = self._find_fitting_variant(
                         hf_repo,
                         free_bytes,
+                        total_bytes,
                         hf_token,
+                        requested_file = gguf_filename,
                     )
                     if smaller:
                         fallback_file, fallback_size, fallback_shards = smaller
-                        logger.info(
-                            f"Selected variant too large ({total_gb:.1f} GB), "
-                            f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
+                        from utils.models.model_config import _gguf_variant_key
+
+                        fallback_variant = _gguf_variant_key(fallback_file)
+                        notice = (
+                            f"Not enough disk space to download {hf_variant} "
+                            f"({total_gb:.1f} GB needed, {free_gb:.1f} GB free), so "
+                            f"{fallback_variant} ({fallback_size / (1024**3):.1f} GB) "
+                            "was loaded instead."
                         )
+                        logger.warning(notice)
+                        self._gguf_variant_fallback = (fallback_variant, notice)
                         gguf_filename = fallback_file
                         gguf_extra_shards = fallback_shards
 
@@ -21239,6 +21267,7 @@ class LlamaCppBackend:
                 _paravirtual_cpu_forced and not self.diffusion_split_supported()
             )
             _preflight_model_path = None
+            self._gguf_variant_fallback = None
             if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin or _pv_diffusion_unpinnable):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
@@ -21367,6 +21396,7 @@ class LlamaCppBackend:
                     self._cleanup_cpu_fallback_runtime()
 
                 self._mmproj_fallback_reason = None
+                self._variant_fallback_warning = None
             # Both describe the process just killed, so they are reset HERE rather than
             # where the binary is resolved: everything above can bail with the old server
             # still running (a stand-down, a non-chat refusal, a cancel), and resetting on
@@ -21421,6 +21451,8 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             cancel_event = download_cancel_event,
                         )
+                    if self._gguf_variant_fallback:
+                        hf_variant, self._variant_fallback_warning = self._gguf_variant_fallback
                     # Auto-download mmproj for vision models unless opted out. Vision
                     # switched off does NOT opt out: remote discovery calls any mmproj
                     # filename vision, and only the file's metadata separates an image
