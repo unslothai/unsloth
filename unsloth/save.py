@@ -2468,7 +2468,7 @@ def unsloth_save_pretrained_merged(
 
     Choose for `save_method` to be either:
     1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM (`fp8`, `mxfp4`, `nvfp4`, `mxfp8`): keeps the
         16bit merge at `save_directory` and writes the quantized checkpoint to
@@ -2598,7 +2598,7 @@ def unsloth_push_to_hub_merged(
 
     Choose for `save_method` to be either:
     1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
     """
@@ -6299,7 +6299,7 @@ def unsloth_generic_save_pretrained_merged(
 
     Choose for `save_method` to be either:
     1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM via llm-compressor:
         `fp8` (dynamic W8A8), `mxfp4`, `nvfp4` (W4A4), `mxfp8`. The LoRA is merged to 16bit at
@@ -6428,7 +6428,7 @@ def unsloth_generic_push_to_hub_merged(
 
     Choose for `save_method` to be either:
     1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
     4.  FP8 / FP4 compressed export for vLLM: `fp8`, `mxfp4`, `nvfp4`, `mxfp8`.
     """
