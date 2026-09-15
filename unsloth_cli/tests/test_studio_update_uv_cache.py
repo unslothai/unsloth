@@ -992,7 +992,7 @@ def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
     """setup treats the value this hands it as the caller's choice and never probes it
     again, and uv aborts on a cache it cannot write, so a share remounted read-only since
     the install has to lose here."""
-    if os.geteuid() == 0:
+    if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
     studio_cache, _default = caches
@@ -1023,7 +1023,7 @@ def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path
     the update. Leaving the variable alone lets setup.sh probe and fall back to uv's
     default, which is what it does when it runs standalone.
     """
-    if os.geteuid() == 0:
+    if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
     studio_cache, _default = caches
@@ -1048,7 +1048,7 @@ def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path
 def test_a_store_with_a_two_digit_version_is_probed(tmp_path):
     """uv 0.12.1 names its registry store simple-v24, so the probe's `*-v[0-9]*` has to reach
     two-digit versions as well as one-digit ones."""
-    if os.geteuid() == 0:
+    if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
     cache = tmp_path / "shared-uv"
@@ -1109,7 +1109,7 @@ def test_a_case_folded_store_name_is_probed(monkeypatch, tmp_path):
     """On APFS or NTFS `Python-V0` is the same path uv opens as `python-v0`. This box is ext4,
     so the fold is stubbed: what is under test is that the probe acts on the answer, not that
     it can measure a folding filesystem it does not have."""
-    if os.geteuid() == 0:
+    if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
     cache = tmp_path / "shared-uv"
@@ -1163,7 +1163,7 @@ def test_a_store_pip_install_never_writes_does_not_condemn_the_cache(tmp_path, s
     """setup.sh runs only `uv pip install`. Measured on uv 0.10.7 at 0555: binaries-v0, osv-v0,
     environments-v2, flat-index-v2, git-v0 and python-v0 all install fine, so probing the ones
     pip never writes only threw away the warm cache this path exists to find."""
-    if os.geteuid() == 0:
+    if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
     cache = tmp_path / "shared-uv"
@@ -1182,7 +1182,7 @@ def test_a_store_pip_install_never_writes_does_not_condemn_the_cache(tmp_path, s
 @pytest.mark.parametrize("store", ["archive-v0", "git-v0", "builds-v0"])
 def test_a_store_pip_install_does_write_still_condemns_it(tmp_path, store):
     """git-v0 and builds-v0 count: a `git+` requirement writes both."""
-    if os.geteuid() == 0:
+    if getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("root can write anywhere")
     studio = _studio()
     cache = tmp_path / "shared-uv"
@@ -1222,6 +1222,12 @@ def test_a_folded_bucket_name_counts_as_warmth(tmp_path, monkeypatch):
     (cache / "Archive-V0" / "pkg").mkdir(parents = True)
     (cache / "Archive-V0" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
 
+    # On a filesystem that really folds (APFS, NTFS) the bytes are already where uv looks, and
+    # asserting the case-SENSITIVE answer first would fail there. Ask the filesystem rather than
+    # assume: this was green on ext4 and red on the macOS runner until it did.
+    if (cache / "archive-v0").exists():
+        assert studio._uv_cache_has_packages(cache) is True
+        return
     # Case-sensitive: uv opens archive-v0, which is not there, so those bytes are unreachable.
     assert studio._uv_cache_has_packages(cache) is False
     _simulate_case_folding(monkeypatch)
@@ -1234,6 +1240,8 @@ def test_a_folded_lookalike_is_still_not_a_bucket(tmp_path, monkeypatch):
     cache = tmp_path / "shared-uv"
     (cache / "Archive-V0.backup" / "pkg").mkdir(parents = True)
     (cache / "Archive-V0.backup" / "pkg" / "torch.whl").write_bytes(b"\0" * 8)
+    # Holds on a folding filesystem and a case-sensitive one alike: the name is not uv's either
+    # way, so the stub only has to make the folding case reachable on ext4.
     _simulate_case_folding(monkeypatch)
     assert studio._uv_cache_has_packages(cache) is False
 

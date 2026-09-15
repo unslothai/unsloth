@@ -34,6 +34,11 @@ pytestmark = pytest.mark.skipif(
     os.name != "posix", reason = "studio/setup.sh only ever runs on POSIX; install.ps1 is Windows"
 )
 
+# Windows has no os.geteuid, and a skipif DECORATOR is evaluated at collection, before the
+# module-level skip above can spare it. Reading it through getattr keeps the file importable
+# there; a non-root default is the right answer on a platform with no euid.
+_IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
+
 # The helpers the two scans are built from. Sliced out by name because setup.sh does work at
 # load and cannot be sourced whole; a missing one would make every shell answer read as false,
 # so the extraction is asserted rather than assumed.
@@ -173,7 +178,7 @@ def test_both_implementations_agree_on_usability(tmp_path, shape):
     assert _ask_shell("_uv_cache_usable", cache) is _studio()._uv_cache_is_writable(cache)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root can write anywhere")
+@pytest.mark.skipif(_IS_ROOT, reason = "root can write anywhere")
 @pytest.mark.parametrize(
     "store, usable",
     [
@@ -203,7 +208,7 @@ def test_both_implementations_agree_on_which_stores_are_probed(tmp_path, store, 
     assert shell is usable
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root can write anywhere")
+@pytest.mark.skipif(_IS_ROOT, reason = "root can write anywhere")
 @pytest.mark.parametrize(
     "shard, usable",
     [
