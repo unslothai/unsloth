@@ -34,6 +34,8 @@ export interface DiffusionStatus {
   // actually ran instead of echoing the load request back. Transformer quant engaged on the dense fast path
   // ("int8" / "fp8" / ...), null = the GGUF ran as-is.
   transformer_quant?: string | null;
+  // Which NVFP4 kernel path the loaded DiT runs, null for every other scheme.
+  transformer_quant_backend?: string | null;
   // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
   text_encoder_quant?: string | null;
   // Memory mode the load ran under: "auto" | "fast" | "balanced" | "low_vram".

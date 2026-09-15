@@ -74,6 +74,9 @@ studio = [
     # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
     # /docs and /redoc pages render blank in an installed Unsloth.
     "backend/assets/docs_ui/*",
+    # The reviewed NVFP4 accuracy-gate verdicts. Data the auto ladder READS: without it in the
+    # wheel every install answers "not gated" and nvfp4 silently leaves the ladder.
+    "backend/core/inference/nvfp4_gate_record.json",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
