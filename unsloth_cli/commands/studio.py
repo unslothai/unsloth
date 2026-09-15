@@ -3398,10 +3398,11 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
                 return False
             probes.append(entry)
             # One level inside the index stores, and only those. uv REWRITES this metadata on
-            # every resolve, so a shard another account owns aborts it: measured on uv 0.10.7, a
-            # 0555 shard under simple-v20 or wheels-v6 gives "Failed to write to the client
-            # cache", exit 2, while one under archive-v0 or interpreter-v4 installs fine.
-            # Bounded on purpose: these hold one entry per index; archive-* grows per package.
+            # every resolve, so a shard another account owns aborts it. Measured on BOTH the
+            # pinned uv 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives
+            # "Failed to write to the client cache", exit 2. One level is the leaf on both:
+            # 0.12.1 lays this out as `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a
+            # 0555 `wheels-v6/pypi/requests` one deeper installs fine. Bounded on purpose.
             if entry.name.lower().startswith(("simple-", "wheels-")):
                 probes.extend(shard for shard in entry.iterdir() if shard.is_dir())
     except OSError:

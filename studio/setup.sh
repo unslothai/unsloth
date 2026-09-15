@@ -1066,8 +1066,13 @@ _uv_cache_usable() {
         # happens to survive: a `git+` requirement creates git-v0 and builds-v0, so those stay,
         # while flat-index-v2 is not created even by `--find-links --no-index`, and binaries,
         # environments, osv and python belong to uv self-update, uv venv and uv python.
-        # Probing a store uv never touches only throws away the warm cache this path exists
-        # to find. Re-measure on a pin bump.
+        #
+        # A store is probed even where one trivial install tolerates it read-only, because that
+        # tolerance is the WORKLOAD, not the cache. On the pinned uv 0.12.1 a 0555 sdists-v9
+        # passes a wheel-only install and aborts the moment a source build needs it, and a 0555
+        # interpreter-v4 passes while its entry is cached and aborts on a new interpreter. An
+        # update installs a large, varying set, so a store it cannot write is a cache that
+        # breaks later rather than one that is fine. Re-measure on a pin bump.
         case "${_uvu_name%-v*}" in
             archive|builds|built-wheels|git|interpreter|sdists|simple|wheels) ;;
             *) continue ;;
@@ -1091,10 +1096,12 @@ _uv_cache_usable() {
         # sdists-* only: that is the one store measured to abort on a read-only .git, and
         # rejecting a cache uv accepts costs the warm cache this path exists to find.
         # One level inside the index stores, and only those. uv REWRITES this metadata on every
-        # resolve, so a shard another account owns aborts it: measured on uv 0.10.7, a 0555
-        # shard under simple-v20 or wheels-v6 gives "Failed to write to the client cache",
-        # exit 2, while one under archive-v0 or interpreter-v4 installs fine. Bounded on
-        # purpose: these hold one entry per index, where archive-* grows with every package.
+        # resolve, so a shard another account owns aborts it. Measured on BOTH the pinned uv
+        # 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives "Failed to write to
+        # the client cache", exit 2. One level is the leaf on both: 0.12.1 lays this out as
+        # `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a 0555 `wheels-v6/pypi/requests`
+        # one level deeper installs fine. Bounded on purpose: the index level holds one entry per
+        # index, while the level below it grows with every package.
         case "$_uvu_name" in
             simple-* | wheels-*)
                 for _uvu_shard in "$_uvu_bucket"/*/; do
