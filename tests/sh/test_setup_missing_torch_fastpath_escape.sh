@@ -36,12 +36,16 @@ run_escapes() {
     (
         PROBE_RC="$1"
         _SKIP_PYTHON_DEPS="${2:-true}"
+        _OFFLINE_FAST_PATH="${3:-false}"
+        _UV_OFFLINE="${4:-false}"
         export PROBE_RC
         SCRIPT_DIR="$WORK"
         unset UNSLOTH_STUDIO_FULL_DEPS UNSLOTH_DESKTOP_BACKEND_VERSION \
             UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
         SUBSTEPS=""
         substep() { SUBSTEPS="$SUBSTEPS|$1"; }
+        # Stubbed like substep: awk lifts _fast_path_escapes alone out of setup.sh.
+        _uv_offline_requested() { [ "$_UV_OFFLINE" = true ]; }
         # shellcheck disable=SC1090
         . "$WORK/escapes.sh"
         _fast_path_escapes
@@ -69,6 +73,15 @@ assert_eq "exactly that call" \
 
 echo "=== a pass another escape already forced stays forced ==="
 assert_eq "exit 1 does not undo it" "false" "$(run_escapes 1 false)"
+
+echo "=== offline defers the repair, because the pass can only download torch ==="
+_deferred="true|PyTorch is not installed but UV_OFFLINE is set -- left for the next online update"
+assert_eq "the offline keep defers it" "$_deferred" "$(run_escapes 0 true true false)"
+assert_eq "UV_OFFLINE alone defers it" "$_deferred" "$(run_escapes 0 true false true)"
+assert_eq "neither set still forces it" \
+    "false|PyTorch is not installed -- forcing dependency pass to reinstall it..." \
+    "$(run_escapes 0 true false false)"
+assert_eq "offline does not undo a pass another escape forced" "false" "$(run_escapes 0 false true false)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
