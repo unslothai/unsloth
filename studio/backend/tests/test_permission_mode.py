@@ -3374,6 +3374,10 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # Running a path-qualified binary READS that file before anything else it does.
+    "/media/alice/tool --flag",
+    # The interpreter payload writes through a RELATIVE path, under the directory the `cd` set.
+    "cd /usr/share/doc && python -c \"open('w.gguf', 'w').write('x')\"",
     # `gcc -o FILE` truncates that file; `make -C DIR` runs recipes that write there;
     # `git init DIR` creates the repository in it.
     "gcc -E input.c -o /media/alice/private.txt",
@@ -3791,6 +3795,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "/usr/bin/python3 script.py",
+    'cd /usr/share/doc && python -c "print(1)"',
     "gcc -o out main.c",
     "make -C ./sub all",
     "git init ./repo",

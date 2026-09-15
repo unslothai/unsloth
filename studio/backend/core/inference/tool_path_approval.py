@@ -1556,8 +1556,18 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if command.endswith(".exe"):
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
+    # `/media/alice/tool --flag` RUNS a file outside the sandbox, which reads it before anything the
+    # rest of this scan looks at. Taking the basename dropped the only spelling of that path, so the
+    # command word is reported as a read of its own before it is reduced to a name.
+    # A path ending in a separator names a DIRECTORY and can never be the binary, which is what
+    # keeps a `sed` expression fragment such as `/x/` from reading as one.
+    launched = (
+        [(segment[index], False)]
+        if _looks_absolute(segment[index]) and not segment[index].endswith(("/", "\\"))
+        else []
+    )
     if command in _TEST_COMMANDS:
-        operands = []
+        operands = list(launched)
         for arg in _test_command_operands(args):
             if _looks_absolute(arg):
                 operands.append((arg, False))
@@ -1590,7 +1600,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last or flag_only):
-        return []
+        return launched
     inplace = command in ("sed", "perl") and any(
         arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args
@@ -1609,12 +1619,12 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         # subcommand takes its paths through the flags the spec already lists.
         after = args[args.index("init") + 1 :]
         target = next((arg for arg in after if not arg.startswith("-")), None)
-        return [(target, True)] if target else []
+        return launched + ([(target, True)] if target else [])
     if command in ("7z", "7za", "7zr"):
         # `7z a out.7z src`: the archive is the first positional after the command word.
         creating = bool(args) and args[0].lower() in _SEVENZIP_WRITE_COMMANDS
         archive_from_flag = False
-        return _seven_zip_operands(args, creating)
+        return launched + _seven_zip_operands(args, creating)
     creating = command in _PATH_ARCHIVE_COMMANDS and (
         any(
             any(mode in arg.lstrip("-") for mode in _ARCHIVE_WRITE_SHORT_MODES)
@@ -1639,7 +1649,7 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         for arg in args
     )
     skip = _PATH_ARG_SKIP.get(command, 0)
-    operands: "list[tuple[str, bool]]" = []
+    operands: "list[tuple[str, bool]]" = list(launched)
     positionals: "list[str]" = []
     pattern_flags = _PATTERN_SUPPLYING_FLAGS.get(command, frozenset())
     pending_flag = None
@@ -1867,6 +1877,26 @@ def _forwarded_command_writes(tokens) -> bool:
     return False
 
 
+# An interpreter whose `-c` payload is a command line or a snippet of its own.
+_INLINE_CODE_COMMANDS = frozenset("python python2 python3 sh bash zsh dash ksh".split())
+
+
+def _nested_payload_writes(tokens, index: int) -> bool:
+    """Whether an interpreter's `-c` payload writes, so the directory it runs in is a write target.
+
+    `cd /models && python -c "open('weights.gguf', 'w')"` writes through a RELATIVE path, which the
+    payload scan cannot place and the command-name test never sees.
+    """
+    payload = next((tokens[i + 1] for i in range(index, len(tokens) - 1) if tokens[i] == "-c"), "")
+    if not payload:
+        return False
+    words = _shell_words(payload)
+    if words and _command_base_writes(_token_command_base(words[0])):
+        return True
+    operands = _inline_code_operands(payload) or _terminal_path_operands(words, payload)
+    return any(writing for _path, writing in operands)
+
+
 def _directory_change_write_targets(tokens) -> "list[tuple[str, bool]]":
     """The absolute destination of a `cd` that is followed by a write, as a write operand."""
     targets: "list[str]" = []
@@ -1882,6 +1912,7 @@ def _directory_change_write_targets(tokens) -> "list[tuple[str, bool]]":
             continue
         if (
             _command_base_writes(base)
+            or (base in _INLINE_CODE_COMMANDS and _nested_payload_writes(tokens, index))
             or _REDIR_WRITE_RE.match(token)
             or _REDIR_PREFIX_RE.match(token)
             and ">" in token
