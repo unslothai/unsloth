@@ -56,6 +56,7 @@ type SheetView =
   | "sampler"
   | "seed"
   | "llm"
+  | "model"
   | "validator"
   | "expression"
   | "note"
