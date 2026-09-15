@@ -3249,8 +3249,10 @@ html[data-chat-font] .aui-root {
 .aui-thread-viewport {
 	scrollbar-color: oklch(0.5 0 0 / 0.54) var(--sidebar);
 	/* Reserve scrollbar space always so absolute-positioned overlays (topbar)
-	   can stop flush with the gutter edge without covering the scrollbar. */
-	scrollbar-gutter: stable;
+	   can stop flush with the gutter edge without covering the scrollbar.
+	   both-edges: a one-sided gutter pushes the centred column off-centre by
+	   half the scrollbar, and away from the dock, which sits outside here. */
+	scrollbar-gutter: stable both-edges;
 }
 
 /* An unregistered custom property always inherits, so writing

@@ -20,6 +20,9 @@ import weakref
 
 import pytest
 import torch
+from real_accelerator import (
+    has_real_cuda,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.utils import attention_dispatch
 from unsloth.utils import packing as packing_utils
@@ -236,7 +239,11 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 
 
 @pytest.mark.skipif(
-    torch.cuda.device_count() < 2 or packing_utils._XFormersBlockMask is None,
+    # The spoof answers device_count() with 1, so this skips today only because 1 < 2.
+    # Raise that stub to exercise a multi-GPU path and it un-skips on a box with no card.
+    not has_real_cuda()
+    or torch.cuda.device_count() < 2
+    or packing_utils._XFormersBlockMask is None,
     reason = "needs xFormers and two CUDA devices",
 )
 def test_real_xformers_packed_mask_validates_on_each_device():

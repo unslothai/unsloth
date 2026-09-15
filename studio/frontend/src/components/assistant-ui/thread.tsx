@@ -165,7 +165,12 @@ import {
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { create } from "zustand";
-import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  modelCatalogVersion,
+  subscribeModelCatalog,
+} from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
@@ -1863,7 +1868,7 @@ export const Thread: FC<{
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
-          ["--thread-max-width" as string]: "48rem",
+          ["--thread-max-width" as string]: "var(--custom-chat-max-width, 48rem)",
           ["--thread-content-max-width" as string]:
             "calc(var(--thread-max-width) - 1.5rem)",
         }}
@@ -2128,7 +2133,9 @@ const ThreadComposerDock: FC<{
     <div
       ref={dockRef}
       className={cn(
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
+        // Inset both sides, not just the right: the offset keeps the bottom
+        // fade off the scrollbar, and a one-sided one also moves the centre.
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[10px] md:right-[10px]",
         overlay ? "z-40" : "z-20",
       )}
     >
@@ -2255,7 +2262,7 @@ const ThreadWelcome: FC<{
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
         {/* Matches the docked composer's gutter; index.css trims both. */}
-        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
+        <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-[var(--custom-chat-welcome-padding,1rem)]">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
@@ -2310,7 +2317,9 @@ const ComposerAnimated: FC<{
     // unsloth-composer-shell is the size container the tight (mobile) layout
     // in index.css queries. It sits outside the surface so those rules can
     // trim the surface's own padding.
-    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[46rem]">
+    // Its own width variable: every parent here is already capped by the width
+    // setting, so re-reading that one would apply the cap twice.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,46rem)]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
@@ -5452,9 +5461,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     (s) => s.reasoningEffortLevels,
   );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const lastOpenRouterChosenModel = useChatRuntimeStore(
-    (s) => s.lastOpenRouterChosenModel,
-  );
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -5473,17 +5479,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
-  const effectiveExternalModelId =
-    selectedExternalProvider?.providerType === "openrouter" &&
-    externalSelection?.modelId === "openrouter/free" &&
-    lastOpenRouterChosenModel
-      ? lastOpenRouterChosenModel
-      : externalSelection?.modelId;
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const externalReasoningCaps =
     externalSelection != null
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
-          effectiveExternalModelId,
+          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
+          externalSelection?.modelId,
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
@@ -5506,8 +5508,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
@@ -5521,7 +5529,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     }
     return "Extra High";
   };
-  const effortLabel = formatEffortLabel(reasoningEffort);
+  const effortLabel = formatEffortLabel(displayedEffort);
 
   // Only rendered for models that can reason.
   if (!effectiveSupportsReasoning) {
@@ -5557,7 +5565,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
-              reasoningEffort,
+              reasoningEffort: displayedEffort,
             })}
           >
             <ThinkIcon />
@@ -5621,7 +5629,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       "unsloth-tick size-4",
                       !(
                         effectiveReasoningVisualEnabled &&
-                        reasoningEffort === level
+                        displayedEffort === level
                       ) && "opacity-0",
                     )}
                   />
