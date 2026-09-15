@@ -10118,9 +10118,7 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         fallback_filename = "transformer.fp8.safetensors",
     )
     monkeypatch.setattr(diffusion_mod, "usable_prequant_source", lambda *a, **k: source)
-    monkeypatch.setattr(
-        diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8"
-    )
+    monkeypatch.setattr(diffusion_mod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     monkeypatch.setattr(
         DiffusionBackend, "_target_for_ordinal", lambda self, fam, ordinal: SimpleNamespace()
     )
@@ -10140,5 +10138,7 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
     )
 
     assert got is None
-    assert failures, "a configured prequant that is not in its repo left the plan calling itself complete"
+    assert (
+        failures
+    ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
