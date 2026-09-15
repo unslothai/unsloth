@@ -13,7 +13,13 @@ import {
 } from "../adapters/studio-model-dictation-adapter";
 import { accountTransitionPending } from "@/lib/account-transition";
 import { toast } from "@/lib/toast";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   applyDictationDictionary,
   recordRecentDictation,
@@ -54,7 +60,7 @@ export function useChatAudioUpload({
   const readDraftRef = useRef(readDraft);
   const writeDraftRef = useRef(writeDraft);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     ownerRef.current = owner;
     readDraftRef.current = readDraft;
     writeDraftRef.current = writeDraft;

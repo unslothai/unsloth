@@ -74,6 +74,30 @@ test("an ignored abort cannot commit a late transcript", async () => {
   assert.equal(commits, 0);
 });
 
+test("an owner change before transcription resolves cannot commit", async () => {
+  let resolveTranscript: (value: string) => void = () => {};
+  const transcript = new Promise<string>((resolve) => {
+    resolveTranscript = resolve;
+  });
+  const started = { generation: 1, owner: "thread-a", authSessionEpoch: 2 };
+  let current = started;
+  let commits = 0;
+  const completion = completeChatAudioUpload({
+    started,
+    current: () => current,
+    signal: new AbortController().signal,
+    blocked: () => false,
+    transcribe: () => transcript,
+    commit: () => {
+      commits += 1;
+    },
+  });
+  current = { ...started, owner: "thread-b" };
+  resolveTranscript("late words");
+  assert.equal(await completion, "stale");
+  assert.equal(commits, 0);
+});
+
 test("an A to B to A generation change still rejects the first result", async () => {
   const started = { generation: 1, owner: "thread-a", authSessionEpoch: 2 };
   let current = started;
@@ -132,6 +156,13 @@ test("a later disabled transition cancels the active upload", () => {
   assert.match(
     hookSource,
     /useEffect\(\(\) => \{\s*if \(disabled\) \{\s*invalidate\(\);[\s\S]*?queueMicrotask\([\s\S]*?setBusy\(false\);[\s\S]*?\}\);\s*\}\s*\}, \[disabled, invalidate\]\);/,
+  );
+});
+
+test("owner changes fence stale completions before passive effects", () => {
+  assert.match(
+    hookSource,
+    /useLayoutEffect\(\(\) => \{\s*ownerRef\.current = owner;\s*readDraftRef\.current = readDraft;\s*writeDraftRef\.current = writeDraft;\s*\}, \[owner, readDraft, writeDraft\]\);/,
   );
 });
 
