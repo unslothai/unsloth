@@ -39,6 +39,8 @@ function Write-StudioStdoutMirror { param([string]$Line) }
 function Write-LlamaFailureLog { param([string]$Output, [int]$MaxLines = 120) }
 function Test-PathQuiet { param([string]$Path, [string]$PathType = "Any") Test-Path -LiteralPath $Path }
 function Test-CudaFamilyLeaf { param([string]$Leaf) return ($Leaf -match '^cu\d+$') }
+$script:FakeIntelAdapters = @()
+function Get-IntelRegistryAdapterNames { return $script:FakeIntelAdapters }
 
 # nvidia-smi stand-in: $script:FakeSmiStdout answers every probe, $script:FakeSmiRc is its exit code.
 function Invoke-NvidiaSmiBounded {
@@ -215,6 +217,11 @@ Check "a CUDA prebuilt with the GPU gone is not kept" ((Get-GpuPrebuiltToKeepOve
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "vulkan"}'
 $HasROCm = $true
 Check "a Vulkan prebuilt is kept for any GPU vendor" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
+$HasROCm = $false
+Check "a Vulkan prebuilt with no GPU at all is not kept" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
+$script:FakeIntelAdapters = @("Intel(R) UHD Graphics 770")
+Check "a Vulkan prebuilt is kept for an Intel adapter that is not an XPU part" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "vulkan")
+$script:FakeIntelAdapters = @()
 Set-Content -LiteralPath (Join-Path $install "UNSLOTH_PREBUILT_INFO.json") -Value '{"backend": "cpu"}'
 Check "a CPU prebuilt has nothing to keep" ((Get-GpuPrebuiltToKeepOverSourceBuild -InstallDir $install) -eq "")
 # Markers from before the backend field, read as setup.sh reads them.

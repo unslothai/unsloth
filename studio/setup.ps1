@@ -616,7 +616,8 @@ function Get-GpuPrebuiltToKeepOverSourceBuild {
     $present = switch ($backend) {
         "cuda"   { $nvidia }
         "rocm"   { $amd }
-        "vulkan" { $nvidia -or $amd -or [bool]$script:IsIntelXpu }
+        # Any Intel adapter runs the Vulkan bundle (windows_intel_gpu_in_registry), not only an XPU part.
+        "vulkan" { $nvidia -or $amd -or [bool]$script:IsIntelXpu -or (@(Get-IntelRegistryAdapterNames).Count -gt 0) }
         default  { $false }
     }
     if (-not $present) { return "" }
