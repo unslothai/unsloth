@@ -1,0 +1,335 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Will AMSI let the installer compile, and does Defender's file scanner flag its bytes?
+#
+# This is the lane that reproduces #10805's mechanism rather than approximating it. The user there
+# was not running the installer and watching it misbehave -- the script was refused before its first
+# statement ran, because PowerShell hands a script block to AMSI at COMPILE time. So the measurement
+# is compilation, which `[scriptblock]::Create` performs with none of an install's side effects: no
+# download, no venv, no registry, no shortcut. That makes it cheap enough to run on every candidate,
+# which the two-full-installs lane (windows-installer-differential-ci.yml) is not.
+#
+# It is differential. "install.ps1 compiles fine" is close to meaningless on its own; "the merge base
+# compiles and the candidate does not" is a finding, and so is the reverse.
+#
+# Every verdict here depends on a positive control, and both halves have one:
+#
+#   AMSI      Microsoft's documented test sample, assembled from fragments, submitted through the
+#             SAME code path in the SAME process as each measurement.
+#   Defender  EICAR, assembled from fragments, scanned through the same MpCmdRun invocation.
+#
+# If a control does not fire, the lane reports that it could not measure and passes with a warning.
+# It never reports clean. That distinction is not theoretical: release-desktop.yml's own comments
+# record three releases that shipped unscanned while their scan step was green, because a runner
+# whose scanner is not live looks exactly like a clean verdict.
+#
+# What this lane cannot answer: anything about Skyhigh, Bitdefender or Kaspersky, which are the
+# products that have actually flagged us. No hosted runner has them, and a Defender verdict is not a
+# proxy for another vendor's. See docs/windows-installer-av-shapes.md for what each detection was.
+
+name: "Windows: AMSI and Defender differential"
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'studio/setup.ps1'
+      - 'scripts/uninstall.ps1'
+      - '.github/scripts/Probe-AmsiParse.ps1'
+      - '.github/workflows/windows-amsi-defender-differential-ci.yml'
+  schedule:
+    # Definitions change daily and outside our control, so a periodic run against an unchanged tree
+    # is how a new signature that starts matching us gets noticed at all. It is also why this lane
+    # must not be a required check: a Microsoft definition push could otherwise block every merge.
+    - cron: '41 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: does the scanner refuse either side
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lay out both sides of the comparison
+        id: sides
+        shell: pwsh
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          if ($env:PR_BASE) {
+            # The merge base, not the base branch tip: comparing against a tip that has moved on
+            # attributes somebody else's merged change to this PR.
+            $base = (git merge-base $env:PR_BASE $head).Trim()
+          } else {
+            $base = (git rev-parse 'HEAD~1').Trim()
+          }
+          Write-Host "base $base"
+          Write-Host "head $head"
+
+          $root = Join-Path $env:RUNNER_TEMP 'sides'
+          foreach ($side in 'base', 'head') {
+            New-Item -ItemType Directory -Force -Path (Join-Path $root $side) | Out-Null
+          }
+
+          $files = @('install.ps1', 'studio/setup.ps1', 'scripts/uninstall.ps1')
+          $laid = 0
+          foreach ($f in $files) {
+            $leaf = ($f -replace '/', '_')
+            foreach ($pair in @(@($base, 'base'), @($head, 'head'))) {
+              $sha, $side = $pair
+              $dest = Join-Path (Join-Path $root $side) $leaf
+              # git show, not a second checkout: it costs nothing and cannot leave the working tree
+              # in a state the next step misreads.
+              $content = (git show "${sha}:${f}" 2>$null)
+              if ($LASTEXITCODE -ne 0 -or $null -eq $content) {
+                Write-Host "::notice::$f does not exist at $($sha.Substring(0,8)) ($side); skipping it on that side"
+                continue
+              }
+              # Written through .NET rather than Set-Content, and this is not fussiness. The point of
+              # the lane is to scan the bytes that ship, and install.ps1 is LF-only with no BOM.
+              # Set-Content would rewrite every line ending to CRLF and, on Windows PowerShell 5.1,
+              # prepend a BOM -- so the scanner would be given a file this project never serves, and
+              # a verdict on it would not transfer to the one users get.
+              $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+              [System.IO.File]::WriteAllText($dest, (($content -join "`n") + "`n"), $utf8NoBom)
+              $laid++
+            }
+          }
+          if ($laid -lt 2) {
+            Write-Host '::error::fewer than two files were laid out, so there is nothing to compare. Refusing to report a verdict.'
+            exit 1
+          }
+          Write-Host "laid out $laid file copies"
+          "base_sha=$base"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "head_sha=$head"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "root=$root"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "identical=$([int]($base -eq $head))" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Ask AMSI, under Windows PowerShell 5.1
+        id: amsi
+        shell: pwsh
+        env:
+          ROOT: ${{ steps.sides.outputs.root }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $probe = (Resolve-Path '.github/scripts/Probe-AmsiParse.ps1').Path
+          $out = Join-Path $env:RUNNER_TEMP 'amsi'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          # 5.1 specifically. It is what install.rs spawns (install.rs:433-440), what a clean Windows
+          # box ships, and what the #10805 reporter ran. pwsh 7 is a different host with a different
+          # AMSI integration, so its answer does not transfer.
+          $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          if (-not (Test-Path -LiteralPath $ps51)) {
+            Write-Host "::error::Windows PowerShell 5.1 is absent at $ps51; this runner cannot answer the question that matters"
+            exit 1
+          }
+
+          $rows = @()
+          foreach ($side in 'base', 'head') {
+            foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side) -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+              $json = Join-Path $out "$side-$($file.BaseName).json"
+              Write-Host "--- $side/$($file.Name)"
+              # -Control on every invocation, so the control fires in the same process as the
+              # measurement it vouches for. A control in a sibling process only shares a host
+              # configuration, which is a weaker claim than it looks.
+              & $ps51 -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned `
+                  -File $probe -Control -Path $file.FullName -OutFile $json
+              if (-not (Test-Path -LiteralPath $json)) {
+                Write-Host "::warning::the probe wrote no result for $side/$($file.Name)"
+                continue
+              }
+              $rows += [pscustomobject]@{
+                side = $side
+                name = $file.Name
+                data = (Get-Content -Raw $json | ConvertFrom-Json)
+              }
+            }
+          }
+
+          if ($rows.Count -eq 0) {
+            Write-Host '::error::the AMSI probe produced no results at all. Refusing to report a verdict.'
+            exit 1
+          }
+
+          # The control decides whether any of this means anything.
+          $controlFired = $false
+          foreach ($row in $rows) {
+            foreach ($r in $row.data.results) {
+              if ($r.label -like 'control*' -and $r.blocked) { $controlFired = $true }
+            }
+          }
+
+          $blocked = @()
+          foreach ($row in $rows) {
+            foreach ($r in $row.data.results) {
+              if ($r.label -like 'control*') { continue }
+              if ($r.blocked) { $blocked += "$($row.side)/$($row.name) [$($r.errorId)]" }
+            }
+          }
+
+          Write-Host ''
+          if (-not $controlFired) {
+            # Never clean. On this runner Defender is in passive mode with both drive roots excluded,
+            # so this is the expected outcome more often than not, and saying "no detections" would be
+            # reporting the absence of a scanner as the absence of a problem.
+            Write-Host '::warning::the AMSI positive control did NOT fire: Microsoft''s own test sample compiled without being refused.'
+            Write-Host '::warning::That means no AMSI provider is live in this process, so every input here would have come back clean whatever it contained.'
+            Write-Host '::warning::COULD NOT MEASURE. This is a missing scanner, not a clean verdict.'
+            "verdict=unmeasured" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          Write-Host 'control: the AMSI test sample was refused, so a provider is live and this process can answer.'
+          $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
+          $baseBlocked = @($blocked | Where-Object { $_ -like 'base/*' })
+
+          if ($headBlocked.Count -eq 0) {
+            Write-Host "AMSI: no script was refused on head$(if ($baseBlocked.Count) { ", and $($baseBlocked.Count) was refused on base -- an improvement" })."
+            "verdict=clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          foreach ($b in $headBlocked) { Write-Host "::error::AMSI refused $b" }
+          if ($baseBlocked.Count) {
+            # Pre-existing, so it is not this change's fault -- and still worth failing on, because
+            # it means a live provider is refusing a shipped script right now.
+            Write-Host "::error::the merge base is refused too ($($baseBlocked -join ', ')), so this is pre-existing rather than introduced. It is still a shipped script that will not compile for these users."
+          } else {
+            Write-Host '::error::the merge base compiled and the candidate did not. This change introduced it.'
+          }
+          "verdict=blocked" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          exit 1
+
+      - name: Ask Defender's file scanner
+        id: defender
+        if: always()
+        shell: pwsh
+        env:
+          ROOT: ${{ steps.sides.outputs.root }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path -LiteralPath $mp)) {
+            Write-Host "::warning::MpCmdRun.exe is absent; the file-scan half could not run. This is a missing scanner, not a clean verdict."
+            exit 0
+          }
+
+          # The control first, and everything after it is conditional on it. Assembled from three
+          # fragments so this repository does not itself carry the EICAR signature, the same way
+          # release-desktop.yml does it.
+          $controlDir = Join-Path $env:RUNNER_TEMP 'defender-control'
+          New-Item -ItemType Directory -Force -Path $controlDir | Out-Null
+          $controlFile = Join-Path $controlDir 'control.txt'
+          $fired = $false
+          try {
+            Set-Content -LiteralPath $controlFile -Encoding ascii -NoNewline -Value (
+              'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
+            $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile 2>&1 | Out-String)
+            $fired = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            if (-not $fired -and -not (Test-Path -LiteralPath $controlFile)) {
+              # Quarantined before the scan could open it. Real-time protection is live, which is a
+              # stronger result than the on-demand scan reporting it.
+              Write-Host 'control: EICAR was quarantined on write; real-time protection is live.'
+              $fired = $true
+            }
+          } catch {
+            Write-Host 'control: EICAR was blocked on write; real-time protection is live.'
+            $fired = $true
+          } finally {
+            Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          if (-not $fired) {
+            Write-Host '::warning::the EICAR positive control did NOT fire, so Defender is not scanning on this runner.'
+            Write-Host '::warning::COULD NOT MEASURE. Hosted images ship with real-time protection off, passive mode forced and both drive roots excluded; release-desktop.yml spends ~180 lines undoing exactly that, and this cheap lane deliberately does not.'
+            exit 0
+          }
+          Write-Host 'control: EICAR fired, so the file scanner is live and its verdicts mean something.'
+          Write-Host ''
+
+          $flagged = @()
+          foreach ($side in 'base', 'head') {
+            foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side) -Filter '*.ps1' -ErrorAction SilentlyContinue)) {
+              # Mark of the web, so block-at-first-sight consults the cloud rather than treating a
+              # local file as trusted. A zero-prevalence script from the Internet zone is exactly what
+              # the reporter in #10805 had, and it is the condition the heuristics are harshest under.
+              Set-Content -LiteralPath "$($file.FullName):Zone.Identifier" -Encoding ascii `
+                -Value "[ZoneTransfer]`r`nZoneId=3" -ErrorAction SilentlyContinue
+              # -DisableRemediation, or a detection deletes the file and the next step reports it
+              # missing rather than flagged.
+              $text = (& $mp -Scan -ScanType 3 -File $file.FullName -DisableRemediation 2>&1 | Out-String)
+              # Read the output, not just the exit code: MpCmdRun has returned 0 with a threat named
+              # in its text.
+              $hit = [bool]($text -match 'found\s+([1-9]\d*)\s+threat')
+              Write-Host ("  {0,-8} {1,-24} {2}" -f $side, $file.Name, $(if ($hit) { 'FLAGGED' } else { 'clean' }))
+              if ($hit) {
+                $flagged += "$side/$($file.Name)"
+                ($text -split "`r?`n" | Where-Object { $_ -match 'Threat|found' } | Select-Object -First 5) |
+                  ForEach-Object { Write-Host "      $_" }
+              }
+            }
+          }
+
+          Write-Host ''
+          $s = (Get-MpComputerStatus -ErrorAction SilentlyContinue)
+          if ($s) {
+            # A verdict without the definition version is not reproducible, and a re-detection after a
+            # definition bump is a different event from one on the same definitions.
+            Write-Host "engine $($s.AMEngineVersion), definitions $($s.AntivirusSignatureVersion) ($($s.AntivirusSignatureLastUpdated)), AMRunningMode $($s.AMRunningMode)"
+          }
+
+          $headFlagged = @($flagged | Where-Object { $_ -like 'head/*' })
+          if ($headFlagged.Count -eq 0) {
+            Write-Host 'Defender: nothing on head was flagged.'
+            exit 0
+          }
+          foreach ($f in $headFlagged) { Write-Host "::error::Defender flagged $f" }
+          exit 1
+
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: amsi-defender-differential
+          path: ${{ runner.temp }}/amsi/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Say plainly what was and was not measured
+        if: always()
+        shell: pwsh
+        env:
+          AMSI_VERDICT: ${{ steps.amsi.outputs.verdict }}
+          IDENTICAL: ${{ steps.sides.outputs.identical }}
+        run: |
+          # Last, and always. A run whose summary is only "green" teaches the next reader that this
+          # lane proves more than it does.
+          Write-Host '--- what this run establishes'
+          switch ($env:AMSI_VERDICT) {
+            'clean'      { Write-Host '  AMSI: a live provider accepted the candidate at compile time under Windows PowerShell 5.1.' }
+            'blocked'    { Write-Host '  AMSI: a live provider REFUSED a script. See the errors above.' }
+            'unmeasured' { Write-Host '  AMSI: not measured. No provider was live in the probe process.' }
+            default      { Write-Host '  AMSI: the probe did not complete.' }
+          }
+          if ($env:IDENTICAL -eq '1') {
+            Write-Host '  the two sides were the same commit, so nothing differential was established.'
+          }
+          Write-Host '  NOT established: anything about Skyhigh, Bitdefender or Kaspersky, which are'
+          Write-Host '  the products that have actually flagged Unsloth. No hosted runner has them, and'
+          Write-Host '  one vendor''s verdict is not a proxy for another''s.'
