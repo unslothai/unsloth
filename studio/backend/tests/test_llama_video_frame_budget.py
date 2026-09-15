@@ -309,7 +309,22 @@ def _frames_at(tmp_path: Path, clip_b64: str, name: str, fps: int) -> int:
     """Frames llama-server would actually get, via the same `-vf fps=` it runs."""
     path = tmp_path / name
     path.write_bytes(base64.b64decode(clip_b64))
-    info = _probe(tmp_path, clip_b64)
+    # Dimensions only: a raw elementary stream has no container duration, and
+    # _probe would KeyError on it before the frames could be counted.
+    dims = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            *("-show_entries", "stream=width,height"),
+            *("-of", "json", str(path)),
+        ],
+        check = True,
+        capture_output = True,
+    )
+    stream = json.loads(dims.stdout)["streams"][0]
     raw = subprocess.run(
         [
             "ffmpeg",
@@ -329,7 +344,7 @@ def _frames_at(tmp_path: Path, clip_b64: str, name: str, fps: int) -> int:
         check = True,
         capture_output = True,
     ).stdout
-    return len(raw) // (info["width"] * info["height"] * 3)
+    return len(raw) // (stream["width"] * stream["height"] * 3)
 
 
 @needs_ffmpeg
@@ -537,3 +552,50 @@ def test_an_eight_fps_override_keeps_eight_fps_of_frames(tmp_path):
 
     assert _frame_count(tmp_path, default, "d8") == MAX_FRAME_RATE * 2
     assert _frame_count(tmp_path, override, "o8") == 8 * 2
+
+
+@needs_ffmpeg
+def test_a_short_clip_with_no_container_duration_is_still_padded(tmp_path):
+    # A raw elementary stream carries no format.duration, so the sub-second
+    # floor never fired and the clip reached the model with no frames. Annex B
+    # has no packet timestamps either, only per-packet durations, so the
+    # fallback has to sum those rather than read a presentation time.
+    path = tmp_path / "raw.h264"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-y",
+            *("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30"),
+            *("-t", "0.3", "-c:v", "libx264", "-bsf:v", "h264_mp4toannexb"),
+            *("-f", "h264", str(path)),
+        ],
+        check = True,
+    )
+    clip = base64.b64encode(path.read_bytes()).decode("ascii")
+    ffprobe = shutil.which("ffprobe")
+    assert llama_video_input._frame_geometry(ffprobe, path)[2] == pytest.approx(0.3, abs = 0.05)
+    assert _frames_at(tmp_path, clip, "raw-src", 1) == 0
+
+    shrunk = shrink_video_for_llama(clip, _CAP)
+
+    assert _frames_at(tmp_path, shrunk, "raw-out", 1) >= 1
+
+
+@needs_ffmpeg
+def test_the_packet_fallback_is_only_consulted_when_the_container_is_silent(tmp_path, monkeypatch):
+    # It reads packets, so a long ordinary clip must never reach it.
+    called = []
+    real = llama_video_input._packet_duration
+    monkeypatch.setattr(
+        llama_video_input,
+        "_packet_duration",
+        lambda *a, **k: called.append(1) or real(*a, **k),
+    )
+    clip = _clip(tmp_path, "ordinary.mp4", "1280x720", rate = 30, seconds = 2)
+
+    shrink_video_for_llama(clip, _CAP)
+
+    assert not called

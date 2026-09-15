@@ -104,7 +104,62 @@ def _frame_geometry(
             duration = float(container.get("duration"))
         except (TypeError, ValueError):
             duration = None
+    if duration is None:
+        duration = _packet_duration(ffprobe, clip)
     return area, _frame_rate(streams[0].get("avg_frame_rate")), duration
+
+
+def _packet_duration(ffprobe: str, clip: Path) -> Optional[float]:
+    """Duration from packet timestamps, for containers that carry none.
+
+    A raw elementary stream (`.h264`, rawvideo) has no `format.duration` at
+    all, so the sub-second floor never fired and a 0.3s clip still reached the
+    model with no frames. Reading packets answers it without a container.
+
+    Bounded by `-read_intervals` to twice the floor: the only question is
+    whether the clip is SHORTER than the floor, so a clip still producing
+    packets past that window is long enough by definition and there is no
+    reason to walk the rest of it.
+    """
+    result = _run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            f"%+{MIN_SAMPLED_SECONDS * 2:g}",
+            "-show_entries",
+            "packet=pts_time,duration_time",
+            "-of",
+            "json",
+            str(clip),
+        ],
+        _PROBE_TIMEOUT_S,
+    )
+    if result.returncode != 0:
+        return None
+    payload = json.loads(result.stdout or b"{}")
+    if not isinstance(payload, dict):
+        return None
+    end = 0.0
+    total = 0.0
+    for packet in payload.get("packets") or []:
+        if not isinstance(packet, dict):
+            continue
+        try:
+            span = float(packet.get("duration_time"))
+        except (TypeError, ValueError):
+            span = 0.0
+        total += span
+        try:
+            end = max(end, float(packet.get("pts_time")) + span)
+        except (TypeError, ValueError):
+            # Annex B carries no timestamps at all, only per-packet durations,
+            # so summing them is the only reading available for a raw stream.
+            continue
+    return (end or total) or None
 
 
 def _frame_rate(value: object) -> Optional[float]:
