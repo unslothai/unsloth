@@ -23,7 +23,14 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 _TWO_GPUS = [(0, 15_000, 16_000), (1, 11_000, 12_000)]
 
 
-def _run(monkeypatch, tmp_path, *, mask, gpu_ids = None, extra_args = None):
+def _run(
+    monkeypatch,
+    tmp_path,
+    *,
+    mask,
+    gpu_ids = None,
+    extra_args = None,
+):
     if mask is None:
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     else:
@@ -89,9 +96,7 @@ def test_tensor_split_repoint_declines_a_mismatched_width(monkeypatch, tmp_path)
 
 def test_user_tensor_split_keeps_ascending_order(monkeypatch, tmp_path):
     """Their shares are positional over the order they expected. Decline, don't rewrite."""
-    _, result = _run(
-        monkeypatch, tmp_path, mask = "1,0", extra_args = ["--tensor-split", "60,40"]
-    )
+    _, result = _run(monkeypatch, tmp_path, mask = "1,0", extra_args = ["--tensor-split", "60,40"])
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
     assert result["cmd"][result["cmd"].index("--tensor-split") + 1] == "60,40"
 
