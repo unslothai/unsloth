@@ -1016,6 +1016,95 @@ jobs:
             exit 1
           }
 
+      - name: Did the Windows shortcut survive, and did nothing compile to make it?
+        if: always()
+        shell: pwsh
+        run: |
+          # The only lane that runs install.sh's WSL shortcut branch, so the only one that can
+          # answer either half of this. Both halves changed together: the generated script moved
+          # from WSL's /tmp (a \\wsl.localhost UNC path, which is why it needed a relaxed execution
+          # policy) to the Windows %TEMP%, and its icon-refresh declaration stopped compiling.
+          #
+          # Advisory, not fatal. Shortcut creation is best-effort in the installer itself -- it
+          # warns and continues when interop is unavailable -- so failing the job for an absent
+          # .lnk would make this stricter than the code it measures. What must never be advisory is
+          # the compiler check below.
+          $names = @('Unsloth Studio (WSL*.lnk')
+          $roots = @(
+            [Environment]::GetFolderPath('Desktop'),
+            (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+          )
+          $found = @()
+          foreach ($root in $roots) {
+            if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+            foreach ($pattern in $names) {
+              $found += @(Get-ChildItem -LiteralPath $root -Filter $pattern -ErrorAction SilentlyContinue)
+            }
+          }
+          if ($found.Count -eq 0) {
+            Write-Host '::warning::no WSL shortcut was created; the installer prints its own notice when interop is unavailable, so check logs/wsl-install.log before reading this as a regression'
+          } else {
+            $shell = New-Object -ComObject WScript.Shell
+            foreach ($lnk in $found) {
+              $sc = $shell.CreateShortcut($lnk.FullName)
+              Write-Host "shortcut: $($lnk.Name)"
+              Write-Host "  target: $($sc.TargetPath)"
+              Write-Host "  args  : $($sc.Arguments)"
+              # wsl.exe or wt.exe, never a script engine. #6326 removed the .vbs launcher for
+              # exactly this reason and nothing in the WSL path should reintroduce one.
+              if ($sc.TargetPath -match 'wscript|cscript|mshta') {
+                Write-Host "::error::$($lnk.Name) launches a script host: $($sc.TargetPath)"
+                exit 1
+              }
+            }
+          }
+
+          # The compiler half. A .cmdline or .rsp in the Windows %TEMP% is csc.exe's response file,
+          # and nothing else writes one, so a hit means the icon-refresh declaration is compiling
+          # again.
+          #
+          # Positive control first, because a detector that sees nothing looks exactly like a clean
+          # run, and every reason it could see nothing is silent: an unreadable TEMP, a TEMP that is
+          # not the one the interop process used, a Get-ChildItem that fails on a long path. Plant
+          # one intermediate of each kind, require the search to find both, then remove them. If the
+          # control does not fire the job fails as a broken detector rather than reporting a pass.
+          $controlDir = Join-Path $env:TEMP ('unsloth-compiler-control-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+          New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
+          $controlFiles = @(
+            (Join-Path $controlDir 'control.cmdline'),
+            (Join-Path $controlDir 'control.rsp')
+          )
+          foreach ($f in $controlFiles) { Set-Content -LiteralPath $f -Value '/noconfig /fullpaths' -Encoding ascii }
+          $controlSeen = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -like (Join-Path $controlDir '*') }
+          )
+          Remove-Item -LiteralPath $controlDir -Recurse -Force -ErrorAction SilentlyContinue
+          if ($controlSeen.Count -lt 2) {
+            Write-Host "::error::the compiler-intermediate detector is broken: it found $($controlSeen.Count) of 2 planted files under $env:TEMP."
+            Write-Host '::error::Not reporting this run as clean. A search that cannot see a file it just wrote cannot see one csc.exe wrote either.'
+            exit 1
+          }
+          Write-Host "positive control fired: the detector saw both planted intermediates under $env:TEMP"
+
+          $leftovers = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Filter 'unsloth-shortcut-*.ps1' -ErrorAction SilentlyContinue
+          )
+          if ($leftovers.Count) {
+            Write-Host "::error::the generated shortcut script was not cleaned up: $($leftovers.Name -join ', ')"
+            exit 1
+          }
+          $compiled = @(
+            Get-ChildItem -LiteralPath $env:TEMP -Recurse -Include '*.cmdline', '*.rsp' -ErrorAction SilentlyContinue |
+              Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }
+          )
+          if ($compiled.Count) {
+            Write-Host "::error::a C# compiler ran during the WSL install: $($compiled.FullName -join ', ')"
+            Write-Host '::error::install.sh must declare SHChangeNotify through reflection emit, never Add-Type -MemberDefinition'
+            exit 1
+          }
+          Write-Host 'no compiler intermediates in the Windows TEMP, and no generated script left behind'
+
       - name: Tear the distro down
         if: always()
         shell: pwsh

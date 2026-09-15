@@ -245,7 +245,7 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
 
 
-@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+@pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
     """The desktop app spawns Windows PowerShell 5.1, which compiles Add-Type by writing C# to
     %TEMP% and running csc.exe. A GUI binary launching a windowless PowerShell that launches a
@@ -255,20 +255,32 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
 
     Add-Type in full, not only -TypeDefinition: -MemberDefinition wraps its argument in a class
     and compiles that too. -AssemblyName is the only exception, since it loads an assembly that
-    already exists on disk. Both scripts, because a compile left anywhere makes "does this run a
-    compiler" depend on which entrypoint ran and whether an early return came first, and a guard
-    that holds only conditionally is what let this reach the field.
+    already exists on disk. Every shipped script, because a compile left anywhere makes "does this
+    run a compiler" depend on which entrypoint ran and whether an early return came first, and a
+    guard that holds only conditionally is what let this reach the field.
+
+    The shell scripts are covered for a concrete reason, not for symmetry. install.sh writes
+    PowerShell into a here-string and runs it on the Windows side to create the WSL shortcut, and
+    that generated script still carried the `Add-Type -MemberDefinition` this test exists to ban:
+    #10540 replaced it in install.ps1 and the install.sh copy was missed, because the parametrise
+    list here stopped at the two .ps1 files. The `^[ \\t]*Add-Type` anchor matches inside a
+    here-string exactly as it does outside one, so seeing it needs no here-string parsing.
     """
     text = _text(name)
     hits = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", text)
     assert not hits, (
         f"{name} compiles C# again ({len(hits)} Add-Type call(s), first: {hits[0].strip()!r}). "
-        "Declare native methods with New-StudioEmittedNativeType instead; -MemberDefinition runs "
-        "csc.exe just as -TypeDefinition does."
+        "Declare native methods with New-StudioEmittedNativeType instead, or with an inline "
+        "DefinePInvokeMethod block where the script is generated and cannot call it; "
+        "-MemberDefinition runs csc.exe just as -TypeDefinition does."
     )
-    assert (
-        "DefinePInvokeMethod" in text
-    ), f"{name} no longer emits its native imports; update this guard"
+    # Conditional: only a script that declares a native import has an emit to still be doing.
+    # scripts/uninstall.ps1 and studio/setup.sh declare none, and demanding the token of them would
+    # be a guard that fails for being satisfied.
+    if _native_imports(text):
+        assert (
+            "DefinePInvokeMethod" in text
+        ), f"{name} declares native imports without emitting them; update this guard"
     # The private-%TEMP% retry is gone with it: redirecting TEMP to compile again cannot beat a
     # filter driver, and "blocked writing an executable to TEMP, change TEMP, write it again" is
     # itself an evasion heuristic. Scoped to the resolver, since Initialize-StudioTempEnvironment
