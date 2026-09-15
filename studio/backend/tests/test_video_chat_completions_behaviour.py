@@ -484,6 +484,40 @@ def test_the_tool_passthrough_path_refuses_either_spelling(monkeypatch, body):
     assert "guided decoding" in _detail(response)
 
 
+def test_a_durable_chat_run_refuses_a_clip_in_either_spelling():
+    """The request payload persists verbatim, so a data URI would sit in request_json for the
+    life of the thread. The gate is field-shaped, so the part needs its own predicate."""
+    from fastapi import HTTPException
+    from routes.chat_generation_runs import CreateChatGenerationRun, _sanitize_request
+
+    for body in (_part_body(_DATA_URI), _field_body()):
+        run = CreateChatGenerationRun(
+            runId = "run-1",
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            assistantMessageId = "assistant-1",
+            requestPayload = {k: v for k, v in body.items() if k != "stream"},
+        )
+        with pytest.raises(HTTPException) as exc:
+            _sanitize_request(run)
+        assert exc.value.status_code == 400
+        assert "Media chat runs" in str(exc.value.detail)
+
+
+def test_a_durable_chat_run_still_takes_a_plain_text_turn():
+    """The control: the media gate must not start refusing ordinary durable runs."""
+    from routes.chat_generation_runs import CreateChatGenerationRun, _sanitize_request
+
+    run = CreateChatGenerationRun(
+        runId = "run-1",
+        threadId = "thread-1",
+        userMessageId = "user-1",
+        assistantMessageId = "assistant-1",
+        requestPayload = {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert _sanitize_request(run) is not None
+
+
 # ── message roles ────────────────────────────────────────────────────────────────
 
 
