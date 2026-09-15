@@ -4735,7 +4735,12 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
     before = json.dumps(settings, sort_keys = True)
     for key, copied in previous.items():
         own = settings.get(key)
-        if isinstance(copied, list) and isinstance(own, list):
+        if key in _PI_USER_VERBATIM_SETTINGS:
+            # An argument vector, not a set of entries: subtracting it element by
+            # element would leave a command missing whatever the two share.
+            if own == copied:
+                settings.pop(key, None)
+        elif isinstance(copied, list) and isinstance(own, list):
             rest = [item for item in own if item not in copied]
             if rest:
                 settings[key] = rest

@@ -5677,6 +5677,36 @@ def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, 
     assert (user_agent_dir / "extensions").is_dir()
 
 
+@pytest.mark.parametrize("session_command", [None, ["npm", "--silent"]])
+def test_write_pi_user_resources_clears_npm_command_whole(
+    tmp_path, monkeypatch, session_command,
+):
+    # npmCommand is an argument vector: subtracting it entry by entry would leave a
+    # command missing whatever the copied and session values happen to share.
+    user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
+    (user_agent_dir / "settings.json").write_text(
+        json.dumps({"npmCommand": ["npm", "--registry=x"]})
+    )
+    session_home = tmp_path / "session"
+    agent_dir = session_home / ".pi" / "agent"
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
+    start.write_pi_user_resources(agent_dir, session_home)
+    assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == [
+        "npm", "--registry=x",
+    ]
+    if session_command is not None:
+        settings = json.loads((agent_dir / "settings.json").read_text())
+        settings["npmCommand"] = session_command
+        (agent_dir / "settings.json").write_text(json.dumps(settings))
+
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
+    start.write_pi_user_resources(agent_dir, session_home)
+
+    settings = json.loads((agent_dir / "settings.json").read_text())
+    # The copied command goes; one the session chose survives intact.
+    assert settings.get("npmCommand") == session_command
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_link(
     tmp_path, monkeypatch
