@@ -120,7 +120,7 @@ export function PromptQueueList({
   return (
     <div
       ref={listRef}
-      className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[20px] border border-border/60 bg-background px-1.5 pt-1 pb-3 text-muted-foreground sm:mx-5 sm:px-2 dark:bg-card"
+      className="relative z-0 mx-3 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[20px] border border-border/60 bg-background px-1.5 pt-1 pb-3 text-muted-foreground sm:mx-5 sm:px-2 dark:bg-card [&_button]:border-0 [&_button]:shadow-none [&_.aui-button-icon:focus-visible]:bg-accent"
       aria-label={`Prompt queue, ${entry.current} of ${entry.total}`}
     >
       <p id={instructionsId} className="sr-only">
@@ -151,8 +151,7 @@ export function PromptQueueList({
               className={cn(
                 "group relative rounded-lg transition-colors",
                 draggingId && "will-change-transform",
-                draggingId === item.id &&
-                  "z-10 bg-background shadow-lg ring-1 ring-border/60 dark:bg-muted",
+                draggingId === item.id && "z-10 opacity-50",
               )}
             >
               {isEditing ? (
@@ -188,6 +187,7 @@ export function PromptQueueList({
                     type="button"
                     variant="ghost"
                     size="sm"
+                    className="focus-visible:bg-accent"
                     onClick={finishEditing}
                   >
                     Cancel
@@ -195,6 +195,7 @@ export function PromptQueueList({
                   <Button
                     type="button"
                     size="sm"
+                    className="focus-visible:bg-primary/80"
                     disabled={!draft.trim()}
                     onClick={saveEditing}
                   >
