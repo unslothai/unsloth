@@ -3200,6 +3200,147 @@ class TestWindowsAmdWithoutRocmTakesVulkan:
         assert result[0].install_kind == "windows-cpu"
 
 
+class TestWindowsMaskedNvidiaTakesCuda:
+    """A Windows host whose NVIDIA GPU is hidden by CUDA_VISIBLE_DEVICES selects CUDA, as Linux does.
+
+    The CUDA branch was gated on has_usable_nvidia alone, so physical-without-usable fell
+    into the windows-cpu arm and a masked run (the backend pins GPUs for itself and the
+    in-app update inherits that env) installed the CPU bundle over a CUDA machine for good.
+    """
+
+    TAG = "b10909"
+
+    def _cuda(self):
+        return make_artifact(
+            f"app-{self.TAG}-windows-x64-cuda12-newer.zip",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda12",
+            coverage_class = "newer",
+            supported_sms = ["86", "89", "90", "100", "120"],
+            min_sm = 86,
+            max_sm = 120,
+            bundle_profile = "cuda12-newer",
+            rank = 20,
+        )
+
+    def _release(self):
+        return make_release(
+            [
+                self._cuda(),
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-cpu.zip", install_kind = "windows-cpu"
+                ),
+            ],
+            upstream_tag = self.TAG,
+        )
+
+    def _checksums(self):
+        return make_checksums(
+            [
+                f"app-{self.TAG}-windows-x64-cuda12-newer.zip",
+                f"app-{self.TAG}-windows-x64-cpu.zip",
+            ]
+        )
+
+    def _host(self, **overrides):
+        # As detect_host leaves a masked host: every visible row is dropped, so only the
+        # physical caps survive.
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (12, 8),
+            visible_cuda_devices = "",
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            compute_caps = [],
+            physical_compute_caps = ["89"],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    def test_a_masked_host_takes_cuda_not_the_cpu_bundle(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        self._no_torch(monkeypatch)
+        result = resolve_release_asset_choice(
+            self._host(), self.TAG, self._release(), self._checksums()
+        )
+        assert result, "a masked NVIDIA host must still get a CUDA attempt"
+        assert {c.install_kind for c in result} == {"windows-cuda"}
+
+    def test_the_masked_host_keeps_torchs_runtime_preference(self, monkeypatch):
+        # Both usual gates answer "no GPU" under the mask, so the preference must be read
+        # without the availability check or a cu12 venv gets a CUDA 13 bundle.
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        seen = {}
+
+        def _preference(host, **kwargs):
+            seen.update(kwargs)
+            return CudaRuntimePreference(runtime_line = None, selection_log = [])
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "detect_torch_cuda_runtime_preference", _preference
+        )
+        resolve_release_asset_choice(self._host(), self.TAG, self._release(), self._checksums())
+        assert seen == {"gpu_hidden_by_mask": True}
+
+    def test_selection_reads_the_physical_caps(self, monkeypatch):
+        # sm_61 against a floor of sm_86: no published match, and the (stubbed, empty)
+        # upstream release has none either, so it source-builds with CUDA. Never windows-cpu.
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        self._no_torch(monkeypatch)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(physical_compute_caps = ["61"]),
+                self.TAG,
+                self._release(),
+                self._checksums(),
+            )
+
+    def test_a_masked_host_with_usable_rocm_keeps_rocm(self, monkeypatch):
+        # The windows-rocm arm still owns that host; the CUDA branch is not entered.
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: pytest.fail("CUDA selection ran on a ROCm host"),
+        )
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(has_rocm = True), self.TAG, self._release(), self._checksums()
+            )
+
+    def test_an_explicit_cpu_request_still_takes_the_cpu_bundle(self):
+        host = INSTALL_LLAMA_PREBUILT._apply_host_overrides(self._host(), force_cpu = True)
+        result = resolve_release_asset_choice(host, self.TAG, self._release(), self._checksums())
+        assert [c.install_kind for c in result] == ["windows-cpu"]
+
+    def test_the_direct_upstream_plan_agrees(self, monkeypatch):
+        # The pinned --published-repo path has its own Windows arm with the same gate.
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        self._no_torch(monkeypatch)
+        names = [
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        release = {
+            "tag_name": self.TAG,
+            "assets": [
+                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+            ],
+        }
+        plan = direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
+        assert plan.attempts[0].install_kind == "windows-cuda"
+
+
 class TestPublishedWindowsCudaAppBundleSmSelection:
     """app-named windows-cuda bundles carry no minor, so the driver-minor gate is skipped; selection must filter by SM coverage instead of handing every host the lowest-rank "older" bundle."""
 
