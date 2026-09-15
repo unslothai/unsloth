@@ -1,0 +1,93 @@
+# Unsloth on AMD (ROCm)
+
+Fine-tune and run LLMs on AMD GPUs with no setup. This image carries the full training stack built against ROCm: PyTorch with ROCm 7.2, Unsloth, unsloth-zoo, a bitsandbytes build with the ROCm 4-bit fix, triton-rocm, TRL, PEFT and diffusers.
+
+This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsloth/unsloth), which is CUDA-only. Source: [`docker/Dockerfile.rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.rocm). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
+
+## Quick start
+
+AMD GPUs are reached through the kernel driver's device nodes, not through a container toolkit, so the run command differs from the NVIDIA one:
+
+```bash
+docker run --rm -it \
+  --device /dev/kfd --device /dev/dri \
+  --group-add video --group-add render \
+  --ipc=host \
+  unsloth/unsloth-rocm
+```
+
+Or let the launcher work out the device nodes and group ids for you:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/run.sh -o run.sh
+bash run.sh --rocm
+```
+
+Check the GPU is visible before anything else:
+
+```bash
+docker run --rm --device /dev/kfd --device /dev/dri \
+  --group-add video --group-add render \
+  unsloth/unsloth-rocm python /workspace/smoke_test_rocm.py
+```
+
+That runs a real 5-step LoRA on a 1B model and fails loudly if the GPU is not usable.
+
+## Tags
+
+| tag | what it is |
+|---|---|
+| `latest` | the current build from `main`, linux/amd64 |
+| `sha-<commit>` | the same image, pinned to the commit it was built from |
+| `nightly` | the scheduled weekly build |
+| `gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201` | builds using AMD's per-architecture wheels, when published |
+
+Pin a digest for anything reproducible. `latest` moves.
+
+## Supported hardware
+
+RDNA2 and newer, and CDNA. The image is built against the generic ROCm 7.2 PyTorch index, which covers most cards.
+
+Two cases need care:
+
+- **Strix Halo / Strix Point APUs (`gfx1150`, `gfx1151`, `gfx1152`) and RDNA4 (`gfx1200`, `gfx1201`)** run on the generic wheels, and the entrypoint says so on start, but AMD's per-architecture wheels carry kernels tuned for them. Build with `ROCM_GFX=gfx1151` (or your arch) if you want those.
+- **Vega 20 (`gfx906`)** lost its kernels after ROCm 6.3. Build with `ROCM_GFX=gfx906` and `ROCM_VERSION=6.3.4`; that variant ships without bitsandbytes, since no prebuilt wheel carries gfx906 kernels.
+
+The container prints what it found and refuses to start rather than silently falling back to the CPU. Set `UNSLOTH_SKIP_GPU_CHECK=1` to bypass the diagnostics.
+
+## What is measured
+
+On a Radeon 8060S (`gfx1151`, Strix Halo), against the published `latest` digest:
+
+| workload | result |
+|---|---|
+| 4-bit QLoRA, 5 steps, Llama 3.2 1B | loss 2.8146 to 1.2242 |
+| text to image, sd-turbo, 4 steps, 512px | 118 s, 4.21 GB peak VRAM |
+| text to video, text-to-video-ms-1.7b, 8 frames, 256px | 279 s, 4.77 GB peak VRAM |
+
+The diffusion outputs match the same seed on an NVIDIA B200 to three decimal places of pixel spread, so this is numerical agreement rather than only "it ran". Speed is another matter: an integrated APU sharing system memory is roughly 25x to 50x slower than a datacentre card on those two generations.
+
+Discrete RDNA2, RDNA4 and CDNA cards are not covered by that testing.
+
+## What is in the image, and what is not
+
+Included: PyTorch with ROCm, Unsloth, unsloth-zoo, transformers, TRL, PEFT, accelerate, bitsandbytes, triton-rocm, diffusers, timm.
+
+Not included, unlike `unsloth/unsloth`: Unsloth Studio and its web UI, JupyterLab, prebuilt llama.cpp and whisper.cpp, vLLM and xformers. This is a training image; GGUF tooling and the UI are CUDA-only for now.
+
+## Environment
+
+| variable | effect |
+|---|---|
+| `UNSLOTH_SKIP_GPU_CHECK=1` | skip the startup diagnostics |
+| `HSA_OVERRIDE_GFX_VERSION` | present an unsupported card as a supported one. Ignored on images with native kernels for the card |
+| `HF_TOKEN` | forwarded for gated models |
+
+The build's own record is in the image: `cat /etc/unsloth-rocm-build` reports the ROCm version, the wheel index and the architecture it was built for, and `/opt/unsloth-venv/requirements.lock.txt` is the resolved package set.
+
+## Links
+
+- Source and issues: [github.com/unslothai/unsloth](https://github.com/unslothai/unsloth)
+- Docker files: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker)
+- Documentation: [docs.unsloth.ai](https://docs.unsloth.ai)
+- Licence: [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/LICENSE)
