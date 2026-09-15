@@ -4361,6 +4361,33 @@ class DiffusionBackend:
                     uninstall_arch_patches,
                 )
 
+                # BEFORE the speed/compile block and the offload step below, because both reach
+                # torch._dynamo and whichever gets there first is the one that can lose the race:
+                # apply_speed_optims reads torch._dynamo.config (diffusion_speed.py), and
+                # diffusers.hooks imports the module outright from apply_memory_plan. Doing it here,
+                # on this one thread, is the whole mechanism; done after either, it is too late and
+                # the speed path's own best-effort handler would have quietly turned compile off
+                # while leaving the module poisoned for the offload (#10350, #10963).
+                # Normally a no-op: the background torch warm already did it at boot. Guarded around
+                # the IMPORT as well as the call, because utils.torch_warmup reaches
+                # importlib._bootstrap._ModuleLockManager, a private CPython name: a build lacking
+                # it must not take the load down. Best-effort, never a new failure.
+                try:
+                    from utils.torch_warmup import ensure_dynamo_imported
+                    if not ensure_dynamo_imported():
+                        # Not fatal, and deliberately not a retry: measured on torch 2.10, a
+                        # process that has lost this race does not recover (0 of 14 retries
+                        # resolved), and evicting the half-built package to re-import is the
+                        # C-extension purge that purge_partial_import already refuses. So the
+                        # useful thing is a breadcrumb: if the compile or offload step below dies
+                        # on dynamo, this line says the condition was already present.
+                        logger.warning(
+                            "diffusion.load: torch._dynamo is not importable in this process; "
+                            "if this load fails on a dynamo import, restart Unsloth"
+                        )
+                except Exception as exc:  # noqa: BLE001 - optimisation only
+                    logger.debug("dynamo pre-import skipped: %r", exc)
+
                 try:
                     if effective_speed != SPEED_OFF:
                         install_compile_safe_patches()
@@ -4474,33 +4501,6 @@ class DiffusionBackend:
                         te_quant = te_quant,
                         logger = logger,
                     )
-
-                    # apply_memory_plan's offload step imports diffusers.hooks, which eagerly imports
-                    # torch._dynamo (@torch.compiler.disable() at class-body time). Finish that import
-                    # here, on this one thread, before the offload APIs can start it concurrently with
-                    # anything else in the server: a half-built torch._dynamo read from another thread
-                    # raises "partially initialized module 'torch._dynamo' has no attribute 'utils'"
-                    # and, since nothing on this path is guarded, fails the whole load (#10350, #10963).
-                    # Normally a no-op: the background torch warm already did it at boot, so this
-                    # is the belt for hosts where that warm is disabled or failed. Guarded around
-                    # the IMPORT as well as the call, because utils.torch_warmup reaches
-                    # importlib._bootstrap._ModuleLockManager, a private CPython name: a build
-                    # lacking it must not take the load down. Best-effort, never a new failure.
-                    try:
-                        from utils.torch_warmup import ensure_dynamo_imported
-                        if not ensure_dynamo_imported():
-                            # Not fatal here, and deliberately not a retry: measured on torch
-                            # 2.10, a process that has lost this race does not recover (0 of 14
-                            # retries resolved), and evicting the half-built package to re-import
-                            # is the C-extension purge that purge_partial_import already refuses.
-                            # So the useful thing is a breadcrumb: if the offload step below dies
-                            # on dynamo, this line is what says the condition was already present.
-                            logger.warning(
-                                "diffusion.load: torch._dynamo is not importable in this process; "
-                                "if this load fails on a dynamo import, restart Unsloth"
-                            )
-                    except Exception as exc:  # noqa: BLE001 - optimisation only
-                        logger.debug("dynamo pre-import skipped: %r", exc)
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.

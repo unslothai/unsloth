@@ -158,19 +158,30 @@ def _load_pipeline_body():
     )
 
 
-def test_load_path_closes_the_window_before_the_offload_step():
-    """Order is the point, not presence: apply_memory_plan is what imports diffusers.hooks,
-    so warming after it would close the window only once the load had already opened it."""
+def test_load_path_closes_the_window_before_every_dynamo_consumer():
+    """Order is the point, not presence, and there is more than one consumer.
+
+    ``apply_memory_plan`` imports ``diffusers.hooks``, but the speed path gets there FIRST on the
+    default GGUF profile: ``apply_speed_optims`` reads ``torch._dynamo.config`` and
+    ``compile_cache.begin`` enters the compile stack. Whichever runs first is the one that can
+    lose the race, and the speed path's own best-effort handler would swallow it, quietly
+    disabling compile while leaving the module poisoned for the offload below. So the pre-import
+    has to precede all three, not just the offload."""
     body = _load_pipeline_body()
-    # Keyed on lineno, not on ast.walk order: walk is breadth-first, so wrapping either call
-    # in a try/except would silently reorder it and make this assertion meaningless.
+    # Keyed on lineno, not on ast.walk order: walk is breadth-first, so wrapping a call in a
+    # try/except would silently reorder it and make this assertion meaningless.
     lines = {}
     for node in ast.walk(body):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             lines.setdefault(node.func.id, node.lineno)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            lines.setdefault(node.func.attr, node.lineno)
     assert "ensure_dynamo_imported" in lines, "the load path never closes the dynamo window"
-    assert "apply_memory_plan" in lines
-    assert lines["ensure_dynamo_imported"] < lines["apply_memory_plan"]
+    for consumer in ("begin", "apply_speed_optims", "apply_memory_plan"):
+        assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
+        assert lines["ensure_dynamo_imported"] < lines[consumer], (
+            f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
+        )
 
 
 def test_load_failure_is_logged_with_a_traceback():
