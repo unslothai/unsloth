@@ -496,7 +496,10 @@ def test_a_guard_short_circuited_on_the_real_probe_is_accepted(condition):
         # The broad probe is true on an XPU-only or Ascend NPU-only host, so it does not
         # settle whether torch.cuda is there to answer. Only has_real_cuda() does.
         ("not has_real_accelerator() or torch.cuda.device_count() < 2", "broad gate on cuda"),
-        ("has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12", "broad gate on cuda"),
+        (
+            "has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12",
+            "broad gate on cuda",
+        ),
     ],
 )
 def test_a_gate_that_does_not_short_circuit_is_still_an_offender(condition):
