@@ -133,7 +133,11 @@ KNOWN_BYPASS_SITES = {
 # Known (script, variable) pairs where one assignment carries a hidden window and another a relaxed
 # policy. Empty is the goal. install.ps1's $shortcutArgs is recorded rather than failed on, so this
 # guard can land without also forcing the launcher relocation above.
-KNOWN_SPLIT_PAIR_VARIABLES = {("install.ps1", "shortcutArgs")}
+# Keyed on the CASEFOLDED variable name. PowerShell variable names are not case-sensitive
+# (about_Variables: "Variable names aren't case-sensitive"), so `$shortcutArgs` and `$ShortcutArgs`
+# are one variable. Grouping on the captured spelling instead would file them as two, each holding
+# only one of the two flags, and layer 3 below would wave the pair through on a capitalisation edit.
+KNOWN_SPLIT_PAIR_VARIABLES = {("install.ps1", "shortcutargs")}
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
@@ -182,11 +186,15 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     # 3. Same variable, any distance: the union of everything assigned to one name must not contain
     #    both flags. This is the layer that catches the install.ps1 3419/3433 shape.
     contributions: dict[str, set] = {}
+    spellings: dict[str, set] = {}
     for line in lines:
         match = _ASSIGNMENT.match(line.strip())
         if not match:
             continue
-        seen = contributions.setdefault(match.group(1), set())
+        # Casefolded, because PowerShell resolves $shortcutArgs and $ShortcutArgs to one variable.
+        key = match.group(1).casefold()
+        spellings.setdefault(key, set()).add(match.group(1))
+        seen = contributions.setdefault(key, set())
         if _HIDDEN.search(match.group(2)):
             seen.add("hidden")
         if _BYPASS.search(match.group(2)):
@@ -194,8 +202,9 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     for variable, seen in sorted(contributions.items()):
         if seen != {"hidden", "bypass"}:
             continue
+        written = " / ".join(sorted(spellings[variable]))
         assert (name, variable) in KNOWN_SPLIT_PAIR_VARIABLES, (
-            f"{name}: ${variable} is assigned a hidden window in one place and a relaxed policy in "
+            f"{name}: ${written} is assigned a hidden window in one place and a relaxed policy in "
             f"another. Only one of them reaches the command line, so whichever is dead weight "
             f"should go rather than be recorded here."
         )
