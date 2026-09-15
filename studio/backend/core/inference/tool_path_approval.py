@@ -1119,6 +1119,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         or (arg.startswith("-") and not arg.startswith("--") and "f" in arg.lstrip("-"))
         for arg in args
     )
+    # `install -d` / `mkdir -p` style: every positional is a directory being CREATED.
+    directory_mode = command == "install" and any(
+        arg == "-d" or arg == "--directory" or (arg.startswith("-") and not arg.startswith("--") and "d" in arg.lstrip("-"))
+        for arg in args
+    )
     skip = _PATH_ARG_SKIP.get(command, 0)
     operands: "list[tuple[str, bool]]" = []
     positionals: "list[str]" = []
@@ -1166,7 +1171,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         if "=" in arg and not _looks_absolute(arg):
             arg = arg.split("=", 1)[1]
         if dest_last:
-            writing = position == len(positionals) - 1 and len(positionals) > 1
+            # `install -d DIRECTORY...` creates every operand (`install --help`), so there is no
+            # source to distinguish and the "more than one positional" rule does not apply.
+            writing = directory_mode or (
+                position == len(positionals) - 1 and len(positionals) > 1
+            )
         else:
             # `creating and position == 0` is the LEGACY form, `tar cf out.tar src`, where the
             # archive occupies the first positional. With `-f` the archive arrived as a flag value
@@ -1645,15 +1654,33 @@ def _python_path_fold_aliases(tree) -> "tuple[set, set]":
     ctors = set(_PATH_CTORS)
     joins: "set[str]" = set()
     for node in _tree_nodes(tree):
-        if not isinstance(node, ast.ImportFrom):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for entry in node.names:
+                local = entry.asname or entry.name
+                if entry.name in _PATH_CTORS:
+                    ctors.add(local)
+                elif entry.name == "join" and (module == "os.path" or module.endswith(".path")):
+                    joins.add(local)
             continue
-        module = node.module or ""
-        for entry in node.names:
-            local = entry.asname or entry.name
-            if entry.name in _PATH_CTORS:
-                ctors.add(local)
-            elif entry.name == "join" and (module == "os.path" or module.endswith(".path")):
-                joins.add(local)
+        # `P = Path` binds the constructor exactly as an import alias does, and `j = os.path.join`
+        # the join. Without this the call folded to nothing and the path it built was never seen.
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        if isinstance(value, ast.Name):
+            source = value.id
+        elif isinstance(value, ast.Attribute):
+            source = value.attr
+        else:
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name) or target.id == source:
+                continue
+            if source in ctors:
+                ctors.add(target.id)
+            elif source in joins or source == "join":
+                joins.add(target.id)
     return ctors, joins
 
 

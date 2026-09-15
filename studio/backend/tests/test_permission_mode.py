@@ -2022,7 +2022,7 @@ def test_high_risk_dispatcher_non_terminal():
             True,
         ),  # qualified path-ctor alias (P = pathlib.Path)
         (
-            "import pathlib\nP = pathlib.Path\n(P('/tmp') / 'x').read_text()",
+            "import pathlib\nP = pathlib.Path\n(P('/usr/share') / 'x').read_text()",
             False,
         ),  # benign qualified path-ctor alias stays safe
         (
@@ -2126,9 +2126,9 @@ def test_high_risk_dispatcher_non_terminal():
             True,
         ),  # os.path.join aliased
         (
-            "from pathlib import Path\nP = Path\n(P('/tmp') / 'x').read_text()",
+            "from pathlib import Path\nP = Path\n(P('/usr/share') / 'x').read_text()",
             False,
-        ),  # benign alias
+        ),  # benign alias, under a read-silent root: /tmp is the SHARED temp dir, not the session's
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -3453,6 +3453,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "date -f /media/kuser/MEDIA_SSD/private.txt",
     # ripgrep's own path option, absent from the grep spec it inherits.
     "rg --ignore-file=/media/kuser/MEDIA_SSD/private.rules needle .",
+    # `install -d DIR...` CREATES every operand, so the destination-last rule does not apply.
+    "install -d /dev/shm/tool-output",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3533,6 +3535,14 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # A constructor or a join under an import alias builds the same path.
     "from pathlib import Path as P\nP('/media/kuser/MEDIA_SSD/private.txt').read_text()",
     "from os.path import join as j\nopen(j('/media/kuser/MEDIA_SSD', 'private.txt')).read()",
+    # numpy.load is modelled on its module, so a from-import has to carry that provenance.
+    "from numpy import load\nload('/media/kuser/MEDIA_SSD/private.npy')",
+    "from numpy import load as read_array\nread_array('/media/kuser/MEDIA_SSD/x.npy')",
+    # `Image` is itself a modelled receiver, so an aliased from-import has to resolve back to it.
+    "from PIL import Image as I\nI.open('/media/kuser/MEDIA_SSD/private.png')",
+    # A constructor bound by assignment, which is the same binding an import alias makes.
+    "from pathlib import Path\nP = Path\nP('/media/kuser/MEDIA_SSD/private.txt').read_text()",
+    "import os.path\nj = os.path.join\nopen(j('/media/kuser/MEDIA_SSD', 'x.txt')).read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3559,6 +3569,12 @@ _INDIRECT_BENIGN_TERMINAL = (
     'sqlite3 file:local.db "select 1"',
     "curl https://example.com/x",
     "curl file:///usr/share/doc/x.txt",
+    "date",
+    "date -d yesterday",
+    "rg --ignore-file=.rgignore needle .",
+    "wget https://example.com/x",
+    "install -d out",
+    "install a.txt b.txt",
     "tar -cf out.tar /usr/share/doc",
     # A read-only sqlite invocation under a read-silent root. Without `-readonly` the database is a
     # write, which /usr is not silent for.
@@ -3588,6 +3604,10 @@ _INDIRECT_BENIGN_PYTHON = (
     "import numpy as np\nnp.load('data.npy')",
     "import json\njson.load(open('cfg.json'))",
     "from pathlib import Path as P\nP('data.csv').read_text()",
+    "from pathlib import Path\nP = Path\nP('data.csv').read_text()",
+    "from numpy import load\nload('data.npy')",
+    "from json import load\nload(open('cfg.json'))",
+    "from PIL import Image as I\nI.open('local.png')",
 )
 
 
