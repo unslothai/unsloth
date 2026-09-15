@@ -4342,8 +4342,10 @@ def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runt
     pipe.scheduler.on_step = lambda n: steps_seen.append(backend._gen.get("step"))
     result = backend.generate(prompt = "a fox", steps = 4)
     assert "callback_on_step_end" not in pipe.last_kwargs
-    # One wrapped tick per denoise step, then the original method back in place.
-    assert steps_seen == [1, 2, 3, 4]
+    # One wrapped tick per denoise step, then the original method back in place. The reading taken
+    # from INSIDE step n is n-1, not n: scheduler.step is what enqueues the step's latent update,
+    # so the tick for step n lands after the original returns rather than before it.
+    assert steps_seen == [0, 1, 2, 3]
     assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
     assert result["num_frames"] == 124 and result["has_audio"] is False
 
@@ -9062,7 +9064,7 @@ def test_completed_step_poller_advances_with_no_host_ticks(monkeypatch):
     for step in range(1, 4):
         ticker.record(step)
     seen: list = []
-    with video_mod._completed_step_poller(ticker, seen.append, poll_seconds = 0.01):
+    with video_mod._completed_step_poller(lambda: seen.append(ticker.completed()), 0.01):
         for event in events:
             event.done = True
         deadline = time.monotonic() + 5.0
@@ -9083,10 +9085,12 @@ def test_completed_step_poller_stands_back_during_a_graph_capture(monkeypatch):
         ticker.record(step)
     for event in events:
         event.done = True
-    monkeypatch.setattr(video_mod, "_cuda_graph_capture_in_progress", lambda: True)
+    from core.inference import diffusion_cuda_graph as cg
+
     seen: list = []
-    with video_mod._completed_step_poller(ticker, seen.append, poll_seconds = 0.01):
-        time.sleep(0.2)
+    with cg._capturing():  # a capture really is recording for the whole poll window
+        with video_mod._completed_step_poller(lambda: seen.append(ticker.completed()), 0.01):
+            time.sleep(0.2)
     assert seen == []
     assert all(event.queries == 0 for event in events)
 
@@ -9171,20 +9175,69 @@ def test_decode_phase_covers_the_audio_decoder_too():
     assert "decode" not in audio_vae.__dict__
 
 
-def test_hv15_bar_never_outruns_the_gpu_and_completes(fake_runtime, monkeypatch):
-    # End to end on the scheduler-wrap path (HunyuanVideo-1.5 exposes no step callback, like H3's
-    # modular workflow). The host enqueues every step while the GPU finishes none.
+def _patch_events(monkeypatch, *, done: bool = False):
+    """Hand out fake CUDA events, optionally already complete. Returns the list they land in."""
     import core.inference.video as video_mod
 
     events: list = []
 
     def _fake_event():
         event = _FakeCudaEvent()
+        event.done = done
         events.append(event)
         return event
 
     monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    return events
 
+
+def test_step_marker_goes_down_after_the_scheduler_step_not_before(fake_runtime, monkeypatch):
+    # scheduler.step is what enqueues the step's latent update (and H3's audio scheduler update
+    # after it), so a marker recorded before it sits AHEAD of kernels that step still owes and can
+    # signal while the step is still running. The tick must come after the original returns.
+    events = _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    marked_when_step_ran: list = []
+    # The fake fires this from INSIDE the original scheduler.step, i.e. while step n's latent
+    # update is being submitted.
+    pipe.scheduler.on_step = lambda n: marked_when_step_ran.append((n, len(events)))
+
+    backend.generate(prompt = "a fox", steps = 5, num_frames = 9, fps = 24)
+
+    # While step n is submitting, only the n-1 steps BEFORE it are marked. The old ordering made
+    # this (n, n): step n was already marked before its own work was enqueued.
+    assert marked_when_step_ran == [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4)]
+    assert len(events) == 6  # five steps plus the end-of-denoise boundary marker
+
+
+def test_cancellation_is_still_checked_before_the_step_runs(fake_runtime, monkeypatch):
+    # Moving the tick after the call must not move the cancel check with it: cancelling has to
+    # unwind before the next step's work is submitted, not after it has run.
+    events = _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    pipe.scheduler.on_step = lambda n: backend.cancel_generate() if n == 1 else None
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
+    # Step 2 never ran: the pre-hook raised ahead of it.
+    assert pipe.scheduler.calls == 1
+    # And exactly one step was marked, the one that really was submitted. No boundary marker
+    # either, since the decoder was never reached.
+    assert len(events) == 1
+
+
+def test_hv15_bar_never_outruns_the_gpu_and_holds_the_phase(fake_runtime, monkeypatch):
+    # End to end on the scheduler-wrap path (HunyuanVideo-1.5 exposes no step callback, like H3's
+    # modular workflow). The host enqueues every step and enters the decoder while the GPU has
+    # finished nothing, which is exactly the Wan / LTX-2 shape.
+    events = _patch_events(monkeypatch)
     backend = VideoBackend()
     backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
@@ -9205,14 +9258,98 @@ def test_hv15_bar_never_outruns_the_gpu_and_completes(fake_runtime, monkeypatch)
     # The invariant: never more steps reported than the GPU has actually completed.
     for enqueued, reported, finished in seen:
         assert reported <= finished, (enqueued, reported, finished)
-    # And with the GPU finishing nothing, the bar stayed at 0 through the whole host-side loop --
-    # where it used to read 8/8 while no denoising had happened.
+    # With the GPU finishing nothing, the bar stayed at 0 through the whole host-side loop, where
+    # it used to read 8/8 while no denoising had happened.
     assert {reported for _, reported, _ in seen} == {0}
-    # The decode gets its own phase, and the bar is complete when it starts, not one short.
+    # And entering the decoder did NOT complete the bar or flip the phase, because the boundary
+    # marker has not completed: the GPU is still denoising.
+    assert at_decode.get("phase") == "denoise"
+    assert at_decode.get("step") == 0
+
+
+def test_decode_phase_lands_once_the_gpu_reaches_the_boundary(fake_runtime, monkeypatch):
+    # Same path, but now the device keeps up with the host, so the boundary marker is complete when
+    # the decoder is entered and the phase flips there.
+    _patch_events(monkeypatch, done = True)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    at_decode: dict = {}
+    pipe.vae.on_decode = lambda: _settle(backend, at_decode)
+
+    backend.generate(prompt = "a fox", steps = 8, num_frames = 9, fps = 24)
+
     assert at_decode.get("phase") == "decode"
     assert at_decode.get("step") == 8
     assert at_decode.get("total") == 8
     assert at_decode.get("eta_seconds") is None
+
+
+def _settle(backend, out, timeout = 5.0):
+    """Wait for the poller to publish the decode phase, then snapshot it.
+
+    The flip is the poller's job precisely because the decoder-entry position cannot know whether
+    the GPU has caught up, so a test that reads _gen the instant the decoder is entered is racing
+    the poll interval rather than testing anything.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if backend._gen.get("phase") == "decode":
+            break
+        time.sleep(0.01)
+    out.update(backend._gen)
+
+
+def test_a_capture_cannot_start_while_an_event_query_is_in_flight(monkeypatch):
+    # The TOCTOU this replaced: a poll read "no capture", the capture began, and the poll's
+    # prohibited cudaEventQuery landed inside it. The lock has to span the query itself.
+    import core.inference.video as video_mod
+    from core.inference import diffusion_cuda_graph as cg
+
+    in_query = threading.Event()
+    finish_query = threading.Event()
+
+    class _BlockingEvent:
+        def query(self):
+            in_query.set()
+            finish_query.wait(5.0)
+            return True
+
+    monkeypatch.setattr(video_mod, "_record_cuda_event", lambda: _BlockingEvent())
+    ticker = video_mod._CompletedStepTicker(1)
+    ticker.record(1)
+
+    entered_capture = threading.Event()
+
+    def _capture():
+        with cg._capturing():
+            entered_capture.set()
+
+    with video_mod._completed_step_poller(ticker.completed, 0.01):
+        assert in_query.wait(5.0), "the poller never reached the query"
+        capturer = threading.Thread(target = _capture, daemon = True)
+        capturer.start()
+        # A capture must not be able to raise the depth, and so must not be able to enter
+        # torch.cuda.graph, while a query is in flight.
+        assert not entered_capture.wait(0.5)
+        finish_query.set()
+        assert entered_capture.wait(5.0)
+        capturer.join(timeout = 5.0)
+    assert cg.capture_in_progress() is False
+
+
+def test_hold_off_capture_yields_false_rather_than_waiting_on_a_capture():
+    from core.inference import diffusion_cuda_graph as cg
+
+    with cg.hold_off_capture() as clear:
+        assert clear is True
+    with cg._capturing():
+        with cg.hold_off_capture() as clear:
+            assert clear is False
+    with cg.hold_off_capture() as clear:
+        assert clear is True
 
 
 def test_denoise_completes_even_when_the_loop_ticks_fewer_times_than_steps(fake_runtime):
@@ -9274,33 +9411,27 @@ def test_callback_family_keeps_its_own_callback(fake_runtime, monkeypatch):
     # the reported step now comes from completed events rather than the callback's index.
     import core.inference.video as video_mod
 
-    events: list = []
-
-    def _fake_event():
-        event = _FakeCudaEvent()
-        events.append(event)
-        return event
-
-    monkeypatch.setattr(video_mod, "_record_cuda_event", _fake_event)
+    events = _patch_events(monkeypatch, done = True)
     wrapped: list = []
     original_wrap = video_mod._scheduler_step_progress
     monkeypatch.setattr(
         video_mod,
         "_scheduler_step_progress",
-        lambda pipe, on_step: wrapped.append(pipe) or original_wrap(pipe, on_step),
+        lambda *a, **kw: wrapped.append(a[0]) or original_wrap(*a, **kw),
     )
 
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     pipe = backend._state.pipe
     at_decode: dict = {}
-    pipe.vae.on_decode = lambda: at_decode.update(backend._gen)
+    pipe.vae.on_decode = lambda: _settle(backend, at_decode)
 
     backend.generate(prompt = "a sloth", steps = 6, num_frames = 9, fps = 24)
 
     # The scheduler was never wrapped: this family drives its own callback and still does.
     assert wrapped == []
-    assert len(events) == 6  # one marker per callback tick, so the callback really ran
+    # One marker per callback tick, so the callback really ran, plus the boundary marker.
+    assert len(events) == 7
     assert pipe.vae.decodes == 1
     assert at_decode.get("phase") == "decode"
     assert at_decode.get("step") == 6
