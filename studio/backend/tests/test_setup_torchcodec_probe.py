@@ -70,8 +70,11 @@ def _ffmpeg(present: bool) -> str:
 
 def _probe(preamble: str) -> str:
     """The state the installers would read: the sentinel line, not all of stdout."""
+    # sys.executable, not a bare "python": the installers name the venv interpreter by
+    # path, and a host with only python3 on PATH (Debian without python-is-python3, the
+    # AMD CI runners) has no `python` to find, which failed seven tests here for nothing.
     out = subprocess.run(
-        ["python", "-c", preamble + _PROBE],
+        [sys.executable, "-c", preamble + _PROBE],
         capture_output = True,
         text = True,
     )
