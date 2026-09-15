@@ -61,9 +61,15 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
-import { requestLocalPromptQueueStop } from "../utils/prompt-queue-boundary";
+import {
+  requestLocalPromptQueueStop,
+  notifyLocalPromptQueueLoadFailed,
+} from "../utils/prompt-queue-boundary";
 import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
-import type { ModelLifecycleLease } from "../utils/model-lifecycle-gate";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
@@ -792,6 +798,7 @@ export function useChatModelRuntime() {
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;
     if (!model) return;
+    notifyLocalPromptQueueLoadFailed(loadLifecycleLeaseRef.current);
     loadAbortRef.current?.abort();
     loadAbortRef.current = null;
     loadingModelRef.current = null;
@@ -1095,11 +1102,10 @@ export function useChatModelRuntime() {
         }
       }
 
-      // Block queue materialization before taking the cancellation snapshot: a queue that appears while
-      // the dialog is open must not be stopped without having been included in the confirmation.
+      // Hold the lifecycle lease through confirmation and loading.
       const lifecycleLease = useChatRuntimeStore
         .getState()
-        .beginModelLoading();
+        .beginModelLoading("preparing");
       if (lifecycleLease === null) {
         restorePreviousConfig();
         toast.info("A model is loading", {
@@ -1741,9 +1747,11 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
-            // A queue can be created while the preliminary unload is pending, so stop a second time at the
-            // final boundary.
+            // Invalidate factories started before the final loading boundary.
             requestLocalPromptQueueStop();
+            if (lifecycleLease !== null) {
+              chatModelLifecycleGate.markLoading(lifecycleLease);
+            }
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -2053,7 +2061,8 @@ export function useChatModelRuntime() {
               });
             }
           } catch (error) {
-            // Skip rollback if the user cancelled: the model is already being unloaded.
+            notifyLocalPromptQueueLoadFailed(lifecycleLease);
+            // Cancellation already handles unloading.
             if (abortCtrl.signal.aborted) throw error;
             if (previousWasUnloaded && previousCheckpoint) {
               let rollbackNativePathLease: string | undefined;
@@ -2549,9 +2558,10 @@ export function useChatModelRuntime() {
     }
     let lifecycleLease: ModelLifecycleLease | null = null;
     try {
-      // Block queue materialization before taking the confirmation snapshot, or a queue can appear
-      // while the dialog is open and be stopped without the user confirming it.
-      lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      // Hold the lifecycle lease through confirmation and unloading.
+      lifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading("unloading");
       if (lifecycleLease === null) {
         return false;
       }

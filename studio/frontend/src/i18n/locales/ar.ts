@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ar = {
+  composerSettings: {
+    title: "كتابة الرسائل",
+    plainText: "محرر نص عادي",
+    plainTextDescription: "إبقاء التعليمات البرمجية وMarkdown والروابط كنص حرفي. عطّل هذا الخيار لعرض معاينة منسقة.",
+    showContext: "إظهار استخدام نافذة السياق",
+    sendShortcut: "اختصار الإرسال",
+    sendDescription: "اختر ما إذا كان Enter يرسل الرسالة أو يضيف سطرًا جديدًا.",
+    followUp: "سلوك رسائل المتابعة",
+    followUpDescription: "اختر ما يحدث عند الإرسال أثناء الرد. اضغط {shortcut} لتنفيذ الإجراء المعاكس لرسالة واحدة.",
+    queue: "إضافة للطابور",
+    steer: "توجيه",
+    steerDescription: "التوجيه يوقف الرد الحالي ويرسل رسالة المتابعة بعده مباشرة.",
+    settings: "إعدادات كتابة الرسائل",
+    preview: "معاينة منسقة",
+  },
   picker: {
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
