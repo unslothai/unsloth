@@ -1126,9 +1126,11 @@ def test_every_script_that_dropped_its_explanation_points_at_the_record(name: st
         f"tests/studio/test_installer_av_shapes.py as AV_SHAPES_RECORD."
     )
 
+
 # -------------------------------------------------------------------------
 # studio/setup.bat
 # ---------------------------------------------------------------------------
+
 
 def _setup_bat_probe() -> str:
     """The PowerShell that setup.bat embeds to clear the mark and choose a policy."""
@@ -1159,18 +1161,20 @@ def test_the_setup_bat_probe_parses() -> None:
         pytest.skip("pwsh is unavailable")
     probe = _setup_bat_probe()
     import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "probe.ps1"
         path.write_text(probe, encoding = "utf-8")
         result = _run_pwsh_parse(pwsh, path)
-    assert result.returncode == 0, (
-        f"the probe embedded in studio/setup.bat does not parse:\n{result.stdout}\n{result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"the probe embedded in studio/setup.bat does not parse:\n{result.stdout}\n{result.stderr}"
 
 
 def _run_pwsh_parse(pwsh: str, path: Path):
     import os
     from unsloth_pwsh_runner import run_pwsh
+
     script = (
         "$errors = $null; $tokens = $null; "
         "$null = [System.Management.Automation.Language.Parser]::ParseFile("
@@ -1179,7 +1183,9 @@ def _run_pwsh_parse(pwsh: str, path: Path):
     )
     return run_pwsh(
         [pwsh, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True, text = True, timeout = 120,
+        capture_output = True,
+        text = True,
+        timeout = 120,
         env = {**os.environ, "UNSLOTH_TARGET": str(path)},
     )
 
@@ -1194,16 +1200,16 @@ def test_setup_bat_steps_down_to_bypass_only_for_a_remote_script() -> None:
     the shortcut; reusing that logic beats inventing a second answer.
     """
     probe = _setup_bat_probe()
-    assert "DriveInfo" in probe and "Network" in probe, (
-        "the probe no longer detects a mapped network drive, so a script on H:/Z: would be refused"
-    )
+    assert (
+        "DriveInfo" in probe and "Network" in probe
+    ), "the probe no longer detects a mapped network drive, so a script on H:/Z: would be refused"
     assert "-like '\\\\*'" in probe, "the probe no longer detects a UNC path"
-    assert "'Bypass'" in probe and "'RemoteSigned'" in probe, (
-        "the probe no longer chooses between the two policies"
-    )
-    assert "Unblock-File" in probe, (
-        "the probe no longer clears the mark of the web, so an unzipped download is refused"
-    )
+    assert (
+        "'Bypass'" in probe and "'RemoteSigned'" in probe
+    ), "the probe no longer chooses between the two policies"
+    assert (
+        "Unblock-File" in probe
+    ), "the probe no longer clears the mark of the web, so an unzipped download is refused"
 
     # The launch line, the -NoProfile asymmetry and the Unblock-File ordering are asserted by
     # test_setup_bat_clears_the_mark_before_loading_under_remotesigned above; not repeated here.
