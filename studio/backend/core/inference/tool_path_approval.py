@@ -1144,9 +1144,7 @@ _SHELL_CONTROL_WORDS = frozenset(
 
 
 def _looks_separator_for_paths(token: str) -> bool:
-    return bool(token) and (
-        all(ch in ";&|()" for ch in token) or token in _SHELL_CONTROL_WORDS
-    )
+    return bool(token) and (all(ch in ";&|()" for ch in token) or token in _SHELL_CONTROL_WORDS)
 
 
 def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
