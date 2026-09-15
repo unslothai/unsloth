@@ -7,6 +7,7 @@
 import {
   isNativeFileLabel,
   isOllamaLinkPath,
+  isOllamaModelId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   splitQuantSuffix,
@@ -23,7 +24,8 @@ import {
   toApiOverride,
 } from "./model-overrides";
 
-const DONE_FLAG = "unsloth_model_overrides_backfilled_v1";
+// Bumped when the filter below started admitting Ollama tags, so a completed v1 pass reruns.
+const DONE_FLAG = "unsloth_model_overrides_backfilled_v2";
 
 function alreadyRan(): boolean {
   try {
@@ -78,12 +80,12 @@ export async function backfillModelOverrides(): Promise<void> {
     return;
   }
   const local = listPerModelConfigs().filter(
-    // A quant means GGUF, the only thing auto-switch resolves. A standalone .gguf is stored with a
-    // null variant, so it needs the extra test. An Ollama blob sits behind a link dir the resolver
-    // skips, and a bare file name is a dropped file's label, which the resolver never keys.
+    // A quant means GGUF, all auto-switch resolves; a .gguf and a reference have a null variant.
+    // A link sits in a dir the resolver skips, a bare file name is a label it never keys.
     (entry) =>
       (entry.ggufVariant != null ||
-        entry.modelId.toLowerCase().endsWith(".gguf")) &&
+        entry.modelId.toLowerCase().endsWith(".gguf") ||
+        isOllamaModelId(entry.modelId)) &&
       !isOllamaLinkPath(entry.modelId) &&
       !isNativeFileLabel(entry.modelId) &&
       !isDefaultConfig(entry.config),

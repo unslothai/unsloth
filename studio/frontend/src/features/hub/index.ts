@@ -104,6 +104,7 @@ export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
   isOllamaLinkPath,
+  isOllamaModelId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
