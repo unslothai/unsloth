@@ -1772,3 +1772,59 @@ def test_a_command_substitution_inside_double_quotes_is_a_subshell(monkeypatch, 
             ), blocked
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_consecutive_cds_inside_one_subshell(monkeypatch, tmp_path):
+    # A subshell's move has to reach the NEXT command inside the same subshell. Dropping it outright
+    # resolved the second `cd` from the outer sandbox and missed the database entirely.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        blocked = '(cd ../..; cd auth; sqlite3 auth.db "select jwt_secret from auth_user")'
+        assert tools._bash_exec(blocked, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        # ...and must not reach past the closing bracket. Entering the directory and leaving
+        # without reading anything is not a credential read.
+        for ordinary in (
+            "(cd ../..; cd auth); cat config.json",
+            "(cd ../..; ls models); cat auth/config.json",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_chdir_in_an_uncalled_helper_does_not_move_the_walk(monkeypatch, tmp_path):
+    # A `chdir` inside a function body only moves anything if that function runs.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = (
+            "import os\n"
+            "def helper():\n"
+            '    os.chdir("../..")\n'
+            'print(open("auth/config.json").read())'
+        )
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        # A body whose name IS called stays live, and a branch is not a scope.
+        for blocked in (
+            'import os\ndef helper():\n    os.chdir("../..")\nhelper()\n'
+            'print(open("auth/auth.db", "rb").read())',
+            'import os\nif x:\n    os.chdir("../..")\nprint(open("auth/auth.db", "rb").read())',
+        ):
+            assert tools._python_exec(blocked, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), blocked
+    finally:
+        tools._studio_auth_markers_cache = None

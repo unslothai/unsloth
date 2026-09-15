@@ -3064,17 +3064,25 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
     # shell carries on from where it was, so `cd missing; cd ../..; cat auth/auth.db` reaches the
     # studio root from the sandbox. Assuming every `cd` succeeds resolved the rest against a
     # directory the command was never in.
-    states: "list[str]" = [workdir]
+    # Each state carries the position it stays valid until: the end of the text for an outer `cd`,
+    # the closing bracket for one inside a subshell. `(cd ../..; cd auth; sqlite3 auth.db)` needs
+    # the first move to reach the second `cd`, and dropping a subshell move outright resolved that
+    # second one from the outer sandbox and missed the database.
+    states: "list[tuple[str, int]]" = [(workdir, len(text))]
     walked: "list[tuple[int, int, str]]" = []
     seen: "set[tuple[str, int]]" = set()
     for match in _CD_TARGET_RE.finditer(text):
         target = match.group(1).strip("'\"")
         if not target or target.startswith("-"):
             continue
+        # A subshell that has already closed takes its moves with it.
+        states = [(cwd, until) for cwd, until in states if until >= match.start()] or [
+            (workdir, len(text))
+        ]
         # A `cd` inside `( ... )` or `$( ... )` moves only that subshell, so its move stops there.
         limit = _subshell_end(text, match.end())
         moved: "list[str]" = []
-        for cwd in states:
+        for cwd, _until in states:
             nxt = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
             if nxt not in moved:
                 moved.append(nxt)
@@ -3086,9 +3094,10 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
         # starting directory is kept FIRST: it is where the shell is when every `cd` fails, which is
         # what a padded command relies on, and truncating the tail used to drop exactly that state.
         # The cap bounds the STATES only, never the scan, or the padding hides the `cd ../..`.
-        # A subshell's move does not survive it, so the outer states are what carry on.
         ordered = (
-            [workdir] + [c for c in states if c != workdir] + (moved if limit >= len(text) else [])
+            [(workdir, len(text))]
+            + [(c, u) for c, u in states if c != workdir]
+            + [(m, limit) for m in moved]
         )
         states = list(dict.fromkeys(ordered))[:_MAX_TRACKED_CWDS]
         if len(walked) >= _MAX_WALKED_CWDS:
@@ -3141,8 +3150,11 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
             # The directory itself: `cd ../..; cd auth; sqlite3 auth.db` writes no separator at
-            # all, so every token below reads as an ordinary filename.
-            if _references_studio_credential(cwd):
+            # all, so every token below reads as an ordinary filename. Only when something actually
+            # RUNS there, though: `(cd ../..; cd auth); cat config.json` enters the directory and
+            # leaves without reading anything, and the `cat` outside the subshell is back in the
+            # sandbox.
+            if _references_studio_credential(cwd) and text[offset:limit].strip(" \t\n;&|()"):
                 return True
             for match in _RELATIVE_PATH_TOKEN_RE.finditer(text):
                 # Only what comes AFTER that `cd`: a path written before it opens from the old
@@ -3169,6 +3181,35 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
         ):
             return True
     return False
+
+
+def _calls_in_uncalled_scopes(tree) -> "set[int]":
+    """Ids of calls sitting in a function, lambda or class body that nothing in *code* calls.
+
+    Deliberately narrow. A body whose name IS called anywhere in the snippet stays live, because the
+    move is then real and only the ordering is unknown, and the conservative reading is what a guard
+    wants. A branch is not a scope: `if cond: os.chdir(...)` may well run, so it keeps moving.
+    """
+    called: "set[str]" = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            called.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            called.add(func.attr)
+    inert: "set[int]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name in called:
+                continue
+        elif not isinstance(node, ast.Lambda):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call) and inner is not node:
+                inert.add(id(inner))
+    return inert
 
 
 def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
@@ -3200,6 +3241,10 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # path that does not exist raises, and code that catches it carries on from where it was.
     chdir_modules = _chdir_modules(tree)
     chdir_names = _chdir_names(tree, chdir_modules)
+    # A `chdir` inside a function body only moves anything if that function RUNS. An uncalled helper
+    # was moving the walk for the statements after it, so a snippet that defines one and then reads
+    # its own `auth/config.json` was refused although the process never left the sandbox.
+    inert_moves = _calls_in_uncalled_scopes(tree)
     name_bases = _literal_name_bases(tree)
     process_aliases, process_functions = _process_module_aliases(tree)
     cwds: "list[str | None]" = [workdir]
@@ -3211,7 +3256,11 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     for node in nodes:
         while restore and getattr(node, "lineno", 0) > restore[-1][0]:
             cwds = restore.pop()[1]
-        if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names, chdir_modules):
+        if (
+            isinstance(node, ast.Call)
+            and _is_chdir_call(node, chdir_names, chdir_modules)
+            and id(node) not in inert_moves
+        ):
             argument = _chdir_argument(node)
             target = None if argument is None else _folded_path(argument)
             targets: "list[str]" = []
