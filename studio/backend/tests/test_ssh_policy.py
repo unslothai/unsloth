@@ -59,6 +59,15 @@ class TestSshCommandExtraction:
         assert hosts == set()
         assert dynamic is True
 
+    def test_dynamic_destination_with_remote_command_fails_closed(self):
+        cmd = 'TARGET=unapproved.example; ssh "$TARGET" approved.example'
+        hosts, dynamic = extract_ssh_hosts_from_command(cmd)
+        assert "approved.example" not in hosts or dynamic
+        approve_hosts("review", ["approved.example"])
+        err = check_ssh_command_access(cmd, "review")
+        assert err is not None
+        assert "non-literal" in err or "literal" in err
+
     def test_ansi_c_quoted_ssh_command(self):
         hosts, dynamic = extract_ssh_hosts_from_command("$'ssh' deploy@prod.example.com")
         assert hosts == {"prod.example.com"}
@@ -243,6 +252,15 @@ class TestNetworkBlockFiltering:
         assert any(item["type"] == "untrusted_host_blocked" for item in info["network_calls"])
         filtered = filter_ssh_approved_network_blocks(code, "sess-1", info)
         assert any(item["type"] == "untrusted_host_blocked" for item in filtered["network_calls"])
+
+    def test_same_line_http_not_exempted_with_approved_ssh(self):
+        code = (
+            'import paramiko, requests\n'
+            'c = paramiko.SSHClient()\n'
+            'requests.get("https://unapproved.example"); c.connect("approved.example")'
+        )
+        approve_hosts("sess-1", ["approved.example"])
+        assert _check_code_safety(code, session_id = "sess-1") is not None
 
 
 class TestSessionCleanup:

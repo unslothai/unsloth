@@ -268,13 +268,7 @@ def _hosts_from_ssh_segment(name: str, tokens: list[str]) -> tuple[set[str], boo
         positional, opt_hosts, opt_dynamic = _parse_ssh_cli_options(tokens)
         literal_hosts.update(opt_hosts)
         dynamic = dynamic or opt_dynamic
-        candidates: list[str] = []
-        for tok in positional:
-            if _extract_host_from_endpoint(tok):
-                candidates = [tok]
-                break
-        if not candidates and positional:
-            candidates = [positional[0]]
+        candidates = [positional[0]] if positional else []
     else:
         candidates = _scp_remote_candidates(tokens)
         if not candidates and tokens:
@@ -483,21 +477,44 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
-def _scan_ssh_python_usage(code: str) -> tuple[set[str], bool, bool, set[int]]:
-    """Return (literal_hosts, dynamic_target, uses_ssh_connect, connect_line_numbers)."""
+def _ssh_call_span(node: ast.Call) -> tuple[int, int, int, int]:
+    lineno = getattr(node, "lineno", -1)
+    col = getattr(node, "col_offset", 0)
+    end_lineno = getattr(node, "end_lineno", None) or lineno
+    end_col = getattr(node, "end_col_offset", None) or col
+    return lineno, col, end_lineno, end_col
+
+
+def _position_in_span(lineno: int, col: int, span: tuple[int, int, int, int]) -> bool:
+    start_line, start_col, end_line, end_col = span
+    if lineno < start_line or lineno > end_line:
+        return False
+    if start_line == end_line:
+        return start_col <= col < end_col
+    if lineno == start_line:
+        return col >= start_col
+    if lineno == end_line:
+        return col < end_col
+    return True
+
+
+def _scan_ssh_python_usage(
+    code: str,
+) -> tuple[set[str], bool, bool, list[tuple[int, int, int, int]]]:
+    """Return (literal_hosts, dynamic_target, uses_ssh_connect, connect_spans)."""
     if not code or not code.strip():
-        return set(), False, False, set()
+        return set(), False, False, []
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return set(), True, bool(re.search(r"\b(?:paramiko|asyncssh|fabric)\b", code)), set()
+        return set(), True, bool(re.search(r"\b(?:paramiko|asyncssh|fabric)\b", code)), []
     bindings = _ssh_import_bindings(tree)
     clients = _ssh_client_bindings(tree)
     shell_aliases = _shell_exec_aliases(tree)
     hosts: set[str] = set()
     dynamic = False
     uses_ssh = False
-    connect_lines: set[int] = set()
+    connect_spans: list[tuple[int, int, int, int]] = []
 
     class _Visitor(ast.NodeVisitor):
         def visit_Call(self, node: ast.Call) -> None:
@@ -505,7 +522,7 @@ def _scan_ssh_python_usage(code: str) -> tuple[set[str], bool, bool, set[int]]:
             ssh_call = _resolve_ssh_call(node.func, bindings, clients)
             if ssh_call:
                 uses_ssh = True
-                connect_lines.add(getattr(node, "lineno", -1))
+                connect_spans.append(_ssh_call_span(node))
                 host_lit: Optional[str] = None
                 if node.args:
                     host_lit = _literal_host_from_ast(node.args[0])
@@ -543,7 +560,7 @@ def _scan_ssh_python_usage(code: str) -> tuple[set[str], bool, bool, set[int]]:
                         seg_hosts, seg_dynamic = _ssh_from_argv_literals(argv)
                         if seg_hosts or seg_dynamic:
                             uses_ssh = True
-                            connect_lines.add(getattr(node, "lineno", -1))
+                            connect_spans.append(_ssh_call_span(node))
                             hosts.update(seg_hosts)
                             dynamic = dynamic or seg_dynamic
                         continue
@@ -551,14 +568,14 @@ def _scan_ssh_python_usage(code: str) -> tuple[set[str], bool, bool, set[int]]:
                         seg_hosts, seg_dynamic = _extract_ssh_from_shell_literal(literal)
                         if seg_hosts or seg_dynamic:
                             uses_ssh = True
-                            connect_lines.add(getattr(node, "lineno", -1))
+                            connect_spans.append(_ssh_call_span(node))
                             hosts.update(seg_hosts)
                             dynamic = dynamic or seg_dynamic
 
             self.generic_visit(node)
 
     _Visitor().visit(tree)
-    return hosts, dynamic, uses_ssh, connect_lines
+    return hosts, dynamic, uses_ssh, connect_spans
 
 
 def extract_ssh_hosts_from_python(code: str) -> tuple[set[str], bool, bool]:
@@ -567,14 +584,16 @@ def extract_ssh_hosts_from_python(code: str) -> tuple[set[str], bool, bool]:
     return hosts, dynamic, uses_ssh
 
 
-def _approved_ssh_connect_lines(code: str, session_id: Optional[str]) -> set[int]:
-    """Lines with approved SSH connect calls, for network-block filtering."""
-    hosts, dynamic, uses_ssh, connect_lines = _scan_ssh_python_usage(code)
+def _approved_ssh_connect_spans(
+    code: str, session_id: Optional[str]
+) -> list[tuple[int, int, int, int]]:
+    """AST spans for approved SSH connect calls (network-block filtering)."""
+    hosts, dynamic, uses_ssh, connect_spans = _scan_ssh_python_usage(code)
     if not uses_ssh or dynamic or not hosts:
-        return set()
+        return []
     if not all(is_host_approved(session_id, host) for host in hosts):
-        return set()
-    return connect_lines
+        return []
+    return connect_spans
 
 
 def _unapproved(hosts: Iterable[str], session_id: Optional[str]) -> set[str]:
@@ -651,14 +670,23 @@ def list_approved_ssh_hosts(session_id: Optional[str]) -> list[str]:
 def filter_ssh_approved_network_blocks(
     code: str, session_id: Optional[str], analysis_info: dict
 ) -> dict:
-    """Drop host blocks only on lines with already-approved SSH connect calls."""
-    approved_lines = _approved_ssh_connect_lines(code, session_id)
-    if not approved_lines:
+    """Drop host blocks only for approved SSH connect call sites."""
+    approved_spans = _approved_ssh_connect_spans(code, session_id)
+    if not approved_spans:
         return analysis_info
     filtered = dict(analysis_info)
-    filtered["network_calls"] = [
-        item
-        for item in analysis_info.get("network_calls", [])
-        if not (item.get("type") == "untrusted_host_blocked" and item.get("line") in approved_lines)
-    ]
+    kept: list[dict] = []
+    for item in analysis_info.get("network_calls", []):
+        if item.get("type") != "untrusted_host_blocked":
+            kept.append(item)
+            continue
+        line = item.get("line", -1)
+        col = item.get("col_offset", -1)
+        if col < 0:
+            kept.append(item)
+            continue
+        if any(_position_in_span(line, col, span) for span in approved_spans):
+            continue
+        kept.append(item)
+    filtered["network_calls"] = kept
     return filtered

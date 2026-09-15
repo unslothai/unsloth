@@ -1200,8 +1200,8 @@ class TestBashBlocklistPosition:
                 ".", ". ./script.sh", ".", "cat x && . ./payload", id = "dot_source_blocked"
             ),
             pytest.param(
-                "ssh",
-                "$'ssh' user@host",
+                "rm",
+                "$'rm' -rf /tmp/x",
                 "source",
                 "$'source' ./payload",
                 id = "ansi_c_quoted_command_blocked",

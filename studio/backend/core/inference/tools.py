@@ -14189,6 +14189,7 @@ def _check_signal_escape_patterns(code: str):
                             {
                                 "type": "untrusted_host_blocked",
                                 "line": getattr(node, "lineno", -1),
+                                "col_offset": getattr(node, "col_offset", -1),
                                 "description": (
                                     "Blocked: host not in sandbox allowlist; "
                                     "use an allowed informational source"
@@ -14237,6 +14238,7 @@ def _check_signal_escape_patterns(code: str):
                             {
                                 "type": "untrusted_host_blocked",
                                 "line": getattr(node, "lineno", -1),
+                                "col_offset": getattr(node, "col_offset", -1),
                                 "description": (
                                     "Blocked: host not in sandbox allowlist; "
                                     "use an allowed informational source"
