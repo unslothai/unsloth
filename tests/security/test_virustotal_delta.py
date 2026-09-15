@@ -509,9 +509,9 @@ def test_engines_that_answered_in_a_newer_bucket_still_count() -> None:
     stats["type-unsupported"] = 5
     stats["failure"] = 2
     after = vtd.snapshot_from_payload("candidate", "b" * 64, payload).total_engines
-    assert after == before + 7, (
-        f"engines that answered in a newer bucket were not counted: {before} -> {after}"
-    )
+    assert (
+        after == before + 7
+    ), f"engines that answered in a newer bucket were not counted: {before} -> {after}"
 
     # The bucket-only case, which used to read as unanalysed and void the run.
     only_new = copy.deepcopy(vtd._BASELINE_FIXTURE)
