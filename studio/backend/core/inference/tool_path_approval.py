@@ -1150,9 +1150,15 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     pending_heredoc = False
     for token in tokens:
         if pending_heredoc:
-            # The word after `<<` names the delimiter and the word after `<<<` is the data itself.
+            # The word after `<<` names the delimiter and the word after `<<<` is the data itself,
+            # so neither is opened. A SUBSTITUTION inside it still runs though, before the data is
+            # handed over: `cat <<< "$(cat /media/x)"` reads that file, which is the thing this skip
+            # got wrong when it was added.
             pending_heredoc = False
             if not _looks_separator_for_paths(token):
+                operands.extend(
+                    (path, False) for path in _substitution_operand_paths(token)
+                )
                 continue
         if pending_redirect is not None:
             # `>| /abs` lexes as `>` then `|`: the punctuation is part of the operator, so keep waiting for the
@@ -2428,6 +2434,12 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                         words.extend(folded.split() or [folded])
                     for path in rebound.get(piece.id, ()):
                         words.extend(path.split() or [path])
+        # `subprocess.run(["echo"], executable = "/media/x")` LAUNCHES that binary; argv[0] is only
+        # what the child sees as its name. Scanned on its own, since a recognised argv command
+        # otherwise suppressed the fallback that would have caught it.
+        for keyword in _call_keywords(call):
+            if keyword.arg == "executable":
+                add(keyword.value, False)
         if words:
             from_command = _terminal_path_operands(words)
             operands.extend(from_command)
