@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # A permission change modifies the file it names; the mode or owner is not a path.
+    "chmod 000 /media/alice/report.txt",
+    "chown alice /media/alice/report.txt",
     # `fd --ignore-file <path>` reads that file as a custom ignore list.
     "fd --ignore-file=/media/alice/private.rules needle .",
     # GNU long options accept unambiguous abbreviations, so `--targ=` is the destination.
@@ -3573,6 +3576,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # `tempfile` creators write into `dir` when it is given.
+    "import tempfile\ntempfile.mkstemp(dir = '/media/alice')",
+    "import tempfile\ntempfile.TemporaryDirectory(dir = '/usr/share/doc')",
     # The constructor's mode applies to the keyword spelling of the path too.
     "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'w')",
     # `sqlite3.Connection` is the public constructor `connect` returns; it opens the same file.
@@ -3780,6 +3786,7 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "chmod 644 notes.txt",
     "cp --targ=./staged payload",
     "cp --preserve=mode notes.txt copy.txt",
     # Reading through the same spellings stays silent under a read-silent root.
@@ -3898,6 +3905,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import tempfile\ntempfile.mkstemp()",
+    "import tempfile\ntempfile.mkdtemp(dir = './scratch')",
     "import h5py\nh5py.File(name = '/usr/share/doc/model.h5', mode = 'r')",
     "import h5py\nh5py.File('/usr/share/doc/model.h5', 'r')",
     "import os, subprocess\nos.chdir('/usr/share/doc')\nsubprocess.run(['ls', '-la'])",

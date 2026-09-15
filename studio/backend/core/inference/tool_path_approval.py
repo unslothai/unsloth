@@ -640,6 +640,11 @@ _PATH_READ_COMMANDS = frozenset(
 # Commands whose file operands are CREATED or OVERWRITTEN.
 _PATH_WRITE_COMMANDS = frozenset(
     {
+        # A permission change MODIFIES the file's metadata, and the first operand is the mode or
+        # owner rather than a path, so it is skipped through `_PATH_ARG_SKIP`.
+        "chmod",
+        "chown",
+        "chgrp",
         "tee",
         "touch",
         "mkdir",
@@ -704,6 +709,9 @@ _PATH_FLAG_ONLY_COMMANDS = frozenset({"git", "make", "jq"})
 # Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
 # `grep /usr/bin list.txt` must not read as absolute-path operands. The value is how many positionals to skip.
 _PATH_ARG_SKIP = {
+    "chmod": 1,
+    "chown": 1,
+    "chgrp": 1,
     "sed": 1,
     "awk": 1,
     "gawk": 1,
@@ -2131,6 +2139,12 @@ _PY_PATH_CONTENT_FIRST_CALLS = frozenset({"write_text", "write_bytes", "write"})
 
 
 # Keywords that always name a destination, whatever the call's default access is.
+# `tempfile` creators put their file in `dir` when it is given, and in TMPDIR otherwise.
+_PY_TEMPFILE_CALLS = frozenset(
+    """mkstemp mkdtemp NamedTemporaryFile TemporaryFile TemporaryDirectory SpooledTemporaryFile""".split()
+)
+
+
 _PY_PATH_DEST_KWARGS = frozenset(
     {
         "dst",
@@ -3157,6 +3171,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                     None,
                 )
             add(given, not _sqlite_opens_read_only(node, given))
+        elif name in _PY_TEMPFILE_CALLS:
+            # `tempfile.mkstemp(dir = "/media/x")` CREATES its file in that directory; without the
+            # keyword it lands in the sandbox's own TMPDIR, which is silent.
+            add(next((kw.value for kw in _call_keywords(node) if kw.arg == "dir"), None), True)
         elif name in _PY_PATH_OPENING_CTORS:
             # The mode applies to the keyword spelling of the path too (`h5py.File(name = ...,
             # mode = "w")`), which reaches the shared keyword loop rather than this `add`.
