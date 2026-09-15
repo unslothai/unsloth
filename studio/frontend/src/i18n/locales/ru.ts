@@ -513,6 +513,11 @@ export const ru = {
       title: "Голос",
       description: "Микрофон, диктовка, распознавание речи и чтение вслух",
       dictation: {
+        audioUploadTitle: "Расшифровать аудиофайл",
+        audioUploadDescription: "Выбранный аудиофайл будет расшифрован указанной ниже локальной моделью на этом сервере Studio.",
+        audioUploadChooseFile: "Выбрать аудиофайл",
+        audioUploadCancel: "Отменить расшифровку",
+        audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",

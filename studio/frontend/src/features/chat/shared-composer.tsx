@@ -112,7 +112,9 @@ import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { ChatAudioUpload } from "./components/chat-audio-upload";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
@@ -197,6 +199,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -879,6 +882,17 @@ export function SharedComposer({
     start: startDictation,
     stop: stopDictation,
   } = useDictation(setText);
+  const compareUploadInstanceId = useId();
+  const audioUploadOwner = `${compareUploadInstanceId}:${model1?.id ?? ""}:${model2?.id ?? ""}`;
+  const readAudioUploadDraft = useCallback(() => textRef.current, []);
+  const writeAudioUploadDraft = useCallback((value: string) => setText(value), []);
+  const audioUpload = useChatAudioUpload({
+    owner: audioUploadOwner,
+    chatId: null,
+    disabled: isDictating,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+  });
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -1091,6 +1105,7 @@ export function SharedComposer({
       resetPromptQueue();
       return;
     }
+    audioUpload.cancel();
     if (sendUnavailableReason) {
       resetPromptQueue();
       toast.error("Compare unavailable", {
@@ -2781,17 +2796,29 @@ export function SharedComposer({
           {
             <>
               {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
+                <>
+                  <ChatAudioUpload
+                    model={audioUpload.model}
+                    language={audioUpload.language}
+                    busy={audioUpload.busy}
+                    disabled={isDictating}
+                    onFileSelected={audioUpload.selectFile}
+                    onCancel={audioUpload.cancel}
+                    className="size-8 rounded-full"
+                  />
+                  <TooltipIconButton
+                    tooltip="Dictate"
+                    side="bottom"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-muted-foreground"
+                    disabled={audioUpload.busy}
+                    onClick={startDictation}
+                    aria-label="Dictate"
+                  >
+                    <MicIcon className="unsloth-dictate-icon size-4" />
+                  </TooltipIconButton>
+                </>
               ) : (
                 <TooltipIconButton
                   tooltip={

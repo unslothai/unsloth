@@ -51,6 +51,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  ChatAudioUpload,
   ChatSkillsDialog,
 
   PROMPT_QUEUE_DRAG_TYPE,
@@ -72,6 +73,7 @@ import {
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
   useChatActive,
+  useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
 } from "@/features/chat";
@@ -4501,6 +4503,21 @@ const Composer: FC<{
   // a new chat first persists, which is the same composer.
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
+  const readAudioUploadDraft = useCallback(
+    () => aui.composer().getState().text,
+    [aui],
+  );
+  const writeAudioUploadDraft = useCallback(
+    (value: string) => aui.composer().setText(value),
+    [aui],
+  );
+  const audioUpload = useChatAudioUpload({
+    owner: composerIdentity,
+    chatId: referenceThreadId,
+    disabled: Boolean(disabled) || isDictating,
+    readDraft: readAudioUploadDraft,
+    writeDraft: writeAudioUploadDraft,
+  });
   useEffect(() => {
     setIsWritingExpanded(false);
   }, [composerIdentity]);
@@ -4525,6 +4542,7 @@ const Composer: FC<{
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
   const startDictation = useCallback(() => {
+    if (audioUpload.busy) return;
     if (!isStudioDictationAvailable()) {
       notifyStudioDictationUnavailable();
       return;
@@ -4534,7 +4552,7 @@ const Composer: FC<{
     } catch {
       notifyStudioDictationUnavailable();
     }
-  }, [aui]);
+  }, [aui, audioUpload.busy]);
   const sendAfterDictation = useCallback(() => {
     sendAfterDictationRef.current = true;
     dictationComposerRef.current = composerIdentity;
@@ -4678,6 +4696,9 @@ const Composer: FC<{
         parkIfWaitingOnAttachments();
         return;
       }
+      // A send owns the draft now; an uploaded transcript arriving afterwards
+      // must not land in the cleared or queued composer.
+      audioUpload.cancel();
       // Before the queue branch below, not after it: a prompt queued while this chat's
       // own settings are still on their way is snapshotted from the installation
       // defaults on screen, so a chat stored as "ask" would queue as "off".
@@ -4830,6 +4851,7 @@ const Composer: FC<{
       sendReservedComposer();
     },
     [
+      audioUpload,
       aui,
       canQueueCurrentPrompt,
       canQueuePastedTextPrompt,
@@ -5073,6 +5095,7 @@ const Composer: FC<{
               onStopClick={stopQueue}
               onResumeClick={resumeQueue}
               onDictateClick={startDictation}
+              audioUpload={audioUpload}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
               queueThreadIds={promptQueueThreadIds}
@@ -6809,6 +6832,7 @@ const ComposerRightControls: FC<{
   onStopClick?: () => void;
   onResumeClick?: () => void;
   onDictateClick?: () => void;
+  audioUpload: ReturnType<typeof useChatAudioUpload>;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
   queueThreadIds: string[];
@@ -6820,6 +6844,7 @@ const ComposerRightControls: FC<{
   onStopClick,
   onResumeClick,
   onDictateClick,
+  audioUpload,
   pendingSend,
   menuSide,
   queueThreadIds,
@@ -6893,16 +6918,28 @@ const ComposerRightControls: FC<{
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <TooltipIconButton
-          tooltip="Dictate"
-          aria-label="Dictate"
-          type="button"
-          variant="ghost"
-          className="size-9 rounded-full text-foreground"
-          onClick={onDictateClick}
-        >
-          <MicIcon className="unsloth-dictate-icon size-6" />
-        </TooltipIconButton>
+        <div className="flex items-center gap-1">
+          <ChatAudioUpload
+            model={audioUpload.model}
+            language={audioUpload.language}
+            busy={audioUpload.busy}
+            disabled={disabled}
+            onFileSelected={audioUpload.selectFile}
+            onCancel={audioUpload.cancel}
+            className="size-9 rounded-full"
+          />
+          <TooltipIconButton
+            tooltip="Dictate"
+            aria-label="Dictate"
+            type="button"
+            variant="ghost"
+            className="size-9 rounded-full text-foreground"
+            disabled={audioUpload.busy}
+            onClick={onDictateClick}
+          >
+            <MicIcon className="unsloth-dictate-icon size-6" />
+          </TooltipIconButton>
+        </div>
       </ComposerPrimitive.If>
       <AuiIf
         condition={({ thread }) =>

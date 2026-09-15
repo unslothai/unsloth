@@ -509,6 +509,11 @@ export const zhCN = {
       title: "语音",
       description: "麦克风、语音输入、语音转文字和朗读",
       dictation: {
+        audioUploadTitle: "转录音频文件",
+        audioUploadDescription: "您选择的音频文件将由下方显示的本地模型在此 Studio 服务器上转录。",
+        audioUploadChooseFile: "选择音频文件",
+        audioUploadCancel: "取消转录",
+        audioUploadTranscribing: "正在转录音频…",
         sectionTitle: "语音输入",
         engineLabel: "语音输入引擎",
         engineBrowser: "浏览器",

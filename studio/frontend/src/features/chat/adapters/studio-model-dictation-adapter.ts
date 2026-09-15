@@ -115,6 +115,7 @@ export async function transcribeAudioBlob(
     model?: string;
     language?: string;
     engine?: SttEngine;
+    device?: SttDevice;
     providerId?: string;
     signal?: AbortSignal;
   } = {},
@@ -180,7 +181,7 @@ export async function transcribeAudioBlob(
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
-  params.set("device", settings.sttDevice);
+  params.set("device", options.device ?? settings.sttDevice);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {

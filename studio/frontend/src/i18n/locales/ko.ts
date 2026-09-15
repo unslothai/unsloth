@@ -511,6 +511,11 @@ export const ko = {
       title: "음성",
       description: "마이크, 받아쓰기, 음성 인식 및 소리 내어 읽기",
       dictation: {
+        audioUploadTitle: "오디오 파일 전사",
+        audioUploadDescription: "선택한 오디오 파일은 아래에 표시된 로컬 모델을 통해 이 Studio 서버에서 텍스트로 변환됩니다.",
+        audioUploadChooseFile: "오디오 파일 선택",
+        audioUploadCancel: "전사 취소",
+        audioUploadTranscribing: "오디오 전사 중…",
         sectionTitle: "받아쓰기",
         engineLabel: "받아쓰기 엔진",
         engineBrowser: "브라우저",
