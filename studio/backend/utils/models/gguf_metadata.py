@@ -55,8 +55,13 @@ _TTS_AUDIO_TYPE_CACHE: Dict[_CacheKey, Optional[str]] = {}
 # Whether the GGUF tensor table contains a sequence-classification head. None means the file could not be read or parsed, so callers can fail closed.
 _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
+# Whether the GGUF tensor table lists one exact tensor name, keyed by (file cache key, tensor name). None = unreadable, so callers can fail open. Backs the MTP drafter launchability check, which the memory-estimate route asks on every settings change.
+_NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
+
 # GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+# Read on its own: the only caller wants just this number, on every settings change.
+_N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 # Cache the embedded speculative-head count separately for discovery, launch, and sizing.
@@ -173,6 +178,26 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
             except StopIteration:
                 break
         _DIMS_CACHE[key] = result
+    return result
+
+
+def read_gguf_embedding_length(path: str) -> Optional[int]:
+    """Return the cached ``{arch}.embedding_length`` value, if readable."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _N_EMBD_CACHE:
+            return _N_EMBD_CACHE[key]
+    parsed = _parse_gguf_arch_uints(path, frozenset({"embedding_length"}))
+    result = (parsed or {}).get("embedding_length")
+    with _CACHE_LOCK:
+        while len(_N_EMBD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _N_EMBD_CACHE.pop(next(iter(_N_EMBD_CACHE)))
+            except StopIteration:
+                break
+        _N_EMBD_CACHE[key] = result
     return result
 
 
@@ -455,6 +480,122 @@ def _gguf_has_classifier_head(path: str) -> Optional[bool]:
     if any(result is True for result in results):
         return True
     return False if results and all(result is False for result in results) else None
+
+
+def _parse_gguf_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
+    """Whether the GGUF tensor table lists exactly ``wanted_name``.
+
+    Same stream and bounds as ``_parse_gguf_has_classifier_head``, which matches a
+    prefix; this matches a full name, without mapping the tensor data in.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, tensor_count, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or tensor_count > 1 << 20 or kv_count > 1 << 20:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20 or len(f.read(klen)) < klen:
+                    return None
+                vtype_bytes = f.read(4)
+                if len(vtype_bytes) < 4 or not _skip_gguf_value(
+                    f, struct.unpack("<I", vtype_bytes)[0]
+                ):
+                    return None
+
+            wanted = wanted_name.encode("utf-8")
+            for _ in range(tensor_count):
+                nlen_bytes = f.read(8)
+                if len(nlen_bytes) < 8:
+                    return None
+                nlen = struct.unpack("<Q", nlen_bytes)[0]
+                if nlen > 1 << 20:
+                    return None
+                name_bytes = f.read(nlen)
+                ndim_bytes = f.read(4)
+                if len(name_bytes) < nlen or len(ndim_bytes) < 4:
+                    return None
+                n_dimensions = struct.unpack("<I", ndim_bytes)[0]
+                if n_dimensions > 16:
+                    return None
+                # dimensions (u64 each), ggml type (u32), and data offset (u64)
+                trailer_size = n_dimensions * 8 + 4 + 8
+                if len(f.read(trailer_size)) < trailer_size:
+                    return None
+                if name_bytes == wanted:
+                    return True
+    except OSError as e:
+        logger.debug(f"_parse_gguf_has_named_tensor: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_has_named_tensor: parse failure on {path}: {e}")
+        return None
+    return False
+
+
+def _gguf_shard_has_named_tensor(path: str, wanted_name: str) -> Optional[bool]:
+    """Cached single-shard tensor-name lookup, keyed by (path, mtime, size, name)."""
+    fkey = _cache_key(path)
+    if fkey is None:
+        return None
+    ckey = (fkey, wanted_name)
+    with _CACHE_LOCK:
+        if ckey in _NAMED_TENSOR_CACHE:
+            return _NAMED_TENSOR_CACHE[ckey]
+    result = _parse_gguf_has_named_tensor(path, wanted_name)
+    with _CACHE_LOCK:
+        while len(_NAMED_TENSOR_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _NAMED_TENSOR_CACHE.pop(next(iter(_NAMED_TENSOR_CACHE)))
+            except StopIteration:
+                break
+        _NAMED_TENSOR_CACHE[ckey] = result
+    return result
+
+
+def mtp_drafter_loads_standalone(path: str) -> bool:
+    """Can llama-server open *path* as a ``--model-draft``?
+
+    A draft head is opened as a complete model unless it can borrow the target's
+    embeddings, so one carrying neither its own ``token_embd.weight`` nor
+    ``<arch>.nextn_shared_target_tensors`` ends the launch with
+    ``check_tensor_dims: tensor 'token_embd.weight' not found``. Measured against the
+    shipped llama.cpp: the metadata flag is what admits a head into
+    ``borrow_shared_tensor``. Only that one tensor decides, since the rest of the
+    borrowable set is per-architecture (``qwen4exp`` creates no ``output_norm``), so a
+    stricter refusal would reject heads that work.
+
+    Split-aware like ``_gguf_has_classifier_head``: llama-server opens sibling shards
+    implicitly, so a tensor absent from shard 1 may live in shard 2. Fails open on
+    anything it cannot see, leaving the verdict to llama-server.
+    """
+    from utils.models.model_config import colocated_split_shards
+
+    try:
+        shards, complete = colocated_split_shards(Path(path))
+    except Exception as e:
+        logger.debug(f"mtp_drafter_loads_standalone: cannot enumerate shards for {path}: {e}")
+        return True
+    if not complete or not shards:
+        return True
+
+    carries = [_gguf_shard_has_named_tensor(str(shard), "token_embd.weight") for shard in shards]
+    if any(result is True for result in carries):
+        return True
+    if any(result is None for result in carries):
+        return True
+
+    architecture = read_gguf_architecture(path)
+    if architecture and _read_gguf_bool(path, f"{architecture}.nextn_shared_target_tensors"):
+        return True
+    return False
 
 
 def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
@@ -745,6 +886,13 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
 def read_mmproj_projector_type(path: str) -> Optional[str]:
     """``clip.projector_type`` from an mmproj GGUF, or None if absent or unreadable. The family name llama.cpp keys its per-projector image-token limits on (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an image will occupy can look the ceiling up instead of assuming one."""
     return _read_gguf_string(path, "clip.projector_type")
+
+
+def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
+    """Return the image tower family, falling back to the single-tower key."""
+    return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
+        path, "clip.projector_type"
+    )
 
 
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:

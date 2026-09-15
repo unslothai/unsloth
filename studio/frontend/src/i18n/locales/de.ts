@@ -1053,6 +1053,13 @@ export const de = {
         minimal: "Minimal",
       },
       custom: {
+        chatWidth: {
+          label: "Chatbreite",
+          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          standard: "Standard",
+          wide: "Breit",
+          full: "Volle Breite",
+        },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
         preferencesTitle: "Weitere Optionen",
@@ -1102,6 +1109,10 @@ export const de = {
           errorStorageFull:
             "Nicht genug lokaler Speicher für diese Schrift. Entfernen Sie zuerst eine importierte Schrift.",
           errorFailed: "Diese Schriftdatei konnte nicht geladen werden.",
+        },
+        interfaceScale: {
+          label: "Oberflächenskalierung",
+          description: "Passen Sie die Größe aller Oberflächenelemente an.",
         },
         uiFontSize: {
           label: "Schriftgröße der Oberfläche",
@@ -1457,6 +1468,7 @@ export const de = {
           "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
+        skills: "Agentenfähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
@@ -2550,5 +2562,23 @@ export const de = {
     kvRate: "KV reserviert, ca. {rate}/Token",
     oomLikely: "Mit den aktuellen Einstellungen ist ein Speicherüberlauf wahrscheinlich",
     tooLarge: "Größer als der VRAM, wird auf die CPU ausgelagert. Eine kleinere Quantisierung läuft schneller",
+  },
+  skills: {
+    title: "Agentenfähigkeiten",
+    description: "Fähigkeiten werden aus deinen Standard-Agentenordnern erkannt. Aktiviere sie hier und tippe dann @ im Chat, um eine zu erwähnen.",
+    precedence: "~/.agents/skills hat Vorrang vor ~/.claude/skills.",
+    refresh: "Aktualisieren",
+    empty: "Keine Agentenfähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Mitgeliefert",
+    shadowed: "Überdeckt",
+    invalid: "Ungültig",
+    compatibility: "Kompatibilität: {value}",
+    shadowedBy: "Eine andere Fähigkeit ({source}) mit diesem Namen hat Vorrang.",
+    enable: "{name} aktivieren",
+    disable: "{name} deaktivieren",
+    updateError: "Agentenfähigkeit konnte nicht aktualisiert werden",
+    mentions: "Agentenfähigkeiten",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

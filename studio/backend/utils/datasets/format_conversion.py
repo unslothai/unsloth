@@ -5,6 +5,7 @@
 
 import os
 
+from .cells import cell_text
 from .iterable import is_streaming_dataset
 from loggers import get_logger
 
@@ -265,6 +266,9 @@ def convert_alpaca_to_chatml(
             instruction = examples["instruction"][i]
             input_text = examples.get("input", [""] * len(examples["instruction"]))[i]
             output = examples["output"][i]
+            instruction, input_text, output = (
+                cell_text(value) for value in (instruction, input_text, output)
+            )
 
             if input_text and input_text.strip():
                 user_content = f"{instruction}\n\n{input_text}".strip()

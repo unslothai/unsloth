@@ -5,6 +5,7 @@ import type {
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
+import { modelCatalogSupportsVision } from "./model-catalog.ts";
 
 export interface ExternalProviderConfig {
   id: string;
@@ -204,6 +205,8 @@ export function providerModelSupportsVision(
     const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
+  const catalogVision = modelCatalogSupportsVision(providerType, modelId);
+  if (catalogVision != null) return catalogVision;
   return providerTypeSupportsVision(providerType);
 }
 
