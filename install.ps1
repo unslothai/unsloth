@@ -5405,6 +5405,19 @@ exit 0
     }
 
     # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # nvml.dll sits in System32 with current drivers and under NVSMI with older ones; a bare
+    # name reaches only the former, so name the file, as studio/nvidia_probe.py does.
+    function Get-NvidiaNvmlLibraryPath {
+        $dirs = @()
+        if ($env:SystemRoot) { $dirs += (Join-Path $env:SystemRoot "System32") }
+        if ($env:ProgramFiles) { $dirs += (Join-Path $env:ProgramFiles "NVIDIA Corporation\NVSMI") }
+        foreach ($dir in $dirs) {
+            $candidate = Join-Path $dir "nvml.dll"
+            if (Test-Path -LiteralPath $candidate) { return $candidate.Replace('\', '\\') }  # a C# literal
+        }
+        return "nvml.dll"
+    }
+
     # NVIDIA inventory from the driver's own libraries (NVML, then the CUDA driver API), for a
     # host whose nvidia-smi is absent, stale or hangs (#9255). Twin of studio/nvidia_probe.py.
     # Cached. $null, or @{ Source; CudaMajor; CudaMinor; ComputeCaps ("8.9" strings); Count }.
@@ -5415,7 +5428,7 @@ exit 0
         $script:NvidiaLibraryInventory = $null
         if ("$($env:UNSLOTH_NVIDIA_LIBRARY_PROBE)".Trim() -eq "0") { return $null }
         $windows = ($env:OS -eq "Windows_NT")
-        $nvml = if ($windows) { "nvml.dll" } else { "libnvidia-ml.so.1" }
+        $nvml = if ($windows) { Get-NvidiaNvmlLibraryPath } else { "libnvidia-ml.so.1" }
         $cuda = if ($windows) { "nvcuda.dll" } else { "libcuda.so.1" }
         $source = @'
 using System;

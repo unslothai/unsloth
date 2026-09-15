@@ -57,6 +57,27 @@ $setupBlock = @(Get-HelperSources $setupPs1 @("Get-NvidiaLibraryInventory"))[0]
 # install.ps1 nests its helpers one level deeper; compare the two copies without indentation.
 $strip = { param($text) ($text -split "`n" | ForEach-Object { $_.TrimStart() }) -join "`n" }
 Check "install.ps1 and setup.ps1 carry the same helper" ((& $strip $installBlock) -eq (& $strip $setupBlock))
+$installPath = @(Get-HelperSources $installPs1 @("Get-NvidiaNvmlLibraryPath"))[0]
+$setupPath = @(Get-HelperSources $setupPs1 @("Get-NvidiaNvmlLibraryPath"))[0]
+Check "both copies find nvml.dll the same way" ((& $strip $installPath) -eq (& $strip $setupPath))
+Invoke-Expression $setupPath
+$pathRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-nvml-" + [guid]::NewGuid().ToString("N"))
+$sys32 = Join-Path (Join-Path $pathRoot "root") "System32"
+$nvsmi = Join-Path (Join-Path $pathRoot "pf") "NVIDIA Corporation\NVSMI"
+New-Item -ItemType Directory -Path $sys32, $nvsmi -Force | Out-Null
+$savedRoot = $env:SystemRoot; $savedPf = $env:ProgramFiles
+try {
+    $env:SystemRoot = Join-Path $pathRoot "root"; $env:ProgramFiles = Join-Path $pathRoot "pf"
+    Check "no nvml.dll on disk keeps the bare name" ((Get-NvidiaNvmlLibraryPath) -eq "nvml.dll")
+    Set-Content -Path (Join-Path $nvsmi "nvml.dll") -Value ""
+    $expected = (Join-Path $nvsmi "nvml.dll").Replace('\', '\\')
+    Check "an NVSMI-only nvml.dll is named by path, escaped for the C# literal" ((Get-NvidiaNvmlLibraryPath) -eq $expected)
+    Set-Content -Path (Join-Path $sys32 "nvml.dll") -Value ""
+    Check "System32 wins when both exist" ((Get-NvidiaNvmlLibraryPath) -eq (Join-Path $sys32 "nvml.dll").Replace('\', '\\'))
+} finally {
+    $env:SystemRoot = $savedRoot; $env:ProgramFiles = $savedPf
+    Remove-Item -LiteralPath $pathRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 Check "a failed driver-version read is not an inventory" (
     $setupBlock -match 'nvmlSystemGetCudaDriverVersion_v2\(out version\) != 0' -and
     $setupBlock -match 'cuDriverGetVersion\(out version\) != 0')
