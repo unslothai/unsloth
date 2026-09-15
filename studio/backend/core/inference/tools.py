@@ -2837,6 +2837,16 @@ def _canonical_path_text(text: str) -> str:
 
 _GLOB_META_RE = re.compile(r"[*?\[]")
 _BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
+# A class holding exactly one character expands to that character and nothing else, so
+# `[a][u][t][h]` IS `auth`. Collapsing it to a wildcard threw the literal away, and a segment of
+# nothing but wildcards is deliberately not matched.
+_SINGLETON_CLASS_RE = re.compile(r"\[([^\]/\s!^-])\]")
+
+
+# A backslash before an ordinary word character is quoting, and the shell drops it: `c\d` is `cd`.
+# Restricted to word characters so a Windows separator (`auth\auth.db`) is left alone, which the
+# spelling walk handles separately.
+_ESCAPED_WORD_CHAR_RE = re.compile(r"\\(\w)")
 # The spellings of the home directory a shell expands before the command sees them. The bare `~` only
 # counts at the head of a path, so `file~` and `a~b` are left alone.
 _HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])", re.IGNORECASE)
@@ -3214,6 +3224,19 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     leave the sandbox at all."""
     if _references_studio_credential(text):
         return True
+    # `c\d ../..` runs the `cd` builtin: bash removes the backslash before a word is a command name
+    # at all, so the escaped spelling has to be folded away before the cwd walk reads it.
+    if "\\" in text:
+        unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
+        if unescaped != text and _references_studio_credential_here(unescaped, workdir):
+            return True
+    if "[" in text:
+        # A one-character class is deterministic: `[a][u][t][h]/auth.db` is the auth directory
+        # spelled out, and it has to be read as the literal BEFORE the wildcard collapse below
+        # discards it.
+        literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
+        if literal != text and _references_studio_credential_here(literal, workdir):
+            return True
     # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
     if "[" in text:
         collapsed = _BRACKET_CLASS_RE.sub("?", text)

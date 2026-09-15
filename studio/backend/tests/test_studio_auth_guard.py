@@ -1976,3 +1976,38 @@ def test_a_cd_in_a_function_nothing_calls_does_not_move_the_directory(monkeypatc
             ), command
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_singleton_class_and_an_escaped_builtin_are_the_literals_they_expand_to(
+    monkeypatch, tmp_path
+):
+    # `[a][u][t][h]` expands to exactly `auth`, and `c\d` is the `cd` builtin with its backslash
+    # removed. Both were folded away before the guard read them: the classes collapsed to wildcards,
+    # and a segment of nothing but wildcards is deliberately not matched, while the escaped name
+    # matched no command position at all.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'sqlite3 ../../[a][u][t][h]/auth.db "select jwt_secret from auth_user"',
+            "cat ../../[a][u][t][h]/.desktop_secret",
+            'c\\d ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
+            "\\c\\d ../..; cat auth/.desktop_secret",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # A broad class still names nothing in particular, and a singleton elsewhere is ordinary.
+        for ordinary in (
+            "ls ../../[a-z]*",
+            "cat data/[a]/notes.txt",
+            "cat notes.txt",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
