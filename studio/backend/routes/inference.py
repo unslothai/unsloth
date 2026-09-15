@@ -8450,7 +8450,7 @@ def _loaded_satisfies(requested: str) -> bool:
             # A re-pull keeps a spelling and replaces its blobs, so the tag the load recorded
             # vouches for nothing but itself. Every other name, the alias this was adopted under
             # included, is resolved and judged on its own blobs.
-            own = [identifier, ollama_model_ref_public_id(identifier)]
+            own = [name for name in (identifier, _ollama_public_id(identifier)) if name]
             still_tagged = _resident_is_still_tagged(identifier, llama_backend)
             if _matches_any(requested, own):
                 return still_tagged
@@ -8588,6 +8588,14 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
 def _blob_identity(identity: Optional[tuple]) -> Optional[tuple]:
     """A load identity reduced to (device, inode, size, mtime): link, hardlink and blob then match."""
     return tuple(part[-4:] for part in identity) if identity else None
+
+
+def _ollama_public_id(ref: str) -> Optional[str]:
+    """The tag id *ref* publishes, or None once its manifest no longer reads."""
+    try:
+        return ollama_model_ref_public_id(ref)
+    except (OSError, ValueError):
+        return None
 
 
 def _ollama_source_identity(ref: str) -> Optional[tuple]:

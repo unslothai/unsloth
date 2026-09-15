@@ -156,6 +156,10 @@ def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store
     _retag(store, "latest", "c" * 64)
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
+    # A manifest mid-pull reads as nothing; the listing withholds the row rather than failing.
+    (store / "manifests/registry.ollama.ai/library/llama3/latest").write_text("truncated")
+    assert inf._loaded_satisfies("ollama/llama3:latest") is False
+    assert inf._openai_model_objects() == []
 
 
 def _rewritten(model_path: str) -> str:
