@@ -1027,7 +1027,11 @@ BANNED_TOKENS = (
     "sophos",
     "malwarebytes",
     "tencent",
-    "rising",
+    # "rising" is deliberately absent. It is a real engine, and one of the two that flagged the
+    # fixture archives, but the word is also ordinary English: "rising memory use" is a sentence
+    # someone will write, and boundary matching cannot tell it from the vendor. A guard that fails
+    # on valid prose gets deleted by the next person, so it is worth less than nothing. "tencent",
+    # the other engine that flagged those archives, has no such problem and stays.
     "panda",
     "wacatac",
     "heur:",
@@ -1053,14 +1057,29 @@ BANNED_TOKENS = (
 # having one meaning.
 
 
+def _banned_pattern(token: str) -> re.Pattern:
+    """`token`, matched on word boundaries where the token's own edges are word characters.
+
+    A raw substring search makes several of these unusable. `rising` is inside `surprising`,
+    `arising` and `comprising`; `panda` is inside `pandas`, which is a real dependency name. The
+    failure message would then accuse an ordinary sentence of naming an antivirus vendor, and the
+    fix a reader would reach for is to delete the guard. Boundaries are conditional because
+    `heur:` and `gen:variant` end or begin on a colon, where `\b` asserts the opposite of what is
+    wanted.
+    """
+    left = r"\b" if token[:1].isalnum() else ""
+    right = r"\b" if token[-1:].isalnum() else ""
+    return re.compile(left + re.escape(token) + right, re.IGNORECASE)
+
+
 @pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
 @pytest.mark.parametrize("token", BANNED_TOKENS)
 def test_no_shipped_script_names_a_detection(name: str, token: str) -> None:
     path = REPO / name
     if not path.is_file():
         pytest.skip(f"{name} is not present")
-    lowered = path.read_text(encoding = "utf-8").lower()
-    assert token not in lowered, (
+    found = _banned_pattern(token).search(path.read_text(encoding = "utf-8"))
+    assert not found, (
         f"{name} contains {token!r}. Vendor names, detection families and analyst vocabulary "
         f"belong in tests/studio/test_installer_av_shapes.py, not in a file that is itself handed to "
         f"a classifier in full before it runs. Say what the code does and what breaks if it "
