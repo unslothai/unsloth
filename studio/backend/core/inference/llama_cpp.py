@@ -11671,14 +11671,17 @@ class LlamaCppBackend:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
         uuid prefix per entry, as the CUDA runtime reads it; any other entry hides every GPU."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+        gpus = [r for r in rows if not r.get("mig")]
         if raw is None:
-            return rows
+            return gpus
         picked: list[dict] = []
         for token in (t.strip() for t in raw.split(",") if t.strip()):
             if token.isdigit():
-                hits = [r for r in rows if str(r.get("index")) == token]
+                hits = [r for r in gpus if str(r.get("index")) == token]
             elif token.startswith(("GPU-", "MIG-")):
-                hits = [r for r in rows if str(r.get("uuid", "")).startswith(token)]
+                # A MIG- entry names a slice row the probe lists under its parent.
+                pool = [r for r in rows if bool(r.get("mig")) == token.startswith("MIG-")]
+                hits = [r for r in pool if str(r.get("uuid", "")).startswith(token)]
                 if len(hits) > 1:
                     return []  # an abbreviation must name one device, or CUDA sees none
             else:

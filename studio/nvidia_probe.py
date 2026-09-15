@@ -79,6 +79,34 @@ class _NvmlMemory(ctypes.Structure):
     ]
 
 
+def _mig_children(nvml, handle) -> list:
+    """(handle, uuid, memory) per MIG instance of a device; empty without MIG or on an NVML
+    too old to ask. Unused instance slots answer NOT_FOUND and are skipped."""
+    get_max = getattr(nvml, "nvmlDeviceGetMaxMigDeviceCount", None)
+    get_mig = getattr(nvml, "nvmlDeviceGetMigDeviceHandleByIndex", None)
+    if get_max is None or get_mig is None:
+        return []
+    children = []
+    try:
+        count = ctypes.c_uint(0)
+        if get_max(handle, ctypes.byref(count)) != 0:
+            return []
+        for index in range(count.value):
+            mig = ctypes.c_void_p()
+            if get_mig(handle, index, ctypes.byref(mig)) != 0:
+                continue
+            uuid = ctypes.create_string_buffer(96)
+            if nvml.nvmlDeviceGetUUID(mig, uuid, 96) != 0:
+                continue
+            memory = _NvmlMemory()
+            if nvml.nvmlDeviceGetMemoryInfo(mig, ctypes.byref(memory)) != 0:
+                memory.total = memory.free = 0
+            children.append((mig, uuid.value.decode("ascii", "replace"), memory))
+    except Exception:
+        return children
+    return children
+
+
 def _probe_nvml() -> dict | None:
     nvml = _load("nvml")
     if nvml is None:
@@ -134,6 +162,20 @@ def _probe_nvml() -> dict | None:
                     "compute_cap": cap,
                     "memory_total_mib": str(memory.total // (1024 * 1024)),
                     "memory_free_mib": str(memory.free // (1024 * 1024)),
+                }
+            )
+            # MIG slices, so a CUDA_VISIBLE_DEVICES=MIG-... assignment can be named: same
+            # parent index and capability, their own uuid and memory, marked "mig".
+            for mig, mig_uuid, mig_memory in _mig_children(nvml, handle):
+                devices.append(
+                    {
+                        "index": str(index),
+                        "uuid": mig_uuid,
+                        "name": name.value.decode("utf-8", "replace") + " MIG",
+                        "compute_cap": cap,
+                        "memory_total_mib": str(mig_memory.total // (1024 * 1024)),
+                        "memory_free_mib": str(mig_memory.free // (1024 * 1024)),
+                        "mig": "1",
                 }
             )
         return {
@@ -211,6 +253,7 @@ def _from_payload(payload: object) -> NvidiaLibraryInventory | None:
     devices = [
         {key: str(row.get(key, "")) for key in keys}
         for row in payload.get("devices") or []
+        if not row.get("mig")
         if isinstance(row, dict)
     ]
     return NvidiaLibraryInventory(

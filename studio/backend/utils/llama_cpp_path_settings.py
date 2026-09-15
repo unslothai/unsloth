@@ -122,9 +122,14 @@ def binary_gpu_verdict(binary: Path | str) -> str:
     return "unknown" if backends is None else ("gpu" if backends else "cpu")
 
 
+def _mask_hides_all(*names: str) -> bool:
+    return any(os.environ.get(n, "x").strip() in ("", "-1") for n in names)
+
+
 def host_gpu_vendors() -> Optional[set[str]]:
-    """GPU vendors on this host from the DRM sysfs entries or the vendors' Windows driver
-    DLLs; None when nothing answers, so an unknown host filters nothing."""
+    """GPU vendors this process can reach: DRM sysfs vendors whose device node is present and
+    whose visibility mask is not empty on Linux, the vendors' driver DLLs on Windows; None
+    when nothing answers, so an unknown host filters nothing."""
     vendors: set[str] = set()
     if sys.platform == "darwin":
         return {"apple"}
@@ -143,6 +148,17 @@ def host_gpu_vendors() -> Optional[set[str]]:
                 vendors.add(vendor)
         if os.path.isdir("/proc/driver/nvidia"):
             vendors.add("nvidia")
+        # A container that exposes only one vendor's device nodes, or a mask hiding a vendor,
+        # must not make its backend look runnable on a hybrid box.
+        if "nvidia" in vendors and (
+            not os.path.exists("/dev/nvidiactl") or _mask_hides_all("CUDA_VISIBLE_DEVICES")
+        ):
+            vendors.discard("nvidia")
+        if "amd" in vendors and (
+            not os.path.exists("/dev/kfd")
+            or _mask_hides_all("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+        ):
+            vendors.discard("amd")
     return vendors or None
 
 

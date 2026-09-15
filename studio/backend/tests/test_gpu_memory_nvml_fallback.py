@@ -120,12 +120,27 @@ class TestTheMemoryProbeFallsBackToNvml:
             ("GPU-bbbb,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
             ("1,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
             # A MIG slice or an entry the rows cannot name hides every GPU rather than exposing all.
-            ("MIG-cccc3333", []),
             ("nope", []),
             ("GPU-", []),
         ):
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
             assert LlamaCppBackend._get_gpu_memory() == expected, mask
+
+    def test_a_mig_assignment_names_the_slice_row_the_probe_lists(self, monkeypatch, probe_script):
+        _failing_smi(monkeypatch)
+        slice_row = dict(_row(0, 9000, 20480, uuid = "MIG-cccc3333-0"), mig = "1")
+        probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row]))
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-cccc")
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
+        # The parent's rows, not the slices, answer an index, a GPU- entry and no mask at all.
+        for mask in ("0", "GPU-aaaa"):
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920)], mask
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920)]
+        # A slice the probe does not list hides every GPU rather than exposing the parent.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd")
+        assert LlamaCppBackend._get_gpu_memory() == []
 
     def test_rows_without_a_memory_reading_are_not_evidence(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
@@ -278,12 +293,24 @@ class TestAGpuCapableBuildIsPreferred:
 
         monkeypatch.setattr(ps.sys, "platform", "linux")
         monkeypatch.setattr(ps.os.path, "isdir", lambda p: False)
+        nodes = {"/dev/nvidiactl", "/dev/kfd"}
+        monkeypatch.setattr(ps.os.path, "exists", lambda p: p in nodes)
         monkeypatch.setattr(ps, "_DRM_ROOT", str(tmp_path))
+        for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+            monkeypatch.delenv(var, raising = False)
         assert ps.host_gpu_vendors() is None
         for card, vendor in (("card0", "0x1002"), ("card1", "0x10de"), ("card1-DP-1", "0x10de")):
             (tmp_path / card / "device").mkdir(parents = True)
             (tmp_path / card / "device" / "vendor").write_text(vendor + "\n", encoding = "utf-8")
         assert ps.host_gpu_vendors() == {"amd", "nvidia"}
+        # A container exposing only the AMD device node, or a mask hiding NVIDIA: not runnable.
+        nodes.discard("/dev/nvidiactl")
+        assert ps.host_gpu_vendors() == {"amd"}
+        nodes.add("/dev/nvidiactl")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        assert ps.host_gpu_vendors() == {"amd"}
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
+        assert ps.host_gpu_vendors() is None
 
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps
