@@ -1063,8 +1063,12 @@ class MtmdSttSidecar:
             # outside the lock: a held lock would block unload, including a training run's, for the whole request
             # timeout
             text = self._post_transcribe(
-                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event,
-                **({"on_progress": on_progress} if on_progress is not None else {})
+                port,
+                model_id,
+                wav_bytes,
+                audio_seconds,
+                cancel_event = cancel_event,
+                **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -1155,15 +1159,21 @@ class MtmdSttSidecar:
                             break
                         event = json.loads(data)
                         if event.get("error"):
-                            raise RuntimeError("The transcription server could not complete this recording.")
+                            raise RuntimeError(
+                                "The transcription server could not complete this recording."
+                            )
                         choices = event.get("choices") or []
                         if choices:
                             finished = finished or choices[0].get("finish_reason") is not None
                             text += choices[0].get("delta", {}).get("content") or ""
                             if not spec.transcript_marker or spec.transcript_marker in text:
-                                on_progress({"text": _clean_transcript(text, spec.transcript_marker)})
+                                on_progress(
+                                    {"text": _clean_transcript(text, spec.transcript_marker)}
+                                )
                     if not finished:
-                        raise RuntimeError("The transcription server disconnected before finishing.")
+                        raise RuntimeError(
+                            "The transcription server disconnected before finishing."
+                        )
                     return _clean_transcript(text, spec.transcript_marker)
                 response_body = response.read()
                 if not 200 <= response.status < 300:

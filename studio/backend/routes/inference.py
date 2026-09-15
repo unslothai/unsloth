@@ -19425,7 +19425,12 @@ async def _transcribe_audio_result(
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
         if on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
-                sidecar.transcribe, raw, model, language, fast, cancel_event,
+                sidecar.transcribe,
+                raw,
+                model,
+                language,
+                fast,
+                cancel_event,
                 on_progress = on_progress,
             )
         elif cancel_event is None:
@@ -19536,7 +19541,6 @@ async def transcribe_audio_raw(
         chunks.append(chunk)
     if stream:
         from core.inference.transcript_stream import stream_transcript
-
         raw = b"".join(chunks)
         return StreamingResponse(
             stream_transcript(
@@ -37138,7 +37142,6 @@ async def list_gallery_transcripts(
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import transcript_gallery
-
     return await asyncio.to_thread(transcript_gallery.list_transcripts, limit, before, archived)
 
 
@@ -37160,10 +37163,9 @@ async def archive_gallery_transcript(
 
 @studio_router.delete("/audio/transcripts/{transcript_id}")
 async def delete_gallery_transcript(
-    transcript_id: str, current_subject: str = Depends(get_current_subject),
+    transcript_id: str, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference import transcript_gallery
-
     if not await asyncio.to_thread(transcript_gallery.delete, transcript_id):
         raise HTTPException(status_code = 404, detail = "Transcript not found.")
     return {"deleted": True}
@@ -37172,7 +37174,6 @@ async def delete_gallery_transcript(
 @studio_router.delete("/audio/transcripts")
 async def clear_gallery_transcripts(current_subject: str = Depends(get_current_subject)):
     from core.inference import transcript_gallery
-
     return {"removed": await asyncio.to_thread(transcript_gallery.clear)}
 
 

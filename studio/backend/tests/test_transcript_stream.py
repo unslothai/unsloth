@@ -82,14 +82,18 @@ def test_transformers_progress_uses_existing_audio_windows(monkeypatch):
     class Worker:
         generation_config = None
         calls = 0
+
         def transcribe_window(self, pcm, kwargs, cancel):
             self.calls += 1
             return f"part {self.calls}"
+
     worker = Worker()
     sidecar = WhisperSttSidecar()
     monkeypatch.setattr(sidecar, "load", lambda model: worker)
     updates = []
-    result = sidecar._transcribe_decoded("tiny", np.zeros(35 * 16000), {}, on_progress = updates.append)
+    result = sidecar._transcribe_decoded(
+        "tiny", np.zeros(35 * 16000), {}, on_progress = updates.append
+    )
     assert result == "part 1 part 2"
     assert [event["processed_seconds"] for event in updates] == [30, 35]
     assert updates[-1]["text"] == result
@@ -106,14 +110,25 @@ def test_mtmd_stream_cleans_metadata_and_requires_completion(monkeypatch):
         {"choices": [{"delta": {"content": " world"}}]},
     ]
     payloads = []
+
     class Response(io.BytesIO):
         status = 200
+
     class Connection:
-        def __init__(self, *args, **kwargs): pass
-        def request(self, *args, **kwargs): payloads.append(json.loads(kwargs["body"]))
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, *args, **kwargs):
+            payloads.append(json.loads(kwargs["body"]))
+
         def getresponse(self):
-            return Response(b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in wire))
-        def close(self): pass
+            return Response(
+                b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in wire)
+            )
+
+        def close(self):
+            pass
+
     monkeypatch.setattr(mtmd.http.client, "HTTPConnection", Connection)
     updates = []
     sidecar = mtmd.MtmdSttSidecar()
@@ -121,9 +136,11 @@ def test_mtmd_stream_cleans_metadata_and_requires_completion(monkeypatch):
         sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress = updates.append)
     assert updates[-1]["text"] == "hello world"
     wire.append({"choices": [{"delta": {}, "finish_reason": "stop"}]})
-    assert sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress = updates.append) == "hello world"
+    assert (
+        sidecar._post_transcribe(1234, "qwen3-asr-0.6b", b"wav", on_progress = updates.append)
+        == "hello world"
+    )
     assert payloads[-1]["stream"] is True
-
 
 
 def test_diffusion_status_retains_the_exact_checkpoint_filename():

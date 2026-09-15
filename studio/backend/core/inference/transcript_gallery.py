@@ -41,10 +41,10 @@ def save(result: dict, title: str) -> dict:
     directory = gallery_dir()
     staged = directory / f".{transcript_id}.tmp"
     try:
-        staged.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        staged.write_text(json.dumps(record, ensure_ascii = False), encoding = "utf-8")
         os.replace(staged, directory / f"{transcript_id}.json")
     finally:
-        staged.unlink(missing_ok=True)
+        staged.unlink(missing_ok = True)
     return record
 
 
@@ -55,7 +55,7 @@ def _read(directory: Path, transcript_id: str) -> dict | None:
     if path.is_symlink():
         return None
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding = "utf-8"))
         if not isinstance(record, dict) or record.get("id") != transcript_id:
             return None
         if not all(
@@ -75,7 +75,11 @@ def get(transcript_id: str) -> dict | None:
     return record
 
 
-def list_transcripts(limit: int = 50, before: str | None = None, archived: bool = False) -> dict:
+def list_transcripts(
+    limit: int = 50,
+    before: str | None = None,
+    archived: bool = False,
+) -> dict:
     directory = gallery_dir()
     flags = gallery_flags.read_trusted(directory)
     records = []
@@ -88,7 +92,7 @@ def list_transcripts(limit: int = 50, before: str | None = None, archived: bool 
             continue
         record["archived"] = archived
         records.append(record)
-    records.sort(key=lambda record: (record["created_at"], record["id"]), reverse=True)
+    records.sort(key = lambda record: (record["created_at"], record["id"]), reverse = True)
     visible = records[:limit]
     return {
         "transcripts": visible,
@@ -100,18 +104,18 @@ def list_transcripts(limit: int = 50, before: str | None = None, archived: bool 
 
 def set_archived(transcript_id: str, archived: bool) -> dict | None:
     directory = gallery_dir()
-    with gallery_flags.exclusive(directory, require_file_lock=True):
+    with gallery_flags.exclusive(directory, require_file_lock = True):
         record = _read(directory, transcript_id)
         if record is None:
             return None
-        gallery_flags.set_flags_locked(directory, transcript_id, archived=archived)
+        gallery_flags.set_flags_locked(directory, transcript_id, archived = archived)
         record["archived"] = archived
         return record
 
 
 def delete(transcript_id: str) -> bool:
     directory = gallery_dir()
-    with gallery_flags.exclusive(directory, require_file_lock=True):
+    with gallery_flags.exclusive(directory, require_file_lock = True):
         if _read(directory, transcript_id) is None:
             return False
         (directory / f"{transcript_id}.json").unlink()
@@ -121,7 +125,7 @@ def delete(transcript_id: str) -> bool:
 
 def clear() -> int:
     directory = gallery_dir()
-    with gallery_flags.exclusive(directory, require_file_lock=True):
+    with gallery_flags.exclusive(directory, require_file_lock = True):
         flags = gallery_flags.read_trusted(directory)
         removed = []
         for path in directory.glob("*.json"):

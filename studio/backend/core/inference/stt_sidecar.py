@@ -1644,11 +1644,14 @@ class WhisperSttSidecar:
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
             parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
             if on_progress is not None:
-                on_progress({
-                    "text": " ".join(part.strip() for part in parts if part.strip()),
-                    "processed_seconds": min(start + window, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
-                    "duration": len(decoded_audio) / _TARGET_SAMPLE_RATE,
-                })
+                on_progress(
+                    {
+                        "text": " ".join(part.strip() for part in parts if part.strip()),
+                        "processed_seconds": min(start + window, len(decoded_audio))
+                        / _TARGET_SAMPLE_RATE,
+                        "duration": len(decoded_audio) / _TARGET_SAMPLE_RATE,
+                    }
+                )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
