@@ -1439,6 +1439,48 @@ class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
         )
         assert raw(profile) > raw(None)
 
+    @pytest.mark.parametrize("marker", ["<|im_start|>", "[ZETA]"])
+    @pytest.mark.parametrize("shape", ["raw", "injected"])
+    def test_catalogue_pricing_matches_the_sanitized_description(self, marker, shape):
+        from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+        profile = model_markup(marker + " {{ m }}", [marker])
+        backend = _backend_stub(window = 16384, total = 16384, slots = 4)
+        backend.markup_profile = profile
+        messages = [{"role": "user", "content": "Explain the template"}]
+        tools = copy.deepcopy(_CATALOGUE)
+        tools[0]["function"]["description"] = "Template delimiter: " + (marker + " ") * 400
+        before = copy.deepcopy(tools)
+        safe = neutralize_tool_descriptions(tools, None, profile)
+        assert len(safe) == 1 and safe != tools
+
+        def priced(catalogue):
+            payload = _Payload(messages = messages, max_tokens = 16384)
+            kwargs = {}
+            if shape == "raw":
+                payload.tools = catalogue
+            else:
+                kwargs = {"conversation": messages, "injected_tools": catalogue}
+            bound = _openai_llama_admission_enforced_max_tokens(
+                payload,
+                request = None,
+                llama_backend = backend,
+                **kwargs,
+            )
+            payload.max_tokens = 64
+            charge = _openai_llama_admission_tokens(
+                payload,
+                budget = 16384,
+                capacity = 4,
+                context_window = 16384,
+                markup = profile,
+                **kwargs,
+            )
+            return bound, charge
+
+        assert priced(tools) == priced(safe)
+        assert tools == before, "pricing mutated the catalogue used for dispatch"
+
     def test_the_reservation_hands_the_backends_profile_over(self):
         import inspect
 

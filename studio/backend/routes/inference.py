@@ -1859,24 +1859,13 @@ def _openai_llama_admission_can_yield(llama_backend) -> bool:
     return bool(getattr(llama_backend, "idle_slot_clearing_active", False))
 
 
-def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
-    """Prompt the request carries OUTSIDE ``messages``, in tokens.
+def _openai_llama_admission_extra_prompt_tokens(payload, *, markup = None) -> int:
+    """Price top-level prompt fields and the sanitized client catalogue.
 
-    OpenAI tool definitions are rendered into the llama-server prompt, and Anthropic
-    keeps ``system`` and ``tools`` separate until they are translated. Sizing only the
-    message list let two requests with small messages but large system instructions or
-    JSON tool schemas both be admitted on a severe undercount.
-
-    Serialised and charged at the dense rate, since a JSON schema is punctuation-heavy
-    and the four-chars-per-token rule flatters it.
-
-    A catalogue here also earns the template's one-off tool-use block, the same constant
-    ``_openai_llama_admission_injected_tool_tokens`` charges. The passthrough builder prices
-    through this helper with no injected catalogue, so without it a client that sends its own
-    ``tools`` was short exactly that block and four such chats lost every one.
+    Tools include the template preamble, just as a server-injected catalogue does.
     """
     extra = 0
-    for attribute in ("system", "tools", "tool_choice", "instructions"):
+    for attribute in ("system", "tool_choice", "instructions"):
         value = getattr(payload, attribute, None)
         if value is None or isinstance(value, (bool, int, float)):
             continue
@@ -1886,11 +1875,9 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
             continue
         if text:
             extra += estimate_messages_tokens_dense([{"role": "system", "content": text}])
-    # Once, and only where the catalogue itself is: the tool-loop paths price through
-    # `_openai_llama_admission_wire_prompt_tokens`, which never reaches this helper.
-    if getattr(payload, "tools", None):
-        extra += _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS
-    return extra
+    return extra + _openai_llama_admission_injected_tool_tokens(
+        getattr(payload, "tools", None), markup = markup
+    )
 
 
 # An upper bound per image, not an estimate: under-reserving hands out a slot the cache
@@ -2140,26 +2127,12 @@ def _openai_llama_admission_transport_tokens(payload) -> int:
 _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS = 256
 
 
-def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
-    """The tool catalogue Unsloth adds itself, in tokens.
+def _openai_llama_admission_injected_tool_tokens(injected_tools, *, markup = None) -> int:
+    """Price a client or server catalogue, including its one-off template preamble."""
+    from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
-    ``payload.tools`` is what the CLIENT sent, and for Unsloth's own tool loop that is
-    usually nothing: Web Search and the rest resolve server-side and render into the
-    prompt after admission has priced the request. Measured on Qwen3.5-4B-MTP-GGUF, the
-    same user turn is 1716 prompt tokens with tools off and 2969 with them on, so the
-    catalogue is around 1250 tokens the message list cannot see.
-
-    Leaving it out is not a rounding error: at ``-c 4096`` four requests priced at an
-    equal share were all admitted and llama.cpp answered every one with ``Context size
-    has been exceeded``.
-
-    A catalogue costs a FIXED preamble plus a per-tool schema, and only the second was
-    counted. Rendered against Qwen3.5-4B at 1, 2, 4 and 8 tools the template charged 280,
-    359, 517 and 833 tokens against an estimate of 90, 171, 335 and 662: a per-tool term
-    that already tracks (about 83 a tool either way) and a constant 171 to 190 the message
-    list never shows, which is the tool-use instruction block the template emits once. That
-    shortfall put four tool chats 129 cells past their share each and lost all four.
-    """
+    # Descriptive leaves can expand when sanitized; price the catalogue the builders send.
+    injected_tools = neutralize_tool_descriptions(injected_tools, None, markup)
     if not injected_tools:
         return 0
     try:
@@ -2196,8 +2169,8 @@ def _openai_llama_admission_prompt_tokens(
             messages
         )
         prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload, markup = markup)
+        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools, markup = markup)
         prompt_tokens += _openai_llama_admission_media_tokens(
             payload,
             message_image_parts = message_image_parts,
@@ -2392,7 +2365,7 @@ def _openai_llama_admission_wire_prompt_tokens(
     )
     return (
         estimate_messages_tokens_dense(estimate_messages)
-        + _openai_llama_admission_injected_tool_tokens(injected_tools)
+        + _openai_llama_admission_injected_tool_tokens(injected_tools, markup = markup)
         + max(0, message_image_parts) * image_tokens
     )
 
