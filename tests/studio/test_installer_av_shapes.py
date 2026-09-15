@@ -33,6 +33,176 @@ BAT_SCRIPTS = ("studio/setup.bat",)
 ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS + BAT_SCRIPTS
 
 
+# ---------------------------------------------------------------------------
+# Why the installers are written the way they are, and which product flagged what
+# ---------------------------------------------------------------------------
+#
+# This record lives here, in a test, rather than in the shipped scripts or in a doc.
+#
+# Not in the scripts, because PowerShell hands the entire top-level script block to AMSI at compile
+# time, before the first statement runs -- so every byte of install.ps1 is classifier input, comments
+# included. VirusTotal's analysis of the file quoted one of our own comments back as grounds for
+# suspicion: "The presence of comments that suggest the script is designed to evade detection by
+# security tools (e.g. 'AMSI scans this file in full before a line of it runs') further adds to the
+# suspicion." Prose naming vendors and detection families raises the score of the very file it is
+# trying to explain.
+#
+# Here, because this file already owns the guards that keep those shapes out, it ships to nobody, it
+# is not packaged, and nothing scans it. The rule the tests below enforce is:
+#
+#     a comment in a shipped script says what the code does and what breaks if you change it;
+#     this record says which scanner flagged which shape, and when.
+#
+# Nothing below is an evasion. Every decision makes the installer do strictly LESS than the shape it
+# replaced: no compiler, no script engine, no remote script text, no cache purge on a no-op. The
+# heuristics are not wrong about the shapes; they are wrong that we are an instance of them, and the
+# fix is to stop having the shape.
+AV_SHAPES_RECORD = r"""
+## Measured detections
+
+| Sample | Verdict |
+|---|---|
+| install.ps1 at 1ad44677d (the revision reported in #10805) | 1 malicious / 58 undetected: Skyhigh
+  (Trellix / McAfee Enterprise) BehavesLike.PS.Suspicious.gr, engine v2021.2.0+4045, definitions
+  20260912 |
+| the same file uploaded elsewhere as unsloth_install2.ps1 | same single engine, same label |
+| tests/security/fixtures/malicious_wheel.whl, malicious_sdist.tar.gz | 2/65 and 2/60 (Tencent,
+  Rising), and the cause of Panda flagging the GitHub repo zip as Exploit/CVE-2014-6271. Both are now
+  generated at test time rather than committed |
+
+Beyond the one engine verdict, VirusTotal runs 17 Sigma rules against install.ps1 (1 high, 11 medium,
+5 low) plus two crowdsourced YARA rules. That rule count, not an engine detection, is what drives the
+high scores seen on third-party analysis sites.
+
+## What the hardening has actually bought so far
+
+Measured by scripts/virustotal_delta.py, not asserted:
+
+|                  | baseline (1ad44677d)          | main (2c70592a)   |
+|------------------|-------------------------------|-------------------|
+| engines flagging | 1 / 60                        | 1 / 61            |
+| which            | Skyhigh BehavesLike.PS.Suspicious.gr | the same   |
+| Sigma            | 17 (1 high, 11 medium, 5 low) | 14 (10 medium, 4 low) |
+| YARA             | 2                             | 0                 |
+
+The high-severity rule is gone, and so are both YARA hits --
+INDICATOR_SUSPICIOUS_PWSH_B64Encoded_Concatenated_FileEXEC and Windows_API_Function, the second of
+which is the P/Invoke cluster. The Skyhigh verdict has not moved, and that is recorded as unchanged
+rather than dressed up: a cloud behavioural verdict is not recomputed because we deleted some code,
+and the honest expectation is that the static axis moves first and the engine axis may never move.
+
+This is the first before-and-after this work has had. Six passes shipped without one, which is why
+none of them could be shown to have achieved anything.
+
+## Reflection emit instead of Add-Type
+
+Add-Type on Windows PowerShell 5.1 -- the interpreter the desktop app spawns, and the one a clean
+Windows box ships -- has no in-process compiler. -TypeDefinition and -MemberDefinition alike write C#
+to %TEMP% and run csc.exe, leaving source, a response file and a DLL behind.
+
+Bitdefender blocked the resulting DLL as Gen:Variant.MSILHeracles.272113 (#10540). The shape it scores
+is real: a windowless PowerShell spawned by a GUI binary, running a compiler, writing executable
+content to %TEMP%. The same call also failed outright with CS2001 where %TEMP% was unusable (#9140),
+so this is a robustness fix as much as a detection one.
+
+System.Reflection.Emit builds the identical interop stubs in memory: no compiler process, no source
+file, no DLL, and an empty Assembly.Location. windows-no-compiler-ci.yml is the standing proof --
+4688 process auditing unioned with a live FileSystemWatcher over every temp root, with a positive
+control, requiring zero compiler launches across a full install.
+
+## No .vbs launcher
+
+A WScript.Shell .vbs that spawns a hidden PowerShell with a bypassed execution policy is close to the
+canonical shape VBS-dropper heuristics are written for -- Kaspersky HEUR:Trojan.VBS.Agent.gen is the
+family. The .lnk files therefore point straight at powershell.exe running launch-studio.ps1, with no
+script engine in between, and the installer removes an older launch-studio.vbs if it finds one,
+because leaving it behind means a machine that was cleaned still has the flagged file.
+
+## RemoteSigned rather than Bypass, next to a hidden window
+
+A hidden window paired with a bypassed execution policy is a pair Microsoft's own detections key on,
+and it appears in Sigma's "Suspicious PowerShell WindowStyle Option" too. The hidden window is a real
+requirement -- a console flashing up on every launch is a visible regression, and
+tests/studio/install/test_launch_studio_launcher.py pins the flag -- so the half that goes is the
+policy.
+
+RemoteSigned is not a weaker guarantee here, it is the same one: it refuses unsigned scripts only in
+the Internet and Untrusted zones, and every script involved is written locally by the installer. Where
+a mark of the web can exist (a downloaded zip rather than a clone), Unblock-File clears it first
+instead of the policy being relaxed to tolerate it.
+
+Three things to know before simplifying any of this:
+
+  - UNC paths are a remote zone. \\wsl.localhost\<distro>\tmp\x.ps1 is refused under RemoteSigned,
+    which is why install.sh resolves the Windows %TEMP% for its generated script and skips shortcut
+    creation rather than falling back to Bypass when it cannot.
+  - Execution policy is evaluated against the script FILE's zone, not against who launched
+    PowerShell, and it does not apply to -Command at all. A .cmd or .bat shim therefore cannot
+    launder a remote-zone script, and Sigma's "Powershell Execute Batch Script" scores the shim
+    itself.
+  - The Windows CLIENT default is Restricted, which blocks every script file. Documentation telling a
+    user to set a process-scoped policy is load-bearing; it just does not need to say Bypass.
+
+## The icon-cache refresh is gated on a first install or a real icon change
+
+Clearing icon caches and killing StartMenuExperienceHost is the only way to make Explorer pick up a
+rewritten .lnk icon, and ie4uinit's global broadcast alone does not do it. But "clear caches, kill a
+shell process, repeat on every run" is a cluster behavioural engines score, and on a reinstall that
+changed nothing it is also pure waste. So both install.ps1 and install.sh snapshot the icon and run
+the heavy path only on a first install or an actual change, preserving start2.bin.
+
+SHChangeNotify stays, and with it one shell32 import: a permanently wrong desktop icon is a worse
+outcome than one import.
+
+## uv comes from a pinned archive, not from a remote install script
+
+The upstream one-liner pipes a remote script into the interpreter. Running remote script text
+in-process is the highest-scoring thing in this problem space, and download-run-delete is the literal
+definition of a dropper. Our fallback reaches the same end state (same archive, same destination, same
+user-PATH prepend as astral's installer) by fetching a DATA file with a pinned SHA-256.
+
+Cost: bumping the uv version means bumping all three hashes, one per architecture, in all three
+scripts. That is deliberate friction and the comment at each site says so.
+
+There is a floor no shape work removes: while the supported install route is
+`irm https://unsloth.ai/install.ps1 | iex`, the documented entry point is itself the top-scoring token
+sequence in this space.
+
+## Why the script headers do not repeat the usage text
+
+install.ps1 and scripts/uninstall.ps1 are scanned in full at compile time, before a line of either
+runs, and nothing reads a header comment from inside the script. Duplicating the README's option list
+into a header adds bytes to a classifier's input and reaches no user.
+
+## Shapes we are keeping, on purpose
+
+Each fires a rule and each is load-bearing. Listed so nobody spends a second pass rediscovering them.
+
+  - -WindowStyle Hidden on the shortcuts. Removing it makes a console window appear on every launch;
+    the flag is a pinned contract in test_launch_studio_launcher.py.
+  - Authenticode publisher checks on the python.org and vc_redist downloads. Weakening a real security
+    control to lower a heuristic score is backwards.
+  - New-Object -ComObject WScript.Shell to write the .lnk files. The only shortcut mechanism available
+    to PowerShell 5.1 without IShellLink interop; hand-writing the shell-link binary format or
+    emitting COM interop are both more suspicious and more fragile.
+  - Unblock-File rather than deleting the Zone.Identifier stream directly. The direct delete trades
+    one medium indicator ("Suspicious Unblock-File") for another ("Hidden Executable In NTFS Alternate
+    Data Stream"), which already fires.
+  - ie4uinit, Get-Process, python -X utf8 -c, Invoke-WebRequest. Each is scored; each has no
+    equivalent that does the job.
+
+## Reporting a detection
+
+Use the "Windows: antivirus or security software blocked the installer" issue form. It requires the
+product, the exact detection name, the full error including its FullyQualifiedErrorId, and the output
+of a read-only collection script naming the AMSI providers actually loaded.
+
+Those fields are required because clearance is granted per file hash and every vendor submission form
+asks for a detection name. Six previous reports (#8523, #6326, #6588, #6648, #10540, #10805) named
+none of them, which is why none could be submitted to a vendor or proven fixed.
+"""
+
+
 def _text(name: str) -> str:
     return (REPO / name).read_text(encoding = "utf-8")
 
@@ -837,6 +1007,103 @@ def test_the_native_resolver_still_has_a_lexical_fallback() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The shipped scripts must not name detections. The document must.
+# ---------------------------------------------------------------------------
+
+
+# Every file that ships and is scanned, including the two no other check in this file reads.
+DOCUMENTED_SCRIPTS = tuple(sorted(
+    set(ALL_SCRIPTS) | {"studio/setup.bat", "scripts/uninstall.sh"}
+))
+
+# Vendor names, detection families and analyst vocabulary. Not a style rule: PowerShell hands the
+# entire top-level script block to AMSI at compile time, so comments are classifier input, and
+# VirusTotal's analysis of install.ps1 quoted one of our own comments as grounds for suspicion.
+BANNED_TOKENS = (
+    "bitdefender", "kaspersky", "skyhigh", "trellix", "mcafee", "avast", "sophos",
+    "malwarebytes", "tencent", "rising", "panda",
+    "wacatac", "heur:", "heracles", "gen:variant", "behaveslike", "trojan", "dropper",
+    "amsi", "smartscreen", "virustotal", "sigma rule", "malware",
+)
+
+# Generic words describing a runtime hazard the code actually handles, one of which reaches the
+# user. Banning these would delete real operational meaning, so they are deliberately allowed:
+# antivirus, quarantine, scanner, security software, blocked.
+#
+# "false positive" is also deliberately absent, and for a more interesting reason: this test caught
+# it at install.ps1 and studio/setup.ps1, where it means a *statistical* false positive in a
+# registry probe and has nothing to do with a scanner. A token list is only as good as the words
+# having one meaning.
+
+
+@pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
+@pytest.mark.parametrize("token", BANNED_TOKENS)
+def test_no_shipped_script_names_a_detection(name: str, token: str) -> None:
+    path = REPO / name
+    if not path.is_file():
+        pytest.skip(f"{name} is not present")
+    lowered = path.read_text(encoding = "utf-8").lower()
+    assert token not in lowered, (
+        f"{name} contains {token!r}. Vendor names, detection families and analyst vocabulary "
+        f"belong in tests/studio/test_installer_av_shapes.py, not in a file that is itself handed to "
+        f"a classifier in full before it runs. Say what the code does and what breaks if it "
+        f"changes; link the anchor for which product flagged what."
+    )
+
+
+def test_the_record_survives_and_keeps_its_evidence() -> None:
+    """Without this, the ban above is satisfiable by deleting the knowledge instead of moving it.
+
+    Six hardening passes shipped without recording which engine flagged what, which is why none of
+    them could be shown to have fixed anything. AV_SHAPES_RECORD is where that record lives now --
+    in this file rather than a doc, because a test ships to nobody and nothing scans it, and because
+    the guards that enforce the split are right here beside it.
+    """
+    for section in (
+        "## Measured detections",
+        "## Reflection emit instead of Add-Type",
+        "## No .vbs launcher",
+        "## RemoteSigned rather than Bypass, next to a hidden window",
+        "## The icon-cache refresh is gated on a first install or a real icon change",
+        "## uv comes from a pinned archive, not from a remote install script",
+        "## Why the script headers do not repeat the usage text",
+        "## Shapes we are keeping, on purpose",
+    ):
+        assert section in AV_SHAPES_RECORD, f"the record lost its {section!r} section"
+
+    # The sections are the skeleton; these are the point. A record with headings and no evidence is
+    # the same loss with extra steps.
+    for evidence in ("Gen:Variant.MSILHeracles.272113", "HEUR:Trojan.VBS.Agent.gen",
+                     "BehavesLike.PS.Suspicious.gr", "#10540", "#10805", "#9140"):
+        assert evidence in AV_SHAPES_RECORD, f"the record no longer names {evidence}"
+
+
+@pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
+def test_every_script_that_dropped_its_explanation_points_at_the_record(name: str) -> None:
+    """A comment reduced to "security software blocks this" with no forward reference is worse
+    than the prose it replaced: the next maintainer cannot tell whether it is still true.
+    """
+    path = REPO / name
+    if not path.is_file():
+        pytest.skip(f"{name} is not present")
+    text = path.read_text(encoding = "utf-8")
+    hints = ("Add-Type", "RemoteSigned", "ClearIconCache", "Sha256", "SHA-256")
+    if not any(hint in text for hint in hints):
+        pytest.skip(f"{name} carries none of the documented shapes")
+    assert "test_installer_av_shapes.py" in text, (
+        f"{name} implements one of the recorded shapes but references nothing. Point at "
+        f"tests/studio/test_installer_av_shapes.py, where AV_SHAPES_RECORD says which product "
+        f"flagged what, so the reasoning is one grep away rather than lost."
+    )
+    # Assembled, so that a later blanket rename of the doc path cannot silently rewrite this check
+    # into asserting the opposite of what it means. That happened once while writing it.
+    stale = "docs/windows-installer-" + "av-shapes.md"
+    assert stale not in text, (
+        f"{name} points at {stale}, which does not exist. The record lives in "
+        f"tests/studio/test_installer_av_shapes.py as AV_SHAPES_RECORD."
+    )
+
+# -------------------------------------------------------------------------
 # studio/setup.bat
 # ---------------------------------------------------------------------------
 

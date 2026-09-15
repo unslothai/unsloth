@@ -2274,12 +2274,11 @@ if (\$hasIcon) {
 # <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
 #
 # Emitted, not compiled. Add-Type -MemberDefinition writes C# to %TEMP% and runs
-# csc.exe on Windows PowerShell 5.1, and behavioural antivirus blocks the DLL that
-# comes out, because a PowerShell started by interop running a compiler and dropping
-# executable content in %TEMP% is a dropper's shape whatever the code says.
-# install.ps1 carries the same reflection-emit form for the same reason; this copy
-# was missed when that one changed. Reflection emit builds the identical stub in
+# csc.exe on Windows PowerShell 5.1, and security software blocks the DLL that comes
+# out. install.ps1 carries the same reflection-emit form for the same reason; this
+# copy was missed when that one changed. Reflection emit builds the identical stub in
 # memory: no compiler process, no source on disk, no DLL.
+# Which product blocked what: tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 try {
     \$refreshType = 'UnslothShellIconRefresh' -as [type]
     if (-not \$refreshType) {
@@ -2306,7 +2305,8 @@ try {
 } catch {}
 # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
 # (preserve start2.bin) only on first install or a real icon change, so a no-op
-# WSL reinstall does not run a dropper-like clear-cache + kill cluster each time.
+# WSL reinstall does not purge caches and kill a shell process for nothing.
+# See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
 if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
     try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
     try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
@@ -3027,7 +3027,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     _uv_refreshed=true
     # download() exits the shell outright when neither curl nor wget is present, which an `if` cannot catch, so probe first: a minimal image with uv copied in but no downloader must keep the install it had before the floor moved.
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
-        # Pinned release first: a digest-checked data file scores far lower than download-run-delete, which is the literal shape of a dropper.
+        # Pinned release first: fetch a digest-checked data file rather than download-run-delete a remote script. See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
         if _uv_install_pinned; then
             :
         else
