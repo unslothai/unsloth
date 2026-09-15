@@ -255,15 +255,15 @@ def test_the_generated_emit_carries_both_spellings_of_define_dynamic_assembly() 
     is the combination that fails invisibly. Carry the same fallback.
     """
     script = _render()
-    assert "[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly" in script, (
-        "the generated script no longer tries the documented static spelling first"
-    )
+    assert (
+        "[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly" in script
+    ), "the generated script no longer tries the documented static spelling first"
     assert "[AppDomain]::CurrentDomain.DefineDynamicAssembly" in script, (
         "the generated script has no AppDomain fallback, so on a host without the static overload "
         "the empty outer catch swallows the failure and both icon refreshes stop happening"
     )
     static_at = script.index("[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly")
     appdomain_at = script.index("[AppDomain]::CurrentDomain.DefineDynamicAssembly")
-    assert static_at < appdomain_at, (
-        "AppDomain.CurrentDomain is absent on .NET Core, so leading with it would break pwsh"
-    )
+    assert (
+        static_at < appdomain_at
+    ), "AppDomain.CurrentDomain is absent on .NET Core, so leading with it would break pwsh"
