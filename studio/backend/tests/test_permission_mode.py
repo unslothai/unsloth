@@ -3568,6 +3568,10 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     f"import os\nos.replace({_OUTSIDE_FILE!r}, 'b')",
     f"import os\nos.remove({_OUTSIDE_FILE!r})",
     f"from pathlib import Path\np = Path('x')\np.replace({_OUTSIDE_FILE!r})",
+    # An interpreter's `-c` payload is CODE, so it is classified as code.
+    f"import subprocess\nsubprocess.run(['python', '-c', \"open({_OUTSIDE_FILE!r}, 'w')\"])",
+    # A `chdir` to an absolute directory moves where every later RELATIVE write lands.
+    f"import os\nos.chdir({_OUTSIDE_DIR!r})\nopen('weights.gguf', 'w').write('x')",
     # A quoted path with a space in a `shell = True` command line.
     f"import subprocess\nsubprocess.run(\"cat '{_OUTSIDE_DIR}/My Documents/private.txt'\", shell = True)",
     # `io.open_code` opens its argument in binary mode, which is a read of that path.
@@ -3866,6 +3870,10 @@ _INDIRECT_BENIGN_PYTHON = (
     "import zipfile\nz = zipfile.ZipFile('out.zip', 'w')\nz.write('notes.txt')",
     "import io\nprint(io.open_code('local.py').read())",
     "import pandas as pd\nprint(pd.read_excel(io = 'book.xlsx'))",
+    "import subprocess\nsubprocess.run(['python', '-c', 'print(1)'])",
+    # A `chdir` with only reads after it, and a relative one, are both ordinary.
+    "import os\nos.chdir('/usr/share/doc')\nprint(open('x').read())",
+    "import os\nos.chdir('build')\nopen('x', 'w').write('y')",
     # `replace` and `remove` on a str, a list or a DataFrame touch no file.
     "text = 'a'\nprint(text.replace('/media/alice', 'x'))",
     "import pandas as pd\ndf = pd.DataFrame()\ndf.replace('/media/alice', 'x')",

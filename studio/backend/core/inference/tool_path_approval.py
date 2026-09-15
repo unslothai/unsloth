@@ -1661,6 +1661,40 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     return operands
 
 
+# Relative writes after a `chdir` land under the NEW directory, so the destination is charged as a
+# write when the snippet writes anything afterwards. Mirrors the terminal `cd` rule; the classifier
+# keeps no working-directory state, and a path computed at runtime stays the documented residual.
+def _python_directory_change_targets(tree, operands) -> "list[tuple[str, bool]]":
+    """The absolute destination of an `os.chdir` in a snippet that also writes."""
+    # `open` is not listed: the operand pass already reports its mode, so a read through it does
+    # not count as writing while `open(p, "w")` does.
+    writers = _PY_PATH_WRITE_CALLS | _PY_PATH_CONTENT_FIRST_CALLS
+    if not any(writing for _path, writing in operands) and not any(
+        isinstance(node, ast.Call)
+        and (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) in writers
+        for node in ast.walk(tree)
+    ):
+        return []
+    targets: "list[tuple[str, bool]]" = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) != "chdir":
+            continue
+        first = node.args[0] if node.args else None
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            targets.append((first.value, True))
+    return targets
+
+
+def _inline_code_operands(source: str) -> "list[tuple[str, bool]]":
+    """Operands of a literal `-c` payload, read as python. Anything unparseable yields nothing."""
+    try:
+        return _python_path_operands(ast.parse(source))
+    except Exception:  # noqa: BLE001 - not python, or not parseable: the token scan still applies
+        return []
+
+
 def _shell_words(text: str) -> "list[str]":
     """Split a `shell = True` command line the way the shell does.
 
@@ -2786,6 +2820,18 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             argv0 = next(iter(_sequence_elements(head, containers)), None)
             if argv0 is not None:
                 add(argv0, False)
+        # `subprocess.run(["python", "-c", "open('/media/x', 'w')"])` carries CODE, not a path, so
+        # the terminal operand scan sees nothing. The payload goes through the python scan instead.
+        elements = _sequence_elements(call.args[0], containers) if call.args else []
+        literals = [
+            e.value for e in elements if isinstance(e, ast.Constant) and isinstance(e.value, str)
+        ]
+        for index, literal in enumerate(literals[:-1]):
+            if (
+                literal in ("-c", "-e")
+                and _token_command_base(literals[0]) in _PATH_SCRIPT_COMMANDS
+            ):
+                operands.extend(_inline_code_operands(literals[index + 1]))
         if words:
             from_command = _terminal_path_operands(words)
             operands.extend(from_command)
@@ -3024,6 +3070,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 # `open(file = p, mode = "w")` is the same write the positional form is: carry the mode decided
                 # above rather than re-deriving it from a table that does not list `open`.
                 add(keyword.value, writing_default)
+    operands.extend(_python_directory_change_targets(tree, operands))
     return operands
 
 
