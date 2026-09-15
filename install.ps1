@@ -3520,19 +3520,20 @@ exit 0
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
 
-    # Warn early if Store aliases may shadow Python during detection
-    $preAliasCheck = Test-AppExecutionAliasesBlocking
-    if ($preAliasCheck.Blocking) {
-        Show-AppAliasWarning -Aliases $preAliasCheck.Aliases
-        substep "attempting to detect Python despite aliases..." "Yellow"
-    }
-
     $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
     }
     if (-not $DetectedPython) {
+        # No early alias warning here: Find-CompatiblePython already looks past
+        # WindowsApps stubs (py launcher, then Get-Command -All skipping
+        # *\WindowsApps\*), so a stub that merely wins the single-match
+        # Get-Command lookup inside Test-AppExecutionAliasesBlocking would
+        # otherwise print this warning even on a machine where a real
+        # interpreter was just found. The alias check below, after winget and
+        # the python.org fallback have both failed, is the only place a stub
+        # is actually implicated.
         substep "installing Python ${PythonVersion}..."
         $pythonPackageId = "Python.Python.$PythonVersion"
         $wingetExit = $null
