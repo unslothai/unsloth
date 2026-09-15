@@ -2653,15 +2653,16 @@ def test_the_fixtures_are_published_atomically() -> None:
     from pathlib import Path as _Path
 
     source = (_Path(__file__).resolve().parent / "fixtures" / "_build.py").read_text(
-        encoding = "utf-8")
+        encoding = "utf-8"
+    )
     assert "os.replace" in source, (
         "the fixture builder no longer publishes through os.replace. A truncate-then-write at a "
         "fixed path races the other xdist workers."
     )
-    assert "write_bytes(buf" not in source and "write_bytes(gz_buf" not in source, (
-        "the builder writes an archive directly to its final path again"
-    )
-    assert f'{_os.getpid.__name__}()' in source or "getpid" in source, (
+    assert (
+        "write_bytes(buf" not in source and "write_bytes(gz_buf" not in source
+    ), "the builder writes an archive directly to its final path again"
+    assert f"{_os.getpid.__name__}()" in source or "getpid" in source, (
         "the temp name is no longer pid-unique, so the workers collide on the temp file instead of "
         "on the final one"
     )
@@ -2669,6 +2670,7 @@ def test_the_fixtures_are_published_atomically() -> None:
     # Byte-for-byte reproducible, which is the reason a reader that sees the old file and a reader
     # that sees the new one are looking at the same thing.
     import hashlib
+
     for name, digest in (
         ("malicious_wheel.whl", "fe6927b5"),
         ("clean_wheel.whl", "0c327818"),
