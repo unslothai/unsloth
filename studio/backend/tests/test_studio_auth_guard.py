@@ -1892,7 +1892,9 @@ def test_a_snippets_own_chdir_is_not_a_move(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
     try:
-        ordinary = 'def chdir(path):\n    pass\nchdir("../..")\nprint(open("auth/config.json").read())'
+        ordinary = (
+            'def chdir(path):\n    pass\nchdir("../..")\nprint(open("auth/config.json").read())'
+        )
         assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
             tools._STUDIO_CREDENTIAL_BLOCKED
         )
