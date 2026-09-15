@@ -214,10 +214,8 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     audited = ["audio-torch211", "audio-torch210", "audio-torch290", "audio-torch280"]
     # Both halves of the workflow build the inputs; one is the advisory audit, one is
     # scan_packages. 211 is folded into unsloth-deps.txt, the rest get a file each.
-    # Either index shape counts. The workflow now reaches its extras through a guarded
-    # `extra(name)` helper so a renamed or deleted group names itself instead of raising a
-    # bare KeyError mid-step, and the question this asserts is that both halves still look
-    # the group up, not which spelling they use to do it.
+    # Either index shape counts: the workflow now reaches extras through a guarded helper
+    # that names a missing group. What matters is that both halves still look the group up.
     indexed = text.count('optional-dependencies"]["audio-torch211"]') + text.count(
         'extra("audio-torch211")'
     )

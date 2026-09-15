@@ -3,11 +3,9 @@
 
 """Contract tests for the amd / huggingfacenotorch extras.
 
-security-audit.yml builds its hf-stack scan set by indexing
-[huggingfacenotorch] straight out of pyproject.toml. When the pip release
-branch shipped without that extra, four security jobs died on a bare
-KeyError for three weeks and nobody noticed, because the failure looked
-like a generic Python crash rather than a missing extra.
+security-audit.yml indexes [huggingfacenotorch] straight out of pyproject.toml. A release
+branch shipping without it killed four security jobs for three weeks: a bare KeyError reads
+as a generic crash, not as a missing extra.
 """
 
 from __future__ import annotations
@@ -24,8 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 SECURITY_AUDIT = REPO_ROOT / ".github" / "workflows" / "security-audit.yml"
 
-# 4-bit decode is unreliable on ROCm before 0.50.0, the first PyPI release
-# carrying the full path (bnb #1887, #1979, #2012).
+# 4-bit decode is unreliable on ROCm before bnb 0.50.0 (bnb #1887, #1979, #2012).
 BNB_MIN = Version("0.50.0")
 
 
@@ -41,10 +38,8 @@ def _extras() -> dict[str, list[str]]:
 def _extras_referenced_by_the_audit_workflow() -> set[str]:
     """Every extra name security-audit.yml reaches into pyproject.toml for.
 
-    Three shapes, and all three have to be read or the check is vacuous: the
-    literal index `optional-dependencies"]["name"]`, the guarded helper call
-    `extra("name")`, and the shell list the per-extra loop iterates, whose names
-    only ever appear in the `for extra in ...` line.
+    All three shapes must be read or the check is vacuous: the literal index, the guarded
+    helper call, and the shell list the per-extra loop iterates over.
     """
     source = SECURITY_AUDIT.read_text(encoding = "utf-8")
     names = set(re.findall(r'optional-dependencies"\]\["([^"]+)"\]', source))
@@ -99,9 +94,8 @@ class TestAmdBitsandbytesFloor:
 class TestSecurityAuditWorkflowStaysInSync:
     """Every extra the audit workflow indexes has to actually exist.
 
-    This is the generic form of the failure: the workflow reaches into
-    pyproject.toml by name, so any rename or omission takes out the scan
-    jobs rather than the branch that caused it.
+    The workflow reaches into pyproject.toml by name, so a rename or omission takes out the
+    scan jobs rather than the branch that caused it.
     """
 
     def test_indexed_extras_exist(self):
@@ -116,19 +110,15 @@ class TestSecurityAuditWorkflowStaysInSync:
     def test_the_extras_the_scan_set_is_built_from_are_still_named(self, known: str):
         """The scan set loses coverage silently if one of these stops being read.
 
-        `test_indexed_extras_exist` only checks that what IS named exists; it
-        passes just as well when the workflow names nothing at all, which is how
-        a refactor can quietly drop an extra out of the audit input.
+        `test_indexed_extras_exist` passes just as well when the workflow names nothing.
         """
         assert known in _extras_referenced_by_the_audit_workflow()
 
     def test_every_lookup_is_guarded(self):
         """A bare index is the failure mode this file exists for.
 
-        An `optional-dependencies` lookup outside the `extra()` helper or the
-        `try` that wraps the per-extra loop raises a bare KeyError, which reads
-        as a generic crash rather than as a missing extra. Allowlist the two
-        guarded call sites by their exact line so a third one has to be looked at.
+        Any lookup outside the two guarded call sites raises a bare KeyError, which reads as
+        a generic crash. Allowlist them by exact line so a third one has to be looked at.
         """
         guarded = {
             'return d["project"]["optional-dependencies"][name]',

@@ -267,10 +267,8 @@ jobs:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
           def extra(name):
-              # A bare KeyError here reads as a generic crash, which is how four
-              # scan jobs stayed dead on the pip branch for three weeks. Name the
-              # extra instead, and do it for every extra this file indexes rather
-              # than only the first one, or the next rename repeats the outage.
+              # A bare KeyError reads as a generic crash: that is how four scan jobs
+              # stayed dead for three weeks. Name the extra, for every extra indexed here.
               try:
                   return d["project"]["optional-dependencies"][name]
               except KeyError:
@@ -908,10 +906,8 @@ jobs:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
           def extra(name):
-              # A bare KeyError here reads as a generic crash, which is how four
-              # scan jobs stayed dead on the pip branch for three weeks. Name the
-              # extra instead, and do it for every extra this file indexes rather
-              # than only the first one, or the next rename repeats the outage.
+              # A bare KeyError reads as a generic crash: that is how four scan jobs
+              # stayed dead for three weeks. Name the extra, for every extra indexed here.
               try:
                   return d["project"]["optional-dependencies"][name]
               except KeyError:
