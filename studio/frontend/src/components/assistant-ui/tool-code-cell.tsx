@@ -9,16 +9,17 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { code as codePlugin } from "@streamdown/code";
 import { CopyIcon, DownloadIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { createCodePlugin } from "./code-plugin";
 
 const COPY_RESET_MS = 2000;
 const SHIKI_THEME = ["github-light", "github-dark"] as [
   "github-light",
   "github-dark",
 ];
+const codePlugin = createCodePlugin({ themes: SHIKI_THEME });
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
 
