@@ -806,6 +806,9 @@ _PATH_FLAG_SPECS = {
         "--add-file": "read",
         "--output": "write",
         "-o": "write",
+        # `git clone -h`: `--[no-]separate-git-dir <gitdir>` puts the repository metadata there,
+        # which is a write outside the sandbox while every remaining operand stays relative.
+        "--separate-git-dir": "write",
         "-c": "skip",
         "--exec-path": "skip",
         "--namespace": "skip",
@@ -842,6 +845,12 @@ _PATH_FLAG_SPECS = {
         # `-P, --directory-prefix=PREFIX` (`wget --help`): both spellings save under that prefix.
         "-P": "write",
         "--directory-prefix": "write",
+        # `wget --help`: `-o, --output-file=FILE` logs to FILE and `-a, --append-output=FILE`
+        # appends to it. A plain download writes the log wherever it is pointed.
+        "-o": "write",
+        "--output-file": "write",
+        "-a": "write",
+        "--append-output": "write",
         "--header": "skip",
     },
     "zip": {"-x": "skip", "-i": "skip"},
@@ -962,7 +971,7 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
-def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
+def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     """Absolute file operands a command list touches, as ``(path, writing)``.
 
     Only commands in the tables above contribute operands, and only tokens that look absolute are
@@ -979,7 +988,7 @@ def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
         return []
     # shlex does not treat < and > as punctuation, so `echo CHANGED>/media/x` arrives as ONE token with the
     # redirection buried inside it. Split those out, or the target is never seen.
-    tokens = _split_attached_redirections(tokens)
+    tokens = _split_attached_redirections(tokens, text)
     operands: "list[tuple[str, bool]]" = []
     segment: "list[str]" = []
 
@@ -1040,17 +1049,27 @@ def _terminal_path_operands(tokens) -> "list[tuple[str, bool]]":
 _ATTACHED_REDIR_RE = re.compile(r"(\d*(?:>>|>\||&>>|&>|>|<<<|<<|<))")
 
 
-def _split_attached_redirections(tokens) -> "list[str]":
+def _split_attached_redirections(tokens, text = None) -> "list[str]":
     """Break a token that carries a redirection operator inside it into its parts.
 
     ``echo CHANGED>/media/x`` lexes as one token because ``shlex`` is not given ``<``/``>`` as
     punctuation, which hid the redirection target from the operand scan.
+
+    A QUOTED word is data, not syntax: `printf 'see >/media/private/report'` opens no file, and the
+    lexer has already dropped the quotes by the time the token arrives here. Two signs that it was
+    quoted are enough to leave it alone -- whitespace inside it, which no redirection operator has,
+    and the quoted spelling appearing in the command text the tokens came from.
     """
     if not any(("<" in t or ">" in t) for t in tokens):
         return list(tokens)
     out: "list[str]" = []
     for token in tokens:
         if "<" not in token and ">" not in token:
+            out.append(token)
+            continue
+        if any(ch.isspace() for ch in token) or (
+            text and (f"'{token}'" in text or f'"{token}"' in text)
+        ):
             out.append(token)
             continue
         prefix = _REDIR_PREFIX_RE.match(token)
@@ -1342,7 +1361,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
             return False
     if any(
         _path_needs_approval(path, writing = writing)
-        for path, writing in _terminal_path_operands(tokens)
+        for path, writing in _terminal_path_operands(tokens, text)
     ):
         return True
     if not text or not _WINDOWS_SPELLING_RE.search(text):
@@ -1352,7 +1371,7 @@ def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool
         return False
     return any(
         _path_needs_approval(path, writing = writing)
-        for path, writing in _terminal_path_operands(raw)
+        for path, writing in _terminal_path_operands(raw, text)
     )
 
 
@@ -1636,10 +1655,16 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
         for target in node.targets:
             if not isinstance(target, ast.Name):
                 continue
-            # Counted whatever the right-hand side was: `reader = open` followed by `reader = None`
-            # leaves the name holding neither, so it must not resolve to the first binding.
+            # A rebinding does not undo the calls BEFORE it: `reader = open;
+            # reader('/media/x').read(); reader = None` performs the read, and dropping the name
+            # outright let it through. The first modelled binding is kept, and a later one is
+            # ignored rather than replacing it, which is the fail-closed reading of an order this
+            # whole-tree pass does not track. Nothing is gated by the binding alone: the name has to
+            # be CALLED with a path outside the sandbox before it reaches an approval.
             if target.id in seen_twice:
-                assigned.pop(target.id, None)
+                # A first binding that was not itself modelled leaves room for a later one.
+                if real and real != target.id:
+                    assigned.setdefault(target.id, real)
                 continue
             seen_twice.add(target.id)
             # Recorded even when the right-hand side is not itself a modelled name: `reader2 =
@@ -1892,6 +1917,11 @@ _REBOUND_PATHS_KEY = "\x00__rebound__"
 _MAX_REBOUND_ALTERNATES = 8
 
 
+# Rebound names substituted into one compound expression, bounding the work on a snippet that
+# assembles a path from many variables each bound several times.
+_MAX_REBOUND_NAMES = 3
+
+
 def _capped_alternates(values) -> "list[str]":
     """Bound a list of candidate paths WITHOUT dropping the ones that can need approval.
 
@@ -1982,6 +2012,25 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         # cannot order the statements, so each candidate counts.
         if isinstance(node, ast.Name) and node.id in rebound:
             operands.extend((path, writing) for path in rebound[node.id])
+            return
+        # The same name inside a larger expression: `open(base + '/report')` folds `base` to one of
+        # its bindings and the others never reach the gate. Substituted one name at a time, since a
+        # path is assembled from one variable and literals far more often than from two.
+        names = [
+            piece.id
+            for piece in ast.walk(node)
+            if isinstance(piece, ast.Name) and piece.id in rebound
+        ]
+        for rebound_name in list(dict.fromkeys(names))[:_MAX_REBOUND_NAMES]:
+            for alternate in rebound[rebound_name]:
+                try:
+                    refolded = _folded_path(
+                        node, {**bindings, rebound_name: alternate}, ctors, joins
+                    )
+                except Exception:  # noqa: BLE001 - folding is best effort
+                    continue
+                if isinstance(refolded, str) and refolded and refolded != folded:
+                    operands.append((refolded, writing))
 
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):

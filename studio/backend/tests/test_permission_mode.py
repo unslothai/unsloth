@@ -3374,6 +3374,11 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `wget --help`: `-o, --output-file=FILE` logs there and `-a, --append-output=FILE` appends.
+    f"wget --output-file={_OUTSIDE_FILE} https://example.com",
+    f"wget -o {_OUTSIDE_FILE} https://example.com",
+    # `git clone -h`: `--[no-]separate-git-dir <gitdir>` puts the repository metadata there.
+    f"git clone --separate-git-dir={_OUTSIDE_DIR}/repo repo checkout",
     # `sort --help`: "--random-source=FILE  get random bytes from FILE". Attached, it was discarded
     # as an unknown option and the host file it named was read without a word.
     f"sort -R --random-source={_OUTSIDE_FILE} input.txt",
@@ -3468,6 +3473,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # Called BEFORE the rebinding, so dropping the alias outright let the read through.
+    f"reader = open\nprint(reader({_OUTSIDE_FILE!r}).read())\nreader = None",
+    # The rebound name sits inside a larger expression, where only its first binding was folded.
+    f"base = 'local'\nbase = {_OUTSIDE_DIR!r}\nopen(base + '/report').read()",
+    f"import os\nbase = 'local'\nbase = {_OUTSIDE_DIR!r}\nopen(os.path.join(base, 'report')).read()",
     # Parameter names only these callables use, so the shared keyword list never carried them.
     f"import configparser\nc = configparser.ConfigParser()\nc.read(filenames = {_OUTSIDE_FILE!r})",
     f"import configparser\nc = configparser.ConfigParser()\nc.read(filenames = ['a.ini', {_OUTSIDE_FILE!r}])",
@@ -3571,6 +3581,11 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    # Quoted, so the shell prints it and opens nothing.
+    f"printf 'see >{_OUTSIDE_FILE}'",
+    f'echo "a > {_OUTSIDE_FILE}"',
+    "wget -o log.txt https://example.com",
+    "git clone --separate-git-dir=.git repo checkout",
     # No shell opens either of these: `<<` names a here-document delimiter and `<<<` is the data.
     f"cat <<< {_OUTSIDE_FILE}",
     f"cat << {_OUTSIDE_DIR}/END",
@@ -3620,6 +3635,7 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "base = 'local'\nbase = 'other'\nopen(base + '/report').read()",
     "import configparser\nc = configparser.ConfigParser()\nc.read(filenames = 'settings.ini')",
     "import glob\nprint(glob.glob(pathname = '*.txt'))",
     "import glob\nprint(glob.glob('*.txt', root_dir = 'data'))",
