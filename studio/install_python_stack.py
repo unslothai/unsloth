@@ -3581,17 +3581,34 @@ def _detect_cuda_torch_index_url() -> str:
     # default stays, since cu128+ has none for Maxwell, Pascal or Volta either.
     inventory = _nvidia_library_inventory()
     if inventory is not None and inventory.cuda_driver_version:
-        sms = []
-        for row in inventory.devices:
-            m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
-            if m is None:
-                sms = []
-                break
-            sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+        sms = _inventory_compute_sms(inventory)
         if sms:
             family = _torch_family_for_cuda_version(*inventory.cuda_driver_version)
             return f"{_PYTORCH_WHL_BASE}/{_cap_cuda_family_for_pre_turing(family, None, sms)}"
     return f"{_PYTORCH_WHL_BASE}/{tag}"
+
+
+def _inventory_compute_sms(inventory) -> "list[int]":
+    """Every sm_NN the driver library lists; empty when one row is unreadable, like
+    _nvidia_compute_sms."""
+    sms: list[int] = []
+    for row in inventory.devices:
+        m = re.fullmatch(r"(\d+)\.(\d+)", row.get("compute_cap", ""))
+        if m is None:
+            return []
+        sms.append(int(m.group(1)) * 10 + int(m.group(2)))
+    return sms
+
+
+def _host_compute_sms() -> "list[int] | None":
+    """The host's sm_NN list from nvidia-smi, else from the driver library; None when
+    neither can say."""
+    smi = _nvidia_smi_path()
+    sms = _nvidia_compute_sms(smi) if smi else None
+    if sms:
+        return sms
+    inventory = _nvidia_library_inventory()
+    return (_inventory_compute_sms(inventory) or None) if inventory is not None else None
 
 
 def _driver_cuda_torch_flavor_tag() -> str:
@@ -3893,8 +3910,7 @@ def _ensure_cuda_torch() -> None:
         _span = _cuda_family_sm_range(_family, _installed_release)
         if _span is None:
             return  # untagged or unrecognised build: not this check's business
-        _smi = _nvidia_smi_path()
-        _sms = _nvidia_compute_sms(_smi) if _smi else None
+        _sms = _host_compute_sms()
         if not _sms or _span_covers(_span, _sms):
             return  # healthy CUDA torch this host can use
         # Never trade one partial family for another, or reinstall the same one forever.
@@ -3907,6 +3923,15 @@ def _ensure_cuda_torch() -> None:
             f"torch is {_family} but this host has GPUs outside its "
             f"sm_{_span[0]}-{_span[1]} range"
         )
+    elif (
+        _marker == "cpu"
+        and _is_cuda_family_leaf(_RECORDED_TORCH_TAG or "")
+        and not _explicit_cpu_torch_index_pin()
+    ):
+        # The last completed install chose a CUDA wheel and nobody asked for CPU since: a
+        # dependency step resolved torch from PyPI. The Windows flavour invariant catches
+        # this; Linux only recorded the expectation.
+        _why = f"torch is a CPU build but this install recorded {_RECORDED_TORCH_TAG}"
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 

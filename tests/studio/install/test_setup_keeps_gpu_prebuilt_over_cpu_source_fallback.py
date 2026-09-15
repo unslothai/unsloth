@@ -31,6 +31,7 @@ requires_bash = pytest.mark.skipif(BASH is None, reason = "a working bash is req
 
 _FUNCTIONS = (
     "_has_local_llama_server() {",
+    "_installed_prebuilt_field() {",
     "_installed_prebuilt_backend() {",
     "_gpu_prebuilt_to_keep_over_cpu_build() {",
 )
@@ -151,6 +152,20 @@ class TestTheKeepDecision:
             == "REPLACE"
         )
         assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "latest", **nvidia) == "KEEP cuda"
+
+    def test_a_version_pin_the_old_install_already_satisfies_keeps_it(self, tmp_path):
+        install_dir = _install(tmp_path, {"backend": "cuda", "tag": "b8508", "release_tag": "b8508-mix"})
+        nvidia = {"_setup_nvidia_physical": "true"}
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b8508", **nvidia) == "KEEP cuda"
+        assert _decide(tmp_path, install_dir, UNSLOTH_LLAMA_TAG = "b8509", **nvidia) == "REPLACE"
+        assert (
+            _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b8508-mix", **nvidia)
+            == "KEEP cuda"
+        )
+        assert (
+            _decide(tmp_path, install_dir, UNSLOTH_LLAMA_RELEASE_TAG = "b8509-mix", **nvidia)
+            == "REPLACE"
+        )
 
     def test_a_cpu_prebuilt_is_not_worth_keeping(self, tmp_path):
         install_dir = _install(tmp_path, {"backend": "cpu"})
@@ -457,3 +472,13 @@ def test_every_footer_names_the_outcome():
 def test_the_flags_are_initialised_for_set_u():
     assert '_LLAMA_KEPT_GPU_PREBUILT=""' in SETUP_TEXT
     assert "_LLAMA_CPU_ONLY_ON_GPU_HOST=false" in SETUP_TEXT
+
+
+def test_the_source_build_reads_capabilities_from_the_driver_library_too():
+    """setup.sh's CUDA source build turned CUDA off without nvidia-smi (#5854); the probe
+    module beside it lists the same capabilities."""
+    start = SETUP_TEXT.index('_raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap')
+    end = SETUP_TEXT.index('CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps"', start)
+    between = SETUP_TEXT[start:end]
+    assert 'nvidia_probe.py' in between and '[ -z "$_raw_caps" ]' in between
+    assert 'UNSLOTH_NVIDIA_LIBRARY_PROBE' in between
