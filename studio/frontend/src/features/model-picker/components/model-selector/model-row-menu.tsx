@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
   Folder01Icon,
+  InformationCircleIcon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
@@ -39,6 +40,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ModelInfoDialog } from "./model-info-dialog";
 
 interface ModelRowMenuPin {
   pinned: boolean;
@@ -46,6 +48,12 @@ interface ModelRowMenuPin {
   pinLabel: string;
   unpinLabel: string;
   onToggle: () => void;
+}
+
+/** Hub repo to look up in the model-info dialog. Omitted for local-path rows, which have no
+ *  repo on the Hub to report on. */
+interface ModelRowMenuInfo {
+  repoId: string;
 }
 
 interface ModelRowMenuUpdate {
@@ -83,6 +91,7 @@ export function ModelRowMenu({
   iconClassName,
   cachePath,
   pin,
+  info,
   update,
   del,
 }: {
@@ -92,6 +101,8 @@ export function ModelRowMenu({
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
   pin?: ModelRowMenuPin;
+  /** Enables "Model info" for rows backed by a Hub repo. */
+  info?: ModelRowMenuInfo;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
 }) {
@@ -106,6 +117,7 @@ export function ModelRowMenu({
     del?.impact?.variant,
   );
   const [updateOpen, setUpdateOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
 
   // Refresh the caller when this repo+variant's managed update completes.
   const onUpdatedRef = useRef(update?.onUpdated);
@@ -171,7 +183,7 @@ export function ModelRowMenu({
     });
   }, [cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  if (!pin && !update && !del && !cachePath && !info) return null;
 
   return (
     <>
@@ -213,6 +225,21 @@ export function ModelRowMenu({
                 className="size-icon"
               />
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
+            </DropdownMenuItem>
+          )}
+          {info && (
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.stopPropagation();
+                setInfoOpen(true);
+              }}
+            >
+              <HugeiconsIcon
+                icon={InformationCircleIcon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              <span>Model info</span>
             </DropdownMenuItem>
           )}
           {cachePath && (
@@ -282,6 +309,15 @@ export function ModelRowMenu({
           deleting={deleting}
           blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
           onConfirm={() => void handleDeleteConfirm()}
+        />
+      )}
+
+      {/* Mounted only once opened, so a menu that is never used costs no metadata fetch. */}
+      {info && infoOpen && (
+        <ModelInfoDialog
+          repoId={info.repoId}
+          open={infoOpen}
+          onOpenChange={setInfoOpen}
         />
       )}
 

@@ -2165,6 +2165,7 @@ function GgufVariantExpander({
                   cachePath={
                     isLocalPath ? undefined : { repoId, variant: v.quant }
                   }
+                  info={isLocalPath ? undefined : { repoId }}
                   pin={
                     allowPin && v.downloaded
                       ? {
@@ -5137,6 +5138,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
+            info={{ repoId: entry.repoId }}
             pin={{
               pinned: true,
               pinLabel: "Pin to top",
@@ -5266,6 +5268,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            info={{ repoId: c.repo_id }}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin to top",
@@ -5360,6 +5363,7 @@ export function HubModelPicker({
               <ModelRowMenu
                 ariaLabel={`More options for ${c.repo_id}`}
                 cachePath={{ repoId: c.repo_id }}
+                info={{ repoId: c.repo_id }}
                 del={{
                   title: "Delete cached model?",
                   impact: { repoId: c.repo_id },
@@ -5509,6 +5513,7 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
             cachePath={{ repoId: c.repo_id }}
+            info={{ repoId: c.repo_id }}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
               pinLabel: "Pin to top",
