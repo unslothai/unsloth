@@ -36,9 +36,22 @@ concurrency:
 
 jobs:
   measure:
-    name: does the host property agree with the native call
-    runs-on: windows-latest
+    name: "property vs native call (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      # Every supported host, not one of them. The property and the startup VT behaviour are
+      # supplied by the OS: ConsoleHost and the in-box Windows PowerShell ship with Windows, so
+      # agreement on one image says nothing about another. windows-latest is Server 2025, which is
+      # not what a user runs at all; windows-11-arm is the only CLIENT SKU available to a hosted
+      # runner and therefore the closest thing here to the machine in #10805; windows-2022 is an
+      # older ConsoleHost. windows-2019 is not an option, GitHub retired it.
+      #
+      # fail-fast is off because a single UNSAFE answer is the most valuable result this lane can
+      # produce and cancelling its siblings would throw away the comparison that explains it.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022, windows-11-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,6 +59,8 @@ jobs:
 
       - name: Measure with stdout redirected, and with a real console
         shell: pwsh
+        env:
+          MATRIX_OS: ${{ matrix.os }}
         run: |
           $probe = (Resolve-Path '.github/scripts/Probe-VirtualTerminal.ps1').Path
           $outDir = Join-Path $env:RUNNER_TEMP 'vt-preflight'
@@ -95,6 +110,7 @@ jobs:
             Write-Host ''
             Write-Host "--- $($row.label)"
             Write-Host "  host               : $($row.hostName) / $($row.psVersion) / $($row.psEdition)"
+            Write-Host "  os                 : $($row.osCaption) build $($row.osBuild) / $($row.architecture)"
             Write-Host "  isOutputRedirected : $($row.isOutputRedirected)"
             Write-Host "  SupportsVirtualTerminal : $($row.supportsVt)$(if ($row.supportsVtError) { " [$($row.supportsVtError)]" })"
             Write-Host "  native GetConsoleMode/Set : $($row.nativeVt)$(if ($row.nativeVtError) { " [$($row.nativeVtError)]" })"
@@ -113,15 +129,19 @@ jobs:
           Write-Host ''
           Write-Host 'control: the console-attached run really had a console (isOutputRedirected=False)'
 
+          # Named, and scoped to the image that produced it. One runner's agreement is evidence about
+          # that runner: the claim the replacement rests on is that EVERY measured host agrees, and
+          # that claim belongs to the summary job below, not to any single matrix leg.
+          $where = "$env:MATRIX_OS ($($c.osCaption ?? 'unknown build'))"
           Write-Host ''
           if ($null -ne $c.supportsVt -and $c.supportsVt -eq $c.nativeVt) {
-            Write-Host "VERDICT: SAFE. At a real console the property and the native call both answer $($c.supportsVt),"
-            Write-Host '         so Enable-StudioVirtualTerminal can read the property and the three kernel32'
-            Write-Host '         imports can go, taking studio/setup.ps1 emit helpers with them.'
+            Write-Host "VERDICT for ${where}: SAFE. At a real console the property and the native call both answer $($c.supportsVt)."
+            Write-Host '         This leg speaks for this image only. See the summary job for whether every'
+            Write-Host '         measured host agreed, which is what the replacement actually rests on.'
             exit 0
           }
 
-          Write-Host "::error::VERDICT: UNSAFE. At a real console the property answers '$($c.supportsVt)' but the native call answers '$($c.nativeVt)'."
+          Write-Host "::error::VERDICT for ${where}: UNSAFE. At a real console the property answers '$($c.supportsVt)' but the native call answers '$($c.nativeVt)'."
           Write-Host '::error::Do NOT swap the implementation. Users on this host would lose banner colour, or worse get raw escape sequences.'
           Write-Host '::error::This is the measurement saying no, which is the outcome this lane exists to be able to produce.'
           exit 1
@@ -130,7 +150,38 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vt-preflight
+          # Per leg. upload-artifact v4 and later refuse a duplicate name outright, so one shared
+          # name would leave the matrix with a single surviving leg's measurements.
+          name: vt-preflight-${{ matrix.os }}
           path: ${{ runner.temp }}/vt-preflight/*.json
           if-no-files-found: warn
           retention-days: 30
+
+  agree:
+    name: did every measured host agree
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Combine the legs
+        env:
+          RESULT: ${{ needs.measure.result }}
+        run: |
+          set -euo pipefail
+          echo "measure matrix result: $RESULT"
+          if [ "$RESULT" = "success" ]; then
+            echo "VERDICT: SAFE on every measured host."
+            echo "Windows Server 2025, Windows Server 2022 and Windows 11 on Arm64 all reported the"
+            echo "property and the native call agreeing at a real console. That is the claim"
+            echo "Enable-StudioVirtualTerminal's replacement rests on."
+            echo
+            echo "Still not measured here, and not claimed: Windows 10, and x64 Windows 11 client."
+            echo "No hosted runner offers either. The four self-hosted Windows 11 Pro boxes are where"
+            echo "an x64 client answer would come from if one is wanted before the swap ships."
+            exit 0
+          fi
+          echo "::error::At least one host did not agree, or could not be measured (result: $RESULT)."
+          echo "::error::Read the per-host legs. A single UNSAFE answer is enough to cancel the replacement:"
+          echo "::error::the cost of being wrong is raw escape sequences printed at a user."
+          exit 1

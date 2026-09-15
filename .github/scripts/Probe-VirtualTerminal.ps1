@@ -45,6 +45,11 @@ $result = [ordered]@{
     hostName            = $Host.Name
     psVersion           = $PSVersionTable.PSVersion.ToString()
     psEdition           = $PSVersionTable.PSEdition
+    # The OS build, because the thing being measured is supplied by the OS. A verdict that does not
+    # say which ConsoleHost produced it cannot be checked later against the host a user reports.
+    osCaption           = $null
+    osBuild             = $null
+    architecture        = $env:PROCESSOR_ARCHITECTURE
     isOutputRedirected  = $null
     supportsVt          = $null
     supportsVtError     = $null
@@ -52,6 +57,13 @@ $result = [ordered]@{
     nativeVtError       = $null
     nativeConsoleMode   = $null
 }
+
+# Get-CimInstance rather than Get-ComputerInfo: the latter is slow and absent on 5.1 before 5.1.14393.
+try {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $result.osCaption = [string]$os.Caption
+    $result.osBuild = "$($os.Version).$($os.BuildNumber)"
+} catch { $result.osCaption = "THREW: $($_.Exception.GetType().Name)" }
 
 try { $result.isOutputRedirected = [Console]::IsOutputRedirected } catch { $result.isOutputRedirected = "THREW: $($_.Exception.GetType().Name)" }
 
