@@ -127,6 +127,8 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.llama_cpp import requested_video_fps
+from core.inference.llama_video_input import shrink_video_for_llama
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -19919,7 +19921,8 @@ _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
 # Flooring instead refused a file of exactly the size the composer allows.
-_MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
+_MAX_VIDEO_BYTES = 64 * 1024 * 1024
+_MAX_VIDEO_B64_CHARS = 4 * math.ceil(_MAX_VIDEO_BYTES / 3)
 _MAX_AUDIO_SECONDS = 30 * 60
 # The duration cap alone is rate-relative, so a high-rate container retains far
 # more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
@@ -20610,7 +20613,7 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
     """Append an input_video part to the last user message, in place.
 
     llama-server samples the clip into frames itself (ffmpeg via mtmd), so the
-    container is forwarded untouched. Rides the message list like image_url and
+    part carries a container, not frames. Rides the message list like image_url and
     input_audio, so it flows through the plain and tool-calling paths alike.
     Ref: llama.cpp tools/server/server-common.cpp, `type == "input_video"`.
     """
@@ -23604,8 +23607,7 @@ async def produce_openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
 
-        # Forwarded whole: llama-server owns the frame sampling, and takes the
-        # clip only when /props reports modalities.video.
+        # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
         if payload.video_base64:
             if not getattr(llama_backend, "_has_video_input", False):
@@ -23617,6 +23619,21 @@ async def produce_openai_chat_completions(
             video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
             if video_rejection is not None:
                 raise _reject(*video_rejection)
+            try:
+                # The transcode runs BEFORE llama-server samples and the server can
+                # only duplicate what was dropped, so an explicit rate must reach it.
+                video_b64 = await asyncio.to_thread(
+                    shrink_video_for_llama,
+                    video_b64,
+                    _MAX_VIDEO_BYTES,
+                    sampled_fps = requested_video_fps(getattr(llama_backend, "extra_args", None)),
+                )
+            except Exception as e:
+                # The helper absorbs its own ffmpeg failures, so reaching here means
+                # something it does not model went wrong. Reject like the audio path
+                # above, rather than letting a raw 500 leak the monitor entry with it.
+                logger.warning("Video preprocessing failed: %s", e, exc_info = True)
+                raise _reject(400, "Could not process the provided video file.")
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
