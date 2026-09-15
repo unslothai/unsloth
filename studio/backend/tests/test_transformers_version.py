@@ -2269,6 +2269,68 @@ class TestVenvDirFileIntegrity:
         assert installed == ["transformers==5.3.0"], "damaged sidecar was not reinstalled"
         assert not (venv_dir / "transformers").exists(), "damaged tree was not wiped first"
 
+    def test_ensure_venv_dir_repairs_a_symlinked_sidecar_in_place(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The Docker image keeps the sidecars under UNSLOTH_STUDIO_APP and links them into
+        the Studio home. rmtree refuses a symlink and ignore_errors hides that, so the
+        damaged tree used to survive the wipe and a version-satisfied install left it in
+        place. The repair has to reach the directory the link points at, and the link
+        itself must stay, since Studio keeps addressing the sidecar through the home."""
+        monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(tmp_path / "app"))
+        real = self._make_venv(tmp_path / "app" / "venv")
+        (real / "transformers" / "__init__.py").write_text("x")
+        link = tmp_path / "home" / "venv"
+        link.parent.mkdir()
+        link.symlink_to(real)
+
+        targets = []
+
+        def _fake_install(pkg, target):
+            targets.append(target)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        ok = _ensure_venv_dir(str(link), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert ok is True
+        assert link.is_symlink(), "the home's link to the sidecar was replaced by a real dir"
+        assert not (real / "transformers").exists(), "damaged tree behind the link was not wiped"
+        assert targets == [str(real)], "the reinstall did not target the linked directory"
+        assert (real / ".unsloth-studio-owned").is_file()
+
+    def test_ensure_venv_dir_does_not_wipe_behind_a_link_that_is_not_the_image_tree(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A user who moved a sidecar to another disk and linked it is not the Docker
+        layout, so the repair must not follow that link into a tree it does not own."""
+        monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+        real = self._make_venv(tmp_path / "elsewhere" / "venv")
+        (real / "transformers" / "__init__.py").write_text("x")
+        (real / "keep.txt").write_text("mine")
+        link = tmp_path / "home" / "venv"
+        link.parent.mkdir()
+        link.symlink_to(real)
+
+        targets = []
+
+        def _fake_install(pkg, target):
+            targets.append(target)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        _ensure_venv_dir(str(link), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert link.is_symlink()
+        assert (
+            real / "keep.txt"
+        ).read_text() == "mine", "the user's tree behind the link was wiped"
+        assert targets == [str(link)]
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(tmp_path / "app"))
+        _ensure_venv_dir(str(link), ("transformers==5.3.0",), "transformers 5.3.0")
+        assert (real / "keep.txt").exists(), "a link outside the app tree was followed"
+
     def test_ensure_venv_dir_restores_the_studio_owned_marker(self, tmp_path: Path, monkeypatch):
         """The wipe takes setup.sh's ownership marker with the old directory. Without a
         new one, the next `unsloth studio update` under a custom UNSLOTH_STUDIO_HOME

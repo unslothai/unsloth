@@ -211,11 +211,28 @@ def test_concurrent_misses_ask_the_hub_once_per_repo(monkeypatch):
 
 
 def test_a_listing_probes_its_unknown_repos_together(monkeypatch):
-    monkeypatch.setattr(access, "_hub_public_answer", lambda *a: time.sleep(0.1) or True)
+    """All eight probes must be in flight at once, not walked one at a time.
+
+    Asked with a barrier rather than a stopwatch, the way
+    `test_concurrent_misses_ask_the_hub_once_per_repo` above already does. Eight
+    sleeping probes finish in ~0.1s concurrently and ~0.8s serially, so `< 0.4`
+    looks like it separates the two -- but it is still eight threads on a shared
+    2-vCPU runner under `pytest -n 4`, and descheduling reads as serialization.
+    A Barrier(8) only clears if all eight really are inside the probe together,
+    which is the claim, and it cannot be answered by how busy the box is.
+    """
     rows = [{"repo_id": f"org/slow-{index}"} for index in range(8)]
-    start = time.perf_counter()
+    # Sized off the fan-out, so _PROBE_FANOUT = 1 fails rather than satisfying a Barrier(1).
+    together = min(access._PROBE_FANOUT, len(rows))
+    assert together > 1, f"_PROBE_FANOUT is {access._PROBE_FANOUT}; the listing is serial"
+    barrier = threading.Barrier(together)
+
+    def answer(*_args):
+        barrier.wait(timeout = 30)
+        return True
+
+    monkeypatch.setattr(access, "_hub_public_answer", answer)
     assert len(run_as(ALICE, access.filter_model_rows, rows)) == 8
-    assert time.perf_counter() - start < 0.4
 
 
 def test_a_warm_listing_asks_the_hub_nothing(monkeypatch):

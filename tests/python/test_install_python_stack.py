@@ -10,6 +10,7 @@ import io
 import os
 import re
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -66,6 +67,161 @@ STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips
+
+STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
+
+
+# A CI image with its own /etc/pip.conf would leak into these assertions, and a test that
+# mocks subprocess could poison the memoised read for whatever runs next under -p randomly.
+@pytest.fixture(autouse = True)
+def _hermetic_pinned_pip_config(request):
+    ips._PINNED_PIP_CONFIG_LISTING = None
+    ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+    if "reads_real_pip_config" in request.keywords:
+        yield
+    else:
+        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
+            yield
+    ips._PINNED_PIP_CONFIG_LISTING = None
+    ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+
+
+class TestUvOnlyBinaryOnPinnedCommands:
+    """uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
+    UV_NO_CONFIG=1, so restoring the policy in the environment alone leaves it unenforced
+    on the leg that actually runs. Measured against uv 0.10.7: with PIP_ONLY_BINARY=:all:
+    set, a pinned `uv pip install` builds the sdist anyway, and `--only-binary` refuses
+    it."""
+
+    PINNED = ("torch", "--index-url", "https://pin.example/whl")
+    AMD = ("torch", "--index-url", "https://repo.amd.com/rocm/whl/gfx1151/")
+
+    def _uv_cmd(self, args):
+        return ips._pinned_cmd_and_env(ips._build_uv_cmd(args))[0]
+
+    def _pip_cmd(self, args):
+        return ips._pinned_cmd_and_env(ips._build_pip_cmd(args))[0]
+
+    def test_a_pinned_uv_command_carries_only_binary_as_flags(self):
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._uv_cmd(self.PINNED)
+        assert cmd[-2:] == ["--only-binary", ":all:"]
+
+    def test_each_entry_becomes_its_own_flag(self):
+        """uv takes the option repeatably, not comma joined the way pip spells it."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
+            cmd = self._uv_cmd(self.PINNED)
+        assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
+
+    def test_an_amd_arch_pin_exempts_rocm_on_the_uv_leg(self):
+        """Every torch on a gfx* index requires rocm[libraries], published as an sdist alone."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._uv_cmd(self.AMD)
+        assert cmd[-4:] == ["--only-binary", ":all:", "--no-binary", "rocm"]
+
+    def test_an_amd_arch_pip_command_keeps_the_policy_in_env_and_the_exemption_in_argv(self):
+        """pip reads PIP_ONLY_BINARY itself; the command line only has to exempt rocm."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd, env = ips._pinned_cmd_and_env(ips._build_pip_cmd(self.AMD))
+        assert "--only-binary" not in cmd
+        assert cmd[-2:] == ["--no-binary", "rocm"]
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+
+    @pytest.mark.parametrize(
+        "index",
+        (
+            "https://download.pytorch.org/whl/cu128",
+            "https://download.pytorch.org/whl/cpu",
+            "https://download.pytorch.org/whl/xpu",
+            "https://download.pytorch.org/whl/rocm7.2",
+            "https://mirror.corp/gfx1151/cu128",
+            "https://mirror.corp/gfx-private",
+        ),
+    )
+    @pytest.mark.parametrize("leg", ("uv", "pip"))
+    def test_no_other_pin_is_exempted(self, index, leg):
+        """Anywhere else the name would only let an index get a build past the policy."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            args = ("torch", "--index-url", index)
+            cmd = self._uv_cmd(args) if leg == "uv" else self._pip_cmd(args)
+        assert "--no-binary" not in cmd
+
+    @pytest.mark.parametrize(
+        "index",
+        (
+            "https://mirror.corp/amd/gfx120X-all/",
+            "https://mirror.corp/amd/gfx110X-all?token=x",
+        ),
+    )
+    def test_a_mirrored_amd_arch_index_is_exempted_too(self, index):
+        """UNSLOTH_AMD_ROCM_MIRROR / UNSLOTH_ROCM_WINDOWS_MIRROR keep the gfx leaf."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._pip_cmd(("torch", "--index-url", index))
+        assert cmd[-2:] == ["--no-binary", "rocm"]
+
+    @pytest.mark.parametrize("policy", ("rocm", ":all:,rocm", ":all:,ROCm"))
+    @pytest.mark.parametrize("leg", ("uv", "pip"))
+    def test_a_package_the_operator_names_is_not_exempted(self, policy, leg):
+        """A command-line --no-binary overrides the operator's own rule for that package."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": policy}):
+            cmd = self._uv_cmd(self.AMD) if leg == "uv" else self._pip_cmd(self.AMD)
+        assert "--no-binary" not in cmd
+
+    @pytest.mark.reads_real_pip_config  # stubbed below with a read that fails once
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    def test_the_flag_and_the_environment_can_never_disagree(self, monkeypatch, installer):
+        """Both come from one read. A failed read is not memoised, so asking twice let a
+        transient miss leave the flag off the argv while the retry put the policy in the
+        environment, which uv never reads."""
+        answers = iter(({}, {"PIP_ONLY_BINARY": ":all:"}))
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: next(answers, {}))
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        runs = []
+        monkeypatch.setattr(
+            ips.subprocess,
+            "run",
+            lambda cmd, **kwargs: runs.append((cmd, kwargs.get("env")))
+            or subprocess.CompletedProcess(cmd, 0, b""),
+        )
+        getattr(ips, installer)("torch", *self.PINNED, constrain = False)
+        ((cmd, env),) = runs
+        flagged = cmd[cmd.index("--only-binary") + 1] if "--only-binary" in cmd else None
+        assert flagged == (env or {}).get("PIP_ONLY_BINARY")
+
+    @pytest.mark.reads_real_pip_config  # stubbed below with reads that disagree
+    def test_the_pip_fallback_runs_with_the_env_its_exemption_came_from(self, monkeypatch):
+        """uv fails, so pip_install falls back. Had run() read the config again, a policy that
+        appeared on that read would refuse rocm with no exemption on the argv."""
+        answers = iter(({}, {}, {"PIP_ONLY_BINARY": ":all:"}))
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: next(answers, {}))
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append((cmd, kwargs.get("env")))
+            return subprocess.CompletedProcess(cmd, 1 if cmd[:1] == ["uv"] else 0, b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        ips.pip_install("torch", *self.AMD, constrain = False)
+        pip_cmd, pip_env = runs[-1]
+        assert pip_cmd[:3] == [sys.executable, "-m", "pip"]
+        assert ("--no-binary" in pip_cmd) == bool((pip_env or {}).get("PIP_ONLY_BINARY"))
+
+    def test_a_non_pinned_command_is_left_alone(self):
+        """It keeps its config file, so uv applies the operator's policy itself."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            assert self._uv_cmd(("torch",)) == ips._build_uv_cmd(("torch",))
+            assert self._pip_cmd(("torch",)) == ips._build_pip_cmd(("torch",))
+
+    def test_no_policy_leaves_the_argv_untouched(self):
+        """An unconfigured host must run exactly the command main ran, AMD indexes included."""
+        env = {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}
+        with mock.patch.dict(os.environ, env, clear = True):
+            for args in (self.PINNED, self.AMD):
+                assert self._uv_cmd(args) == ips._build_uv_cmd(args)
+                assert self._pip_cmd(args) == ips._build_pip_cmd(args)
 
 
 class TestBuildUvCmdTorchBackend:
@@ -312,10 +468,9 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_CONFIG_FILE" not in env
 
     def test_pinned_cmd_disables_pip_config_files(self):
-        """The pip FALLBACK honours user/site pip config files (pip config set
-        global.extra-index-url) even with the PIP_* env vars stripped; pip loads
-        NO configuration files when PIP_CONFIG_FILE is os.devnull. Harmless for
-        uv, decisive for the fallback."""
+        """devnull is the ONLY spelling that reaches a SITE or GLOBAL pip.conf. Measured
+        on pip 26.2: naming a real file suppresses the per-user file alone, so a
+        venv-level `no-index` still killed the pin."""
         env = ips._install_env_for_cmd(
             ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
         )
@@ -506,18 +661,429 @@ class TestHardenedPipConfigRelaxation:
             assert ips._install_env_for_cmd(["python", "-m", "pip", "--version"]) is None
             assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
 
-    def test_pinned_cmd_strips_restrictive_policy_env(self):
-        """The pinned branch neutralises the config FILES, but an env var outranks a
-        config file, so a hardened shell could still fail a torch repair the pin was
-        supposed to make deterministic."""
+    def test_pinned_cmd_clears_hash_mode_only(self):
+        """Hash enforcement, which our unhashed requirements cannot satisfy, and nothing
+        else the operator hardened: dropping only-binary would let a compromised mirror
+        run a source build they had forbidden."""
         with mock.patch.dict(os.environ, self.HOSTILE):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
         assert env is not None
-        for name in ("PIP_REQUIRE_HASHES", "PIP_ONLY_BINARY", "UV_NO_BUILD", "UV_EXCLUDE_NEWER"):
-            assert name not in env, f"{name} must be cleared for a pinned install"
-        assert env["UV_NO_CONFIG"] == "1" and env["PIP_CONFIG_FILE"] == os.devnull
+        for name in ("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"):
+            assert name not in env, f"{name} cannot be satisfied by an unhashed pin"
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert env["UV_NO_BUILD"] == "1"  # inert for uv, but not ours to drop either
+        assert env["UV_NO_CONFIG"] == "1"
+
+    def test_pinned_cmd_clears_an_upload_cutoff_uv_alone_would_honour(self):
+        """Only uv reads it, and pip_install falls back to pip whenever uv fails, so
+        honouring it on the uv leg alone lets the fallback install past the cutoff."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert "UV_EXCLUDE_NEWER" not in env
+
+    def test_pinned_cmd_clears_forced_source_builds(self):
+        """Dropping it is hardening: it would force torch to be BUILT from an sdist the
+        pinned index does not serve."""
+        with mock.patch.dict(os.environ, {"PIP_NO_BINARY": ":all:", "UV_NO_BINARY": ":all:"}):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert "PIP_NO_BINARY" not in env and "UV_NO_BINARY" not in env
+
+    LISTING = (
+        "global.index-url='https://mirror/simple'\n"
+        "global.extra-index-url='https://other/simple'\n"
+        "global.no-index='true'\n"
+        "global.no-binary=':all:'\n"
+        "global.require-hashes='true'\n"
+        "install.only-binary=':all:'\n"
+        "global.cert='/etc/ssl/corp.pem'\n"
+        "global.proxy='http://proxy.corp:3128'\n"
+        "global.trusted-host='a.corp\\nb.corp'\n"
+        "list.format='columns'\n"
+        ":env:.no-binary=':all:'\n"
+    )
+
+    def _overrides(
+        self,
+        listing = None,
+        subcommand = "install",
+    ):
+        return ips._parse_pinned_pip_config(
+            (self.LISTING if listing is None else listing).encode(), subcommand
+        )
+
+    def test_devnull_gives_the_operators_policy_and_transport_back(self):
+        """only-binary is the security half; cert / proxy / trusted-host are the half
+        that makes a private index reachable, which devnull alone used to drop."""
+        overrides = self._overrides()
+        assert overrides["PIP_ONLY_BINARY"] == ":all:"
+        assert overrides["PIP_CERT"] == "/etc/ssl/corp.pem"
+        assert overrides["PIP_PROXY"] == "http://proxy.corp:3128"
+        # Newline separated by `pip config list`, whitespace separated in the environment.
+        assert overrides["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+
+    def test_the_pin_and_the_unsatisfiable_policy_never_come_back(self):
+        """The pin replaces the source keys, no-binary would force a source build, and
+        require-hashes cannot be met. None may come back."""
+        overrides = self._overrides()
+        for name in (
+            "PIP_INDEX_URL",
+            "PIP_EXTRA_INDEX_URL",
+            "PIP_NO_INDEX",
+            "PIP_NO_BINARY",
+            "PIP_REQUIRE_HASHES",
+        ):
+            assert name not in overrides, f"{name} must not survive the pinned scrub"
+
+    def test_options_from_unrelated_sections_are_not_translated(self):
+        """`list.format` becoming PIP_FORMAT would apply it to install."""
+        assert "PIP_FORMAT" not in self._overrides()
+
+    def test_env_entries_are_skipped(self):
+        """The child already inherits them, and re-asserting would undo the scrub."""
+        assert "PIP_NO_BINARY" not in self._overrides()
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            mock.Mock(returncode = 1, stdout = b""),  # no pip in the venv yet
+            mock.Mock(returncode = 0, stdout = None),  # nothing captured
+            OSError("no pip"),
+            subprocess.TimeoutExpired("pip", 60),  # a wedged pip
+        ],
+    )
+    def test_a_pip_that_cannot_answer_changes_nothing(self, outcome):
+        """On the path to every pinned install, so anything but a clean listing has to
+        degrade to no overrides."""
+        kwargs = (
+            {"side_effect": outcome}
+            if isinstance(outcome, Exception)
+            else {"return_value": outcome}
+        )
+        with mock.patch.object(ips.subprocess, "run", **kwargs):
+            assert ips._pinned_pip_config_overrides() == {}
+
+    @pytest.mark.reads_real_pip_config
+    def test_only_a_successful_read_is_cached(self):
+        """A transient miss must not cost the operator their cert and proxy for the rest
+        of the run."""
+        listing = b"global.cert='/etc/ssl/corp.pem'\n"
+        with mock.patch.object(ips.subprocess, "run", side_effect = OSError("wedged")):
+            assert ips._pinned_pip_config_overrides() == {}
+        with mock.patch.object(ips.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode = 0, stdout = listing)
+            assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/ssl/corp.pem"}
+            assert run.call_count == 1
+        # ...and the success IS cached: N pinned commands, one subprocess.
+        with mock.patch.object(ips.subprocess, "run") as run:
+            assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/ssl/corp.pem"}
+            assert run.call_count == 0
+
+    def test_garbage_in_the_listing_is_ignored_not_fatal(self):
+        for listing in (
+            b"",
+            b"not a config listing\n",
+            b"global.cert\n",
+            b"=\n",
+            b"global.cert=<unparseable>\n",
+            b"\xff\xfe binary \x00\n",
+        ):
+            assert ips._parse_pinned_pip_config(listing) == {}
+
+    def test_a_command_section_beats_global_for_a_scalar(self):
+        """pip's own precedence for a single-valued option, resolved by position, not by
+        the order the listing prints the two lines in."""
+        for listing in (
+            b"global.timeout='30'\ninstall.timeout='9'\n",
+            b"install.timeout='9'\nglobal.timeout='30'\n",
+        ):
+            assert ips._parse_pinned_pip_config(listing)["PIP_TIMEOUT"] == "9"
+
+    def test_the_section_read_is_the_one_pip_would_apply(self):
+        """pip config is per subcommand: measured on pip 26.2, `[download] no-index` stops
+        a `pip download` and leaves `pip install` alone. A PIP_ variable is command-wide,
+        so reading `[install]` for a download both drops that command's own settings and
+        imposes another command's."""
+        listing = (
+            b"global.timeout='30'\ninstall.only-binary=':all:'\n"
+            b"install.timeout='9'\ndownload.timeout='5'\ndownload.cert='/etc/dl.pem'\n"
+        )
+        for_install = ips._parse_pinned_pip_config(listing, "install")
+        assert for_install["PIP_TIMEOUT"] == "9" and for_install["PIP_ONLY_BINARY"] == ":all:"
+        assert "PIP_CERT" not in for_install
+        for_download = ips._parse_pinned_pip_config(listing, "download")
+        assert for_download["PIP_TIMEOUT"] == "5" and for_download["PIP_CERT"] == "/etc/dl.pem"
+        assert "PIP_ONLY_BINARY" not in for_download, "an install-only policy is not a download one"
+        # A section belonging to neither is never read.
+        assert "PIP_FORMAT" not in ips._parse_pinned_pip_config(
+            b"list.format='columns'\n", "install"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd, expected",
+        [
+            (["python", "-m", "pip", "install", "x", "--index-url", "u"], "install"),
+            (["python", "-m", "pip", "download", "x", "--index-url", "u"], "download"),
+            (["python", "-m", "pip", "wheel", "x", "--index-url", "u"], "wheel"),
+            # uv reads none of the PIP_ vars; they exist for its pip FALLBACK, an install.
+            (["uv", "pip", "install", "x", "--index-url", "u"], "install"),
+            (["python", "-m", "pip", "uninstall", "-y", "x"], "install"),
+        ],
+    )
+    def test_the_subcommand_drives_which_section_is_read(self, cmd, expected):
+        assert ips._pip_subcommand_of(cmd) == expected
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_xpu_download_gets_the_download_section(self):
+        """_ensure_xpu_triton's pinned fetch is a `pip download`, so a corporate
+        `[download] cert` must reach it rather than an `[install]` one.
+
+        PIP_CERT is cleared first: the caller's environment legitimately wins over the
+        re-assertion, so a host that exports one would otherwise make this assert on the
+        ambient value and pass or fail for reasons that have nothing to do with sections.
+        """
+        listing = b"download.cert='/etc/dl.pem'\ninstall.cert='/etc/inst.pem'\n"
+        env_without_cert = {k: v for k, v in os.environ.items() if k != "PIP_CERT"}
+        with (
+            mock.patch.object(ips, "_PINNED_PIP_CONFIG_LISTING", listing),
+            mock.patch.dict(os.environ, env_without_cert, clear = True),
+        ):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "download", "triton", "--index-url", "https://x/xpu"]
+            )
+        assert env["PIP_CERT"] == "/etc/dl.pem"
+
+    def test_an_empty_inherited_value_is_not_an_override(self):
+        ambient = ""
+        """pip ignores an EMPTY environment value and falls through to the config file
+        (verified with `pip config debug`), which the pinned branch has just switched off
+        with devnull. Treating it as set would lose the operator's cert entirely. Only a
+        truly empty value: a whitespace one is a value pip would use, not ours to
+        second-guess."""
+        with (
+            mock.patch.object(
+                ips, "_pinned_pip_config_overrides", lambda *a, **k: {"PIP_CERT": "/etc/corp.pem"}
+            ),
+            mock.patch.dict(os.environ, {"PIP_CERT": ambient}),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_CERT"] == "/etc/corp.pem"
+
+    def test_a_repeatable_option_accumulates_across_sections(self):
+        """Measured on pip 26.2: `[global] only-binary = :all:` plus
+        `[install] only-binary = numpy` still refuses an unrelated sdist, so pip
+        accumulates the two rather than letting the command section replace the global
+        one. Keeping only `numpy` would drop the operator's :all: policy on every pinned
+        install, which is the control this change exists to preserve."""
+        listing = b"global.only-binary=':all:'\ninstall.only-binary='numpy'\n"
+        assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == ":all:,numpy"
+        # A scalar still takes the command section alone: two certs cannot be concatenated.
+        certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
+        assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
+
+    def test_a_non_utf8_listing_is_decoded_the_way_the_child_wrote_it(self, monkeypatch):
+        """A piped child encodes stdout with ITS locale encoding, which on Windows is the
+        ANSI code page, not UTF-8. Getting that wrong does not merely lose the setting: it
+        yields a cert path that exists nowhere, so pip fails the pinned install outright on
+        exactly the corporate host the allowlist exists to serve. The read dictates the
+        child's encoding (below) rather than sniffing it, since cp1252 bytes can form valid
+        UTF-8; this covers the fallback, for a listing produced some other way."""
+        path = "C:\\Soci\u00e9t\u00e9\\ca.pem"
+        # repr, the way `pip config list` itself prints a value.
+        listing = f"global.cert={path!r}\n".encode("cp1252")
+        monkeypatch.setattr(ips.locale, "getpreferredencoding", lambda *a: "cp1252")
+        assert ips._parse_pinned_pip_config(listing) == {"PIP_CERT": path}
+        # UTF-8 is still tried first and strictly, so the POSIX case is untouched.
+        assert (
+            ips._decode_pip_output("cert='/etc/caf\u00e9/ca.pem'".encode())
+            == "cert='/etc/caf\u00e9/ca.pem'"
+        )
+        # Undecodable under either codec is skipped, never fatal.
+        assert ips._parse_pinned_pip_config(b"global.cert=\xff\xfe\x00") == {}
+
+    @pytest.mark.reads_real_pip_config
+    def test_a_wedged_pip_costs_the_run_one_budget_not_one_per_command(self, monkeypatch):
+        """Failures are deliberately not memoised, so a transient miss cannot cost the
+        operator their cert for the whole run. Unbounded, a HANG paid the timeout once per
+        pinned command instead of once."""
+        attempts = []
+
+        def always_fails(cmd, **kwargs):
+            attempts.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        monkeypatch.setattr(ips.subprocess, "run", always_fails)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        for _ in range(25):
+            assert ips._pinned_pip_config_overrides() == {}
+        assert len(attempts) == 2, attempts
+        assert set(attempts) == {ips._PINNED_PIP_CONFIG_TIMEOUT}
+        # ...and small enough that the worst case is a wait, not a hang.
+        assert ips._PINNED_PIP_CONFIG_TIMEOUT * 2 <= 60
+
+    @pytest.mark.reads_real_pip_config
+    def test_a_cheap_failure_does_not_spend_the_budget(self, monkeypatch):
+        """A fresh venv has no pip for the first part of the run. That answer is instant,
+        so budgeting it would mean the operator's cert is lost for the rest of the run the
+        moment pip does appear."""
+        calls = []
+
+        def missing_then_present(cmd, **kwargs):
+            calls.append(1)
+            if len(calls) < 8:
+                raise OSError("no pip yet")
+            return subprocess.CompletedProcess(cmd, 0, b"global.cert='/etc/corp/ca.pem'\n")
+
+        monkeypatch.setattr(ips.subprocess, "run", missing_then_present)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        for _ in range(7):
+            assert ips._pinned_pip_config_overrides() == {}
+        assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/corp/ca.pem"}
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_read_dictates_the_child_encoding(self, monkeypatch):
+        """Sniffing cannot recover an undictated encoding, so the child is told one."""
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            return subprocess.CompletedProcess(cmd, 0, b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        ips._pinned_pip_config_overrides()
+        assert seen.get("PYTHONIOENCODING") == "utf-8"
+
+    def test_trusted_host_takes_section_precedence_instead(self):
+        """Not every list key accumulates. Asked of pip 26.2's own parser with [global]
+        and [install] both set, `trusted_hosts` comes back as the install value alone (an
+        append option, assigned per section) while `format_control` holds both (a callback
+        that mutates in place). Accumulating trusted-host would re-trust a host the
+        install section had dropped, and that is a TLS decision."""
+        hosts = b"global.trusted-host='global-a.corp'\ninstall.trusted-host='install-b.corp'\n"
+        assert (
+            ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "install-b.corp"
+        )
+        # Multiple hosts WITHIN the winning section are still space separated.
+        many = rb"install.trusted-host='a.corp\nb.corp'"
+        assert ips._parse_pinned_pip_config(many, "install")["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+
+    def test_a_reset_entry_keeps_its_order(self):
+        """pip applies a repeatable option IN ORDER and `:none:` empties the set, so a
+        re-add after a reset has to survive. Measured on pip 26.2: [global] a,b with
+        [install] :none:,a still refuses a's sdist, and so does this concatenation, while
+        deduplicating dropped the re-add and left `:none:` last, which empties the set and
+        allowed the very build the operator forbade."""
+        listing = (
+            b"global.only-binary='probe-sdist,probe-wheel'\n"
+            b"install.only-binary=':none:,probe-sdist'\n"
+        )
+        assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == (
+            "probe-sdist,probe-wheel,:none:,probe-sdist"
+        )
+
+    @pytest.mark.parametrize(
+        "listing, expected",
+        [
+            # One value, passed through: collapsing whitespace breaks a real path.
+            (
+                b"global.cert='C:\\Program  Files\\ca.pem'",
+                {"PIP_CERT": "C:\\Program  Files\\ca.pem"},
+            ),
+            (
+                b"global.proxy='http://user:pw@proxy.corp:3128'",
+                {"PIP_PROXY": "http://user:pw@proxy.corp:3128"},
+            ),
+            # Measured: rendered on ONE line with an escaped \n, which literal_eval undoes.
+            (rb"global.trusted-host='a.corp\nb.corp'", {"PIP_TRUSTED_HOST": "a.corp b.corp"}),
+            # COMMA separated, not whitespace. Verified: PIP_ONLY_BINARY="a,b" refuses both.
+            (rb"global.only-binary='numpy\nscipy'", {"PIP_ONLY_BINARY": "numpy,scipy"}),
+            (b"global.only-binary=':all:'", {"PIP_ONLY_BINARY": ":all:"}),
+        ],
+    )
+    def test_each_key_is_joined_the_way_pip_reads_it(self, listing, expected):
+        assert ips._parse_pinned_pip_config(listing) == expected
+
+    def test_the_callers_own_environment_wins(self):
+        """The re-assertion fills gaps; it never overwrites a variable the caller set."""
+        with (
+            mock.patch.object(
+                ips,
+                "_pinned_pip_config_overrides",
+                lambda *a, **k: {"PIP_CERT": "/etc/ssl/corp.pem"},
+            ),
+            mock.patch.dict(os.environ, {"PIP_CERT": "/home/me/mine.pem"}),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_CERT"] == "/home/me/mine.pem"
+
+    @pytest.mark.parametrize(
+        "configured, exported, expected",
+        [
+            ("numpy", "scipy", "numpy,scipy"),
+            (":all:", ":none:", ":all:,:none:"),
+            (":none:", ":all:", ":none:,:all:"),
+        ],
+    )
+    def test_only_binary_from_the_environment_adds_to_the_file(
+        self, configured, exported, expected
+    ):
+        """only-binary accumulates: measured on pip 26.2, the file's entries apply first and the
+        environment's after them. Letting the variable replace the file lost the file's rule."""
+        with (
+            mock.patch.object(
+                ips,
+                "_pinned_pip_config_overrides",
+                lambda *a, **k: {"PIP_ONLY_BINARY": configured},
+            ),
+            mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": exported}),
+        ):
+            cmd, env = ips._pinned_cmd_and_env(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_ONLY_BINARY"] == expected
+        flags = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--only-binary"]
+        assert flags == expected.split(",")
+
+    def test_no_uv_env_var_is_invented_for_a_uv_toml_no_build(self):
+        """Measured on uv 0.10.7: UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
+        environment variables, so nothing here may pretend to carry a uv.toml no-build
+        onto a pinned command."""
+        src = STACK_SOURCE
+        assert (
+            "_uv_config_build_policy" not in src
+        ), "re-asserting UV_NO_BUILD would promise a guarantee uv does not honour"
+        # A NON-pinned uv command inherits everything, which is where source builds happen.
+        with mock.patch.dict(os.environ, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"}):
+            assert ips._install_env_for_cmd(["uv", "pip", "install", "-r", "extras.txt"]) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["python", "-m", "pip", "uninstall", "-y", "install"],
+            ["python", "-m", "pip", "config", "list"],
+            [sys.executable, "/opt/tools/install.py", "--download"],
+            ["uv", "pip", "install", "-r", "extras.txt"],
+        ],
+    )
+    def test_only_a_real_pip_install_is_relaxed(self, cmd):
+        """Keyed on the pip SUBCOMMAND, not on the word appearing anywhere in argv."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert ips._install_env_for_cmd(cmd) is None
 
     def test_the_parent_environment_is_never_mutated(self):
         """The relaxation is a child-env override. Leaking it into os.environ would
@@ -527,6 +1093,37 @@ class TestHardenedPipConfigRelaxation:
             ips._install_env_for_cmd(["uv", "pip", "install", "x", "--index-url", "https://y"])
             assert os.environ["PIP_REQUIRE_HASHES"] == "1"
             assert os.environ["UV_NO_BUILD"] == "1"
+
+    @pytest.mark.parametrize(
+        "cmd, relaxed",
+        [
+            # os.path.basename keeps a backslash off-Windows: the naive-stem traps.
+            ([r"C:\Python313\python.exe", "-m", "pip", "install", "x"], True),
+            ([r"C:\venv\Scripts\pip.exe", "install", "x"], True),
+            ([r"C:\venv\Scripts\pip3.13.exe", "download", "x"], True),
+            ([r"C:\Program Files\venv\Scripts\python.exe", "-m", "pip", "wheel", "x"], True),
+            (["/venv/bin/pip", "install", "x"], True),
+            (["/venv/bin/pip3", "install", "x"], True),
+            (["python", "-m", "pip", "-q", "install", "x"], True),
+            (["python", "-m", "pip", "--isolated", "install", "x"], True),
+            # ...and the ones that only LOOK like an install.
+            (["python", "-m", "pip", "uninstall", "-y", "install"], False),
+            (["python", "-m", "pip", "show", "wheel"], False),
+            (["python", "-m", "pip", "check", "install.txt"], False),
+            (["python", "/opt/tools/install.py"], False),
+            ([r"C:\tools\installer.exe", "--download"], False),
+        ],
+    )
+    def test_the_subcommand_test_reads_every_platform_spelling(self, cmd, relaxed):
+        assert ips._is_pip_subcommand(cmd, ("install", "download", "wheel")) is relaxed
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [[], [""], ["uv"], ["python"], ["python", "-m"], ["python", "-m", "pip"]],
+    )
+    def test_a_degenerate_command_never_raises(self, cmd):
+        """run() routes EVERY command through this, so a non-command must not IndexError."""
+        assert ips._install_env_for_cmd(cmd) is None
 
     def test_the_pip_fallback_receives_the_relaxation(self):
         """End of the real path: uv fails, pip_install falls back through run(), and
@@ -2449,6 +3046,7 @@ class TestRecordlessDistributionRecovery:
             *,
             quiet = True,
             check = True,
+            env = None,
         ):
             attempts.append(cmd)
             failed = len(attempts) == 1
@@ -2475,6 +3073,7 @@ class TestRecordlessDistributionRecovery:
             *,
             quiet = True,
             check = True,
+            env = None,
         ):
             attempts.append(cmd)
             return types.SimpleNamespace(returncode = 1, stdout = b"ERROR: no matching distribution")
