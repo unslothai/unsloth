@@ -817,10 +817,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         output_tokens,
         conversation = None,
     ):
-        """Open a tool lease from ``payload``, then re-cost it before it has grown.
-
-        ``conversation`` is what a translating route hands both sides: the opening
-        prices it, and the loop re-costs it."""
+        """Open and re-cost an unchanged conversation, using translated messages when provided."""
         import asyncio
 
         from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
@@ -915,9 +912,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         ), f"round zero shrank an uncapped loop from {opened} to {committed}"
 
     def test_round_zero_keeps_a_top_level_system_prompt(self):
-        """Anthropic keeps `system` out of `messages`, and the route folds it into the
-        conversation it reserves from and re-costs; for that route it is most of the
-        prompt, and both sides have to count it once."""
+        """Count Anthropic system content once in both admission and re-cost."""
         system = "You are a careful assistant that cites its sources. " * 200
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],

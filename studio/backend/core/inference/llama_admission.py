@@ -204,11 +204,7 @@ class LlamaAdmissionCancelled(LlamaAdmissionError):
 
 
 class LlamaAdmissionRecostRefused(LlamaAdmissionError):
-    """A started run asked to grow past its lease and was refused.
-
-    The lease still holds the figure it came in with, so the larger prompt is not covered
-    and the caller must end the turn rather than send.
-    """
+    """The lease could not grow; end the turn without dispatching the larger prompt."""
 
 
 def _raw_env(name: str) -> Optional[str]:

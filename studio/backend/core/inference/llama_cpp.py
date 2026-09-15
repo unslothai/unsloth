@@ -32092,9 +32092,7 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         # Appended, never inserted: no bare `*`, so a mid parameter rebinds positional callers.
         admission_output_allowance: Optional[int] = None,
-        # Re-prices the bound from the messages the fit LEAVES: this path has no re-cost, so a
-        # history over the window stays at the one-token floor after the fit made room. Pure
-        # pricing, no lease, since the fit only shrinks the prompt.
+        # Reprice after fitting so a shortened prompt does not retain the one-token floor.
         on_prompt_fitted: Optional[Callable[[list], Optional[int]]] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -32248,8 +32246,7 @@ class LlamaCppBackend:
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
-                # Below the recall, which puts messages back: the bound has to be for the
-                # prompt this request sends, not for the one the fit was about to cut.
+                # Reprice after recall, which may restore messages removed by fitting.
                 if on_prompt_fitted is not None:
                     try:
                         _refitted_allowance = on_prompt_fitted(openai_messages)
@@ -32526,11 +32523,8 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
-        # Appended, never inserted: no bare `*` here, so every parameter is
-        # positional-or-keyword and inserting one rebinds later positional arguments.
-        #
-        # Per request: the conversation as it stands and the catalogue it sends (None = no
-        # `tools`). MAY BLOCK for cache room. An int back replaces the allowance below.
+        # Append parameters to preserve positional callers.
+        # The callback may block for cache room and returns the replacement output allowance.
         on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         # Bounds the wire cap of every request the loop sends. Appended after existing hooks.
@@ -32767,11 +32761,8 @@ class LlamaCppBackend:
             }
 
         def _admission_refused_ending(shown: str):
-            """End the turn on a refused re-cost, keeping what is on screen.
-
-            `length` renders as Continue, not an error box; content events are cumulative,
-            so the explanation goes out only over nothing.
-            """
+            """Preserve partial output and end with `length` so Studio offers Continue.
+            Show the refusal explanation only when there is no output."""
             yield {"type": "status", "text": ""}
             if not (shown or "").strip():
                 yield {"type": "content", "text": _admission_room_refused_message()}
@@ -33131,9 +33122,7 @@ class LlamaCppBackend:
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
-            # What the wire may emit, for SIZING only: a fit reserving the caller's whole cap
-            # against an eighth-of-the-window share evicts history that had room.
-            # `payload["max_tokens"]` keeps its own path.
+            # Size the fit against the admitted output allowance to avoid unnecessary history eviction.
             _iteration_fit_max_tokens = (
                 min(
                     _iteration_max_tokens
@@ -33268,17 +33257,13 @@ class LlamaCppBackend:
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
 
-            # All six growth sites pass here, below the fit: a refusal has to be for the
-            # prompt this round sends, not for history the compaction was about to drop.
+            # Re-cost after fitting so refusal is based on the prompt actually sent.
             if on_conversation_grew is not None:
                 try:
                     _recosted_allowance = on_conversation_grew(conversation, safe_tools)
                     if _recosted_allowance is not None:
                         admission_output_allowance = _recosted_allowance
-                        # Everything sized BELOW this point -- the result and recall
-                        # budgets, the reply-room gates, the respawn refit -- ran on the
-                        # figure the fit above had to use, which is the previous round's.
-                        # This round's is known now, and it is the one the payload sends.
+                        # Use this round's allowance for all budgets below the re-cost.
                         _iteration_fit_max_tokens = min(
                             _iteration_max_tokens
                             if _iteration_max_tokens is not None
@@ -35821,9 +35806,7 @@ class LlamaCppBackend:
                         # The synthesized final answer never returns to the prompt.
                         recall_budget_tokens = _retrieval_budget(
                             self._effective_context_length,
-                            # The bound the wire is held to, like the fit above: the caller's
-                            # whole cap reserves a reply this request may not write, and the
-                            # recall is what pays for it.
+                            # Reserve only the output this request may emit, leaving the rest for recall.
                             _final_fit_max_tokens,
                             truncation.get("prompt_tokens_after") or 0,
                         ),
@@ -35864,11 +35847,8 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
-        # The loop's callback fires at the TOP of a round, so the breaks leading here (the
-        # tool-iteration cap, a controller turning tools off) leave the assistant turn,
-        # its tool results and any nudge appended after the last re-cost -- making this
-        # final pass the largest request of the run and the one the pool never heard
-        # about. It sends no `tools` array, hence the None below.
+        # Re-cost the final pass: tool results and nudges may have grown since the last round.
+        # It sends no tools catalogue.
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(

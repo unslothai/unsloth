@@ -336,10 +336,7 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
 
 
 def admission_room_refused_message() -> str:
-    """Shown when the KV ledger refused the room the turn's next request needs.
-
-    The only wall the user cannot widen from this chat: other chats hold the shared cache.
-    """
+    """Explain that the next request cannot fit in the shared KV cache."""
     return (
         "There was no room left in the shared model cache for the next step of this "
         "reply, so it stopped here rather than send a request the server could not "

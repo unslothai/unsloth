@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A reservation nobody enforces is not a reservation.
-
-An unstated "Max Tokens: Max" was charged a bounded allowance while the wire request still
-said the whole window, so four chats on `-c 16384 --parallel 4 --kv-unified` errored every
-slot at once. The charge now matches the bound exactly.
-"""
+"""Verify that outgoing generation is bounded by its KV reservation."""
 
 from types import SimpleNamespace
 
@@ -80,17 +75,7 @@ class TestTheInvariant:
 
 
 class TestThePoolIsNeverFilledToTheLastCell:
-    """Two measured costs this module cannot price, both covered by the reserve.
-
-    llama-server stops a sequence on `prompt.n_tokens() + 1 >= slot.n_ctx`, so a request held
-    to exactly its share leaves the pool nothing to place its next token in; and the
-    estimator prices the message list while llama-server prices the rendered template.
-
-    Measured on b10840 at `-c 16384 --parallel 4 --kv-unified`: four chats summing to exactly
-    16384 cells lost every chat in 3 of 6, 4 of 8 and 7 of 12 waves. Four fresh chats on a
-    one-line question lost every chat in 6 of 6 with an 8-token reserve, and none in 8 with
-    64, which is the measured 38-token template envelope plus margin.
-    """
+    """Reserve room for template overhead and llama-server's next-token check."""
 
     def test_a_full_capacity_leaves_the_pool_room_to_step(self):
         for window, slots in ((16384, 4), (16384, 2), (16384, 8), (65536, 4), (4096, 4)):
@@ -105,10 +90,7 @@ class TestThePoolIsNeverFilledToTheLastCell:
             ), f"{window}/{slots}: only {window - occupancy} cells left for {slots} sequences"
 
     def test_a_prompt_inside_the_reserve_of_its_share_does_not_reclaim_it(self):
-        """At `share - 1` the fair-share allowance is 1, the reserve takes it below zero and
-        the floor of one used to hand back exactly `share`, which is the exact fill that
-        loses every chat. Such a prompt does not fit its share, so it is priced like one
-        that is over it: a bigger charge, and the queue admits fewer."""
+        """A prompt inside the wire margin needs a larger reservation, not a one-token floor."""
         from routes.inference import (
             _openai_llama_admission_output_allowance as allowance,
             _openai_llama_admission_wire_output_bound as wire_bound,
@@ -159,15 +141,7 @@ class TestThePoolIsNeverFilledToTheLastCell:
 
 
 class TestTheMarkupTheBuilderRewrites:
-    """Every builder sends `neutralize_control_markup_in_messages(...)`, not the list the
-    route priced. A marker in the user's own text becomes ordinary words, so the prompt the
-    wire carries is longer than the raw one.
-
-    Measured on b10840 with Qwen3: 32 markers cost 128 more REAL tokens after the rewrite
-    (185 -> 313), and 200 cost 800 (857 -> 1657). Pricing the raw list therefore hands back
-    an allowance the prompt has already spent, and a full capacity of such requests puts the
-    pool back over its budget.
-    """
+    """Price sanitized control markers, which can expand into multiple tokens."""
 
     _MARKER = "<|im_start|>"
 
@@ -203,14 +177,7 @@ class TestTheMarkupTheBuilderRewrites:
 
 
 class TestTheCatalogueCostsAPreambleToo:
-    """A catalogue is a fixed template block plus a per-tool schema, and only the second
-    was priced. Rendered against Qwen3.5-4B at 1, 2, 4 and 8 tools the template charged
-    280, 359, 517 and 833 tokens against an estimate of 90, 171, 335 and 662: the per-tool
-    term already tracked, the one-off tool-use instruction block did not.
-
-    Four tool chats at `-c 8192 --parallel 4 --kv-unified` were each 129 cells past their
-    share and lost all four, in 4 of 4 waves through Studio's own route; none in 4 after.
-    """
+    """Charge the once-per-catalogue template preamble as well as individual tool schemas."""
 
     _TOOLS = [
         {
@@ -297,14 +264,7 @@ class TestTheCatalogueCostsAPreambleToo:
 
 
 class TestPricingNeverTouchesThePrompt:
-    """The bound is priced from a neutralised copy of the conversation. If that rewrite
-    reached the caller's list, the prompt the user actually sent would change: a system
-    prompt containing a control marker would silently become different text.
-
-    `neutralize_control_markup_in_messages` builds `{**msg, **updates}` into a new list and
-    returns the input unchanged when nothing was rewritten, so pricing is a pure read. This
-    pins it, because the pricing call sites hand it the live conversation.
-    """
+    """Pricing must not mutate the caller's conversation while sanitizing control markers."""
 
     def _loaded(self):
         marker = "<|im_start|>"
@@ -368,10 +328,7 @@ class TestWhatIsLeftAlone:
         assert _enforced(_chat(max_completion_tokens = 2048), backend) is None
 
     def test_a_stated_but_unusable_cap_is_not_read_as_unstated(self):
-        """`/v1/messages` takes `max_tokens: 0` past its required-field check, and
-        `_positive_int_or_none` cannot tell that from an omitted field. Reading it as
-        unstated replaced the caller's zero with an allowance and generated a full answer
-        where none was asked for. It reaches llama-server as it did before the bound."""
+        """Preserve an explicit zero cap instead of replacing it with the default allowance."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
         assert _enforced(_chat(max_tokens = 0), backend) is None
         assert _enforced(_chat(max_completion_tokens = 0), backend) is None
@@ -399,11 +356,7 @@ class TestWhatIsLeftAlone:
 
 
 class TestWhereAStatedCapStopsBeingStated:
-    """The line the docstring draws, pinned: only a cap STRICTLY BELOW the window is a
-    promise to write less than the window. At or above it the caller has promised
-    nothing the window did not already say, and ``_openai_llama_admission_tokens``
-    charges such a request the unstated allowance, so the wire has to be bounded to
-    match or the charge is fiction again."""
+    """Caps at or above the context window must receive the same bound as unstated caps."""
 
     def test_one_token_below_the_window_is_left_alone(self):
         backend = _backend(window = 16384, total = 16384, slots = 4)
@@ -499,9 +452,7 @@ class TestItReachesTheWireWithoutBecomingTheCallersCap:
 
 
 class TestChargedAndPermittedCannotDrift:
-    """The bound is only safe if nothing is admitted on less than it may use: a prompt past
-    its share is permitted ``prompt + 1``, safe alone but not mixed with a SMALL prompt
-    charged ``prompt + 1024`` while permitted its whole share."""
+    """Mixed prompt sizes must never be charged less KV than they may consume."""
 
     def _charged(self, budget, share, prompt):
         from routes.inference import _openai_llama_admission_output_allowance
@@ -556,11 +507,7 @@ class TestChargedAndPermittedCannotDrift:
 
 
 class TestAnOverSharePromptIsPricedTheSameOnBothSides:
-    """The bug this class exists for: the ledger charged ``prompt + allowance`` for a
-    prompt at or above its share while the wire sent ``max_tokens=1``, so a lease big
-    enough for a full answer produced a one-token one. Default vision is the common case:
-    a single image's allowance is already past a 4096 share on a 16K unified cache.
-    """
+    """Prompts larger than their share must receive the output allowance already reserved."""
 
     def _priced(
         self,

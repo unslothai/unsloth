@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The bound has to hold on every path that builds a wire ``max_tokens``.
-
-The arithmetic is proved next door; this proves the figure reaches every request, since a
-tool round, the final answer, both respawn refits, the post-respawn retry and /v1/messages
-each rebuilt the cap from the whole window. Driven through the real generators, so what is
-asserted is the payload llama-server would have received.
-"""
+"""Exercise output caps through real generators, tool rounds, retries, and API routes."""
 
 from __future__ import annotations
 
@@ -247,12 +241,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads) == [_SHARE, _SHARE]
 
     def test_a_truncated_plain_chat_is_re_priced_from_what_it_sends(self, monkeypatch):
-        """A history over the window prices at the one-token floor before the fit runs.
-
-        The plain path has no re-cost, so that floor used to reach llama-server even
-        though `truncate_oldest` had just made room, turning any overlong chat into a
-        one-token reply. The bound is re-priced from the messages the fit leaves.
-        """
+        """Reprice after truncation so an oversized history does not force a one-token reply."""
         payloads: list[dict] = []
         backend = _make_backend(monkeypatch, [[_sse({"content": "hi"}), _done()]], payloads)
         monkeypatch.setattr(backend, "count_chat_tokens", _count_by_length)
@@ -430,13 +419,7 @@ class TestTheGeneratorsSendIt:
         assert _caps(payloads)[1:] == [_SHARE - 100, _SHARE - 700]
 
     def test_a_continuation_that_earned_a_bigger_allowance_gets_it(self, monkeypatch):
-        """The re-cost is the cap, not a ceiling the previous attempt keeps lowering.
-
-        Replaying a truncated answer moves the prompt to or above its share, where the
-        allowance stops being `share - prompt` and becomes the flat unstated figure. The
-        lease is re-costed for it before the hook returns, so a continuation held to the
-        previous attempt's smaller cap stops short of an answer already paid for.
-        """
+        """A successful re-cost replaces the prior cap, including when the new allowance is larger."""
         payloads: list[dict] = []
         backend = _make_backend(
             monkeypatch,
@@ -489,9 +472,7 @@ def _shown(events: list) -> str:
 
 
 class TestARefusedReCostDoesNotAuthoriseTheRequest:
-    """``recost_waiting`` returning False leaves the PREVIOUS round's figure in force, so
-    the prompt that asked for the growth is over the reservation. Handing it a freshly
-    computed wire cap authorised exactly the aggregate the lease refused to buy."""
+    """A refused re-cost must stop dispatch while the lease still covers the previous prompt."""
 
     def test_a_refused_round_sends_nothing_and_ends_the_turn_on_length(self, monkeypatch):
         payloads: list[dict] = []
@@ -723,16 +704,10 @@ class TestTheLedgerBoundsTheAggregate:
         asyncio.run(self._round_zero_matches_the_opening())
 
     async def _round_zero_matches_the_opening(self):
-        """A translating route folds `system` into the conversation and prices the
-        catalogue once; a re-cost that added the payload's raw `system` and `tools` on top
-        asked for more than the share at round zero and, with nothing to yield, was
-        refused before any generation ran."""
+        """Charge translated system content and the catalogue once at admission and re-cost."""
         budget = 16384
         share = budget // 4
-        # 440, not 500: a longer system prompt lands inside the wire reserve of its share,
-        # where it is deliberately priced the flat allowance instead, and the catalogue's
-        # template preamble moved that line again. This test is about the path that DOES
-        # fit its share, so it is sized with room to spare rather than against the edge.
+        # Keep the prompt and catalogue comfortably below the share, including the wire margin.
         system = "You are a careful assistant. " * 440
         payload = _Payload(
             messages = [{"role": "user", "content": "hi"}],
@@ -861,9 +836,7 @@ class TestEveryCallSiteCarriesIt:
         assert not unbounded, f"these call sites send the whole window: {unbounded}"
 
     def test_a_fitting_call_site_re_prices_what_the_fit_leaves(self):
-        """`context_overflow` turns the fit on, and the fit moves the prompt the bound was
-        priced from. The loop re-prices through its re-cost; the plain path has no re-cost,
-        so it needs the fitted hook or it sends the pre-fit floor."""
+        """Plain generation must reprice after fitting; tool loops do so through re-cost."""
         # Which hook re-prices the bound on each generator.
         _REPRICES = {
             "generate_chat_completion": "on_prompt_fitted",
@@ -1299,14 +1272,7 @@ class TestARetryThatGrewItsPrompt:
         )
 
     def test_the_retry_never_gets_a_second_allowance(self):
-        """One lease covers both attempts, so the retry spends what is left of it.
-
-        Under a 16K unified pool with four slots the first attempt is charged a share:
-        prompt 3007 plus a 1089-token allowance. The model fills the allowance with an
-        unparseable call, the nudge appends it and asks again, and the retry prompt is now
-        past the share -- where the wire bound hands out the flat unstated allowance. That
-        is 1024 tokens of KV nobody reserved, and four such chats occupy 21736 of 16384.
-        """
+        """Replay growth must consume the existing lease rather than receive a fresh allowance."""
         budget, slots = 16384, 4
         backend = _backend_stub(window = budget, total = budget, slots = slots)
         first_messages = [{"role": "user", "content": "word " * 2400}]
@@ -1408,10 +1374,7 @@ class TestARetryThatGrewItsPrompt:
 
 
 class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
-    """The builders neutralise against the loaded model's profile, and so does the bound.
-    Charging the generic sweep instead left a lease short of the wire by every profiled
-    marker the prompt repeats, and a bound priced past its share falls to the flat
-    allowance: cells the ledger never booked."""
+    """Price with the loaded markup profile, matching the generation builders."""
 
     def test_the_charge_moves_with_the_profile_exactly_as_the_wire_does(self):
         from core.inference.chat_template_helpers import model_markup
@@ -1655,13 +1618,7 @@ class TestTheAnthropicSurface:
         assert captured["allowance"] == captured["max_tokens"]
 
     def test_the_plain_chat_is_reserved_from_the_finalized_prompt(self, monkeypatch):
-        """Charged and permitted must be the same prompt, as the GGUF chat paths do.
-
-        The date prompt is spliced in after the payload, so a raw prompt just under its
-        share is sent at or above one, where the bound is the flat unstated allowance
-        rather than `share - prompt`. Reserving from the raw payload charged one share for
-        a request the wire lets write a share plus another 1024.
-        """
+        """Reserve from the finalized prompt, including the injected date, just as the wire cap does."""
         seen: dict = {}
         self._install(monkeypatch, seen)
         monkeypatch.setattr(
@@ -1714,11 +1671,7 @@ class TestTheAnthropicSurface:
 
 
 class TestBothPassthroughsPriceTheirRetry:
-    """The wire cap the nudge retry actually goes out with, on both routes.
-
-    The arithmetic is proved above; this proves each passthrough hands the first
-    attempt's messages over, since neither can reach a lease from where it retries.
-    """
+    """Both passthrough routes must deduct replay growth from the first attempt's allowance."""
 
     _GARBAGE = "<tool_call>call lookup somehow???"
     _TOOL = {
@@ -1918,15 +1871,7 @@ class TestBothPassthroughsPriceTheirRetry:
 
 
 class TestTheLoopSizesAgainstTheAdmittedAllowance:
-    """The bound the wire gets is the bound the fit has to reserve for.
-
-    A tool round clamps its payload to the admitted share and then sized everything
-    else -- the fit, the recall budget, every tool-result budget -- against the caller's
-    whole cap. On eight slots that reserves eight times the room the request may ever
-    emit, so history is evicted and results are cut to pay for output the lease already
-    forbids. The final pass had its fit right with `_final_fit_max_tokens` and priced the
-    recall beside it off the caller's cap; both ends now read the admitted figure.
-    """
+    """Fit, recall, and tool-result budgets must reserve the admitted output allowance."""
 
     _ALLOWANCE = 256
 
@@ -2043,14 +1988,7 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
 
 
 class TestARoundSizesAgainstWhatItsOwnReCostEarned:
-    """The re-cost runs below the fit, so everything under it has this round's figure.
-
-    The fit has to price against the previous round's -- the re-cost cannot run until the
-    prompt it charges for exists. Every sizing decision AFTER it can, and the result
-    budget, the recall budget and the reply-room gates were all still reading the figure
-    the fit used. A round that opened with a roomy allowance and re-costed down to a
-    narrow one then cut its tool result to reserve output the wire is no longer sending.
-    """
+    """Budgets after re-cost must use the new allowance, not the one used for the initial fit."""
 
     _OPENED = 1024
     _RECOSTED = 128
@@ -2161,9 +2099,7 @@ class TestTheSizingSitesReadTheClampedFigure:
         raise AssertionError("the tool loop is gone")
 
     def test_no_sizing_call_in_the_loop_reads_an_unclamped_cap(self):
-        """Every budget in the loop, rounds and final pass alike, prices against what the
-        wire is allowed to emit. Read off the source because one behaviour test cannot
-        reach all of them and a new site added against the raw cap is the same defect."""
+        """Check every output-budget site, including paths not reached by runtime tests."""
         import ast
 
         unclamped = []
@@ -2179,9 +2115,7 @@ class TestTheSizingSitesReadTheClampedFigure:
                 for keyword in call.keywords:
                     if keyword.arg != "max_tokens":
                         continue
-                    # Bare names only. The continuation eviction helper fits to a computed
-                    # reply FLOOR on purpose, and a site regressed to the raw cap would be
-                    # written as a name.
+                    # Match bare cap names only; computed reply floors are intentional.
                     if not isinstance(keyword.value, ast.Name):
                         continue
                     if keyword.value.id not in self._CLAMPED:
@@ -2189,10 +2123,7 @@ class TestTheSizingSitesReadTheClampedFigure:
         assert not unclamped, f"these size against a cap the wire will not send: {unclamped}"
 
     def test_a_re_cost_that_moves_the_allowance_re_sizes_with_it(self):
-        """The fit above a re-cost cannot price against this round's allowance; the re-cost
-        needs the fitted prompt first. Everything below it can, so both re-costs rebuild
-        the sizing figure, and the final pass has no behaviour test that reaches its
-        respawn refit."""
+        """Both re-cost sites must refresh subsequent sizing, including the final respawn refit."""
         import ast
 
         resized: set = set()
