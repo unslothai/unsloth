@@ -40,6 +40,7 @@ from hub.utils.paths import (
 logger = get_logger(__name__)
 
 _OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:"
+_OLLAMA_LINK_DIR_NAMES = frozenset((".studio_links", "ollama_links"))
 _OLLAMA_BLOB_NAME_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+-"
 )
@@ -160,9 +161,21 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
     return link_path
 
 
-def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """Writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` next to the blobs; falls back to Unsloth's cache (read-only system installs), then the temp dir (sandboxed installs)."""
+def _ollama_links_roots(ollama_dir: Path) -> tuple[Path, ...]:
+    """Where *ollama_dir*'s ``.gguf`` links can live, best first: beside the blobs, then Unsloth's cache (read-only installs), then the temp dir (sandboxed installs)."""
+    # Hashed so two Ollama roots cannot collide. A cache path, not a security boundary.
+    try:
+        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
+    except (OSError, RuntimeError):
+        digest = "default"
+    return (
+        ollama_dir / ".studio_links",
+        cache_root() / "ollama_links" / digest,
+        tmp_root() / "ollama_links" / digest,
+    )
 
+
+def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
         try:
             path.mkdir(parents = True, exist_ok = True)
@@ -174,24 +187,9 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
             logger.debug("Ollama link dir %s is not writable: %s", path, e)
             return None
 
-    primary = ollama_dir / ".studio_links"
-    if _ensure_writable_dir(primary) is not None:
-        return primary
-
-    # Namespace by a hash of the ollama_dir so two different Ollama roots do not collide. A cache path,
-    # not a security boundary.
-    try:
-        digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
-    except (OSError, RuntimeError):
-        digest = "default"
-
-    fallback = cache_root() / "ollama_links" / digest
-    if _ensure_writable_dir(fallback) is not None:
-        return fallback
-
-    tmp_fallback = tmp_root() / "ollama_links" / digest
-    if _ensure_writable_dir(tmp_fallback) is not None:
-        return tmp_fallback
+    for candidate in _ollama_links_roots(ollama_dir):
+        if _ensure_writable_dir(candidate) is not None:
+            return candidate
 
     logger.warning(
         "Could not create a writable Ollama link directory for %s",
@@ -257,6 +255,21 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         return None
 
 
+def _manifest_rel_path(tag_file: Path, manifests_root: Path) -> Optional[Path]:
+    try:
+        return tag_file.relative_to(manifests_root)
+    except ValueError:
+        # ``manifests`` can be a symlink: a reference carries the canonical path, a scan its own.
+        try:
+            return Path(os.path.realpath(tag_file)).relative_to(os.path.realpath(manifests_root))
+        except (OSError, ValueError):
+            return None
+
+
+def _manifest_stem_hash(rel: Path) -> str:
+    return hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
+
+
 def _ollama_model_info_from_manifest(
     ollama_dir: Path,
     tag_file: Path,
@@ -269,15 +282,9 @@ def _ollama_model_info_from_manifest(
     manifests_root = ollama_dir / "manifests"
     blobs_dir = ollama_dir / "blobs"
 
-    try:
-        rel = tag_file.relative_to(manifests_root)
-    except ValueError:
-        # ``manifests`` can be a symlink onto another volume, and a reference carries the
-        # canonical path while a scan carries the spelling it walked.
-        try:
-            rel = Path(os.path.realpath(tag_file)).relative_to(os.path.realpath(manifests_root))
-        except (OSError, ValueError):
-            return None
+    rel = _manifest_rel_path(tag_file, manifests_root)
+    if rel is None:
+        return None
     parts = rel.parts
     if len(parts) < 3:
         return None
@@ -351,8 +358,7 @@ def _ollama_model_info_from_manifest(
     model_blob: Optional[Path] = None
     projector_blob: Optional[Path] = None
     gguf_link_path: Optional[str] = None
-    stem_hash = hashlib.sha256(rel.as_posix().encode()).hexdigest()[:10]
-    model_link_dir = links_root / stem_hash if links_root is not None else None
+    model_link_dir = links_root / _manifest_stem_hash(rel) if links_root is not None else None
     safe_name = repo_name.replace("/", "-")
 
     for layer in layers:
@@ -539,8 +545,7 @@ def scan_ollama_dir(
     return found
 
 
-def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
-    """Return a discovered or registered Ollama root containing *tag_file*."""
+def _known_ollama_dirs() -> List[Path]:
     known_dirs = list(ollama_model_dirs())
     try:
         from hub.storage.scan_folders import list_scan_folders
@@ -551,7 +556,36 @@ def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
         )
     except Exception as e:
         logger.debug("Could not load registered Ollama roots: %s", e)
-    for ollama_dir in known_dirs:
+    return known_dirs
+
+
+def ollama_manifest_ref_for_path(model_path: str) -> Optional[str]:
+    """The manifest reference *model_path* names, or None when it names no Ollama tag."""
+    if is_ollama_manifest_ref(model_path):
+        return model_path
+    link = Path(model_path)
+    if not any(part in _OLLAMA_LINK_DIR_NAMES for part in link.parts):
+        return None
+    for ollama_dir in _known_ollama_dirs():
+        if not any(
+            path_is_same_or_child(link.parent, root) for root in _ollama_links_roots(ollama_dir)
+        ):
+            continue
+        manifests_root = ollama_dir / "manifests"
+        try:
+            for tag_file in manifests_root.rglob("*"):
+                if not _safe_is_file(tag_file):
+                    continue
+                rel = _manifest_rel_path(tag_file, manifests_root)
+                if rel is not None and _manifest_stem_hash(rel) == link.parent.name:
+                    return _ollama_manifest_ref(tag_file)
+        except OSError as e:
+            logger.debug("Could not walk Ollama manifests under %s: %s", manifests_root, e)
+    return None
+
+
+def _ollama_dir_for_manifest(tag_file: Path) -> Optional[Path]:
+    for ollama_dir in _known_ollama_dirs():
         if path_is_same_or_child(tag_file, ollama_dir / "manifests"):
             return ollama_dir
     return None

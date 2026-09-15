@@ -7276,6 +7276,25 @@ def _public_model_identifier(requested: str, resolved: str) -> str:
     return requested if is_ollama_manifest_ref(requested) else resolved
 
 
+def _as_ollama_manifest_request(request):
+    """*request* with a materialized Ollama ``.gguf`` link rewritten to the tag that produced it."""
+    from hub.services.models.ollama import ollama_manifest_ref_for_path, ollama_model_ref_files
+
+    # An authorized request keeps its path: the tag names whatever its manifest names now, so a
+    # managed account would load weights its check never saw and a lease would lose its artifact.
+    if account_access.managed_account() or getattr(request, "native_path_lease", None):
+        return request
+    ref = ollama_manifest_ref_for_path(request.model_path)
+    if not ref or ref == request.model_path:
+        return request
+    try:
+        ollama_model_ref_files(ref)
+    except Exception:
+        # A tag whose manifest no longer reads is no improvement on a link that still resolves.
+        return request
+    return request.model_copy(update = {"model_path": ref})
+
+
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
@@ -8585,6 +8604,9 @@ def _ollama_source_identity(ref: str) -> Optional[tuple]:
 
 
 def _resident_is_still_tagged(ref: str, llama_backend) -> bool:
+    # The load identity survives a failed load, so it describes a resident model only while one is.
+    if not getattr(llama_backend, "is_loaded", False):
+        return False
     source = _ollama_source_identity(ref)
     loaded = _blob_identity(getattr(llama_backend, "_gguf_load_identity", None))
     return bool(source and source == loaded)
@@ -14682,6 +14704,7 @@ async def _load_model_impl(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -15974,6 +15997,7 @@ async def validate_model(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
