@@ -3374,6 +3374,9 @@ _ALLOWLISTED_PYTHON = (
 # Routes that reach an out-of-sandbox path WITHOUT naming it in an operand position. Each of these ran silently
 # before the operand scan learned about them.
 _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
+    # `make --help`: `-f FILE` reads that makefile and `-C DIR` changes to it first.
+    f"make -f {_OUTSIDE_DIR}/Makefile",
+    f"make -C {_OUTSIDE_DIR}",
     # A multicall binary dispatches to the applet named first, so that is the command to classify.
     f"busybox cat {_OUTSIDE_FILE}",
     f"toybox cat {_OUTSIDE_FILE}",
@@ -3512,6 +3515,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
+    # The predicate family answers existence and type, the same disclosure `test -e` makes.
+    f"import os\nprint(os.path.exists({_OUTSIDE_FILE!r}))",
+    f"import os\nprint(os.path.isfile({_OUTSIDE_FILE!r}))",
+    f"import pathlib\nprint(pathlib.Path({_OUTSIDE_DIR!r}).is_dir())",
     # `os.popen` runs a command line through a shell exactly as `os.system` does.
     f"import os\nos.popen('cat {_OUTSIDE_FILE}').read()",
     # Archive members are written UNDER the destination, so it is a write of a whole tree.
@@ -3656,6 +3663,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
 _INDIRECT_BENIGN_TERMINAL = (
+    "make -j4",
+    "make -f Makefile.dev install",
     "busybox cat notes.txt",
     "test -e ./notes.txt",
     "[ -d build ]",
@@ -3729,6 +3738,8 @@ _INDIRECT_BENIGN_TERMINAL = (
 )
 
 _INDIRECT_BENIGN_PYTHON = (
+    "import os\nprint(os.path.exists('notes.txt'))",
+    "import pathlib\nprint(pathlib.Path('build').is_dir())",
     "import os\nos.popen('ls').read()",
     "import zipfile\nzipfile.ZipFile('local.zip').extractall('out')",
     "from fileinput import input as read\nprint(next(read('notes.txt')))",

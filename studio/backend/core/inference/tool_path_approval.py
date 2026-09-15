@@ -622,7 +622,7 @@ _PATH_SCRIPT_COMMANDS = frozenset(
 
 # `git` carries its paths on flags rather than in operand position, so it only needs the flag spec
 # below; listing it here would read a subcommand name as a path.
-_PATH_FLAG_ONLY_COMMANDS = frozenset({"git"})
+_PATH_FLAG_ONLY_COMMANDS = frozenset({"git", "make"})
 
 
 # Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
@@ -781,6 +781,10 @@ _PATH_FLAG_SPECS = {
         "-t": "skip",
         "--to-code": "skip",
     },
+    # `make --help`: `-f FILE` reads that makefile and `-C DIR` changes to that directory first, so
+    # both select what make reads and executes. The bare positionals are TARGETS, not paths.
+    "make": {"-f": "read", "--file": "read", "--makefile": "read", "-C": "read",
+             "--directory": "read", "-j": "skip", "--jobs": "skip", "-l": "skip"},
     "install": {
         "-t": "write",
         "--target-directory": "write",
@@ -1608,6 +1612,17 @@ _PY_PATH_READ_CALLS = frozenset(
         # size, ownership and timestamps for a path outside the sandbox.
         "stat",
         "lstat",
+        # The predicate family answers existence and type for a path, which is the same disclosure
+        # `test -e` and `os.stat` make.
+        "exists",
+        "lexists",
+        "isfile",
+        "isdir",
+        "islink",
+        "ismount",
+        "is_file",
+        "is_dir",
+        "is_symlink",
         "getsize",
         "getmtime",
         "getctime",
