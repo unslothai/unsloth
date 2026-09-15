@@ -14,6 +14,9 @@ check, not a benchmark. Select/deselect it by name, e.g. `-k gpu_generation`.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 from real_accelerator import (
     has_real_cuda,
@@ -28,6 +31,35 @@ MODEL_ID = "unsloth/gemma-3-270m-it"
 # stay a few seconds.
 MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
+# A connection that is merely slow, rather than failing, would otherwise block a self-hosted GPU
+# runner indefinitely, and --timeout cannot interrupt a blocked socket read. Only the fetch is
+# bounded: the contract is to skip when the model is not reachable.
+FETCH_TIMEOUT_SECONDS = 300
+
+# The fetch is the only step that touches the network, and it runs in a child process. A thread
+# cannot be interrupted, so bounding it in-process would leave the download running after this
+# test had already skipped, still able to write the cache and to reach CUDA. The child only
+# populates the hub cache and never touches the device, so the runner's selected device is left
+# alone too.
+_PREFETCH = """
+import sys
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = sys.argv[1]
+AutoTokenizer.from_pretrained(model_id)
+AutoModelForCausalLM.from_pretrained(model_id)
+"""
+
+
+def _prefetch(model_id, timeout):
+    """Populate the hub cache for model_id, killing the attempt if it stalls."""
+    return subprocess.run(
+        [sys.executable, "-c", _PREFETCH, model_id],
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+    )
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "requires a CUDA GPU")
@@ -40,11 +72,19 @@ def test_gpu_generation_smoke():
     # Gemma is numerically unstable in fp16 (it emits only <pad>); use bf16 where supported, else fp32. The model is
     # tiny, so fp32 is still fast.
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+
+    # Offline / gated / slow hub access is not a code defect, so an unreachable model skips.
     try:
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to("cuda")
-    except Exception as exc:  # offline / gated / download failure is not a code defect
-        pytest.skip(f"could not fetch/load {MODEL_ID}: {exc}")
+        fetch = _prefetch(MODEL_ID, FETCH_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"timed out fetching {MODEL_ID} after {FETCH_TIMEOUT_SECONDS}s")
+    if fetch.returncode != 0:
+        pytest.skip(f"could not fetch {MODEL_ID}: {fetch.stderr.strip()[-500:]}")
+
+    # Everything below is local: construction, placement, and generation all run on this thread,
+    # so a failure here is a real regression and is reported as one rather than skipped.
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to("cuda")
 
     model.eval()
     messages = [{"role": "user", "content": "Say hello in one word."}]
