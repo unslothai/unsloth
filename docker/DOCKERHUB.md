@@ -107,6 +107,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: nothing is created at `/workspace/unsloth-notebooks` or `/workspace/Unsloth Notebooks` (copies left there by an earlier start on a mounted `/workspace` stay as they are). |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
+| `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` | How long a training run gets to save a checkpoint when the container stops. Default `120`. |
 
 On a host with no GPU, Studio, JupyterLab and its kernels, and login shells all run in
 CPU mode. A non-login `docker exec` is built from the image, not the container's first
@@ -136,6 +137,16 @@ Studio's code (its venv, source tree, Node, prebuilt tools) ships in the image u
 - To go back to an image from before the split on the same volume, move the legacy entries back first: `docker run --rm -v unsloth-studio:/h alpine sh -c 'cd /h && for e in .unsloth-studio-legacy/* .unsloth-studio-legacy/.[!.]*; do [ -e "$e" ] || [ -L "$e" ] || continue; rm -rf "${e##*/}"; mv "$e" .; done'`. Images from after the split need nothing. A volume that never held old code (first used after the split, or its legacy directory deleted) gets a copy of the current image's code instead: `docker run --rm -v unsloth-studio:/opt/unsloth-studio --entrypoint unsloth-studio-home <current image> --restore` (about 5 GB, half a minute), after which the older image runs it.
 - `docker rm` still discards anything written into the image's copy: an in-container `unsloth-studio-update` and the `cloudflared` binary `unsloth-jupyter-tunnel` downloads. Studio's caches under `/opt/unsloth-studio/cache` (download resume state, dataset caches) are in the home, so they stay with the volume. Models stay in the Hugging Face cache mount.
 - Use a named volume, not a bind mount of a Windows or macOS host directory. The Studio home needs symlinks, and bind mounts through Docker Desktop's file sharing (a Windows drive under WSL 2 in particular) may refuse to create them; the container then stops at start with the linker's error instead of running a half-linked Studio. A bind mount of a Linux directory (including a directory inside the WSL 2 distribution) works.
+
+## Stopping while training
+
+On `docker stop`, `docker restart` and a host shutdown, Studio stops a running training job at the next step and saves a checkpoint before it exits, so the run can be resumed from the Training page. Docker only waits 10 seconds by default, which is not enough for a large model, so give it the budget:
+
+```bash
+docker stop -t 150 <container>
+```
+
+or `stop_grace_period: 150s` in Compose. `docker/run.sh` sets this for you. `UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S` (default 120) is the time Studio itself waits for the save; the container's own limit is 30 seconds above it.
 
 ## Updating inside a running container
 
