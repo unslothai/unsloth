@@ -4,9 +4,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, readText } from "./helpers/kit.ts";
 
 const source = readSrc("features/audio/audio-page.tsx");
+
+test("macOS termination checks unsaved transcripts before allowing exit", () => {
+  const native = readText("../../src-tauri/src/main.rs");
+  const predicate = native.slice(
+    native.indexOf("fn quit_requires_confirmation"),
+    native.indexOf("fn cleanup_child_processes"),
+  );
+  assert.match(predicate, /\|\| renderer.unsaved_transcript/);
+  assert.match(
+    native,
+    /begin_or_attach_termination\(quit_requires_confirmation\(app\)\)/,
+  );
+  assert.match(native, /&& confirm_quit_with_unsaved_transcript\(&app\)/);
+});
 
 function section(start: string, end: string): string {
   return source.slice(

@@ -1165,6 +1165,7 @@ fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
     install_is_active(app)
         || update_active
         || renderer.shell_update
+        || renderer.unsaved_transcript
         || training_is_active(app)
         || renderer.downloads
 }

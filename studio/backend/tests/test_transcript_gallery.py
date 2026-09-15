@@ -53,6 +53,19 @@ def test_clear_does_not_guess_when_archive_flags_are_corrupt():
     assert (gallery.gallery_dir() / f"{record['id']}.json").exists()
 
 
+@pytest.mark.parametrize(
+    "contents",
+    ["broken", json.dumps({"version": 1, "items": {}, "unreadable": True})],
+)
+def test_listing_recovers_when_archive_flags_are_unavailable(contents):
+    record = save()
+    gallery_flags._store_path(gallery.gallery_dir()).write_text(contents)
+    assert gallery.list_transcripts()["transcripts"] == [record]
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.get(record["id"])["text"] == record["text"]
+
+
 def test_foreign_files_and_unsafe_ids_are_untouched(tmp_path):
     directory = gallery.gallery_dir()
     foreign = directory / ("a" * 32 + ".json")

@@ -81,7 +81,7 @@ def list_transcripts(
     archived: bool = False,
 ) -> dict:
     directory = gallery_dir()
-    flags = gallery_flags.read_trusted(directory)
+    flags = gallery_flags.read(directory)
     records = []
     for path in directory.glob("*.json"):
         record = _read(directory, path.stem)
