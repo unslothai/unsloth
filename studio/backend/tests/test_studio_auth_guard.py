@@ -2409,6 +2409,59 @@ def test_a_shell_local_studio_home_wins_over_the_backend_one(monkeypatch, tmp_pa
         tools._studio_auth_markers_cache = None
 
 
+def test_a_path_walked_up_from_getcwd_is_resolved(monkeypatch, tmp_path):
+    # `os.path.dirname(os.path.dirname(os.getcwd()))` walks out of the sandbox without writing a
+    # `..`, so the workdir was never handed to the analyzer that resolves `getcwd` itself.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        code = (
+            "import os, sqlite3\nroot = os.path.dirname(os.path.dirname(os.getcwd()))\n"
+            'sqlite3.connect(os.path.join(root, "auth", "auth.db"))'
+        )
+        assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert (
+            tools._python_exec(
+                "import os\nprint(os.getcwd())", None, 30, _SESSION, disable_sandbox = True
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_foreign_studio_home_value_is_not_read_as_this_installs_root(monkeypatch, tmp_path):
+    # Bypass keeps a foreign `STUDIO_HOME` in the child, so python that reads it names the other
+    # application's directory. The variable NAME alone was enough to refuse the call.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    other = tmp_path / "other-app"
+    other.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(other))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for ordinary in (
+            'import os\nopen(os.environ["STUDIO_HOME"] + "/auth/config.json").read()',
+            'import os\nopen(os.getenv("STUDIO_HOME") + "/auth/config.json").read()',
+        ):
+            assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        refused = 'import os\nopen(os.environ["UNSLOTH_STUDIO_HOME"] + "/auth/auth.db").read()'
+        assert tools._python_exec(refused, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_foreign_environment_variable_is_not_the_studio_home(monkeypatch, tmp_path):
     # A dynamic path piece was attributed to the studio root whenever the snippet mentioned the
     # variable ANYWHERE, so an unrelated project directory read from a different variable was

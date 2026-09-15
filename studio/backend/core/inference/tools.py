@@ -4281,6 +4281,25 @@ def _expression_reads_the_studio_home(node, studio_names, foreign_names) -> bool
     return not (names & set(foreign_names))
 
 
+def _variable_points_at_this_install(name: str) -> bool:
+    """Whether a studio-home variable's VALUE is this install's root.
+
+    `STUDIO_HOME` is a generic name another application can own, and bypass keeps that foreign value
+    in the child, so `open(os.environ["STUDIO_HOME"] + "/auth/config.json")` reads the other
+    application. Unset stays True: the child cannot expand it either, so nothing is granted.
+    """
+    value = (os.environ.get(name.upper()) or "").strip()
+    if not value:
+        return True
+    root = _studio_home_for_guard()
+    if not root:
+        return True
+    try:
+        return _same_directory(os.path.expanduser(value), root)
+    except Exception:  # noqa: BLE001 - an unreadable value must not break classification
+        return True
+
+
 def _names_the_studio_home_env(node) -> bool:
     """True when *node* reads an environment variable that holds the studio home.
 
@@ -4293,10 +4312,12 @@ def _names_the_studio_home_env(node) -> bool:
         receiver = node.value
         named = getattr(receiver, "attr", None) or getattr(receiver, "id", None)
         key = node.slice
-        return named == "environ" and (
-            isinstance(key, ast.Constant)
+        return (
+            named == "environ"
+            and isinstance(key, ast.Constant)
             and isinstance(key.value, str)
             and key.value.upper() in _STUDIO_HOME_ENV_VARS
+            and _variable_points_at_this_install(key.value)
         )
     if isinstance(node, ast.Call) and node.args:
         called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
@@ -4306,6 +4327,7 @@ def _names_the_studio_home_env(node) -> bool:
             and isinstance(first, ast.Constant)
             and isinstance(first.value, str)
             and first.value.upper() in _STUDIO_HOME_ENV_VARS
+            and _variable_points_at_this_install(first.value)
         )
     return False
 
@@ -4318,7 +4340,11 @@ def _code_reads_the_studio_home(code: str) -> bool:
     value the upper-case spelling does. The variable markers the text scan uses are already compared
     lowercased, so this brings the python fold into line with them."""
     lowered = code.lower()
-    return any(var.lower() in lowered for var in _STUDIO_HOME_ENV_VARS)
+    # A variable SET to another application's directory names that one, not this install's root.
+    return any(
+        var.lower() in lowered and _variable_points_at_this_install(var)
+        for var in _STUDIO_HOME_ENV_VARS
+    )
 
 
 def _code_reads_the_working_directory(code: str) -> bool:
@@ -4354,6 +4380,10 @@ def _needs_a_workdir(text: str) -> bool:
         "cd" in lowered
         or "pushd" in lowered
         or "chdir" in lowered
+        # `os.path.dirname(os.path.dirname(os.getcwd()))` walks up without writing a `..`, and the
+        # python analyzer resolves `getcwd` itself -- but only if it is handed the workdir.
+        or "getcwd" in lowered
+        or "cwd" in lowered
         # `Path.cwd().parents[1] / "auth"` walks up from the cwd without writing a `..`.
         or "parent" in lowered
     )
