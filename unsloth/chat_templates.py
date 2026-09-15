@@ -20,6 +20,7 @@ __all__ = [
     "standardize_data_formats",
     "apply_chat_template",
     "train_on_responses_only",
+    "audit_supervision",
 
     "test_construct_chat_template",
 ]
@@ -36,6 +37,12 @@ import os
 import shutil
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
+try:
+    from .dataprep.supervision_audit import audit_supervision
+except ImportError:
+    # dataprep/__init__ imports synthetic.py -> torch; keep chat_templates importable on torch-free (MLX)
+    # hosts, like the unsloth_zoo.dataset_utils import below.
+    audit_supervision = None
 try:
     from unsloth_zoo.dataset_utils import (
         train_on_responses_only as _zoo_train_on_responses_only,
