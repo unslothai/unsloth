@@ -398,6 +398,26 @@ class TestTorchIndexFallsBackToTheLibraries:
         monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: None)
         assert IPS._has_usable_nvidia_gpu() is False
 
+    def test_presence_applies_an_explicit_mask_to_the_nvml_rows(self, monkeypatch):
+        monkeypatch.setattr(IPS, "_nvidia_smi_candidates", lambda: [])
+        monkeypatch.setattr(IPS.os.path, "isdir", lambda p: False)
+        monkeypatch.setattr(
+            IPS, "_nvidia_library_inventory", lambda: _inventory(caps = ("8.9", "6.1"))
+        )
+        for mask, usable in (
+            ("1", True),
+            ("gpu-0001", True),
+            ("5", False),
+            ("GPU-ffff", False),
+            ("MIG-4b3c2a1d-0000-1111-2222-333344445555", True),
+        ):
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+            assert IPS._has_usable_nvidia_gpu() is usable, mask
+        # The CUDA driver rows are already masked, so a miss there is not second-guessed.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5")
+        monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: _inventory(source = "cuda"))
+        assert IPS._has_usable_nvidia_gpu() is True
+
 
 # ── setup.sh ──
 

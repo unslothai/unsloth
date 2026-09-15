@@ -2546,7 +2546,16 @@ def _has_usable_nvidia_gpu() -> bool:
             pass
     # Last: the driver's own libraries, which ship without the nvidia-smi utility.
     inventory = _nvidia_library_inventory()
-    return bool(inventory is not None and inventory.devices)
+    if inventory is None or not inventory.devices:
+        return False
+    if inventory.source != "nvml" or cvd is None:
+        return True  # the CUDA driver rows already honour the mask
+    # NVML rows are physical: an explicit index or GPU- UUID mask must name one of them.
+    # A mask they cannot name (a MIG UUID) is left usable, as the probes above leave it.
+    tokens = [t.strip().lower() for t in cvd.split(",") if t.strip()]
+    if not all(t.isdigit() or t.startswith("gpu-") for t in tokens):
+        return True
+    return any(row["index"] in tokens or row["uuid"].lower() in tokens for row in inventory.devices)
 
 
 # Which probe answered the last _detect_amd_gfx_codes() call: only rocminfo is subject
