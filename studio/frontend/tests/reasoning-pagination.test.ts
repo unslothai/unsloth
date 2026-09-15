@@ -180,3 +180,72 @@ test("CRLF bytes and unicode survive complete pagination", () => {
   assert.equal(rebuilt.includes("😀"), true);
   assert.equal(rebuilt.includes("\uFFFD"), false);
 });
+
+test("a small page budget still yields a page that holds characters", () => {
+  // Shrunk from a fuzz failure and kept verbatim: the trigger is a separator
+  // sitting immediately before `end`. `pageStart` searches FORWARD from its
+  // target and returns the offset just after the separator, which could reach
+  // `end` itself whenever the search window was allowed to extend that far --
+  // that is, whenever `maxCharacters <= BOUNDARY_SEARCH_CHARACTERS` (1,024).
+  //
+  // The invariant, as a sentence: a page start must stay STRICTLY BELOW the
+  // page end, because `Earlier` sets the next page's end to this start. A start
+  // equal to `end` yields an empty page whose own start is that same offset, so
+  // the chain stops advancing and everything before it is unreachable by paging.
+  const markdown = `${"x".repeat(4_000)}\n${"y".repeat(4_000)}\n`;
+
+  for (const maxCharacters of [64, 256, 1_023, 1_024, 1_025, 2_048]) {
+    const page = selectReasoningPage(markdown, {
+      end: markdown.length,
+      maxCharacters,
+    });
+    assert.ok(
+      page.start < page.end,
+      `start ${page.start} must stay below end ${page.end} at maxCharacters ${maxCharacters}`,
+    );
+    assert.equal(page.markdown.length, page.end - page.start);
+    assert.ok(page.markdown.length > 0);
+  }
+});
+
+test("the Earlier chain rebuilds the whole trace at every page budget", () => {
+  // The property the feature rests on: paging backwards loses nothing. Run at
+  // budgets on both sides of BOUNDARY_SEARCH_CHARACTERS, because the bug above
+  // was invisible at the shipped 8,192 default and only appeared below it.
+  const markdown = `${longReasoning}\n\`\`\`py\n${"c = 1\n".repeat(400)}\`\`\`\n${longReasoning}`;
+
+  for (const maxCharacters of [128, 1_024, 4_096, REASONING_PAGE_CHARACTERS]) {
+    const pages: string[] = [];
+    let end: number | null = null;
+    for (let step = 0; step < 5_000; step += 1) {
+      const page = selectReasoningPage(markdown, { end, maxCharacters });
+      assert.ok(page.start < page.end || page.end === 0);
+      pages.push(page.markdown);
+      if (!page.hasEarlier || page.start === 0) {
+        break;
+      }
+      end = page.start;
+    }
+    assert.equal(pages.reverse().join(""), markdown);
+  }
+});
+
+test("a page budget shorter than a surrogate pair keeps the character whole", () => {
+  const markdown = `${"a".repeat(200)}\n\u{1F600}`;
+  const page = selectReasoningPage(markdown, {
+    end: markdown.length,
+    maxCharacters: 1,
+  });
+
+  assert.ok(page.markdown.length > 0);
+  // Never a lone half: the page carries the whole astral character or none of
+  // it. Iterating a string yields code POINTS, so a surviving lone surrogate
+  // shows up here as a single unit still inside the surrogate range.
+  for (const codePoint of page.markdown) {
+    const value = codePoint.codePointAt(0) ?? 0;
+    assert.ok(
+      value < 0xd800 || value > 0xdfff,
+      `page opened on a lone surrogate (U+${value.toString(16)})`,
+    );
+  }
+});
