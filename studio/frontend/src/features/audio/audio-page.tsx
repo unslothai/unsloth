@@ -2050,8 +2050,13 @@ export function AudioPage({
   ]);
 
   const runTranscription = useCallback(
-    async (blob: Blob, name: string) => {
-      if (transcriptionAbort.current || !confirmTranscriptReplacement()) return;
+    async (blob: Blob, name: string, confirmedVersion?: number) => {
+      if (
+        transcriptionAbort.current ||
+        busyRef.current !== null ||
+        (confirmedVersion !== transcriptVersion.current &&
+          !confirmTranscriptReplacement())
+      ) return;
       let started = false;
       const controller = new AbortController();
       transcriptionAbort.current = controller;
@@ -2122,6 +2127,8 @@ export function AudioPage({
       return;
     }
     if (micPendingGeneration.current !== null || busyRef.current !== null) return;
+    if (!confirmTranscriptReplacement()) return;
+    const confirmedVersion = transcriptVersion.current;
     const requestGeneration = ++micRequestGeneration.current;
     micPendingGeneration.current = requestGeneration;
     setMicRequestPending(true);
@@ -2199,7 +2206,8 @@ export function AudioPage({
         const blob = new Blob(chunks, {
           type: recorder.mimeType || "audio/webm",
         });
-        if (!discard && blob.size > 0) void runTranscription(blob, "Recording");
+        if (!discard && blob.size > 0)
+          void runTranscription(blob, "Recording", confirmedVersion);
       });
       recorderRef.current = recorder;
       // A timeslice is what makes the byte cap observable: with none, some browsers hold the whole
@@ -2226,7 +2234,13 @@ export function AudioPage({
         setMicRequestPending(false);
       }
     }
-  }, [isRecording, runTranscription, stopRecordStream, prepareTranscriptionModel]);
+  }, [
+    isRecording,
+    runTranscription,
+    stopRecordStream,
+    prepareTranscriptionModel,
+    confirmTranscriptReplacement,
+  ]);
 
   // Release the microphone on unmount AND whenever the page goes inactive: the page stays mounted
   // across tab switches, so unmount alone left a hidden recorder capturing.
