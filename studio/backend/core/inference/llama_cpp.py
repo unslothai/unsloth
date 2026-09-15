@@ -10498,7 +10498,7 @@ class LlamaCppBackend:
     # know which it holds (#10613).
     _GPU_IDS_ARE_PCI_INDICES = None
     # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
-    _VISIBLE_UUID_BY_INDEX: dict = {}
+    _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -11713,22 +11713,27 @@ class LlamaCppBackend:
                 for r in map(as_cuda_sees, hits)
                 if str(r.get("index")) not in {str(p.get("index")) for p in picked}
             )
-        # The launch re-emits a selection as indices; a slice has only its parent's, so
-        # remember the uuid each index stands for and hand that back instead.
-        by_uuid = any(not t.isdigit() for t in tokens)
-        LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {
+        return picked
+
+    @staticmethod
+    def _uuid_by_index(rows: list[dict]) -> dict[int, str]:
+        """The uuid each visible index stands for: every row when the mask named rows by
+        uuid, else only a slice standing in for its MIG parent (a slice has no index of its
+        own). Derived from the rows and the mask on each call, so it belongs to no probe."""
+        tokens = [t.strip() for t in (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")]
+        by_uuid = any(t and not t.isdigit() for t in tokens)
+        return {
             int(r["index"]): str(r["uuid"])
-            for r in picked
+            for r in LlamaCppBackend._nvml_rows_visible(rows)
             if str(r.get("index", "")).isdigit() and (by_uuid or r.get("mig"))
         }
-        return picked
 
     @staticmethod
     def _child_visibility_for(gpu_indices) -> str:
         """The mask for these indices: the inherited uuids when the mask named the rows by
         uuid (a MIG slice must stay a MIG- entry), else the indices themselves."""
         ids = [int(i) for i in gpu_indices]
-        by_index = LlamaCppBackend._VISIBLE_UUID_BY_INDEX
+        by_index = LlamaCppBackend._uuid_by_index(LlamaCppBackend._NVML_ROWS)
         if by_index and all(i in by_index for i in ids):
             return ",".join(by_index[i] for i in ids)
         return ",".join(str(i) for i in ids)
@@ -11761,8 +11766,9 @@ class LlamaCppBackend:
             return []
         if not isinstance(payload, dict) or payload.get("source") != "nvml":
             return []
+        LlamaCppBackend._NVML_ROWS = list(payload.get("devices") or [])
         gpus: list[tuple[int, int, int]] = []
-        for row in LlamaCppBackend._nvml_rows_visible(list(payload.get("devices") or [])):
+        for row in LlamaCppBackend._nvml_rows_visible(LlamaCppBackend._NVML_ROWS):
             try:
                 idx = int(row["index"])
                 free_mib = int(row.get("memory_free_mib") or 0)
@@ -11805,9 +11811,6 @@ class LlamaCppBackend:
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable."""
-        # Only the NVML step names rows by uuid; a later answer from nvidia-smi or torch must
-        # not be translated through a map that step left behind.
-        LlamaCppBackend._VISIBLE_UUID_BY_INDEX = {}
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)

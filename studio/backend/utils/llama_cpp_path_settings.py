@@ -194,15 +194,21 @@ def prefer_gpu_capable(
     usable: Callable[[Path], bool],
     vendors: Any = _HOST,
 ) -> list[Path]:
-    """Search order, except that a first hit proven CPU-only yields to a later usable build
-    shipping a GPU backend this host's vendor runs (#5941: a CPU build/ beside build-cuda/;
-    a stale build-cuda/ must not shadow build-hip/ on an AMD box). Unknown layouts stay put."""
+    """Search order, except that a first hit proven CPU-only, or proven built for a GPU vendor
+    this host lacks, yields to a later usable build shipping a GPU backend this host's vendor
+    runs (#5941: a CPU build/ beside build-cuda/; a stale build-cuda/ must not shadow
+    build-hip/ on an AMD box, whether or not a build/ precedes it). Unknown layouts stay put."""
     ordered = list(candidates)
     first = next((c for c in ordered if usable(c)), None)
-    if first is None or binary_gpu_verdict(first) != "cpu":
+    if first is None:
+        return ordered
+    verdict = binary_gpu_verdict(first)
+    if verdict == "unknown":
         return ordered
     if vendors is _HOST:
         vendors = host_gpu_vendors()
+    if verdict == "gpu" and _fits_host(binary_gpu_backends(first), vendors):
+        return ordered
     for candidate in ordered:
         if candidate == first or not usable(candidate):
             continue

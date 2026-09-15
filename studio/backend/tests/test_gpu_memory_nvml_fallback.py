@@ -159,22 +159,42 @@ class TestTheMemoryProbeFallsBackToNvml:
         assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 10240)]
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
 
-    def test_a_later_probe_that_answers_clears_the_uuid_map(self, monkeypatch, probe_script):
+    def test_the_child_pin_belongs_to_no_probe(self, monkeypatch, probe_script):
+        """The uuid each index stands for is derived from the last NVML inventory and the
+        mask in force when the launch asks, so another query answering in between (nvidia-smi
+        recovering, a concurrent preflight) neither blanks it nor leaves a stale one."""
         _failing_smi(monkeypatch)
         slice_row = dict(_row(0, 9000, 20480, uuid = "MIG-cccc3333-0"), mig = "1")
-        probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row]))
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
-        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
+        probe_script(
+            _payload(
+                [
+                    _row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"),
+                    _row(1, 20000, uuid = "GPU-bbbb2222-1"),
+                    slice_row,
+                ]
+            )
+        )
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbb,GPU-aaaa")
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480), (1, 20000, 24576)]
 
-        # nvidia-smi recovers: its rows are physical cards, so the child gets the index back.
         def smi_ok(cmd, *args, **kwargs):
             if cmd and os.path.basename(str(cmd[0])) == "nvidia-smi":
-                return types.SimpleNamespace(returncode = 0, stdout = "0, 60000, 81920\n", stderr = "")
+                return types.SimpleNamespace(
+                    returncode = 0, stdout = "0, 60000, 81920\n1, 20000, 24576\n", stderr = ""
+                )
             raise AssertionError("no other probe should run")
 
         monkeypatch.setattr(mod.subprocess, "run", smi_ok)
-        assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920)]
-        assert LlamaCppBackend._child_visibility_for([0]) == "0"
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920), (1, 20000, 24576)]
+        # The inherited uuid mask is still what the child gets, a MIG parent still its slice.
+        assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,MIG-cccc3333-0"
+        # The mask changing underneath is read as it is now, not as it was at the probe.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+        assert LlamaCppBackend._child_visibility_for([1]) == "1"
+        assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
+        # No NVML inventory at all: indices as before.
+        monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", [])
+        assert LlamaCppBackend._child_visibility_for([0, 1]) == "0,1"
 
     def test_a_uuid_mask_is_handed_to_the_child_as_uuids(self, monkeypatch, probe_script):
         _failing_smi(monkeypatch)
@@ -412,6 +432,20 @@ class TestAGpuCapableBuildIsPreferred:
         nodes.discard("/dev/dxg")
         assert ps.host_gpu_vendors() is None
 
+    def test_a_gpu_first_hit_for_another_vendor_yields_too(self, tmp_path, monkeypatch):
+        from utils import llama_cpp_path_settings as ps
+
+        # No build/ at all: a stale build-cuda/ is the first hit on an AMD box.
+        made = self._tree(
+            tmp_path, "linux", {"build-cuda": ["libggml-cuda.so"], "build-hip": ["libggml-hip.so"]}
+        )
+        monkeypatch.setattr(ps, "host_gpu_vendors", lambda: {"amd"})
+        assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-hip"]
+        # On the NVIDIA box, or an unknown host, the first hit stands.
+        for vendors in ({"nvidia"}, None):
+            monkeypatch.setattr(ps, "host_gpu_vendors", lambda v = vendors: v)
+            assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-cuda"]
+
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps
         made = self._tree(tmp_path, "linux", {"build": [], "build-cuda": ["libggml-cuda.so"]})
@@ -481,6 +515,9 @@ class TestAGpuCapableBuildIsPreferred:
         assert LlamaCppBackend._find_llama_server_binary() == str(made["build-cuda"])
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "the Linux library path is built from posix paths"
+)
 class TestTheLinuxLibrarySearchPath:
     @pytest.mark.parametrize("prefix_name", ["Studio", "Studio[CUDA]"])
     def test_a_bracketed_prefix_and_torch_lib_are_found(self, monkeypatch, tmp_path, prefix_name):
