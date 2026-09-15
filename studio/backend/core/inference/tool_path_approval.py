@@ -1082,7 +1082,17 @@ _PATH_FLAG_SPECS = {
     "du": {"--exclude": "skip"},
     # `date -f DATEFILE` processes every line of that file, and an invalid line is echoed back in the
     # diagnostic, so the contents reach tool output (`date --help`).
-    "date": {"-f": "read", "--file": "read", "-d": "skip", "--date": "skip", "-s": "skip"},
+    # `date --help`: `-f FILE` reads dates from it and `-r, --reference=FILE` displays that file's
+    # last modification time; `-d`/`--date`/`-s` take a date STRING, not a path.
+    "date": {
+        "-f": "read",
+        "--file": "read",
+        "-r": "read",
+        "--reference": "read",
+        "-d": "skip",
+        "--date": "skip",
+        "-s": "skip",
+    },
     "tree": {"-o": "write", "-P": "skip", "-I": "skip"},
     "cd": {},
 }
@@ -1927,7 +1937,9 @@ _PY_MODULE_OPEN_CTORS = {"FileIO"}
 
 # Constructors that OPEN their first argument, so the path is the constructor's rather than the
 # reader method's: `pd.ExcelFile(p).parse(0)` never names the workbook again after this call.
-_PY_PATH_OPENING_CTORS = frozenset({"ExcelFile", "HDFStore"})
+# `h5py.File(path, "r")` and `netCDF4.Dataset(path)` open the file they are handed, like the pandas
+# pair above. The mode sits where `open`'s does, so the shared ctor branch decides read or write.
+_PY_PATH_OPENING_CTORS = frozenset({"ExcelFile", "HDFStore", "File", "Dataset"})
 
 
 _PY_INSTANCE_READ_CTORS = {

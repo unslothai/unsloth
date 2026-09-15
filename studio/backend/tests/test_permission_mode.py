@@ -3379,6 +3379,8 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     f"cd {_OUTSIDE_DIR} && echo hi > out.txt",
     # `tar --add-file=FILE` adds that file, so it is read.
     f"tar -cf out.tar --add-file={_OUTSIDE_FILE}",
+    # `date --help`: `-r, --reference=FILE` displays that file's modification time.
+    f"date --reference={_OUTSIDE_FILE}",
     # `tar --help`: `--delete` removes members and `-A` appends archives, both mutating `-f`.
     f"tar --delete -f {_OUTSIDE_DIR}/a.tar member",
     f"tar -A -f {_OUTSIDE_DIR}/a.tar b.tar",
@@ -3568,6 +3570,8 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     f"import os\nos.replace({_OUTSIDE_FILE!r}, 'b')",
     f"import os\nos.remove({_OUTSIDE_FILE!r})",
     f"from pathlib import Path\np = Path('x')\np.replace({_OUTSIDE_FILE!r})",
+    # `h5py.File(path, "r")` opens the file it is handed.
+    f"import h5py\nprint(h5py.File({_OUTSIDE_FILE!r}, 'r')['d'][:])",
     # An interpreter's `-c` payload is CODE, so it is classified as code.
     f"import subprocess\nsubprocess.run(['python', '-c', \"open({_OUTSIDE_FILE!r}, 'w')\"])",
     # A `chdir` to an absolute directory moves where every later RELATIVE write lands.
@@ -3774,6 +3778,8 @@ _INDIRECT_BENIGN_TERMINAL = (
     "cd /usr/share/doc && grep -rn TODO .",
     "cd build && touch x",
     "tar -cf out.tar --add-file=local.txt",
+    "date --reference=./notes.txt",
+    "date +%s",
     # `zip archive src`: the archive is written, the sources are read.
     "zip local.zip /usr/share/doc/file",
     "cat <(cat $(echo notes.txt))",
@@ -3871,6 +3877,7 @@ _INDIRECT_BENIGN_PYTHON = (
     "import io\nprint(io.open_code('local.py').read())",
     "import pandas as pd\nprint(pd.read_excel(io = 'book.xlsx'))",
     "import subprocess\nsubprocess.run(['python', '-c', 'print(1)'])",
+    "import h5py\nprint(h5py.File('local.h5', 'r')['d'][:])",
     # A `chdir` with only reads after it, and a relative one, are both ordinary.
     "import os\nos.chdir('/usr/share/doc')\nprint(open('x').read())",
     "import os\nos.chdir('build')\nopen('x', 'w').write('y')",
