@@ -115,12 +115,18 @@ def parse_sigma(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, int] = {}
-    for severity in SEVERITIES:
-        value = raw.get(severity, 0)
+    # Every bucket VirusTotal reports, not only the four this tool knows how to rank. Iterating a
+    # fixed key list is what the docstring above warns about and then did anyway: a candidate that
+    # gained rules only in a renamed or newly added bucket produced a dictionary identical to the
+    # baseline's, so compare() called Sigma unchanged and the run exited 0 on a regression.
+    # Unrankable buckets are kept here and handled separately in compare().
+    for key, value in raw.items():
+        if not isinstance(key, str):
+            continue
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         if int(value):
-            out[severity] = int(value)
+            out[key] = int(value)
     return out
 
 
@@ -311,6 +317,27 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
                 f"Sigma {decisive} fell ({before} -> {after}), the most severe bucket that moved: "
                 f"{detail}"
             )
+
+    # Buckets this tool cannot place in the severity order, which is what a VirusTotal rename or
+    # addition looks like on the day it happens. They are deliberately kept out of the ordered
+    # trade-off above, because that logic depends on knowing which of two buckets is more severe.
+    # A rise in one is reported as worse rather than assumed minor: an unrankable bucket could sit
+    # anywhere, including above critical, and calling it an improvement is the one answer that
+    # cannot be defended.
+    unknown = sorted(
+        (key, baseline.sigma.get(key, 0), candidate.sigma.get(key, 0))
+        for key in set(baseline.sigma) | set(candidate.sigma)
+        if key not in SEVERITIES and baseline.sigma.get(key, 0) != candidate.sigma.get(key, 0)
+    )
+    for key, before, after in unknown:
+        if after > before:
+            delta.worse.append(
+                f"Sigma {key} rose ({before} -> {after}). This tool does not know where {key!r} "
+                f"ranks against {', '.join(SEVERITIES)}, so it is not being called minor."
+            )
+        else:
+            delta.better.append(f"Sigma {key} fell ({before} -> {after}), an unranked bucket")
+
     if baseline.sigma == candidate.sigma:
         delta.same.append(
             f"Sigma unchanged ({baseline.sigma_total} rules: "

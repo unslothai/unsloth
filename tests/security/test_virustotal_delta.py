@@ -449,3 +449,39 @@ def test_a_spent_deadline_becomes_a_void_row_and_not_a_crash() -> None:
     snap = vtd.fetch(_Expired(), "d" * 64, "candidate", deadline = 0.0)
     assert snap.total_engines == 0, "a timed-out lookup invented engine verdicts"
     assert "budget" in snap.note, snap.note
+
+
+def test_a_renamed_sigma_bucket_is_not_silently_dropped() -> None:
+    """The parser warned about renamed buckets in its docstring and then read a fixed key list.
+
+    A candidate that gains rules only in a bucket outside critical/high/medium/low produced a Sigma
+    dictionary identical to the baseline's, so the comparison reported Sigma unchanged and the run
+    exited 0 on a real regression. The day VirusTotal renames or adds a bucket is exactly the day
+    this measurement matters.
+    """
+    assert vtd.parse_sigma({"informational": 3}) == {"informational": 3}, (
+        "an unrecognised severity bucket is still dropped by the parser"
+    )
+
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 1, "informational": 4}
+    base_payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    base_payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 1}
+    delta = vtd.compare(_snap(base_payload, "baseline", "a" * 64), _snap(payload))
+    assert delta.worse, "rules gained in an unranked bucket were reported as no change"
+    assert any("informational" in row for row in delta.worse), delta.worse
+    assert delta.exit_code() == 2, delta
+
+
+def test_an_unranked_bucket_never_overrides_the_ordered_tradeoff() -> None:
+    """The ordered comparison depends on knowing which bucket is more severe, so it keeps its own.
+
+    Trading a high for several lows is still the improvement the comment claims, and an unranked
+    bucket that did not move must not turn it into a regression.
+    """
+    base_payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    base_payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 1, "low": 5, "informational": 2}
+    payload = copy.deepcopy(vtd._BASELINE_FIXTURE)
+    payload["data"]["attributes"]["sigma_analysis_stats"] = {"high": 0, "low": 8, "informational": 2}
+    delta = vtd.compare(_snap(base_payload, "baseline", "a" * 64), _snap(payload))
+    assert delta.exit_code() == 0, (delta.worse, delta.better)
