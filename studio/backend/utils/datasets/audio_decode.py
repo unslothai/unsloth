@@ -127,7 +127,7 @@ def ensure_audio_decoding() -> bool:
         try:
             # config only ran find_spec, and an installed torchcodec whose native libraries cannot dlopen still passes that. The API process never imports unsloth, so disable_torchcodec_if_broken has not corrected the flag here.
             from datasets.features._torchcodec import AudioDecoder  # noqa: F401
-        except (ImportError, OSError, RuntimeError) as exc:
+        except Exception as exc:  # noqa: BLE001  a damaged wheel can raise anything at import; every shape means unusable
             logger.info("torchcodec is installed but unusable (%s)", exc)
             config.TORCHCODEC_AVAILABLE = False
     if config.TORCHCODEC_AVAILABLE:
