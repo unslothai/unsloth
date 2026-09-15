@@ -33,6 +33,9 @@ class _Tokenizer:
 class _Model:
     config = _Config()
 
+    def __init__(self):
+        self.merges = []
+
     def save_pretrained(self, save_directory):
         Path(save_directory, "model.safetensors").write_bytes(b"weights")
 
@@ -43,9 +46,14 @@ class _Model:
         save_method = None,
         token = None,
     ):
-        output = Path(f"{save_directory}-torchao-fp8")
-        output.mkdir(parents = True)
-        (output / "model.safetensors").write_bytes(b"fp8")
+        self.merges.append(save_method)
+        suffix = "-torchao-fp8" if save_method == "torchao_fp8" else ""
+        output = Path(f"{save_directory}{suffix}")
+        output.mkdir(parents = True, exist_ok = True)
+        (output / "model.safetensors").write_bytes(b"weights")
+
+    def push_to_hub_merged(self, *args, **kwargs):
+        self.merges.append("push_to_hub_merged")
 
 
 def _non_mlx_backend(monkeypatch, name, calls, seen):
@@ -140,3 +148,55 @@ def test_merged_torchao_export_push_creates_the_repo_without_push_to_hub_mixin(
     assert seen["card_repo"] == "owner/model"
     assert seen["folder"] == output_path
     assert "model.safetensors" in seen["uploaded"]
+
+
+@pytest.mark.parametrize(
+    "format_type, save_method",
+    [("16-bit (FP16)", "merged_16bit"), ("4-bit (FP4)", "merged_4bit_forced")],
+)
+@pytest.mark.parametrize("private", [True, False])
+def test_merged_export_push_uploads_the_saved_folder_instead_of_merging_again(
+    tmp_path, monkeypatch, format_type, save_method, private
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        format_type = format_type,
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+        private = private,
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == [save_method]
+    assert output_path == str((tmp_path / "export").resolve())
+    assert seen["repo"] == {"repo_id": "model", "private": private, "exist_ok": True}
+    assert calls == _expected_calls(private)
+    assert f"# Uploaded finetuned {format_type} model" in seen["card"]
+    assert "base_model: unsloth/Qwen2.5-0.5B-Instruct" in seen["card"]
+    assert seen["folder"] == output_path
+    assert seen["uploaded"] == ["export_metadata.json", "model.safetensors"]
+
+
+def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    backend.current_model.config = types.SimpleNamespace(
+        _name_or_path = str(tmp_path), model_type = "qwen2"
+    )
+
+    success, message, _ = backend.export_merged_model(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert "base_model: owner/model" in seen["card"]
+    assert str(tmp_path) not in seen["card"]

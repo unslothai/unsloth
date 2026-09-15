@@ -947,17 +947,18 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
+                elif output_path and Path(output_path).is_dir():
                     # Upload the artifact already built in output_path; push_to_hub_merged(save_method=...) would
-                    # redo the expensive quantization.
+                    # redo the expensive merge and quantization.
                     hf_api = HfApi(token = hf_token)
                     repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                     repo_id = getattr(repo_url, "repo_id", repo_id)
                     if private:
                         _ensure_hub_repo_private(hf_api, repo_id)
+                    base_model = getattr(self.current_model.config, "_name_or_path", "unknown")
                     content = MODEL_CARD.format(
                         username = repo_id.split("/")[0],
-                        base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
+                        base_model = repo_id if os.path.isdir(base_model) else base_model,
                         model_type = getattr(self.current_model.config, "model_type", "llm"),
                         method = compressed_alias or format_type,
                         extra = "unsloth",
