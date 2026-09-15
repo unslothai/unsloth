@@ -2,6 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  composerSettings: {
+    title: "Composer",
+    plainText: "Plain text composer",
+    plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
+    showContext: "Show context window usage",
+    sendShortcut: "Send shortcut",
+    sendDescription: "Choose when Enter sends a prompt or inserts a new line.",
+    followUp: "Follow-up behavior",
+    followUpDescription: "Choose what happens when you send during a response. Press {shortcut} to do the opposite for one message.",
+    queue: "Queue",
+    steer: "Steer",
+    steerDescription: "Steer stops the current response and sends your follow-up next.",
+    settings: "Composer settings",
+    preview: "Formatted preview",
+  },
   picker: {
     onDevice: "On Device",
     huggingFace: "Hugging Face",

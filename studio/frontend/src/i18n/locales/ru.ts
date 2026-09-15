@@ -5,6 +5,21 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ru = {
+  composerSettings: {
+    title: "Ввод сообщений",
+    plainText: "Обычный текст",
+    plainTextDescription: "Показывать код, Markdown и ссылки как обычный текст. Отключите для предпросмотра форматирования.",
+    showContext: "Показывать использование контекстного окна",
+    sendShortcut: "Клавиши отправки",
+    sendDescription: "Выберите, отправляет ли Enter сообщение или добавляет новую строку.",
+    followUp: "Последующие сообщения",
+    followUpDescription: "Выберите действие при отправке во время ответа. Нажмите {shortcut}, чтобы выполнить противоположное действие для одного сообщения.",
+    queue: "В очередь",
+    steer: "Перенаправить",
+    steerDescription: "Перенаправление останавливает текущий ответ и отправляет ваше сообщение следующим.",
+    settings: "Настройки ввода",
+    preview: "Предпросмотр форматирования",
+  },
   picker: {
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",

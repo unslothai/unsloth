@@ -2183,6 +2183,9 @@ export function ChatPage({
   search,
   active,
 }: { search: ChatSearch; active: boolean }): ReactElement {
+  const showContextWindowUsage = useChatPreferencesStore(
+    (s) => s.showContextWindowUsage,
+  );
   const navigate = useNavigate();
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
@@ -4113,7 +4116,9 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex items-center gap-1">
-            {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
+            {showContextWindowUsage &&
+            view.mode === "single" &&
+            (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.

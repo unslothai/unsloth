@@ -48,22 +48,21 @@ export const BUDGET = {
   // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
   // together instead of each dragging main red on its own.
   //
-  // That is the re-measure. raw ran out first and main went red on its own: at 5fbbd61e6f main
-  // measures 5,377.2 KB raw / 1,607.9 KB transfer, 6.1 KB past the raw ceiling, with nothing
-  // on a branch to blame. #10974 then bought main back with +10,000 bytes and it did not
-  // last one merge: at f7ab2098f the same build measures 5,381.0 KB raw against a 5,380.9 KB
-  // ceiling, so main is over again by a tenth of a kilobyte. Buying a week at a time is the
-  // pattern this replaces rather than repeats.
+  // That is the re-measure, and the reason it is one raise rather than the next in the queue.
+  // raw ran out and main went red on its own at 5fbbd61e6f, 5,377.2 KB against a 5,371.1 KB
+  // ceiling with nothing on a branch to blame. It has been bought back twice since, in one
+  // day: #10974 added 10,000 bytes and did not survive a single merge, and the next raise
+  // added 10,000 more. Each one leaves a few kilobytes, which is one locale string or one
+  // lazy boundary, and the next PR to cross it pays for a drift it did not cause.
   //
-  // Both halves move together as the note above intended, to the headroom that raise chose:
-  // against f7ab2098f's 5,381.0 KB raw / 1,609.0 KB transfer, 5,730,000 leaves 214.7 KB raw
-  // (3.8%) and 1,715,000 leaves 65.8 KB transfer (3.9%).
+  // So both halves move together as the note above intended, to the headroom that raise
+  // chose: PLACEHOLDER
   //
-  // Nothing became eager again. The eager set is still 84 chunks with the same top five
-  // (chat, index, chunk-BO2N2NFS, providers-api, katex), so there is nothing here to
-  // lazy-load; the raw total grew inside chunks that were already eager, the locale messages
-  // most of all. Measured on one machine, one build per side, so the two numbers are
-  // comparable to each other rather than to a CI runner's.
+  // Nothing became eager. The eager set is still 84 chunks with the same top five (chat,
+  // index, chunk-BO2N2NFS, providers-api, katex), so there is nothing here to lazy-load; the
+  // raw total grew inside chunks that were already eager, the locale messages most of all.
+  // Measured on one machine, one build per side, so the two numbers are comparable to each
+  // other rather than to a CI runner's.
   transferBytes: 1_715_000,
   rawBytes: 5_730_000,
 };
