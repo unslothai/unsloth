@@ -458,3 +458,107 @@ def test_library_configuration_requires_disabling(code, safe_code):
 def test_library_options_cannot_restore_implicit_destinations(code):
     approve_hosts("review", ["approved.example"])
     assert check_ssh_python_access(code, "review") is not None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os; os.execv('/usr/bin/ssh', ['ignored', '-F', 'none', 'approved.example'])",
+        "from os import execlp as launch; launch('ssh', 'ignored', '-F', 'none', 'approved.example')",
+        "import os; os.execve('/usr/bin/ssh', ['ignored', '-F', 'none', 'approved.example'], {})",
+        "import os; os.spawnv(os.P_WAIT, '/usr/bin/ssh', ['ignored', '-F', 'none', 'approved.example'])",
+        "import os; os.spawnle(os.P_WAIT, '/usr/bin/ssh', 'ignored', '-F', 'none', 'approved.example', {})",
+        "import os; os.posix_spawn('/usr/bin/ssh', ['ignored', '-F', 'none', 'approved.example'], {})",
+    ],
+)
+def test_os_launchers_use_the_actual_program_and_target(code):
+    assert check_ssh_python_access(code, "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_python_access(code, "review") is None
+
+
+def test_os_exec_argv_zero_is_not_the_executable():
+    code = "import os; os.execv('/bin/echo', ['ssh', 'hello'])"
+    assert extract_ssh_hosts_from_python(code) == (set(), False, False)
+
+
+@pytest.mark.parametrize(
+    "target", ["*", "evil.?xample", "[e]vil.example", "{evil,other}.example", "*@approved.example"]
+)
+def test_shell_expanded_destinations_remain_blocked_after_confirmation(target):
+    command = f"ssh -F none {target}"
+    approve_hosts("review", collect_ssh_hosts_for_approval("terminal", {"command": command}))
+    assert check_ssh_command_access(command, "review") is not None
+
+
+def test_remote_path_globs_keep_the_literal_scp_host():
+    approve_hosts("review", ["approved.example"])
+    assert check_ssh_command_access("scp -F none approved.example:/tmp/*.txt ./", "review") is None
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "first = client = paramiko.SSHClient()",
+        "client, other = paramiko.SSHClient(), None",
+        "first = paramiko.SSHClient(); client = first",
+    ],
+)
+def test_client_assignment_forms_keep_approval_checks(binding):
+    code = f"import paramiko; {binding}; client.connect(hostname='approved.example')"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_client_attribute_assignment_keeps_approval_checks():
+    code = "import paramiko\nclass Wrapper:\n def connect(self):\n  self.client = paramiko.SSHClient()\n  self.client.connect(hostname='approved.example')\nWrapper().connect()"
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "'approved.example', sock=paramiko.ProxyCommand('ssh -F none evil.example -W approved.example:22')",
+        "'approved.example', 22, None, None, None, None, None, True, True, False, other_socket",
+        "'approved.example', **options",
+    ],
+)
+def test_paramiko_socket_overrides_fail_closed(arguments):
+    approve_hosts("review", ["approved.example"])
+    code = f"import paramiko; client=paramiko.SSHClient(); client.connect({arguments})"
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+def test_paramiko_explicit_default_socket_remains_supported():
+    approve_hosts("review", ["approved.example"])
+    code = "import paramiko; client=paramiko.SSHClient(); client.connect('approved.example', sock=None)"
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "from paramiko import SSHClient as Client; Client().connect(hostname='approved.example')",
+        "from paramiko import *; c=SSHClient(); c.connect(hostname='approved.example')",
+        "import paramiko as p; p.SSHClient().connect(hostname='approved.example')",
+    ],
+)
+def test_inline_factory_aliases_require_approval(code):
+    assert _check_code_safety(code, session_id = "review") is not None
+    approve_hosts("review", ["approved.example"])
+    assert _check_code_safety(code, session_id = "review") is None
+
+
+def test_inline_module_alias_keeps_socket_override_check():
+    approve_hosts("review", ["approved.example"])
+    code = "import paramiko as p; p.SSHClient().connect('approved.example', sock=p.ProxyCommand('ssh -F none evil.example -W approved.example:22'))"
+    assert _check_code_safety(code, session_id = "review") is not None
+
+
+def test_inline_transport_connect_uses_constructor_host():
+    approve_hosts("review", ["approved.example"])
+    code = "from paramiko import Transport as T; T(('approved.example', 22)).connect(username='deploy')"
+    assert _check_code_safety(code, session_id = "review") is None

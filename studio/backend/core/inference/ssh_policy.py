@@ -101,6 +101,24 @@ _SHELL_EXEC_FUNCS = frozenset(
         "os.popen2",
         "os.popen3",
         "os.popen4",
+        "os.execl",
+        "os.execle",
+        "os.execlp",
+        "os.execlpe",
+        "os.execv",
+        "os.execve",
+        "os.execvp",
+        "os.execvpe",
+        "os.spawnl",
+        "os.spawnle",
+        "os.spawnlp",
+        "os.spawnlpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+        "os.posix_spawn",
+        "os.posix_spawnp",
         "subprocess.run",
         "subprocess.call",
         "subprocess.check_call",
@@ -124,9 +142,14 @@ def _extract_host_from_endpoint(token: str) -> Optional[str]:
 
     if token.startswith(("ssh://", "scp://", "sftp://")):
         try:
+            authority = token.split("://", 1)[1].split("/", 1)[0]
+            if any(c in authority for c in "*?{}~"):
+                return None
             return normalize_host(urlsplit(token).hostname or "") or None
         except ValueError:
             return None
+    if "@" in token and any(c in token.split("@", 1)[0] for c in "*?[]{}~"):
+        return None
     host_part = token.split("@", 1)[-1]
     if host_part.count(":") > 1 and not host_part.startswith("["):
         try:
@@ -136,8 +159,10 @@ def _extract_host_from_endpoint(token: str) -> Optional[str]:
 
     if host_part.startswith("[") and "]" in host_part:
         host = host_part[1 : host_part.index("]")]
-        host = normalize_host(host)
-        return host or None
+        try:
+            return str(ipaddress.IPv6Address(host))
+        except ValueError:
+            return None
 
     if ":" in host_part:
         left, right = host_part.split(":", 1)
@@ -146,6 +171,8 @@ def _extract_host_from_endpoint(token: str) -> Optional[str]:
         elif "/" not in left:
             host_part = left
 
+    if any(c in host_part for c in "*?[]{}~"):
+        return None
     host = normalize_host(host_part)
     if not host:
         return None
@@ -315,6 +342,13 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
             module = node.module or ""
             for alias in node.names:
                 if alias.name == "*":
+                    exports = {
+                        "paramiko": ("SSHClient", "Transport"),
+                        "asyncssh": ("SSHClient", "connect"),
+                        "fabric": ("Connection", "Config"),
+                    }
+                    for name in exports.get(module, ()):
+                        bindings[name] = f"{module}.{name}"
                     continue
                 local = alias.asname or alias.name
                 bindings[local] = f"{module}.{alias.name}"
@@ -322,26 +356,38 @@ def _ssh_import_bindings(tree: ast.AST) -> dict[str, str]:
 
 
 def _ssh_client_bindings(tree: ast.AST, bindings: dict[str, str]) -> dict[str, str]:
-    """Map variables assigned from SSH client factories."""
+    """Map variables and attributes assigned from SSH client factories."""
     clients: dict[str, str] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign):
-            target = node.target
-        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
+            targets = [node.target]
+        elif isinstance(node, ast.Assign):
+            targets = node.targets
         else:
             continue
-        if not isinstance(target, ast.Name) or not isinstance(node.value, ast.Call):
-            continue
-        fq = _fq_name(node.value.func)
-        root, sep, rest = fq.partition(".")
-        fq = bindings.get(root, root) + (sep + rest if sep else "")
-        if fq.endswith(".SSHClient") or fq.endswith(".Transport") or fq.endswith(".Connection"):
-            clients[target.id] = fq
+        pending = [(target, node.value) for target in targets]
+        while pending:
+            target, value = pending.pop()
+            if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+                value, (ast.Tuple, ast.List)
+            ):
+                if len(target.elts) == len(value.elts):
+                    pending.extend(zip(target.elts, value.elts))
+                continue
+            name = _fq_name(target)
+            if not name:
+                continue
+            if isinstance(value, ast.Call):
+                root, sep, rest = _fq_name(value.func).partition(".")
+                fq = bindings.get(root, root) + (sep + rest if sep else "")
+                if fq.endswith((".SSHClient", ".Transport", ".Connection")):
+                    clients[name] = fq
+            elif _fq_name(value) in clients:
+                clients[name] = clients[_fq_name(value)]
     return clients
 
 
-def _fq_name(node: ast.AST) -> str:
+def _fq_name(node: Optional[ast.AST]) -> str:
     parts: list[str] = []
     cur = node
     while isinstance(cur, ast.Attribute):
@@ -383,14 +429,14 @@ def _resolve_ssh_call(
     if func.attr not in _SSH_PY_CONNECT_ATTRS and func.attr != "Connection":
         return None
 
+    client_fq = clients.get(_fq_name(func.value))
+    if client_fq:
+        if client_fq == "paramiko.Transport":
+            return None
+        root = client_fq.split(".", 1)[0]
+        if root in _SSH_PY_ROOT_MODULES:
+            return f"{root}.{func.attr}"
     if isinstance(func.value, ast.Name):
-        client_fq = clients.get(func.value.id)
-        if client_fq:
-            if client_fq == "paramiko.Transport":
-                return None
-            root = client_fq.split(".", 1)[0]
-            if root in _SSH_PY_ROOT_MODULES:
-                return f"{root}.{func.attr}"
         root = bindings.get(func.value.id, func.value.id).split(".", 1)[0]
         if root in _SSH_PY_ROOT_MODULES:
             if func.attr == "Connection":
@@ -399,25 +445,13 @@ def _resolve_ssh_call(
         return None
 
     if isinstance(func.value, ast.Call):
-        inner = func.value.func
-        if isinstance(inner, ast.Attribute) and inner.attr in {
-            "SSHClient",
-            "Transport",
-            "Connection",
-        }:
-            receiver_root = (
-                _fq_name(inner.value).split(".", 1)[0] if isinstance(inner.value, ast.AST) else ""
-            )
-            if receiver_root in _SSH_PY_ROOT_MODULES or receiver_root in bindings:
-                return f"{receiver_root}.{func.attr}"
-        if isinstance(inner, ast.Name):
-            root = bindings.get(inner.id, inner.id).split(".", 1)[0]
-            if root in _SSH_PY_ROOT_MODULES and inner.id in {
-                "SSHClient",
-                "Transport",
-                "Connection",
-            }:
-                return f"{root}.{func.attr}"
+        root, sep, rest = _fq_name(func.value.func).partition(".")
+        factory = bindings.get(root, root) + (sep + rest if sep else "")
+        root = factory.split(".", 1)[0]
+        if factory == "paramiko.Transport":
+            return None
+        if root in _SSH_PY_ROOT_MODULES and factory.endswith((".SSHClient", ".Connection")):
+            return f"{root}.{func.attr}"
 
     if isinstance(func.value, ast.Attribute) and func.value.attr in {
         "SSHClient",
@@ -425,7 +459,8 @@ def _resolve_ssh_call(
         "Connection",
     }:
         root = _fq_name(func.value).split(".", 1)[0]
-        if root in _SSH_PY_ROOT_MODULES or root in bindings:
+        root = bindings.get(root, root).split(".", 1)[0]
+        if root in _SSH_PY_ROOT_MODULES:
             return f"{root}.{func.attr}"
 
     return None
@@ -471,6 +506,25 @@ def _shell_exec_aliases(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
+def _os_process_argv(node: ast.Call, function: str) -> list[ast.AST]:
+    """Use the actual executable, ignoring argv[0] and the spawn mode/environment."""
+    kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg is not None}
+    offset = 1 if function.startswith("os.spawn") else 0
+    program = (
+        node.args[offset] if len(node.args) > offset else kwargs.get("path", kwargs.get("file"))
+    )
+    tail = list(node.args[offset + 1 :])
+    vector = function.startswith(("os.execv", "os.spawnv", "os.posix_spawn"))
+    if vector:
+        argv = tail[0] if tail else kwargs.get("argv", kwargs.get("args"))
+        tail = list(argv.elts[1:]) if isinstance(argv, (ast.List, ast.Tuple)) else [argv]
+    else:
+        tail = tail[1:]
+        if function.endswith("e"):
+            tail = tail[:-1]
+    return [part for part in [program, *tail] if part is not None]
+
+
 def _ssh_call_span(node: ast.Call) -> tuple[int, int, int, int]:
     lineno = getattr(node, "lineno", -1)
     col = getattr(node, "col_offset", 0)
@@ -483,6 +537,16 @@ def _ssh_python_configuration_is_explicit(
     node: ast.Call, ssh_call: str, bindings: dict[str, str]
 ) -> bool:
     """Reject library configuration which can hide destinations."""
+    if ssh_call.startswith("paramiko.") and ssh_call != "paramiko.Transport":
+        if len(node.args) > 10 and not (
+            isinstance(node.args[10], ast.Constant) and node.args[10].value is None
+        ):
+            return False
+        return all(
+            kw.arg is not None
+            and (kw.arg != "sock" or isinstance(kw.value, ast.Constant) and kw.value.value is None)
+            for kw in node.keywords
+        )
     if not ssh_call.startswith(("asyncssh.", "fabric.")):
         return True
     if any(kw.arg is None for kw in node.keywords):
@@ -577,6 +641,25 @@ def _scan_ssh_python_usage(
             elif isinstance(node.func, ast.Name):
                 shell_func = shell_aliases.get(node.func.id)
 
+            if (
+                shell_func
+                and shell_func.startswith(("os.exec", "os.spawn", "os.posix_spawn"))
+                and shell_func in _SHELL_EXEC_FUNCS
+            ):
+                argv_nodes = _os_process_argv(node, shell_func)
+                argv = [text for arg in argv_nodes for text in _literal_strings_from_node(arg)]
+                found, unknown = _ssh_from_argv_literals(argv)
+                if found or unknown:
+                    uses_ssh = True
+                    hosts.update(found)
+                    dynamic |= unknown or any(
+                        not isinstance(arg, ast.Constant) or not isinstance(arg.value, str)
+                        for arg in argv_nodes
+                    )
+                    connect_spans.append(_ssh_call_span(node))
+                self.generic_visit(node)
+                return
+
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 expanded_kwargs: dict[str, ast.AST] = {}
                 for kw in node.keywords or []:
@@ -664,7 +747,7 @@ def check_ssh_python_access(code: str, session_id: Optional[str]) -> Optional[st
         return None
     if uses_ssh and not hosts and dynamic:
         return (
-            "Blocked: SSH usage with a non-literal host or implicit configuration is not allowed. "
+            "Blocked: SSH usage with a non-literal host or indirect connection settings is not allowed. "
             "Disable configuration with -F none for OpenSSH, config=None for AsyncSSH, "
             "or config=fabric.Config(lazy=True) for Fabric."
         )
@@ -679,7 +762,7 @@ def check_ssh_python_access(code: str, session_id: Optional[str]) -> Optional[st
         )
     if dynamic:
         return (
-            "Blocked: SSH usage with a non-literal host or implicit configuration is not allowed. "
+            "Blocked: SSH usage with a non-literal host or indirect connection settings is not allowed. "
             "Disable configuration with -F none for OpenSSH, config=None for AsyncSSH, "
             "or config=fabric.Config(lazy=True) for Fabric."
         )

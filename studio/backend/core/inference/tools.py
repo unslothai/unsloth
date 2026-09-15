@@ -59,6 +59,7 @@ import urllib.parse
 import urllib.request
 
 from core.inference.ssh_policy import (
+    _SHELL_EXEC_FUNCS,
     check_ssh_command_access,
     check_ssh_python_access,
     filter_ssh_approved_network_blocks,
@@ -13243,42 +13244,6 @@ def _check_signal_escape_patterns(code: str):
             full_name = ".".join(reversed(full_name))
             return full_name in names
         return False
-
-    # Dangerous os/subprocess functions that can execute shell commands.
-    _SHELL_EXEC_FUNCS = frozenset(
-        {
-            "os.system",
-            "os.popen",
-            "os.popen2",
-            "os.popen3",
-            "os.popen4",
-            "os.execl",
-            "os.execle",
-            "os.execlp",
-            "os.execlpe",
-            "os.execv",
-            "os.execve",
-            "os.execvp",
-            "os.execvpe",
-            "os.spawnl",
-            "os.spawnle",
-            "os.spawnlp",
-            "os.spawnlpe",
-            "os.spawnv",
-            "os.spawnve",
-            "os.spawnvp",
-            "os.spawnvpe",
-            "os.posix_spawn",
-            "os.posix_spawnp",
-            "subprocess.run",
-            "subprocess.call",
-            "subprocess.check_call",
-            "subprocess.check_output",
-            "subprocess.Popen",
-            "subprocess.getoutput",
-            "subprocess.getstatusoutput",
-        }
-    )
 
     def _extract_string_from_node(node):
         """Extract a plain string value from an AST node, if it is a constant."""
