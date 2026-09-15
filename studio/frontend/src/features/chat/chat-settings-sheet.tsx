@@ -556,11 +556,17 @@ export function ChatSettingsPanel({
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
-  // capturePresetLoadConfig() reads both off the store, so the preset memos
-  // below only see a change to either if this component re-renders for it.
-  const reasoningBudget = useChatRuntimeStore((s) => s.reasoningBudget);
+  // subscribe to the same requested values that preset capture snapshots.
+  const reasoningBudget = useChatRuntimeStore((s) =>
+    s.reasoningBudget === s.loadedReasoningBudget
+      ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
+      : s.reasoningBudget,
+  );
   const reasoningBudgetMessage = useChatRuntimeStore(
-    (s) => s.reasoningBudgetMessage,
+    (s) =>
+      s.reasoningBudgetMessage === s.loadedReasoningBudgetMessage
+        ? (s.loadedReasoningBudgetMessageRequested ?? s.reasoningBudgetMessage)
+        : s.reasoningBudgetMessage,
   );
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
