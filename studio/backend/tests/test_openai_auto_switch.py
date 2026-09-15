@@ -5445,10 +5445,7 @@ def test_chat_count_tokens_layers_explicit_template_kwargs_over_reasoning(monkey
         chat_template_kwargs = {"custom_switch": "kept"},
     )
     assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
-    assert counted["chat_template_kwargs"] == {
-        "custom_switch": "kept",
-        "enable_thinking": True,
-    }
+    assert counted["chat_template_kwargs"] == {"custom_switch": "kept", "enable_thinking": True}
 
 
 @pytest.mark.parametrize(
