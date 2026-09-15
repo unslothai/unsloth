@@ -955,8 +955,7 @@ STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 
-# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
-# block there, including the write probe and the unwind on failure.
+# Same uv cache install.sh chose, for the same reasons.
 #
 # This script is also the standalone entry point: `unsloth studio update` runs it
 # directly, without install.sh, so an export made only there covers the first install and
@@ -968,23 +967,311 @@ VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
 #
 # STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
 # two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
-if [ -z "${UV_CACHE_DIR:-}" ]; then
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
-    export UV_CACHE_DIR
-    # mktemp, not a $$-derived name: this branch exists for a cache directory another
-    # account can write, and there a predictable path can be pre-created as a symlink,
-    # which `: >` would follow and truncate -- as root, any file on the box. mktemp
-    # creates O_EXCL with an unpredictable suffix, so it cannot follow one, and failing
-    # to create IS the writability answer this probe wanted.
+# The LIVE marker, even under a stage root: the CLI promotes its parked choice on acceptance,
+# so an unactivated stage cannot move the live cache. setup.sh only infers; it never writes.
+_uv_no_cache_requested() {
+    # --no-cache outranks --cache-dir. Same spelling as install.sh's _uv_no_cache_requested.
+    case "$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|y|yes|t|true|on) return 0 ;;
+    esac
+    return 1
+}
+
+_uv_is_bucket_name() {
+    # install.sh's _uv_is_bucket_name, verbatim: the two have to call the same directories uv's.
+    case "$1" in
+        *-v[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "${1##*-v}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    case "${1%-v*}" in
+        archive|binaries|builds|built-wheels|environments|flat-index) ;;
+        git|interpreter|osv|python|sdists|simple|wheels) ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+_uv_cache_probe_writable() {
+    # As install.sh's _uv_cache_root_is_writable: a real create, and mktemp (O_EXCL) not $$,
+    # since a predictable name can be pre-created as a symlink.
     _uv_cache_probe=""
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
-        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
-        unset UV_CACHE_DIR
+    if ! mkdir -p "$1" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+        unset _uv_cache_probe
+        return 1
     fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
+    # Creating is not enough: an ACL granting create but denying unlink leaves uv's renames to
+    # fail later. GONE is the answer, not rm's exit status, since a scanner holding the handle
+    # makes one delete fail and the next succeed. Retry, then believe the filesystem. Same
+    # bounded loop as install.sh's _uv_cache_root_is_writable.
+    _uv_cache_tries=0
+    while :; do
+        rm -f "$_uv_cache_probe" 2>/dev/null || true
+        [ -e "$_uv_cache_probe" ] || break
+        _uv_cache_tries=$((_uv_cache_tries + 1))
+        if [ "$_uv_cache_tries" -ge 3 ]; then
+            unset _uv_cache_probe _uv_cache_tries
+            return 1
+        fi
+        sleep 1
+    done
+    unset _uv_cache_probe _uv_cache_tries
+    return 0
+}
+
+_uv_cache_folds_case() {  # <dir>
+    # Measured on the cache filesystem, not assumed from the platform, as install.sh does it:
+    # default APFS folds and ext4 does not, and a Mac can have either mounted. A cache we
+    # cannot write answers "no", which is the conservative reading.
+    _uvf_probe="$1/.unsloth-case-probe.$$-A"
+    mkdir "$_uvf_probe" 2>/dev/null || { unset _uvf_probe; return 1; }
+    if [ -d "$1/.unsloth-case-probe.$$-a" ]; then
+        rmdir "$_uvf_probe" 2>/dev/null || true
+        unset _uvf_probe
+        return 0
+    fi
+    rmdir "$_uvf_probe" 2>/dev/null || true
+    unset _uvf_probe
+    return 1
+}
+
+_uv_store_key() {  # <entry name> <folds:1|0>  -> the name uv opens it as, or nonzero
+    # Only the NAME folds; what the entry IS is the caller's business. Both scans go through
+    # here so they cannot disagree about which entries are uv's.
+    if _uv_is_bucket_name "$1"; then
+        printf '%s' "$1"
+        return 0
+    fi
+    [ "$2" = 1 ] || return 1
+    case "$1" in *[[:upper:]]*) ;; *) return 1 ;; esac
+    _uvk_lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+    if _uv_is_bucket_name "$_uvk_lower"; then
+        printf '%s' "$_uvk_lower"
+        unset _uvk_lower
+        return 0
+    fi
+    unset _uvk_lower
+    return 1
+}
+
+_uv_cache_usable() {
+    # The stores uv owns: a 0555 archive-* or interpreter-v4 aborts uv. Not every subdirectory,
+    # or an unrelated read-only one disqualifies a usable cache. install.sh's
+    # _uv_cache_is_writable is the same check.
+    _uv_cache_probe_writable "$1" || return 1
+    _uv_cache_folds_case "$1" && _uvu_fold=1 || _uvu_fold=0
+    for _uvu_bucket in "$1"/*; do
+        _uvu_name=$(_uv_store_key "${_uvu_bucket##*/}" "$_uvu_fold") || continue
+        # Only the stores `uv pip install` CREATES, which is the one uv command this file runs
+        # (line 2053). The rule is what uv is measured to write, not what a 0555 directory
+        # happens to survive: a `git+` requirement creates git-v0 and builds-v0, so those stay,
+        # while flat-index-v2 is not created even by `--find-links --no-index`, and binaries,
+        # environments, osv and python belong to uv self-update, uv venv and uv python.
+        #
+        # A store is probed even where one trivial install tolerates it read-only, because that
+        # tolerance is the WORKLOAD, not the cache. On the pinned uv 0.12.1 a 0555 sdists-v9
+        # passes a wheel-only install and aborts the moment a source build needs it, and a 0555
+        # interpreter-v4 passes while its entry is cached and aborts on a new interpreter. An
+        # update installs a large, varying set, so a store it cannot write is a cache that
+        # breaks later rather than one that is fine. Re-measure on a pin bump.
+        case "${_uvu_name%-v*}" in
+            archive|builds|built-wheels|git|interpreter|sdists|simple|wheels) ;;
+            *) continue ;;
+        esac
+        if [ ! -d "$_uvu_bucket" ]; then
+            # A file, or a symlink dangling or not, is an existing path to mkdir(2), so uv
+            # cannot make the store and aborts. Measured on uv 0.10.7: a plain file at any of
+            # archive-v0, interpreter-v4, sdists-v9, simple-v20 or wheels-v6 exits 1 or 2.
+            if [ -e "$_uvu_bucket" ] || [ -L "$_uvu_bucket" ]; then
+                unset _uvu_bucket
+                return 1
+            fi
+            continue
+        fi
+        if ! _uv_cache_probe_writable "$_uvu_bucket"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+        # Inside the store, and only inside one uv owns: a `*-v[0-9]*` glob also reaches
+        # `unused-v999/.git`, and a read-only file there condemned a cache real uv uses fine.
+        # sdists-* only: that is the one store measured to abort on a read-only .git, and
+        # rejecting a cache uv accepts costs the warm cache this path exists to find.
+        # One level inside the index stores, and only those. uv REWRITES this metadata on every
+        # resolve, so a shard another account owns aborts it. Measured on BOTH the pinned uv
+        # 0.12.1 and 0.10.7: a 0555 `simple-*/pypi` or `wheels-*/pypi` gives "Failed to write to
+        # the client cache", exit 2. One level is the leaf on both: 0.12.1 lays this out as
+        # `simple-v24/pypi`, not `simple-v24/index/<hash>`, and a 0555 `wheels-v6/pypi/requests`
+        # one level deeper installs fine. Bounded on purpose: the index level holds one entry per
+        # index, while the level below it grows with every package.
+        case "$_uvu_name" in
+            simple-* | wheels-*)
+                for _uvu_shard in "$_uvu_bucket"/* "$_uvu_bucket"/index/*; do
+                    # `index/<hash>`, one per CUSTOM index, is where uv puts metadata when
+                    # --index-url is set, which Studio does for the torch wheels. Measured on
+                    # the pinned uv 0.12.1: a 0555 `simple-v24/index/<hash>` is adopted by a
+                    # one-level probe and then aborts `uv pip install --refresh` with "Failed
+                    # to write to the client cache". The literal `index` level is still bounded:
+                    # one entry per index, where the level below THAT is one per package.
+                    [ "${_uvu_shard#"$_uvu_bucket"/index/}" != "*" ] || continue
+                    if [ ! -d "$_uvu_shard" ]; then
+                        # Same rule as the store level: a file, or a symlink dangling or not, is
+                        # an existing path uv can neither open nor mkdir. Measured on the pinned
+                        # uv 0.12.1, a plain file OR a dangling symlink at simple-v24/pypi or
+                        # wheels-v6/pypi aborts with "Failed to write to the client cache",
+                        # exit 2. A `*/` glob skips both, which called the cache usable.
+                        { [ -e "$_uvu_shard" ] || [ -L "$_uvu_shard" ]; } || continue
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                    if ! _uv_cache_probe_writable "$_uvu_shard"; then
+                        unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+                        return 1
+                    fi
+                done
+                unset _uvu_shard
+                ;;
+        esac
+        case "$_uvu_name" in sdists-*) _uvu_ctl=.git ;; *) _uvu_ctl="" ;; esac
+        if [ -n "$_uvu_ctl" ] && ! _uv_control_files_writable "$_uvu_bucket" "$_uvu_ctl"; then
+            unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl
+            return 1
+        fi
+    done
+    unset _uvu_bucket _uvu_name _uvu_fold _uvu_ctl _uvu_shard
+    _uv_control_files_writable "$1" .lock || return 1
+    return 0
+}
+
+_uv_control_files_writable() {  # <dir> <name>...
+    # Only the names uv is measured to need writable, because rejecting more throws away the
+    # warm cache this whole path exists to find. Every control file at 0444 against uv 0.10.7:
+    # root .lock ABORTS (exit 2) and sdists-v9/.git ABORTS (exit 2); root CACHEDIR.TAG and
+    # .gitignore, and .git/.gitignore/.lock under archive-v0, interpreter-v4, simple-v20 and
+    # wheels-v6, all install fine. uv itself creates only the three root files, so a per-store
+    # .git is someone else's, and one of them is proven to break uv. Re-measure on a pin bump.
+    _uvc_dir=$1
+    shift
+    for _uvc_name in "$@"; do
+        _uvc_path="$_uvc_dir/$_uvc_name"
+        { [ -e "$_uvc_path" ] || [ -L "$_uvc_path" ]; } || continue
+        # Not a regular file, so uv cannot open it at all: measured on uv 0.10.7, a `.lock`
+        # DIRECTORY (or a symlink to one) exits 2 with "Could not acquire lock ... Is a
+        # directory". `-f` alone skipped it and called the cache usable.
+        if [ ! -f "$_uvc_path" ] || [ ! -r "$_uvc_path" ] || [ ! -w "$_uvc_path" ]; then
+            unset _uvc_dir _uvc_name _uvc_path
+            return 1
+        fi
+    done
+    unset _uvc_dir _uvc_name _uvc_path
+    return 0
+}
+
+_uv_cache_warm() {
+    # Package BYTES, not metadata (wheels-* is .msgpack/.http after a bare resolve). Mirrors
+    # install.sh's scan and unsloth_cli's _uv_cache_has_packages.
+    [ -n "${1:-}" ] && [ -d "$1" ] && [ -r "$1" ] || return 1
+    # One pass over the entries, not five lowercase globs: on a folding filesystem `Archive-V0`
+    # IS the store uv opens as `archive-v0`, and a glob does not fold, so a cache holding every
+    # wheel read as cold and the offline update failed. _uv_cache_usable normalises the same way.
+    _uv_cache_folds_case "$1" && _uvw_fold=1 || _uvw_fold=0
+    for _uvw_bucket in "$1"/*; do
+        [ -d "$_uvw_bucket" ] || continue
+        # Stricter than the probe, deliberately, and exactly as install.sh's scan: `archive-*`
+        # also matches `archive-v0.backup`, whose bytes uv cannot reuse. Counting those reads a
+        # cache as warm that then fails an offline update (measured: uv exit 1, not in cache).
+        _uvw_base=$(_uv_store_key "${_uvw_bucket##*/}" "$_uvw_fold") || continue
+        case "${_uvw_base%-v*}" in
+            archive|builds|built-wheels|wheels|sdists) ;;
+            *) continue ;;
+        esac
+        # Unreadable is not empty, but it is also not proof of warmth.
+        [ -r "$_uvw_bucket" ] && [ -x "$_uvw_bucket" ] || continue
+        # -L: a bucket can be a symlink, as Get-ChildItem -Recurse follows. -print -quit, never
+        # `| head -n 1`: under this file's pipefail head's early exit SIGPIPEs find on a bucket
+        # over 64K of names, and the warm cache then reads as cold.
+        _uvw_hit=$(find -L "$_uvw_bucket" -type f \
+            ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+            ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+            -print -quit 2>/dev/null) || true
+        # `|| true`: find exits nonzero after an unreadable leaf even once it printed the hit,
+        # and the hit is already assigned.
+        if [ -n "$_uvw_hit" ]; then
+            unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
+            return 0
+        fi
+    done
+    unset _uvw_bucket _uvw_hit _uvw_base _uvw_fold
+    return 1
+}
+
+_recorded_uv_cache() {
+    # The marker as unsloth_cli writes it: one absolute path, one trailing newline. Tolerates a
+    # BOM (PowerShell 5.1) and a CR, otherwise byte-for-byte. The sentinel keeps the bytes, and
+    # exactly one delimiter is removed, so a pathname ending in a newline round-trips.
+    _ruc_raw=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null && printf x) || return 1
+    _ruc_raw=${_ruc_raw%x}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_LF"}
+    _ruc_raw=${_ruc_raw#"$_UV_MARKER_BOM"}
+    _ruc_raw=${_ruc_raw%"$_UV_MARKER_CR"}
+    case "$_ruc_raw" in
+        # Absolute only, as install.sh records (_absolutize_uv_cache_dir): setup.sh has already
+        # changed directory. No [:print:] filter: in the C locale it rejects every non-ASCII home.
+        "") unset _ruc_raw; return 1 ;;
+        /*) ;;
+        *) unset _ruc_raw; return 1 ;;
+    esac
+    printf '%s' "$_ruc_raw"
+    unset _ruc_raw
+    return 0
+}
+_UV_MARKER_BOM=$(printf '\357\273\277')
+_UV_MARKER_CR=$(printf '\r')
+_UV_MARKER_LF=$(printf '\n.')
+_UV_MARKER_LF=${_UV_MARKER_LF%.}
+
+# Three tiers: a caller value, --no-cache, then the recorded marker or the Studio cache. No
+# "uv's default if warm" tier, unlike install.sh, which decides before anything is recorded:
+# here it would move an update off the installer's cache with nothing recording the change.
+_uv_caller_value=false
+# `*[![:space:]]*`, not `-n`: install.sh's test, so an all-whitespace value is not a caller's
+# choice here and `--cache-dir '   '` there. The two selectors have to answer alike.
+case "${UV_CACHE_DIR-}" in
+    *[![:space:]]*) _uv_caller_value=true ;;
+esac
+if [ "$_uv_caller_value" = true ]; then
+    # A caller value wins outright, here as in install.sh and in the CLI.
+    :
+elif _uv_no_cache_requested; then
+    # Unset, not left alone: uv parses an exported EMPTY value as `--cache-dir ''` and fails.
+    unset UV_CACHE_DIR
+else
+    # Same sentinel as the reader: substitution would strip the newline it preserved.
+    _uv_recorded=$(_recorded_uv_cache && printf x) || _uv_recorded=""
+    _uv_recorded=${_uv_recorded%x}
+    if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded" \
+       && _uv_cache_usable "$_uv_recorded"; then
+        # Only while it holds packages and uv can write to it: an emptied cache would refetch
+        # everything, and uv aborts on a read-only one (a share remounted since the install).
+        UV_CACHE_DIR="$_uv_recorded"
+        export UV_CACHE_DIR
+    else
+        UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+        export UV_CACHE_DIR
+        # The whole cache, not just its root, and the same check the recorded branch gets: a
+        # Studio cache whose archive-v0 went read-only passes a root probe and then aborts uv
+        # (measured: exit 1, "Permission denied"). Leaving it unset lets uv use its own.
+        if ! _uv_cache_usable "$UV_CACHE_DIR"; then
+            echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+            unset UV_CACHE_DIR
+        fi
+    fi
+    unset _uv_recorded
 fi
+unset _uv_caller_value
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
@@ -1932,6 +2219,29 @@ sys.exit(0 if windows and installed not in windows[0] else 1)
         substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     fi
+    # Failures and timeouts keep the fast path, as for the ROCm probe below.
+    _fpe_missing_torch=false
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 180 "$VENV_DIR/bin/python" \
+            "$SCRIPT_DIR/install_python_stack.py" --missing-torch-needs-dependency-pass \
+            >/dev/null 2>&1 && _fpe_missing_torch=true
+    elif "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+            --missing-torch-needs-dependency-pass >/dev/null 2>&1; then
+        _fpe_missing_torch=true
+    fi
+    if [ "$_fpe_missing_torch" = true ]; then
+        # Offline the pass can only fail, and failing it loses the verified install.
+        if [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; then
+            # Silent once another escape forced the pass: torch comes back with it.
+            if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+                substep "PyTorch is not installed but UV_OFFLINE is set -- left for the next online update"
+            fi
+        else
+            substep "PyTorch is not installed -- forcing dependency pass to reinstall it..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+    fi
+    unset _fpe_missing_torch
     # If the desktop app specifies a minimum required backend version and the installed
     # package is older than that requirement, force the dependency pass to upgrade it.
     if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
