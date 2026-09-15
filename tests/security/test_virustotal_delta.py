@@ -427,7 +427,7 @@ def test_an_overridden_baseline_is_not_labelled_as_the_recorded_one() -> None:
 
     other = _snap(copy.deepcopy(vtd._BASELINE_FIXTURE), "baseline", "c" * 64)
     overridden = vtd.render(other, _snap(copy.deepcopy(vtd._BASELINE_FIXTURE)), vtd.Delta())
-    assert vtd.BASELINE_NOTE not in overridden, (
-        "an overridden baseline is still labelled as install.ps1 at the recorded commit"
-    )
+    assert (
+        vtd.BASELINE_NOTE not in overridden
+    ), "an overridden baseline is still labelled as install.ps1 at the recorded commit"
     assert "OVERRIDDEN" in overridden, overridden.splitlines()[:4]
