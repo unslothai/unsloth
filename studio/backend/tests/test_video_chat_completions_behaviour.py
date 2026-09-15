@@ -186,7 +186,9 @@ def test_the_text_of_the_turn_survives_translation(monkeypatch):
 def test_every_clip_in_a_turn_is_translated(monkeypatch):
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
-        client.post("/v1/chat/completions", json = _part_body(_DATA_URI, "data:video/webm;base64,REVG"))
+        client.post(
+            "/v1/chat/completions", json = _part_body(_DATA_URI, "data:video/webm;base64,REVG")
+        )
     assert [p["input_video"] for p in _sent_media(backend)] == [
         {"data": _CLIP_B64},
         {"data": "REVG"},
@@ -615,6 +617,7 @@ def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
     assert response.status_code == 400
     assert "hologram_url" in _detail(response)
 
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -651,9 +654,7 @@ def test_the_dispatch_boundary_refuses_a_remote_url_on_its_own():
     refuse it too rather than trust that it was already checked."""
     from fastapi import HTTPException
 
-    messages = [
-        {"role": "user", "content": [{"type": "video_url", "video_url": {"url": _REMOTE}}]}
-    ]
+    messages = [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": _REMOTE}}]}]
     with pytest.raises(HTTPException) as exc:
         inference_route._translate_video_parts(messages)
     assert exc.value.status_code == 400
@@ -702,11 +703,11 @@ def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
 
 def test_a_clip_on_the_latest_turn_is_still_served_on_a_non_gguf_backend():
     from models.inference import ChatCompletionRequest
-
     payload = ChatCompletionRequest.model_validate(_part_body(_DATA_URI))
-    assert inference_route._local_video_clip(
-        payload, {"is_vision": True, "has_video_input": True}
-    ) == _CLIP_B64
+    assert (
+        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        == _CLIP_B64
+    )
 
 
 def test_the_legacy_field_is_not_treated_as_an_older_turn():
@@ -715,9 +716,10 @@ def test_the_legacy_field_is_not_treated_as_an_older_turn():
 
     payload = ChatCompletionRequest.model_validate(_field_body())
     assert inference_route._video_is_on_an_older_turn(payload) is False
-    assert inference_route._local_video_clip(
-        payload, {"is_vision": True, "has_video_input": True}
-    ) == _CLIP_B64
+    assert (
+        inference_route._local_video_clip(payload, {"is_vision": True, "has_video_input": True})
+        == _CLIP_B64
+    )
 
 
 def test_gguf_still_keeps_a_clip_on_the_turn_that_carried_it(monkeypatch):
@@ -773,6 +775,7 @@ def test_the_measured_verdict_agrees_on_the_cap_boundary():
     limit = inference_route._MAX_VIDEO_B64_CHARS
     for length in (limit, limit + 1):
         clip = "data:video/mp4;base64," + "A" * length
-        assert inference_route._video_size_rejection(clip) == (
-            inference_route._video_b64_rejection(clip)[1]
+        assert (
+            inference_route._video_size_rejection(clip)
+            == (inference_route._video_b64_rejection(clip)[1])
         )

@@ -586,8 +586,6 @@ def test_chat_rate_limited_returns_429(client, monkeypatch):
 import threading
 from types import SimpleNamespace
 
-from fastapi import HTTPException
-
 import routes.inference as inference
 from core.inference import llama_keepwarm
 from models.inference import LoadRequest

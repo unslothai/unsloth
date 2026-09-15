@@ -331,9 +331,7 @@ def test_an_uppercase_scheme_is_refused_as_a_remote_url_too():
     from routes.inference import _translate_video_parts
 
     for url in ("HTTPS://example.com/clip.mp4", "Http://example.com/other.mp4"):
-        messages = [
-            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": url}}]}
-        ]
+        messages = [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": url}}]}]
         with pytest.raises(HTTPException) as exc:
             _translate_video_parts(messages)
         assert exc.value.status_code == 400

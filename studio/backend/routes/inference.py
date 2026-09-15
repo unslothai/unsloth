@@ -20470,9 +20470,7 @@ def _local_video_clip(payload, model_info) -> str:
         )
     # Refused everywhere, so the message must not send the caller to GGUF for it.
     if _is_remote_video(clips[0]):
-        raise HTTPException(
-            status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1]
-        )
+        raise HTTPException(status_code = _REMOTE_VIDEO_REFUSAL[0], detail = _REMOTE_VIDEO_REFUSAL[1])
     # _request_video_rejection runs only when a pre-switch validation happens, so an unsupported
     # scheme reached here and was decoded as base64 instead of earning the 400 GGUF returns.
     scheme_rejection = _video_scheme_rejection(clips[0])
@@ -20733,7 +20731,9 @@ def _translate_video_parts(messages: list[dict]) -> None:
             if scheme_rejection is not None:
                 raise HTTPException(status_code = scheme_rejection[0], detail = scheme_rejection[1])
             part.clear()
-            part.update({"type": "input_video", "input_video": {"data": _video_b64_rejection(url)[0]}})
+            part.update(
+                {"type": "input_video", "input_video": {"data": _video_b64_rejection(url)[0]}}
+            )
 
 
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
