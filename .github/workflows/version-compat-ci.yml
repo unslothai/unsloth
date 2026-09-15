@@ -182,6 +182,22 @@ jobs:
   #         torchcodec >= 0.12 rather than a lockstep row because 0.12 and up are
   #         ABI-stable against torch >= 2.11.
   #
+  # torchcodec sits on the torch install line rather than in the package list,
+  # because it carries a compiled extension linked against ONE libtorch build and
+  # torch here comes from the CPU index. Installed from PyPI next to a
+  # `torch==2.14.0+cpu` it loads far enough to be importable and then answers
+  # `from torchcodec.decoders import ...` with `'torchcodec' is not a package`,
+  # which is what datasets 5 does while building any Dataset; measured on the
+  # latest lane. On the index line pip prefers the `+cpu` build that matches. The
+  # floor lane's 0.2 row is not published there at all, so `--extra-index-url`
+  # still serves it from PyPI, where it pairs with torch 2.6.0 correctly.
+  #
+  # hf_transfer is a declared unsloth_zoo dependency, and the zoo is installed
+  # here with --no-deps, so the lane has to supply it. unsloth sets
+  # HF_HUB_ENABLE_HF_TRANSFER=1 around from_pretrained, and huggingface_hub 0.x,
+  # which the floor lane's transformers 4.57.6 pulls, raises rather than falling
+  # back when the package is missing.
+  #
   # fail-fast is off: which end broke is the whole answer, so one lane failing must
   # not cancel the other.
   zoo-imports-under-spoof:
@@ -195,18 +211,19 @@ jobs:
           - slug: floor
             python: '3.10'
             torch_pins: >-
-              'torch==2.6.0' 'torchvision==0.21.0'
+              'torch==2.6.0' 'torchvision==0.21.0' 'torchcodec>=0.2,<0.3'
             pkg_pins: >-
-              'torchcodec>=0.2,<0.3' 'transformers==4.57.6' 'trl==0.22.2'
+              'transformers==4.57.6' 'trl==0.22.2'
               'peft==0.18.0' 'sentence-transformers>=5.0,<6' 'accelerate>=1.0'
               'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5' 'triton==3.2.0'
+              hf_transfer
           - slug: latest
             python: '3.12'
             torch_pins: >-
-              torch torchvision
+              torch torchvision 'torchcodec>=0.12'
             pkg_pins: >-
-              'torchcodec>=0.12' transformers trl peft sentence-transformers
-              accelerate datasets bitsandbytes triton
+              transformers trl peft sentence-transformers
+              accelerate datasets bitsandbytes triton hf_transfer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -350,19 +367,19 @@ jobs:
           - slug: floor
             python: '3.10'
             torch_pins: >-
-              'torch==2.6.0' 'torchvision==0.21.0'
+              'torch==2.6.0' 'torchvision==0.21.0' 'torchcodec>=0.2,<0.3'
             pkg_pins: >-
-              'torchcodec>=0.2,<0.3' 'transformers==4.57.6' 'peft==0.18.0'
+              'transformers==4.57.6' 'peft==0.18.0'
               'accelerate>=1.0' 'datasets>=3.4,<4.4' 'bitsandbytes>=0.45.5'
-              'triton==3.2.0'
+              'triton==3.2.0' hf_transfer
             trl_pin: 'trl==0.22.2'
           - slug: latest
             python: '3.12'
             torch_pins: >-
-              torch torchvision
+              torch torchvision 'torchcodec>=0.12'
             pkg_pins: >-
-              'torchcodec>=0.12' transformers peft accelerate datasets
-              bitsandbytes triton
+              transformers peft accelerate datasets
+              bitsandbytes triton hf_transfer
             trl_pin: '--upgrade trl'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
