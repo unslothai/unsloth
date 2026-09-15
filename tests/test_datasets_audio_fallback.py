@@ -101,11 +101,18 @@ def test_an_m4a_row_decodes_through_pyav(broken_torchcodec):
     assert 0.4 <= float(np.abs(array).max()) <= 0.6
 
 
-def test_resampling_works_without_librosa(broken_torchcodec, monkeypatch):
+@pytest.mark.parametrize("shape", ["absent", "broken"])
+def test_resampling_works_without_a_usable_librosa(broken_torchcodec, monkeypatch, tmp_path, shape):
     import sys
 
     pytest.importorskip("av")
-    monkeypatch.setitem(sys.modules, "librosa", None)  # `import librosa` now raises ImportError
+    if shape == "absent":
+        monkeypatch.setitem(sys.modules, "librosa", None)  # `import librosa` now raises ImportError
+    else:
+        # An old librosa beside numpy 2 raises AttributeError at import; that must reach PyAV too.
+        (tmp_path / "librosa.py").write_text("raise AttributeError('np.complex was removed')\n", encoding = "utf-8")
+        monkeypatch.delitem(sys.modules, "librosa", raising = False)
+        monkeypatch.syspath_prepend(str(tmp_path))
     out = import_fixes._audio_resample(np.zeros(1600, dtype = np.float32), 16000, 24000)
     assert len(out) == pytest.approx(2400, abs = 8)
 

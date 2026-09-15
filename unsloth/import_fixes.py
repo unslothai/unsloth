@@ -2809,9 +2809,10 @@ def _audio_resample(array, rate, target):
     """librosa when installed, else swresample through PyAV; both are already on the audio extras."""
     try:
         import librosa
+    except Exception:  # noqa: BLE001  an old librosa beside numpy 2 raises AttributeError at import, not ImportError
+        librosa = None
+    if librosa is not None:
         return librosa.resample(array, orig_sr = rate, target_sr = target)
-    except ImportError:
-        pass
     import av
     import numpy as np
 
