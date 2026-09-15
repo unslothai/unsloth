@@ -181,13 +181,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $script:UnslothVanished = @()
+          $script:UnslothUnknownExpected = @()
           # Reads the layout manifest and returns what SHOULD be there, with anything missing
           # reported rather than skipped. A quarantined copy is the case this exists for.
           function Get-UnslothExpected {
             param([Parameter(Mandatory = $true)][string]$Side)
             $manifestPath = Join-Path $env:ROOT 'manifest.json'
             if (-not (Test-Path -LiteralPath $manifestPath)) {
+              # Recorded, not only warned about. Enumerating survivors cannot notice that an expected
+              # candidate is absent, so a quarantined copy left its siblings to carry the run to a
+              # clean verdict. The expected set being unknown IS an unmeasured condition.
               Write-Host '::warning::the layout manifest is missing, so the expected set is unknown and only surviving files can be measured'
+              $script:UnslothUnknownExpected += $Side
               return @(Get-ChildItem -LiteralPath (Join-Path $env:ROOT $Side) -Filter '*.ps1' -ErrorAction SilentlyContinue)
             }
             $expected = @(Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json | Where-Object { $_.side -eq $Side })
@@ -267,6 +272,9 @@ jobs:
           foreach ($v in $script:UnslothVanished) {
             Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be compiled"
             $noResult += "$v [the laid-out copy vanished before it was measured]"
+          }
+          foreach ($side in $script:UnslothUnknownExpected) {
+            $noResult += "$side/<unknown> [the layout manifest is missing, so a quarantined candidate cannot be distinguished from one that was never laid out]"
           }
 
           if ($rows.Count -eq 0) {
@@ -416,13 +424,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $script:UnslothVanished = @()
+          $script:UnslothUnknownExpected = @()
           # Reads the layout manifest and returns what SHOULD be there, with anything missing
           # reported rather than skipped. A quarantined copy is the case this exists for.
           function Get-UnslothExpected {
             param([Parameter(Mandatory = $true)][string]$Side)
             $manifestPath = Join-Path $env:ROOT 'manifest.json'
             if (-not (Test-Path -LiteralPath $manifestPath)) {
+              # Recorded, not only warned about. Enumerating survivors cannot notice that an expected
+              # candidate is absent, so a quarantined copy left its siblings to carry the run to a
+              # clean verdict. The expected set being unknown IS an unmeasured condition.
               Write-Host '::warning::the layout manifest is missing, so the expected set is unknown and only surviving files can be measured'
+              $script:UnslothUnknownExpected += $Side
               return @(Get-ChildItem -LiteralPath (Join-Path $env:ROOT $Side) -Filter '*.ps1' -ErrorAction SilentlyContinue)
             }
             $expected = @(Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json | Where-Object { $_.side -eq $Side })
@@ -447,7 +460,16 @@ jobs:
           # The control first, and everything after it is conditional on it. Assembled from three
           # fragments so this repository does not itself carry the EICAR signature, the same way
           # release-desktop.yml does it.
-          $controlDir = Join-Path $env:RUNNER_TEMP 'defender-control'
+          #
+          # Inside $env:ROOT, which the earlier step exempted from on-access scanning, and that is
+          # deliberate. The candidates are measured ONLY through the explicit MpCmdRun scan, because
+          # they are exempt from on-access too, so a control that fires by being quarantined on write
+          # proves a live real-time provider and says nothing about the path the measurement uses. An
+          # on-demand scanner that silently skips files would still be trusted. Put somewhere it can
+          # survive, the control has to be found by the same command that reads the candidates.
+          # -DisableRemediation makes that command ignore file exclusions
+          # (release-desktop.yml:1295, :1440-1442), so the exemption does not weaken it.
+          $controlDir = Join-Path $env:ROOT 'defender-control'
           New-Item -ItemType Directory -Force -Path $controlDir | Out-Null
           $controlFile = Join-Path $controlDir 'control.txt'
           $fired = $false
@@ -488,17 +510,16 @@ jobs:
             # straight into $wrote = $true and the absence below would read as quarantine.
             $wrote = (Test-Path -LiteralPath $controlFile)
             if (-not $wrote) {
-              Write-Host 'control: EICAR was quarantined on write while the benign canary of the same size in the same directory survived; real-time protection is live.'
-              $fired = $true
+              # Real-time protection took it despite the exclusion. That says a provider is live and
+              # says nothing about the on-demand command the candidates are read with, so it is NOT
+              # a fired control: it is a control that could not be run.
+              Write-Host '::warning::the EICAR control was removed on write even though its directory is exempt from on-access scanning, so the on-demand scan could not be exercised and there is no positive control for the path the candidates are measured through.'
             }
           } catch {
-            # A throw is not evidence by itself. It is evidence only because the identical benign
-            # write into the same directory succeeded a moment ago and this file is not there.
             if (Test-Path -LiteralPath $controlFile) {
               Write-Host "::warning::could not write the EICAR control and the file is still there, so this was not a Defender block: $($_.Exception.Message)"
             } else {
-              Write-Host "control: the EICAR write was refused while the benign canary of the same size in the same directory succeeded; real-time protection is live. ($($_.Exception.Message))"
-              $fired = $true
+              Write-Host "::warning::the EICAR write was refused while the benign canary of the same size in the same directory succeeded, so a provider is live, but the on-demand scan could not be exercised and that is the path the candidates are measured through. ($($_.Exception.Message))"
             }
           }
           if ($wrote) {
@@ -511,11 +532,11 @@ jobs:
               # exits without testing candidates whose own scans would have worked.
               $controlOut = (& $mp -Scan -ScanType 3 -File $controlFile -DisableRemediation 2>&1 | Out-String)
               $controlCode = $LASTEXITCODE
+              # The one thing that fires this control: the SAME command the candidates are read
+              # with reported the detection.
               $fired = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
               if (-not $fired -and -not (Test-Path -LiteralPath $controlFile)) {
-                # Quarantined between the write and the scan opening it. Still an observation.
-                Write-Host 'control: EICAR was quarantined before it could be scanned; real-time protection is live.'
-                $fired = $true
+                Write-Host '::warning::EICAR was removed between the write and the scan, so the on-demand scan never read it and the measurement path is unproven.'
               } elseif (-not $fired) {
                 Write-Host "::warning::the control scan completed (exit $controlCode) and named no threat, so the file scanner is not detecting EICAR on this runner."
               }
@@ -640,6 +661,9 @@ jobs:
             }
           }
 
+          foreach ($side in $script:UnslothUnknownExpected) {
+            $unscanned += "$side/<unknown> [the layout manifest is missing, so a quarantined candidate cannot be distinguished from one that was never laid out]"
+          }
           foreach ($v in $script:UnslothVanished) {
             Write-Host "::warning::$v was laid out and is no longer on disk; it may have been quarantined before it could be scanned"
             $unscanned += "$v [the laid-out copy vanished before it was scanned]"

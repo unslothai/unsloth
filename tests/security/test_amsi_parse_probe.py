@@ -966,3 +966,61 @@ def test_the_defender_control_writes_a_benign_canary_first() -> None:
     for line in writes:
         block = control[control.index(line):control.index(line) + 400]
         assert "-ErrorAction Stop" in block, f"this write is non-terminating:\n{line.strip()}"
+
+
+def test_the_control_fires_only_through_the_command_the_candidates_are_read_with() -> None:
+    """A live real-time provider does not vouch for the on-demand scan.
+
+    The candidates sit in a directory exempted from on-access scanning and are measured only by the
+    explicit `MpCmdRun -Scan ... -DisableRemediation`. A control that fired by being quarantined on
+    write therefore proved a provider was live and proved nothing about the command the measurement
+    uses, so an on-demand scanner that silently skipped files would still have been trusted. The
+    control now lives inside the same exempt root, survives its write, and has to be found by that
+    same command.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner"):]
+    control = defender[:defender.index("EICAR proves the LOCAL engine scans")]
+    assert "$controlDir = Join-Path $env:ROOT 'defender-control'" in control, (
+        "the control is not inside the on-access exclusion, so real-time protection can take it "
+        "away before the on-demand scan reads it"
+    )
+    # Exactly one place may set the control live, and it is the branch that read the scan output.
+    lines = control.splitlines()
+    fired = [i for i, line in enumerate(lines) if "$fired = [bool]" in line or "$fired = $true" in line]
+    assert len(fired) == 1, (
+        "the control fires from more than one place again:\n"
+        + "\n".join(lines[i].strip() for i in fired)
+    )
+    assert "$controlOut -match" in lines[fired[0]], (
+        f"the control is set live by something other than the on-demand scan output: "
+        f"{lines[fired[0]].strip()}"
+    )
+    assert "the measurement path is unproven" in control, (
+        "a control removed before the scan no longer says the measurement path went unproven"
+    )
+
+
+def test_a_missing_layout_manifest_cannot_produce_a_clean_verdict() -> None:
+    """Enumerating survivors cannot notice that an expected candidate is absent.
+
+    With `manifest.json` gone the fallback lists what is still on disk, so a quarantined copy left
+    its siblings to carry the run to `verdict=clean`. The expected set being unknown is itself an
+    unmeasured condition and has to reach the verdict, not only the log.
+    """
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert body.count("$script:UnslothUnknownExpected") >= 6, (
+        "the unknown-expected-set condition is not tracked in both halves"
+    )
+    for half, feeds in (
+        ("Ask AMSI, under Windows PowerShell 5.1", "$noResult +="),
+        ("Ask Defender's file scanner", "$unscanned +="),
+    ):
+        start = body.index(half)
+        end = body.index("- name:", start + 10)
+        # The step bodies run past the next `- name:` marker for the AMSI half, so take the whole
+        # remainder for it and cut at the upload step instead.
+        chunk = body[start:body.index("Upload the measurements")] if "AMSI" in half else body[start:]
+        loop = chunk[chunk.index("foreach ($side in $script:UnslothUnknownExpected)"):]
+        loop = loop[:loop.index("}")]
+        assert feeds in loop, f"{half}: the unknown expected set does not reach the verdict"
