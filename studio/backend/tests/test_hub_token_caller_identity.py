@@ -517,9 +517,12 @@ def test_an_unreachable_probe_takes_the_short_ttl_and_spans_the_next_request(mon
     assert probes["n"] == 1, "the unreachable answer did not survive to the next request"
 
     # Held under the SHORT ttl, not the denial one, and the constants must stay ordered so
-    # the memo cannot expire before the next request reaches it.
+    # the memo cannot expire before the next request reaches it. Memoized as UNKNOWN rather
+    # than as False: a stored denial the Hub never gave was then handed to every caller in
+    # the window, including one asking about a repo already on this disk. None re-resolves
+    # locally on each call inside it, so a finished download takes effect immediately.
     (expiry, allowed) = next(iter(hf_tokens._repo_access_cache.values()))
-    assert allowed is False
+    assert allowed is None
     assert expiry - time.monotonic() <= hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
     assert (
         hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S
@@ -2557,7 +2560,12 @@ def test_the_scan_predicate_covers_every_config_the_scanner_reads(monkeypatch, c
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _lookup)
 
     assert _scan_refused("acme/private") == 404
-    assert all(root == "/studio/cache" for _n, root in seen), "asked the wrong cache root"
+    # Compared as paths, not as strings: the value travels from this test's own
+    # Path("/studio/cache") through the predicate and back through str(), and on Windows that
+    # round trip spells it "\\studio\\cache". The claim is which root was asked about.
+    assert all(
+        Path(root) == Path("/studio/cache") for _n, root in seen
+    ), "asked the wrong cache root"
 
 
 def test_the_template_predicate_asks_the_active_cache(monkeypatch):
@@ -2594,7 +2602,9 @@ def test_the_template_predicate_asks_the_active_cache(monkeypatch):
     )
 
     assert picker_service.read_default_chat_template("org/private", "hf_dummy") is None
-    assert roots and all(r == "/studio/cache" for r in roots), "asked the wrong cache root"
+    assert roots and all(
+        Path(r) == Path("/studio/cache") for r in roots
+    ), "asked the wrong cache root"
     assert not downloads, "a template cached in the active root was served to a denied caller"
 
 

@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// A cached load that is really a download must say so. #9094: the toast read "Loading cached
+// model into memory." for fourteen minutes while bytes arrived from Hugging Face.
+//
+// Asserted on the decision, not on the source text: a regex over the hook would pass with the
+// watch wired to nothing.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  CACHE_MISS_DOWNLOAD_DESCRIPTION,
+  EMPTY_CACHE_MISS_WATCH,
+  watchCacheMissDownload,
+} from "../src/features/chat/lib/cache-miss-download.ts";
+import { readText } from "./helpers/kit.ts";
+
+const partial = (bytes: number) => ({
+  downloaded_bytes: bytes,
+  expected_bytes: 1_000,
+  progress: bytes / 1_000,
+  cache_measured: true,
+});
+
+test("bytes that grow between two readings are a download", () => {
+  const first = watchCacheMissDownload(EMPTY_CACHE_MISS_WATCH, partial(100));
+  assert.equal(first.started, false, "one reading cannot show movement");
+
+  const second = watchCacheMissDownload(first.watch, partial(400));
+  assert.equal(second.started, true);
+  assert.equal(second.percent, 40);
+});
+
+test("an incomplete cache that is not moving is a load, not a download", () => {
+  // The state #9094's reporter was in before the transfer began, and the state of every repo
+  // whose last download was cancelled. Relabelling here would cry download on every load.
+  let watch = EMPTY_CACHE_MISS_WATCH;
+  for (let poll = 0; poll < 5; poll += 1) {
+    const verdict = watchCacheMissDownload(watch, partial(250));
+    assert.equal(verdict.started, false);
+    watch = verdict.watch;
+  }
+});
+
+test("a complete cache resets the watch instead of arming it", () => {
+  const complete = {
+    downloaded_bytes: 1_000,
+    expected_bytes: 1_000,
+    progress: 1,
+    cache_measured: true,
+  };
+  const armed = watchCacheMissDownload(EMPTY_CACHE_MISS_WATCH, partial(100));
+  const reset = watchCacheMissDownload(armed.watch, complete);
+  assert.equal(reset.started, false);
+  assert.equal(reset.watch.bytes, null);
+  // And the next partial reading is a first reading again, so it cannot claim movement.
+  assert.equal(watchCacheMissDownload(reset.watch, partial(900)).started, false);
+});
+
+test("an unmeasurable cache leaves the comparison alone", () => {
+  const armed = watchCacheMissDownload(EMPTY_CACHE_MISS_WATCH, partial(100));
+  const unreadable = watchCacheMissDownload(armed.watch, {
+    downloaded_bytes: 0,
+    expected_bytes: 0,
+    progress: 0,
+    cache_measured: false,
+  });
+  assert.equal(unreadable.started, false);
+  assert.equal(unreadable.watch.bytes, 100, "the reading was not evidence, so it is not kept");
+  assert.equal(watchCacheMissDownload(unreadable.watch, partial(300)).started, true);
+});
+
+test("a missing or malformed reading is never a download", () => {
+  for (const reading of [null, undefined, {}, { downloaded_bytes: Number.NaN, progress: 0 }]) {
+    assert.equal(
+      watchCacheMissDownload({ bytes: 1 }, reading as never).started,
+      false,
+    );
+  }
+});
+
+test("the phase has words of its own, naming the reason", () => {
+  assert.match(CACHE_MISS_DOWNLOAD_DESCRIPTION, /downloading from Hugging Face/);
+  assert.doesNotMatch(CACHE_MISS_DOWNLOAD_DESCRIPTION, /cached model into memory/);
+});
+
+test("a total the backend could not establish reports bytes rather than a wrong percent", () => {
+  const first = watchCacheMissDownload(EMPTY_CACHE_MISS_WATCH, {
+    downloaded_bytes: 10,
+    expected_bytes: 0,
+    progress: 0,
+    cache_measured: true,
+  });
+  const second = watchCacheMissDownload(first.watch, {
+    downloaded_bytes: 20,
+    expected_bytes: 0,
+    progress: 0,
+    cache_measured: true,
+  });
+  assert.equal(second.started, true);
+  assert.equal(second.percent, null);
+});
+
+test("the load hook actually consults the watch, and on the cached branch", () => {
+  // The decision above is only worth anything if the poll loop asks it. A cached load polls the
+  // mmap phase and nothing else on main, which is how #9094 stayed invisible for fourteen
+  // minutes, so assert the call sits on that branch and that finding a download reopens the
+  // download poller rather than only changing the words.
+  const hook = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  assert.match(hook, /watchCacheMissDownload\(/);
+  assert.match(hook, /watchForCacheMiss && !cacheMissDownload && \(await cacheMissDownloadStarted\(\)\)/);
+  assert.match(hook, /downloadComplete = false;\n\s+activeLoadingDescription = cacheMissDescription;/);
+  // Local paths, Ollama manifests and cached LoRAs never reach the Hub, so they are not polled.
+  assert.match(
+    hook,
+    /const watchForCacheMiss =\n\s+isDownloaded && !isLocal && nativePathToken == null && !isOllamaModelId\(modelId\);/,
+  );
+});

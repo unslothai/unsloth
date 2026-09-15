@@ -20,6 +20,7 @@ from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
+from hub.utils.host_paths import scrub_paths
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -512,7 +513,7 @@ def _scan_cached_gguf(
         )
     except Exception as e:
         # The index is built once for the whole scan and outside the per-repository try, so one undecodable cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
-        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        logger.warning("Could not build shared cached-GGUF state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
@@ -624,7 +625,7 @@ def _scan_cached_gguf(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
@@ -975,7 +976,7 @@ def _scan_cached_models(
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
-        logger.warning("Could not build shared cached-model state index: %s", e)
+        logger.warning("Could not build shared cached-model state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
@@ -1137,7 +1138,7 @@ def _scan_cached_models(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                logger.warning("Skipping cached model repo %s: %s", repo_label, scrub_paths(e))
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(

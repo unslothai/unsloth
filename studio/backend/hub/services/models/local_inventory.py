@@ -20,6 +20,7 @@ from hub.storage.scan_folders import (
     remove_scan_folder,
 )
 from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
+from hub.utils.host_paths import scrub_paths, short_path_for_log
 from hub.utils.paths import (
     hermes_model_dirs,
     hf_default_cache_dir,
@@ -320,7 +321,11 @@ def _scan_hf_cache(
                 or (cache_dir if active_cache else _resolve_hf_cache_dir()),
             )
         except Exception as e:
-            logger.warning("Could not build Hub-state index for %s: %s", cache_dir, e)
+            logger.warning(
+                "Could not build Hub-state index for %s: %s",
+                short_path_for_log(cache_dir),
+                scrub_paths(e),
+            )
             variant_states = None
 
     found: list[LocalModelInfo] = []
@@ -636,7 +641,9 @@ async def _scan_source(label: str, scanner, path: Path) -> List[LocalModelInfo]:
     try:
         return await asyncio.to_thread(scanner, path)
     except Exception as e:
-        logger.warning("Skipping %s scan for %s: %s", label, path, e)
+        logger.warning(
+            "Skipping %s scan for %s: %s", label, short_path_for_log(path), scrub_paths(e)
+        )
         return []
 
 
@@ -703,7 +710,7 @@ async def _collect_models_from_default_sources(
             active_hub_cache = hf_cache_dir,
         )
     except Exception as e:
-        logger.warning("Could not build shared Hub-state index: %s", e)
+        logger.warning("Could not build shared Hub-state index: %s", scrub_paths(e))
         variant_states = None
     for label, cache_dir, active_cache, discovered in discovered_sources:
         local_models += await _scan_source(
@@ -751,7 +758,11 @@ async def _collect_models_from_default_sources(
                     if _inventory_physical_identity(model.path) not in staged
                 ]
         except Exception as e:
-            logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            logger.warning(
+                "Skipping unreadable scan folder %s: %s",
+                short_path_for_log(folder_path),
+                scrub_paths(e),
+            )
             # Only an OS failure is something the user can fix, so only that is shown.
             if isinstance(e, OSError):
                 record_scan_failure(row_path, e)
@@ -853,7 +864,7 @@ async def _load_custom_folders() -> list[dict]:
     try:
         return await asyncio.to_thread(list_scan_folders)
     except Exception as e:
-        logger.warning("Could not load custom scan folders: %s", e)
+        logger.warning("Could not load custom scan folders: %s", scrub_paths(e))
         return []
 
 
@@ -966,7 +977,7 @@ async def _scan_local_models_response(
             models = models,
         )
     except Exception as e:
-        logger.error(f"Error listing local models: {e}", exc_info = True)
+        logger.error("Error listing local models: %s", scrub_paths(e), exc_info = True)
         raise _http_error(
             status_code = 500,
             detail = f"Failed to list local models: {str(e)}",
@@ -1001,7 +1012,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
                 )
             return response.model_copy(update = {"models": models})
         except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
-            logger.warning("Could not classify local model tasks: %s", e)
+            logger.warning("Could not classify local model tasks: %s", scrub_paths(e))
             return response
 
     async def scan_and_classify(
@@ -1079,9 +1090,11 @@ def add_scan_folder_response(path: str) -> dict:
     try:
         folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:
-        logger.warning("Scan folder rejected: %s (path=%s)", e, path)
+        logger.warning(
+            "Scan folder rejected: %s (path=%s)", scrub_paths(e), short_path_for_log(path)
+        )
         raise _http_error(status_code = 400, detail = str(e))
-    logger.info("Scan folder added: %s", folder.get("path"))
+    logger.info("Scan folder added: %s", short_path_for_log(folder.get("path")))
     if inserted:
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
         invalidate_index()

@@ -156,6 +156,10 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, written instead of it for a caller that may not see host
+    # paths (an API key). The null versus non-null discriminator above is preserved either way: a
+    # redacted reading is an empty string, never null, so "no cache dir" still means what it says.
+    cache_ref: Optional[str] = None
     cache_measured: bool = Field(
         True,
         description = (
