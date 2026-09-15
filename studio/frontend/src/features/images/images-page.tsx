@@ -2669,11 +2669,13 @@ export function ImagesPage({
       token?: number,
       downloadSnapshot?: LoadAdvanced,
     ): Promise<boolean> => {
+      const downloadOnly = downloadSnapshot !== undefined || modelSelectionAction === "download";
       // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
-      // a local pick invalidates an in-flight hub plan.
-      const pick = downloadSnapshot ? pickSeq.current : ++pickSeq.current;
-      const downloadOnly = downloadSnapshot !== undefined || modelSelectionAction === "download";
+      // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
+      // nothing, and retiring the sequence made the load it interrupted fail its own stale check below
+      // and return silently, leaving the selected model neither staged nor loaded.
+      const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       // Only load intents have an owner; a download-only pick holds no token and answers true.
@@ -2692,13 +2694,11 @@ export function ImagesPage({
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = downloadSnapshot ?? currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
-      // job must not revert it.
-      const ownRevert = downloadSnapshot ? null : quantRevert.current;
-      // Download-only picks never replace the resident model or its recipe.
-      if (downloadOnly && ownRevert) {
-        revertPick(ownRevert);
-        quantRevert.current = null;
-      }
+      // job must not revert it. A download-only pick claims no slot at all: it never relabels the
+      // selector, so there is nothing here it could own, and reverting what it found would restore
+      // the PREVIOUS resident under a staged load that is still coming and then leave that load
+      // nothing to commit.
+      const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw.
       let incompatible: string | null = null;
@@ -2817,12 +2817,10 @@ export function ImagesPage({
       const downloadOnly = modelSelectionAction === "download";
       const token = downloadOnly ? 0 : pickGuard.claim();
       const downloadSnapshot = downloadOnly ? currentLoadAdvanced(repoId) : undefined;
-      if (downloadOnly && quantRevert.current) {
-        revertPick(quantRevert.current);
-        quantRevert.current = null;
-      }
       const isCurrent = () => isMounted.current &&
         (downloadOnly || pickGuard.holds(token));
+      // onResolved skips the label for a download-only pick, so this snapshot is never installed
+      // for one; taking the slot over would strand a staged load's own baseline in it.
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
@@ -2975,17 +2973,24 @@ export function ImagesPage({
       // Carried forward when one is already pending: a superseded staged pick left its optimistic
       // quant and recipe in state, so snapshotting now would record THAT and restore a model that
       // never loaded. Leaving the old entry would also let that download revert this pick.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(null);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(null);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
           meta.source,
           token,
         ).then((started) => {
-            if (!started && stillOwnsPick()) {
+            if (!started && revert && stillOwnsPick()) {
               revertPick(revert);
               quantRevert.current = null;
             }
@@ -2995,10 +3000,17 @@ export function ImagesPage({
       // GGUF quant pick from the variant expander. Optimistic for instant feedback, but reverted if
       // the load fails to START or later in the poll: the old pipeline stays loaded either way.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(meta.ggufVariant);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(meta.ggufVariant);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -3006,7 +3018,7 @@ export function ImagesPage({
           token,
         ).then((started) => {
           // `quantRevert` is one slot, so only the pick that set the label may take it back.
-          if (!started && stillOwnsPick()) {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -3032,14 +3044,21 @@ export function ImagesPage({
         }
         // A direct pick carries no curated variant label, so surface the filename or the selector
         // keeps advertising the old quant. Optimistic, reverted if the load never starts.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(filename);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(filename);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
           // Guarded like every sibling branch: quantRevert is one slot, so a pick that no longer
           // owns the page must not hand back a label a newer pick has already set.
-          if (!started && stillOwnsPick()) {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -3053,12 +3072,19 @@ export function ImagesPage({
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-        quantRevert.current = revert;
-        setQuant(filename);
-        applyImageModelDefaults(id);
+        // A Download only pick fetches files and never becomes the resident model, so it
+        // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+        // already in flight owns what is in it and still has to commit it.
+        const revert: PickRevert | null = downloadOnlyPick
+          ? null
+          : (quantRevert.current ?? { prev: quant, steps, guidance });
+        if (revert) {
+          quantRevert.current = revert;
+          setQuant(filename);
+          applyImageModelDefaults(id);
+        }
         void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
-          if (!started && stillOwnsPick()) {
+          if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
           }
@@ -3084,12 +3110,19 @@ export function ImagesPage({
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
-      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
-      quantRevert.current = revert;
-      setQuant(null);
-      applyImageModelDefaults(id);
+      // A Download only pick fetches files and never becomes the resident model, so it
+      // relabels nothing and claims no revert: quantRevert is ONE slot, and a staged load
+      // already in flight owns what is in it and still has to commit it.
+      const revert: PickRevert | null = downloadOnlyPick
+        ? null
+        : (quantRevert.current ?? { prev: quant, steps, guidance });
+      if (revert) {
+        quantRevert.current = revert;
+        setQuant(null);
+        applyImageModelDefaults(id);
+      }
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
-        if (!started && stillOwnsPick()) {
+        if (!started && revert && stillOwnsPick()) {
           revertPick(revert);
           quantRevert.current = null;
         }

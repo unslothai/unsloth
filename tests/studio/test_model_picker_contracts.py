@@ -1607,7 +1607,8 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
         src = _read(rel)
         # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
         own = re.search(
-            r"const ownRevert = (?:downloadSnapshot \? null : )?quantRevert\.current;\n(.*?)await ",
+            r"const ownRevert = (?:downloadSnapshot(?: \|\| downloadOnly)? \? null : )?"
+            r"quantRevert\.current;\n(.*?)await ",
             src,
             re.S,
         )
@@ -1648,7 +1649,8 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
         sequence = re.search(
-            r"const pick = (?:downloadSnapshot \? pickSeq\.current : )?\+\+pickSeq\.current;", text
+            r"const pick = (?:(?:downloadSnapshot|downloadOnly) \? pickSeq\.current : )?"
+            r"\+\+pickSeq\.current;", text
         )
         assert sequence, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
@@ -3966,3 +3968,33 @@ def test_a_repeated_download_only_pick_queues_one_download():
         "if (queuedDownloadKeys().has(planKey(entries))) return true;" in src
     ), "download-only plans are queued without checking what is already queued"
     assert "function planKey(entries: StagedDownloadEntry[])" in src
+
+
+def test_a_download_only_pick_does_not_retire_the_pick_sequence():
+    """`pickSeq` is how a load pick tells a NEWER load pick from itself. A Download only pick is
+    neither: it fetches files and takes over nothing. Advancing the sequence for one made the
+    ordinary selection that was still awaiting its plan fail its own stale check and return
+    silently, leaving that model neither staged nor loaded and nothing on screen to say so."""
+    src = _read("features/images/images-page.tsx")
+    body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
+    assert body, "loadOrStage not found"
+    text = body.group(1)
+    assert "const pick = downloadOnly ? pickSeq.current : ++pickSeq.current;" in text
+    # The flag has to be decided first, or the ternary reads an undefined binding.
+    assert text.index("const downloadOnly =") < text.index("const pick =")
+
+
+def test_a_download_only_pick_claims_no_label_rollback():
+    """`quantRevert` is ONE slot and a staged load in flight owns what is in it: that entry is the
+    baseline it restores on failure and commits on success. A Download only pick used to take the
+    slot for an optimistic label it then reverted, which restored the PREVIOUS resident's quant and
+    recipe underneath a load that was still coming and left it nothing to commit. So it installs no
+    label at all, and reads no rollback out of the slot."""
+    src = _read("features/images/images-page.tsx")
+    start = src.index("const handleModelSelect = useCallback(")
+    pick = src[start : src.index("const handleDeployAdapter", start)]
+    installs = re.findall(r"const revert: PickRevert(.*?);\n", pick, re.S)
+    assert installs, "no optimistic label install found; this guard has gone stale"
+    for tail in installs:
+        assert "downloadOnlyPick" in tail, "a download-only pick installs an optimistic label"
+    assert "const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;" in src
