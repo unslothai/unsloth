@@ -3758,20 +3758,11 @@ class MLXInferenceBackend:
                 break
         if not user_text:
             user_text = "Please transcribe this audio."
-        # A named system turn arrives in messages with no system_prompt beside it.
-        system_turn = next(
-            (m for m in messages or [] if isinstance(m, dict) and m.get("role") == "system"), None
-        )
-        if not system_prompt and system_turn is not None:
-            system_prompt = content_to_text(system_turn.get("content") or "")
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         audio_messages = [
-            named_turn(
-                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-                system_turn,
-            ),
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             named_turn(
                 {
                     "role": "user",

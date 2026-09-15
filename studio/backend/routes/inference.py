@@ -22794,9 +22794,6 @@ async def produce_openai_chat_completions(
                 )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
-                chat_messages, system_prompt = _with_named_system_turn(
-                    chat_messages, system_prompt, payload.messages
-                )
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -25254,10 +25251,6 @@ async def produce_openai_chat_completions(
             else:
                 _sf_chat_messages.append(_msg)
 
-        _sf_chat_messages, _sf_system_prompt = _with_named_system_turn(
-            _sf_chat_messages, _sf_system_prompt, payload.messages
-        )
-
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
@@ -25823,17 +25816,13 @@ async def produce_openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
-    else:
-        gen_kwargs["messages"], gen_kwargs["system_prompt"] = _with_named_system_turn(
-            gen_kwargs["messages"], gen_kwargs["system_prompt"], payload.messages
-        )
-        if _sf_renders_image:
-            # The plain route too: later turns then share the prefix that holds the image.
-            _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
-            if _sf_image_ordinal is not None:
-                gen_kwargs["messages"] = _mark_image_owner_turn(
-                    gen_kwargs["messages"], _sf_image_ordinal
-                )
+    elif _sf_renders_image:
+        # The plain route too: later turns then share the prefix that holds the image.
+        _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
+        if _sf_image_ordinal is not None:
+            gen_kwargs["messages"] = _mark_image_owner_turn(
+                gen_kwargs["messages"], _sf_image_ordinal
+            )
 
     # The potential tool context above is needed before server/client routing is
     # known. This standard path now has the exact schemas that will be rendered,
@@ -31148,7 +31137,6 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             else _msg
             for _msg in messages
         ]
-    messages, system_prompt = _with_named_system_turn(messages, system_prompt, payload.messages)
 
     # Nothing to price: the template would render its generation marker alone and the
     # total would describe a conversation nobody has started (#8882). The GGUF branch
@@ -31601,26 +31589,6 @@ async def anthropic_count_tokens(
     return JSONResponse(content = {"input_tokens": int(count) + image_tokens})
 
 
-def _shared_system_name(messages) -> Optional[str]:
-    names = set()
-    for msg in messages or []:
-        is_dict = isinstance(msg, dict)
-        role = msg.get("role") if is_dict else getattr(msg, "role", None)
-        if role in ("system", "developer"):
-            names.add(msg.get("name") if is_dict else getattr(msg, "name", None))
-    return names.pop() if len(names) == 1 else None
-
-
-def _with_named_system_turn(
-    messages: list[dict], system_prompt: str, source_messages
-) -> tuple[list[dict], str]:
-    """Local backends rebuild the system turn from a bare string, so a named one rides in messages."""
-    name = _shared_system_name(source_messages)
-    if not (system_prompt and name):
-        return messages, system_prompt
-    return [{"role": "system", "name": name, "content": system_prompt}, *messages], ""
-
-
 def _set_or_prepend_system_message(
     messages: Optional[list[dict]], system_prompt: str
 ) -> list[dict]:
@@ -31633,7 +31601,9 @@ def _set_or_prepend_system_message(
     # or conflicting system instructions, then prepend the resolved prompt.
     others = [dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")]
     system = {"role": "system", "content": system_prompt}
-    if name := _shared_system_name(safe_messages):
+    # One shared name or none: a single turn cannot answer to two.
+    names = {msg.get("name") for msg in safe_messages if msg.get("role") in ("system", "developer")}
+    if len(names) == 1 and (name := names.pop()):
         system["name"] = name
     return [system, *others]
 

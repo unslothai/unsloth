@@ -582,7 +582,7 @@ def test_the_collapsed_vision_turn_keeps_the_participant_name():
     assert [(m["role"], m.get("name")) for m in seen["messages"]] == [("user", "alice")]
 
 
-def test_a_named_system_turn_reaches_the_vision_template():
+def test_the_folded_vision_history_keeps_participant_names():
     backend, seen = _vision_probe()
     _drain(
         backend,

@@ -1594,23 +1594,24 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                user_msg = {
-                    "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_message},
-                    ],
-                }
-                named_turn(
-                    user_msg,
-                    next(
-                        (
-                            m
-                            for m in reversed(messages)
-                            if isinstance(m, dict) and m.get("role") == "user"
-                        ),
-                        None,
+                # The collapse speaks for the turn user_message came from, so it keeps its name.
+                last_user = next(
+                    (
+                        m
+                        for m in reversed(messages)
+                        if isinstance(m, dict) and m.get("role") == "user"
                     ),
+                    None,
+                )
+                user_msg = named_turn(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": user_message},
+                        ],
+                    },
+                    last_user,
                 )
                 if system_prompt:
                     vision_messages = [
@@ -1631,7 +1632,7 @@ class InferenceBackend:
                                 "role": "assistant",
                                 "content": [{"type": "text", "text": continue_partial}],
                             },
-                            messages[-1],
+                            messages[-1] if messages else None,
                         )
                     )
 
@@ -1897,19 +1898,12 @@ class InferenceBackend:
                     user_turn = msg
                     break
 
-        # A named system turn arrives in messages with no system_prompt beside it.
-        system_turn = next((m for m in messages or [] if m.get("role") == "system"), None)
-        if not system_prompt and system_turn is not None:
-            system_prompt = content_to_text(system_turn.get("content") or "")
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
-            named_turn(
-                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-                system_turn,
-            ),
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
             named_turn(
                 {
                     "role": "user",
@@ -2772,10 +2766,8 @@ class InferenceBackend:
                         assistant_message["reasoning_content"] = reasoning_content
                     chat_messages.append(assistant_message)
                     last_role = role
-                elif role == "system" and last_role is None:
-                    # A named system turn arrives in messages with no system_prompt beside it.
-                    chat_messages.append(named_turn({"role": role, "content": content}, msg))
-                    last_role = role
+                elif role == "system":
+                    continue
 
         # A continuation resumes that turn, so dropping it would restart the answer.
         _continuing = continue_final_message and bool(

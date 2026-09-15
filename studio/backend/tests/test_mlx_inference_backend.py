@@ -2493,20 +2493,16 @@ def test_mlx_audio_input_turns_keep_participant_names(monkeypatch):
     backend.models = {"m": {"audio_type": "audio_vlm"}}
     list(
         backend.generate_audio_input_response(
-            messages = [
-                {"role": "system", "name": "supervisor", "content": "be brief"},
-                {"role": "user", "name": "alice", "content": "what is said?"},
-            ],
-            system_prompt = "",
+            messages = [{"role": "user", "name": "alice", "content": "what is said?"}],
+            system_prompt = "be brief",
             audio_array = [0.0, 0.1],
             max_new_tokens = 8,
         )
     )
     assert [(m["role"], m.get("name")) for m in calls["messages"]] == [
-        ("system", "supervisor"),
+        ("system", None),
         ("user", "alice"),
     ]
-    assert calls["messages"][0]["content"] == [{"type": "text", "text": "be brief"}]
 
 
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):

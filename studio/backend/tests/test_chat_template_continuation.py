@@ -588,7 +588,6 @@ def test_native_fallback_keeps_participant_names():
     }
 
     conversation = [
-        {"role": "system", "name": "supervisor", "content": "be brief"},
         {"role": "user", "name": "alice", "content": "hi"},
         {"role": "assistant", "name": "researcher", "content": "hello"},
         {"role": "user", "content": "again"},

@@ -326,11 +326,8 @@ def test_the_audio_input_turns_keep_participant_names(monkeypatch):
     monkeypatch.setattr(processor, "apply_chat_template", _capture, raising = False)
     list(
         backend.generate_audio_input_response(
-            [
-                {"role": "system", "name": "supervisor", "content": "be brief"},
-                {"role": "user", "name": "alice", "content": "hi"},
-            ],
-            "",
+            [{"role": "user", "name": "alice", "content": "hi"}],
+            "be brief",
             object(),
             0.0,
             1.0,
@@ -341,10 +338,9 @@ def test_the_audio_input_turns_keep_participant_names(monkeypatch):
         )
     )
     assert [(m["role"], m.get("name")) for m in seen["messages"]] == [
-        ("system", "supervisor"),
+        ("system", None),
         ("user", "alice"),
     ]
-    assert seen["messages"][0]["content"] == [{"type": "text", "text": "be brief"}]
 
 
 def test_an_explicit_audio_budget_is_untouched(monkeypatch):

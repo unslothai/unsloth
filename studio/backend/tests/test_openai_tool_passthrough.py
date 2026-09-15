@@ -81,7 +81,6 @@ from routes.inference import (
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
     _set_or_prepend_system_message,
     _strip_provider_synthetic_tool_history,
-    _with_named_system_turn,
     openai_completions,
     openai_embeddings,
     openai_chat_completions,
@@ -1530,7 +1529,7 @@ class TestChatCompletionRequestToolFields:
         assert calls == []
         assert monitor.active_count() == 0
 
-    def test_audio_input_receives_the_named_system_turn(self, monkeypatch):
+    def test_audio_input_carries_participant_names(self, monkeypatch):
         import numpy as np
         import routes.inference as inference_route
 
@@ -1561,11 +1560,8 @@ class TestChatCompletionRequestToolFields:
         )
 
         assert resp.status_code == 200, resp.text
-        assert calls[0]["system_prompt"] == ""
-        assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [
-            ("system", "supervisor"),
-            ("user", "alice"),
-        ]
+        assert calls[0]["system_prompt"].endswith("be brief")
+        assert [(m["role"], m.get("name")) for m in calls[0]["messages"]] == [("user", "alice")]
 
     def test_a_derived_legacy_image_field_does_not_block_a_voice_follow_up(self, monkeypatch):
         """Studio fills image_base64 from anywhere in the thread, so it is not a
@@ -10200,26 +10196,6 @@ class TestGgufChatHistoryAlternation:
         ]
         rebuilt = _set_or_prepend_system_message(messages, "be brief\n\ncite sources")
         assert rebuilt[0] == {"role": "system", "content": "be brief\n\ncite sources"}
-
-    def test_local_backends_get_the_named_system_turn_in_messages(self):
-        source = [
-            ChatMessage(role = "system", name = "supervisor", content = "be brief"),
-            ChatMessage(role = "developer", name = "supervisor", content = "cite sources"),
-            ChatMessage(role = "user", name = "alice", content = "hi"),
-        ]
-        chat = [{"role": "user", "name": "alice", "content": "hi"}]
-        messages, system_prompt = _with_named_system_turn(chat, "be brief\n\ncite sources", source)
-        assert system_prompt == ""
-        assert messages == [
-            {"role": "system", "name": "supervisor", "content": "be brief\n\ncite sources"},
-            {"role": "user", "name": "alice", "content": "hi"},
-        ]
-
-    @pytest.mark.parametrize("names", [(None,), ("supervisor", "auditor"), ("supervisor", None)])
-    def test_unnamed_or_mixed_system_turns_keep_the_system_prompt(self, names):
-        source = [ChatMessage(role = "system", name = n, content = "rule") for n in names]
-        chat = [{"role": "user", "content": "hi"}]
-        assert _with_named_system_turn(chat, "rule", source) == (chat, "rule")
 
     def test_local_backends_receive_participant_names(self):
         req = ChatCompletionRequest.model_validate(
