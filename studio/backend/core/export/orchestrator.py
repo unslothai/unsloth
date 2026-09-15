@@ -579,6 +579,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         return self._run_export(
             "merged",
@@ -590,6 +591,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "private": private,
                 "compressed_method": compressed_method,
+                "install_missing_dependencies": install_missing_dependencies,
             },
         )
 

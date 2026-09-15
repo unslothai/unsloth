@@ -134,6 +134,7 @@ export async function exportMerged(params: {
   repo_id?: string | null;
   hf_token?: string | null;
   private?: boolean;
+  install_missing_dependencies?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/merged", {
     method: "POST",
