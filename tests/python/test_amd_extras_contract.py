@@ -54,7 +54,9 @@ def _extras_referenced_by_the_audit_workflow() -> set[str]:
 def _inline_python_blocks() -> list[str]:
     """Every `python ... <<'PY'` heredoc in security-audit.yml, dedented."""
     source = SECURITY_AUDIT.read_text(encoding = "utf-8")
-    blocks = re.findall(r"^[ \t]*python[^\n]*<<'PY'[^\n]*\n(.*?)^[ \t]*PY[ \t]*$", source, re.MULTILINE | re.DOTALL)
+    blocks = re.findall(
+        r"^[ \t]*python[^\n]*<<'PY'[^\n]*\n(.*?)^[ \t]*PY[ \t]*$", source, re.MULTILINE | re.DOTALL
+    )
     assert blocks, "expected security-audit.yml to embed python heredocs"
     return [textwrap.dedent(b) for b in blocks]
 
