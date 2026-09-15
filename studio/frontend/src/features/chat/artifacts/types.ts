@@ -80,10 +80,21 @@ export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {
   };
 }
 
+/*
+ * The page's own <title>, when it has one. A fence-sourced artifact is titled
+ * "HTML preview" by the card that opens it -- a UI label, not a name for the
+ * document -- so without this every generated page downloads as
+ * `html-preview.html`, whatever the page calls itself. Cheap regex rather than
+ * DOMParser: the artifact may still be streaming, and a half-written document
+ * should degrade to the card title, not throw.
+ */
+const DOCUMENT_TITLE_RE = /<title[^>]*>([^<]*)<\/title>/i;
+
 export function getArtifactFilename(
-  artifact: Pick<ChatArtifact, "title">,
+  artifact: Pick<ChatArtifact, "title" | "code">,
 ): string {
-  const slug = artifact.title
+  const documentTitle = artifact.code.match(DOCUMENT_TITLE_RE)?.[1]?.trim();
+  const slug = (documentTitle || artifact.title)
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
