@@ -566,6 +566,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     return True
 
 
+def _packed_lengths_version(lengths: torch.Tensor) -> Optional[int]:
+    # Inference tensors have no mutation counter, so their contents cannot be cached safely.
+    return None if torch.is_inference(lengths) else lengths._version
+
+
 def get_packed_info_from_kwargs(
     kwargs: dict, device: torch.device
 ) -> Optional[Tuple[torch.Tensor, torch.Tensor, int]]:
@@ -575,17 +580,24 @@ def get_packed_info_from_kwargs(
     if seq_lengths is None:
         return None
 
+    version = _packed_lengths_version(seq_lengths)
     entry = _PACKED_INFO_CACHE.get(device)
-    if entry is not None and entry["seq_lengths"] is seq_lengths:
+    if (
+        version is not None
+        and entry is not None
+        and entry["seq_lengths"] is seq_lengths
+        and entry["version"] == version
+    ):
         return entry["result"]
 
-    lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
+    with torch.inference_mode(False):
+        lengths = seq_lengths.to(device = device, dtype = torch.int32, non_blocking = True)
     cu_seqlens = torch.zeros(lengths.numel() + 1, dtype = torch.int32, device = device)
     torch.cumsum(lengths, dim = 0, dtype = torch.int32, out = cu_seqlens[1:])
 
     max_seqlen = int(lengths.max().item())
     result = (lengths, cu_seqlens, max_seqlen)
-    _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "result": result}
+    _PACKED_INFO_CACHE[device] = {"seq_lengths": seq_lengths, "version": version, "result": result}
     return result
 
 
@@ -602,8 +614,15 @@ def build_xformers_block_causal_mask(
         # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
         params = (sliding_window,)
+        version = _packed_lengths_version(seq_lengths)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
-        if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+        if (
+            version is not None
+            and entry is not None
+            and entry["seq_lengths"] is seq_lengths
+            and entry["version"] == version
+            and entry["params"] == params
+        ):
             return entry["mask"]
 
         lengths_tensor = seq_lengths.to("cpu", torch.int32)
@@ -614,6 +633,7 @@ def build_xformers_block_causal_mask(
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
             "seq_lengths": seq_lengths,
+            "version": version,
             "params": params,
             "mask": mask,
         }
@@ -640,8 +660,15 @@ def build_sdpa_packed_attention_mask(
     seq_lengths, _, _ = seq_info
 
     params = (dtype, sliding_window)
+    version = _packed_lengths_version(seq_lengths)
     entry = _SDPA_MASK_CACHE.get(device)
-    if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
+    if (
+        version is not None
+        and entry is not None
+        and entry["seq_lengths"] is seq_lengths
+        and entry["version"] == version
+        and entry["params"] == params
+    ):
         return entry["mask"]
 
     total_tokens = int(seq_lengths.sum().item())
@@ -670,6 +697,7 @@ def build_sdpa_packed_attention_mask(
     result = mask.unsqueeze(0).unsqueeze(0)
     _SDPA_MASK_CACHE[device] = {
         "seq_lengths": seq_lengths,
+        "version": version,
         "params": params,
         "mask": result,
     }

@@ -198,6 +198,7 @@ class _Model(torch.nn.Module):
             SimpleNamespace(
                 shape = tuple(input_ids.shape),
                 packed = packed_seq_lengths is not None,
+                packed_lengths = packed_seq_lengths,
             )
         )
         h = torch.tanh(self.emb(input_ids))
@@ -294,7 +295,11 @@ def _batch():
     )
 
 
-def _run_packed_block(hidden_states = False, model = None):
+def _run_packed_block(
+    hidden_states = False,
+    model = None,
+    inference_mode = False,
+):
     """Exec the real packed + verify block and hand back its locals."""
     if model is None:
         model = _Model(hidden_states = hidden_states)
@@ -313,7 +318,9 @@ def _run_packed_block(hidden_states = False, model = None):
         "chunked_selective_log_softmax": HELPERS["chunked_selective_log_softmax"],
         "create_completion_attention_mask": HELPERS["create_completion_attention_mask"],
         "calculate_pad_tokens_in_prompt": HELPERS["calculate_pad_tokens_in_prompt"],
-        "_get_inference_mode_context_manager": lambda _model: torch.no_grad(),
+        "_get_inference_mode_context_manager": lambda _model: (
+            torch.inference_mode() if inference_mode else torch.no_grad()
+        ),
         "device_synchronize": lambda *args, **kwargs: None,
         "UNSLOTH_ENABLE_LOGGING": False,
         "UNSLOTH_GRPO_SEQ_PACKING_ON": True,
@@ -379,6 +386,39 @@ def test_packed_path_survives_a_forward_that_returns_real_logits():
     assert namespace["_pk_use"] is True
     assert namespace["_pk_result"] is not None
     assert namespace["_pk_result"].shape == (2, KEEP + 2)
+
+
+@pytest.mark.parametrize("length_dtype", [torch.int32, torch.int64])
+def test_packed_inference_preserves_metadata_cache_hits(length_dtype):
+    import importlib.util
+
+    namespace, model, _, _ = _run_packed_block(inference_mode = True)
+    assert namespace["_pk_use"] is True
+    lengths = next(call.packed_lengths for call in model.calls if call.packed)
+    assert not torch.is_inference(lengths)
+    lengths = lengths.to(dtype = length_dtype)
+
+    spec = importlib.util.spec_from_file_location(
+        "packed_cache", _REPO / "unsloth/utils/packing.py"
+    )
+    packing = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(packing)
+    with torch.inference_mode():
+        info = packing.get_packed_info_from_kwargs({"packed_seq_lengths": lengths}, lengths.device)
+        mask = packing.build_sdpa_packed_attention_mask(
+            info, dtype = torch.float32, device = lengths.device
+        )
+        for _ in range(16):
+            assert (
+                packing.get_packed_info_from_kwargs({"packed_seq_lengths": lengths}, lengths.device)
+                is info
+            )
+            assert (
+                packing.build_sdpa_packed_attention_mask(
+                    info, dtype = torch.float32, device = lengths.device
+                )
+                is mask
+            )
 
 
 @pytest.mark.parametrize("hidden_states", [False, True])
