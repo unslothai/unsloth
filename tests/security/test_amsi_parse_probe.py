@@ -470,3 +470,60 @@ def test_a_block_on_a_different_base_script_is_not_called_pre_existing(tmp_path:
     assert code == 1
     assert "This change introduced it" in text, text
     assert "pre-existing" not in text.split("install.ps1")[-1], text
+
+
+def test_a_real_block_is_reported_even_when_another_row_is_unmeasured(tmp_path: Path) -> None:
+    """Incomplete coverage must not swallow a detection that was actually made.
+
+    Returning early on any unmeasured head row meant a script a live provider genuinely REFUSED
+    went unreported whenever some other invocation happened to write no result, and the job stayed
+    green. A gap in coverage is a warning; a refusal is the finding this lane exists for.
+    """
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control=True, result=_BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(
+        tmp_path, rows, no_result_ps="@('head/setup.ps1 [the probe wrote no result]')"
+    )
+    assert code == 1, f"a refused head script did not fail the job\n{text}"
+    assert "AMSI refused head/install.ps1" in text, text
+    assert "could not measure head/setup.ps1" in text, "the coverage gap was not reported too"
+    assert "verdict=clean" not in text, text
+
+
+def test_a_parse_error_is_classified_even_when_the_control_is_silent(tmp_path: Path) -> None:
+    """A syntax error is a property of the script, not of the scanner.
+
+    The compiler rejects it whether or not an AMSI provider is listening, so gating the
+    classification on the per-row control filed a broken candidate as merely unmeasured and exited
+    zero. Only the BLOCKED verdict genuinely depends on a live provider.
+    """
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control=False, result=_SYNTAX)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, f"a candidate that does not parse was not reported\n{text}"
+    assert "verdict=broken" in text, text
+
+
+def test_a_block_claimed_without_a_live_control_is_not_trusted(tmp_path: Path) -> None:
+    """The other side of the same reordering: only BLOCKED needs the control, and it still needs it."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control=True, result=_COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control=False, result=_BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 0, text
+    assert "verdict=unmeasured" in text, text
+    assert "verdict=clean" not in text, text

@@ -189,17 +189,27 @@ jobs:
             foreach ($r in $row.data.results) {
               if ($r.label -like 'control*') { continue }
               $where = "$($row.side)/$($row.name)"
-              if (-not $row.controlFired) {
-                $unmeasured += "$where [the control did not fire in this process]"
+              # Order matters here, and the obvious order is wrong.
+              #
+              # A parse error is a property of the script, not of the scanner: the compiler rejects
+              # it whether or not an AMSI provider is listening. Classifying it BEFORE the control
+              # gate is therefore both valid and necessary, because gating it meant a syntax error
+              # in a process whose control happened to stay silent was filed as "not measured" and
+              # the run exited zero.
+              if ($r.blocked) {
+                # This one does depend on a live provider, so it is the control's to vouch for.
+                if ($row.controlFired) { $blocked += "$where [$($r.errorId)]" }
+                else { $unmeasured += "$where [reported blocked, but the control did not fire in this process]" }
                 continue
               }
-              if ($r.blocked) { $blocked += "$where [$($r.errorId)]"; continue }
               if ($r.missing)    { $unmeasured += "$where [the probe could not find the file]"; continue }
               if ($r.unreadable) { $unmeasured += "$where [the probe could not read the file]"; continue }
-              # blocked=false with an errorId set is a compile failure, not a scanner verdict. The
-              # probe already separates the two; dropping the result here put a candidate that never
-              # compiled into the same bucket as one that compiled cleanly.
+              # blocked=false with an errorId set is a compile failure, not a scanner verdict.
               if ($r.errorId) { $didNotCompile += "$where [$($r.errorId)]"; continue }
+              # Compiled cleanly, and only a live control makes that mean anything.
+              if (-not $row.controlFired) {
+                $unmeasured += "$where [the control did not fire in this process]"
+              }
             }
           }
 
@@ -227,20 +237,26 @@ jobs:
           }
 
           $headUnmeasured = @($unmeasured | Where-Object { $_ -like 'head/*' })
-          if ($headUnmeasured.Count) {
-            foreach ($u in $headUnmeasured) { Write-Host "::warning::could not measure $u" }
-            Write-Host '::warning::At least one candidate was never actually put to a live provider, so there is no clean verdict to give for the head side.'
-            "verdict=unmeasured" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            exit 0
-          }
-
           $headBlocked = @($blocked | Where-Object { $_ -like 'head/*' })
           $baseBlocked = @($blocked | Where-Object { $_ -like 'base/*' })
 
+          # Incomplete coverage is a warning, never a reason to stop. Returning early on it meant a
+          # script that a live provider genuinely REFUSED went unreported whenever some other
+          # invocation happened to write no result, and the job stayed green on a real detection.
+          foreach ($u in $headUnmeasured) { Write-Host "::warning::could not measure $u" }
+
           if ($headBlocked.Count -eq 0) {
+            if ($headUnmeasured.Count) {
+              Write-Host '::warning::Nothing on head was refused, but at least one candidate was never actually put to a live provider, so this is not a clean verdict.'
+              "verdict=unmeasured" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+              exit 0
+            }
             Write-Host "AMSI: no script was refused on head$(if ($baseBlocked.Count) { ", and $($baseBlocked.Count) was refused on base -- an improvement" })."
             "verdict=clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
+          }
+          if ($headUnmeasured.Count) {
+            Write-Host '::warning::Coverage was incomplete as well, so the blocks below are what was seen, not necessarily all there is.'
           }
 
           # Causality is per SCRIPT, not per side. Comparing counts said "pre-existing" whenever the
@@ -321,6 +337,41 @@ jobs:
             exit 0
           }
           Write-Host 'control: EICAR fired, so the file scanner is live and its verdicts mean something.'
+
+          # EICAR proves the LOCAL engine scans, and nothing more. This lane stamps mark-of-the-web
+          # on every candidate specifically so block-at-first-sight consults the cloud, and a
+          # zero-prevalence script is judged by cloud heuristics rather than by a local signature --
+          # which is the condition the #10805 reporter was under. With MAPS off or unreachable that
+          # half is simply absent, and an exit-0 scan would still read as clean.
+          #
+          # release-desktop.yml:1290-1343 makes the same distinction and verifies MAPS separately
+          # from EICAR, including MpCmdRun -ValidateMapsConnection. This lane is deliberately the
+          # cheap one and does not try to REPAIR the configuration, so it checks and labels instead:
+          # a Defender verdict that could not reach the cloud says so rather than claiming more.
+          $cloudReady = $false
+          $cloudNote = 'not determined'
+          try {
+            $pref = Get-MpPreference -ErrorAction Stop
+            if ([int]$pref.MAPSReporting -eq 0) {
+              $cloudNote = 'MAPSReporting is Disabled'
+            } else {
+              $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
+              if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'fail') {
+                $cloudReady = $true
+                $cloudNote = "MAPSReporting=$($pref.MAPSReporting), connection validated"
+              } else {
+                $cloudNote = "ValidateMapsConnection exit $LASTEXITCODE"
+              }
+            }
+          } catch {
+            $cloudNote = "could not read Defender preferences: $($_.Exception.Message)"
+          }
+          if ($cloudReady) {
+            Write-Host "control: cloud-delivered protection is reachable ($cloudNote), so block-at-first-sight can act on the mark of the web."
+          } else {
+            Write-Host "::warning::cloud-delivered protection is NOT available ($cloudNote)."
+            Write-Host '::warning::Any clean Defender result below is LOCAL SIGNATURES ONLY. The mark of the web is still stamped, but nothing consults the cloud, so the low-prevalence heuristics this lane is aimed at were not exercised.'
+          }
           Write-Host ''
 
           $flagged = @()
@@ -395,7 +446,11 @@ jobs:
             exit 0
           }
           if ($headFlagged.Count -eq 0) {
-            Write-Host 'Defender: nothing on head was flagged.'
+            if ($cloudReady) {
+              Write-Host 'Defender: nothing on head was flagged, with cloud-delivered protection reachable.'
+            } else {
+              Write-Host 'Defender: nothing on head was flagged BY LOCAL SIGNATURES. The cloud half was unavailable, so this is a weaker statement than it looks.'
+            }
             exit 0
           }
           foreach ($f in $headFlagged) { Write-Host "::error::Defender flagged $f" }
