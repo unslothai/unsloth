@@ -50,6 +50,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_python_stack.py",
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
+    "studio/nvidia_probe.py",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
 )
